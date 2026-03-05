@@ -1,8 +1,13 @@
-import type { NextConfig } from "next";
+import { withContentlayer } from 'next-contentlayer2'
+import type { NextConfig } from 'next'
 
+/** @type {import('next').NextConfig} */
 const nextConfig: NextConfig = {
-  /* config options here */
   reactStrictMode: true,
-};
+  output: 'export', // Enabling SSG
+  images: {
+    unoptimized: true,
+  },
+}
 
-export default nextConfig;
+export default withContentlayer(nextConfig)

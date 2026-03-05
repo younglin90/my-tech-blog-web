@@ -1,0 +1,68 @@
+import { readFileSync, writeFileSync, mkdirSync } from 'fs'
+import { join } from 'path'
+
+const SITE_URL = 'https://tech-blog.dev'
+const SITE_TITLE = 'Tech Blog'
+const SITE_DESCRIPTION = 'Fast and SEO-optimized static tech blog'
+
+function getPosts() {
+  const raw = readFileSync(join(process.cwd(), '.contentlayer/generated/Post/_index.json'), 'utf-8')
+  return JSON.parse(raw)
+    .filter((p) => !p.draft)
+    .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+}
+
+function generateRss(posts) {
+  const items = posts.map((post) => `
+    <item>
+      <title><![CDATA[${post.title}]]></title>
+      <description><![CDATA[${post.description}]]></description>
+      <link>${SITE_URL}/posts/${post._raw.flattenedPath}</link>
+      <guid isPermaLink="true">${SITE_URL}/posts/${post._raw.flattenedPath}</guid>
+      <pubDate>${new Date(post.date).toUTCString()}</pubDate>
+    </item>`).join('')
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>${SITE_TITLE}</title>
+    <description>${SITE_DESCRIPTION}</description>
+    <link>${SITE_URL}</link>
+    <atom:link href="${SITE_URL}/feed.xml" rel="self" type="application/rss+xml"/>
+    <language>ko</language>
+    <lastBuildDate>${new Date().toUTCString()}</lastBuildDate>${items}
+  </channel>
+</rss>`
+}
+
+function generateSitemap(posts) {
+  const postEntries = posts.map((post) => `
+  <url>
+    <loc>${SITE_URL}/posts/${post._raw.flattenedPath}</loc>
+    <lastmod>${new Date(post.date).toISOString().split('T')[0]}</lastmod>
+  </url>`).join('')
+
+  const today = new Date().toISOString().split('T')[0]
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>${SITE_URL}</loc>
+    <lastmod>${today}</lastmod>
+  </url>
+  <url>
+    <loc>${SITE_URL}/about</loc>
+    <lastmod>${today}</lastmod>
+  </url>
+  <url>
+    <loc>${SITE_URL}/tags</loc>
+    <lastmod>${today}</lastmod>
+  </url>${postEntries}
+</urlset>`
+}
+
+const posts = getPosts()
+
+mkdirSync(join(process.cwd(), 'out'), { recursive: true })
+writeFileSync(join(process.cwd(), 'out/feed.xml'), generateRss(posts))
+writeFileSync(join(process.cwd(), 'out/sitemap.xml'), generateSitemap(posts))
+console.log('Generated: out/feed.xml, out/sitemap.xml')

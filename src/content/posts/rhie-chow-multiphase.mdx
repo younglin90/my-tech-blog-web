@@ -1,0 +1,332 @@
+---
+title: "압축성 다상유동을 위한 Rhie-Chow 보간법 총정리"
+date: 2026-03-10
+description: "Collocated 격자의 체커보드 문제부터 balanced-force 다상유동까지, Rhie-Chow 보간의 수학적 본질과 OpenFOAM 구현을 체계적으로 정리합니다."
+tags: ["CFD", "Multiphase", "Rhie-Chow", "OpenFOAM", "Numerical Methods"]
+---
+
+# Rhie-Chow 보간: 왜 필요하고, 다상유동에서 왜 까다로운가
+
+Rhie-Chow 보간(momentum-weighted interpolation, MWI)은 collocated 격자에서 **체커보드 압력 진동을 억제**하기 위해 face 속도를 보정하는 핵심 기법입니다. 단상 유동에서는 비교적 간단하지만, 다상유동으로 확장할 때 **압력, 중력, 표면장력, 비정상 보정항의 일관된 처리**가 결정적으로 중요해집니다.
+
+이 글은 Rhie & Chow(1983)의 원본부터 Bartholomew et al.(2018)의 통합 프레임워크, 그리고 OpenFOAM의 interFoam/compressibleInterFoam 구현까지를 다룹니다.
+
+---
+
+## 1. 반이산화 운동량 방정식에서 Face 속도 도출
+
+모든 Rhie-Chow 변형의 출발점은 셀 중심 $P$에서의 **반이산화(semi-discretized) 운동량 방정식**입니다:
+
+$$
+a_P \mathbf{U}_P = H(\mathbf{U}) - V_P \nabla p\big|_P + V_P \rho_P \mathbf{g} + V_P \mathbf{F}_{\sigma,P}
+$$
+
+- $a_P$: 대각 계수 (시간 미분, 대류, 확산 기여 포함)
+- $H(\mathbf{U}) = \sum a_{Nb}\mathbf{U}_{Nb} + \text{sources}$: 이웃 셀 기여 + 명시적 소스
+
+셀 중심 속도를 풀면:
+
+$$
+\mathbf{U}_P = \frac{H}{a_P}\bigg|_P - \frac{V_P}{a_P}\nabla p\big|_P + \frac{V_P}{a_P}\rho_P\mathbf{g} + \frac{V_P}{a_P}\mathbf{F}_{\sigma,P}
+$$
+
+### 문제: 체커보드 진동
+
+이 셀 중심 속도를 **단순 선형 보간**으로 face에 가져오면, 압력 구배가 $p_{i-1}$과 $p_{i+1}$만 연결하고 $p_i$를 건너뛰어 **odd-even decoupling(체커보드)**이 발생합니다.
+
+### Rhie-Chow의 해법
+
+Face에서 **운동량 방정식 자체를 재구성**하여, 넓은 스텐실의 보간된 압력 구배를 **좁은(compact) face 중심 압력 구배**로 대체합니다:
+
+$$
+\mathbf{U}_f = \overline{\left(\frac{H}{a_P}\right)}_f - \left(\frac{1}{a_P}\right)_f \nabla p\big|_f^{\text{compact}} + \left(\frac{1}{a_P}\right)_f (\rho\mathbf{g})_f + \left(\frac{1}{a_P}\right)_f (\mathbf{F}_\sigma)_f + \delta\mathbf{U}_{\text{transient}}
+$$
+
+여기서 $\nabla p\big|_f^{\text{compact}} = (p_Q - p_P)/|\mathbf{d}_{PQ}|$는 인접 셀 값으로 직접 계산한 face 구배이고, overbar는 셀 중심 값의 선형 보간입니다.
+
+**압력 보정항** $-(1/a_P)_f[\nabla p|_f - \overline{\nabla p}_f]$는 $\Delta x^2 \cdot \partial^3 p/\partial x^3$에 비례하는 **저역통과 필터**로 작용하여 체커보드를 억제합니다.
+
+---
+
+## 2. 핵심 논문별 기여
+
+### Rhie & Chow (1983): 원본
+
+AIAA Journal에 발표된 원본은 **정상 유동 SIMPLE 알고리즘** 전용이었습니다:
+
+$$
+u_f = \hat{u}_f - d_f(p_E - p_P)
+$$
+
+$\hat{u} = u + d \cdot \Delta p$는 압력 구배를 제거한 의사속도, $d = V/a_P$입니다. **압력 보정항만** 포함하며, 비정상항이나 이완(relaxation)항 처리가 없었습니다. 이후 Majumdar(1988)가 수렴된 해의 이완 계수 의존성을, Choi(1999)가 비정상 유동에서의 시간 간격 의존성을 지적했습니다.
+
+### Jasak (1996): OpenFOAM의 토대 - H/A 접근법
+
+Imperial College 박사논문으로, **비정렬 다면체 격자** 유한체적법을 체계화했습니다. Rhie-Chow를 **명시적 보정항 없이 암묵적으로** 구현한 것이 특징입니다:
+
+$$
+\mathbf{U} = \frac{H}{A} - \frac{1}{A}\nabla p \quad \Rightarrow \quad \phi_f = \left(\frac{H}{A}\right)_f \cdot \mathbf{S}_f - \left(\frac{1}{A}\right)_f (\nabla p)_f \cdot \mathbf{S}_f
+$$
+
+**HbyA = H/A**는 압력 영향이 제거된 속도 예측자이며, 압력 방정식은 $\nabla\cdot[(1/A)_f \nabla p] = \nabla\cdot(H/A)_f$로 유도됩니다. Rhie-Chow 효과는 Laplacian 이산화(face snGrad)와 속도 보정의 구배(Gauss 정리)가 **서로 다른 스텐실**을 사용하는 데서 자연스럽게 발생합니다.
+
+비정상 보정은 `fvc::ddtCorr`로 처리하지만, **완전히 일관적이지 않아** 시간 간격 의존성이 남습니다.
+
+### Cubero & Fueyo (2007): Compact Momentum Interpolation (CMI)
+
+**시간 간격과 이완 계수 모두에 독립적인** face 속도 공식을 제안했습니다. 운동량 방정식의 각 계수를 **개별적으로 일관되게 보간**하는 것이 핵심입니다:
+
+$$
+u_f = \bar{u}_f + d_f[\overline{\nabla p}_f - (\nabla p)_f] + \frac{a_t}{a_s + a_t + a_\tau}\bigg|_f (\bar{u}^O_f - u^O_f) + \frac{a_\tau}{a_s + a_t + a_\tau}\bigg|_f (\bar{u}^{\text{prev}}_f - u^{\text{prev}}_f)
+$$
+
+- $a_t = \rho V/\Delta t$: 시간 계수
+- $a_\tau = \rho V/\Delta\tau$: 이완 계수
+- $a_s$: 공간 계수
+
+**수렴 시** $u_f = u^{\text{prev}}_f$이고 $u_f = u^O_f$이므로 비정상/이완 보정항이 자동 소멸합니다. 정상 해가 $\Delta t$와 이완 계수에 무관해지는 것이 보장됩니다.
+
+### Bartholomew et al. (2018): 통합 프레임워크
+
+JCP 375에서 **구조/비구조 격자 모두에 적용 가능한 통합 MWI 공식**을 제시했습니다. 세 가지 핵심 기여:
+
+**1) MWI 계수는 공간 계수만으로 구성해야 합니다.** 시간 미분 계수 $\rho V/\Delta t$를 분모에 포함하면 $\Delta t \to 0$일 때 압력 필터가 약해져 체커보드가 재발합니다.
+
+**2) "Driving pressure gradient" 개념:** 체력이 있을 때, MWI 필터는 $\nabla P = \nabla p - \mathbf{S}_{\text{total}}$(전체 소스를 뺀 구동 압력 구배)에만 작용해야 합니다. 이것이 **balanced-force 이산화**의 핵심입니다.
+
+**3) 밀도 가중:** 셀 중심 압력 구배를 $\nabla P_P/\rho_P$로 가중하고, face 밀도는 **조화 평균**으로 보간하여 밀도비 $10^{24}$까지 안정적 결과를 달성했습니다.
+
+### Denner & van Wachem (2014): Balanced-Force VOF
+
+CSF 표면장력($\sigma\kappa\nabla\alpha$)과 압력 구배를 **동일한 이산 구배 연산자로 동일한 위치(face)에서** 평가하여, 정적 액적에서 **solver tolerance까지** 정확한 힘 균형을 달성했습니다. 밀도비 $10^6$ 이상에서 안정적이며, spurious velocity를 대폭 감소시켰습니다.
+
+---
+
+## 3. 네 가지 보정항의 다상유동 처리
+
+다상유동 face 속도의 4가지 보정항은 각각 고유한 물리적 역할과 처리 원칙을 가집니다.
+
+### 압력 보정항 (필수)
+
+$$
+\delta\mathbf{U}_p = -\left(\frac{1}{a_P}\right)_f\left[\nabla p\big|_f - \overline{\nabla p}_f\right]
+$$
+
+Rhie-Chow의 본질입니다. $\Delta x^2 \partial^4 p/\partial x^4$에 비례하는 질량 보존 오류를 대가로 체커보드를 억제합니다. 다상유동에서는 계면 근처 압력의 급격한 변화로 오류가 커질 수 있으므로 balanced-force 접근이 필요합니다.
+
+### 비정상 보정항 (비정상 유동 필수)
+
+$$
+\delta\mathbf{U}_t = \left(\frac{t}{a_P^\alpha}\right)_f \mathbf{U}_f^0 - \overline{\left(\frac{t}{a_P^\alpha}\right)\mathbf{U}^0}_f
+$$
+
+이 항이 없으면 $\Delta t \to 0$일 때 MWI 필터 강도가 변하여 **톱니 형태의 압력 진동**이 나타납니다. Cubero & Fueyo(2007)와 Bartholomew et al.(2018)는 MWI 계수에서 시간 계수를 **완전히 분리**하고 별도 보정항으로 처리할 것을 권장합니다.
+
+### 중력 보정항 (다상유동 필수)
+
+$$
+\delta\mathbf{U}_g = \left(\frac{V}{a_P}\right)_f(\rho\mathbf{g})_f - \overline{\left(\frac{V}{a_P}\right)\rho\mathbf{g}}_f
+$$
+
+밀도 불연속이 있는 다상유동에서 **반드시 포함**해야 합니다. Mencinger & Zun(2007)은 이 항이 없을 때 계면에서 비물리적 속도 스파이크가 발생함을 증명했습니다. 정수압 평형($\mathbf{U}=0$)에서 $\nabla p = \rho\mathbf{g}$가 이산적으로도 성립해야 합니다.
+
+OpenFOAM에서는 수정 압력 $p_{rgh} = p - \rho\mathbf{g}\cdot\mathbf{r}$을 사용하여 이를 $-g_h \cdot \text{snGrad}(\rho)$ 형태로 face에서 직접 평가합니다.
+
+### 표면장력 보정항 (가장 논쟁적)
+
+Balanced-force 접근법에서는 표면장력에 대한 Rhie-Chow 보정을 **적용하지 않아야** 합니다. 이유는 명확합니다:
+
+> 압력 구배와 표면장력이 동일한 face 중심 구배 연산자로 이산화되면,
+> 정적 평형 시 $\nabla p = \sigma\kappa\nabla\alpha$가 정확히 성립한다.
+> 여기에 Rhie-Chow 보정을 추가하면 균형이 깨져 parasitic current가 발생한다.
+
+따라서 face에서의 표면장력은 $(1/a_P)_f \cdot (\sigma\kappa)_f \cdot \text{snGrad}(\alpha)$로 **직접 평가**하며, 보간된 셀 중심 값과의 차이 보정은 **0으로 설정**합니다.
+
+### 보정항 요약
+
+| 보정항 | 단상 유동 | Balanced-force 다상유동 | 미처리 시 문제 |
+|--------|:---------:|:----------------------:|--------------|
+| 압력 (Rhie-Chow) | 필수 | 필수 | 체커보드 압력 진동 |
+| 비정상 (Choi) | 필수 (비정상) | 필수 | $\Delta t$ 의존성, 톱니 진동 |
+| 중력 (Gu) | 가변 밀도 시 | 필수 (face 평가) | 계면 속도 스파이크 |
+| 표면장력 | 해당 없음 | **보정 0** (직접 face 평가) | Parasitic current |
+
+---
+
+## 4. Spurious Velocity 억제의 설계 원칙
+
+Parasitic current(기생 전류)는 계면 곡률이 있는 다상유동에서 표면장력과 압력 구배의 **이산적 불균형**으로 발생하는 비물리적 속도장입니다. 크기가 $\sigma$에 비례하고 $\mu$에 반비례하여, 저점성 유동에서 심각해집니다.
+
+### Balanced-Force 알고리즘
+
+Francois et al.(2006)이 제시한 핵심 원리:
+
+> 압력 구배와 표면장력의 구배 연산자를 **동일하게 이산화하고 동일한 위치에서** 평가해야 한다.
+
+구체적으로, 압력 방정식에서 $\nabla p$가 face의 snGrad로 계산되므로, CSF의 $\sigma\kappa\nabla\alpha$도 **동일한 snGrad로 face에서** 계산해야 합니다. 이 원칙을 따르면 정확한 곡률이 주어진 정적 액적에서 **머신 정밀도까지** 영속도를 달성합니다.
+
+### Rhie-Chow 자체가 원인이 될 수 있다
+
+Mencinger & Zun(2007)의 중요한 발견: 체력이 불연속인 경우(밀도 점프, 표면장력), 압력의 4차 도함수가 커져 Rhie-Chow 보정항 자체가 **대형 오류를 생성**합니다.
+
+따라서 Bartholomew et al.(2018)의 통합 프레임워크는 **체력에 대해서는 Rhie-Chow 보정을 적용하지 않고**, 구동 압력 구배에만 필터를 적용합니다:
+
+$$
+\nabla P = \nabla p - \rho\mathbf{g} - \sigma\kappa\nabla\alpha
+$$
+
+그럼에도 **곡률 추정 정확도**가 spurious velocity의 궁극적 한계를 결정하며, height-function 방법(Popinet, 2009)이 2차 수렴성을 제공하여 가장 효과적입니다.
+
+---
+
+## 5. Mobility 계수 보간: 조화 평균이 필요한 이유
+
+Face에서의 mobility 계수 $(1/a_P)_f$ 보간은 다상유동의 안정성에 큰 영향을 미칩니다. $a_P$는 밀도에 비례하므로($a_P \propto \rho$), 밀도비가 큰 유동에서 계면 양쪽의 $1/a_P$ 값이 수 자릿수 차이납니다.
+
+### 산술 평균의 문제
+
+물-공기($\rho_w/\rho_a = 1000$) 계면에서:
+
+$$
+\left(\frac{1}{a_P}\right)_f^{\text{arith}} \approx \frac{1}{2}\left(\frac{1}{a_{P,w}} + \frac{1}{a_{P,a}}\right)
+$$
+
+가벼운 상(공기)의 큰 $1/a_P$ 값에 의해 지배되어, 무거운 상(물)의 관성을 **과소평가**합니다.
+
+### 조화 평균의 해법
+
+$$
+\rho_f^* = \frac{2}{\frac{1}{\rho_P} + \frac{1}{\rho_Q}}
+$$
+
+물-공기의 경우 $\rho_f^* \approx 2.0$으로, 산술 평균의 $\approx 500.5$와 크게 다릅니다. **가속에 대한 저항이 더 큰 상(무거운 상)을 적절히 반영**하여, Bartholomew et al.(2018)과 Denner et al.(2022)는 밀도비 $10^6$ 이상에서도 안정적 결과를 보였습니다.
+
+산술 보간을 사용하면 압력 방정식의 Laplacian 계수와 MWI 보정의 밀도 가중 사이에 **불일치**가 생겨 spurious velocity가 발생합니다.
+
+---
+
+## 6. OpenFOAM 구현 분석
+
+### interFoam: 비압축성 이상 유동
+
+OpenFOAM의 interFoam은 Jasak의 H/A 접근법을 기반으로 합니다.
+
+**운동량 방정식 조립** (압력 구배 제외):
+
+```cpp
+fvVectorMatrix UEqn(
+    fvm::ddt(rho, U)
+  + fvm::div(rhoPhi, U)
+  + turbulence->divDevRhoReff(rho, U)
+);
+```
+
+**rAU와 HbyA 계산:**
+
+```cpp
+volScalarField rAU("rAU", 1.0/UEqn.A());
+surfaceScalarField rAUf("rAUf", fvc::interpolate(rAU)); // 선형 보간 (기본값)
+volVectorField HbyA(constrainHbyA(rAU*UEqn.H(), U, p_rgh));
+```
+
+**phiHbyA 구성** (4가지 보정항):
+
+```cpp
+// (H/A)_f · S_f + 비정상 보정
+surfaceScalarField phiHbyA("phiHbyA",
+    fvc::flux(HbyA)
+  + fvc::interpolate(rho*rAU)*fvc::ddtCorr(U, phi, Uf)
+);
+
+// 중력 + 표면장력: face에서 직접 평가
+surfaceScalarField phig(
+    (
+        mixture.surfaceTensionForce()    // sigma*kappa*snGrad(alpha)
+      - ghf*fvc::snGrad(rho)            // -g·r_f * snGrad(rho)
+    ) * rAUf * mesh.magSf()
+);
+
+phiHbyA += phig;
+```
+
+핵심 포인트:
+- `ghf = g & mesh.Cf()`: face 중심에서 직접 평가한 중력 포텐셜
+- `mixture.surfaceTensionForce()`: $\sigma\kappa\cdot\text{snGrad}(\alpha)$를 **face에서** 계산
+- 두 체력 모두 **face에서 직접 평가**되어 balanced-force 원리를 근사적으로 따름
+
+**압력 방정식과 플럭스 보정:**
+
+```cpp
+fvScalarMatrix p_rghEqn(
+    fvm::laplacian(rAUf, p_rgh) == fvc::div(phiHbyA)
+);
+p_rghEqn.solve();
+phi = phiHbyA - p_rghEqn.flux();
+```
+
+`pEqn.flux()`는 $-(1/A)_f \cdot \text{snGrad}(p_{rgh}) \cdot |S_f|$이므로, 최종 플럭스는 **압력 없는 속도 + face 평가 체력 + face 평가 압력 구배**의 조합입니다. Laplacian이 face snGrad를 사용하고 속도 보정의 구배가 셀 면 값을 사용하는 **스텐실 비대칭**이 Rhie-Chow 효과를 암묵적으로 제공합니다.
+
+**`ddtCorr`의 한계:** `fvc::ddtCorr(U, phi)`는 $(1/\Delta t)\cdot[\phi_{\text{old}} - (\mathbf{U}_{\text{old}})_f\cdot\mathbf{S}_f]$을 계산합니다. CMI와 달리 **완전히 일관적이지 않아** 시간 간격 의존성이 남으며, Komen et al.(2020)이 확인한 바와 같이 시간 정확도에 영향을 줄 수 있습니다.
+
+### compressibleInterFoam: 압축성 이상 유동
+
+phiHbyA 구성은 interFoam과 동일하나, **압력 방정식이 세 부분**으로 구성됩니다:
+
+$$
+\nabla\cdot\mathbf{U} = -\left(\frac{\alpha_1}{\rho_1}\frac{D\rho_1}{Dt} + \frac{\alpha_2}{\rho_2}\frac{D\rho_2}{Dt}\right)
+$$
+
+비압축 부분(Laplacian)에 각 상의 압축성 항이 추가됩니다. `phid = fvc::interpolate(psi)*phi`($\psi = d\rho/dp$)를 통해 압력-밀도 결합이 이루어지며, $\alpha$-방정식에는 차등 압축성 항 `dgdt`가 추가되어 두 상의 밀도 변화율 차이를 반영합니다.
+
+---
+
+## 7. 방법별 비교
+
+| 방법 | 핵심 기여 | 장점 | 단점 |
+|------|----------|------|------|
+| **Rhie & Chow (1983)** | 원본 MWI | 단순, 효과적 | 정상 전용; $\Delta t$/이완 의존 |
+| **Jasak (1996)** | H/A 암묵적 구현 | 범용, 비정렬 격자 | ddtCorr 불완전 |
+| **Cubero & Fueyo (2007)** | CMI 계수별 일관 보간 | $\Delta t$/이완 완전 독립 | 수치 확산 증가 |
+| **Bartholomew et al. (2018)** | 통합 프레임워크 | 비구조 격자 일반화 | 구현 복잡도 증가 |
+| **Denner & van Wachem (2014)** | Balanced-force VOF | 밀도비 $>10^6$ 안정 | 곡률 정확도 의존 |
+| **Aguerre et al. (2018)** | Flux reconstruction | 고주파 진동 제거 | 기존 코드 통합 어려움 |
+
+일관된 접근법(CMI, 통합 MWI)은 원본보다 **수치 확산이 크지만**, 시간 정확도를 보존하고 격자/시간 간격에 무관한 해를 제공합니다. 남은 spurious velocity의 주된 원인은 **곡률 추정 오류**입니다.
+
+---
+
+## 결론: 설계 원칙과 실용적 권장사항
+
+압축성 다상유동의 face 속도 설계에서 가장 중요한 원칙:
+
+> **"구동 압력 구배에만 Rhie-Chow 필터를 적용하라."**
+
+표면장력과 중력은 face에서 압력 구배와 **동일한 이산 연산자**로 평가하여 balanced-force를 달성하고, MWI 보정은 이들을 뺀 순수 구동 압력에만 적용해야 합니다:
+
+$$
+\nabla P = \nabla p - \rho\mathbf{g} - \sigma\kappa\nabla\alpha
+$$
+
+### OpenFOAM 사용자를 위한 세 가지 개선
+
+1. **`rAU`의 face 보간을 조화 평균으로 변경** - `fvSchemes`에서 `interpolate(rAU) harmonic` 설정. 대밀도비 안정성이 크게 향상됩니다.
+
+2. **`ddtCorr`를 CMI 스타일 비정상 보정으로 대체** - 시간 간격 독립성 확보. 현재 OpenFOAM 기본 ddtCorr는 근사적이라 $\Delta t$ 의존성이 남습니다.
+
+3. **Height-function 등 고정밀 곡률 추정 도입** - Spurious velocity의 궁극적 한계를 결정하는 것은 곡률 정확도입니다.
+
+압축성 확장에서는 상태방정식(EOS)을 통한 압력-밀도 결합이 추가되지만, face 속도의 MWI 구조 자체는 비압축성과 동일합니다. ACID(Denner & van Wachem, 2018) 같은 계면 이산화 기법이 음향파 전달의 정확성을 보장합니다.
+
+---
+
+### References
+
+- Rhie, C.M. & Chow, W.L. (1983). AIAA Journal 21(11)
+- Jasak, H. (1996). PhD Thesis, Imperial College London
+- Cubero, A. & Fueyo, N. (2007). Numerical Heat Transfer Part B 52(6)
+- Francois, M.M. et al. (2006). JCP 213(1)
+- Mencinger, J. & Zun, I. (2007). JCP 224(1)
+- Denner, F. & van Wachem, B. (2014). Numerical Heat Transfer Part B 65(3)
+- Bartholomew, P. et al. (2018). JCP 375
+- Aguerre, H.J. et al. (2018). JCP 365
+- Komen, E.M.J. et al. (2020). Nuclear Engineering and Design 370
