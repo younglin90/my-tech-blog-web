@@ -87,21 +87,9 @@ export default function RootLayout({
               <div className="flex items-center gap-2">
                 <Search />
                 <nav className="flex items-center gap-4 text-sm">
-                  <Link href="/" className="transition-colors" style={{ color: 'var(--text-muted)' }}
-                    onMouseOver={e => (e.currentTarget.style.color = 'var(--text)')}
-                    onMouseOut={e => (e.currentTarget.style.color = 'var(--text-muted)')}>
-                    Posts
-                  </Link>
-                  <Link href="/tags" className="transition-colors" style={{ color: 'var(--text-muted)' }}
-                    onMouseOver={e => (e.currentTarget.style.color = 'var(--text)')}
-                    onMouseOut={e => (e.currentTarget.style.color = 'var(--text-muted)')}>
-                    Tags
-                  </Link>
-                  <Link href="/about" className="transition-colors" style={{ color: 'var(--text-muted)' }}
-                    onMouseOver={e => (e.currentTarget.style.color = 'var(--text)')}
-                    onMouseOut={e => (e.currentTarget.style.color = 'var(--text-muted)')}>
-                    About
-                  </Link>
+                  <Link href="/" className="nav-link">Posts</Link>
+                  <Link href="/tags" className="nav-link">Tags</Link>
+                  <Link href="/about" className="nav-link">About</Link>
                 </nav>
                 <ThemeToggle />
               </div>
