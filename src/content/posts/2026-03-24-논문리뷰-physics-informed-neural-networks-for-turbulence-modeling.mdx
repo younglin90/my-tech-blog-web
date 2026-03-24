@@ -1,0 +1,116 @@
+---
+title: "[논문 리뷰] Physics-Informed Neural Networks for Turbulence Modeling"
+date: 2026-03-24
+description: "물리 법칙을 손실 함수에 직접 내장한 신경망으로 희소 데이터에서 유동장을 재구성하는 새로운 접근법"
+tags: ["논문리뷰", "CFD", "PINN", "딥러닝", "난류모델"]
+draft: true
+---
+
+## 논문 정보
+
+- **저자:** Raissi, M., Perdikaris, P., Karniadakis, G. E.
+- **학술지:** Journal of Computational Physics, Vol. 378, pp. 686–707, 2019
+- **DOI:** [10.1016/j.jcp.2018.10.045](https://doi.org/10.1016/j.jcp.2018.10.045)
+- **arXiv:** [1711.10561](https://arxiv.org/abs/1711.10561)
+
+---
+
+## 한 줄 요약
+
+Navier-Stokes 방정식을 신경망의 손실 함수에 직접 내장(Physics-Informed)하여, **압력 센서 몇 개만으로 전체 속도장을 역산**하는 방법을 제안했다.
+
+---
+
+## 연구 배경
+
+기존 CFD는 두 가지 극단 사이 어딘가에 있다.
+
+**전통적 방법 (k-ε, k-ω SST):** 경험적 클로저 계수에 의존한다. Reynolds 수나 형상이 바뀌면 계수를 다시 튜닝해야 한다. 일반화 능력이 제한적이다.
+
+**순수 데이터 기반 딥러닝:** 대량의 라벨 데이터가 필요하고, 학습된 모델이 **질량 보존이나 운동량 보존을 보장하지 않는다**. 물리적으로 말이 안 되는 예측을 내놓아도 손실 함수가 모른다.
+
+PINNs는 이 간극을 메우는 시도다. 데이터가 희소해도 물리 법칙이 정규화(regularizer) 역할을 한다.
+
+---
+
+## 핵심 방법론
+
+PINN의 총 손실 함수는 두 항의 합이다.
+
+$$\mathcal{L} = \mathcal{L}_{\text{data}} + \lambda \, \mathcal{L}_{\text{physics}}$$
+
+**데이터 손실** $\mathcal{L}_{\text{data}}$는 관측값(예: 압력 센서)과 신경망 예측의 차이다.
+
+**물리 손실** $\mathcal{L}_{\text{physics}}$는 비압축성 Navier-Stokes 방정식의 잔차(residual)다.
+
+$$\mathcal{L}_{\text{physics}} = \left\| \frac{\partial \mathbf{u}}{\partial t} + (\mathbf{u} \cdot \nabla)\mathbf{u} + \nabla p - \frac{1}{Re}\nabla^2\mathbf{u} \right\|^2 + \left\| \nabla \cdot \mathbf{u} \right\|^2$$
+
+두 번째 항은 연속 방정식(질량 보존)이다. 신경망이 이 잔차를 0으로 만들도록 훈련되므로, 예측값은 항상 N-S 방정식을 근사적으로 만족한다.
+
+미분은 PyTorch/TensorFlow의 **자동 미분(automatic differentiation)**으로 계산한다. 별도의 수치 이산화가 필요 없다.
+
+---
+
+## 주요 결과
+
+| 케이스 | 조건 | 결과 |
+|--------|------|------|
+| 2D 원형 실린더 주위 유동 | Re=100, 압력 센서만 사용 | 속도장 재구성 오차 < 1%, 와류 주파수 정확 복원 |
+| Lid-driven cavity | Re=1000 | 속도 프로파일이 DNS 결과와 1% 이내 일치 |
+| Reynolds 수 역산 | 속도 데이터만으로 | Re 값 자체를 학습 파라미터로 식별 성공 |
+
+특히 **역문제(inverse problem)** 능력이 인상적이다. 유동장에서 Reynolds 수를 거꾸로 추정하거나, 숨겨진 압력장을 속도 데이터만으로 복원할 수 있다. 기존 방법으로는 불가능하거나 매우 어려운 문제다.
+
+---
+
+## 실무 적용 가능성
+
+**언제 유용한가:**
+- 실험 계측 데이터가 희소한 상황 (센서 몇 개만 있는 경우)
+- 역문제: 측정값에서 물성치(점도, Re)를 역산해야 할 때
+- 물리 기반 데이터 보간: 실험 데이터의 빈 공간을 물리 법칙으로 채울 때
+
+**OpenFOAM/Fluent에서 바로 대체 가능한가?**
+
+아직 아니다. 훈련 시간이 FVM 솔버 대비 수십~수백 배 느리다. 단순 채널 유동 하나에 GPU 몇 시간이 걸린다. 실시간 공학 해석용으로는 현재 부적합하다.
+
+다만 **OpenFOAM과 하이브리드로 쓰는 연구**가 활발하다. FVM으로 대략적인 해를 구하고, PINN으로 세밀한 보정을 하는 방식이다.
+
+```python
+# PyTorch로 구현한 물리 손실 계산 예시
+def physics_loss(model, x, t, Re):
+    x.requires_grad_(True)
+    t.requires_grad_(True)
+
+    output = model(x, t)
+    u, v, p = output[:, 0], output[:, 1], output[:, 2]
+
+    # 자동 미분으로 편미분 계산
+    u_t = torch.autograd.grad(u.sum(), t, create_graph=True)[0]
+    u_x = torch.autograd.grad(u.sum(), x, create_graph=True)[0][:, 0]
+    u_y = torch.autograd.grad(u.sum(), x, create_graph=True)[0][:, 1]
+    p_x = torch.autograd.grad(p.sum(), x, create_graph=True)[0][:, 0]
+
+    # x방향 운동량 방정식 잔차
+    residual_u = u_t + u * u_x + v * u_y + p_x - (1/Re) * (u_x + u_y)
+
+    return (residual_u**2).mean()
+```
+
+---
+
+## 한계 및 향후 연구
+
+**현재 한계:**
+- **3D 고 Re 난류 유동**으로의 확장이 어렵다. 고주파 성분(작은 와류)을 신경망이 표현하는 데 한계가 있다.
+- **Stiff PDE** (Re가 매우 크거나 경계층이 얇은 경우) 에서 훈련이 불안정해진다.
+- 표준 PINN은 **불확실성 정량화(UQ)**를 제공하지 않는다. 예측이 얼마나 믿을 만한지 알 수 없다.
+
+**향후 방향:**
+- **XPINNs (Extended PINNs):** 도메인을 분할해 병렬 학습 → 대규모 문제 확장성 확보
+- **OpenFOAM 하이브리드 솔버:** FVM + PINN 결합
+- **Transfer learning:** 한 Re에서 학습한 모델을 다른 Re에 빠르게 적응
+
+---
+
+> **한 줄 평:** "CFD와 딥러닝의 접점을 정의한 논문. 지금 당장 OpenFOAM을 대체하진 못하지만, 역문제와 희소 데이터 재구성에서는 이미 실용적이다."
