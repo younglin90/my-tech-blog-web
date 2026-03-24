@@ -1,0 +1,5 @@
+export { VelocityField } from './VelocityField'
+export { StreamLine } from './StreamLine'
+export { NumericalScheme } from './NumericalScheme'
+export { PressureContour } from './PressureContour'
+export { BoundaryCondition } from './BoundaryCondition'

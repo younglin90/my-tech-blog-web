@@ -3,6 +3,7 @@ import Link from 'next/link'
 import Image from 'next/image'
 import { NumericalDungeon } from '@/components/NumericalDungeon'
 import { MachArchitect } from '@/components/MachArchitect'
+import { VelocityField, StreamLine, NumericalScheme, PressureContour, BoundaryCondition } from '@/components/viz'
 
 const components = {
   h1: (props: any) => (
@@ -60,6 +61,11 @@ const components = {
   ),
   NumericalDungeon,
   MachArchitect,
+  VelocityField,
+  StreamLine,
+  NumericalScheme,
+  PressureContour,
+  BoundaryCondition,
 }
 
 interface MdxProps {
