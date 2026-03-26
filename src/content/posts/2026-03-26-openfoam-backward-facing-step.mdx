@@ -1,0 +1,589 @@
+---
+title: "[OpenFOAM 튜토리얼] 후방 계단 유동 해석 — simpleFoam으로 재순환 영역 포착하기"
+date: 2026-03-26
+description: "OpenFOAM simpleFoam으로 후방 계단(Backward Facing Step) 비압축성 유동을 단계별로 해석하는 가이드"
+tags: ["OpenFOAM", "튜토리얼", "simpleFoam", "후방계단", "난류"]
+draft: true
+---
+
+이 튜토리얼에서는 **후방 계단(Backward Facing Step)** 형상에서 재순환 유동을 `simpleFoam`으로 시뮬레이션합니다.
+계단 하류에 형성되는 재순환 영역(recirculation zone)과 재부착 지점(reattachment point)을 직접 확인하는 것이 목표입니다.
+
+---
+
+## 선행 조건
+
+- **OpenFOAM 버전:** v2312 이상 (OpenFOAM.com 또는 OpenFOAM.org 모두 가능)
+- **사전 지식:** 기본 터미널 명령어, OpenFOAM 케이스 구조(0/constant/system) 이해
+- **필요 소프트웨어:** ParaView 5.x 이상 (결과 시각화)
+
+---
+
+## 1단계: 케이스 디렉토리 생성
+
+```bash
+# OpenFOAM 환경 로드 (설치 경로에 따라 다름)
+source /opt/openfoam2312/etc/bashrc
+
+# 튜토리얼 디렉토리 복사 또는 직접 생성
+mkdir -p backwardFacingStep
+cd backwardFacingStep
+```
+
+케이스 구조는 다음과 같습니다.
+
+```bash
+tree backwardFacingStep/
+```
+
+```
+backwardFacingStep/
+├── 0/
+│   ├── U          # 속도 초기/경계 조건
+│   ├── p          # 압력 초기/경계 조건
+│   ├── k          # 난류 운동에너지
+│   └── epsilon    # 난류 소산율
+├── constant/
+│   ├── transportProperties
+│   └── turbulenceProperties
+└── system/
+    ├── blockMeshDict
+    ├── fvSchemes
+    └── fvSolution
+```
+
+---
+
+## 2단계: 격자 생성 — blockMeshDict
+
+`system/blockMeshDict`는 계단 형상을 직육면체 블록 조합으로 정의합니다.
+아래는 단순화된 2D 케이스 예시입니다 (계단 높이 H = 0.1 m).
+
+```cpp
+/*--------------------------------*- C++ -*----------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:  v2312                                 |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      blockMeshDict;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+scale   0.1;   // 전체 스케일 (m 단위 → 0.1 곱하면 최종 크기)
+
+vertices
+(
+    // 입구 채널 블록 (계단 위쪽)
+    (0  1  0)  // 0
+    (5  1  0)  // 1
+    (5  2  0)  // 2
+    (0  2  0)  // 3
+    (0  1  1)  // 4
+    (5  1  1)  // 5
+    (5  2  1)  // 6
+    (0  2  1)  // 7
+
+    // 계단 하류 블록 (계단 전체 높이)
+    (5  0  0)  // 8
+    (20 0  0)  // 9
+    (20 2  0)  // 10
+    (5  2  0)  // 11 (= vertex 2)
+    (5  0  1)  // 12
+    (20 0  1)  // 13
+    (20 2  1)  // 14
+    (5  2  1)  // 15 (= vertex 6)
+);
+
+blocks
+(
+    // 입구 채널
+    hex (0 1 2 3 4 5 6 7)   (50 10 1) simpleGrading (1 1 1)
+    // 계단 하류 (더 조밀한 격자)
+    hex (8 9 10 11 12 13 14 15) (150 20 1) simpleGrading (1 1 1)
+);
+
+boundary
+(
+    inlet
+    {
+        type patch;
+        faces ((0 3 7 4));
+    }
+    outlet
+    {
+        type patch;
+        faces ((9 10 14 13));
+    }
+    wall
+    {
+        type wall;
+        faces
+        (
+            (0 1 5 4)   // 상단 입구 벽
+            (1 8 12 5)  // 계단 수직면
+            (8 9 13 12) // 하단 바닥
+            (3 2 6 7)   // 상단 벽 (입구)
+            (11 10 14 15) // 상단 벽 (하류)
+        );
+    }
+    frontAndBack
+    {
+        type empty;  // 2D 해석
+        faces
+        (
+            (0 1 2 3)
+            (4 5 6 7)
+            (8 9 10 11)
+            (12 13 14 15)
+        );
+    }
+);
+```
+
+```bash
+# 격자 생성 실행
+blockMesh
+```
+
+**예상 출력:**
+```
+Create time
+
+Creating block mesh from "system/blockMeshDict"
+...
+Writing polyMesh with 3600 cells
+End
+```
+
+---
+
+## 3단계: 경계 조건 설정
+
+### 0/U — 속도 경계 조건
+
+```cpp
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       volVectorField;
+    object      U;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+dimensions      [0 1 -1 0 0 0 0];  // m/s
+
+internalField   uniform (0 0 0);   // 초기값: 정지 상태
+
+boundaryField
+{
+    inlet
+    {
+        type        fixedValue;
+        value       uniform (1 0 0);  // x 방향 1 m/s 균일 유입
+    }
+    outlet
+    {
+        type        zeroGradient;  // 출구: 자유 유출
+    }
+    wall
+    {
+        type        noSlip;        // 벽면: 점착 조건
+    }
+    frontAndBack
+    {
+        type        empty;
+    }
+}
+```
+
+### 0/p — 압력 경계 조건
+
+```cpp
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       volScalarField;
+    object      p;
+}
+
+dimensions      [0 2 -2 0 0 0 0];  // 운동 압력 (p/rho), m²/s²
+
+internalField   uniform 0;
+
+boundaryField
+{
+    inlet
+    {
+        type        zeroGradient;
+    }
+    outlet
+    {
+        type        fixedValue;
+        value       uniform 0;  // 출구 기준 압력 0
+    }
+    wall
+    {
+        type        zeroGradient;
+    }
+    frontAndBack
+    {
+        type        empty;
+    }
+}
+```
+
+### 0/k — 난류 운동에너지
+
+```cpp
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       volScalarField;
+    object      k;
+}
+
+dimensions      [0 2 -2 0 0 0 0];  // m²/s²
+
+// 입구 난류강도 5%, 유속 1 m/s → k = 1.5*(I*U)² = 1.5*(0.05*1)² ≈ 0.00375
+internalField   uniform 0.00375;
+
+boundaryField
+{
+    inlet
+    {
+        type        fixedValue;
+        value       uniform 0.00375;
+    }
+    outlet
+    {
+        type        zeroGradient;
+    }
+    wall
+    {
+        type        kqRWallFunction;
+        value       uniform 0.00375;
+    }
+    frontAndBack
+    {
+        type        empty;
+    }
+}
+```
+
+---
+
+## 4단계: 물성치 및 난류 모델 설정
+
+### constant/transportProperties
+
+```cpp
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      transportProperties;
+}
+
+transportModel  Newtonian;
+nu              1e-5;   // 운동점성계수 (m²/s), Re = U*H/nu = 1*0.01/1e-5 = 1000
+```
+
+### constant/turbulenceProperties
+
+```cpp
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      turbulenceProperties;
+}
+
+simulationType  RAS;
+
+RAS
+{
+    RASModel        kEpsilon;   // k-epsilon 두 방정식 모델
+    turbulence      on;
+    printCoeffs     on;
+}
+```
+
+---
+
+## 5단계: 수치 기법 설정
+
+### system/fvSchemes
+
+```cpp
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      fvSchemes;
+}
+
+ddtSchemes      { default steadyState; }  // 정상 상태 해석
+
+gradSchemes
+{
+    default         Gauss linear;
+    grad(U)         cellLimited Gauss linear 1;  // 경사도 제한자
+}
+
+divSchemes
+{
+    default         none;
+    div(phi,U)      bounded Gauss linearUpwind grad(U);  // 2차 정확도
+    div(phi,k)      bounded Gauss upwind;
+    div(phi,epsilon) bounded Gauss upwind;
+    div((nuEff*dev(T(grad(U))))) Gauss linear;
+}
+
+laplacianSchemes { default Gauss linear corrected; }
+
+interpolationSchemes { default linear; }
+
+snGradSchemes { default corrected; }
+```
+
+### system/fvSolution
+
+```cpp
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      fvSolution;
+}
+
+solvers
+{
+    p
+    {
+        solver          GAMG;
+        smoother        GaussSeidel;
+        tolerance       1e-7;
+        relTol          0.01;
+    }
+    U
+    {
+        solver          smoothSolver;
+        smoother        GaussSeidel;
+        tolerance       1e-8;
+        relTol          0.1;
+    }
+    "(k|epsilon)"
+    {
+        solver          smoothSolver;
+        smoother        GaussSeidel;
+        tolerance       1e-8;
+        relTol          0.1;
+    }
+}
+
+SIMPLE
+{
+    nNonOrthogonalCorrectors    0;
+    pRefCell                    0;
+    pRefValue                   0;
+
+    residualControl
+    {
+        p           1e-4;
+        U           1e-4;
+        "(k|epsilon)" 1e-4;
+    }
+}
+
+relaxationFactors
+{
+    fields      { p 0.3; }           // 압력 완화계수 (발산 방지)
+    equations
+    {
+        U       0.7;
+        k       0.7;
+        epsilon 0.7;
+    }
+}
+```
+
+---
+
+## 6단계: 해석 실행
+
+```bash
+# 격자 품질 확인 (선택 사항, 권장)
+checkMesh
+
+# simpleFoam 실행
+simpleFoam 2>&1 | tee log.simpleFoam
+```
+
+**예상 출력 (수렴 과정):**
+```
+Time = 1
+
+smoothSolver:  Solving for Ux, Initial residual = 1, Final residual = 0.0234, No Iterations 3
+smoothSolver:  Solving for Uy, Initial residual = 0.412, Final residual = 0.00891, No Iterations 3
+GAMG:  Solving for p, Initial residual = 0.987, Final residual = 0.00821, No Iterations 15
+...
+
+Time = 500
+
+smoothSolver:  Solving for Ux, Initial residual = 1.23e-05, ...
+GAMG:  Solving for p, Initial residual = 8.91e-05, ...
+
+SIMPLE solution converged in 500 iterations
+```
+
+수렴 기준은 모든 변수의 residual이 `1e-4` 이하가 될 때입니다.
+
+---
+
+## 7단계: 결과 시각화 (ParaView)
+
+```bash
+# ParaView용 더미 파일 생성 후 실행
+touch backwardFacingStep.foam
+paraFoam
+```
+
+ParaView에서 다음 순서로 결과를 확인합니다.
+
+1. **Coloring** 드롭다운 → `U` 선택 → `Magnitude`로 속도 크기 표시
+2. **Glyph** 필터 추가 → 벡터 방향 시각화 (재순환 영역 확인)
+3. **Stream Tracer** 필터 → 유선 그리기
+
+**foamToVTK로 파일 변환 후 후처리:**
+
+```bash
+foamToVTK -latestTime
+```
+
+Python으로 재부착 길이 자동 추출:
+
+```python
+import numpy as np
+
+# foamToVTK 출력 파일에서 하단 벽(y=0) 데이터 읽기
+# (실제 경로는 환경에 따라 조정)
+data = np.loadtxt("VTK/backwardFacingStep_500/internal.vtk",
+                  skiprows=10)  # VTK 헤더 제외
+
+x = data[:, 0]
+ux = data[:, 3]  # x방향 속도
+
+# y ≈ 0인 셀 필터링 (하단 벽 근처)
+wall_mask = data[:, 1] < 0.005
+x_wall = x[wall_mask]
+ux_wall = ux[wall_mask]
+
+# 부호 변화 위치 = 재부착 지점
+sign_changes = np.where(np.diff(np.sign(ux_wall)))[0]
+if len(sign_changes) > 0:
+    x_reattach = x_wall[sign_changes[0]]
+    H = 0.01  # 계단 높이 (m)
+    print(f"재부착 길이: {x_reattach/H:.1f}H")
+```
+
+---
+
+## 흔한 오류와 해결책
+
+### 오류 1: `FOAM FATAL ERROR: Cannot find file "0/epsilon"`
+
+```
+--> FOAM FATAL ERROR:
+    cannot find file
+    "backwardFacingStep/0/epsilon"
+```
+
+**원인:** `0/epsilon` 파일 누락.
+**해결:** `k` 파일과 동일한 형식으로 `0/epsilon`을 생성합니다.
+
+```cpp
+// 0/epsilon
+dimensions      [0 2 -3 0 0 0 0];  // m²/s³
+
+// epsilon = C_mu^(3/4) * k^(3/2) / L, L ≈ 0.1*H
+internalField   uniform 0.0009;
+
+boundaryField
+{
+    inlet       { type fixedValue; value uniform 0.0009; }
+    outlet      { type zeroGradient; }
+    wall        { type epsilonWallFunction; value uniform 0.0009; }
+    frontAndBack { type empty; }
+}
+```
+
+---
+
+### 오류 2: 해석 발산 (Floating point exception)
+
+```
+Floating point exception (core dumped)
+```
+
+**원인:** 완화계수가 너무 크거나 격자가 조밀하지 않아 발산.
+**해결:** `fvSolution`에서 완화계수를 낮춥니다.
+
+```cpp
+relaxationFactors
+{
+    fields      { p 0.2; }   // 0.3 → 0.2로 감소
+    equations   { U 0.5; }   // 0.7 → 0.5로 감소
+}
+```
+
+---
+
+### 오류 3: residual이 감소하지 않고 진동
+
+**원인:** `nNonOrthogonalCorrectors`가 0이지만 격자 비직교성이 높은 경우.
+**해결:** 보정 횟수를 늘립니다.
+
+```cpp
+SIMPLE
+{
+    nNonOrthogonalCorrectors    2;  // 0 → 2
+    ...
+}
+```
+
+---
+
+## 예상 결과 정리
+
+| 항목 | 값 |
+|------|-----|
+| Reynolds 수 ($Re = UH/\nu$) | 1,000 |
+| 재부착 길이 ($x_r / H$) | 6–8 |
+| 최대 역방향 속도 | $\approx -0.1$ m/s |
+| 수렴 반복 횟수 | 300–600회 |
+
+재부착 길이는 $Re$에 따라 달라지며, $Re = 800$ 실험값(Armaly et al., 1983)과 비교하면 약 6H로 일치합니다.
+
+$$
+x_r \approx 6\text{–}8 \cdot H \quad (Re \sim 10^3)
+$$
+
+---
+
+## 다음 단계 제안
+
+- **격자 독립성 검토:** `blockMeshDict`에서 격자 수를 2배로 늘려 결과 비교
+- **난류 모델 비교:** `kEpsilon` → `kOmegaSST`로 교체해 재부착 길이 차이 확인
+- **비정상 해석:** `simpleFoam` → `pimpleFoam`으로 전환해 와류 탈리(vortex shedding) 관찰
