@@ -11,7 +11,14 @@ export interface DynamicPost {
 
 const STORAGE_KEY = 'tech-blog-dynamic-posts'
 const ADMIN_KEY = 'tech-blog-admin-token'
-const ADMIN_PASSWORD = 'admin1234' // Change this to your preferred password
+
+async function sha256(text: string): Promise<string> {
+  const data = new TextEncoder().encode(text)
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data)
+  return Array.from(new Uint8Array(hashBuffer))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('')
+}
 
 export function getAdminToken(): string | null {
   if (typeof window === 'undefined') return null
@@ -22,8 +29,14 @@ export function isAdmin(): boolean {
   return getAdminToken() === 'authenticated'
 }
 
-export function adminLogin(password: string): boolean {
-  if (password === ADMIN_PASSWORD) {
+export async function adminLogin(password: string): Promise<boolean> {
+  const storedHash = process.env.NEXT_PUBLIC_ADMIN_PASSWORD_HASH
+  if (!storedHash) {
+    console.warn('[Admin] NEXT_PUBLIC_ADMIN_PASSWORD_HASH is not set in .env.local')
+    return false
+  }
+  const inputHash = await sha256(password)
+  if (inputHash === storedHash) {
     sessionStorage.setItem(ADMIN_KEY, 'authenticated')
     return true
   }
@@ -76,4 +89,35 @@ export function deleteDynamicPost(id: string): boolean {
   if (filtered.length === posts.length) return false
   localStorage.setItem(STORAGE_KEY, JSON.stringify(filtered))
   return true
+}
+
+export function exportPosts(): void {
+  const posts = getAllDynamicPosts()
+  const blob = new Blob([JSON.stringify(posts, null, 2)], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `dynamic-posts-${new Date().toISOString().split('T')[0]}.json`
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+}
+
+export function importPosts(json: string): { count: number; error?: string } {
+  try {
+    const posts = JSON.parse(json)
+    if (!Array.isArray(posts)) return { count: 0, error: 'Invalid format: expected an array.' }
+    const valid = posts.filter(
+      (p): p is DynamicPost =>
+        typeof p.id === 'string' &&
+        typeof p.title === 'string' &&
+        typeof p.content === 'string' &&
+        typeof p.date === 'string',
+    )
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(valid))
+    return { count: valid.length }
+  } catch {
+    return { count: 0, error: 'Failed to parse JSON file.' }
+  }
 }

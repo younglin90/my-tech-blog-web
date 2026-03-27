@@ -17,6 +17,8 @@ import {
   isAdmin,
   adminLogin,
   adminLogout,
+  exportPosts,
+  importPosts,
 } from '@/lib/dynamic-posts'
 import { format, parseISO } from 'date-fns'
 
@@ -48,6 +50,7 @@ export default function AdminPage() {
   const [content, setContent] = useState('')
   const [showPreview, setShowPreview] = useState(false)
   const [saveMsg, setSaveMsg] = useState('')
+  const [importMsg, setImportMsg] = useState('')
 
   // Static posts from contentlayer
   const staticPosts: AdminPost[] = allPosts
@@ -70,8 +73,9 @@ export default function AdminPage() {
     }
   }, [])
 
-  const handleLogin = () => {
-    if (adminLogin(password)) {
+  const handleLogin = async () => {
+    const ok = await adminLogin(password)
+    if (ok) {
       setAuthed(true)
       setView('dashboard')
       setDynamicPosts(getAllDynamicPosts())
@@ -168,7 +172,7 @@ export default function AdminPage() {
               placeholder="Password"
               value={password}
               onChange={(e) => { setPassword(e.target.value); setLoginError(false); }}
-              onKeyDown={(e) => e.key === 'Enter' && handleLogin()}
+              onKeyDown={(e) => { if (e.key === 'Enter') handleLogin() }}
               className="w-full rounded-md border border-zinc-300 bg-white px-4 py-2.5 text-sm focus:border-zinc-500 focus:outline-none dark:border-zinc-700 dark:bg-zinc-900"
               autoFocus
             />
@@ -338,6 +342,41 @@ export default function AdminPage() {
             + New Post
           </button>
           <button
+            onClick={() => exportPosts()}
+            className="rounded-md border border-zinc-300 px-4 py-2 text-sm text-zinc-500 hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-900"
+            title="Download all dynamic posts as JSON"
+          >
+            Export JSON
+          </button>
+          <label
+            className="cursor-pointer rounded-md border border-zinc-300 px-4 py-2 text-sm text-zinc-500 hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-900"
+            title="Restore posts from a previously exported JSON file"
+          >
+            Import JSON
+            <input
+              type="file"
+              accept=".json"
+              className="hidden"
+              onChange={(e) => {
+                const file = e.target.files?.[0]
+                if (!file) return
+                const reader = new FileReader()
+                reader.onload = (ev) => {
+                  const result = importPosts(ev.target?.result as string)
+                  if (result.error) {
+                    setImportMsg(`Import failed: ${result.error}`)
+                  } else {
+                    setImportMsg(`Imported ${result.count} post(s).`)
+                    refreshPosts()
+                  }
+                  setTimeout(() => setImportMsg(''), 4000)
+                }
+                reader.readAsText(file)
+                e.target.value = ''
+              }}
+            />
+          </label>
+          <button
             onClick={handleLogout}
             className="rounded-md border border-zinc-300 px-4 py-2 text-sm text-zinc-500 hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-900"
           >
@@ -345,6 +384,9 @@ export default function AdminPage() {
           </button>
         </div>
       </div>
+      {importMsg && (
+        <p className="mb-4 text-sm text-emerald-600 dark:text-emerald-400">{importMsg}</p>
+      )}
 
       <div className="mb-4 text-xs text-zinc-400">
         Total {allItems.length} posts ({staticPosts.length} static + {dynamicItems.length} dynamic)
