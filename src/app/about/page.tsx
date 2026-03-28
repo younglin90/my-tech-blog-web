@@ -2,6 +2,7 @@ import { allPosts } from 'contentlayer/generated'
 import { compareDesc, parseISO, format } from 'date-fns'
 import Link from 'next/link'
 import type { Metadata } from 'next'
+import { ReadingStats } from '@/components/ReadingStats'
 
 export const metadata: Metadata = {
   title: 'About',
@@ -113,6 +114,8 @@ export default function AboutPage() {
           ))}
         </div>
       </div>
+
+      <ReadingStats posts={published.map((p) => ({ id: p.slug, readingTime: p.readingTime }))} />
 
       <section className="mb-10">
         <h2

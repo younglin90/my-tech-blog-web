@@ -11,12 +11,12 @@ interface ShareButtonProps {
 export function ShareButton({ title, url }: ShareButtonProps) {
   const [copied, setCopied] = useState(false)
   const [canNativeShare, setCanNativeShare] = useState(false)
+  const [href, setHref] = useState(url ?? '')
 
   useEffect(() => {
     setCanNativeShare(typeof navigator.share === 'function')
-  }, [])
-
-  const href = url ?? (typeof window !== 'undefined' ? window.location.href : '')
+    if (!url) setHref(window.location.href)
+  }, [url])
 
   const handleCopy = async () => {
     await navigator.clipboard.writeText(href)

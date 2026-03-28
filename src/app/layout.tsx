@@ -8,7 +8,7 @@ import { Nav } from '@/components/Nav'
 import { BackToTop } from '@/components/BackToTop'
 import { MobileNav } from '@/components/MobileNav'
 import { KeyboardShortcuts } from '@/components/KeyboardShortcuts'
-import type { Metadata } from 'next'
+import type { Metadata, Viewport } from 'next'
 
 // Display / hero — editorial authority (see DESIGN.md)
 const fraunces = Fraunces({
@@ -32,6 +32,13 @@ const jetbrainsMono = JetBrains_Mono({
   display: 'swap',
 })
 
+export const viewport: Viewport = {
+  themeColor: [
+    { media: '(prefers-color-scheme: dark)', color: '#08111f' },
+    { media: '(prefers-color-scheme: light)', color: '#fafaf9' },
+  ],
+}
+
 export const metadata: Metadata = {
   title: {
     default: 'CFD.Lab',
@@ -42,10 +49,6 @@ export const metadata: Metadata = {
   authors: [{ name: 'CFD.Lab', url: 'https://tech-blog.dev/about' }],
   creator: 'CFD.Lab',
   category: 'technology',
-  themeColor: [
-    { media: '(prefers-color-scheme: dark)', color: '#08111f' },
-    { media: '(prefers-color-scheme: light)', color: '#fafaf9' },
-  ],
   openGraph: {
     title: 'CFD.Lab',
     description: 'CFD 엔지니어를 위한 기술 저널',
@@ -136,6 +139,7 @@ export default function RootLayout({
               <div className="flex flex-col items-center gap-3 text-xs" style={{ color: 'var(--text-muted)' }}>
                 <div className="flex items-center gap-4">
                   <Link href="/tags" className="link-hover-text">Tags</Link>
+                  <Link href="/bookmarks" className="link-hover-text">Saved</Link>
                   <Link href="/about" className="link-hover-text">About</Link>
                   <a href="/feed.xml" className="link-hover-text-accent">RSS</a>
                   <a href="https://github.com/younglin90" target="_blank" rel="noopener noreferrer" className="link-hover-text">GitHub</a>

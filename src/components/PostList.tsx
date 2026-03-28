@@ -4,6 +4,7 @@ import { useEffect, useState, useMemo } from 'react'
 import Link from 'next/link'
 import { format, parseISO } from 'date-fns'
 import { getAllDynamicPosts, type DynamicPost } from '@/lib/dynamic-posts'
+import { getBookmarks } from '@/components/BookmarkButton'
 
 interface StaticPostItem {
   id: string
@@ -43,6 +44,7 @@ export function PostList({ staticPosts }: { staticPosts: StaticPostItem[] }) {
   const [sortMode, setSortMode] = useState<'newest' | 'oldest'>('newest')
   const [showAllTags, setShowAllTags] = useState(false)
   const [readPosts, setReadPosts] = useState<Set<string>>(new Set())
+  const [bookmarks, setBookmarks] = useState<Set<string>>(new Set())
   const TAG_VISIBLE_LIMIT = 12
 
   useEffect(() => {
@@ -57,6 +59,7 @@ export function PostList({ staticPosts }: { staticPosts: StaticPostItem[] }) {
     }))
     setDynamicPosts(dyn)
     setReadPosts(getReadPosts())
+    setBookmarks(getBookmarks())
   }, [])
 
   // Use only static posts until client mounts to avoid hydration mismatch
@@ -218,6 +221,7 @@ export function PostList({ staticPosts }: { staticPosts: StaticPostItem[] }) {
               const href = post.isDynamic ? `/read?id=${post.id}` : post.url
               const isNew = !post.isDynamic && (Date.now() - new Date(post.date).getTime()) < 7 * 24 * 60 * 60 * 1000
               const isRead = mounted && readPosts.has(post.id)
+              const isBookmarked = mounted && bookmarks.has(post.id)
               return (
                 <div key={post.id} className="group rounded-lg px-3 py-6 -mx-3 transition-colors duration-100 hover:bg-[var(--surface)]">
                   <h2 className="mb-1.5 flex items-start justify-between gap-2 text-xl font-semibold leading-snug tracking-tight" style={titleStyle}>
@@ -235,6 +239,9 @@ export function PostList({ staticPosts }: { staticPosts: StaticPostItem[] }) {
                     )}
                     {isRead && (
                       <span className="mt-2 shrink-0 text-[10px]" style={{ color: 'var(--text-faint)' }} title="You've read this">✓</span>
+                    )}
+                    {isBookmarked && (
+                      <span className="mt-2 shrink-0 text-[10px]" style={{ color: 'var(--accent)' }} title="Bookmarked">⊕</span>
                     )}
                     </span>
                     <span

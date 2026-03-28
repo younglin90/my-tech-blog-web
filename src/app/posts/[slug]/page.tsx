@@ -10,6 +10,7 @@ import { ReadingETA } from '@/components/ReadingETA'
 import { PostNavShortcuts } from '@/components/PostNavShortcuts'
 import { MarkAsRead } from '@/components/MarkAsRead'
 import { PrintButton } from '@/components/PrintButton'
+import { BookmarkButton } from '@/components/BookmarkButton'
 import type { Metadata } from 'next'
 
 interface PostProps {
@@ -181,6 +182,7 @@ export default async function PostPage({ params }: PostProps) {
       <div className="mt-12 flex flex-wrap items-center justify-between gap-3 border-t pt-6" style={{ borderColor: 'var(--border)' }}>
         <p className="text-xs" style={{ color: 'var(--text-muted)' }}>도움이 됐다면 공유해주세요.</p>
         <div className="flex items-center gap-2">
+          <BookmarkButton postId={post.slug} />
           <PrintButton />
           <ShareButton title={post.title} />
         </div>

@@ -14,6 +14,7 @@ const shortcuts = [
   { keys: ['G', 'H'], mac: ['G', 'H'], description: 'Go home' },
   { keys: ['G', 'T'], mac: ['G', 'T'], description: 'Go to tags' },
   { keys: ['G', 'A'], mac: ['G', 'A'], description: 'Go to about' },
+  { keys: ['G', 'B'], mac: ['G', 'B'], description: 'Go to bookmarks' },
   { keys: ['J'], mac: ['J'], description: 'Next post (on post page)' },
   { keys: ['K'], mac: ['K'], description: 'Prev post (on post page)' },
   { keys: ['Esc'], mac: ['Esc'], description: 'Close modal' },
@@ -65,6 +66,7 @@ export function KeyboardShortcuts() {
       else if (buffer === 'GH') { router.push('/'); buffer = '' }
       else if (buffer === 'GT') { router.push('/tags'); buffer = '' }
       else if (buffer === 'GA') { router.push('/about'); buffer = '' }
+      else if (buffer === 'GB') { router.push('/bookmarks'); buffer = '' }
     }
 
     document.addEventListener('keydown', handler)
