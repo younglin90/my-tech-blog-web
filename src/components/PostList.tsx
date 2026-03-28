@@ -31,6 +31,7 @@ export function PostList({ staticPosts }: { staticPosts: StaticPostItem[] }) {
   const [mounted, setMounted] = useState(false)
   const [dynamicPosts, setDynamicPosts] = useState<DynamicPostItem[]>([])
   const [activeTag, setActiveTag] = useState<string | null>(null)
+  const [sortMode, setSortMode] = useState<'newest' | 'oldest'>('newest')
 
   useEffect(() => {
     setMounted(true)
@@ -48,9 +49,12 @@ export function PostList({ staticPosts }: { staticPosts: StaticPostItem[] }) {
   // Use only static posts until client mounts to avoid hydration mismatch
   const all: PostItem[] = useMemo(() => (
     [...staticPosts, ...(mounted ? dynamicPosts : [])].sort(
-      (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
+      (a, b) => {
+        const diff = new Date(b.date).getTime() - new Date(a.date).getTime()
+        return sortMode === 'newest' ? diff : -diff
+      }
     )
-  ), [staticPosts, dynamicPosts, mounted])
+  ), [staticPosts, dynamicPosts, mounted, sortMode])
 
   const allTags = useMemo(() => {
     const counts: Record<string, number> = {}
@@ -89,9 +93,11 @@ export function PostList({ staticPosts }: { staticPosts: StaticPostItem[] }) {
 
   return (
     <div>
-      {/* Tag filter bar */}
+      {/* Tag filter bar + sort toggle */}
       {allTags.length > 0 && (
-        <div className="mb-6 -mx-1 flex flex-wrap gap-1.5 px-1">
+        <div className="mb-6 flex flex-col gap-3">
+        <div className="flex items-center justify-between gap-2">
+          <div className="-mx-1 flex flex-wrap gap-1.5 px-1 flex-1">
           <button
             onClick={() => setActiveTag(null)}
             className="rounded-full px-3 py-1 text-xs font-medium transition-colors duration-100"
@@ -126,6 +132,27 @@ export function PostList({ staticPosts }: { staticPosts: StaticPostItem[] }) {
               </span>
             </button>
           ))}
+          </div>
+          {/* Sort toggle */}
+          <div
+            className="flex shrink-0 items-center gap-0.5 rounded-md p-0.5"
+            style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
+          >
+            {(['newest', 'oldest'] as const).map((mode) => (
+              <button
+                key={mode}
+                onClick={() => setSortMode(mode)}
+                className="rounded px-2 py-1 text-[10px] font-medium transition-colors duration-100"
+                style={{
+                  background: sortMode === mode ? 'var(--surface-hover)' : 'transparent',
+                  color: sortMode === mode ? 'var(--text)' : 'var(--text-muted)',
+                }}
+              >
+                {mode === 'newest' ? '↓ New' : '↑ Old'}
+              </button>
+            ))}
+          </div>
+        </div>
         </div>
       )}
 
