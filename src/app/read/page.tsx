@@ -75,18 +75,7 @@ function ReadContent() {
               <Link
                 key={tag}
                 href={`/tags/${encodeURIComponent(tag)}`}
-                className="rounded-full px-3 py-1 text-xs font-medium transition-colors duration-100"
-                style={{ background: 'var(--surface)', color: 'var(--text-muted)', border: '1px solid var(--border)' }}
-                onMouseEnter={(e) => {
-                  const el = e.currentTarget as HTMLElement
-                  el.style.borderColor = 'var(--accent)'
-                  el.style.color = 'var(--accent)'
-                }}
-                onMouseLeave={(e) => {
-                  const el = e.currentTarget as HTMLElement
-                  el.style.borderColor = 'var(--border)'
-                  el.style.color = 'var(--text-muted)'
-                }}
+                className="tag-pill"
               >
                 {tag}
               </Link>

@@ -79,7 +79,7 @@ export default async function PostPage({ params }: PostProps) {
   const nextPost = currentIndex > 0 ? posts[currentIndex - 1] : null
   const related = getRelatedPosts(slug, post.tags ?? [])
 
-  const jsonLd = {
+  const articleJsonLd = {
     '@context': 'https://schema.org',
     '@type': 'TechArticle',
     headline: post.title,
@@ -91,9 +91,19 @@ export default async function PostPage({ params }: PostProps) {
     url: `https://tech-blog.dev/posts/${slug}`,
   }
 
+  const breadcrumbJsonLd = {
+    '@context': 'https://schema.org',
+    '@type': 'BreadcrumbList',
+    itemListElement: [
+      { '@type': 'ListItem', position: 1, name: 'CFD.Lab', item: 'https://tech-blog.dev' },
+      { '@type': 'ListItem', position: 2, name: post.title, item: `https://tech-blog.dev/posts/${slug}` },
+    ],
+  }
+
   return (
     <article className="py-6">
-      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }} />
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(articleJsonLd) }} />
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(breadcrumbJsonLd) }} />
       <ReadingProgress />
 
       {/* Header */}
