@@ -34,15 +34,19 @@ export function Search() {
   }, [query])
 
   const q = query.toLowerCase()
-  const filteredPosts = allPosts
-    .filter((post) => !post.draft)
-    .filter(
-      (post) =>
-        post.title.toLowerCase().includes(q) ||
-        post.description.toLowerCase().includes(q) ||
-        (post.tags ?? []).some((t) => t.toLowerCase().includes(q)),
-    )
-    .slice(0, 8)
+  const publishedPosts = allPosts.filter((post) => !post.draft)
+  const filteredPosts = q
+    ? publishedPosts
+        .filter(
+          (post) =>
+            post.title.toLowerCase().includes(q) ||
+            post.description.toLowerCase().includes(q) ||
+            (post.tags ?? []).some((t) => t.toLowerCase().includes(q)),
+        )
+        .slice(0, 8)
+    : publishedPosts
+        .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+        .slice(0, 5)
 
   const onSelect = (url: string) => {
     setOpen(false)
@@ -140,7 +144,12 @@ export function Search() {
 
               {/* Results */}
               <div className="max-h-72 overflow-y-auto p-1.5">
-                {filteredPosts.length > 0 ? (
+                {!q && filteredPosts.length > 0 && (
+                <p className="px-4 py-2 text-[10px] font-semibold uppercase tracking-widest" style={{ color: 'var(--text-faint)' }}>
+                  Recent
+                </p>
+              )}
+              {filteredPosts.length > 0 ? (
                   filteredPosts.map((post, i) => (
                     <button
                       key={post.slug}
