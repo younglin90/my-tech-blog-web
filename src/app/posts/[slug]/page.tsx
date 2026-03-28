@@ -8,6 +8,7 @@ import { format, parseISO, compareDesc } from 'date-fns'
 import Link from 'next/link'
 import { ReadingETA } from '@/components/ReadingETA'
 import { PostNavShortcuts } from '@/components/PostNavShortcuts'
+import { MarkAsRead } from '@/components/MarkAsRead'
 import type { Metadata } from 'next'
 
 interface PostProps {
@@ -110,6 +111,7 @@ export default async function PostPage({ params }: PostProps) {
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(breadcrumbJsonLd) }} />
       <ReadingProgress />
       <PostNavShortcuts prevUrl={prevPost?.url} nextUrl={nextPost?.url} />
+      <MarkAsRead id={post.slug} />
 
       {/* Breadcrumb back link */}
       <div className="mb-8">

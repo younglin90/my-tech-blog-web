@@ -27,12 +27,22 @@ interface DynamicPostItem {
 
 type PostItem = StaticPostItem | DynamicPostItem
 
+const READ_POSTS_KEY = 'cfd-lab-read-posts'
+
+function getReadPosts(): Set<string> {
+  try {
+    const raw = localStorage.getItem(READ_POSTS_KEY)
+    return new Set(raw ? JSON.parse(raw) : [])
+  } catch { return new Set() }
+}
+
 export function PostList({ staticPosts }: { staticPosts: StaticPostItem[] }) {
   const [mounted, setMounted] = useState(false)
   const [dynamicPosts, setDynamicPosts] = useState<DynamicPostItem[]>([])
   const [activeTag, setActiveTag] = useState<string | null>(null)
   const [sortMode, setSortMode] = useState<'newest' | 'oldest'>('newest')
   const [showAllTags, setShowAllTags] = useState(false)
+  const [readPosts, setReadPosts] = useState<Set<string>>(new Set())
   const TAG_VISIBLE_LIMIT = 12
 
   useEffect(() => {
@@ -46,6 +56,7 @@ export function PostList({ staticPosts }: { staticPosts: StaticPostItem[] }) {
       isDynamic: true,
     }))
     setDynamicPosts(dyn)
+    setReadPosts(getReadPosts())
   }, [])
 
   // Use only static posts until client mounts to avoid hydration mismatch
@@ -208,8 +219,9 @@ export function PostList({ staticPosts }: { staticPosts: StaticPostItem[] }) {
             {grouped[year].map((post) => {
               const href = post.isDynamic ? `/read?id=${post.id}` : post.url
               const isNew = !post.isDynamic && (Date.now() - new Date(post.date).getTime()) < 7 * 24 * 60 * 60 * 1000
+              const isRead = mounted && readPosts.has(post.id)
               return (
-                <div key={post.id} className="group rounded-lg px-3 py-6 -mx-3 transition-colors duration-100 hover:bg-[var(--surface)]">
+                <div key={post.id} className={`group rounded-lg px-3 py-6 -mx-3 transition-colors duration-100 hover:bg-[var(--surface)] ${isRead ? 'opacity-75' : ''}`}>
                   <h2 className="mb-1.5 flex items-start justify-between gap-2 text-xl font-semibold leading-snug tracking-tight" style={titleStyle}>
                     <span className="flex items-start gap-2">
                     <Link
