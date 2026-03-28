@@ -2,8 +2,8 @@ import { readFileSync, writeFileSync, mkdirSync } from 'fs'
 import { join } from 'path'
 
 const SITE_URL = 'https://tech-blog.dev'
-const SITE_TITLE = 'Tech Blog'
-const SITE_DESCRIPTION = 'Fast and SEO-optimized static tech blog'
+const SITE_TITLE = 'CFD.Lab'
+const SITE_DESCRIPTION = 'CFD 엔지니어를 위한 기술 저널 — 수식, 코드, 인터랙티브 시각화'
 
 function getPosts() {
   const raw = readFileSync(join(process.cwd(), '.contentlayer/generated/Post/_index.json'), 'utf-8')

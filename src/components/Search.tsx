@@ -160,7 +160,7 @@ export function Search() {
                             <span
                               key={tag}
                               className="rounded px-1.5 py-0.5 text-[9px] font-medium"
-                              style={{ background: 'var(--border)', color: 'var(--text-muted)' }}
+                              style={{ background: 'var(--surface)', color: 'var(--text-muted)', border: '1px solid var(--border)' }}
                             >
                               {tag}
                             </span>
