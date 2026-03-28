@@ -24,6 +24,36 @@ function Steps({ children }: { children: React.ReactNode }) {
   return <div className="steps-container">{children}</div>
 }
 
+function Tabs({ labels, children }: { labels: string[]; children: React.ReactNode }) {
+  const [active, setActive] = useState(0)
+  const childArray = Array.isArray(children) ? children : [children]
+  return (
+    <div className="my-6 overflow-hidden rounded-lg" style={{ border: '1px solid var(--border)' }}>
+      <div className="flex" style={{ background: 'var(--surface)', borderBottom: '1px solid var(--border)' }}>
+        {labels.map((label, i) => (
+          <button
+            key={label}
+            onClick={() => setActive(i)}
+            className="px-4 py-2.5 text-xs font-medium transition-colors duration-100"
+            style={{
+              color: active === i ? 'var(--accent)' : 'var(--text-muted)',
+              borderBottom: active === i ? '2px solid var(--accent)' : '2px solid transparent',
+              marginBottom: '-1px',
+            }}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      <div>{childArray[active]}</div>
+    </div>
+  )
+}
+
+function Tab({ children }: { children: React.ReactNode }) {
+  return <div>{children}</div>
+}
+
 function Step({ children }: { children: React.ReactNode }) {
   return (
     <div className="step-item">
@@ -229,6 +259,8 @@ const components = {
   Caution: (props: any) => <Callout type="caution" {...props} />,
   Steps,
   Step,
+  Tabs,
+  Tab,
 }
 
 interface MdxProps {
