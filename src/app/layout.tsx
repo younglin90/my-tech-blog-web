@@ -94,7 +94,20 @@ export default function RootLayout({
             Skip to content
           </a>
           <div className="mx-auto max-w-2xl px-4 py-8 pb-20 sm:px-6 sm:py-10 sm:pb-10">
-            <header className="mb-12 flex items-center justify-between border-b pb-5 sm:mb-16 sm:pb-6" style={{ borderColor: 'var(--border)' }}>
+            <header
+              className="sticky top-0 z-30 mb-12 flex items-center justify-between border-b pb-5 sm:mb-16 sm:pb-6"
+              style={{
+                borderColor: 'var(--border)',
+                backdropFilter: 'blur(12px)',
+                WebkitBackdropFilter: 'blur(12px)',
+                background: 'color-mix(in srgb, var(--bg) 85%, transparent)',
+                marginLeft: 'calc(-1 * var(--px, 1rem))',
+                marginRight: 'calc(-1 * var(--px, 1rem))',
+                paddingLeft: 'var(--px, 1rem)',
+                paddingRight: 'var(--px, 1rem)',
+                paddingTop: '1rem',
+              }}
+            >
               <Link
                 href="/"
                 className="text-lg font-bold tracking-tight sm:text-xl"
