@@ -43,6 +43,8 @@ function generateSitemap(posts) {
   <url>
     <loc>${SITE_URL}/posts/${post._raw.flattenedPath}</loc>
     <lastmod>${new Date(post.date).toISOString().split('T')[0]}</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.8</priority>
   </url>`).join('')
 
   const today = new Date().toISOString().split('T')[0]
@@ -51,14 +53,20 @@ function generateSitemap(posts) {
   <url>
     <loc>${SITE_URL}</loc>
     <lastmod>${today}</lastmod>
+    <changefreq>daily</changefreq>
+    <priority>1.0</priority>
   </url>
   <url>
     <loc>${SITE_URL}/about</loc>
     <lastmod>${today}</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.5</priority>
   </url>
   <url>
     <loc>${SITE_URL}/tags</loc>
     <lastmod>${today}</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.6</priority>
   </url>${postEntries}
 </urlset>`
 }
