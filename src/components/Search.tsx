@@ -58,6 +58,14 @@ export function Search() {
 
   const q = query.toLowerCase()
   const publishedPosts = allPosts.filter((post) => !post.draft)
+
+  // Compute top tags for suggestion chips when search is empty
+  const topTags = React.useMemo(() => {
+    const counts: Record<string, number> = {}
+    publishedPosts.forEach((p) => (p.tags ?? []).forEach((t) => { counts[t] = (counts[t] ?? 0) + 1 }))
+    return Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([t]) => t)
+  }, [publishedPosts])
+
   const filteredPosts = q
     ? publishedPosts
         .map((post) => {
@@ -180,6 +188,25 @@ export function Search() {
 
               {/* Results */}
               <div className="max-h-72 overflow-y-auto p-1.5" role="listbox" aria-label="Search results">
+                {!q && topTags.length > 0 && (
+                  <div className="px-3 pb-2 pt-1.5">
+                    <p className="mb-2 text-[10px] font-semibold uppercase tracking-widest" style={{ color: 'var(--text-faint)' }}>
+                      Popular Tags
+                    </p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {topTags.map((tag) => (
+                        <button
+                          key={tag}
+                          onClick={() => setQuery(tag)}
+                          className="rounded-full px-2.5 py-1 text-[10px] font-medium transition-colors duration-75"
+                          style={{ background: 'var(--surface-hover)', color: 'var(--text-muted)', border: '1px solid var(--border)' }}
+                        >
+                          {tag}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 {!q && filteredPosts.length > 0 && (
                 <p className="px-4 py-2 text-[10px] font-semibold uppercase tracking-widest" style={{ color: 'var(--text-faint)' }}>
                   Recent
