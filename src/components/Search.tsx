@@ -7,6 +7,24 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { allPosts } from 'contentlayer/generated'
 import { format, parseISO } from 'date-fns'
 
+function Highlight({ text, query }: { text: string; query: string }) {
+  if (!query) return <>{text}</>
+  const parts = text.split(new RegExp(`(${query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi'))
+  return (
+    <>
+      {parts.map((part, i) =>
+        part.toLowerCase() === query.toLowerCase() ? (
+          <mark key={i} style={{ background: 'var(--accent-glow)', color: 'var(--accent)', borderRadius: '0.2em' }}>
+            {part}
+          </mark>
+        ) : (
+          part
+        )
+      )}
+    </>
+  )
+}
+
 export function Search() {
   const [open, setOpen] = React.useState(false)
   const [query, setQuery] = React.useState('')
@@ -165,14 +183,14 @@ export function Search() {
                           className="text-sm font-medium"
                           style={{ color: i === activeIdx ? 'var(--accent)' : 'var(--text)' }}
                         >
-                          {post.title}
+                          <Highlight text={post.title} query={q} />
                         </span>
                         <span className="shrink-0 text-[10px] tabular-nums" style={{ color: 'var(--text-faint)' }}>
                           {format(parseISO(post.date), 'MMM yyyy')}
                         </span>
                       </div>
                       <span className="mt-0.5 text-xs line-clamp-1" style={{ color: 'var(--text-muted)' }}>
-                        {post.description}
+                        <Highlight text={post.description} query={q} />
                       </span>
                       {post.tags && post.tags.length > 0 && (
                         <div className="mt-1.5 flex flex-wrap gap-1">
