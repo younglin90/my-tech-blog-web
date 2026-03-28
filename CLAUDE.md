@@ -102,25 +102,54 @@ source-docs/
 - **관리:** Claude Code 사이드바 → Scheduled 탭
 - API 비용 없음. Claude Code가 직접 포스트 작성.
 
+## Admin 패널 (`/admin`)
+- 로그인: SHA-256 해시 비교 (평문 미저장)
+- 패스워드 해시: `.env.local`의 `NEXT_PUBLIC_ADMIN_PASSWORD_HASH`
+- Cloudflare Pages 배포 시 Environment variables에도 동일하게 설정 필요
+- 해시 생성: `node -e "crypto.subtle.digest('SHA-256', new TextEncoder().encode('비밀번호')).then(b => console.log(Array.from(new Uint8Array(b)).map(x=>x.toString(16).padStart(2,'0')).join('')))"`
+- 동적 포스트 저장소: localStorage (기기 종속)
+- **Export JSON** / **Import JSON** 버튼으로 기기 간 데이터 이동 가능
+
 ## 주요 파일 위치
 | 파일 | 역할 |
 |------|------|
 | `DESIGN.md` | 디자인 시스템 소스 오브 트루스 |
+| `.env.local` | 어드민 패스워드 해시 (gitignore됨) |
+| `.env.local.example` | 환경변수 템플릿 |
 | `source-docs/index.yaml` | 소스 문서 목록 + 순환 관리 |
 | `source-docs/qa-log.md` | 금요일 Q&A 소스 (계속 추가) |
 | `scripts/prompts/*.txt` | 요일별 포스트 생성 프롬프트 |
 | `scripts/generate_post.py` | API 방식 스크립트 (현재 미사용) |
 | `contentlayer.config.ts` | MDX 스키마 (title/date/desc/draft/tags) |
 | `src/components/viz/` | 수요일 시각화 컴포넌트 5개 |
-| `src/components/MDX.tsx` | MDX 렌더러 + 컴포넌트 등록 |
+| `src/components/MDX.tsx` | MDX 렌더러 + 컴포넌트 등록 (헤딩 앵커 포함) |
+| `src/components/BackToTop.tsx` | 스크롤 400px 이후 우하단 버튼 |
+| `src/components/ShareButton.tsx` | Copy link + Twitter 공유 |
+| `src/components/ReadingProgress.tsx` | 상단 읽기 진행 바 |
+| `src/components/CodeBlock.tsx` | 코드블록 복사 버튼 |
+| `src/lib/dynamic-posts.ts` | Admin 동적 포스트 CRUD + export/import |
+| `src/app/sitemap.ts` | Next.js 자동 sitemap 생성 |
 | `tests/test_generate.py` | pytest 13개 (python -m pytest tests/ -v) |
 
-## 완료된 작업 이력 (2026-03-24)
+## 완료된 작업 이력
+
+### 2026-03-24
 - GitHub Actions + Claude API 파이프라인 구축 (scripts/)
 - 수요일 인터랙티브 시각화 컴포넌트 5개 구현
 - Fraunces + Geist + JetBrains Mono 디자인 시스템 적용
 - Scheduled Task로 매일 자동 생성 설정
 - 첫 번째 포스트 생성: PINN 논문 리뷰 (draft: false, 배포됨)
+
+### 2026-03-28
+- **보안**: Admin 패스워드를 소스코드 평문 → `.env.local` SHA-256 해시로 이전
+- **Admin**: Export/Import JSON으로 동적 포스트 기기 간 백업/복원 가능
+- **MDX**: h1~h4 헤딩에 hover 앵커 링크 추가 (Korean slug 지원)
+- **UX**: BackToTop 버튼 (우하단, 400px 스크롤 후 등장)
+- **모바일**: Nav 레이블 sm 미만에서 숨김, 헤더 padding 모바일 대응
+- **MDX**: table/hr 디자인 토큰(`var(--border)`, `var(--surface)`) 통일
+- **포스트 페이지**: 공유 버튼(Copy link + Twitter), 관련 포스트 섹션 추가
+- **다크모드**: `--text-muted` 명도 개선 (`#64748b` → `#7a90a8`)
+- **SEO**: `src/app/sitemap.ts` 추가 (전체 포스트 자동 색인)
 
 ## 자주 쓰는 명령
 ```bash
