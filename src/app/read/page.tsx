@@ -59,6 +59,11 @@ function ReadContent() {
 
   return (
     <article className="py-6">
+      <div className="mb-8">
+        <Link href="/" className="link-hover-text-accent text-xs">
+          ← All posts
+        </Link>
+      </div>
       <div className="mb-10 flex flex-col items-center text-center">
         <time className="text-sm" style={{ color: 'var(--text-muted)' }} dateTime={post.date}>
           {format(new Date(post.date), 'MMMM d, yyyy')}
