@@ -20,6 +20,18 @@ const { VelocityField, StreamLine, NumericalScheme, PressureContour, BoundaryCon
 
 const displayStyle = { fontFamily: 'var(--font-display)' }
 
+function Steps({ children }: { children: React.ReactNode }) {
+  return <div className="steps-container">{children}</div>
+}
+
+function Step({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="step-item">
+      <div className="step-content">{children}</div>
+    </div>
+  )
+}
+
 function Callout({ type = 'note', title, children }: { type?: 'note' | 'tip' | 'warning' | 'caution'; title?: string; children: React.ReactNode }) {
   const icons = { note: 'ℹ', tip: '💡', warning: '⚠', caution: '🚨' }
   const defaultTitles = { note: 'Note', tip: 'Tip', warning: 'Warning', caution: 'Caution' }
@@ -215,6 +227,8 @@ const components = {
   Tip: (props: any) => <Callout type="tip" {...props} />,
   Warning: (props: any) => <Callout type="warning" {...props} />,
   Caution: (props: any) => <Callout type="caution" {...props} />,
+  Steps,
+  Step,
 }
 
 interface MdxProps {
