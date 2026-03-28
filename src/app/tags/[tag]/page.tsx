@@ -36,6 +36,18 @@ export default async function TagPage({ params }: TagPageProps) {
 
   if (posts.length === 0) notFound()
 
+  // Related tags: co-occurring tags sorted by frequency
+  const relatedTagCounts: Record<string, number> = {}
+  posts.forEach((post) => {
+    post.tags?.forEach((t) => {
+      if (t !== decoded) relatedTagCounts[t] = (relatedTagCounts[t] ?? 0) + 1
+    })
+  })
+  const relatedTags = Object.entries(relatedTagCounts)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 8)
+    .map(([t]) => t)
+
   return (
     <div>
       <div className="mb-8">
@@ -79,6 +91,21 @@ export default async function TagPage({ params }: TagPageProps) {
           </div>
         ))}
       </div>
+
+      {relatedTags.length > 0 && (
+        <div className="mt-10 border-t pt-8" style={{ borderColor: 'var(--border)' }}>
+          <p className="mb-3 text-xs font-semibold uppercase tracking-widest" style={{ color: 'var(--text-faint)' }}>
+            Related Tags
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {relatedTags.map((t) => (
+              <Link key={t} href={`/tags/${encodeURIComponent(t)}`} className="tag-pill">
+                #{t}
+              </Link>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
