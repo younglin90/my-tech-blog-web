@@ -37,7 +37,7 @@ export default makeSource({
   mdx: {
     remarkPlugins: [remarkMath],
     rehypePlugins: [
-      [rehypePrettyCode, { theme: 'github-dark-dimmed', keepBackground: true }],
+      [rehypePrettyCode, { theme: { dark: 'github-dark', light: 'github-light' }, keepBackground: false }],
       rehypeKatex,
     ],
   },

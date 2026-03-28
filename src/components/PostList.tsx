@@ -49,62 +49,72 @@ export function PostList({ staticPosts }: { staticPosts: StaticPostItem[] }) {
     (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
   )
 
+  const titleStyle = { fontFamily: 'var(--font-display)' }
+
   return (
-    <div className="divide-y divide-zinc-100 dark:divide-zinc-800">
-      {all.map((post) => (
-        <div key={post.id} className="py-6">
-          <h2 className="mb-1 text-xl">
-            {post.isDynamic ? (
+    <div className="divide-y" style={{ borderColor: 'var(--border)' }}>
+      {all.map((post) => {
+        const href = post.isDynamic ? `/read?id=${post.id}` : post.url
+        return (
+          <div key={post.id} className="group py-7">
+            <h2 className="mb-1.5 text-xl font-semibold leading-snug tracking-tight" style={titleStyle}>
               <Link
-                href={`/read?id=${post.id}`}
-                className="text-zinc-900 hover:text-zinc-600 dark:text-zinc-100 dark:hover:text-zinc-400"
+                href={href}
+                className="transition-colors duration-150"
+                style={{ color: 'var(--text)' }}
+                onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = 'var(--accent)' }}
+                onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'var(--text)' }}
               >
                 {post.title}
               </Link>
-            ) : (
-              <Link
-                href={post.url}
-                className="text-zinc-900 hover:text-zinc-600 dark:text-zinc-100 dark:hover:text-zinc-400"
-              >
-                {post.title}
-              </Link>
-            )}
-          </h2>
-          <div className="mb-2 flex items-center gap-2 text-xs text-zinc-400">
-            <time dateTime={post.date}>
-              {format(post.isDynamic ? new Date(post.date) : parseISO(post.date), 'LLLL d, yyyy')}
-            </time>
-            {!post.isDynamic && post.readingTime && (
-              <>
-                <span>&middot;</span>
-                <span>{post.readingTime}</span>
-              </>
-            )}
-            {post.isDynamic && (
-              <>
-                <span>&middot;</span>
-                <span className="rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] font-medium dark:bg-zinc-800">Dynamic</span>
-              </>
+            </h2>
+            <div className="mb-2.5 flex items-center gap-2 text-xs" style={{ color: 'var(--text-muted)' }}>
+              <time dateTime={post.date}>
+                {format(post.isDynamic ? new Date(post.date) : parseISO(post.date), 'MMM d, yyyy')}
+              </time>
+              {!post.isDynamic && post.readingTime && (
+                <>
+                  <span style={{ color: 'var(--border)' }}>·</span>
+                  <span>{post.readingTime}</span>
+                </>
+              )}
+              {post.isDynamic && (
+                <>
+                  <span style={{ color: 'var(--border)' }}>·</span>
+                  <span className="rounded px-1.5 py-0.5 text-[10px] font-medium" style={{ background: 'var(--surface)', color: 'var(--text-muted)', border: '1px solid var(--border)' }}>Draft</span>
+                </>
+              )}
+            </div>
+            <p className="text-sm leading-relaxed" style={{ color: 'var(--text-muted)' }}>
+              {post.description}
+            </p>
+            {post.tags.length > 0 && (
+              <div className="mt-3 flex flex-wrap gap-1.5">
+                {post.tags.map((tag) => (
+                  <Link
+                    key={tag}
+                    href={`/tags/${encodeURIComponent(tag)}`}
+                    className="rounded-full px-2.5 py-0.5 text-xs font-medium transition-colors duration-100"
+                    style={{ background: 'var(--surface)', color: 'var(--text-muted)', border: '1px solid var(--border)' }}
+                    onMouseEnter={(e) => {
+                      const el = e.currentTarget as HTMLElement
+                      el.style.borderColor = 'var(--accent)'
+                      el.style.color = 'var(--accent)'
+                    }}
+                    onMouseLeave={(e) => {
+                      const el = e.currentTarget as HTMLElement
+                      el.style.borderColor = 'var(--border)'
+                      el.style.color = 'var(--text-muted)'
+                    }}
+                  >
+                    {tag}
+                  </Link>
+                ))}
+              </div>
             )}
           </div>
-          <p className="text-sm leading-6 text-zinc-600 dark:text-zinc-400">
-            {post.description}
-          </p>
-          {post.tags.length > 0 && (
-            <div className="mt-2 flex flex-wrap gap-1.5">
-              {post.tags.map((tag) => (
-                <Link
-                  key={tag}
-                  href={`/tags/${encodeURIComponent(tag)}`}
-                  className="rounded-full bg-zinc-100 px-2.5 py-0.5 text-xs text-zinc-500 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-400 dark:hover:bg-zinc-700"
-                >
-                  {tag}
-                </Link>
-              ))}
-            </div>
-          )}
-        </div>
-      ))}
+        )
+      })}
     </div>
   )
 }

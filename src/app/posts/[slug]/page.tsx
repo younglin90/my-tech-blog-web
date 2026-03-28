@@ -67,28 +67,42 @@ export default async function PostPage({ params }: PostProps) {
 
   return (
     <article className="py-6">
-      <div className="mb-8 flex flex-col items-center text-center">
-        <div className="flex items-center gap-2 text-sm text-zinc-500">
+      <div className="mb-10 flex flex-col items-center text-center">
+        <div className="flex items-center gap-2 text-sm" style={{ color: 'var(--text-muted)' }}>
           <time dateTime={post.date}>
-            {format(parseISO(post.date), 'LLLL d, yyyy')}
+            {format(parseISO(post.date), 'MMMM d, yyyy')}
           </time>
           {post.readingTime && (
             <>
-              <span>&middot;</span>
+              <span style={{ color: 'var(--border)' }}>·</span>
               <span>{post.readingTime}</span>
             </>
           )}
         </div>
-        <h1 className="mt-2 text-4xl font-bold tracking-tight text-zinc-900 dark:text-zinc-50">
+        <h1
+          className="mt-3 text-4xl font-bold leading-tight tracking-tight"
+          style={{ fontFamily: 'var(--font-display)', color: 'var(--text)' }}
+        >
           {post.title}
         </h1>
         {post.tags && post.tags.length > 0 && (
-          <div className="mt-3 flex flex-wrap justify-center gap-2">
+          <div className="mt-4 flex flex-wrap justify-center gap-2">
             {post.tags.map((tag) => (
               <Link
                 key={tag}
                 href={`/tags/${encodeURIComponent(tag)}`}
-                className="rounded-full bg-zinc-100 px-3 py-1 text-xs font-medium text-zinc-600 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-400 dark:hover:bg-zinc-700"
+                className="rounded-full px-3 py-1 text-xs font-medium transition-colors duration-100"
+                style={{ background: 'var(--surface)', color: 'var(--text-muted)', border: '1px solid var(--border)' }}
+                onMouseEnter={(e) => {
+                  const el = e.currentTarget as HTMLElement
+                  el.style.borderColor = 'var(--accent)'
+                  el.style.color = 'var(--accent)'
+                }}
+                onMouseLeave={(e) => {
+                  const el = e.currentTarget as HTMLElement
+                  el.style.borderColor = 'var(--border)'
+                  el.style.color = 'var(--text-muted)'
+                }}
               >
                 {tag}
               </Link>
@@ -99,19 +113,25 @@ export default async function PostPage({ params }: PostProps) {
 
       <Mdx code={post.body.code} />
 
-      <nav className="mt-16 flex items-center justify-between border-t border-zinc-200 pt-8 dark:border-zinc-800">
+      <nav className="mt-16 flex items-center justify-between border-t pt-8" style={{ borderColor: 'var(--border)' }}>
         {prevPost ? (
-          <Link href={prevPost.url} className="group flex flex-col">
-            <span className="text-xs text-zinc-500">&larr; Previous</span>
-            <span className="text-sm font-medium group-hover:text-zinc-600 dark:group-hover:text-zinc-400">
+          <Link href={prevPost.url} className="group flex flex-col gap-1">
+            <span className="text-xs" style={{ color: 'var(--text-muted)' }}>&larr; Previous</span>
+            <span className="text-sm font-medium transition-colors" style={{ color: 'var(--text)' }}
+              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = 'var(--accent)' }}
+              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'var(--text)' }}
+            >
               {prevPost.title}
             </span>
           </Link>
         ) : <div />}
         {nextPost ? (
-          <Link href={nextPost.url} className="group flex flex-col text-right">
-            <span className="text-xs text-zinc-500">Next &rarr;</span>
-            <span className="text-sm font-medium group-hover:text-zinc-600 dark:group-hover:text-zinc-400">
+          <Link href={nextPost.url} className="group flex flex-col gap-1 text-right">
+            <span className="text-xs" style={{ color: 'var(--text-muted)' }}>Next &rarr;</span>
+            <span className="text-sm font-medium transition-colors" style={{ color: 'var(--text)' }}
+              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = 'var(--accent)' }}
+              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'var(--text)' }}
+            >
               {nextPost.title}
             </span>
           </Link>

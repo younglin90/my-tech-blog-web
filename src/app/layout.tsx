@@ -76,11 +76,11 @@ export default function RootLayout({
       >
         <ThemeProvider attribute="class" defaultTheme="dark" enableSystem>
           <div className="mx-auto max-w-2xl px-6 py-10">
-            <header className="mb-16 flex items-center justify-between">
+            <header className="mb-16 flex items-center justify-between border-b pb-6" style={{ borderColor: 'var(--border)' }}>
               <Link
                 href="/"
                 className="text-xl font-bold tracking-tight"
-                style={{ fontFamily: 'var(--font-display)', letterSpacing: '-0.02em' }}
+                style={{ fontFamily: 'var(--font-display)', letterSpacing: '-0.02em', color: 'var(--text)' }}
               >
                 CFD<span style={{ color: 'var(--accent)' }}>.</span>Lab
               </Link>
