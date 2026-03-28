@@ -28,8 +28,10 @@ GitHub Actions + Anthropic API 방식은 크레딧 문제로 사용 안 함.
 | 월 | CFD 기법 설명 (수식 + 코드) | `scripts/prompts/monday_cfd_technique.txt` |
 | 화 | 논문 리뷰 | `scripts/prompts/tuesday_paper_review.txt` |
 | 수 | 인터랙티브 시각화 (MDX 컴포넌트) | `scripts/prompts/wednesday_visualization.txt` |
-| 목 | OpenFOAM 튜토리얼 | `scripts/prompts/thursday_openfoam.txt` |
-| 금 | CFD 실무 Q&A | `scripts/prompts/friday_qa.txt` |
+| 목 | 유체역학 개념 심층 탐구 (이론+수식 유도) | `scripts/prompts/thursday_fluid_mechanics.txt` |
+| 금 | 수치해석 알고리즘 직접 구현 (Python/C++) | `scripts/prompts/friday_numerical_implementation.txt` |
+| 토 | 고전 유동 문제 해석해 유도 + CFD 검증 | `scripts/prompts/saturday_classical_flow.txt` |
+| 일 | 흥미로운 유동 현상 탐구 | `scripts/prompts/sunday_flow_phenomena.txt` |
 
 ## MDX 필수 형식
 ```
