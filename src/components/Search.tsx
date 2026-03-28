@@ -27,12 +27,14 @@ export function Search() {
     setActiveIdx(0)
   }, [query])
 
+  const q = query.toLowerCase()
   const filteredPosts = allPosts
     .filter((post) => !post.draft)
     .filter(
       (post) =>
-        post.title.toLowerCase().includes(query.toLowerCase()) ||
-        post.description.toLowerCase().includes(query.toLowerCase()),
+        post.title.toLowerCase().includes(q) ||
+        post.description.toLowerCase().includes(q) ||
+        (post.tags ?? []).some((t) => t.toLowerCase().includes(q)),
     )
     .slice(0, 6)
 
@@ -152,6 +154,19 @@ export function Search() {
                       <span className="mt-0.5 text-xs line-clamp-1" style={{ color: 'var(--text-muted)' }}>
                         {post.description}
                       </span>
+                      {post.tags && post.tags.length > 0 && (
+                        <div className="mt-1.5 flex flex-wrap gap-1">
+                          {post.tags.slice(0, 3).map((tag) => (
+                            <span
+                              key={tag}
+                              className="rounded px-1.5 py-0.5 text-[9px] font-medium"
+                              style={{ background: 'var(--border)', color: 'var(--text-muted)' }}
+                            >
+                              {tag}
+                            </span>
+                          ))}
+                        </div>
+                      )}
                     </button>
                   ))
                 ) : (
