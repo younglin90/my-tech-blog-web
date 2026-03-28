@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import { Link2, Check, Twitter } from 'lucide-react'
+import { Link2, Check, Twitter, Linkedin } from 'lucide-react'
 
 interface ShareButtonProps {
   title: string
@@ -20,6 +20,7 @@ export function ShareButton({ title, url }: ShareButtonProps) {
   }
 
   const twitterUrl = `https://twitter.com/intent/tweet?text=${encodeURIComponent(title)}&url=${encodeURIComponent(href)}`
+  const linkedinUrl = `https://www.linkedin.com/sharing/share-offsite/?url=${encodeURIComponent(href)}`
 
   const btnStyle = {
     background: 'var(--surface)',
@@ -59,9 +60,20 @@ export function ShareButton({ title, url }: ShareButtonProps) {
         style={btnStyle}
         onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = 'var(--text)' }}
         onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'var(--text-muted)' }}
+        aria-label="Share on Twitter"
       >
         <Twitter className="h-3.5 w-3.5" />
-        Share
+      </a>
+      <a
+        href={linkedinUrl}
+        target="_blank"
+        rel="noopener noreferrer"
+        style={btnStyle}
+        onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = 'var(--text)' }}
+        onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'var(--text-muted)' }}
+        aria-label="Share on LinkedIn"
+      >
+        <Linkedin className="h-3.5 w-3.5" />
       </a>
     </div>
   )
