@@ -6,6 +6,7 @@ import Link from 'next/link'
 import { Search } from '@/components/Search'
 import { Nav } from '@/components/Nav'
 import { BackToTop } from '@/components/BackToTop'
+import { MobileNav } from '@/components/MobileNav'
 import type { Metadata } from 'next'
 
 // Display / hero — editorial authority (see DESIGN.md)
@@ -84,7 +85,7 @@ export default function RootLayout({
           >
             Skip to content
           </a>
-          <div className="mx-auto max-w-2xl px-4 py-8 sm:px-6 sm:py-10">
+          <div className="mx-auto max-w-2xl px-4 py-8 pb-20 sm:px-6 sm:py-10 sm:pb-10">
             <header className="mb-12 flex items-center justify-between border-b pb-5 sm:mb-16 sm:pb-6" style={{ borderColor: 'var(--border)' }}>
               <Link
                 href="/"
@@ -100,6 +101,7 @@ export default function RootLayout({
               </div>
             </header>
             <main id="main-content">{children}</main>
+            <MobileNav />
             <BackToTop />
             <footer
               className="mt-24 border-t pt-8 pb-10"
