@@ -1,6 +1,7 @@
 import { useMDXComponent } from 'next-contentlayer2/hooks'
 import Link from 'next/link'
 import Image from 'next/image'
+import { CodeBlock } from '@/components/CodeBlock'
 import { NumericalDungeon } from '@/components/NumericalDungeon'
 import { MachArchitect } from '@/components/MachArchitect'
 import { VelocityField, StreamLine, NumericalScheme, PressureContour, BoundaryCondition } from '@/components/viz'
@@ -53,6 +54,7 @@ const components = {
   hr: (props: any) => (
     <hr className="my-8 border-zinc-200 dark:border-zinc-800" {...props} />
   ),
+  pre: (props: any) => <CodeBlock {...props} />,
   img: (props: any) => (
     <Image
       className="rounded-md"
