@@ -124,7 +124,7 @@ export default function RootLayout({
                 <ThemeToggle />
               </div>
             </header>
-            <main id="main-content">{children}</main>
+            <main id="main-content" className="animate-fade-up">{children}</main>
             <KeyboardShortcuts />
             <MobileNav />
             <BackToTop />
