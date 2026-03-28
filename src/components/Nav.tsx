@@ -20,18 +20,12 @@ export function Nav() {
           <Link
             key={href}
             href={href}
-            className="hidden rounded-md px-2.5 py-1.5 transition-colors duration-100 sm:block"
+            className={`hidden rounded-md px-2.5 py-1.5 transition-colors duration-100 sm:block ${active ? '' : 'nav-link'}`}
             aria-current={active ? 'page' : undefined}
             style={{
-              color: active ? 'var(--text)' : 'var(--text-muted)',
+              color: active ? 'var(--text)' : undefined,
               background: active ? 'var(--surface)' : 'transparent',
               fontWeight: active ? 500 : 400,
-            }}
-            onMouseEnter={(e) => {
-              if (!active) (e.currentTarget as HTMLElement).style.color = 'var(--text)'
-            }}
-            onMouseLeave={(e) => {
-              if (!active) (e.currentTarget as HTMLElement).style.color = 'var(--text-muted)'
             }}
           >
             {label}

@@ -17,21 +17,11 @@ export function BackToTop() {
   return (
     <button
       onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
-      className="back-to-top fixed bottom-20 right-4 flex h-9 w-9 items-center justify-center rounded-full shadow-lg transition-all duration-150 hover:scale-110 sm:bottom-8 sm:right-8"
+      className="back-to-top fixed bottom-20 right-4 flex h-9 w-9 items-center justify-center rounded-full shadow-lg transition-all duration-150 hover:scale-110 sm:bottom-8 sm:right-8 back-to-top-btn"
       style={{
         background: 'var(--surface)',
         border: '1px solid var(--border)',
         color: 'var(--text-muted)',
-      }}
-      onMouseEnter={(e) => {
-        const el = e.currentTarget as HTMLElement
-        el.style.borderColor = 'var(--accent)'
-        el.style.color = 'var(--accent)'
-      }}
-      onMouseLeave={(e) => {
-        const el = e.currentTarget as HTMLElement
-        el.style.borderColor = 'var(--border)'
-        el.style.color = 'var(--text-muted)'
       }}
       aria-label="Back to top"
     >
