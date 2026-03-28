@@ -87,5 +87,5 @@ const posts = getPosts()
 
 mkdirSync(join(process.cwd(), 'out'), { recursive: true })
 writeFileSync(join(process.cwd(), 'out/feed.xml'), generateRss(posts))
-writeFileSync(join(process.cwd(), 'out/sitemap.xml'), generateSitemap(posts))
-console.log('Generated: out/feed.xml, out/sitemap.xml')
+// sitemap.xml is generated natively by src/app/sitemap.ts (Next.js static export)
+console.log('Generated: out/feed.xml')
