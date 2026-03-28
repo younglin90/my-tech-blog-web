@@ -21,6 +21,7 @@ export function ShareButton({ title, url }: ShareButtonProps) {
 
   const twitterUrl = `https://twitter.com/intent/tweet?text=${encodeURIComponent(title)}&url=${encodeURIComponent(href)}`
   const linkedinUrl = `https://www.linkedin.com/sharing/share-offsite/?url=${encodeURIComponent(href)}`
+  const hackerNewsUrl = `https://news.ycombinator.com/submitlink?u=${encodeURIComponent(href)}&t=${encodeURIComponent(title)}`
 
   const btnStyle = {
     background: 'var(--surface)',
@@ -74,6 +75,19 @@ export function ShareButton({ title, url }: ShareButtonProps) {
         aria-label="Share on LinkedIn"
       >
         <Linkedin className="h-3.5 w-3.5" />
+      </a>
+      <a
+        href={hackerNewsUrl}
+        target="_blank"
+        rel="noopener noreferrer"
+        style={btnStyle}
+        onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = 'var(--text)' }}
+        onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'var(--text-muted)' }}
+        aria-label="Share on HackerNews"
+      >
+        <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          <path d="M0 24V0h24v24H0zM6.951 5.896l4.112 7.708v5.064h1.583v-4.972l4.148-7.799h-1.749l-2.457 4.875c-.372.745-.688 1.434-.688 1.434s-.297-.708-.651-1.434L8.831 5.896H6.951z"/>
+        </svg>
       </a>
     </div>
   )
