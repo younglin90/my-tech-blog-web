@@ -34,7 +34,9 @@ function generateRss(posts) {
     <link>${SITE_URL}</link>
     <atom:link href="${SITE_URL}/feed.xml" rel="self" type="application/rss+xml"/>
     <language>ko</language>
-    <lastBuildDate>${new Date().toUTCString()}</lastBuildDate>${items}
+    <managingEditor>noreply@tech-blog.dev (CFD.Lab)</managingEditor>
+    <lastBuildDate>${new Date().toUTCString()}</lastBuildDate>
+    <ttl>1440</ttl>${items}
   </channel>
 </rss>`
 }
