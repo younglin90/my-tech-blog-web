@@ -7,6 +7,7 @@ import { TableOfContents } from '@/components/TableOfContents'
 import { format, parseISO, compareDesc } from 'date-fns'
 import Link from 'next/link'
 import { ReadingETA } from '@/components/ReadingETA'
+import { PostNavShortcuts } from '@/components/PostNavShortcuts'
 import type { Metadata } from 'next'
 
 interface PostProps {
@@ -108,6 +109,7 @@ export default async function PostPage({ params }: PostProps) {
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(articleJsonLd) }} />
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(breadcrumbJsonLd) }} />
       <ReadingProgress />
+      <PostNavShortcuts prevUrl={prevPost?.url} nextUrl={nextPost?.url} />
 
       {/* Header */}
       <div className="mb-10 flex flex-col items-center text-center">

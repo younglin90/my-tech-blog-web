@@ -67,10 +67,10 @@ export function CodeBlock({ children, ...props }: React.HTMLAttributes<HTMLPreEl
         </button>
       )}
 
-      {/* Copy button */}
+      {/* Copy button — always visible on touch, hover-only on pointer devices */}
       <button
         onClick={handleCopy}
-        className="absolute right-3 top-3 flex items-center gap-1 rounded px-2 py-1 text-[10px] font-medium opacity-0 transition-all duration-150 group-hover:opacity-100"
+        className="absolute right-3 top-3 flex items-center gap-1 rounded px-2 py-1 text-[10px] font-medium opacity-100 transition-all duration-150 sm:opacity-0 sm:group-hover:opacity-100"
         style={{
           background: 'var(--surface-hover)',
           border: '1px solid var(--border)',

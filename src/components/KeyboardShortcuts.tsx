@@ -11,6 +11,8 @@ const shortcuts = [
   { keys: ['G', 'H'], mac: ['G', 'H'], description: 'Go home' },
   { keys: ['G', 'T'], mac: ['G', 'T'], description: 'Go to tags' },
   { keys: ['G', 'A'], mac: ['G', 'A'], description: 'Go to about' },
+  { keys: ['J'], mac: ['J'], description: 'Next post (on post page)' },
+  { keys: ['K'], mac: ['K'], description: 'Prev post (on post page)' },
   { keys: ['Esc'], mac: ['Esc'], description: 'Close modal' },
 ]
 
