@@ -144,6 +144,11 @@ export default async function PostPage({ params }: PostProps) {
             ))}
           </div>
         )}
+        {post.description && (
+          <p className="mt-5 max-w-xl text-base leading-relaxed" style={{ color: 'var(--text-muted)' }}>
+            {post.description}
+          </p>
+        )}
       </div>
 
       <TableOfContents />

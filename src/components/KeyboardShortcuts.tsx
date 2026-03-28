@@ -6,6 +6,7 @@ import { X } from 'lucide-react'
 
 const shortcuts = [
   { keys: ['Ctrl', 'K'], mac: ['⌘', 'K'], description: 'Open search' },
+  { keys: ['/'], mac: ['/'], description: 'Quick search' },
   { keys: ['?'], mac: ['?'], description: 'Show shortcuts' },
   { keys: ['G', 'H'], mac: ['G', 'H'], description: 'Go home' },
   { keys: ['G', 'T'], mac: ['G', 'T'], description: 'Go to tags' },
