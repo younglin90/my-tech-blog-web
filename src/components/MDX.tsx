@@ -2,12 +2,21 @@
 
 import { useMDXComponent } from 'next-contentlayer2/hooks'
 import { useState, useCallback } from 'react'
+import dynamic from 'next/dynamic'
 import Link from 'next/link'
 import Image from 'next/image'
 import { CodeBlock } from '@/components/CodeBlock'
-import { NumericalDungeon } from '@/components/NumericalDungeon'
-import { MachArchitect } from '@/components/MachArchitect'
-import { VelocityField, StreamLine, NumericalScheme, PressureContour, BoundaryCondition } from '@/components/viz'
+
+// Lazy-load heavy interactive components (only used in Wednesday posts)
+const NumericalDungeon = dynamic(() => import('@/components/NumericalDungeon').then((m) => ({ default: m.NumericalDungeon })))
+const MachArchitect = dynamic(() => import('@/components/MachArchitect').then((m) => ({ default: m.MachArchitect })))
+const { VelocityField, StreamLine, NumericalScheme, PressureContour, BoundaryCondition } = {
+  VelocityField: dynamic(() => import('@/components/viz').then((m) => ({ default: m.VelocityField }))),
+  StreamLine: dynamic(() => import('@/components/viz').then((m) => ({ default: m.StreamLine }))),
+  NumericalScheme: dynamic(() => import('@/components/viz').then((m) => ({ default: m.NumericalScheme }))),
+  PressureContour: dynamic(() => import('@/components/viz').then((m) => ({ default: m.PressureContour }))),
+  BoundaryCondition: dynamic(() => import('@/components/viz').then((m) => ({ default: m.BoundaryCondition }))),
+}
 
 const displayStyle = { fontFamily: 'var(--font-display)' }
 
