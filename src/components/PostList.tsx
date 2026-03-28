@@ -221,7 +221,7 @@ export function PostList({ staticPosts }: { staticPosts: StaticPostItem[] }) {
               const isNew = !post.isDynamic && (Date.now() - new Date(post.date).getTime()) < 7 * 24 * 60 * 60 * 1000
               const isRead = mounted && readPosts.has(post.id)
               return (
-                <div key={post.id} className={`group rounded-lg px-3 py-6 -mx-3 transition-colors duration-100 hover:bg-[var(--surface)] ${isRead ? 'opacity-75' : ''}`}>
+                <div key={post.id} className="group rounded-lg px-3 py-6 -mx-3 transition-colors duration-100 hover:bg-[var(--surface)]">
                   <h2 className="mb-1.5 flex items-start justify-between gap-2 text-xl font-semibold leading-snug tracking-tight" style={titleStyle}>
                     <span className="flex items-start gap-2">
                     <Link
@@ -234,6 +234,9 @@ export function PostList({ staticPosts }: { staticPosts: StaticPostItem[] }) {
                       <span className="mt-1.5 shrink-0 rounded-full px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide" style={{ background: 'var(--accent)', color: '#08111f' }}>
                         New
                       </span>
+                    )}
+                    {isRead && (
+                      <span className="mt-2 shrink-0 text-[10px]" style={{ color: 'var(--text-faint)' }} title="You've read this">✓</span>
                     )}
                     </span>
                     <span
