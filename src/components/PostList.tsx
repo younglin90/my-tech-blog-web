@@ -32,6 +32,8 @@ export function PostList({ staticPosts }: { staticPosts: StaticPostItem[] }) {
   const [dynamicPosts, setDynamicPosts] = useState<DynamicPostItem[]>([])
   const [activeTag, setActiveTag] = useState<string | null>(null)
   const [sortMode, setSortMode] = useState<'newest' | 'oldest'>('newest')
+  const [showAllTags, setShowAllTags] = useState(false)
+  const TAG_VISIBLE_LIMIT = 12
 
   useEffect(() => {
     setMounted(true)
@@ -109,7 +111,7 @@ export function PostList({ staticPosts }: { staticPosts: StaticPostItem[] }) {
           >
             All
           </button>
-          {allTags.map(([tag, count]) => (
+          {(showAllTags ? allTags : allTags.slice(0, TAG_VISIBLE_LIMIT)).map(([tag, count]) => (
             <button
               key={tag}
               onClick={() => setActiveTag(activeTag === tag ? null : tag)}
@@ -132,6 +134,15 @@ export function PostList({ staticPosts }: { staticPosts: StaticPostItem[] }) {
               </span>
             </button>
           ))}
+          {allTags.length > TAG_VISIBLE_LIMIT && (
+            <button
+              onClick={() => setShowAllTags((s) => !s)}
+              className="rounded-full px-3 py-1 text-xs font-medium transition-colors duration-100"
+              style={{ color: 'var(--text-faint)', border: '1px solid var(--border)' }}
+            >
+              {showAllTags ? 'Show less' : `+${allTags.length - TAG_VISIBLE_LIMIT} more`}
+            </button>
+          )}
           </div>
           {/* Sort toggle */}
           <div
