@@ -54,7 +54,7 @@ export function TableOfContents() {
       <p className="mb-3 text-[10px] font-semibold uppercase tracking-widest" style={{ color: 'var(--text-faint)' }}>
         On this page
       </p>
-      <ul className="space-y-1.5 text-xs">
+      <ul className="max-h-[calc(100vh-8rem)] space-y-1.5 overflow-y-auto pr-1 text-xs">
         {headings.map((h) => (
           <li key={h.id} style={{ paddingLeft: h.level === 3 ? '0.75rem' : '0' }}>
             <a
