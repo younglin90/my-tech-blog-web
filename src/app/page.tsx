@@ -2,6 +2,19 @@ import { allPosts } from 'contentlayer/generated'
 import { compareDesc, parseISO } from 'date-fns'
 import { PostList } from '@/components/PostList'
 
+const jsonLd = {
+  '@context': 'https://schema.org',
+  '@type': 'WebSite',
+  name: 'CFD.Lab',
+  description: 'CFD 엔지니어를 위한 기술 저널 — 수식, 코드, 인터랙티브 시각화',
+  url: 'https://tech-blog.dev',
+  potentialAction: {
+    '@type': 'SearchAction',
+    target: 'https://tech-blog.dev/?q={search_term_string}',
+    'query-input': 'required name=search_term_string',
+  },
+}
+
 export default function Home() {
   const posts = allPosts
     .filter((post) => !post.draft)
@@ -19,6 +32,7 @@ export default function Home() {
 
   return (
     <div>
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }} />
       <div className="mb-10">
         <h1
           className="text-3xl font-bold tracking-tight"

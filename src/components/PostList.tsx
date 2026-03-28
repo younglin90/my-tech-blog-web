@@ -60,59 +60,77 @@ export function PostList({ staticPosts }: { staticPosts: StaticPostItem[] }) {
     )
   }
 
+  // Group by year
+  const grouped: Record<string, PostItem[]> = {}
+  for (const post of all) {
+    const year = new Date(post.date).getFullYear().toString()
+    if (!grouped[year]) grouped[year] = []
+    grouped[year].push(post)
+  }
+  const years = Object.keys(grouped).sort((a, b) => Number(b) - Number(a))
+
   return (
-    <div className="divide-y" style={{ borderColor: 'var(--border)' }}>
-      {all.map((post) => {
-        const href = post.isDynamic ? `/read?id=${post.id}` : post.url
-        return (
-          <div key={post.id} className="group py-7">
-            <h2 className="mb-1.5 text-xl font-semibold leading-snug tracking-tight" style={titleStyle}>
-              <Link
-                href={href}
-                className="transition-colors duration-150"
-                style={{ color: 'var(--text)' }}
-                onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = 'var(--accent)' }}
-                onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'var(--text)' }}
-              >
-                {post.title}
-              </Link>
-            </h2>
-            <div className="mb-2.5 flex items-center gap-2 text-xs" style={{ color: 'var(--text-muted)' }}>
-              <time dateTime={post.date}>
-                {format(post.isDynamic ? new Date(post.date) : parseISO(post.date), 'MMM d, yyyy')}
-              </time>
-              {!post.isDynamic && post.readingTime && (
-                <>
-                  <span style={{ color: 'var(--border)' }}>·</span>
-                  <span>{post.readingTime}</span>
-                </>
-              )}
-              {post.isDynamic && (
-                <>
-                  <span style={{ color: 'var(--border)' }}>·</span>
-                  <span className="rounded px-1.5 py-0.5 text-[10px] font-medium" style={{ background: 'var(--surface)', color: 'var(--text-muted)', border: '1px solid var(--border)' }}>Draft</span>
-                </>
-              )}
-            </div>
-            <p className="text-sm leading-relaxed" style={{ color: 'var(--text-muted)' }}>
-              {post.description}
-            </p>
-            {post.tags.length > 0 && (
-              <div className="mt-3 flex flex-wrap gap-1.5">
-                {post.tags.map((tag) => (
-                  <Link
-                    key={tag}
-                    href={`/tags/${encodeURIComponent(tag)}`}
-                    className="tag-pill-sm"
-                  >
-                    {tag}
-                  </Link>
-                ))}
-              </div>
-            )}
+    <div>
+      {years.map((year) => (
+        <div key={year} className="mb-10">
+          <div
+            className="mb-4 text-xs font-semibold uppercase tracking-widest"
+            style={{ color: 'var(--text-faint)' }}
+          >
+            {year}
           </div>
-        )
-      })}
+          <div className="divide-y" style={{ borderColor: 'var(--border)' }}>
+            {grouped[year].map((post) => {
+              const href = post.isDynamic ? `/read?id=${post.id}` : post.url
+              return (
+                <div key={post.id} className="group py-7">
+                  <h2 className="mb-1.5 text-xl font-semibold leading-snug tracking-tight" style={titleStyle}>
+                    <Link
+                      href={href}
+                      className="link-hover-accent"
+                    >
+                      {post.title}
+                    </Link>
+                  </h2>
+                  <div className="mb-2.5 flex items-center gap-2 text-xs" style={{ color: 'var(--text-muted)' }}>
+                    <time dateTime={post.date}>
+                      {format(post.isDynamic ? new Date(post.date) : parseISO(post.date), 'MMM d')}
+                    </time>
+                    {!post.isDynamic && post.readingTime && (
+                      <>
+                        <span style={{ color: 'var(--border)' }}>·</span>
+                        <span>{post.readingTime}</span>
+                      </>
+                    )}
+                    {post.isDynamic && (
+                      <>
+                        <span style={{ color: 'var(--border)' }}>·</span>
+                        <span className="rounded px-1.5 py-0.5 text-[10px] font-medium" style={{ background: 'var(--surface)', color: 'var(--text-muted)', border: '1px solid var(--border)' }}>Draft</span>
+                      </>
+                    )}
+                  </div>
+                  <p className="text-sm leading-relaxed" style={{ color: 'var(--text-muted)' }}>
+                    {post.description}
+                  </p>
+                  {post.tags.length > 0 && (
+                    <div className="mt-3 flex flex-wrap gap-1.5">
+                      {post.tags.map((tag) => (
+                        <Link
+                          key={tag}
+                          href={`/tags/${encodeURIComponent(tag)}`}
+                          className="tag-pill-sm"
+                        >
+                          {tag}
+                        </Link>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      ))}
     </div>
   )
 }
