@@ -13,14 +13,17 @@ function getPosts() {
 }
 
 function generateRss(posts) {
-  const items = posts.map((post) => `
+  const items = posts.map((post) => {
+    const categories = (post.tags ?? []).map((t) => `      <category>${t}</category>`).join('\n')
+    return `
     <item>
       <title><![CDATA[${post.title}]]></title>
       <description><![CDATA[${post.description}]]></description>
       <link>${SITE_URL}/posts/${post._raw.flattenedPath}</link>
       <guid isPermaLink="true">${SITE_URL}/posts/${post._raw.flattenedPath}</guid>
-      <pubDate>${new Date(post.date).toUTCString()}</pubDate>
-    </item>`).join('')
+      <pubDate>${new Date(post.date).toUTCString()}</pubDate>${categories ? '\n' + categories : ''}
+    </item>`
+  }).join('')
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
