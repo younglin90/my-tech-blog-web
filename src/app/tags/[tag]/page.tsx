@@ -1,6 +1,7 @@
 import { allPosts } from 'contentlayer/generated'
 import Link from 'next/link'
 import { format, parseISO, compareDesc } from 'date-fns'
+import { notFound } from 'next/navigation'
 import type { Metadata } from 'next'
 
 interface TagPageProps {
@@ -31,6 +32,8 @@ export default async function TagPage({ params }: TagPageProps) {
   const posts = allPosts
     .filter((post) => !post.draft && post.tags?.includes(decoded))
     .sort((a, b) => compareDesc(parseISO(a.date), parseISO(b.date)))
+
+  if (posts.length === 0) notFound()
 
   return (
     <div>
@@ -72,9 +75,15 @@ export default async function TagPage({ params }: TagPageProps) {
                 {post.title}
               </Link>
             </h2>
-            <time dateTime={post.date} className="mb-2 block text-xs" style={{ color: 'var(--text-muted)' }}>
-              {format(parseISO(post.date), 'MMM d, yyyy')}
-            </time>
+            <div className="mb-2 flex items-center gap-2 text-xs" style={{ color: 'var(--text-muted)' }}>
+              <time dateTime={post.date}>{format(parseISO(post.date), 'MMM d, yyyy')}</time>
+              {post.readingTime && (
+                <>
+                  <span style={{ color: 'var(--border)' }}>·</span>
+                  <span>{post.readingTime}</span>
+                </>
+              )}
+            </div>
             <p className="text-sm leading-relaxed" style={{ color: 'var(--text-muted)' }}>
               {post.description}
             </p>
