@@ -109,7 +109,7 @@ export function PostList({ staticPosts }: { staticPosts: StaticPostItem[] }) {
                       </>
                     )}
                   </div>
-                  <p className="text-sm leading-relaxed" style={{ color: 'var(--text-muted)' }}>
+                  <p className="line-clamp-2 text-sm leading-relaxed" style={{ color: 'var(--text-muted)' }}>
                     {post.description}
                   </p>
                   {post.tags.length > 0 && (

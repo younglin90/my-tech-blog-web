@@ -109,8 +109,21 @@ const components = {
   ol: (props: any) => (
     <ol className="my-6 ml-6 list-decimal [&>li]:mt-2" {...props} />
   ),
-  blockquote: (props: any) => (
-    <blockquote className="mt-6 pl-6 italic" style={{ borderLeft: '3px solid var(--accent)', color: 'var(--text-muted)', opacity: 0.9 }} {...props} />
+  blockquote: ({ children, ...props }: any) => (
+    <blockquote
+      className="relative mt-6 pl-6 italic"
+      style={{ borderLeft: '3px solid var(--accent)', color: 'var(--text-muted)' }}
+      {...props}
+    >
+      <span
+        className="absolute -left-1 -top-2 select-none text-4xl leading-none"
+        style={{ color: 'var(--accent)', opacity: 0.25, fontFamily: 'var(--font-display)' }}
+        aria-hidden="true"
+      >
+        &ldquo;
+      </span>
+      {children}
+    </blockquote>
   ),
   table: (props: any) => (
     <div className="my-6 w-full overflow-x-auto rounded-md" style={{ border: '1px solid var(--border)' }}>

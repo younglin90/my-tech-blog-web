@@ -1,3 +1,5 @@
+import { allPosts } from 'contentlayer/generated'
+import Link from 'next/link'
 import type { Metadata } from 'next'
 
 export const metadata: Metadata = {
@@ -22,6 +24,16 @@ const personJsonLd = {
 }
 
 export default function AboutPage() {
+  const published = allPosts.filter((p) => !p.draft)
+  const totalWords = published.reduce((sum, p) => sum + (p.wordCount ?? 0), 0)
+  const allTagSet = new Set(published.flatMap((p) => p.tags ?? []))
+
+  const stats = [
+    { label: 'Posts', value: published.length.toString() },
+    { label: 'Words', value: totalWords.toLocaleString() },
+    { label: 'Tags', value: allTagSet.size.toString() },
+  ]
+
   return (
     <div className="max-w-none">
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(personJsonLd) }} />
@@ -31,11 +43,27 @@ export default function AboutPage() {
       >
         About
       </h1>
-      <p className="mb-12 text-base leading-relaxed" style={{ color: 'var(--text-muted)' }}>
+      <p className="mb-8 text-base leading-relaxed" style={{ color: 'var(--text-muted)' }}>
         Compressible multiphase flow CFD 수치해석을 연구하고 있습니다.
         이 블로그에서는 압축성 다상유동, 수치 기법, 그리고 CFD 전반에 대한
         이야기를 다룹니다. 포스트는 Claude Code가 매일 자동 생성하며, 검토 후 배포됩니다.
       </p>
+
+      {/* Stats */}
+      <div className="mb-10 grid grid-cols-3 gap-4">
+        {stats.map(({ label, value }) => (
+          <div
+            key={label}
+            className="rounded-lg p-4 text-center"
+            style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
+          >
+            <div className="text-2xl font-bold tabular-nums" style={{ fontFamily: 'var(--font-display)', color: 'var(--accent)' }}>
+              {value}
+            </div>
+            <div className="mt-0.5 text-xs" style={{ color: 'var(--text-muted)' }}>{label}</div>
+          </div>
+        ))}
+      </div>
 
       <section className="mb-10">
         <h2
