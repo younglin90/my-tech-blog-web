@@ -167,6 +167,27 @@ export function PostList({ staticPosts }: { staticPosts: StaticPostItem[] }) {
         </div>
       )}
 
+      {activeTag && (
+        <div className="mb-4 flex items-center gap-2 text-sm" style={{ color: 'var(--text-muted)' }}>
+          <span>Filtering by</span>
+          <span
+            className="rounded-full px-2.5 py-0.5 text-xs font-semibold"
+            style={{ background: 'var(--accent-glow)', color: 'var(--accent)', border: '1px solid var(--accent)' }}
+          >
+            #{activeTag}
+          </span>
+          <button
+            onClick={() => setActiveTag(null)}
+            className="text-xs transition-colors duration-100"
+            style={{ color: 'var(--text-faint)' }}
+            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = 'var(--text-muted)' }}
+            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'var(--text-faint)' }}
+          >
+            Clear ×
+          </button>
+        </div>
+      )}
+
       {filtered.length === 0 && (
         <div className="py-16 text-center">
           <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
