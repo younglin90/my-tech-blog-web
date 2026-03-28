@@ -1,0 +1,22 @@
+import type { MetadataRoute } from 'next'
+
+export const dynamic = 'force-static'
+
+export default function manifest(): MetadataRoute.Manifest {
+  return {
+    name: 'CFD.Lab',
+    short_name: 'CFD.Lab',
+    description: 'CFD 엔지니어를 위한 기술 저널 — 수식, 코드, 인터랙티브 시각화',
+    start_url: '/',
+    display: 'standalone',
+    background_color: '#08111f',
+    theme_color: '#08111f',
+    icons: [
+      {
+        src: '/favicon.ico',
+        sizes: 'any',
+        type: 'image/x-icon',
+      },
+    ],
+  }
+}

@@ -1,6 +1,7 @@
 'use client'
 
 import { useMDXComponent } from 'next-contentlayer2/hooks'
+import { useState, useCallback } from 'react'
 import Link from 'next/link'
 import Image from 'next/image'
 import { CodeBlock } from '@/components/CodeBlock'
@@ -37,24 +38,38 @@ function slugify(children: React.ReactNode): string {
 }
 
 function AnchorLink({ id }: { id: string }) {
-  const handleClick = (e: React.MouseEvent) => {
+  const [copied, setCopied] = useState(false)
+
+  const handleClick = useCallback((e: React.MouseEvent) => {
     e.preventDefault()
     const url = `${window.location.origin}${window.location.pathname}#${id}`
     navigator.clipboard.writeText(url).catch(() => {})
     window.location.hash = id
-  }
+    setCopied(true)
+    setTimeout(() => setCopied(false), 1500)
+  }, [id])
 
   return (
-    <a
-      href={`#${id}`}
-      onClick={handleClick}
-      className="ml-2 opacity-0 transition-opacity group-hover:opacity-100"
-      style={{ color: 'var(--accent)', textDecoration: 'none', fontSize: '0.875em' }}
-      aria-label={`Copy link to section: ${id}`}
-      tabIndex={-1}
-    >
-      #
-    </a>
+    <span className="relative inline-block">
+      <a
+        href={`#${id}`}
+        onClick={handleClick}
+        className="ml-2 opacity-0 transition-opacity group-hover:opacity-100"
+        style={{ color: 'var(--accent)', textDecoration: 'none', fontSize: '0.875em' }}
+        aria-label={`Copy link to section: ${id}`}
+        tabIndex={-1}
+      >
+        #
+      </a>
+      {copied && (
+        <span
+          className="absolute -top-7 left-2 rounded px-1.5 py-0.5 text-[10px] font-medium whitespace-nowrap"
+          style={{ background: 'var(--accent)', color: '#08111f', pointerEvents: 'none' }}
+        >
+          Copied!
+        </span>
+      )}
+    </span>
   )
 }
 

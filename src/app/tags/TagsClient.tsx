@@ -45,26 +45,39 @@ export function TagsClient({ tags }: { tags: [string, number][] }) {
           ))}
         </div>
       </div>
-      <div className="flex flex-wrap gap-2">
-        {sorted.map(([tag, count]) => (
-          <Link
-            key={tag}
-            href={`/tags/${encodeURIComponent(tag)}`}
-            className="tag-pill flex items-center gap-1.5"
-          >
-            {tag}
-            <span
-              className="rounded-full px-1.5 py-0.5 text-[10px] font-semibold"
-              style={{ background: 'var(--border)', color: 'var(--text-muted)' }}
-            >
-              {count}
-            </span>
-          </Link>
-        ))}
-        {tags.length === 0 && (
-          <p className="text-sm" style={{ color: 'var(--text-muted)' }}>No tags found.</p>
-        )}
-      </div>
+      {tags.length === 0 && (
+        <p className="text-sm" style={{ color: 'var(--text-muted)' }}>No tags found.</p>
+      )}
+      {tags.length > 0 && (() => {
+        const maxCount = Math.max(...tags.map(([, c]) => c))
+        const minCount = Math.min(...tags.map(([, c]) => c))
+        return (
+          <div className="flex flex-wrap items-baseline gap-2">
+            {sorted.map(([tag, count]) => {
+              const ratio = maxCount === minCount ? 0.5 : (count - minCount) / (maxCount - minCount)
+              const fontSize = 0.72 + ratio * 0.36 // 0.72rem → 1.08rem
+              const opacity = 0.65 + ratio * 0.35  // 0.65 → 1.0
+              return (
+                <Link
+                  key={tag}
+                  href={`/tags/${encodeURIComponent(tag)}`}
+                  className="tag-pill flex items-center gap-1.5 transition-opacity duration-100 hover:opacity-100"
+                  style={{ fontSize: `${fontSize}rem`, opacity }}
+                  title={`${count} post${count !== 1 ? 's' : ''}`}
+                >
+                  {tag}
+                  <span
+                    className="rounded-full px-1.5 py-0.5 font-semibold"
+                    style={{ background: 'var(--border)', color: 'var(--text-muted)', fontSize: '0.625rem' }}
+                  >
+                    {count}
+                  </span>
+                </Link>
+              )
+            })}
+          </div>
+        )
+      })()}
     </div>
   )
 }
