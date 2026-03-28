@@ -157,6 +157,16 @@ const components = {
       {...props}
     />
   ),
+  figure: (props: any) => (
+    <figure className="my-8" {...props} />
+  ),
+  figcaption: (props: any) => (
+    <figcaption
+      className="mt-2 text-center text-xs italic"
+      style={{ color: 'var(--text-muted)' }}
+      {...props}
+    />
+  ),
   NumericalDungeon,
   MachArchitect,
   VelocityField,
