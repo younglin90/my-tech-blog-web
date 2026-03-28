@@ -173,12 +173,14 @@ const components = {
     <hr className="my-8" style={{ borderColor: 'var(--border)' }} {...props} />
   ),
   pre: (props: any) => <CodeBlock {...props} />,
-  img: (props: any) => (
+  img: ({ src, alt, ...props }: any) => (
     <Image
+      src={src}
+      alt={alt ?? ''}
+      width={1200}
+      height={675}
       className="rounded-md"
-      width={720}
-      height={405}
-      alt={props.alt ?? ''}
+      style={{ width: '100%', height: 'auto' }}
       {...props}
     />
   ),

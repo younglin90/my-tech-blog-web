@@ -6,6 +6,7 @@ import { ShareButton } from '@/components/ShareButton'
 import { TableOfContents } from '@/components/TableOfContents'
 import { format, parseISO, compareDesc } from 'date-fns'
 import Link from 'next/link'
+import { ReadingETA } from '@/components/ReadingETA'
 import type { Metadata } from 'next'
 
 interface PostProps {
@@ -112,12 +113,15 @@ export default async function PostPage({ params }: PostProps) {
       <div className="mb-10 flex flex-col items-center text-center">
         <div className="flex items-center gap-2 text-sm" style={{ color: 'var(--text-muted)' }}>
           <time dateTime={post.date}>{format(parseISO(post.date), 'MMMM d, yyyy')}</time>
-          {post.readingTime && (
-            <>
-              <span style={{ color: 'var(--border)' }}>·</span>
-              <span>{post.readingTime}</span>
-            </>
-          )}
+          {post.readingTime && (() => {
+            const mins = parseInt(post.readingTime ?? '0', 10)
+            return (
+              <>
+                <span style={{ color: 'var(--border)' }}>·</span>
+                {mins > 0 ? <ReadingETA totalMinutes={mins} /> : <span>{post.readingTime}</span>}
+              </>
+            )
+          })()}
           {post.wordCount && (
             <>
               <span style={{ color: 'var(--border)' }}>·</span>
