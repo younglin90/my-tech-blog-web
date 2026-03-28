@@ -13,7 +13,8 @@ export async function generateMetadata({ params }: TagPageProps): Promise<Metada
   const decoded = decodeURIComponent(tag)
   return {
     title: `#${decoded}`,
-    description: `Posts tagged with "${decoded}"`,
+    description: `"${decoded}" 태그의 CFD.Lab 포스트 모음`,
+    alternates: { canonical: `https://tech-blog.dev/tags/${tag}` },
   }
 }
 

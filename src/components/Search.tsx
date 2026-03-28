@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import { Search as SearchIcon } from 'lucide-react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { allPosts } from 'contentlayer/generated'
+import { format, parseISO } from 'date-fns'
 
 export function Search() {
   const [open, setOpen] = React.useState(false)
@@ -145,12 +146,17 @@ export function Search() {
                         background: i === activeIdx ? 'var(--surface-hover)' : 'transparent',
                       }}
                     >
-                      <span
-                        className="text-sm font-medium"
-                        style={{ color: i === activeIdx ? 'var(--accent)' : 'var(--text)' }}
-                      >
-                        {post.title}
-                      </span>
+                      <div className="flex items-baseline justify-between gap-2">
+                        <span
+                          className="text-sm font-medium"
+                          style={{ color: i === activeIdx ? 'var(--accent)' : 'var(--text)' }}
+                        >
+                          {post.title}
+                        </span>
+                        <span className="shrink-0 text-[10px] tabular-nums" style={{ color: 'var(--text-faint)' }}>
+                          {format(parseISO(post.date), 'MMM yyyy')}
+                        </span>
+                      </div>
                       <span className="mt-0.5 text-xs line-clamp-1" style={{ color: 'var(--text-muted)' }}>
                         {post.description}
                       </span>

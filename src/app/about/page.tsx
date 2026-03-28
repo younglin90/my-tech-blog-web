@@ -6,9 +6,25 @@ export const metadata: Metadata = {
   alternates: { canonical: 'https://tech-blog.dev/about' },
 }
 
+const personJsonLd = {
+  '@context': 'https://schema.org',
+  '@type': 'Person',
+  name: 'CFD.Lab',
+  url: 'https://tech-blog.dev',
+  sameAs: ['https://github.com/younglin90'],
+  knowsAbout: [
+    'Computational Fluid Dynamics',
+    'Compressible Multiphase Flow',
+    'Riemann Solvers',
+    'OpenFOAM',
+    'Numerical Methods',
+  ],
+}
+
 export default function AboutPage() {
   return (
     <div className="max-w-none">
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(personJsonLd) }} />
       <h1
         className="mb-4 text-4xl font-bold tracking-tight"
         style={{ fontFamily: 'var(--font-display)', color: 'var(--text)' }}
