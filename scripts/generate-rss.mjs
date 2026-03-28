@@ -48,6 +48,15 @@ function generateSitemap(posts) {
     <priority>0.8</priority>
   </url>`).join('')
 
+  // Collect unique tags
+  const tags = [...new Set(posts.flatMap((p) => p.tags ?? []))]
+  const tagEntries = tags.map((tag) => `
+  <url>
+    <loc>${SITE_URL}/tags/${encodeURIComponent(tag)}</loc>
+    <changefreq>weekly</changefreq>
+    <priority>0.5</priority>
+  </url>`).join('')
+
   const today = new Date().toISOString().split('T')[0]
   return `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
@@ -68,7 +77,7 @@ function generateSitemap(posts) {
     <lastmod>${today}</lastmod>
     <changefreq>weekly</changefreq>
     <priority>0.6</priority>
-  </url>${postEntries}
+  </url>${postEntries}${tagEntries}
 </urlset>`
 }
 
