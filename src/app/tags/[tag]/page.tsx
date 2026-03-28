@@ -1,4 +1,4 @@
-import { allPosts, Post } from 'contentlayer/generated'
+import { allPosts } from 'contentlayer/generated'
 import Link from 'next/link'
 import { format, parseISO, compareDesc } from 'date-fns'
 import type { Metadata } from 'next'
@@ -34,21 +34,48 @@ export default async function TagPage({ params }: TagPageProps) {
 
   return (
     <div>
-      <h1 className="mb-8 text-3xl font-bold tracking-tight">
-        <span className="text-zinc-400">#</span>{decoded}
-      </h1>
-      <div className="divide-y divide-zinc-100 dark:divide-zinc-800">
+      <div className="mb-8">
+        <Link
+          href="/tags"
+          className="text-xs transition-colors"
+          style={{ color: 'var(--text-muted)' }}
+          onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = 'var(--accent)' }}
+          onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'var(--text-muted)' }}
+        >
+          ← All tags
+        </Link>
+        <h1
+          className="mt-2 text-3xl font-bold tracking-tight"
+          style={{ fontFamily: 'var(--font-display)', color: 'var(--text)' }}
+        >
+          <span style={{ color: 'var(--accent)' }}>#</span>{decoded}
+        </h1>
+        <p className="mt-1 text-sm" style={{ color: 'var(--text-muted)' }}>
+          {posts.length} post{posts.length !== 1 ? 's' : ''}
+        </p>
+      </div>
+
+      <div className="divide-y" style={{ borderColor: 'var(--border)' }}>
         {posts.map((post) => (
           <div key={post.slug} className="py-6">
-            <h2 className="mb-1 text-xl">
-              <Link href={post.url} className="text-zinc-900 hover:text-zinc-600 dark:text-zinc-100 dark:hover:text-zinc-400">
+            <h2
+              className="mb-1.5 text-xl font-semibold tracking-tight"
+              style={{ fontFamily: 'var(--font-display)' }}
+            >
+              <Link
+                href={post.url}
+                className="transition-colors"
+                style={{ color: 'var(--text)' }}
+                onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = 'var(--accent)' }}
+                onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'var(--text)' }}
+              >
                 {post.title}
               </Link>
             </h2>
-            <time dateTime={post.date} className="mb-2 block text-xs text-zinc-400">
-              {format(parseISO(post.date), 'LLLL d, yyyy')}
+            <time dateTime={post.date} className="mb-2 block text-xs" style={{ color: 'var(--text-muted)' }}>
+              {format(parseISO(post.date), 'MMM d, yyyy')}
             </time>
-            <p className="text-sm leading-6 text-zinc-600 dark:text-zinc-400">
+            <p className="text-sm leading-relaxed" style={{ color: 'var(--text-muted)' }}>
               {post.description}
             </p>
           </div>

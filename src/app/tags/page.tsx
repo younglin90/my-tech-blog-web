@@ -24,19 +24,44 @@ export default function TagsPage() {
 
   return (
     <div>
-      <h1 className="mb-8 text-3xl font-bold tracking-tight">Tags</h1>
-      <div className="flex flex-wrap gap-3">
+      <h1
+        className="mb-2 text-3xl font-bold tracking-tight"
+        style={{ fontFamily: 'var(--font-display)', color: 'var(--text)' }}
+      >
+        Tags
+      </h1>
+      <p className="mb-8 text-sm" style={{ color: 'var(--text-muted)' }}>
+        {tags.length} tag{tags.length !== 1 ? 's' : ''} across all posts
+      </p>
+      <div className="flex flex-wrap gap-2">
         {tags.map(([tag, count]) => (
           <Link
             key={tag}
             href={`/tags/${encodeURIComponent(tag)}`}
-            className="rounded-full bg-zinc-100 px-4 py-2 text-sm font-medium text-zinc-700 transition-colors hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700"
+            className="group flex items-center gap-1.5 rounded-full px-4 py-1.5 text-sm font-medium transition-colors duration-100"
+            style={{ background: 'var(--surface)', color: 'var(--text-muted)', border: '1px solid var(--border)' }}
+            onMouseEnter={(e) => {
+              const el = e.currentTarget as HTMLElement
+              el.style.borderColor = 'var(--accent)'
+              el.style.color = 'var(--accent)'
+            }}
+            onMouseLeave={(e) => {
+              const el = e.currentTarget as HTMLElement
+              el.style.borderColor = 'var(--border)'
+              el.style.color = 'var(--text-muted)'
+            }}
           >
-            {tag} <span className="text-zinc-400">({count})</span>
+            {tag}
+            <span
+              className="rounded-full px-1.5 py-0.5 text-[10px] font-semibold"
+              style={{ background: 'var(--border)', color: 'var(--text-muted)' }}
+            >
+              {count}
+            </span>
           </Link>
         ))}
         {tags.length === 0 && (
-          <p className="text-zinc-500">No tags found.</p>
+          <p className="text-sm" style={{ color: 'var(--text-muted)' }}>No tags found.</p>
         )}
       </div>
     </div>
