@@ -2,7 +2,8 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { FileText, Tag, User } from 'lucide-react'
+import { FileText, Tag, User, Search } from 'lucide-react'
+import { useState, useEffect } from 'react'
 
 const links = [
   { href: '/', label: 'Posts', Icon: FileText },
@@ -12,6 +13,12 @@ const links = [
 
 export function MobileNav() {
   const pathname = usePathname()
+  const [searchOpen, setSearchOpen] = useState(false)
+
+  // Open search by dispatching the same Ctrl+K event that Search.tsx listens for
+  const openSearch = () => {
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true }))
+  }
 
   return (
     <nav
@@ -36,6 +43,14 @@ export function MobileNav() {
           </Link>
         )
       })}
+      <button
+        onClick={openSearch}
+        className="flex flex-1 flex-col items-center gap-1 py-2.5 text-[10px] font-medium transition-colors duration-100"
+        style={{ color: 'var(--text-muted)' }}
+      >
+        <Search className="h-5 w-5" strokeWidth={1.5} />
+        Search
+      </button>
     </nav>
   )
 }
