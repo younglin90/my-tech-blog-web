@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useMemo } from 'react'
 import Link from 'next/link'
 import { format, parseISO } from 'date-fns'
 import { getAllDynamicPosts, type DynamicPost } from '@/lib/dynamic-posts'
@@ -30,6 +30,7 @@ type PostItem = StaticPostItem | DynamicPostItem
 export function PostList({ staticPosts }: { staticPosts: StaticPostItem[] }) {
   const [mounted, setMounted] = useState(false)
   const [dynamicPosts, setDynamicPosts] = useState<DynamicPostItem[]>([])
+  const [activeTag, setActiveTag] = useState<string | null>(null)
 
   useEffect(() => {
     setMounted(true)
@@ -45,9 +46,23 @@ export function PostList({ staticPosts }: { staticPosts: StaticPostItem[] }) {
   }, [])
 
   // Use only static posts until client mounts to avoid hydration mismatch
-  const all: PostItem[] = [...staticPosts, ...(mounted ? dynamicPosts : [])].sort(
-    (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
-  )
+  const all: PostItem[] = useMemo(() => (
+    [...staticPosts, ...(mounted ? dynamicPosts : [])].sort(
+      (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
+    )
+  ), [staticPosts, dynamicPosts, mounted])
+
+  const allTags = useMemo(() => {
+    const counts: Record<string, number> = {}
+    for (const post of all) {
+      for (const tag of post.tags) {
+        counts[tag] = (counts[tag] ?? 0) + 1
+      }
+    }
+    return Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([tag]) => tag)
+  }, [all])
+
+  const filtered = activeTag ? all.filter((p) => p.tags.includes(activeTag)) : all
 
   const titleStyle = { fontFamily: 'var(--font-display)' }
 
@@ -62,7 +77,7 @@ export function PostList({ staticPosts }: { staticPosts: StaticPostItem[] }) {
 
   // Group by year
   const grouped: Record<string, PostItem[]> = {}
-  for (const post of all) {
+  for (const post of filtered) {
     const year = new Date(post.date).getFullYear().toString()
     if (!grouped[year]) grouped[year] = []
     grouped[year].push(post)
@@ -74,6 +89,45 @@ export function PostList({ staticPosts }: { staticPosts: StaticPostItem[] }) {
 
   return (
     <div>
+      {/* Tag filter bar */}
+      {allTags.length > 0 && (
+        <div className="mb-6 -mx-1 flex flex-wrap gap-1.5 px-1">
+          <button
+            onClick={() => setActiveTag(null)}
+            className="rounded-full px-3 py-1 text-xs font-medium transition-colors duration-100"
+            style={{
+              background: activeTag === null ? 'var(--accent)' : 'var(--surface)',
+              color: activeTag === null ? '#08111f' : 'var(--text-muted)',
+              border: `1px solid ${activeTag === null ? 'var(--accent)' : 'var(--border)'}`,
+            }}
+          >
+            All
+          </button>
+          {allTags.map((tag) => (
+            <button
+              key={tag}
+              onClick={() => setActiveTag(activeTag === tag ? null : tag)}
+              className="rounded-full px-3 py-1 text-xs font-medium transition-colors duration-100"
+              style={{
+                background: activeTag === tag ? 'var(--accent)' : 'var(--surface)',
+                color: activeTag === tag ? '#08111f' : 'var(--text-muted)',
+                border: `1px solid ${activeTag === tag ? 'var(--accent)' : 'var(--border)'}`,
+              }}
+            >
+              {tag}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {filtered.length === 0 && (
+        <div className="py-16 text-center">
+          <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
+            No posts tagged <strong style={{ color: 'var(--text)' }}>#{activeTag}</strong>.
+          </p>
+        </div>
+      )}
+
       {years.map((year) => (
         <div key={year} className="mb-10">
           <div
@@ -136,8 +190,9 @@ export function PostList({ staticPosts }: { staticPosts: StaticPostItem[] }) {
       ))}
       {totalCount > 0 && (
         <p className="mt-4 text-xs tabular-nums" style={{ color: 'var(--text-faint)' }}>
-          {totalCount} post{totalCount !== 1 ? 's' : ''}
-          {mounted && dynamicPosts.length > 0 && ` (${staticCount} published + ${dynamicPosts.length} draft)`}
+          {activeTag ? `${filtered.length} of ${totalCount}` : totalCount} post{totalCount !== 1 ? 's' : ''}
+          {!activeTag && mounted && dynamicPosts.length > 0 && ` (${staticCount} published + ${dynamicPosts.length} draft)`}
+          {activeTag && ` · #${activeTag}`}
         </p>
       )}
     </div>
