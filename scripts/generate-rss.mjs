@@ -15,10 +15,13 @@ function getPosts() {
 function generateRss(posts) {
   const items = posts.map((post) => {
     const categories = (post.tags ?? []).map((t) => `      <category>${t}</category>`).join('\n')
+    const meta = [post.readingTime, post.wordCount ? `${post.wordCount.toLocaleString()} words` : null]
+      .filter(Boolean).join(' · ')
+    const desc = meta ? `${post.description} [${meta}]` : post.description
     return `
     <item>
       <title><![CDATA[${post.title}]]></title>
-      <description><![CDATA[${post.description}]]></description>
+      <description><![CDATA[${desc}]]></description>
       <link>${SITE_URL}/posts/${post._raw.flattenedPath}</link>
       <guid isPermaLink="true">${SITE_URL}/posts/${post._raw.flattenedPath}</guid>
       <pubDate>${new Date(post.date).toUTCString()}</pubDate>

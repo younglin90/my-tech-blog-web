@@ -111,6 +111,13 @@ export default async function PostPage({ params }: PostProps) {
       <ReadingProgress />
       <PostNavShortcuts prevUrl={prevPost?.url} nextUrl={nextPost?.url} />
 
+      {/* Breadcrumb back link */}
+      <div className="mb-8">
+        <Link href="/" className="link-hover-text-accent text-xs">
+          ← All posts
+        </Link>
+      </div>
+
       {/* Header */}
       <div className="mb-10 flex flex-col items-center text-center">
         <div className="flex items-center gap-2 text-sm" style={{ color: 'var(--text-muted)' }}>
