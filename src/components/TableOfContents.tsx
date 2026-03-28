@@ -56,10 +56,19 @@ export function TableOfContents() {
       </p>
       <ul className="max-h-[calc(100vh-8rem)] space-y-1.5 overflow-y-auto pr-1 text-xs">
         {headings.map((h) => (
-          <li key={h.id} style={{ paddingLeft: h.level === 3 ? '0.75rem' : '0' }}>
+          <li
+            key={h.id}
+            style={{
+              paddingLeft: h.level === 3 ? '0.75rem' : '0',
+              borderLeft: `2px solid ${activeId === h.id ? 'var(--accent)' : 'transparent'}`,
+              marginLeft: '-0.75rem',
+              paddingRight: '0',
+              transition: 'border-color 0.15s',
+            }}
+          >
             <a
               href={`#${h.id}`}
-              className="block leading-snug transition-colors duration-100"
+              className="block leading-snug pl-2.5 transition-colors duration-100"
               style={{
                 color: activeId === h.id ? 'var(--accent)' : 'var(--text-faint)',
                 fontWeight: activeId === h.id ? 500 : 400,
