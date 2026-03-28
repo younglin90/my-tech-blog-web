@@ -151,7 +151,8 @@ export function PostList({ staticPosts }: { staticPosts: StaticPostItem[] }) {
               const isNew = !post.isDynamic && (Date.now() - new Date(post.date).getTime()) < 7 * 24 * 60 * 60 * 1000
               return (
                 <div key={post.id} className="group rounded-lg px-3 py-6 -mx-3 transition-colors duration-100 hover:bg-[var(--surface)]">
-                  <h2 className="mb-1.5 flex items-start gap-2 text-xl font-semibold leading-snug tracking-tight" style={titleStyle}>
+                  <h2 className="mb-1.5 flex items-start justify-between gap-2 text-xl font-semibold leading-snug tracking-tight" style={titleStyle}>
+                    <span className="flex items-start gap-2">
                     <Link
                       href={href}
                       className="link-hover-accent"
@@ -163,6 +164,14 @@ export function PostList({ staticPosts }: { staticPosts: StaticPostItem[] }) {
                         New
                       </span>
                     )}
+                    </span>
+                    <span
+                      className="mt-1 shrink-0 text-base opacity-0 transition-opacity duration-100 group-hover:opacity-100"
+                      style={{ color: 'var(--accent)' }}
+                      aria-hidden="true"
+                    >
+                      →
+                    </span>
                   </h2>
                   <div className="mb-2.5 flex items-center gap-2 text-xs" style={{ color: 'var(--text-muted)' }}>
                     <time dateTime={post.date}>

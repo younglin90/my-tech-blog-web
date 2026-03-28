@@ -198,9 +198,16 @@ export function Search() {
                         >
                           <Highlight text={post.title} query={q} />
                         </span>
-                        <span className="shrink-0 text-[10px] tabular-nums" style={{ color: 'var(--text-faint)' }}>
-                          {format(parseISO(post.date), 'MMM yyyy')}
-                        </span>
+                        <div className="flex items-center gap-2 shrink-0">
+                          {post.readingTime && (
+                            <span className="text-[10px] tabular-nums" style={{ color: 'var(--text-faint)' }}>
+                              {post.readingTime}
+                            </span>
+                          )}
+                          <span className="text-[10px] tabular-nums" style={{ color: 'var(--text-faint)' }}>
+                            {format(parseISO(post.date), 'MMM yyyy')}
+                          </span>
+                        </div>
                       </div>
                       <span className="mt-0.5 text-xs line-clamp-1" style={{ color: 'var(--text-muted)' }}>
                         <Highlight text={post.description} query={q} />
