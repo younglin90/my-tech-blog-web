@@ -5,6 +5,7 @@ import { ThemeToggle } from '@/components/ThemeToggle'
 import Link from 'next/link'
 import { Search } from '@/components/Search'
 import { Nav } from '@/components/Nav'
+import { BackToTop } from '@/components/BackToTop'
 import type { Metadata } from 'next'
 
 // Display / hero — editorial authority (see DESIGN.md)
@@ -76,22 +77,23 @@ export default function RootLayout({
         style={{ fontFamily: 'var(--font-body, system-ui, sans-serif)' }}
       >
         <ThemeProvider attribute="class" defaultTheme="dark" enableSystem>
-          <div className="mx-auto max-w-2xl px-6 py-10">
-            <header className="mb-16 flex items-center justify-between border-b pb-6" style={{ borderColor: 'var(--border)' }}>
+          <div className="mx-auto max-w-2xl px-4 py-8 sm:px-6 sm:py-10">
+            <header className="mb-12 flex items-center justify-between border-b pb-5 sm:mb-16 sm:pb-6" style={{ borderColor: 'var(--border)' }}>
               <Link
                 href="/"
-                className="text-xl font-bold tracking-tight"
+                className="text-lg font-bold tracking-tight sm:text-xl"
                 style={{ fontFamily: 'var(--font-display)', letterSpacing: '-0.02em', color: 'var(--text)' }}
               >
                 CFD<span style={{ color: 'var(--accent)' }}>.</span>Lab
               </Link>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1.5 sm:gap-2">
                 <Search />
                 <Nav />
                 <ThemeToggle />
               </div>
             </header>
             <main>{children}</main>
+            <BackToTop />
             <footer
               className="mt-24 border-t pt-8 pb-10"
               style={{ borderColor: 'var(--border)' }}

@@ -13,14 +13,14 @@ export function Nav() {
   const pathname = usePathname()
 
   return (
-    <nav className="flex items-center gap-1 text-sm">
+    <nav className="flex items-center text-sm">
       {links.map(({ href, label }) => {
         const active = href === '/' ? pathname === '/' : pathname.startsWith(href)
         return (
           <Link
             key={href}
             href={href}
-            className="rounded-md px-3 py-1.5 transition-colors duration-100"
+            className="hidden rounded-md px-2.5 py-1.5 transition-colors duration-100 sm:block"
             style={{
               color: active ? 'var(--text)' : 'var(--text-muted)',
               background: active ? 'var(--surface)' : 'transparent',

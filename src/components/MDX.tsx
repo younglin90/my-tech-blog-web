@@ -8,19 +8,65 @@ import { VelocityField, StreamLine, NumericalScheme, PressureContour, BoundaryCo
 
 const displayStyle = { fontFamily: 'var(--font-display)' }
 
+function slugify(children: React.ReactNode): string {
+  const text = [children]
+    .flat(Infinity as 1)
+    .filter((c): c is string => typeof c === 'string')
+    .join('')
+  return text
+    .toLowerCase()
+    .replace(/[^\w\uAC00-\uD7A3\s-]/g, '')
+    .trim()
+    .replace(/\s+/g, '-')
+}
+
+function AnchorLink({ id }: { id: string }) {
+  return (
+    <a
+      href={`#${id}`}
+      className="ml-2 opacity-0 transition-opacity group-hover:opacity-100"
+      style={{ color: 'var(--accent)', textDecoration: 'none', fontSize: '0.875em' }}
+      aria-hidden="true"
+      tabIndex={-1}
+    >
+      #
+    </a>
+  )
+}
+
 const components = {
-  h1: (props: any) => (
-    <h1 className="mt-2 scroll-m-20 text-4xl font-bold tracking-tight" style={displayStyle} {...props} />
-  ),
-  h2: (props: any) => (
-    <h2 className="mt-10 scroll-m-20 border-b pb-2 text-3xl font-semibold tracking-tight first:mt-0" style={{ ...displayStyle, borderColor: 'var(--border)' }} {...props} />
-  ),
-  h3: (props: any) => (
-    <h3 className="mt-8 scroll-m-20 text-2xl font-semibold tracking-tight" style={displayStyle} {...props} />
-  ),
-  h4: (props: any) => (
-    <h4 className="mt-6 scroll-m-20 text-xl font-semibold tracking-tight" style={displayStyle} {...props} />
-  ),
+  h1: ({ children, ...props }: any) => {
+    const id = slugify(children)
+    return (
+      <h1 id={id} className="group mt-2 scroll-m-20 text-4xl font-bold tracking-tight" style={displayStyle} {...props}>
+        {children}<AnchorLink id={id} />
+      </h1>
+    )
+  },
+  h2: ({ children, ...props }: any) => {
+    const id = slugify(children)
+    return (
+      <h2 id={id} className="group mt-10 scroll-m-20 border-b pb-2 text-3xl font-semibold tracking-tight first:mt-0" style={{ ...displayStyle, borderColor: 'var(--border)' }} {...props}>
+        {children}<AnchorLink id={id} />
+      </h2>
+    )
+  },
+  h3: ({ children, ...props }: any) => {
+    const id = slugify(children)
+    return (
+      <h3 id={id} className="group mt-8 scroll-m-20 text-2xl font-semibold tracking-tight" style={displayStyle} {...props}>
+        {children}<AnchorLink id={id} />
+      </h3>
+    )
+  },
+  h4: ({ children, ...props }: any) => {
+    const id = slugify(children)
+    return (
+      <h4 id={id} className="group mt-6 scroll-m-20 text-xl font-semibold tracking-tight" style={displayStyle} {...props}>
+        {children}<AnchorLink id={id} />
+      </h4>
+    )
+  },
   p: (props: any) => (
     <p className="leading-7 [&:not(:first-child)]:mt-6" {...props} />
   ),
@@ -41,18 +87,26 @@ const components = {
     <blockquote className="mt-6 pl-6 italic" style={{ borderLeft: '3px solid var(--accent)', color: 'var(--text-muted)', opacity: 0.9 }} {...props} />
   ),
   table: (props: any) => (
-    <div className="my-6 w-full overflow-y-auto">
-      <table className="w-full" {...props} />
+    <div className="my-6 w-full overflow-x-auto rounded-md" style={{ border: '1px solid var(--border)' }}>
+      <table className="w-full text-sm" {...props} />
     </div>
   ),
   th: (props: any) => (
-    <th className="border border-zinc-200 px-4 py-2 text-left font-bold dark:border-zinc-700 [&[align=center]]:text-center [&[align=right]]:text-right" {...props} />
+    <th
+      className="px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wider [&[align=center]]:text-center [&[align=right]]:text-right"
+      style={{ background: 'var(--surface)', borderBottom: '1px solid var(--border)', color: 'var(--text-muted)' }}
+      {...props}
+    />
   ),
   td: (props: any) => (
-    <td className="border border-zinc-200 px-4 py-2 text-left dark:border-zinc-700 [&[align=center]]:text-center [&[align=right]]:text-right" {...props} />
+    <td
+      className="px-4 py-2.5 text-left [&[align=center]]:text-center [&[align=right]]:text-right"
+      style={{ borderBottom: '1px solid var(--border)', color: 'var(--text)' }}
+      {...props}
+    />
   ),
   hr: (props: any) => (
-    <hr className="my-8 border-zinc-200 dark:border-zinc-800" {...props} />
+    <hr className="my-8" style={{ borderColor: 'var(--border)' }} {...props} />
   ),
   pre: (props: any) => <CodeBlock {...props} />,
   img: (props: any) => (
