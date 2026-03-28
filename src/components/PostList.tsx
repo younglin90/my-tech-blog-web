@@ -51,6 +51,15 @@ export function PostList({ staticPosts }: { staticPosts: StaticPostItem[] }) {
 
   const titleStyle = { fontFamily: 'var(--font-display)' }
 
+  if (all.length === 0) {
+    return (
+      <div className="py-24 text-center">
+        <p className="text-4xl" style={{ color: 'var(--border)' }}>∅</p>
+        <p className="mt-3 text-sm" style={{ color: 'var(--text-muted)' }}>No posts published yet.</p>
+      </div>
+    )
+  }
+
   return (
     <div className="divide-y" style={{ borderColor: 'var(--border)' }}>
       {all.map((post) => {
