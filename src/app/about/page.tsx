@@ -1,4 +1,5 @@
 import { allPosts } from 'contentlayer/generated'
+import { compareDesc, parseISO, format } from 'date-fns'
 import Link from 'next/link'
 import type { Metadata } from 'next'
 
@@ -24,9 +25,12 @@ const personJsonLd = {
 }
 
 export default function AboutPage() {
-  const published = allPosts.filter((p) => !p.draft)
+  const published = allPosts
+    .filter((p) => !p.draft)
+    .sort((a, b) => compareDesc(parseISO(a.date), parseISO(b.date)))
   const totalWords = published.reduce((sum, p) => sum + (p.wordCount ?? 0), 0)
   const allTagSet = new Set(published.flatMap((p) => p.tags ?? []))
+  const recentPosts = published.slice(0, 3)
 
   const stats = [
     { label: 'Posts', value: published.length.toString() },
@@ -114,6 +118,34 @@ export default function AboutPage() {
           ))}
         </div>
       </section>
+
+      {recentPosts.length > 0 && (
+        <section className="mb-10">
+          <div className="mb-4 flex items-center justify-between">
+            <h2
+              className="text-xl font-semibold"
+              style={{ fontFamily: 'var(--font-display)', color: 'var(--text)' }}
+            >
+              Recent Posts
+            </h2>
+            <Link href="/" className="link-hover-text-accent text-xs">
+              All posts →
+            </Link>
+          </div>
+          <div className="divide-y" style={{ borderColor: 'var(--border)' }}>
+            {recentPosts.map((post) => (
+              <div key={post.slug} className="py-3">
+                <Link href={post.url} className="link-hover-accent text-sm font-medium">
+                  {post.title}
+                </Link>
+                <p className="mt-0.5 text-xs" style={{ color: 'var(--text-faint)' }}>
+                  {format(parseISO(post.date), 'MMM d, yyyy')}
+                </p>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       <section>
         <h2

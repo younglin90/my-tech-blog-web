@@ -199,12 +199,17 @@ export function Search() {
               {/* Footer hint */}
               {filteredPosts.length > 0 && (
                 <div
-                  className="flex items-center gap-3 px-4 py-2 text-[10px]"
+                  className="flex items-center justify-between px-4 py-2 text-[10px]"
                   style={{ borderTop: '1px solid var(--border)', color: 'var(--text-faint)' }}
                 >
-                  <span>↑↓ navigate</span>
-                  <span>↵ open</span>
-                  <span>esc close</span>
+                  <div className="flex items-center gap-3">
+                    <span>↑↓ navigate</span>
+                    <span>↵ open</span>
+                    <span>esc close</span>
+                  </div>
+                  {query && (
+                    <span className="tabular-nums">{filteredPosts.length} result{filteredPosts.length !== 1 ? 's' : ''}</span>
+                  )}
                 </div>
               )}
             </motion.div>
