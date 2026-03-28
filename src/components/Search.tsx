@@ -42,7 +42,7 @@ export function Search() {
         post.description.toLowerCase().includes(q) ||
         (post.tags ?? []).some((t) => t.toLowerCase().includes(q)),
     )
-    .slice(0, 6)
+    .slice(0, 8)
 
   const onSelect = (url: string) => {
     setOpen(false)

@@ -124,11 +124,16 @@ source-docs/
 | `src/components/viz/` | 수요일 시각화 컴포넌트 5개 |
 | `src/components/MDX.tsx` | MDX 렌더러 + 컴포넌트 등록 (헤딩 앵커 포함) |
 | `src/components/BackToTop.tsx` | 스크롤 400px 이후 우하단 버튼 |
-| `src/components/ShareButton.tsx` | Copy link + Twitter 공유 |
+| `src/components/ShareButton.tsx` | Copy link + Twitter + LinkedIn 공유 |
 | `src/components/ReadingProgress.tsx` | 상단 읽기 진행 바 |
-| `src/components/CodeBlock.tsx` | 코드블록 복사 버튼 |
+| `src/components/CodeBlock.tsx` | 코드블록 복사 버튼 + 긴 코드 확장/축소 |
+| `src/components/TableOfContents.tsx` | xl 화면 고정 사이드바 ToC (IntersectionObserver) |
+| `src/components/Search.tsx` | ⌘K/Ctrl+K 검색 모달 (태그·날짜 표시, OS 감지) |
 | `src/lib/dynamic-posts.ts` | Admin 동적 포스트 CRUD + export/import |
-| `src/app/sitemap.ts` | Next.js 자동 sitemap 생성 |
+| `src/app/admin/layout.tsx` | Admin noindex 메타 |
+| `src/app/preview/layout.tsx` | Preview noindex 메타 |
+| `src/app/read/layout.tsx` | Read 페이지 noindex 메타 |
+| `scripts/generate-rss.mjs` | RSS + Sitemap 생성 (카테고리, 우선순위 포함) |
 | `tests/test_generate.py` | pytest 13개 (python -m pytest tests/ -v) |
 
 ## 완료된 작업 이력
@@ -140,7 +145,7 @@ source-docs/
 - Scheduled Task로 매일 자동 생성 설정
 - 첫 번째 포스트 생성: PINN 논문 리뷰 (draft: false, 배포됨)
 
-### 2026-03-28
+### 2026-03-28 (1차)
 - **보안**: Admin 패스워드를 소스코드 평문 → `.env.local` SHA-256 해시로 이전
 - **Admin**: Export/Import JSON으로 동적 포스트 기기 간 백업/복원 가능
 - **MDX**: h1~h4 헤딩에 hover 앵커 링크 추가 (Korean slug 지원)
@@ -150,6 +155,22 @@ source-docs/
 - **포스트 페이지**: 공유 버튼(Copy link + Twitter), 관련 포스트 섹션 추가
 - **다크모드**: `--text-muted` 명도 개선 (`#64748b` → `#7a90a8`)
 - **SEO**: `src/app/sitemap.ts` 추가 (전체 포스트 자동 색인)
+
+### 2026-03-28 (2차 — 자율 개선 루프)
+- **빌드 수정**: CRLF→LF, `.gitattributes`, onMouseEnter→CSS 클래스, feed.xml/sitemap.ts Route Handler 삭제
+- **CSS 토큰**: `.link-hover-*`, `.tag-pill`, `.tag-pill-sm` hover 유틸리티 클래스
+- **MDX**: 외부 링크 ↗ 아이콘, 코드 언어 뱃지 (좌측), `<kbd>`, `<mark>`, `<abbr>`, `sup`/`sub`, `details`/`summary`, `figure`/`figcaption`, GFM 각주, Callout (Note/Tip/Warning/Caution)
+- **TableOfContents**: xl 화면 우측 고정 사이드바, IntersectionObserver 활성 추적, 좌측 인디케이터 바
+- **CodeBlock**: 420px 초과 시 Expand/Collapse 버튼, 줄 번호 user-select:none, 단어 하이라이팅 CSS
+- **PostList**: 연도별 그룹핑 + sticky 연도 레이블, hover 배경, 설명 line-clamp-2
+- **SEO**: canonical URL (포스트/about/tags/[tag]), JSON-LD (WebSite/TechArticle/BreadcrumbList/Person), wordCount 필드, sitemap changefreq/priority, RSS 카테고리 태그
+- **검색**: 날짜 표시, OS별 단축키(⌘K/Ctrl K), 최대 결과 8개
+- **공유**: LinkedIn 버튼 추가
+- **About**: 통계 카드 (포스트 수/총 단어/태그 수)
+- **CSS**: smooth scroll, ::selection 색상, 프린트 스타일, focus-visible 링, 목록 마커 accent 색상
+- **noindex**: admin/preview/read 레이아웃에 robots noindex 적용
+- **remark-gfm**: contentlayer에 플러그인 활성화 (strikethrough, task list)
+- **404**: CFD 테마 메시지 + Browse Tags 버튼
 
 ## 자주 쓰는 명령
 ```bash
