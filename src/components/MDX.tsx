@@ -54,6 +54,41 @@ function Tab({ children }: { children: React.ReactNode }) {
   return <div>{children}</div>
 }
 
+function LightboxImage({ src, alt, ...props }: any) {
+  const [open, setOpen] = useState(false)
+  return (
+    <>
+      <Image
+        src={src}
+        alt={alt ?? ''}
+        width={1200}
+        height={675}
+        className="rounded-md cursor-zoom-in"
+        style={{ width: '100%', height: 'auto' }}
+        onClick={() => setOpen(true)}
+        {...props}
+      />
+      {open && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          style={{ background: 'rgba(8,17,31,0.9)', cursor: 'zoom-out' }}
+          onClick={() => setOpen(false)}
+        >
+          <Image
+            src={src}
+            alt={alt ?? ''}
+            width={1600}
+            height={900}
+            className="max-h-[90vh] w-auto max-w-full rounded-lg object-contain"
+            style={{ boxShadow: '0 24px 64px rgba(0,0,0,0.6)' }}
+            onClick={(e) => e.stopPropagation()}
+          />
+        </div>
+      )}
+    </>
+  )
+}
+
 function Step({ children }: { children: React.ReactNode }) {
   return (
     <div className="step-item">
@@ -224,17 +259,7 @@ const components = {
     <hr className="my-8" style={{ borderColor: 'var(--border)' }} {...props} />
   ),
   pre: (props: any) => <CodeBlock {...props} />,
-  img: ({ src, alt, ...props }: any) => (
-    <Image
-      src={src}
-      alt={alt ?? ''}
-      width={1200}
-      height={675}
-      className="rounded-md"
-      style={{ width: '100%', height: 'auto' }}
-      {...props}
-    />
-  ),
+  img: ({ src, alt, ...props }: any) => <LightboxImage src={src} alt={alt} {...props} />,
   figure: (props: any) => (
     <figure className="my-8" {...props} />
   ),
