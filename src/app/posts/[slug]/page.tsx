@@ -1,6 +1,7 @@
 import { allPosts } from 'contentlayer/generated'
 import { notFound } from 'next/navigation'
 import { Mdx } from '@/components/MDX'
+import { ReadingProgress } from '@/components/ReadingProgress'
 import { format, parseISO, compareDesc } from 'date-fns'
 import Link from 'next/link'
 import type { Metadata } from 'next'
@@ -67,6 +68,7 @@ export default async function PostPage({ params }: PostProps) {
 
   return (
     <article className="py-6">
+      <ReadingProgress />
       <div className="mb-10 flex flex-col items-center text-center">
         <div className="flex items-center gap-2 text-sm" style={{ color: 'var(--text-muted)' }}>
           <time dateTime={post.date}>
