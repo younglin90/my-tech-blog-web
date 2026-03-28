@@ -21,7 +21,8 @@ function generateRss(posts) {
       <description><![CDATA[${post.description}]]></description>
       <link>${SITE_URL}/posts/${post._raw.flattenedPath}</link>
       <guid isPermaLink="true">${SITE_URL}/posts/${post._raw.flattenedPath}</guid>
-      <pubDate>${new Date(post.date).toUTCString()}</pubDate>${categories ? '\n' + categories : ''}
+      <pubDate>${new Date(post.date).toUTCString()}</pubDate>
+      <author>noreply@tech-blog.dev (CFD.Lab)</author>${categories ? '\n' + categories : ''}
     </item>`
   }).join('')
 

@@ -1,6 +1,11 @@
 import { allPosts } from 'contentlayer/generated'
 import { compareDesc, parseISO } from 'date-fns'
 import { PostList } from '@/components/PostList'
+import type { Metadata } from 'next'
+
+export const metadata: Metadata = {
+  alternates: { canonical: 'https://tech-blog.dev' },
+}
 
 const jsonLd = {
   '@context': 'https://schema.org',
