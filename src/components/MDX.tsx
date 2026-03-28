@@ -56,6 +56,14 @@ function Tab({ children }: { children: React.ReactNode }) {
 
 function LightboxImage({ src, alt, ...props }: any) {
   const [open, setOpen] = useState(false)
+
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false) }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [open])
+
   return (
     <>
       <Image
@@ -70,8 +78,11 @@ function LightboxImage({ src, alt, ...props }: any) {
       />
       {open && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-4"
-          style={{ background: 'rgba(8,17,31,0.9)', cursor: 'zoom-out' }}
+          role="dialog"
+          aria-modal="true"
+          aria-label={alt ?? 'Image fullscreen view'}
+          className="fixed inset-0 z-50 flex flex-col items-center justify-center p-4"
+          style={{ background: 'rgba(8,17,31,0.92)', cursor: 'zoom-out' }}
           onClick={() => setOpen(false)}
         >
           <Image
@@ -79,10 +90,18 @@ function LightboxImage({ src, alt, ...props }: any) {
             alt={alt ?? ''}
             width={1600}
             height={900}
-            className="max-h-[90vh] w-auto max-w-full rounded-lg object-contain"
+            className="max-h-[85vh] w-auto max-w-full rounded-lg object-contain"
             style={{ boxShadow: '0 24px 64px rgba(0,0,0,0.6)' }}
             onClick={(e) => e.stopPropagation()}
           />
+          {alt && (
+            <p className="mt-3 text-center text-xs" style={{ color: 'rgba(226,232,240,0.6)' }}>
+              {alt}
+            </p>
+          )}
+          <p className="mt-2 text-[10px]" style={{ color: 'rgba(226,232,240,0.3)' }}>
+            Press Esc or click to close
+          </p>
         </div>
       )}
     </>
