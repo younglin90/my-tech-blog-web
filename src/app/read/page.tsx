@@ -9,6 +9,7 @@ import rehypeKatex from 'rehype-katex'
 import Link from 'next/link'
 import { format } from 'date-fns'
 import { getDynamicPost, type DynamicPost } from '@/lib/dynamic-posts'
+import { ReadingProgress } from '@/components/ReadingProgress'
 
 function ReadContent() {
   const searchParams = useSearchParams()
@@ -59,6 +60,7 @@ function ReadContent() {
 
   return (
     <article className="py-6">
+      <ReadingProgress />
       <div className="mb-8">
         <Link href="/" className="link-hover-text-accent text-xs">
           ← All posts
