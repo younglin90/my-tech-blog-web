@@ -37,6 +37,7 @@ export function MobileNav() {
             href={href}
             className="flex flex-1 flex-col items-center gap-1 py-2.5 text-[10px] font-medium transition-colors duration-100"
             style={{ color: active ? 'var(--accent)' : 'var(--text-muted)' }}
+            aria-current={active ? 'page' : undefined}
           >
             <Icon className="h-5 w-5" strokeWidth={active ? 2 : 1.5} />
             {label}

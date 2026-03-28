@@ -21,6 +21,7 @@ export function Nav() {
             key={href}
             href={href}
             className="hidden rounded-md px-2.5 py-1.5 transition-colors duration-100 sm:block"
+            aria-current={active ? 'page' : undefined}
             style={{
               color: active ? 'var(--text)' : 'var(--text-muted)',
               background: active ? 'var(--surface)' : 'transparent',
