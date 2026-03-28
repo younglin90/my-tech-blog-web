@@ -83,7 +83,7 @@ export function PostList({ staticPosts }: { staticPosts: StaticPostItem[] }) {
             {grouped[year].map((post) => {
               const href = post.isDynamic ? `/read?id=${post.id}` : post.url
               return (
-                <div key={post.id} className="group py-7">
+                <div key={post.id} className="group rounded-lg px-3 py-6 -mx-3 transition-colors duration-100 hover:bg-[var(--surface)]">
                   <h2 className="mb-1.5 text-xl font-semibold leading-snug tracking-tight" style={titleStyle}>
                     <Link
                       href={href}
