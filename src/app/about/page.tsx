@@ -30,12 +30,17 @@ export default function AboutPage() {
     .sort((a, b) => compareDesc(parseISO(a.date), parseISO(b.date)))
   const totalWords = published.reduce((sum, p) => sum + (p.wordCount ?? 0), 0)
   const allTagSet = new Set(published.flatMap((p) => p.tags ?? []))
+  const totalReadMinutes = published.reduce((sum, p) => {
+    const mins = parseInt(p.readingTime ?? '0', 10)
+    return sum + (isNaN(mins) ? 0 : mins)
+  }, 0)
   const recentPosts = published.slice(0, 3)
 
   const stats = [
     { label: 'Posts', value: published.length.toString() },
     { label: 'Words', value: totalWords.toLocaleString() },
     { label: 'Tags', value: allTagSet.size.toString() },
+    { label: 'Read time', value: `${Math.round(totalReadMinutes / 60)}h` },
   ]
 
   return (
@@ -54,7 +59,7 @@ export default function AboutPage() {
       </p>
 
       {/* Stats */}
-      <div className="mb-10 grid grid-cols-3 gap-4">
+      <div className="mb-10 grid grid-cols-4 gap-3 sm:grid-cols-4">
         {stats.map(({ label, value }) => (
           <div
             key={label}
