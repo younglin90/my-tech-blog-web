@@ -10,6 +10,7 @@ export function CodeBlock({ children, ...props }: React.HTMLAttributes<HTMLPreEl
   const [copied, setCopied] = useState(false)
   const [expanded, setExpanded] = useState(false)
   const [overflows, setOverflows] = useState(false)
+  const [wrapped, setWrapped] = useState(false)
 
   useEffect(() => {
     const el = preRef.current
@@ -34,7 +35,7 @@ export function CodeBlock({ children, ...props }: React.HTMLAttributes<HTMLPreEl
             : undefined
         }
       >
-        <pre ref={preRef} {...props}>
+        <pre ref={preRef} {...props} style={{ ...((props as any).style ?? {}), whiteSpace: wrapped ? 'pre-wrap' : undefined }}>
           {children}
         </pre>
         {overflows && !expanded && (
@@ -66,6 +67,21 @@ export function CodeBlock({ children, ...props }: React.HTMLAttributes<HTMLPreEl
           {expanded ? 'Collapse' : 'Expand'}
         </button>
       )}
+
+      {/* Wrap toggle */}
+      <button
+        onClick={() => setWrapped((w) => !w)}
+        className="absolute right-20 top-3 hidden items-center gap-1 rounded px-2 py-1 text-[10px] font-medium opacity-0 transition-all duration-150 group-hover:opacity-100 sm:flex"
+        style={{
+          background: 'var(--surface-hover)',
+          border: `1px solid ${wrapped ? 'var(--accent)' : 'var(--border)'}`,
+          color: wrapped ? 'var(--accent)' : 'var(--text-muted)',
+        }}
+        aria-label="Toggle word wrap"
+        title="Toggle word wrap"
+      >
+        ↵ Wrap
+      </button>
 
       {/* Copy button — always visible on touch, hover-only on pointer devices */}
       <button
