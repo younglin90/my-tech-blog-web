@@ -55,13 +55,17 @@ export function Search() {
   const publishedPosts = allPosts.filter((post) => !post.draft)
   const filteredPosts = q
     ? publishedPosts
-        .filter(
-          (post) =>
-            post.title.toLowerCase().includes(q) ||
-            post.description.toLowerCase().includes(q) ||
-            (post.tags ?? []).some((t) => t.toLowerCase().includes(q)),
-        )
+        .map((post) => {
+          const titleMatch = post.title.toLowerCase().includes(q)
+          const descMatch = post.description.toLowerCase().includes(q)
+          const tagMatches = (post.tags ?? []).filter((t) => t.toLowerCase().includes(q)).length
+          const score = (titleMatch ? 3 : 0) + (descMatch ? 1 : 0) + tagMatches * 2
+          return { post, score }
+        })
+        .filter(({ score }) => score > 0)
+        .sort((a, b) => b.score - a.score)
         .slice(0, 8)
+        .map(({ post }) => post)
     : publishedPosts
         .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
         .slice(0, 5)
@@ -160,8 +164,17 @@ export function Search() {
                 )}
               </div>
 
+              {/* Screen reader announcements */}
+              <p className="sr-only" aria-live="polite" aria-atomic="true">
+                {q && filteredPosts.length === 0
+                  ? `No results for ${query}`
+                  : q && filteredPosts.length > 0
+                  ? `${filteredPosts.length} result${filteredPosts.length !== 1 ? 's' : ''} for ${query}`
+                  : ''}
+              </p>
+
               {/* Results */}
-              <div className="max-h-72 overflow-y-auto p-1.5">
+              <div className="max-h-72 overflow-y-auto p-1.5" role="listbox" aria-label="Search results">
                 {!q && filteredPosts.length > 0 && (
                 <p className="px-4 py-2 text-[10px] font-semibold uppercase tracking-widest" style={{ color: 'var(--text-faint)' }}>
                   Recent
