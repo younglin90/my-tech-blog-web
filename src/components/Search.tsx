@@ -11,7 +11,12 @@ export function Search() {
   const [open, setOpen] = React.useState(false)
   const [query, setQuery] = React.useState('')
   const [activeIdx, setActiveIdx] = React.useState(0)
+  const [isMac, setIsMac] = React.useState(false)
   const router = useRouter()
+
+  React.useEffect(() => {
+    setIsMac(navigator.platform.toUpperCase().includes('MAC'))
+  }, [])
 
   React.useEffect(() => {
     const down = (e: KeyboardEvent) => {
@@ -78,7 +83,7 @@ export function Search() {
           className="hidden rounded px-1.5 py-0.5 text-[10px] font-medium sm:inline"
           style={{ background: 'var(--surface)', color: 'var(--text-faint)', border: '1px solid var(--border)' }}
         >
-          ⌘K
+          {isMac ? '⌘K' : 'Ctrl K'}
         </kbd>
       </button>
 

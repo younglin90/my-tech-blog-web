@@ -29,6 +29,10 @@ export const Post = defineDocumentType(() => ({
       type: 'string',
       resolve: (post) => readingTime(post.body.raw).text,
     },
+    wordCount: {
+      type: 'number',
+      resolve: (post) => readingTime(post.body.raw).words,
+    },
   },
 }))
 

@@ -116,6 +116,12 @@ export default async function PostPage({ params }: PostProps) {
               <span>{post.readingTime}</span>
             </>
           )}
+          {post.wordCount && (
+            <>
+              <span style={{ color: 'var(--border)' }}>·</span>
+              <span className="tabular-nums">{post.wordCount.toLocaleString()} words</span>
+            </>
+          )}
         </div>
         <h1
           className="mt-3 text-4xl font-bold leading-tight tracking-tight"
