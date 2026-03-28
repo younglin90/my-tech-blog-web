@@ -30,6 +30,7 @@ export function Search() {
   const [query, setQuery] = React.useState('')
   const [activeIdx, setActiveIdx] = React.useState(0)
   const [isMac, setIsMac] = React.useState(false)
+  const [recentlyRead, setRecentlyRead] = React.useState<string[]>([])
   const router = useRouter()
 
   React.useEffect(() => {
@@ -41,6 +42,11 @@ export function Search() {
       setQuery(q)
       setOpen(true)
     }
+    // Load recently read post IDs from localStorage
+    try {
+      const raw = localStorage.getItem('cfd-lab-read-posts')
+      setRecentlyRead(raw ? JSON.parse(raw) : [])
+    } catch {}
   }, [])
 
   React.useEffect(() => {
@@ -92,9 +98,14 @@ export function Search() {
         .sort((a, b) => b.score - a.score)
         .slice(0, 8)
         .map(({ post }) => post)
-    : publishedPosts
-        .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
-        .slice(0, 5)
+    : (() => {
+        // Prefer recently read posts, fall back to recent
+        const read = publishedPosts.filter((p) => recentlyRead.includes(p.slug))
+        if (read.length >= 3) return read.slice(0, 5)
+        return publishedPosts
+          .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+          .slice(0, 5)
+      })()
 
   const onSelect = (url: string) => {
     setOpen(false)
@@ -227,7 +238,7 @@ export function Search() {
                 )}
                 {!q && filteredPosts.length > 0 && (
                 <p className="px-4 py-2 text-[10px] font-semibold uppercase tracking-widest" style={{ color: 'var(--text-faint)' }}>
-                  Recent
+                  {recentlyRead.length >= 3 ? 'Recently Read' : 'Recent'}
                 </p>
               )}
               {filteredPosts.length > 0 ? (

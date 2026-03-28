@@ -37,11 +37,21 @@ function getReadPosts(): Set<string> {
   } catch { return new Set() }
 }
 
+const PREFS_KEY = 'cfd-lab-list-prefs'
+
+function loadPrefs(): { sort: 'newest' | 'oldest'; compact: boolean } {
+  try {
+    const raw = localStorage.getItem(PREFS_KEY)
+    return raw ? { sort: 'newest', compact: false, ...JSON.parse(raw) } : { sort: 'newest', compact: false }
+  } catch { return { sort: 'newest', compact: false } }
+}
+
 export function PostList({ staticPosts }: { staticPosts: StaticPostItem[] }) {
   const [mounted, setMounted] = useState(false)
   const [dynamicPosts, setDynamicPosts] = useState<DynamicPostItem[]>([])
   const [activeTag, setActiveTag] = useState<string | null>(null)
   const [sortMode, setSortMode] = useState<'newest' | 'oldest'>('newest')
+  const [compact, setCompact] = useState(false)
   const [showAllTags, setShowAllTags] = useState(false)
   const [readPosts, setReadPosts] = useState<Set<string>>(new Set())
   const [bookmarks, setBookmarks] = useState<Set<string>>(new Set())
@@ -49,6 +59,9 @@ export function PostList({ staticPosts }: { staticPosts: StaticPostItem[] }) {
 
   useEffect(() => {
     setMounted(true)
+    const prefs = loadPrefs()
+    setSortMode(prefs.sort)
+    setCompact(prefs.compact)
     const dyn = getAllDynamicPosts().map((p): DynamicPostItem => ({
       id: p.id,
       title: p.title,
@@ -61,6 +74,16 @@ export function PostList({ staticPosts }: { staticPosts: StaticPostItem[] }) {
     setReadPosts(getReadPosts())
     setBookmarks(getBookmarks())
   }, [])
+
+  const updateSort = (mode: 'newest' | 'oldest') => {
+    setSortMode(mode)
+    try { localStorage.setItem(PREFS_KEY, JSON.stringify({ sort: mode, compact })) } catch {}
+  }
+
+  const updateCompact = (val: boolean) => {
+    setCompact(val)
+    try { localStorage.setItem(PREFS_KEY, JSON.stringify({ sort: sortMode, compact: val })) } catch {}
+  }
 
   // Use only static posts until client mounts to avoid hydration mismatch
   const all: PostItem[] = useMemo(() => (
@@ -158,24 +181,38 @@ export function PostList({ staticPosts }: { staticPosts: StaticPostItem[] }) {
             </button>
           )}
           </div>
-          {/* Sort toggle */}
-          <div
-            className="flex shrink-0 items-center gap-0.5 rounded-md p-0.5"
-            style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
-          >
-            {(['newest', 'oldest'] as const).map((mode) => (
-              <button
-                key={mode}
-                onClick={() => setSortMode(mode)}
-                className="rounded px-2 py-1 text-[10px] font-medium transition-colors duration-100"
-                style={{
-                  background: sortMode === mode ? 'var(--surface-hover)' : 'transparent',
-                  color: sortMode === mode ? 'var(--text)' : 'var(--text-muted)',
-                }}
-              >
-                {mode === 'newest' ? '↓ New' : '↑ Old'}
-              </button>
-            ))}
+          {/* Sort + View toggles */}
+          <div className="flex shrink-0 items-center gap-1.5">
+            <div
+              className="flex items-center gap-0.5 rounded-md p-0.5"
+              style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
+            >
+              {(['newest', 'oldest'] as const).map((mode) => (
+                <button
+                  key={mode}
+                  onClick={() => updateSort(mode)}
+                  className="rounded px-2 py-1 text-[10px] font-medium transition-colors duration-100"
+                  style={{
+                    background: sortMode === mode ? 'var(--surface-hover)' : 'transparent',
+                    color: sortMode === mode ? 'var(--text)' : 'var(--text-muted)',
+                  }}
+                >
+                  {mode === 'newest' ? '↓ New' : '↑ Old'}
+                </button>
+              ))}
+            </div>
+            <button
+              onClick={() => updateCompact(!compact)}
+              className="rounded-md px-2 py-1 text-[10px] font-medium transition-colors duration-100"
+              style={{
+                background: 'var(--surface)',
+                border: `1px solid ${compact ? 'var(--accent)' : 'var(--border)'}`,
+                color: compact ? 'var(--accent)' : 'var(--text-muted)',
+              }}
+              title={compact ? 'Switch to full view' : 'Switch to compact view'}
+            >
+              {compact ? '≡ Full' : '≡ Compact'}
+            </button>
           </div>
         </div>
         </div>
@@ -222,6 +259,24 @@ export function PostList({ staticPosts }: { staticPosts: StaticPostItem[] }) {
               const isNew = !post.isDynamic && (Date.now() - new Date(post.date).getTime()) < 7 * 24 * 60 * 60 * 1000
               const isRead = mounted && readPosts.has(post.id)
               const isBookmarked = mounted && bookmarks.has(post.id)
+              if (compact) {
+                return (
+                  <div key={post.id} className="group flex items-center justify-between gap-3 py-2.5 -mx-1 px-1 rounded transition-colors duration-100 hover:bg-[var(--surface)]">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <Link href={href} className="link-hover-accent text-sm font-medium truncate" style={titleStyle}>
+                        {post.title}
+                      </Link>
+                      {isNew && <span className="shrink-0 rounded-full px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide" style={{ background: 'var(--accent)', color: '#08111f' }}>New</span>}
+                      {isRead && <span className="shrink-0 text-[10px]" style={{ color: 'var(--text-faint)' }} title="Read">✓</span>}
+                      {isBookmarked && <span className="shrink-0 text-[10px]" style={{ color: 'var(--accent)' }} title="Saved">⊕</span>}
+                    </div>
+                    <time className="shrink-0 text-xs tabular-nums" style={{ color: 'var(--text-faint)' }} dateTime={post.date}>
+                      {format(post.isDynamic ? new Date(post.date) : parseISO(post.date), 'MMM d')}
+                    </time>
+                  </div>
+                )
+              }
+
               return (
                 <div key={post.id} className="group rounded-lg px-3 py-6 -mx-3 transition-colors duration-100 hover:bg-[var(--surface)]">
                   <h2 className="mb-1.5 flex items-start justify-between gap-2 text-xl font-semibold leading-snug tracking-tight" style={titleStyle}>
