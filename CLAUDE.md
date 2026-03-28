@@ -127,8 +127,14 @@ source-docs/
 | `src/components/ShareButton.tsx` | Copy link + Twitter + LinkedIn 공유 |
 | `src/components/ReadingProgress.tsx` | 상단 읽기 진행 바 |
 | `src/components/CodeBlock.tsx` | 코드블록 복사 버튼 + 긴 코드 확장/축소 |
-| `src/components/TableOfContents.tsx` | xl 화면 고정 사이드바 ToC (IntersectionObserver) |
-| `src/components/Search.tsx` | ⌘K/Ctrl+K 검색 모달 (태그·날짜 표시, OS 감지) |
+| `src/components/TableOfContents.tsx` | xl 고정 사이드바 + 모바일 인라인 접힘 ToC |
+| `src/components/Search.tsx` | ⌘K/Ctrl+K 검색 모달 (하이라이트, OS 감지) |
+| `src/components/MobileNav.tsx` | 모바일 바텀 네비게이션 (sm 미만) |
+| `src/components/KeyboardShortcuts.tsx` | '?' 단축키 모달 (g+h/t/a 이동) |
+| `src/components/ReadingETA.tsx` | 스크롤 기반 읽기 예상 시간 표시 |
+| `src/app/sitemap.ts` | Next.js 네이티브 sitemap.xml |
+| `src/app/robots.ts` | Next.js 네이티브 robots.txt |
+| `src/app/manifest.ts` | PWA web app manifest |
 | `src/lib/dynamic-posts.ts` | Admin 동적 포스트 CRUD + export/import |
 | `src/app/admin/layout.tsx` | Admin noindex 메타 |
 | `src/app/preview/layout.tsx` | Preview noindex 메타 |
@@ -171,6 +177,26 @@ source-docs/
 - **noindex**: admin/preview/read 레이아웃에 robots noindex 적용
 - **remark-gfm**: contentlayer에 플러그인 활성화 (strikethrough, task list)
 - **404**: CFD 테마 메시지 + Browse Tags 버튼
+
+### 2026-03-28 (3차 — 자율 개선 루프 계속)
+- **중첩 리스트**: ul>ul→circle, ul>ul>ul→square, ol>ol→lower-alpha CSS
+- **Prev/Next 카드**: 포스트 이전/다음 네비게이션을 bordered card grid UI로 개선
+- **sitemap.ts + robots.ts**: Next.js 네이티브 생성 (정적 익스포트 대응, `force-static`)
+- **MobileNav**: 모바일 바텀 네비게이션 (Posts/Tags/About, sm 미만에서만 표시)
+- **태그 필터 바**: 홈 PostList 상단에 태그 클릭 필터링 (인라인, 페이지 이동 없음)
+- **AnchorLink**: 클릭 시 "Copied!" 툴팁 1.5초 표시
+- **태그 클라우드**: 빈도에 비례한 크기/투명도 태그 pill (Tags 페이지)
+- **manifest.ts**: PWA 기본 web app manifest
+- **search 하이라이트**: 검색어와 매칭되는 텍스트를 제목/설명에서 강조
+- **BackToTop**: 모바일 바텀 nav 위로 위치 이동 (bottom-20 sm:bottom-8)
+- **ToC 모바일**: xl 미만 화면에 접힘/펼침 인라인 목차 추가
+- **Related Tags**: 태그 페이지 하단에 함께 쓰인 태그 표시 (빈도순 8개)
+- **ReadingETA**: 스크롤에 따라 '~N min left' 동적 표시
+- **MDX img**: width:100% + height:auto 반응형 처리
+- **KeyboardShortcuts**: '?' 키로 토글, g+h/g+t/g+a 이동, Mac/Win 구분
+- **text-faint 다크모드**: #334155 → #4a6280 (대비비 개선)
+- **RSS**: 홈 헤더 RSS 아이콘 링크 추가
+- **preconnect**: jsDelivr/Google Fonts CDN 사전 연결 힌트
 
 ## 자주 쓰는 명령
 ```bash
