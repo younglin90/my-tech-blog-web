@@ -3,6 +3,7 @@ import { notFound } from 'next/navigation'
 import { Mdx } from '@/components/MDX'
 import { ReadingProgress } from '@/components/ReadingProgress'
 import { ShareButton } from '@/components/ShareButton'
+import { TableOfContents } from '@/components/TableOfContents'
 import { format, parseISO, compareDesc } from 'date-fns'
 import Link from 'next/link'
 import type { Metadata } from 'next'
@@ -119,6 +120,8 @@ export default async function PostPage({ params }: PostProps) {
           </div>
         )}
       </div>
+
+      <TableOfContents />
 
       {/* Body */}
       <Mdx code={post.body.code} />
