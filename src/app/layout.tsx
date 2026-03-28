@@ -7,6 +7,7 @@ import { Search } from '@/components/Search'
 import { Nav } from '@/components/Nav'
 import { BackToTop } from '@/components/BackToTop'
 import { MobileNav } from '@/components/MobileNav'
+import { KeyboardShortcuts } from '@/components/KeyboardShortcuts'
 import type { Metadata } from 'next'
 
 // Display / hero — editorial authority (see DESIGN.md)
@@ -104,6 +105,7 @@ export default function RootLayout({
               </div>
             </header>
             <main id="main-content">{children}</main>
+            <KeyboardShortcuts />
             <MobileNav />
             <BackToTop />
             <footer
