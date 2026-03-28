@@ -38,7 +38,7 @@ export function ShareButton({ title, url }: ShareButtonProps) {
   } as const
 
   return (
-    <div className="flex items-center gap-2">
+    <div className="share-button flex items-center gap-2">
       <button
         onClick={handleCopy}
         style={{ ...btnStyle, color: copied ? 'var(--success)' : 'var(--text-muted)' }}

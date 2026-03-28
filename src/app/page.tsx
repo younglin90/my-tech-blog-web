@@ -34,12 +34,17 @@ export default function Home() {
     <div>
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }} />
       <div className="mb-10">
-        <h1
-          className="text-3xl font-bold tracking-tight"
-          style={{ fontFamily: 'var(--font-display)', color: 'var(--text)' }}
-        >
-          CFD.Lab
-        </h1>
+        <div className="flex items-baseline justify-between">
+          <h1
+            className="text-3xl font-bold tracking-tight"
+            style={{ fontFamily: 'var(--font-display)', color: 'var(--text)' }}
+          >
+            CFD.Lab
+          </h1>
+          <span className="text-xs tabular-nums" style={{ color: 'var(--text-faint)' }}>
+            {posts.length} posts
+          </span>
+        </div>
         <p className="mt-1.5 text-sm leading-relaxed" style={{ color: 'var(--text-muted)' }}>
           수식, 코드, 시각화로 풀어내는 전산유체역학 기술 저널.
           <span style={{ color: 'var(--accent)' }}> 매일 자동 발행.</span>

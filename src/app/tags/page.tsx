@@ -4,7 +4,8 @@ import type { Metadata } from 'next'
 
 export const metadata: Metadata = {
   title: 'Tags',
-  description: 'Browse posts by tag',
+  description: 'CFD.Lab의 모든 태그 — 주제별 포스트를 찾아보세요.',
+  alternates: { canonical: 'https://tech-blog.dev/tags' },
 }
 
 function getAllTags() {
