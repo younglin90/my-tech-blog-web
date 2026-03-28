@@ -181,17 +181,19 @@ export default async function PostPage({ params }: PostProps) {
       )}
 
       {/* Prev / Next */}
-      <nav className="mt-10 flex items-center justify-between border-t pt-8" style={{ borderColor: 'var(--border)' }}>
+      <nav className="mt-10 grid grid-cols-2 gap-4 border-t pt-8" style={{ borderColor: 'var(--border)' }}>
         {prevPost ? (
-          <Link href={prevPost.url} className="flex flex-col gap-1">
+          <Link href={prevPost.url} className="group flex flex-col gap-1 rounded-lg p-3 transition-colors duration-100" style={{ border: '1px solid var(--border)' }}>
             <span className="text-xs" style={{ color: 'var(--text-muted)' }}>&larr; Previous</span>
-            <span className="link-hover-accent text-sm font-medium">{prevPost.title}</span>
+            <span className="link-hover-accent text-sm font-medium leading-snug">{prevPost.title}</span>
+            {prevPost.readingTime && <span className="text-xs" style={{ color: 'var(--text-faint)' }}>{prevPost.readingTime}</span>}
           </Link>
         ) : <div />}
         {nextPost ? (
-          <Link href={nextPost.url} className="flex flex-col gap-1 text-right">
+          <Link href={nextPost.url} className="group flex flex-col gap-1 rounded-lg p-3 text-right transition-colors duration-100" style={{ border: '1px solid var(--border)' }}>
             <span className="text-xs" style={{ color: 'var(--text-muted)' }}>Next &rarr;</span>
-            <span className="link-hover-accent text-sm font-medium">{nextPost.title}</span>
+            <span className="link-hover-accent text-sm font-medium leading-snug">{nextPost.title}</span>
+            {nextPost.readingTime && <span className="text-xs" style={{ color: 'var(--text-faint)' }}>{nextPost.readingTime}</span>}
           </Link>
         ) : <div />}
       </nav>
