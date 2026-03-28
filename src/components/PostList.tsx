@@ -139,15 +139,21 @@ export function PostList({ staticPosts }: { staticPosts: StaticPostItem[] }) {
           <div className="divide-y" style={{ borderColor: 'var(--border)' }}>
             {grouped[year].map((post) => {
               const href = post.isDynamic ? `/read?id=${post.id}` : post.url
+              const isNew = !post.isDynamic && (Date.now() - new Date(post.date).getTime()) < 7 * 24 * 60 * 60 * 1000
               return (
                 <div key={post.id} className="group rounded-lg px-3 py-6 -mx-3 transition-colors duration-100 hover:bg-[var(--surface)]">
-                  <h2 className="mb-1.5 text-xl font-semibold leading-snug tracking-tight" style={titleStyle}>
+                  <h2 className="mb-1.5 flex items-start gap-2 text-xl font-semibold leading-snug tracking-tight" style={titleStyle}>
                     <Link
                       href={href}
                       className="link-hover-accent"
                     >
                       {post.title}
                     </Link>
+                    {isNew && (
+                      <span className="mt-1.5 shrink-0 rounded-full px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide" style={{ background: 'var(--accent)', color: '#08111f' }}>
+                        New
+                      </span>
+                    )}
                   </h2>
                   <div className="mb-2.5 flex items-center gap-2 text-xs" style={{ color: 'var(--text-muted)' }}>
                     <time dateTime={post.date}>
