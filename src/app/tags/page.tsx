@@ -22,5 +22,25 @@ function getAllTags() {
 
 export default function TagsPage() {
   const tags = getAllTags()
-  return <TagsClient tags={tags} />
+  const jsonLd = {
+    '@context': 'https://schema.org',
+    '@type': 'ItemList',
+    name: 'CFD.Lab Tags',
+    numberOfItems: tags.length,
+    itemListElement: tags
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 20)
+      .map(([tag], i) => ({
+        '@type': 'ListItem',
+        position: i + 1,
+        name: tag,
+        url: `https://tech-blog.dev/tags/${encodeURIComponent(tag)}`,
+      })),
+  }
+  return (
+    <>
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }} />
+      <TagsClient tags={tags} />
+    </>
+  )
 }

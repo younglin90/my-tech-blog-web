@@ -39,6 +39,9 @@ export const metadata: Metadata = {
   },
   description: 'CFD 엔지니어를 위한 기술 저널 — 수식, 코드, 인터랙티브 시각화',
   metadataBase: new URL('https://tech-blog.dev'),
+  authors: [{ name: 'CFD.Lab', url: 'https://tech-blog.dev/about' }],
+  creator: 'CFD.Lab',
+  category: 'technology',
   themeColor: [
     { media: '(prefers-color-scheme: dark)', color: '#08111f' },
     { media: '(prefers-color-scheme: light)', color: '#fafaf9' },
