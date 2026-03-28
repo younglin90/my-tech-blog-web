@@ -36,6 +36,21 @@ export default async function TagPage({ params }: TagPageProps) {
 
   if (posts.length === 0) notFound()
 
+  const totalReadMinutes = posts.reduce((sum, p) => {
+    const mins = parseInt(p.readingTime ?? '0', 10)
+    return sum + (isNaN(mins) ? 0 : mins)
+  }, 0)
+
+  const breadcrumbJsonLd = {
+    '@context': 'https://schema.org',
+    '@type': 'BreadcrumbList',
+    itemListElement: [
+      { '@type': 'ListItem', position: 1, name: 'CFD.Lab', item: 'https://tech-blog.dev' },
+      { '@type': 'ListItem', position: 2, name: 'Tags', item: 'https://tech-blog.dev/tags' },
+      { '@type': 'ListItem', position: 3, name: `#${decoded}`, item: `https://tech-blog.dev/tags/${tag}` },
+    ],
+  }
+
   // Related tags: co-occurring tags sorted by frequency
   const relatedTagCounts: Record<string, number> = {}
   posts.forEach((post) => {
@@ -50,6 +65,7 @@ export default async function TagPage({ params }: TagPageProps) {
 
   return (
     <div>
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(breadcrumbJsonLd) }} />
       <div className="mb-8">
         <Link href="/tags" className="link-hover-text-accent text-xs">
           ← All tags
@@ -62,6 +78,11 @@ export default async function TagPage({ params }: TagPageProps) {
         </h1>
         <p className="mt-1 text-sm" style={{ color: 'var(--text-muted)' }}>
           {posts.length} post{posts.length !== 1 ? 's' : ''}
+          {totalReadMinutes > 0 && (
+            <span style={{ color: 'var(--text-faint)' }}>
+              {' '}· ~{totalReadMinutes} min total
+            </span>
+          )}
         </p>
       </div>
 
