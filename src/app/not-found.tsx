@@ -23,6 +23,9 @@ export default function NotFound() {
         <p className="mt-2 max-w-sm mx-auto text-sm leading-relaxed" style={{ color: 'var(--text-muted)' }}>
           The page you&apos;re looking for doesn&apos;t exist — like a simulation that left the mesh.
         </p>
+        <div className="mt-6 text-xs" style={{ color: 'var(--text-faint)' }}>
+          Press <kbd className="rounded px-1.5 py-0.5" style={{ background: 'var(--surface)', border: '1px solid var(--border)', fontSize: '10px' }}>⌘K</kbd> or <kbd className="rounded px-1.5 py-0.5" style={{ background: 'var(--surface)', border: '1px solid var(--border)', fontSize: '10px' }}>/</kbd> to search
+        </div>
         <div className="mt-8 flex items-center justify-center gap-3">
           <Link
             href="/"
