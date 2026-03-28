@@ -6,6 +6,7 @@ import dynamic from 'next/dynamic'
 import Link from 'next/link'
 import Image from 'next/image'
 import { CodeBlock } from '@/components/CodeBlock'
+import { MDXErrorBoundary } from '@/components/MDXErrorBoundary'
 
 // Lazy-load heavy interactive components (only used in Wednesday posts)
 const NumericalDungeon = dynamic(() => import('@/components/NumericalDungeon').then((m) => ({ default: m.NumericalDungeon })))
@@ -315,8 +316,10 @@ export function Mdx({ code }: MdxProps) {
   const Component = useMDXComponent(code)
 
   return (
-    <div className="mdx prose prose-zinc dark:prose-invert max-w-none">
-      <Component components={components} />
-    </div>
+    <MDXErrorBoundary>
+      <div className="mdx prose prose-zinc dark:prose-invert max-w-none">
+        <Component components={components} />
+      </div>
+    </MDXErrorBoundary>
   )
 }

@@ -38,6 +38,19 @@ export default function AboutPage() {
 
   const lastPostDate = published[0] ? format(parseISO(published[0].date), 'MMM d') : '—'
 
+  // Build monthly activity for the last 12 months
+  const now = new Date()
+  const months = Array.from({ length: 12 }, (_, i) => {
+    const d = new Date(now.getFullYear(), now.getMonth() - (11 - i), 1)
+    return { key: format(d, 'yyyy-MM'), label: format(d, 'MMM'), count: 0 }
+  })
+  published.forEach((p) => {
+    const key = format(parseISO(p.date), 'yyyy-MM')
+    const m = months.find((m) => m.key === key)
+    if (m) m.count++
+  })
+  const maxMonthCount = Math.max(...months.map((m) => m.count), 1)
+
   const stats = [
     { label: 'Posts', value: published.length.toString() },
     { label: 'Words', value: totalWords.toLocaleString() },
@@ -62,7 +75,7 @@ export default function AboutPage() {
       </p>
 
       {/* Stats */}
-      <div className="mb-10 grid grid-cols-2 gap-3 sm:grid-cols-5">
+      <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-5">
         {stats.map(({ label, value }) => (
           <div
             key={label}
@@ -75,6 +88,30 @@ export default function AboutPage() {
             <div className="mt-0.5 text-xs" style={{ color: 'var(--text-muted)' }}>{label}</div>
           </div>
         ))}
+      </div>
+
+      {/* Monthly activity chart */}
+      <div className="mb-10 rounded-lg p-4" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
+        <p className="mb-3 text-[10px] font-semibold uppercase tracking-widest" style={{ color: 'var(--text-faint)' }}>
+          Activity (last 12 months)
+        </p>
+        <div className="flex items-end gap-1.5 h-12">
+          {months.map(({ key, label, count }) => (
+            <div key={key} className="flex flex-1 flex-col items-center gap-1" title={`${label}: ${count} post${count !== 1 ? 's' : ''}`}>
+              <div
+                className="w-full rounded-sm transition-all duration-300"
+                style={{
+                  height: count === 0 ? '2px' : `${Math.max(8, (count / maxMonthCount) * 40)}px`,
+                  background: count === 0 ? 'var(--border)' : 'var(--accent)',
+                  opacity: count === 0 ? 0.3 : 0.6 + (count / maxMonthCount) * 0.4,
+                }}
+              />
+              <span className="text-[8px] tabular-nums" style={{ color: 'var(--text-faint)' }}>
+                {label.slice(0, 1)}
+              </span>
+            </div>
+          ))}
+        </div>
       </div>
 
       <section className="mb-10">
