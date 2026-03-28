@@ -168,22 +168,32 @@ export default async function PostPage({ params }: PostProps) {
           <h2 className="mb-4 text-sm font-semibold uppercase tracking-widest" style={{ color: 'var(--text-muted)' }}>
             Related
           </h2>
-          <div className="divide-y" style={{ borderColor: 'var(--border)' }}>
+          <div className="grid gap-3 sm:grid-cols-3">
             {related.map((r) => (
-              <div key={r.slug} className="py-4">
-                <Link href={r.url} className="link-hover-accent text-base font-medium">
+              <Link
+                key={r.slug}
+                href={r.url}
+                className="group flex flex-col gap-1.5 rounded-lg p-3.5 transition-colors duration-100"
+                style={{ border: '1px solid var(--border)', background: 'var(--surface)' }}
+              >
+                <span className="text-sm font-medium leading-snug link-hover-accent group-hover:text-[var(--accent)]" style={{ color: 'var(--text)' }}>
                   {r.title}
-                </Link>
-                <div className="mt-0.5 flex items-center gap-2 text-xs" style={{ color: 'var(--text-muted)' }}>
+                </span>
+                {r.description && (
+                  <span className="line-clamp-2 text-xs leading-relaxed" style={{ color: 'var(--text-muted)' }}>
+                    {r.description}
+                  </span>
+                )}
+                <div className="mt-auto flex items-center gap-1.5 pt-1 text-[10px] tabular-nums" style={{ color: 'var(--text-faint)' }}>
                   <span>{format(parseISO(r.date), 'MMM d, yyyy')}</span>
                   {r.readingTime && (
                     <>
-                      <span style={{ color: 'var(--border)' }}>·</span>
+                      <span>·</span>
                       <span>{r.readingTime}</span>
                     </>
                   )}
                 </div>
-              </div>
+              </Link>
             ))}
           </div>
         </div>
