@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { useTheme } from 'next-themes'
 import { X } from 'lucide-react'
@@ -10,6 +10,7 @@ const shortcuts = [
   { keys: ['/'], mac: ['/'], description: 'Quick search' },
   { keys: ['?'], mac: ['?'], description: 'Show shortcuts' },
   { keys: ['T'], mac: ['T'], description: 'Toggle theme' },
+  { keys: ['G', 'G'], mac: ['G', 'G'], description: 'Scroll to top' },
   { keys: ['G', 'H'], mac: ['G', 'H'], description: 'Go home' },
   { keys: ['G', 'T'], mac: ['G', 'T'], description: 'Go to tags' },
   { keys: ['G', 'A'], mac: ['G', 'A'], description: 'Go to about' },
@@ -23,10 +24,15 @@ export function KeyboardShortcuts() {
   const [isMac, setIsMac] = useState(false)
   const router = useRouter()
   const { theme, setTheme } = useTheme()
+  const themeRef = useRef(theme)
 
   useEffect(() => {
     setIsMac(navigator.platform.toUpperCase().includes('MAC'))
   }, [])
+
+  useEffect(() => {
+    themeRef.current = theme
+  }, [theme])
 
   useEffect(() => {
     let buffer = ''
@@ -46,7 +52,7 @@ export function KeyboardShortcuts() {
         return
       }
       if (e.key === 't' && !e.ctrlKey && !e.metaKey) {
-        setTheme(theme === 'dark' ? 'light' : 'dark')
+        setTheme(themeRef.current === 'dark' ? 'light' : 'dark')
         return
       }
 
@@ -55,7 +61,8 @@ export function KeyboardShortcuts() {
       clearTimeout(bufferTimer)
       bufferTimer = setTimeout(() => { buffer = '' }, 800)
 
-      if (buffer === 'GH') { router.push('/'); buffer = '' }
+      if (buffer === 'GG') { window.scrollTo({ top: 0, behavior: 'smooth' }); buffer = '' }
+      else if (buffer === 'GH') { router.push('/'); buffer = '' }
       else if (buffer === 'GT') { router.push('/tags'); buffer = '' }
       else if (buffer === 'GA') { router.push('/about'); buffer = '' }
     }

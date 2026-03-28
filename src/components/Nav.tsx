@@ -13,7 +13,7 @@ export function Nav() {
   const pathname = usePathname()
 
   return (
-    <nav className="flex items-center text-sm">
+    <nav className="flex items-center text-sm" aria-label="Main navigation">
       {links.map(({ href, label }) => {
         const active = href === '/' ? pathname === '/' : pathname.startsWith(href)
         return (

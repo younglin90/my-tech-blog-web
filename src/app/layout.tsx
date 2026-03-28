@@ -83,6 +83,7 @@ export default function RootLayout({
           crossOrigin="anonymous"
         />
         <link rel="alternate" type="application/rss+xml" title="CFD.Lab RSS" href="/feed.xml" />
+        <link rel="alternate" type="application/feed+json" title="CFD.Lab JSON Feed" href="/feed.json" />
       </head>
       <body
         className={`${fraunces.variable} ${geist.variable} ${jetbrainsMono.variable} min-h-screen antialiased`}

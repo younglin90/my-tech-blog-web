@@ -189,10 +189,8 @@ export function PostList({ staticPosts }: { staticPosts: StaticPostItem[] }) {
           </span>
           <button
             onClick={() => setActiveTag(null)}
-            className="text-xs transition-colors duration-100"
+            className="link-hover-text text-xs transition-colors duration-100"
             style={{ color: 'var(--text-faint)' }}
-            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = 'var(--text-muted)' }}
-            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'var(--text-faint)' }}
           >
             Clear ×
           </button>

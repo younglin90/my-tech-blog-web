@@ -3,6 +3,21 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { ChevronDown } from 'lucide-react'
 
+function useScrollProgress() {
+  const [progress, setProgress] = useState(0)
+  useEffect(() => {
+    const update = () => {
+      const scrollTop = window.scrollY
+      const docHeight = document.documentElement.scrollHeight - window.innerHeight
+      setProgress(docHeight > 0 ? Math.min(100, (scrollTop / docHeight) * 100) : 0)
+    }
+    window.addEventListener('scroll', update, { passive: true })
+    update()
+    return () => window.removeEventListener('scroll', update)
+  }, [])
+  return progress
+}
+
 interface Heading {
   id: string
   text: string
@@ -14,6 +29,7 @@ export function TableOfContents() {
   const [activeId, setActiveId] = useState('')
   const [mobileOpen, setMobileOpen] = useState(false)
   const observerRef = useRef<IntersectionObserver | null>(null)
+  const progress = useScrollProgress()
 
   const handleMobileNavClick = useCallback(() => setMobileOpen(false), [])
 
@@ -64,18 +80,10 @@ export function TableOfContents() {
         >
           <a
             href={`#${h.id}`}
-            className="block pl-2.5 leading-snug transition-colors duration-100"
+            className={`toc-link block pl-2.5 leading-snug transition-colors duration-100${activeId === h.id ? ' toc-link--active' : ''}`}
             style={{
               color: activeId === h.id ? 'var(--accent)' : 'var(--text-faint)',
               fontWeight: activeId === h.id ? 500 : 400,
-            }}
-            onMouseEnter={(e) => {
-              if (activeId !== h.id)
-                (e.currentTarget as HTMLElement).style.color = 'var(--text-muted)'
-            }}
-            onMouseLeave={(e) => {
-              if (activeId !== h.id)
-                (e.currentTarget as HTMLElement).style.color = 'var(--text-faint)'
             }}
             onClick={handleMobileNavClick}
           >
@@ -117,10 +125,22 @@ export function TableOfContents() {
         className="fixed right-6 top-24 hidden w-52 xl:block"
         aria-label="Table of contents"
       >
-        <p className="mb-3 text-[10px] font-semibold uppercase tracking-widest" style={{ color: 'var(--text-faint)' }}>
-          On this page
-        </p>
-        <div className="max-h-[calc(100vh-8rem)] overflow-y-auto pr-1">
+        <div className="mb-3 flex items-center justify-between">
+          <p className="text-[10px] font-semibold uppercase tracking-widest" style={{ color: 'var(--text-faint)' }}>
+            On this page
+          </p>
+          <span className="text-[9px] tabular-nums" style={{ color: 'var(--text-faint)' }}>
+            {Math.round(progress)}%
+          </span>
+        </div>
+        {/* Progress bar */}
+        <div className="mb-3 h-px w-full overflow-hidden" style={{ background: 'var(--border)' }}>
+          <div
+            className="h-full transition-[width] duration-150"
+            style={{ width: `${progress}%`, background: 'var(--accent)', opacity: 0.6 }}
+          />
+        </div>
+        <div className="max-h-[calc(100vh-10rem)] overflow-y-auto pr-1">
           {tocList}
         </div>
       </nav>

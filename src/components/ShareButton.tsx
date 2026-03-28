@@ -1,7 +1,7 @@
 'use client'
 
-import { useState } from 'react'
-import { Link2, Check, Twitter, Linkedin } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { Link2, Check, Twitter, Linkedin, Share2 } from 'lucide-react'
 
 interface ShareButtonProps {
   title: string
@@ -10,6 +10,11 @@ interface ShareButtonProps {
 
 export function ShareButton({ title, url }: ShareButtonProps) {
   const [copied, setCopied] = useState(false)
+  const [canNativeShare, setCanNativeShare] = useState(false)
+
+  useEffect(() => {
+    setCanNativeShare(typeof navigator.share === 'function')
+  }, [])
 
   const href = url ?? (typeof window !== 'undefined' ? window.location.href : '')
 
@@ -19,36 +24,36 @@ export function ShareButton({ title, url }: ShareButtonProps) {
     setTimeout(() => setCopied(false), 2000)
   }
 
+  const handleNativeShare = async () => {
+    try {
+      await navigator.share({ title, url: href })
+    } catch {}
+  }
+
   const twitterUrl = `https://twitter.com/intent/tweet?text=${encodeURIComponent(title)}&url=${encodeURIComponent(href)}`
   const linkedinUrl = `https://www.linkedin.com/sharing/share-offsite/?url=${encodeURIComponent(href)}`
   const hackerNewsUrl = `https://news.ycombinator.com/submitlink?u=${encodeURIComponent(href)}&t=${encodeURIComponent(title)}`
 
-  const btnStyle = {
-    background: 'var(--surface)',
-    border: '1px solid var(--border)',
-    color: 'var(--text-muted)',
-    borderRadius: '0.375rem',
-    padding: '0.375rem 0.75rem',
-    fontSize: '0.75rem',
-    fontWeight: 500,
-    display: 'flex',
-    alignItems: 'center',
-    gap: '0.375rem',
-    transition: 'border-color 0.1s, color 0.1s',
-    cursor: 'pointer',
-    textDecoration: 'none',
-  } as const
-
   return (
     <div className="share-button flex items-center gap-2">
+      {canNativeShare && (
+        <button
+          onClick={handleNativeShare}
+          className="share-btn flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium"
+          style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text-muted)' }}
+          aria-label="Share"
+        >
+          <Share2 className="h-3.5 w-3.5" />
+          Share
+        </button>
+      )}
       <button
         onClick={handleCopy}
-        style={{ ...btnStyle, color: copied ? 'var(--success)' : 'var(--text-muted)' }}
-        onMouseEnter={(e) => {
-          if (!copied) (e.currentTarget as HTMLElement).style.color = 'var(--text)'
-        }}
-        onMouseLeave={(e) => {
-          if (!copied) (e.currentTarget as HTMLElement).style.color = 'var(--text-muted)'
+        className="share-btn flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium"
+        style={{
+          background: 'var(--surface)',
+          border: '1px solid var(--border)',
+          color: copied ? 'var(--success)' : 'var(--text-muted)',
         }}
       >
         {copied ? <Check className="h-3.5 w-3.5" /> : <Link2 className="h-3.5 w-3.5" />}
@@ -58,9 +63,8 @@ export function ShareButton({ title, url }: ShareButtonProps) {
         href={twitterUrl}
         target="_blank"
         rel="noopener noreferrer"
-        style={btnStyle}
-        onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = 'var(--text)' }}
-        onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'var(--text-muted)' }}
+        className="share-btn flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium"
+        style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text-muted)', textDecoration: 'none' }}
         aria-label="Share on Twitter"
       >
         <Twitter className="h-3.5 w-3.5" />
@@ -69,9 +73,8 @@ export function ShareButton({ title, url }: ShareButtonProps) {
         href={linkedinUrl}
         target="_blank"
         rel="noopener noreferrer"
-        style={btnStyle}
-        onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = 'var(--text)' }}
-        onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'var(--text-muted)' }}
+        className="share-btn flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium"
+        style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text-muted)', textDecoration: 'none' }}
         aria-label="Share on LinkedIn"
       >
         <Linkedin className="h-3.5 w-3.5" />
@@ -80,9 +83,8 @@ export function ShareButton({ title, url }: ShareButtonProps) {
         href={hackerNewsUrl}
         target="_blank"
         rel="noopener noreferrer"
-        style={btnStyle}
-        onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = 'var(--text)' }}
-        onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'var(--text-muted)' }}
+        className="share-btn flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium"
+        style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text-muted)', textDecoration: 'none' }}
         aria-label="Share on HackerNews"
       >
         <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">

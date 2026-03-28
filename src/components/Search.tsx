@@ -34,6 +34,13 @@ export function Search() {
 
   React.useEffect(() => {
     setIsMac(navigator.platform.toUpperCase().includes('MAC'))
+    // Pre-fill and open search if ?q= is in the URL (client-side only)
+    const params = new URLSearchParams(window.location.search)
+    const q = params.get('q')
+    if (q) {
+      setQuery(q)
+      setOpen(true)
+    }
   }, [])
 
   React.useEffect(() => {
@@ -56,7 +63,6 @@ export function Search() {
     setActiveIdx(0)
   }, [query])
 
-  const q = query.toLowerCase()
   const publishedPosts = allPosts.filter((post) => !post.draft)
 
   // Compute top tags for suggestion chips when search is empty
@@ -66,9 +72,16 @@ export function Search() {
     return Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([t]) => t)
   }, [publishedPosts])
 
+  const isTagQuery = query.startsWith('#')
+  const q = isTagQuery ? query.slice(1).toLowerCase() : query.toLowerCase()
+
   const filteredPosts = q
     ? publishedPosts
         .map((post) => {
+          if (isTagQuery) {
+            const tagMatches = (post.tags ?? []).filter((t) => t.toLowerCase().includes(q)).length
+            return { post, score: tagMatches * 3 }
+          }
           const titleMatch = post.title.toLowerCase().includes(q)
           const descMatch = post.description.toLowerCase().includes(q)
           const tagMatches = (post.tags ?? []).filter((t) => t.toLowerCase().includes(q)).length
@@ -107,14 +120,12 @@ export function Search() {
     <>
       <button
         onClick={() => setOpen(true)}
-        className="flex items-center gap-2 rounded-md px-3 py-1.5 text-sm transition-colors duration-100"
+        className="search-trigger flex items-center gap-2 rounded-md px-3 py-1.5 text-sm transition-colors duration-100"
         style={{
           border: '1px solid var(--border)',
           color: 'var(--text-muted)',
           background: 'transparent',
         }}
-        onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.borderColor = 'var(--accent)' }}
-        onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.borderColor = 'var(--border)' }}
       >
         <SearchIcon className="h-3.5 w-3.5" />
         <span className="hidden sm:inline">Search</span>
@@ -159,7 +170,7 @@ export function Search() {
                 <SearchIcon className="h-4 w-4 shrink-0" style={{ color: 'var(--text-muted)' }} />
                 <input
                   autoFocus
-                  placeholder="Search posts…"
+                  placeholder="Search posts… or #tag"
                   className="h-12 w-full border-none bg-transparent text-sm focus:outline-none"
                   style={{ color: 'var(--text)' }}
                   value={query}
@@ -176,6 +187,13 @@ export function Search() {
                   </button>
                 )}
               </div>
+
+              {/* Tag search mode indicator */}
+              {isTagQuery && q && (
+                <div className="px-4 py-1.5 text-[10px]" style={{ background: 'var(--accent-glow)', color: 'var(--accent)' }}>
+                  Filtering by tag: <strong>#{q}</strong>
+                </div>
+              )}
 
               {/* Screen reader announcements */}
               <p className="sr-only" aria-live="polite" aria-atomic="true">
@@ -197,7 +215,7 @@ export function Search() {
                       {topTags.map((tag) => (
                         <button
                           key={tag}
-                          onClick={() => setQuery(tag)}
+                          onClick={() => setQuery(`#${tag}`)}
                           className="rounded-full px-2.5 py-1 text-[10px] font-medium transition-colors duration-75"
                           style={{ background: 'var(--surface-hover)', color: 'var(--text-muted)', border: '1px solid var(--border)' }}
                         >

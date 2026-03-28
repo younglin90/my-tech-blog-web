@@ -1,7 +1,7 @@
 'use client'
 
 import { useMDXComponent } from 'next-contentlayer2/hooks'
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import dynamic from 'next/dynamic'
 import Link from 'next/link'
 import Image from 'next/image'

@@ -3,7 +3,6 @@
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { FileText, Tag, User, Search } from 'lucide-react'
-import { useState, useEffect } from 'react'
 
 const links = [
   { href: '/', label: 'Posts', Icon: FileText },
@@ -13,7 +12,6 @@ const links = [
 
 export function MobileNav() {
   const pathname = usePathname()
-  const [searchOpen, setSearchOpen] = useState(false)
 
   // Open search by dispatching the same Ctrl+K event that Search.tsx listens for
   const openSearch = () => {

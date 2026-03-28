@@ -36,11 +36,14 @@ export default function AboutPage() {
   }, 0)
   const recentPosts = published.slice(0, 3)
 
+  const lastPostDate = published[0] ? format(parseISO(published[0].date), 'MMM d') : '—'
+
   const stats = [
     { label: 'Posts', value: published.length.toString() },
     { label: 'Words', value: totalWords.toLocaleString() },
     { label: 'Tags', value: allTagSet.size.toString() },
     { label: 'Read time', value: `${Math.round(totalReadMinutes / 60)}h` },
+    { label: 'Last post', value: lastPostDate },
   ]
 
   return (
@@ -59,7 +62,7 @@ export default function AboutPage() {
       </p>
 
       {/* Stats */}
-      <div className="mb-10 grid grid-cols-4 gap-3 sm:grid-cols-4">
+      <div className="mb-10 grid grid-cols-2 gap-3 sm:grid-cols-5">
         {stats.map(({ label, value }) => (
           <div
             key={label}

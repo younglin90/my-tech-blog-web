@@ -9,6 +9,7 @@ import Link from 'next/link'
 import { ReadingETA } from '@/components/ReadingETA'
 import { PostNavShortcuts } from '@/components/PostNavShortcuts'
 import { MarkAsRead } from '@/components/MarkAsRead'
+import { PrintButton } from '@/components/PrintButton'
 import type { Metadata } from 'next'
 
 interface PostProps {
@@ -113,16 +114,25 @@ export default async function PostPage({ params }: PostProps) {
       <PostNavShortcuts prevUrl={prevPost?.url} nextUrl={nextPost?.url} />
       <MarkAsRead id={post.slug} />
 
-      {/* Breadcrumb back link */}
-      <div className="mb-8">
+      {/* Breadcrumb */}
+      <nav aria-label="Breadcrumb" className="mb-8 flex items-center justify-between">
         <Link href="/" className="link-hover-text-accent text-xs">
           ← All posts
         </Link>
-      </div>
+        {(Date.now() - new Date(post.date).getTime()) < 7 * 24 * 60 * 60 * 1000 && (
+          <span className="rounded-full px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide" style={{ background: 'var(--accent)', color: '#08111f' }}>
+            New
+          </span>
+        )}
+      </nav>
 
       {/* Header */}
       <div className="mb-10 flex flex-col items-center text-center">
         <div className="flex items-center gap-2 text-sm" style={{ color: 'var(--text-muted)' }}>
+          <span className="tabular-nums text-xs font-medium" style={{ color: 'var(--text-faint)' }}>
+            #{posts.length - currentIndex}
+          </span>
+          <span style={{ color: 'var(--border)' }}>·</span>
           <time dateTime={post.date}>{format(parseISO(post.date), 'MMMM d, yyyy')}</time>
           {post.readingTime && (() => {
             const mins = parseInt(post.readingTime ?? '0', 10)
@@ -168,9 +178,12 @@ export default async function PostPage({ params }: PostProps) {
       <Mdx code={post.body.code} />
 
       {/* Share */}
-      <div className="mt-12 flex items-center justify-between border-t pt-6" style={{ borderColor: 'var(--border)' }}>
+      <div className="mt-12 flex flex-wrap items-center justify-between gap-3 border-t pt-6" style={{ borderColor: 'var(--border)' }}>
         <p className="text-xs" style={{ color: 'var(--text-muted)' }}>도움이 됐다면 공유해주세요.</p>
-        <ShareButton title={post.title} />
+        <div className="flex items-center gap-2">
+          <PrintButton />
+          <ShareButton title={post.title} />
+        </div>
       </div>
 
       {/* Related posts */}
@@ -214,14 +227,20 @@ export default async function PostPage({ params }: PostProps) {
       <nav className="mt-10 grid grid-cols-2 gap-4 border-t pt-8" style={{ borderColor: 'var(--border)' }}>
         {prevPost ? (
           <Link href={prevPost.url} className="group flex flex-col gap-1 rounded-lg p-3 transition-colors duration-100" style={{ border: '1px solid var(--border)' }}>
-            <span className="text-xs" style={{ color: 'var(--text-muted)' }}>&larr; Previous</span>
+            <span className="flex items-center gap-1.5 text-xs" style={{ color: 'var(--text-muted)' }}>
+              &larr; Previous
+              <kbd className="rounded px-1 py-0.5 text-[9px]" style={{ background: 'var(--surface-hover)', border: '1px solid var(--border)', color: 'var(--text-faint)' }}>K</kbd>
+            </span>
             <span className="link-hover-accent text-sm font-medium leading-snug">{prevPost.title}</span>
             {prevPost.readingTime && <span className="text-xs" style={{ color: 'var(--text-faint)' }}>{prevPost.readingTime}</span>}
           </Link>
         ) : <div />}
         {nextPost ? (
           <Link href={nextPost.url} className="group flex flex-col gap-1 rounded-lg p-3 text-right transition-colors duration-100" style={{ border: '1px solid var(--border)' }}>
-            <span className="text-xs" style={{ color: 'var(--text-muted)' }}>Next &rarr;</span>
+            <span className="flex items-center justify-end gap-1.5 text-xs" style={{ color: 'var(--text-muted)' }}>
+              <kbd className="rounded px-1 py-0.5 text-[9px]" style={{ background: 'var(--surface-hover)', border: '1px solid var(--border)', color: 'var(--text-faint)' }}>J</kbd>
+              Next &rarr;
+            </span>
             <span className="link-hover-accent text-sm font-medium leading-snug">{nextPost.title}</span>
             {nextPost.readingTime && <span className="text-xs" style={{ color: 'var(--text-faint)' }}>{nextPost.readingTime}</span>}
           </Link>

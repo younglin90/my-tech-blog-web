@@ -7,10 +7,12 @@ type SortMode = 'count' | 'alpha'
 
 export function TagsClient({ tags }: { tags: [string, number][] }) {
   const [sort, setSort] = useState<SortMode>('count')
+  const [filter, setFilter] = useState('')
 
-  const sorted = [...tags].sort((a, b) =>
-    sort === 'count' ? b[1] - a[1] : a[0].localeCompare(b[0])
-  )
+  const q = filter.toLowerCase()
+  const sorted = [...tags]
+    .filter(([tag]) => !q || tag.toLowerCase().includes(q))
+    .sort((a, b) => sort === 'count' ? b[1] - a[1] : a[0].localeCompare(b[0]))
 
   return (
     <div>
@@ -23,7 +25,9 @@ export function TagsClient({ tags }: { tags: [string, number][] }) {
             Tags
           </h1>
           <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
-            {tags.length} tag{tags.length !== 1 ? 's' : ''} across all posts
+            {sorted.length !== tags.length
+              ? `${sorted.length} of ${tags.length} tags`
+              : `${tags.length} tag${tags.length !== 1 ? 's' : ''} across all posts`}
           </p>
         </div>
         <div
@@ -45,15 +49,68 @@ export function TagsClient({ tags }: { tags: [string, number][] }) {
           ))}
         </div>
       </div>
-      {tags.length === 0 && (
-        <p className="text-sm" style={{ color: 'var(--text-muted)' }}>No tags found.</p>
+      {tags.length > 6 && (
+        <input
+          type="search"
+          placeholder="Filter tags…"
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+          className="mb-5 w-full rounded-md px-3 py-2 text-sm focus:outline-none"
+          style={{
+            background: 'var(--surface)',
+            border: '1px solid var(--border)',
+            color: 'var(--text)',
+          }}
+        />
       )}
-      {tags.length > 0 && (() => {
-        const maxCount = Math.max(...tags.map(([, c]) => c))
-        const minCount = Math.min(...tags.map(([, c]) => c))
+      {sorted.length === 0 && (
+        <p className="text-sm" style={{ color: 'var(--text-muted)' }}>No tags match &ldquo;{filter}&rdquo;.</p>
+      )}
+      {sorted.length > 0 && (() => {
+        if (sort === 'alpha') {
+          // Group by first letter
+          const groups: Record<string, [string, number][]> = {}
+          sorted.forEach(([tag, count]) => {
+            const letter = tag[0].toUpperCase()
+            if (!groups[letter]) groups[letter] = []
+            groups[letter].push([tag, count])
+          })
+          return (
+            <div className="space-y-6">
+              {Object.entries(groups).sort(([a], [b]) => a.localeCompare(b)).map(([letter, items]) => (
+                <div key={letter}>
+                  <p className="mb-2.5 text-xs font-bold uppercase tracking-widest" style={{ color: 'var(--accent)', opacity: 0.7 }}>
+                    {letter}
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    {items.map(([tag, count]) => (
+                      <Link
+                        key={tag}
+                        href={`/tags/${encodeURIComponent(tag)}`}
+                        className="tag-pill flex items-center gap-1.5"
+                        title={`${count} post${count !== 1 ? 's' : ''}`}
+                      >
+                        {tag}
+                        <span
+                          className="rounded-full px-1.5 py-0.5 font-semibold"
+                          style={{ background: 'var(--border)', color: 'var(--text-muted)', fontSize: '0.625rem' }}
+                        >
+                          {count}
+                        </span>
+                      </Link>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )
+        }
+
+        const maxCount = Math.max(...sorted.map(([, c]) => c))
+        const minCount = Math.min(...sorted.map(([, c]) => c))
         return (
           <div className="flex flex-wrap items-baseline gap-2">
-            {sorted.map(([tag, count]) => {
+            {sorted.map(([tag, count]: [string, number]) => {
               const ratio = maxCount === minCount ? 0.5 : (count - minCount) / (maxCount - minCount)
               const fontSize = 0.72 + ratio * 0.36 // 0.72rem → 1.08rem
               const opacity = 0.65 + ratio * 0.35  // 0.65 → 1.0
