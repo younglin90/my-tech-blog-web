@@ -119,7 +119,13 @@ export default function RootLayout({
                   <a href="/feed.xml" className="link-hover-text-accent">RSS</a>
                   <a href="https://github.com/younglin90" target="_blank" rel="noopener noreferrer" className="link-hover-text">GitHub</a>
                 </div>
-                <span>&copy; 2026 CFD.Lab</span>
+                <div className="flex items-center gap-3">
+                  <span>&copy; 2026 CFD.Lab</span>
+                  <span className="hidden sm:inline" style={{ color: 'var(--text-faint)' }}>·</span>
+                  <span className="hidden sm:inline text-[10px]" style={{ color: 'var(--text-faint)' }}>
+                    Press <kbd className="rounded px-1 py-0.5" style={{ background: 'var(--surface)', border: '1px solid var(--border)', fontSize: '10px' }}>?</kbd> for shortcuts
+                  </span>
+                </div>
               </div>
             </footer>
           </div>

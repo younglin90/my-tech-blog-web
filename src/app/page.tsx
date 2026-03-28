@@ -1,6 +1,7 @@
 import { allPosts } from 'contentlayer/generated'
 import { compareDesc, parseISO } from 'date-fns'
 import { PostList } from '@/components/PostList'
+import Link from 'next/link'
 import type { Metadata } from 'next'
 
 export const metadata: Metadata = {
@@ -50,10 +51,22 @@ export default function Home() {
             {posts.length} posts
           </span>
         </div>
-        <p className="mt-1.5 text-sm leading-relaxed" style={{ color: 'var(--text-muted)' }}>
-          수식, 코드, 시각화로 풀어내는 전산유체역학 기술 저널.
-          <span style={{ color: 'var(--accent)' }}> 매일 자동 발행.</span>
-        </p>
+        <div className="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1">
+          <p className="text-sm leading-relaxed" style={{ color: 'var(--text-muted)' }}>
+            수식, 코드, 시각화로 풀어내는 전산유체역학 기술 저널.
+            <span style={{ color: 'var(--accent)' }}> 매일 자동 발행.</span>
+          </p>
+          <a
+            href="/feed.xml"
+            className="flex items-center gap-1 text-xs font-medium transition-opacity hover:opacity-75"
+            style={{ color: 'var(--accent)' }}
+          >
+            <svg className="h-3 w-3" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+              <path d="M6.18 15.64a2.18 2.18 0 0 1 2.18 2.18C8.36 19.01 7.38 20 6.18 20C4.98 20 4 19.01 4 17.82a2.18 2.18 0 0 1 2.18-2.18M4 4.44A15.56 15.56 0 0 1 19.56 20h-2.83A12.73 12.73 0 0 0 4 7.27V4.44m0 5.66a9.9 9.9 0 0 1 9.9 9.9h-2.83A7.07 7.07 0 0 0 4 12.93V10.1z"/>
+            </svg>
+            RSS
+          </a>
+        </div>
       </div>
       <PostList staticPosts={posts} />
     </div>
