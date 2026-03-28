@@ -1,3 +1,5 @@
+'use client'
+
 import { useMDXComponent } from 'next-contentlayer2/hooks'
 import Link from 'next/link'
 import Image from 'next/image'
@@ -35,12 +37,20 @@ function slugify(children: React.ReactNode): string {
 }
 
 function AnchorLink({ id }: { id: string }) {
+  const handleClick = (e: React.MouseEvent) => {
+    e.preventDefault()
+    const url = `${window.location.origin}${window.location.pathname}#${id}`
+    navigator.clipboard.writeText(url).catch(() => {})
+    window.location.hash = id
+  }
+
   return (
     <a
       href={`#${id}`}
+      onClick={handleClick}
       className="ml-2 opacity-0 transition-opacity group-hover:opacity-100"
       style={{ color: 'var(--accent)', textDecoration: 'none', fontSize: '0.875em' }}
-      aria-hidden="true"
+      aria-label={`Copy link to section: ${id}`}
       tabIndex={-1}
     >
       #

@@ -53,10 +53,10 @@ export function Search() {
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'ArrowDown') {
       e.preventDefault()
-      setActiveIdx((i) => Math.min(i + 1, filteredPosts.length - 1))
+      setActiveIdx((i) => (i + 1) % filteredPosts.length)
     } else if (e.key === 'ArrowUp') {
       e.preventDefault()
-      setActiveIdx((i) => Math.max(i - 1, 0))
+      setActiveIdx((i) => (i - 1 + filteredPosts.length) % filteredPosts.length)
     } else if (e.key === 'Enter' && filteredPosts[activeIdx]) {
       onSelect(filteredPosts[activeIdx].url)
     } else if (e.key === 'Escape') {
