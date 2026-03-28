@@ -2,12 +2,14 @@
 
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
+import { useTheme } from 'next-themes'
 import { X } from 'lucide-react'
 
 const shortcuts = [
   { keys: ['Ctrl', 'K'], mac: ['⌘', 'K'], description: 'Open search' },
   { keys: ['/'], mac: ['/'], description: 'Quick search' },
   { keys: ['?'], mac: ['?'], description: 'Show shortcuts' },
+  { keys: ['T'], mac: ['T'], description: 'Toggle theme' },
   { keys: ['G', 'H'], mac: ['G', 'H'], description: 'Go home' },
   { keys: ['G', 'T'], mac: ['G', 'T'], description: 'Go to tags' },
   { keys: ['G', 'A'], mac: ['G', 'A'], description: 'Go to about' },
@@ -20,6 +22,7 @@ export function KeyboardShortcuts() {
   const [open, setOpen] = useState(false)
   const [isMac, setIsMac] = useState(false)
   const router = useRouter()
+  const { theme, setTheme } = useTheme()
 
   useEffect(() => {
     setIsMac(navigator.platform.toUpperCase().includes('MAC'))
@@ -40,6 +43,10 @@ export function KeyboardShortcuts() {
       }
       if (e.key === 'Escape') {
         setOpen(false)
+        return
+      }
+      if (e.key === 't' && !e.ctrlKey && !e.metaKey) {
+        setTheme(theme === 'dark' ? 'light' : 'dark')
         return
       }
 
