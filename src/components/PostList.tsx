@@ -69,6 +69,9 @@ export function PostList({ staticPosts }: { staticPosts: StaticPostItem[] }) {
   }
   const years = Object.keys(grouped).sort((a, b) => Number(b) - Number(a))
 
+  const staticCount = staticPosts.length
+  const totalCount = all.length
+
   return (
     <div>
       {years.map((year) => (
@@ -131,6 +134,12 @@ export function PostList({ staticPosts }: { staticPosts: StaticPostItem[] }) {
           </div>
         </div>
       ))}
+      {totalCount > 0 && (
+        <p className="mt-4 text-xs tabular-nums" style={{ color: 'var(--text-faint)' }}>
+          {totalCount} post{totalCount !== 1 ? 's' : ''}
+          {mounted && dynamicPosts.length > 0 && ` (${staticCount} published + ${dynamicPosts.length} draft)`}
+        </p>
+      )}
     </div>
   )
 }
