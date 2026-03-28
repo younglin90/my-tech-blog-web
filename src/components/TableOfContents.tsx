@@ -1,6 +1,7 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useCallback } from 'react'
+import { ChevronDown } from 'lucide-react'
 
 interface Heading {
   id: string
@@ -11,7 +12,10 @@ interface Heading {
 export function TableOfContents() {
   const [headings, setHeadings] = useState<Heading[]>([])
   const [activeId, setActiveId] = useState('')
+  const [mobileOpen, setMobileOpen] = useState(false)
   const observerRef = useRef<IntersectionObserver | null>(null)
+
+  const handleMobileNavClick = useCallback(() => setMobileOpen(false), [])
 
   useEffect(() => {
     // Collect headings rendered by MDX (h2, h3 only)
@@ -46,47 +50,80 @@ export function TableOfContents() {
 
   if (headings.length < 2) return null
 
-  return (
-    <nav
-      className="fixed right-6 top-24 hidden w-52 xl:block"
-      aria-label="Table of contents"
-    >
-      <p className="mb-3 text-[10px] font-semibold uppercase tracking-widest" style={{ color: 'var(--text-faint)' }}>
-        On this page
-      </p>
-      <ul className="max-h-[calc(100vh-8rem)] space-y-1.5 overflow-y-auto pr-1 text-xs">
-        {headings.map((h) => (
-          <li
-            key={h.id}
+  const tocList = (
+    <ul className="space-y-1.5 text-xs">
+      {headings.map((h) => (
+        <li
+          key={h.id}
+          style={{
+            paddingLeft: h.level === 3 ? '0.75rem' : '0',
+            borderLeft: `2px solid ${activeId === h.id ? 'var(--accent)' : 'transparent'}`,
+            marginLeft: '-0.75rem',
+            transition: 'border-color 0.15s',
+          }}
+        >
+          <a
+            href={`#${h.id}`}
+            className="block pl-2.5 leading-snug transition-colors duration-100"
             style={{
-              paddingLeft: h.level === 3 ? '0.75rem' : '0',
-              borderLeft: `2px solid ${activeId === h.id ? 'var(--accent)' : 'transparent'}`,
-              marginLeft: '-0.75rem',
-              paddingRight: '0',
-              transition: 'border-color 0.15s',
+              color: activeId === h.id ? 'var(--accent)' : 'var(--text-faint)',
+              fontWeight: activeId === h.id ? 500 : 400,
             }}
+            onMouseEnter={(e) => {
+              if (activeId !== h.id)
+                (e.currentTarget as HTMLElement).style.color = 'var(--text-muted)'
+            }}
+            onMouseLeave={(e) => {
+              if (activeId !== h.id)
+                (e.currentTarget as HTMLElement).style.color = 'var(--text-faint)'
+            }}
+            onClick={handleMobileNavClick}
           >
-            <a
-              href={`#${h.id}`}
-              className="block leading-snug pl-2.5 transition-colors duration-100"
-              style={{
-                color: activeId === h.id ? 'var(--accent)' : 'var(--text-faint)',
-                fontWeight: activeId === h.id ? 500 : 400,
-              }}
-              onMouseEnter={(e) => {
-                if (activeId !== h.id)
-                  (e.currentTarget as HTMLElement).style.color = 'var(--text-muted)'
-              }}
-              onMouseLeave={(e) => {
-                if (activeId !== h.id)
-                  (e.currentTarget as HTMLElement).style.color = 'var(--text-faint)'
-              }}
-            >
-              {h.text}
-            </a>
-          </li>
-        ))}
-      </ul>
-    </nav>
+            {h.text}
+          </a>
+        </li>
+      ))}
+    </ul>
+  )
+
+  return (
+    <>
+      {/* Mobile inline ToC (hidden on xl+) */}
+      <div
+        className="mb-8 overflow-hidden rounded-lg xl:hidden"
+        style={{ border: '1px solid var(--border)', background: 'var(--surface)' }}
+      >
+        <button
+          onClick={() => setMobileOpen((o) => !o)}
+          className="flex w-full items-center justify-between px-4 py-3 text-xs font-semibold uppercase tracking-widest"
+          style={{ color: 'var(--text-muted)' }}
+          aria-expanded={mobileOpen}
+        >
+          On this page
+          <ChevronDown
+            className="h-3.5 w-3.5 transition-transform duration-150"
+            style={{ transform: mobileOpen ? 'rotate(180deg)' : 'none' }}
+          />
+        </button>
+        {mobileOpen && (
+          <div className="border-t px-4 pb-4 pt-3" style={{ borderColor: 'var(--border)' }}>
+            {tocList}
+          </div>
+        )}
+      </div>
+
+      {/* Desktop fixed sidebar (xl+) */}
+      <nav
+        className="fixed right-6 top-24 hidden w-52 xl:block"
+        aria-label="Table of contents"
+      >
+        <p className="mb-3 text-[10px] font-semibold uppercase tracking-widest" style={{ color: 'var(--text-faint)' }}>
+          On this page
+        </p>
+        <div className="max-h-[calc(100vh-8rem)] overflow-y-auto pr-1">
+          {tocList}
+        </div>
+      </nav>
+    </>
   )
 }
