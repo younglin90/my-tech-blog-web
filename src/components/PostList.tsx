@@ -59,7 +59,7 @@ export function PostList({ staticPosts }: { staticPosts: StaticPostItem[] }) {
         counts[tag] = (counts[tag] ?? 0) + 1
       }
     }
-    return Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([tag]) => tag)
+    return Object.entries(counts).sort((a, b) => b[1] - a[1])
   }, [all])
 
   const filtered = activeTag ? all.filter((p) => p.tags.includes(activeTag)) : all
@@ -103,11 +103,11 @@ export function PostList({ staticPosts }: { staticPosts: StaticPostItem[] }) {
           >
             All
           </button>
-          {allTags.map((tag) => (
+          {allTags.map(([tag, count]) => (
             <button
               key={tag}
               onClick={() => setActiveTag(activeTag === tag ? null : tag)}
-              className="rounded-full px-3 py-1 text-xs font-medium transition-colors duration-100"
+              className="flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium transition-colors duration-100"
               style={{
                 background: activeTag === tag ? 'var(--accent)' : 'var(--surface)',
                 color: activeTag === tag ? '#08111f' : 'var(--text-muted)',
@@ -115,6 +115,15 @@ export function PostList({ staticPosts }: { staticPosts: StaticPostItem[] }) {
               }}
             >
               {tag}
+              <span
+                className="rounded-full px-1 text-[9px] font-semibold tabular-nums"
+                style={{
+                  background: activeTag === tag ? 'rgba(0,0,0,0.15)' : 'var(--border)',
+                  color: activeTag === tag ? '#08111f' : 'var(--text-faint)',
+                }}
+              >
+                {count}
+              </span>
             </button>
           ))}
         </div>
