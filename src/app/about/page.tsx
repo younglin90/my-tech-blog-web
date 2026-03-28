@@ -2,7 +2,8 @@ import type { Metadata } from 'next'
 
 export const metadata: Metadata = {
   title: 'About',
-  description: 'About this blog and its author',
+  description: 'CFD 연구자가 운영하는 기술 블로그 — 압축성 다상유동, 수치 기법, OpenFOAM 튜토리얼을 다룹니다.',
+  alternates: { canonical: 'https://tech-blog.dev/about' },
 }
 
 export default function AboutPage() {

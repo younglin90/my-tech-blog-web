@@ -8,6 +8,20 @@ import { VelocityField, StreamLine, NumericalScheme, PressureContour, BoundaryCo
 
 const displayStyle = { fontFamily: 'var(--font-display)' }
 
+function Callout({ type = 'note', title, children }: { type?: 'note' | 'tip' | 'warning' | 'caution'; title?: string; children: React.ReactNode }) {
+  const icons = { note: 'ℹ', tip: '💡', warning: '⚠', caution: '🚨' }
+  const defaultTitles = { note: 'Note', tip: 'Tip', warning: 'Warning', caution: 'Caution' }
+  return (
+    <div className={`callout callout-${type}`}>
+      <span className="callout-icon" aria-hidden="true">{icons[type]}</span>
+      <div className="callout-content">
+        <div className="callout-title">{title ?? defaultTitles[type]}</div>
+        {children}
+      </div>
+    </div>
+  )
+}
+
 function slugify(children: React.ReactNode): string {
   const text = [children]
     .flat(Infinity as 1)
@@ -137,6 +151,11 @@ const components = {
   NumericalScheme,
   PressureContour,
   BoundaryCondition,
+  Callout,
+  Note: (props: any) => <Callout type="note" {...props} />,
+  Tip: (props: any) => <Callout type="tip" {...props} />,
+  Warning: (props: any) => <Callout type="warning" {...props} />,
+  Caution: (props: any) => <Callout type="caution" {...props} />,
 }
 
 interface MdxProps {
