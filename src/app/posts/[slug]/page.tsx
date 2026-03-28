@@ -165,9 +165,15 @@ export default async function PostPage({ params }: PostProps) {
                 <Link href={r.url} className="link-hover-accent text-base font-medium">
                   {r.title}
                 </Link>
-                <p className="mt-0.5 text-xs" style={{ color: 'var(--text-muted)' }}>
-                  {format(parseISO(r.date), 'MMM d, yyyy')}
-                </p>
+                <div className="mt-0.5 flex items-center gap-2 text-xs" style={{ color: 'var(--text-muted)' }}>
+                  <span>{format(parseISO(r.date), 'MMM d, yyyy')}</span>
+                  {r.readingTime && (
+                    <>
+                      <span style={{ color: 'var(--border)' }}>·</span>
+                      <span>{r.readingTime}</span>
+                    </>
+                  )}
+                </div>
               </div>
             ))}
           </div>
