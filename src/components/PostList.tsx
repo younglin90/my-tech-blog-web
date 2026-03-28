@@ -167,7 +167,7 @@ export function PostList({ staticPosts }: { staticPosts: StaticPostItem[] }) {
       {years.map((year) => (
         <div key={year} className="mb-10">
           <div
-            className="sticky top-0 z-10 mb-4 -mx-4 px-4 py-1.5 text-xs font-semibold uppercase tracking-widest sm:-mx-6 sm:px-6"
+            className="sticky top-14 z-10 mb-4 -mx-4 px-4 py-1.5 text-xs font-semibold uppercase tracking-widest sm:-mx-6 sm:px-6"
             style={{ color: 'var(--text-faint)', background: 'var(--bg)' }}
           >
             {year}
