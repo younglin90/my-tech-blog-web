@@ -4,6 +4,7 @@ import { ThemeProvider } from '@/components/ThemeProvider'
 import { ThemeToggle } from '@/components/ThemeToggle'
 import Link from 'next/link'
 import { Search } from '@/components/Search'
+import { Nav } from '@/components/Nav'
 import type { Metadata } from 'next'
 
 // Display / hero — editorial authority (see DESIGN.md)
@@ -86,20 +87,40 @@ export default function RootLayout({
               </Link>
               <div className="flex items-center gap-2">
                 <Search />
-                <nav className="flex items-center gap-4 text-sm">
-                  <Link href="/" className="nav-link">Posts</Link>
-                  <Link href="/tags" className="nav-link">Tags</Link>
-                  <Link href="/about" className="nav-link">About</Link>
-                </nav>
+                <Nav />
                 <ThemeToggle />
               </div>
             </header>
             <main>{children}</main>
             <footer
-              className="mt-24 border-t py-10 text-center text-xs"
-              style={{ borderColor: 'var(--border)', color: 'var(--text-muted)' }}
+              className="mt-24 border-t pt-8 pb-10"
+              style={{ borderColor: 'var(--border)' }}
             >
-              &copy; 2026 CFD.Lab. Built with Next.js &amp; Contentlayer.
+              <div className="flex flex-col items-center gap-3 text-xs" style={{ color: 'var(--text-muted)' }}>
+                <div className="flex items-center gap-4">
+                  <Link href="/tags" className="transition-colors hover:text-inherit" style={{ color: 'var(--text-muted)' }}
+                    onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = 'var(--text)' }}
+                    onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'var(--text-muted)' }}
+                  >Tags</Link>
+                  <Link href="/about" className="transition-colors"
+                    style={{ color: 'var(--text-muted)' }}
+                    onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = 'var(--text)' }}
+                    onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'var(--text-muted)' }}
+                  >About</Link>
+                  <a href="/feed.xml" className="transition-colors"
+                    style={{ color: 'var(--text-muted)' }}
+                    onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = 'var(--accent)' }}
+                    onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'var(--text-muted)' }}
+                  >RSS</a>
+                  <a href="https://github.com/younglin90" target="_blank" rel="noopener noreferrer"
+                    className="transition-colors"
+                    style={{ color: 'var(--text-muted)' }}
+                    onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = 'var(--text)' }}
+                    onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'var(--text-muted)' }}
+                  >GitHub</a>
+                </div>
+                <span>&copy; 2026 CFD.Lab</span>
+              </div>
             </footer>
           </div>
         </ThemeProvider>
