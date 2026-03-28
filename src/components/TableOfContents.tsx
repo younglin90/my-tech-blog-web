@@ -113,11 +113,17 @@ export function TableOfContents() {
             style={{ transform: mobileOpen ? 'rotate(180deg)' : 'none' }}
           />
         </button>
-        {mobileOpen && (
+        <div
+          style={{
+            maxHeight: mobileOpen ? '400px' : '0',
+            overflow: 'hidden',
+            transition: 'max-height 0.2s ease',
+          }}
+        >
           <div className="border-t px-4 pb-4 pt-3" style={{ borderColor: 'var(--border)' }}>
             {tocList}
           </div>
-        )}
+        </div>
       </div>
 
       {/* Desktop fixed sidebar (xl+) */}
