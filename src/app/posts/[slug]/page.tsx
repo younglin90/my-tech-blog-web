@@ -42,12 +42,14 @@ export async function generateMetadata({ params }: PostProps): Promise<Metadata>
   return {
     title: post.title,
     description: post.description,
+    keywords: post.tags ?? [],
     openGraph: {
       title: post.title,
       description: post.description,
       type: 'article',
       publishedTime: post.date,
       url: `https://tech-blog.dev/posts/${slug}`,
+      tags: post.tags,
     },
     twitter: {
       card: 'summary_large_image',
@@ -74,8 +76,21 @@ export default async function PostPage({ params }: PostProps) {
   const nextPost = currentIndex > 0 ? posts[currentIndex - 1] : null
   const related = getRelatedPosts(slug, post.tags ?? [])
 
+  const jsonLd = {
+    '@context': 'https://schema.org',
+    '@type': 'TechArticle',
+    headline: post.title,
+    description: post.description,
+    datePublished: post.date,
+    keywords: (post.tags ?? []).join(', '),
+    author: { '@type': 'Person', name: 'CFD.Lab', url: 'https://tech-blog.dev/about' },
+    publisher: { '@type': 'Organization', name: 'CFD.Lab', url: 'https://tech-blog.dev' },
+    url: `https://tech-blog.dev/posts/${slug}`,
+  }
+
   return (
     <article className="py-6">
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }} />
       <ReadingProgress />
 
       {/* Header */}
@@ -98,22 +113,7 @@ export default async function PostPage({ params }: PostProps) {
         {post.tags && post.tags.length > 0 && (
           <div className="mt-4 flex flex-wrap justify-center gap-2">
             {post.tags.map((tag) => (
-              <Link
-                key={tag}
-                href={`/tags/${encodeURIComponent(tag)}`}
-                className="rounded-full px-3 py-1 text-xs font-medium transition-colors duration-100"
-                style={{ background: 'var(--surface)', color: 'var(--text-muted)', border: '1px solid var(--border)' }}
-                onMouseEnter={(e) => {
-                  const el = e.currentTarget as HTMLElement
-                  el.style.borderColor = 'var(--accent)'
-                  el.style.color = 'var(--accent)'
-                }}
-                onMouseLeave={(e) => {
-                  const el = e.currentTarget as HTMLElement
-                  el.style.borderColor = 'var(--border)'
-                  el.style.color = 'var(--text-muted)'
-                }}
-              >
+              <Link key={tag} href={`/tags/${encodeURIComponent(tag)}`} className="tag-pill">
                 {tag}
               </Link>
             ))}
@@ -135,22 +135,13 @@ export default async function PostPage({ params }: PostProps) {
       {/* Related posts */}
       {related.length > 0 && (
         <div className="mt-10">
-          <h2
-            className="mb-4 text-sm font-semibold uppercase tracking-widest"
-            style={{ color: 'var(--text-muted)' }}
-          >
+          <h2 className="mb-4 text-sm font-semibold uppercase tracking-widest" style={{ color: 'var(--text-muted)' }}>
             Related
           </h2>
           <div className="divide-y" style={{ borderColor: 'var(--border)' }}>
             {related.map((r) => (
               <div key={r.slug} className="py-4">
-                <Link
-                  href={r.url}
-                  className="text-base font-medium transition-colors"
-                  style={{ color: 'var(--text)' }}
-                  onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = 'var(--accent)' }}
-                  onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'var(--text)' }}
-                >
+                <Link href={r.url} className="link-hover-accent text-base font-medium">
                   {r.title}
                 </Link>
                 <p className="mt-0.5 text-xs" style={{ color: 'var(--text-muted)' }}>
@@ -167,27 +158,13 @@ export default async function PostPage({ params }: PostProps) {
         {prevPost ? (
           <Link href={prevPost.url} className="flex flex-col gap-1">
             <span className="text-xs" style={{ color: 'var(--text-muted)' }}>&larr; Previous</span>
-            <span
-              className="text-sm font-medium transition-colors"
-              style={{ color: 'var(--text)' }}
-              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = 'var(--accent)' }}
-              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'var(--text)' }}
-            >
-              {prevPost.title}
-            </span>
+            <span className="link-hover-accent text-sm font-medium">{prevPost.title}</span>
           </Link>
         ) : <div />}
         {nextPost ? (
           <Link href={nextPost.url} className="flex flex-col gap-1 text-right">
             <span className="text-xs" style={{ color: 'var(--text-muted)' }}>Next &rarr;</span>
-            <span
-              className="text-sm font-medium transition-colors"
-              style={{ color: 'var(--text)' }}
-              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = 'var(--accent)' }}
-              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'var(--text)' }}
-            >
-              {nextPost.title}
-            </span>
+            <span className="link-hover-accent text-sm font-medium">{nextPost.title}</span>
           </Link>
         ) : <div />}
       </nav>

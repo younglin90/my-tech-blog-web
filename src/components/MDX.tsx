@@ -70,13 +70,25 @@ const components = {
   p: (props: any) => (
     <p className="leading-7 [&:not(:first-child)]:mt-6" {...props} />
   ),
-  a: (props: any) => (
-    <Link
-      className="font-medium underline underline-offset-4 transition-opacity hover:opacity-75"
-      style={{ color: 'var(--accent)' }}
-      {...props}
-    />
-  ),
+  a: ({ href, children, ...props }: any) => {
+    const isExternal = typeof href === 'string' && (href.startsWith('http://') || href.startsWith('https://'))
+    return (
+      <Link
+        href={href ?? '#'}
+        className="font-medium underline underline-offset-4 transition-opacity hover:opacity-75 inline-flex items-center gap-0.5"
+        style={{ color: 'var(--accent)' }}
+        {...(isExternal ? { target: '_blank', rel: 'noopener noreferrer' } : {})}
+        {...props}
+      >
+        {children}
+        {isExternal && (
+          <svg className="inline h-3 w-3 shrink-0" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5">
+            <path d="M2 10L10 2M10 2H5M10 2v5" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+        )}
+      </Link>
+    )
+  },
   ul: (props: any) => (
     <ul className="my-6 ml-6 list-disc [&>li]:mt-2" {...props} />
   ),

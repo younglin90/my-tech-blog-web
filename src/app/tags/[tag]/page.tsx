@@ -38,13 +38,7 @@ export default async function TagPage({ params }: TagPageProps) {
   return (
     <div>
       <div className="mb-8">
-        <Link
-          href="/tags"
-          className="text-xs transition-colors"
-          style={{ color: 'var(--text-muted)' }}
-          onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = 'var(--accent)' }}
-          onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'var(--text-muted)' }}
-        >
+        <Link href="/tags" className="link-hover-text-accent text-xs">
           ← All tags
         </Link>
         <h1
@@ -65,13 +59,7 @@ export default async function TagPage({ params }: TagPageProps) {
               className="mb-1.5 text-xl font-semibold tracking-tight"
               style={{ fontFamily: 'var(--font-display)' }}
             >
-              <Link
-                href={post.url}
-                className="transition-colors"
-                style={{ color: 'var(--text)' }}
-                onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = 'var(--accent)' }}
-                onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = 'var(--text)' }}
-              >
+              <Link href={post.url} className="link-hover-accent">
                 {post.title}
               </Link>
             </h2>
