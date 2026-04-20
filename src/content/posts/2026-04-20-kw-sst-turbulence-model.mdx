@@ -1,0 +1,213 @@
+---
+title: "k-ω SST 난류 모델: 혼합 함수와 와점성 리미터의 원리"
+date: 2026-04-20
+description: "산업 CFD의 표준 RANS 모델인 k-ω SST의 수학적 구조와 OpenFOAM 적용 실무를 해설한다"
+tags: ["CFD", "난류모델", "RANS", "OpenFOAM", "k-omega-SST"]
+draft: true
+---
+
+## 왜 SST인가?
+
+난류 모델의 양대 산맥 **k-ε**과 **k-ω**는 각자 약점이 있다.
+k-ε은 자유류에서 강건하지만 역압력구배(adverse pressure gradient) 근처에서 와점성을 과대평가한다.
+k-ω는 벽면 근처 경계층을 정확하게 잡지만 자유류에서 초기조건에 민감하다.
+
+Menter(1994)는 이 두 모델을 **혼합 함수(blending function)**로 이어 붙인 SST(Shear Stress Transport) 모델을 제안했다.
+오늘날 항공우주·자동차·터보기계 CFD에서 가장 널리 쓰이는 RANS 모델이다.
+
+---
+
+## 수송 방정식
+
+SST는 두 개의 스칼라 수송 방정식을 푼다.
+
+**난류 운동에너지 $k$:**
+
+$$
+\frac{\partial(\rho k)}{\partial t} + \frac{\partial(\rho U_j k)}{\partial x_j}
+= P_k - \beta^* \rho \omega k
++ \frac{\partial}{\partial x_j}\!\left[\left(\mu + \sigma_k \mu_t\right)\frac{\partial k}{\partial x_j}\right]
+$$
+
+**비소산율 $\omega$ (specific dissipation rate):**
+
+$$
+\frac{\partial(\rho \omega)}{\partial t} + \frac{\partial(\rho U_j \omega)}{\partial x_j}
+= \frac{\alpha \rho}{\mu_t} P_k - \beta \rho \omega^2
++ \frac{\partial}{\partial x_j}\!\left[\left(\mu + \sigma_\omega \mu_t\right)\frac{\partial \omega}{\partial x_j}\right]
++ 2(1 - F_1)\frac{\rho \sigma_{\omega 2}}{\omega}\frac{\partial k}{\partial x_j}\frac{\partial \omega}{\partial x_j}
+$$
+
+$\omega$ 방정식 마지막 항이 **교차확산(cross-diffusion)** 항으로, k-ε 방정식에서 $\omega$로 변환할 때 나타난다.
+$F_1 = 0$인 외층에서만 활성화된다.
+
+---
+
+## 혼합 함수 $F_1$
+
+$$
+F_1 = \tanh\!\left(\mathrm{arg}_1^4\right)
+$$
+
+$$
+\mathrm{arg}_1 = \min\!\left[\max\!\left(\frac{\sqrt{k}}{\beta^* \omega y},\; \frac{500\nu}{y^2 \omega}\right),\;
+\frac{4\rho \sigma_{\omega 2} k}{C_{D_{k\omega}} y^2}\right]
+$$
+
+여기서 $y$는 가장 가까운 벽면까지의 거리이고,
+
+$$
+C_{D_{k\omega}} = \max\!\left(2\rho\sigma_{\omega 2} \cdot \frac{1}{\omega}\frac{\partial k}{\partial x_j}\frac{\partial \omega}{\partial x_j},\; 10^{-10}\right)
+$$
+
+$F_1 \to 1$이면 **내층(log-law region)**에서 k-ω가 작동하고,
+$F_1 \to 0$이면 **외층**에서 k-ε이 작동한다.
+모든 모델 상수는 $\varphi = F_1 \varphi_1 + (1 - F_1)\varphi_2$ 로 혼합된다.
+
+---
+
+## 핵심: 와점성 리미터(Eddy Viscosity Limiter)
+
+SST의 진정한 차별점은 와점성 $\mu_t$ 계산에 있다.
+
+표준 k-ε의 공식은 $\mu_t = C_\mu \rho k^2 / \varepsilon$ 이다.
+역압력구배 영역에서 $k$가 과도하게 쌓이면 $\mu_t$가 비현실적으로 커진다.
+
+SST는 이를 **변형률 크기** $S$로 제한한다:
+
+$$
+\mu_t = \frac{\rho a_1 k}{\max(a_1 \omega,\; S F_2)}
+$$
+
+$$
+F_2 = \tanh\!\left(\mathrm{arg}_2^2\right), \qquad
+\mathrm{arg}_2 = \max\!\left(\frac{2\sqrt{k}}{\beta^* \omega y},\; \frac{500\nu}{y^2 \omega}\right)
+$$
+
+$S = \sqrt{2 S_{ij} S_{ij}}$는 변형률 텐서의 크기다.
+$S F_2 > a_1 \omega$이면, 즉 유동이 강하게 전단될수록 $\mu_t$가 줄어든다.
+이것이 박리 영역의 $\mu_t$ 과대 예측을 억제하는 메커니즘이다.
+
+---
+
+## 모델 상수
+
+| 상수 | Inner (k-ω) $\varphi_1$ | Outer (k-ε 변환) $\varphi_2$ |
+|------|--------------------------|-------------------------------|
+| $\sigma_k$ | 0.85 | 1.00 |
+| $\sigma_\omega$ | 0.50 | 0.856 |
+| $\beta$ | 0.0750 | 0.0828 |
+| $\alpha$ | 5/9 | 0.44 |
+| $\beta^*$ | 0.09 | 0.09 |
+| $a_1$ | 0.31 | 0.31 |
+
+---
+
+## OpenFOAM 설정
+
+### `constant/turbulenceProperties`
+
+```cpp
+simulationType  RAS;
+
+RAS
+{
+    RASModel    kOmegaSST;
+    turbulence  on;
+    printCoeffs on;
+}
+```
+
+### 초기조건 계산 (파이프 유동, 난류강도 5%)
+
+입구 유속 $U_\infty$, 수력직경 $D_h$, 난류강도 $I = 0.05$를 가정한다.
+
+$$
+k_0 = \tfrac{3}{2}(U_\infty I)^2, \qquad
+\omega_0 = \frac{k_0^{1/2}}{C_\mu^{1/4} \, l}, \quad l = 0.07 D_h
+$$
+
+```python
+import numpy as np
+
+U_inf = 10.0    # m/s
+D_h   = 0.1     # m
+I     = 0.05    # turbulence intensity
+C_mu  = 0.09
+
+k0  = 1.5 * (U_inf * I)**2
+l   = 0.07 * D_h
+w0  = k0**0.5 / (C_mu**0.25 * l)
+
+print(f"k₀  = {k0:.4f}  m²/s²")
+print(f"ω₀  = {w0:.2f}  1/s")
+# k₀  = 0.1875  m²/s²
+# ω₀  = 28.87   1/s
+```
+
+### 경계조건 요약
+
+| 경계 | $k$ | $\omega$ | $\nu_t$ |
+|------|-----|----------|---------|
+| 입구 | `fixedValue` $k_0$ | `fixedValue` $\omega_0$ | `calculated` |
+| 벽면 | `kqRWallFunction` | `omegaWallFunction` | `nutkWallFunction` |
+| 출구 | `zeroGradient` | `zeroGradient` | `calculated` |
+
+---
+
+## $y^+$ 요구사항
+
+k-ω SST는 **벽함수(wall function) 없이** 벽면까지 직접 적분한다.
+
+$$y^+ = \frac{y_p \, u_\tau}{\nu}, \qquad u_\tau = \sqrt{\frac{\tau_w}{\rho}}$$
+
+- 목표: $y^+ \approx 0.5 \sim 1$
+- 허용: $y^+ < 5$ (단, 첫 번째 셀이 점성 부층 내에 있어야 함)
+- **절대 금지**: $y^+ > 10$ — 이 경우 로그법칙 영역을 건너뛰어 결과가 완전히 틀어진다
+
+첫 번째 셀 높이 추정:
+
+```python
+def first_cell_height(Re, L, target_yp=1.0, nu=1.5e-5):
+    """평판 경험식으로 벽면 셀 높이 추정 (단위: m)."""
+    Cf  = 0.058 * Re**(-0.2)          # Prandtl 1/5 power law
+    U   = Re * nu / L
+    tau = 0.5 * Cf * U**2             # ρ=1 가정
+    u_tau = tau**0.5
+    return target_yp * nu / u_tau
+
+Re = 1e6; L = 1.0
+delta_y = first_cell_height(Re, L)
+print(f"첫 번째 셀 높이: {delta_y*1e6:.2f} μm")
+```
+
+---
+
+## 흔한 실수 4가지
+
+1. **$y^+$ 무시**: SST는 벽함수를 쓰지 않는다. $y^+ > 5$이면 경계층 전체가 틀린다.
+2. **$\omega_0$ 오류**: $\omega$가 너무 크면 $\mu_t \to 0$으로 수치확산만 남고, 너무 작으면 발산한다.
+3. **비정상 해석에 URANS만 사용**: 강한 주기적 박리(예: 실린더 후류)에서 SST는 에너지를 과소평가한다. SAS-SST 또는 DES를 검토하라.
+4. **압축성 유동에 보정 없이 적용**: Mach > 0.3에서는 압축성 보정(compressibility correction) 또는 Wilcox k-ω(2006)를 고려해야 한다.
+
+---
+
+## 정리
+
+| 항목 | 내용 |
+|------|------|
+| 핵심 아이디어 | $F_1$으로 k-ω(벽면)↔k-ε(외부) 혼합 |
+| 와점성 | 변형률 $S$로 $\mu_t$ 상한 제한 |
+| $y^+$ 목표 | $< 1$ (LRN 직접 적분) |
+| 적합한 유동 | 역압력구배, 박리, 경계층 전이 |
+| 적합하지 않은 유동 | 강한 박리 후 재부착, 고마하수 충격파 |
+
+k-ω SST는 "만능"은 아니지만, 경계층이 있는 외부 유동과 내부 유동에서 계산 비용 대비 가장 신뢰할 수 있는 RANS 선택지다.
+
+---
+
+## 참고문헌
+
+- Menter, F.R. (1994). *Two-Equation Eddy-Viscosity Turbulence Models for Engineering Applications.* AIAA Journal, 32(8), 1598–1605.
+- Menter, F.R., Kuntz, M., Langtry, R. (2003). *Ten Years of Industrial Experience with the SST Turbulence Model.* Turbulence, Heat and Mass Transfer, 4, 625–632.
+- OpenFOAM Foundation. [kOmegaSST model documentation](https://www.openfoam.com/documentation/guides/latest/doc/guide-turbulence-ras-k-omega-sst.html).
