@@ -18,9 +18,12 @@ export function TagsClient({ tags }: { tags: [string, number][] }) {
     <div>
       <div className="mb-6 flex items-center justify-between">
         <div>
+          <div className="mono mb-1" style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+            <span style={{ color: 'var(--accent)' }}>$</span> ls tags/ | sort -nr
+          </div>
           <h1
-            className="mb-1 text-3xl font-bold tracking-tight"
-            style={{ fontFamily: 'var(--font-display)', color: 'var(--text)' }}
+            className="display mb-1"
+            style={{ fontSize: 32, fontWeight: 700, letterSpacing: '-0.02em', color: 'var(--text)' }}
           >
             Tags
           </h1>

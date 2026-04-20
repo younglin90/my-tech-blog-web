@@ -4,8 +4,8 @@ export const dynamic = 'force-static'
 
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: 'CFD.Lab',
-    short_name: 'CFD.Lab',
+    name: "영린's CFD Blog",
+    short_name: "영린's CFD Blog",
     description: 'CFD 엔지니어를 위한 기술 저널 — 수식, 코드, 인터랙티브 시각화',
     start_url: '/',
     display: 'standalone',

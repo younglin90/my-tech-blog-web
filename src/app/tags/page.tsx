@@ -4,7 +4,7 @@ import { TagsClient } from './TagsClient'
 
 export const metadata: Metadata = {
   title: 'Tags',
-  description: 'CFD.Lab의 모든 태그 — 주제별 포스트를 찾아보세요.',
+  description: "영린's CFD Blog의 모든 태그 — 주제별 포스트를 찾아보세요.",
   alternates: { canonical: 'https://tech-blog.dev/tags' },
 }
 
@@ -25,7 +25,7 @@ export default function TagsPage() {
   const jsonLd = {
     '@context': 'https://schema.org',
     '@type': 'ItemList',
-    name: 'CFD.Lab Tags',
+    name: "영린's CFD Blog Tags",
     numberOfItems: tags.length,
     itemListElement: tags
       .sort((a, b) => b[1] - a[1])

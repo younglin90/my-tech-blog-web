@@ -1,7 +1,8 @@
 import { allPosts } from 'contentlayer/generated'
 import { compareDesc, parseISO } from 'date-fns'
 import { PostList } from '@/components/PostList'
-import Link from 'next/link'
+import { QuoteHero } from '@/components/QuoteHero'
+import { DAY_META } from '@/lib/day-meta'
 import type { Metadata } from 'next'
 
 export const metadata: Metadata = {
@@ -11,8 +12,8 @@ export const metadata: Metadata = {
 const jsonLd = {
   '@context': 'https://schema.org',
   '@type': 'WebSite',
-  name: 'CFD.Lab',
-  description: 'CFD 엔지니어를 위한 기술 저널 — 수식, 코드, 인터랙티브 시각화',
+  name: "영린's CFD Blog",
+  description: '압축성 다상유동 CFD 연구자의 작업 노트',
   url: 'https://tech-blog.dev',
   potentialAction: {
     '@type': 'SearchAction',
@@ -20,6 +21,8 @@ const jsonLd = {
     'query-input': 'required name=search_term_string',
   },
 }
+
+const DAY_ORDER: Array<keyof typeof DAY_META> = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']
 
 export default function Home() {
   const posts = allPosts
@@ -39,35 +42,37 @@ export default function Home() {
   return (
     <div>
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }} />
-      <div className="mb-10">
-        <div className="flex items-baseline justify-between">
-          <h1
-            className="text-3xl font-bold tracking-tight"
-            style={{ fontFamily: 'var(--font-display)', color: 'var(--text)' }}
-          >
-            CFD.Lab
-          </h1>
-          <span className="text-xs tabular-nums" style={{ color: 'var(--text-faint)' }}>
-            {posts.length} posts
-          </span>
-        </div>
-        <div className="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1">
-          <p className="text-sm leading-relaxed" style={{ color: 'var(--text-muted)' }}>
-            수식, 코드, 시각화로 풀어내는 전산유체역학 기술 저널.
-            <span style={{ color: 'var(--accent)' }}> 매일 자동 발행.</span>
-          </p>
-          <a
-            href="/feed.xml"
-            className="flex items-center gap-1 text-xs font-medium transition-opacity hover:opacity-75"
-            style={{ color: 'var(--accent)' }}
-          >
-            <svg className="h-3 w-3" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-              <path d="M6.18 15.64a2.18 2.18 0 0 1 2.18 2.18C8.36 19.01 7.38 20 6.18 20C4.98 20 4 19.01 4 17.82a2.18 2.18 0 0 1 2.18-2.18M4 4.44A15.56 15.56 0 0 1 19.56 20h-2.83A12.73 12.73 0 0 0 4 7.27V4.44m0 5.66a9.9 9.9 0 0 1 9.9 9.9h-2.83A7.07 7.07 0 0 0 4 12.93V10.1z"/>
-            </svg>
-            RSS
-          </a>
-        </div>
+
+      <QuoteHero />
+
+      {/* Weekly schedule strip */}
+      <div
+        className="mb-5 flex flex-wrap items-center gap-x-5 gap-y-2 px-4 py-3 rounded-lg"
+        style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
+      >
+        <span
+          className="mono"
+          style={{ fontSize: 10, color: 'var(--text-faint)', letterSpacing: '0.2em', fontWeight: 600 }}
+        >
+          WEEKLY
+        </span>
+        {DAY_ORDER.map((k) => {
+          const m = DAY_META[k]
+          return (
+            <span key={k} className="inline-flex items-center gap-1.5" style={{ fontSize: 12 }}>
+              <span
+                className="inline-block rounded-full"
+                style={{ width: 6, height: 6, background: m.colorVar }}
+              />
+              <span className="mono" style={{ color: 'var(--text-muted)', fontSize: 10.5 }}>
+                {m.short}
+              </span>
+              <span style={{ color: 'var(--text)' }}>{m.label}</span>
+            </span>
+          )
+        })}
       </div>
+
       <PostList staticPosts={posts} />
     </div>
   )

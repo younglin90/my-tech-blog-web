@@ -2,7 +2,7 @@ import { ImageResponse } from 'next/og'
 import { allPosts } from 'contentlayer/generated'
 
 export const dynamic = 'force-static'
-export const alt = 'CFD.Lab post'
+export const alt = "영린's CFD Blog post"
 
 export function generateStaticParams() {
   return allPosts
@@ -15,7 +15,7 @@ export const contentType = 'image/png'
 export default async function Image({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params
   const post = allPosts.find((p) => p._raw.flattenedPath === slug)
-  const title = post?.title ?? 'CFD.Lab'
+  const title = post?.title ?? "영린's CFD Blog"
   const description = post?.description ?? 'CFD 엔지니어를 위한 기술 저널'
   const tags = post?.tags?.slice(0, 3) ?? []
 
@@ -34,13 +34,14 @@ export default async function Image({ params }: { params: Promise<{ slug: string
         }}
       >
         {/* Accent line */}
-        <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: '4px', background: '#22d3ee' }} />
+        <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: '4px', background: '#fbbf24' }} />
 
         {/* Logo */}
-        <div style={{ position: 'absolute', top: '48px', left: '60px', display: 'flex', alignItems: 'center', gap: '4px' }}>
-          <span style={{ fontSize: '22px', fontWeight: 700, color: '#e2e8f0', letterSpacing: '-0.02em' }}>CFD</span>
-          <span style={{ fontSize: '22px', fontWeight: 700, color: '#22d3ee' }}>.</span>
-          <span style={{ fontSize: '22px', fontWeight: 700, color: '#e2e8f0', letterSpacing: '-0.02em' }}>Lab</span>
+        <div style={{ position: 'absolute', top: '48px', left: '60px', display: 'flex', alignItems: 'baseline', gap: '10px' }}>
+          <span style={{ fontSize: '22px', fontWeight: 700, color: '#fbbf24', fontFamily: 'monospace' }}>$_</span>
+          <span style={{ fontSize: '22px', fontWeight: 700, color: '#e2e8f0', letterSpacing: '-0.02em' }}>영린</span>
+          <span style={{ fontSize: '22px', fontWeight: 700, color: '#fbbf24', letterSpacing: '-0.02em' }}>&apos;s</span>
+          <span style={{ fontSize: '22px', fontWeight: 700, color: '#e2e8f0', letterSpacing: '-0.02em' }}>CFD Blog</span>
         </div>
 
         {/* Tags */}
@@ -54,9 +55,9 @@ export default async function Image({ params }: { params: Promise<{ slug: string
                   borderRadius: '9999px',
                   fontSize: '13px',
                   fontWeight: 500,
-                  color: '#22d3ee',
-                  background: 'rgba(34,211,238,0.12)',
-                  border: '1px solid rgba(34,211,238,0.25)',
+                  color: '#fbbf24',
+                  background: 'rgba(251,191,36,0.12)',
+                  border: '1px solid rgba(251,191,36,0.25)',
                   fontFamily: 'monospace',
                 }}
               >

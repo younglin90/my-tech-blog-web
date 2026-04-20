@@ -13,7 +13,7 @@ export async function generateMetadata({ params }: TagPageProps): Promise<Metada
   const decoded = decodeURIComponent(tag)
   return {
     title: `#${decoded}`,
-    description: `"${decoded}" 태그의 CFD.Lab 포스트 모음`,
+    description: `"${decoded}" 태그의 포스트 모음`,
     alternates: { canonical: `https://tech-blog.dev/tags/${tag}` },
   }
 }
@@ -45,7 +45,7 @@ export default async function TagPage({ params }: TagPageProps) {
     '@context': 'https://schema.org',
     '@type': 'BreadcrumbList',
     itemListElement: [
-      { '@type': 'ListItem', position: 1, name: 'CFD.Lab', item: 'https://tech-blog.dev' },
+      { '@type': 'ListItem', position: 1, name: "영린's CFD Blog", item: 'https://tech-blog.dev' },
       { '@type': 'ListItem', position: 2, name: 'Tags', item: 'https://tech-blog.dev/tags' },
       { '@type': 'ListItem', position: 3, name: `#${decoded}`, item: `https://tech-blog.dev/tags/${tag}` },
     ],
@@ -67,23 +67,31 @@ export default async function TagPage({ params }: TagPageProps) {
     <div>
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(breadcrumbJsonLd) }} />
       <div className="mb-8">
-        <Link href="/tags" className="link-hover-text-accent text-xs">
-          ← All tags
+        <Link
+          href="/tags"
+          className="mono"
+          style={{ fontSize: 12, color: 'var(--text-muted)' }}
+        >
+          <span style={{ color: 'var(--accent)' }}>$</span> cd ..
         </Link>
+        <div className="mono mt-3" style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+          <span style={{ color: 'var(--accent)' }}>grep</span>{' '}
+          <span style={{ color: 'var(--text)' }}>&quot;#{decoded}&quot;</span>
+          <span style={{ color: 'var(--text-faint)', marginLeft: 10 }}>
+            // {posts.length} match{posts.length !== 1 ? 'es' : ''}
+          </span>
+        </div>
         <h1
-          className="mt-2 text-3xl font-bold tracking-tight"
-          style={{ fontFamily: 'var(--font-display)', color: 'var(--text)' }}
+          className="display mt-1"
+          style={{ fontSize: 30, fontWeight: 700, letterSpacing: '-0.02em', color: 'var(--text)' }}
         >
           <span style={{ color: 'var(--accent)' }}>#</span>{decoded}
         </h1>
-        <p className="mt-1 text-sm" style={{ color: 'var(--text-muted)' }}>
-          {posts.length} post{posts.length !== 1 ? 's' : ''}
-          {totalReadMinutes > 0 && (
-            <span style={{ color: 'var(--text-faint)' }}>
-              {' '}· ~{totalReadMinutes} min total
-            </span>
-          )}
-        </p>
+        {totalReadMinutes > 0 && (
+          <p className="mt-1 text-sm" style={{ color: 'var(--text-muted)' }}>
+            ~{totalReadMinutes} min total
+          </p>
+        )}
       </div>
 
       <div className="divide-y" style={{ borderColor: 'var(--border)' }}>

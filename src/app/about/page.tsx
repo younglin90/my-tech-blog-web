@@ -13,7 +13,7 @@ export const metadata: Metadata = {
 const personJsonLd = {
   '@context': 'https://schema.org',
   '@type': 'Person',
-  name: 'CFD.Lab',
+  name: "영린's CFD Blog",
   url: 'https://tech-blog.dev',
   sameAs: ['https://github.com/younglin90'],
   knowsAbout: [
@@ -63,9 +63,12 @@ export default function AboutPage() {
   return (
     <div className="max-w-none">
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(personJsonLd) }} />
+      <div className="mono mb-2" style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+        <span style={{ color: 'var(--accent)' }}>$</span> whoami
+      </div>
       <h1
-        className="mb-4 text-4xl font-bold tracking-tight"
-        style={{ fontFamily: 'var(--font-display)', color: 'var(--text)' }}
+        className="display mb-4"
+        style={{ fontSize: 36, fontWeight: 700, letterSpacing: '-0.02em', color: 'var(--text)' }}
       >
         About
       </h1>

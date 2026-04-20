@@ -3,8 +3,9 @@
 import { useEffect, useState, useMemo } from 'react'
 import Link from 'next/link'
 import { format, parseISO } from 'date-fns'
-import { getAllDynamicPosts, type DynamicPost } from '@/lib/dynamic-posts'
+import { getAllDynamicPosts } from '@/lib/dynamic-posts'
 import { getBookmarks } from '@/components/BookmarkButton'
+import { dayMeta } from '@/lib/day-meta'
 
 interface StaticPostItem {
   id: string
@@ -29,21 +30,24 @@ interface DynamicPostItem {
 type PostItem = StaticPostItem | DynamicPostItem
 
 const READ_POSTS_KEY = 'cfd-lab-read-posts'
+const PREFS_KEY = 'cfd-lab-list-prefs'
 
 function getReadPosts(): Set<string> {
   try {
     const raw = localStorage.getItem(READ_POSTS_KEY)
     return new Set(raw ? JSON.parse(raw) : [])
-  } catch { return new Set() }
+  } catch {
+    return new Set()
+  }
 }
-
-const PREFS_KEY = 'cfd-lab-list-prefs'
 
 function loadPrefs(): { sort: 'newest' | 'oldest'; compact: boolean } {
   try {
     const raw = localStorage.getItem(PREFS_KEY)
     return raw ? { sort: 'newest', compact: false, ...JSON.parse(raw) } : { sort: 'newest', compact: false }
-  } catch { return { sort: 'newest', compact: false } }
+  } catch {
+    return { sort: 'newest', compact: false }
+  }
 }
 
 export function PostList({ staticPosts }: { staticPosts: StaticPostItem[] }) {
@@ -55,7 +59,7 @@ export function PostList({ staticPosts }: { staticPosts: StaticPostItem[] }) {
   const [showAllTags, setShowAllTags] = useState(false)
   const [readPosts, setReadPosts] = useState<Set<string>>(new Set())
   const [bookmarks, setBookmarks] = useState<Set<string>>(new Set())
-  const TAG_VISIBLE_LIMIT = 12
+  const TAG_VISIBLE_LIMIT = 8
 
   useEffect(() => {
     setMounted(true)
@@ -77,23 +81,26 @@ export function PostList({ staticPosts }: { staticPosts: StaticPostItem[] }) {
 
   const updateSort = (mode: 'newest' | 'oldest') => {
     setSortMode(mode)
-    try { localStorage.setItem(PREFS_KEY, JSON.stringify({ sort: mode, compact })) } catch {}
+    try {
+      localStorage.setItem(PREFS_KEY, JSON.stringify({ sort: mode, compact }))
+    } catch {}
   }
 
   const updateCompact = (val: boolean) => {
     setCompact(val)
-    try { localStorage.setItem(PREFS_KEY, JSON.stringify({ sort: sortMode, compact: val })) } catch {}
+    try {
+      localStorage.setItem(PREFS_KEY, JSON.stringify({ sort: sortMode, compact: val }))
+    } catch {}
   }
 
-  // Use only static posts until client mounts to avoid hydration mismatch
-  const all: PostItem[] = useMemo(() => (
-    [...staticPosts, ...(mounted ? dynamicPosts : [])].sort(
-      (a, b) => {
+  const all: PostItem[] = useMemo(
+    () =>
+      [...staticPosts, ...(mounted ? dynamicPosts : [])].sort((a, b) => {
         const diff = new Date(b.date).getTime() - new Date(a.date).getTime()
         return sortMode === 'newest' ? diff : -diff
-      }
-    )
-  ), [staticPosts, dynamicPosts, mounted, sortMode])
+      }),
+    [staticPosts, dynamicPosts, mounted, sortMode]
+  )
 
   const allTags = useMemo(() => {
     const counts: Record<string, number> = {}
@@ -106,253 +113,288 @@ export function PostList({ staticPosts }: { staticPosts: StaticPostItem[] }) {
   }, [all])
 
   const filtered = activeTag ? all.filter((p) => p.tags.includes(activeTag)) : all
-
-  const titleStyle = { fontFamily: 'var(--font-display)' }
+  const totalCount = all.length
 
   if (all.length === 0) {
     return (
       <div className="py-24 text-center">
-        <p className="text-4xl" style={{ color: 'var(--border)' }}>∅</p>
-        <p className="mt-3 text-sm" style={{ color: 'var(--text-muted)' }}>No posts published yet.</p>
+        <p className="text-4xl" style={{ color: 'var(--border)' }}>
+          ∅
+        </p>
+        <p className="mt-3 text-sm" style={{ color: 'var(--text-muted)' }}>
+          No posts published yet.
+        </p>
       </div>
     )
   }
 
-  // Group by year
-  const grouped: Record<string, PostItem[]> = {}
-  for (const post of filtered) {
-    const year = new Date(post.date).getFullYear().toString()
-    if (!grouped[year]) grouped[year] = []
-    grouped[year].push(post)
-  }
-  const years = Object.keys(grouped).sort((a, b) => Number(b) - Number(a))
-
-  const staticCount = staticPosts.length
-  const totalCount = all.length
+  const totalWords =
+    staticPosts.reduce((sum, p) => {
+      // readingTime like "12 min" — approximate wordCount from minutes * 250 for display
+      const m = p.readingTime?.match(/(\d+)/)
+      return sum + (m ? Number(m[1]) * 250 : 0)
+    }, 0) || 0
 
   return (
     <div>
-      {/* Tag filter bar + sort toggle */}
+      {/* Tag filter — mono pills */}
       {allTags.length > 0 && (
         <div className="mb-6 flex flex-col gap-3">
-        <div className="flex items-center justify-between gap-2">
-          <div className="-mx-1 flex flex-wrap gap-1.5 px-1 flex-1">
-          <button
-            onClick={() => setActiveTag(null)}
-            className="rounded-full px-3 py-1 text-xs font-medium transition-colors duration-100"
-            style={{
-              background: activeTag === null ? 'var(--accent)' : 'var(--surface)',
-              color: activeTag === null ? '#08111f' : 'var(--text-muted)',
-              border: `1px solid ${activeTag === null ? 'var(--accent)' : 'var(--border)'}`,
-            }}
-          >
-            All
-          </button>
-          {(showAllTags ? allTags : allTags.slice(0, TAG_VISIBLE_LIMIT)).map(([tag, count]) => (
-            <button
-              key={tag}
-              onClick={() => setActiveTag(activeTag === tag ? null : tag)}
-              className="flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium transition-colors duration-100"
-              style={{
-                background: activeTag === tag ? 'var(--accent)' : 'var(--surface)',
-                color: activeTag === tag ? '#08111f' : 'var(--text-muted)',
-                border: `1px solid ${activeTag === tag ? 'var(--accent)' : 'var(--border)'}`,
-              }}
-            >
-              {tag}
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center gap-1.5 flex-1">
               <span
-                className="rounded-full px-1 text-[9px] font-semibold tabular-nums"
+                className="mono shrink-0"
+                style={{ fontSize: 11, color: 'var(--text-faint)', letterSpacing: '0.15em', marginRight: 4 }}
+              >
+                FILTER
+              </span>
+              <button
+                onClick={() => setActiveTag(null)}
+                className="mono rounded-md px-2.5 py-1 text-[12px] transition-colors duration-100"
                 style={{
-                  background: activeTag === tag ? 'rgba(0,0,0,0.15)' : 'var(--border)',
-                  color: activeTag === tag ? '#08111f' : 'var(--text-faint)',
+                  border: '1px solid',
+                  borderColor: !activeTag ? 'var(--accent)' : 'var(--border)',
+                  background: !activeTag ? 'var(--accent-glow)' : 'transparent',
+                  color: !activeTag ? 'var(--accent)' : 'var(--text-muted)',
                 }}
               >
-                {count}
-              </span>
-            </button>
-          ))}
-          {allTags.length > TAG_VISIBLE_LIMIT && (
-            <button
-              onClick={() => setShowAllTags((s) => !s)}
-              className="rounded-full px-3 py-1 text-xs font-medium transition-colors duration-100"
-              style={{ color: 'var(--text-faint)', border: '1px solid var(--border)' }}
-            >
-              {showAllTags ? 'Show less' : `+${allTags.length - TAG_VISIBLE_LIMIT} more`}
-            </button>
-          )}
-          </div>
-          {/* Sort + View toggles */}
-          <div className="flex shrink-0 items-center gap-1.5">
-            <div
-              className="flex items-center gap-0.5 rounded-md p-0.5"
-              style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
-            >
-              {(['newest', 'oldest'] as const).map((mode) => (
+                all
+              </button>
+              {(showAllTags ? allTags : allTags.slice(0, TAG_VISIBLE_LIMIT)).map(([tag, count]) => (
                 <button
-                  key={mode}
-                  onClick={() => updateSort(mode)}
-                  className="rounded px-2 py-1 text-[10px] font-medium transition-colors duration-100"
+                  key={tag}
+                  onClick={() => setActiveTag(activeTag === tag ? null : tag)}
+                  className="mono rounded-md px-2.5 py-1 text-[12px] transition-colors duration-100"
                   style={{
-                    background: sortMode === mode ? 'var(--surface-hover)' : 'transparent',
-                    color: sortMode === mode ? 'var(--text)' : 'var(--text-muted)',
+                    border: '1px solid',
+                    borderColor: activeTag === tag ? 'var(--accent)' : 'var(--border)',
+                    background: activeTag === tag ? 'var(--accent-glow)' : 'transparent',
+                    color: activeTag === tag ? 'var(--accent)' : 'var(--text-muted)',
                   }}
+                  title={`${count} posts`}
                 >
-                  {mode === 'newest' ? '↓ New' : '↑ Old'}
+                  #{tag}
                 </button>
               ))}
+              {allTags.length > TAG_VISIBLE_LIMIT && (
+                <button
+                  onClick={() => setShowAllTags((s) => !s)}
+                  className="mono rounded-md px-2.5 py-1 text-[11px]"
+                  style={{ color: 'var(--text-faint)', border: '1px solid var(--border)' }}
+                >
+                  {showAllTags ? 'less' : `+${allTags.length - TAG_VISIBLE_LIMIT}`}
+                </button>
+              )}
             </div>
-            <button
-              onClick={() => updateCompact(!compact)}
-              className="rounded-md px-2 py-1 text-[10px] font-medium transition-colors duration-100"
-              style={{
-                background: 'var(--surface)',
-                border: `1px solid ${compact ? 'var(--accent)' : 'var(--border)'}`,
-                color: compact ? 'var(--accent)' : 'var(--text-muted)',
-              }}
-              title={compact ? 'Switch to full view' : 'Switch to compact view'}
-            >
-              {compact ? '≡ Full' : '≡ Compact'}
-            </button>
+            <div className="flex shrink-0 items-center gap-1.5">
+              <div
+                className="mono flex items-center gap-0.5 rounded-md p-0.5"
+                style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
+              >
+                {(['newest', 'oldest'] as const).map((mode) => (
+                  <button
+                    key={mode}
+                    onClick={() => updateSort(mode)}
+                    className="rounded px-2 py-1 text-[10px] transition-colors duration-100"
+                    style={{
+                      background: sortMode === mode ? 'var(--surface-hover)' : 'transparent',
+                      color: sortMode === mode ? 'var(--text)' : 'var(--text-muted)',
+                    }}
+                  >
+                    {mode === 'newest' ? '↓ new' : '↑ old'}
+                  </button>
+                ))}
+              </div>
+              <button
+                onClick={() => updateCompact(!compact)}
+                className="mono rounded-md px-2 py-1 text-[10px] transition-colors duration-100"
+                style={{
+                  background: 'var(--surface)',
+                  border: `1px solid ${compact ? 'var(--accent)' : 'var(--border)'}`,
+                  color: compact ? 'var(--accent)' : 'var(--text-muted)',
+                }}
+                title={compact ? 'Switch to full view' : 'Switch to compact view'}
+              >
+                {compact ? '≡ full' : '≡ compact'}
+              </button>
+            </div>
           </div>
         </div>
-        </div>
       )}
 
-      {activeTag && (
-        <div className="mb-4 flex items-center gap-2 text-sm" style={{ color: 'var(--text-muted)' }}>
-          <span>Filtering by</span>
-          <span
-            className="rounded-full px-2.5 py-0.5 text-xs font-semibold"
-            style={{ background: 'var(--accent-glow)', color: 'var(--accent)', border: '1px solid var(--accent)' }}
-          >
-            #{activeTag}
-          </span>
-          <button
-            onClick={() => setActiveTag(null)}
-            className="link-hover-text text-xs transition-colors duration-100"
-            style={{ color: 'var(--text-faint)' }}
-          >
-            Clear ×
-          </button>
-        </div>
-      )}
+      {/* Post list */}
+      <div>
+        {filtered.map((post, idx) => {
+          const href = post.isDynamic ? `/read?id=${post.id}` : post.url
+          const isNew = !post.isDynamic && Date.now() - new Date(post.date).getTime() < 7 * 24 * 60 * 60 * 1000
+          const isRead = mounted && readPosts.has(post.id)
+          const isBookmarked = mounted && bookmarks.has(post.id)
+          const day = dayMeta(post.date)
+          const no = totalCount - (sortMode === 'newest' ? idx : totalCount - 1 - idx)
 
-      {filtered.length === 0 && (
-        <div className="py-16 text-center">
-          <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
-            No posts tagged <strong style={{ color: 'var(--text)' }}>#{activeTag}</strong>.
-          </p>
-        </div>
-      )}
-
-      {years.map((year) => (
-        <div key={year} className="mb-10">
-          <div
-            className="sticky top-14 z-10 mb-4 -mx-4 px-4 py-1.5 text-xs font-semibold uppercase tracking-widest sm:-mx-6 sm:px-6"
-            style={{ color: 'var(--text-faint)', background: 'var(--bg)' }}
-          >
-            {year}
-          </div>
-          <div className="divide-y" style={{ borderColor: 'var(--border)' }}>
-            {grouped[year].map((post) => {
-              const href = post.isDynamic ? `/read?id=${post.id}` : post.url
-              const isNew = !post.isDynamic && (Date.now() - new Date(post.date).getTime()) < 7 * 24 * 60 * 60 * 1000
-              const isRead = mounted && readPosts.has(post.id)
-              const isBookmarked = mounted && bookmarks.has(post.id)
-              if (compact) {
-                return (
-                  <div key={post.id} className="group flex items-center justify-between gap-3 py-2.5 -mx-1 px-1 rounded transition-colors duration-100 hover:bg-[var(--surface)]">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <Link href={href} className="link-hover-accent text-sm font-medium truncate" style={titleStyle}>
-                        {post.title}
-                      </Link>
-                      {isNew && <span className="shrink-0 rounded-full px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide" style={{ background: 'var(--accent)', color: '#08111f' }}>New</span>}
-                      {isRead && <span className="shrink-0 text-[10px]" style={{ color: 'var(--text-faint)' }} title="Read">✓</span>}
-                      {isBookmarked && <span className="shrink-0 text-[10px]" style={{ color: 'var(--accent)' }} title="Saved">⊕</span>}
-                    </div>
-                    <time className="shrink-0 text-xs tabular-nums" style={{ color: 'var(--text-faint)' }} dateTime={post.date}>
-                      {format(post.isDynamic ? new Date(post.date) : parseISO(post.date), 'MMM d')}
-                    </time>
-                  </div>
-                )
-              }
-
-              return (
-                <div key={post.id} className="group rounded-lg px-3 py-6 -mx-3 transition-colors duration-100 hover:bg-[var(--surface)]">
-                  <h2 className="mb-1.5 flex items-start justify-between gap-2 text-xl font-semibold leading-snug tracking-tight" style={titleStyle}>
-                    <span className="flex items-start gap-2">
-                    <Link
-                      href={href}
-                      className="link-hover-accent"
-                    >
-                      {post.title}
-                    </Link>
+          if (compact) {
+            return (
+              <Link
+                key={post.id}
+                href={href}
+                className="group transition-colors duration-100"
+                style={{ display: 'block' }}
+              >
+                <div
+                  className="grid gap-3 py-2.5 px-1 -mx-1 rounded"
+                  style={{
+                    gridTemplateColumns: '50px 46px 88px 1fr auto',
+                    alignItems: 'baseline',
+                    borderBottom: '1px solid var(--border-soft)',
+                  }}
+                >
+                  <span className="mono tabular" style={{ fontSize: 11, color: 'var(--text-faint)' }}>
+                    #{String(no).padStart(3, '0')}
+                  </span>
+                  <span className="mono" style={{ fontSize: 11, color: day.colorVar, fontWeight: 600 }}>
+                    {day.short}
+                  </span>
+                  <span className="mono tabular" style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                    {format(post.isDynamic ? new Date(post.date) : parseISO(post.date), 'yyyy.MM.dd')}
+                  </span>
+                  <span
+                    className="truncate"
+                    style={{
+                      fontSize: 14.5,
+                      color: 'var(--text)',
+                      fontWeight: 500,
+                    }}
+                  >
+                    {post.title}
                     {isNew && (
-                      <span className="mt-1.5 shrink-0 rounded-full px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide" style={{ background: 'var(--accent)', color: '#08111f' }}>
-                        New
+                      <span
+                        className="ml-2 rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide"
+                        style={{ background: 'var(--accent)', color: 'var(--bg)' }}
+                      >
+                        new
                       </span>
                     )}
                     {isRead && (
-                      <span className="mt-2 shrink-0 text-[10px]" style={{ color: 'var(--text-faint)' }} title="You've read this">✓</span>
+                      <span className="ml-1.5 text-[10px]" style={{ color: 'var(--text-faint)' }}>✓</span>
                     )}
                     {isBookmarked && (
-                      <span className="mt-2 shrink-0 text-[10px]" style={{ color: 'var(--accent)' }} title="Bookmarked">⊕</span>
+                      <span className="ml-1 text-[10px]" style={{ color: 'var(--accent)' }}>⊕</span>
                     )}
+                  </span>
+                  <span className="mono tabular" style={{ fontSize: 11, color: 'var(--text-faint)' }}>
+                    {post.isDynamic ? 'draft' : (post as StaticPostItem).readingTime}
+                  </span>
+                </div>
+              </Link>
+            )
+          }
+
+          return (
+            <Link key={post.id} href={href} className="post-row group block">
+              <div
+                className="grid gap-5 px-1 py-5"
+                style={{
+                  gridTemplateColumns: '92px 1fr',
+                  alignItems: 'start',
+                  borderBottom: '1px solid var(--border-soft)',
+                }}
+              >
+                <div style={{ paddingTop: 3 }}>
+                  <div className="mono tabular" style={{ fontSize: 11, color: 'var(--text-faint)', letterSpacing: '0.1em' }}>
+                    #{String(no).padStart(3, '0')}
+                  </div>
+                  <div
+                    className="mono"
+                    style={{
+                      marginTop: 6,
+                      fontSize: 11,
+                      color: day.colorVar,
+                      fontWeight: 600,
+                      letterSpacing: '0.15em',
+                    }}
+                  >
+                    {day.short}
+                  </div>
+                  <div className="mono tabular" style={{ marginTop: 4, fontSize: 11, color: 'var(--text-muted)' }}>
+                    {format(post.isDynamic ? new Date(post.date) : parseISO(post.date), 'yyyy.MM.dd')}
+                  </div>
+                </div>
+                <div className="min-w-0">
+                  <h2
+                    className="display flex items-start gap-2"
+                    style={{
+                      margin: 0,
+                      fontSize: 19,
+                      fontWeight: 600,
+                      letterSpacing: '-0.01em',
+                      lineHeight: 1.3,
+                      color: 'var(--text)',
+                    }}
+                  >
+                    <span className="flex-1">
+                      {post.title}
+                      {isNew && (
+                        <span
+                          className="ml-2 align-middle rounded-full px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide"
+                          style={{ background: 'var(--accent)', color: 'var(--bg)' }}
+                        >
+                          new
+                        </span>
+                      )}
+                      {isRead && (
+                        <span className="ml-2 align-middle text-[11px]" style={{ color: 'var(--text-faint)' }} title="Read">
+                          ✓
+                        </span>
+                      )}
+                      {isBookmarked && (
+                        <span className="ml-1 align-middle text-[11px]" style={{ color: 'var(--accent)' }} title="Saved">
+                          ⊕
+                        </span>
+                      )}
                     </span>
                     <span
-                      className="mt-1 shrink-0 text-base opacity-0 transition-opacity duration-100 group-hover:opacity-100"
-                      style={{ color: 'var(--accent)' }}
+                      className="opacity-0 transition-opacity duration-100 group-hover:opacity-100 shrink-0"
+                      style={{ color: 'var(--accent)', fontSize: 15, marginTop: 3 }}
                       aria-hidden="true"
                     >
                       →
                     </span>
                   </h2>
-                  <div className="mb-2.5 flex items-center gap-2 text-xs" style={{ color: 'var(--text-muted)' }}>
-                    <time dateTime={post.date}>
-                      {format(post.isDynamic ? new Date(post.date) : parseISO(post.date), 'MMM d')}
-                    </time>
-                    {!post.isDynamic && post.readingTime && (
-                      <>
-                        <span style={{ color: 'var(--border)' }}>·</span>
-                        <span>{post.readingTime}</span>
-                      </>
-                    )}
-                    {post.isDynamic && (
-                      <>
-                        <span style={{ color: 'var(--border)' }}>·</span>
-                        <span className="rounded px-1.5 py-0.5 text-[10px] font-medium" style={{ background: 'var(--surface)', color: 'var(--text-muted)', border: '1px solid var(--border)' }}>Draft</span>
-                      </>
-                    )}
-                  </div>
-                  <p className="line-clamp-2 text-sm leading-relaxed" style={{ color: 'var(--text-muted)' }}>
+                  <p
+                    className="line-clamp-2"
+                    style={{ margin: '8px 0 10px', fontSize: 14.5, color: 'var(--text-muted)', lineHeight: 1.6 }}
+                  >
                     {post.description}
                   </p>
-                  {post.tags.length > 0 && (
-                    <div className="mt-3 flex flex-wrap gap-1.5">
-                      {post.tags.map((tag) => (
-                        <Link
-                          key={tag}
-                          href={`/tags/${encodeURIComponent(tag)}`}
-                          className="tag-pill-sm"
-                        >
-                          {tag}
-                        </Link>
-                      ))}
-                    </div>
-                  )}
+                  <div
+                    className="mono flex flex-wrap items-center gap-x-3 gap-y-1"
+                    style={{ fontSize: 11, color: 'var(--text-faint)' }}
+                  >
+                    {!post.isDynamic && post.readingTime && <span>{post.readingTime}</span>}
+                    {post.isDynamic && (
+                      <span
+                        className="rounded px-1.5 py-0.5 text-[10px]"
+                        style={{ background: 'var(--surface)', color: 'var(--text-muted)', border: '1px solid var(--border)' }}
+                      >
+                        draft
+                      </span>
+                    )}
+                    {post.tags.length > 0 && <span aria-hidden="true">·</span>}
+                    <span>{post.tags.slice(0, 3).map((t) => `#${t}`).join(' ')}</span>
+                  </div>
                 </div>
-              )
-            })}
-          </div>
-        </div>
-      ))}
-      {totalCount > 0 && (
-        <p className="mt-4 text-xs tabular-nums" style={{ color: 'var(--text-faint)' }}>
-          {activeTag ? `${filtered.length} of ${totalCount}` : totalCount} post{totalCount !== 1 ? 's' : ''}
-          {!activeTag && mounted && dynamicPosts.length > 0 && ` (${staticCount} published + ${dynamicPosts.length} draft)`}
-          {activeTag && ` · #${activeTag}`}
-        </p>
-      )}
+              </div>
+            </Link>
+          )
+        })}
+      </div>
+
+      {/* Bottom stats line */}
+      <div className="mono mt-4" style={{ fontSize: 11, color: 'var(--text-faint)' }}>
+        <span style={{ color: 'var(--accent)' }}>$</span> {filtered.length} entries
+        {totalWords > 0 && <> · total {(totalWords / 1000).toFixed(1)}K words</>}
+        {activeTag && ` · #${activeTag}`}
+      </div>
     </div>
   )
 }

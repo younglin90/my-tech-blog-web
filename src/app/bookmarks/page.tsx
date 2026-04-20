@@ -5,7 +5,7 @@ import { BookmarksClient } from '@/components/BookmarksClient'
 
 export const metadata: Metadata = {
   title: 'Bookmarks',
-  description: 'Your saved CFD.Lab posts.',
+  description: "Your saved 영린's CFD Blog posts.",
   robots: { index: false },
 }
 
