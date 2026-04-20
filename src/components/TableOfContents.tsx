@@ -96,9 +96,9 @@ export function TableOfContents() {
 
   return (
     <>
-      {/* Mobile inline ToC (hidden on xl+) */}
+      {/* Mobile/narrow inline ToC (shown below 2xl where sidebar doesn't fit) */}
       <div
-        className="mb-8 overflow-hidden rounded-lg xl:hidden"
+        className="mb-8 overflow-hidden rounded-lg 2xl:hidden"
         style={{ border: '1px solid var(--border)', background: 'var(--surface)' }}
       >
         <button
@@ -126,10 +126,11 @@ export function TableOfContents() {
         </div>
       </div>
 
-      {/* Desktop fixed sidebar (xl+) */}
+      {/* Desktop fixed sidebar (2xl+ where 768px content + gap + sidebar fits without overlap) */}
       <nav
-        className="fixed right-6 top-24 hidden w-52 xl:block"
+        className="fixed top-24 hidden w-52 2xl:block"
         aria-label="Table of contents"
+        style={{ left: 'calc(50% + 24rem + 2rem)' }}
       >
         <div className="mb-3 flex items-center justify-between">
           <p className="text-[10px] font-semibold uppercase tracking-widest" style={{ color: 'var(--text-faint)' }}>
