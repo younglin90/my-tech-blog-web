@@ -35,15 +35,32 @@ INDEX_FILE = SOURCE_DIR / "index.yaml"
 SKIP_DIRS = {"extracted", "notes"}
 SKIP_KEYWORDS = {"이력서", "영어공부", "정보처리기사", "전자계산기", "정처기"}
 
-# extract_docs.py 와 동일
+# extract_docs.py 와 동일한 3그룹 체계
+_KW_CFD = [
+    "FVM", "FEM", "수치해석", "CFD기법", "유한체적", "유한요소",
+    "SIMPLE", "PIMPLE", "압력속도", "알고리즘", "구현", "implementation",
+    "TDMA", "python", "코드", "Riemann", "HLLC", "Roe", "AUSM",
+    "high-order", "Multigrid", "GMRES", "AMG", "implicit", "solver",
+]
+_KW_FLUID = [
+    "유체역학", "경계층", "이론", "나비에", "스토크스", "navier", "stokes",
+    "Reynolds", "레이놀즈", "천이", "turbulence", "난류", "와류", "vortex",
+    "카르만", "cavitation", "공동", "충격파", "shock", "기화", "충돌모델",
+    "LBM", "볼츠만", "열전달", "열역학", "기체역학", "상변화",
+]
+_KW_PAPER = [
+    "논문", "paper", "review", "PINN", "arxiv", "journal",
+    "paper review", "논문리뷰",
+]
+
 DAY_KEYWORDS = {
-    "monday":    ["FVM", "FEM", "수치해석", "CFD기법", "유한체적", "유한요소", "SIMPLE", "압력속도"],
-    "tuesday":   ["논문", "paper", "review", "PINN", "난류", "turbulence", "LBM", "볼츠만"],
-    "wednesday": ["시각화", "visualization", "reynolds", "레이놀즈", "천이"],
-    "thursday":  ["유체역학", "경계층", "이론", "나비에", "스토크스", "navier", "stokes", "기화", "충돌모델"],
-    "friday":    ["알고리즘", "구현", "implementation", "TDMA", "python", "코드"],
-    "saturday":  ["해석해", "검증", "쿠에트", "포아즈이유", "couette", "poiseuille", "classical"],
-    "sunday":    ["현상", "와류", "카르만", "불안정", "cavitation", "공동", "충격파"],
+    "monday":    _KW_CFD,
+    "wednesday": _KW_CFD,
+    "friday":    _KW_CFD,
+    "tuesday":   _KW_FLUID,
+    "thursday":  _KW_FLUID,
+    "saturday":  _KW_PAPER,
+    "sunday":    _KW_PAPER,
 }
 
 

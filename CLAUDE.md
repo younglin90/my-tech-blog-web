@@ -10,43 +10,72 @@ CFD(전산유체역학) 연구자가 운영하는 기술 블로그.
 GitHub Actions + Anthropic API 방식은 크레딧 문제로 사용 안 함.
 대신 Claude Code 예약 작업(Scheduled Task)이 매일 오전 10:05 자동 실행.
 
-**수동으로 만들고 싶을 때:** "오늘 포스트 만들어줘" 또는 "월요일 포스트 만들어줘"
+**수동 트리거:** "오늘 포스트 만들어줘" / "월요일 포스트 만들어줘" / "/daily-post"
 
-**생성 절차:**
-1. `source-docs/index.yaml` 읽기
-2. 오늘 요일 `day_hint` 문서 선택 (last_used가 null이거나 가장 오래된 것)
-3. 해당 문서 파일 읽기
-4. `scripts/prompts/{요일}_*.txt` 프롬프트 읽기
-5. MDX 포스트 직접 작성
-6. `src/content/posts/YYYY-MM-DD-{slug}.mdx` 저장 (draft: false)
-7. `source-docs/index.yaml` last_used 업데이트
-8. git add → commit → push
-
-## 요일별 포스트 타입
-| 요일 | 타입 | 프롬프트 파일 |
-|------|------|--------------|
-| 월 | CFD 기법 설명 (수식 + 코드) | `scripts/prompts/monday_cfd_technique.txt` |
-| 화 | 논문 리뷰 | `scripts/prompts/tuesday_paper_review.txt` |
-| 수 | 인터랙티브 시각화 (MDX 컴포넌트) | `scripts/prompts/wednesday_visualization.txt` |
-| 목 | 유체역학 개념 심층 탐구 (이론+수식 유도) | `scripts/prompts/thursday_fluid_mechanics.txt` |
-| 금 | 수치해석 알고리즘 직접 구현 (Python/C++) | `scripts/prompts/friday_numerical_implementation.txt` |
-| 토 | 고전 유동 문제 해석해 유도 + CFD 검증 | `scripts/prompts/saturday_classical_flow.txt` |
-| 일 | 흥미로운 유동 현상 탐구 | `scripts/prompts/sunday_flow_phenomena.txt` |
-
-## MDX 필수 형식
-```
 ---
-title: "제목"
+
+## 매일 루틴 지침 (Scheduled Task / 수동 모두 동일)
+
+### 목표
+오늘 날짜로 CFD 블로그 포스트 **1개를 자동 생성 → main branch에 push** (Cloudflare Pages 자동 배포).
+
+### 요일 → 그룹 매핑
+| 요일 | 그룹 | 프롬프트 파일 |
+|------|------|---------------|
+| 월/수/금 | `cfd_technique` — CFD 기법 + 알고리즘 구현 | `scripts/prompts/cfd_technique.txt` |
+| 화/목 | `fluid_mechanics` — 유체역학 이론 + 흥미로운 유동 현상 | `scripts/prompts/fluid_mechanics.txt` |
+| 토/일 | `paper_review` — CFD 논문 리뷰 + 구현 재현 | `scripts/prompts/paper_review.txt` |
+
+모든 그룹은 **인터랙티브 시각화 컴포넌트 1~2개를 필수 포함**한다 (목록: `scripts/prompts/_viz_components.txt`).
+
+### 실행 순서
+
+1. **중복 체크** — `src/content/posts/YYYY-MM-DD-*.mdx`가 이미 있으면 "이미 있음" 한 줄 출력 후 종료.
+2. **소스 문서 선택** — `source-docs/index.yaml` 로드. 오늘 요일 그룹에 해당하는 `day_hint` 값(또는 `any`)을 가진 문서 중, `last_used`가 null이거나 가장 오래된 것 **하나** 선택.
+   - 월/수/금 그룹 → `day_hint ∈ {monday, wednesday, friday, any}`
+   - 화/목 그룹 → `day_hint ∈ {tuesday, thursday, any}`
+   - 토/일 그룹 → `day_hint ∈ {saturday, sunday, any}`
+   - 금요일인데 `source-docs/qa-log.md`에 새 항목이 있으면 그것을 우선 소스로 사용.
+   - 후보가 없으면: "건너뜀 — 오늘 그룹에 맞는 문서 없음" 한 줄 출력 후 종료.
+3. **소스 읽기** — 선택된 문서 (`source-docs/{path}`) 내용 로드.
+4. **프롬프트 로드 + 치환** — 그룹별 프롬프트에서 `{VIZ_COMPONENTS}`를 `_viz_components.txt` 내용으로, `{SOURCE_CONTENT}`를 소스 문서 내용으로, `{DATE}`를 오늘 날짜로 치환.
+5. **MDX 포스트 작성** — 프롬프트 지침을 그대로 따른다. 아래 **글 규칙** 반드시 준수.
+6. **저장** — `src/content/posts/YYYY-MM-DD-{영문-slug}.mdx`에 저장. **`draft: false`** (즉시 공개).
+7. **인덱스 업데이트** — 방금 사용한 문서의 `last_used`를 오늘 날짜(`YYYY-MM-DD`)로 업데이트.
+8. **git 커밋/푸시** — `main` 브랜치에 바로 push. 커밋 메시지: `post: {요일} 자동 생성 - {포스트 제목}`.
+9. **결과 보고** — 파일 경로 + 제목 한 줄.
+
+### 글 규칙 (프롬프트 지침과 함께 지킬 것)
+- **총 분량**: 4~7분 읽기 분량 (한국어 기준 **1,000~1,700단어**, 공백 제외 약 2,500~4,500자).
+- **도입부**: 3~5문장 안에 포스트의 핵심과 독자가 얻을 것을 밝힐 것.
+- **문장**: 짧게. 복합문 지양. 기술 용어는 처음 등장 시 한 줄 풀이.
+- **문단**: 한 문단 = 한 주제, **최대 5문장**. 긴 설명은 섹션을 나눈다.
+- **수식**: KaTeX — 인라인 `$...$`, 블록 `$$...$$`. 수식 뒤에는 반드시 변수/기호의 의미를 한 줄로.
+- **코드 블록**: 언어 명시 (` ```python `, ` ```cpp `, ` ```fortran `). 돌아가는 코드여야 함 (토이 문제 OK).
+- **시각화 컴포넌트**: 본문 중 1~2개 삽입. 삽입 전 1문장 안내, 삽입 후 관찰 포인트 1~2문장.
+- **결론**: 마지막에 "핵심 3줄 요약" 또는 "기억할 점" 섹션으로 마무리.
+
+### 실패 처리
+어느 단계에서 멈추든 명시적으로 어떤 단계에서 왜 실패했는지 보고한다. 부분 결과물이 남았다면 파일 경로를 알려준다.
+
+### MDX frontmatter 템플릿
+```yaml
+---
+title: "구체적이고 검색 친화적인 제목"
 date: YYYY-MM-DD
-description: "한 줄 요약 (50자 이내)"
-tags: ["태그1", "태그2"]
+description: "한 문장 요약 (50자 이내)"
+tags: ["CFD", "그룹태그", "세부태그"]
+draft: false
 ---
 ```
-- 수식: KaTeX — 인라인 `$수식$`, 블록 `$$수식$$`
-- 코드블록: 언어 명시 필수 (` ```python `, ` ```cpp `)
-- 생성 직후부터 `draft: false`. 항상 즉시 공개.
 
-## 수요일 시각화 컴포넌트 (이 목록 외 사용 금지)
+## MDX 기타 규정
+- 수식: KaTeX — 인라인 `$수식$`, 블록 `$$수식$$`
+- 코드블록: 언어 명시 필수 (` ```python `, ` ```cpp `, ` ```fortran `)
+- `draft: false` 로 즉시 공개 (Cloudflare Pages가 main push 감지 → 자동 배포)
+- 한 포스트에 인터랙티브 시각화 컴포넌트 **1~2개 필수**
+
+## 시각화 컴포넌트 (이 목록 외 사용 금지)
 ```mdx
 <VelocityField reynolds={100} animated={true} gridSize={20} />
 <StreamLine particles={50} speed={1.0} obstacle="cylinder" />
