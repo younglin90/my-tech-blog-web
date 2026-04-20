@@ -1,0 +1,126 @@
+---
+title: "불연속 갈레르킨법(DGM): 비정렬 격자 압축성 유동 해석의 고정밀 이산화"
+date: 2026-04-20
+description: "DGM의 약형식 유도부터 Gauss 구적법, 비정렬 격자 구현까지 단계별 정리"
+tags: ["CFD", "FEM", "DGM", "고차 정확도", "압축성 유동"]
+draft: true
+---
+
+불연속 갈레르킨법(Discontinuous Galerkin Method, DGM)은 유한요소법(FEM)과 유한체적법(FVM)의 장점을 결합한 수치해석 기법입니다. 셀 내부에서는 고차 다항식 기저함수를 사용하고, 셀 경계에서는 수치 플럭스로 정보를 교환합니다. 비정렬 격자에서 압축성 유동을 고정밀로 해석할 때 강력한 선택지입니다.
+
+## 지배방정식과 플럭스 분리
+
+압축성 유동의 보존 방정식:
+
+$$\frac{\partial \mathbf{U}}{\partial t} + \nabla \cdot \mathbf{F}^c(\mathbf{U}) - \nabla \cdot \mathbf{F}^v(\mathbf{U}, \nabla \mathbf{U}) = \mathbf{S}(\mathbf{U})$$
+
+여기서
+- $\mathbf{U} = [\rho,\ \rho u,\ \rho v,\ \rho w,\ \rho E]^T$: 보존 변수 벡터
+- $\mathbf{F}^c$: 대류(convective) 플럭스
+- $\mathbf{F}^v$: 점성(viscous) 플럭스
+- $\mathbf{S}$: 소스항
+
+## 기저함수 전개와 약형식 유도
+
+셀 $\Omega_e$ 내부에서 해를 기저함수의 선형결합으로 근사합니다:
+
+$$\mathbf{U}_h(\mathbf{x}, t) = \sum_{l=1}^{N_p} \hat{\mathbf{U}}_l(t)\, \phi_l(\mathbf{x})$$
+
+$N_p$는 셀 내 자유도 수로, 근사 다항식 차수 $K$에 따라 결정됩니다 ($N_p = (K+1)(K+2)(K+3)/6$ in 3D).
+
+시험함수 $\phi_k$를 곱하고 $\Omega_e$에서 적분하면:
+
+$$\int_{\Omega_e} \phi_k \frac{\partial \mathbf{U}_h}{\partial t}\, d\Omega + \int_{\Omega_e} \phi_k \nabla \cdot \mathbf{F}\, d\Omega = \int_{\Omega_e} \phi_k \mathbf{S}\, d\Omega$$
+
+Green 공식(부분 적분)을 적용하면 체적 적분과 경계 적분으로 나뉩니다:
+
+$$\int_{\Omega_e} \phi_k \frac{\partial \mathbf{U}_h}{\partial t}\, d\Omega
+- \int_{\Omega_e} \nabla \phi_k \cdot \mathbf{F}\, d\Omega
++ \oint_{\partial \Omega_e} \phi_k \hat{\mathbf{F}} \cdot \mathbf{n}\, d\Gamma
+= \int_{\Omega_e} \phi_k \mathbf{S}\, d\Omega$$
+
+경계면의 $\hat{\mathbf{F}}$는 인접 셀 정보를 이용한 **수치 플럭스**입니다 (Roe, HLLC 등).
+
+## 질량 행렬과 시간 적분
+
+$l$ 번째 기저함수 계수에 대한 ODE로 정리하면:
+
+$$\mathbf{M} \frac{d\hat{\mathbf{U}}}{dt} = \mathbf{R}(\hat{\mathbf{U}})$$
+
+여기서 질량 행렬(mass matrix)은:
+
+$$M_{kl} = \int_{\Omega_e} \phi_k \phi_l\, d\Omega$$
+
+직교 기저함수(Taylor basis 또는 Legendre 다항식 등)를 사용하면 $\mathbf{M}$이 대각행렬이 되어 역행렬 계산 비용이 없어집니다. 잔차 벡터 $\mathbf{R}$은 체적 적분항과 면 플럭스항의 합입니다:
+
+$$R_k = \int_{\Omega_e} \nabla \phi_k \cdot \mathbf{F}\, d\Omega - \oint_{\partial \Omega_e} \phi_k \hat{\mathbf{F}} \cdot \mathbf{n}\, d\Gamma + \int_{\Omega_e} \phi_k \mathbf{S}\, d\Omega$$
+
+## Gauss 구적법 적용
+
+체적·면 적분은 Gauss-Legendre 구적법으로 수치 계산합니다. 차수 $K$의 다항식을 정확히 적분하려면 **최소 $2K-1$ 차 이상의 적분**이 필요합니다.
+
+셀 유형별 Gauss 포인트 개수 (대표 차수별):
+
+| 셀 유형     | 1차 | 2차 | 3차 |
+|------------|-----|-----|-----|
+| Tetrahedron | 1  | 4   | 10  |
+| Hexahedron  | 1  | 8   | 27  |
+| Prism       | 3  | 9   | 18  |
+| Pyramid     | 1  | 5   | 15  |
+
+면(face) 유형에 대해서는 셀 포인트의 3배(3D 투영)를 사용합니다.
+
+## 알고리즘 구현 순서
+
+실제 구현에서는 다음 순서로 진행합니다:
+
+1. **셀·면 분류**: 테트라/헥사/프리즘/피라미드/폴리헤드론
+2. **기저함수 준비**: 각 셀 유형 × 근사 차수에 맞는 $\phi_l$, $\nabla\phi_l$ 계산
+3. **Gauss 포인트 캐시**: 참조 요소(reference element) 좌표와 가중치를 메모리에 저장
+4. **변수 초기화**: $\hat{\mathbf{U}}_l^0$ 설정 (자유흐름 조건 등)
+5. **루프(시간 전진)**:
+   - 체적 적분: $\int_{\Omega_e} \nabla\phi_k \cdot \mathbf{F}\ d\Omega$ — 각 Gauss 포인트에서 플럭스 계산 후 합산
+   - 면 플럭스: $\oint_{\partial\Omega_e} \phi_k \hat{\mathbf{F}}\cdot\mathbf{n}\ d\Gamma$ — 수치 플럭스 산정
+   - RK 업데이트: SSP-RK3 등 명시적 시간 적분
+
+```python
+import numpy as np
+
+def compute_volume_residual(U_hat, phi, dphi, gauss_w, flux_func):
+    """체적 잔차 계산 (단일 셀)"""
+    Np, Ng = phi.shape   # (기저함수 수, Gauss 포인트 수)
+    R = np.zeros_like(U_hat)
+    for g in range(Ng):
+        # Gauss 포인트에서 물리량 복원
+        U_g = phi[:, g] @ U_hat          # shape: (nvar,)
+        F_g = flux_func(U_g)             # (nvar, ndim)
+        # 체적 잔차에 기여
+        for k in range(Np):
+            R[k] += gauss_w[g] * (dphi[k, :, g] @ F_g.T)
+    return R
+```
+
+## 수치 플럭스 선택 — 실무 주의사항
+
+DGM에서 수치 플럭스는 안정성과 정확도에 직결됩니다.
+
+- **Roe 플럭스**: 접촉 불연속을 잘 포착하지만, 엔트로피 수정이 없으면 팽창 충격파(expansion shock)를 유발할 수 있음.
+- **HLLC**: Roe보다 안정적이나 희귀한 경우 과도한 소산 발생.
+- **LxF(Lax-Friedrichs)**: 구현 단순, 소산이 크므로 고차 이득이 줄어듦.
+
+흔한 실수:
+1. **Gauss 포인트 수 부족** — 비선형 플럭스에서 차수가 줄어드는 aliasing 오류 발생.
+2. **질량 행렬 비대각화 무시** — 일반 FEM 기저함수 사용 시 매 스텝마다 선형계 풀이 필요, 비효율적.
+3. **면 법선 방향 불일치** — 공유면에서 인접 셀의 법선 부호 반대임을 항상 확인.
+
+## 정확도 검증 — Taylor-Green Vortex
+
+$$u_0 = V_0 \sin\!\left(\frac{x}{L}\right)\cos\!\left(\frac{y}{L}\right), \quad
+  v_0 = -V_0 \cos\!\left(\frac{x}{L}\right)\sin\!\left(\frac{y}{L}\right)$$
+
+비압축성 해석해와 DGM 결과를 비교할 때, $K$차 DGM은 이론적으로 $O(h^{K+1})$ 수렴을 보여야 합니다. 실무에서 격자를 2배 세분화했을 때 오차가 $2^{K+1}$배 줄지 않으면 구적 차수 또는 경계 처리를 점검하세요.
+
+## 참고 문헌
+
+1. Luo, H. et al., "A discontinuous Galerkin method based on a Taylor basis for the compressible flows on arbitrary grids," *J. Comput. Phys.* 227 (2008).
+2. Luo, H. et al., "Hybrid discontinuous Galerkin–finite volume techniques for compressible flows on unstructured meshes," *AIAA Paper* (2012).
