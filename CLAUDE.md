@@ -18,7 +18,7 @@ GitHub Actions + Anthropic API 방식은 크레딧 문제로 사용 안 함.
 3. 해당 문서 파일 읽기
 4. `scripts/prompts/{요일}_*.txt` 프롬프트 읽기
 5. MDX 포스트 직접 작성
-6. `src/content/posts/YYYY-MM-DD-{slug}.mdx` 저장 (draft: true)
+6. `src/content/posts/YYYY-MM-DD-{slug}.mdx` 저장 (draft: false)
 7. `source-docs/index.yaml` last_used 업데이트
 8. git add → commit → push
 
@@ -40,12 +40,11 @@ title: "제목"
 date: YYYY-MM-DD
 description: "한 줄 요약 (50자 이내)"
 tags: ["태그1", "태그2"]
-draft: true
 ---
 ```
 - 수식: KaTeX — 인라인 `$수식$`, 블록 `$$수식$$`
 - 코드블록: 언어 명시 필수 (` ```python `, ` ```cpp `)
-- 생성 직후는 항상 `draft: true`. 사용자가 검토 후 `false`로 변경.
+- 생성 직후부터 `draft: false`. 항상 즉시 공개.
 
 ## 수요일 시각화 컴포넌트 (이 목록 외 사용 금지)
 ```mdx
