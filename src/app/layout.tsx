@@ -9,8 +9,12 @@ import { TerminalHeader } from '@/components/TerminalHeader'
 import { TerminalFooter } from '@/components/TerminalFooter'
 import type { Metadata, Viewport } from 'next'
 
-const UMAMI_SCRIPT_URL = process.env.NEXT_PUBLIC_UMAMI_SCRIPT_URL
-const UMAMI_WEBSITE_ID = process.env.NEXT_PUBLIC_UMAMI_WEBSITE_ID
+// Umami 트래킹 정보는 공개 값(브라우저에 그대로 노출되는 script 태그)이라 코드에 고정해도 안전.
+// 필요 시 환경변수로 오버라이드 가능.
+const UMAMI_SCRIPT_URL =
+  process.env.NEXT_PUBLIC_UMAMI_SCRIPT_URL ?? 'https://cloud.umami.is/script.js'
+const UMAMI_WEBSITE_ID =
+  process.env.NEXT_PUBLIC_UMAMI_WEBSITE_ID ?? 'ef0b4cb2-34b1-4d5e-a70e-26a543816b22'
 
 // Display / hero — editorial authority (see DESIGN.md)
 const fraunces = Fraunces({

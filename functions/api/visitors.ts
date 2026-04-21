@@ -1,21 +1,26 @@
 // Cloudflare Pages Function: Umami 일일 방문자·페이지뷰 프록시
 // 엔드포인트: GET /api/visitors
 //
-// 필요 환경변수 (Cloudflare Pages → Settings → Environment variables):
-//   UMAMI_API_URL       예) https://api.umami.is/v1   또는  self-host URL + /api
-//   UMAMI_API_KEY       Umami Cloud: Profile → API 키 발급
-//   UMAMI_WEBSITE_ID    Umami 사이트 설정의 Website ID (UUID)
+// 필수 시크릿 (Cloudflare Pages → Settings → Environment variables, Encrypt):
+//   UMAMI_API_KEY       Umami Cloud: Profile → API keys 에서 발급
 //
-// 응답 예시: { "visitors": 42, "pageviews": 128 }
+// 아래 두 값은 공개 정보이므로 기본값 하드코딩 (환경변수로 오버라이드 가능):
+//   UMAMI_API_URL       (기본: https://api.umami.is/v1)
+//   UMAMI_WEBSITE_ID    (기본: ef0b4cb2-34b1-4d5e-a70e-26a543816b22)
 
 interface Env {
-  UMAMI_API_URL: string
+  UMAMI_API_URL?: string
   UMAMI_API_KEY: string
-  UMAMI_WEBSITE_ID: string
+  UMAMI_WEBSITE_ID?: string
 }
 
+const DEFAULT_UMAMI_API_URL = 'https://api.umami.is/v1'
+const DEFAULT_UMAMI_WEBSITE_ID = 'ef0b4cb2-34b1-4d5e-a70e-26a543816b22'
+
 export const onRequestGet: PagesFunction<Env> = async ({ env }) => {
-  const { UMAMI_API_URL, UMAMI_API_KEY, UMAMI_WEBSITE_ID } = env
+  const UMAMI_API_URL = env.UMAMI_API_URL || DEFAULT_UMAMI_API_URL
+  const UMAMI_WEBSITE_ID = env.UMAMI_WEBSITE_ID || DEFAULT_UMAMI_WEBSITE_ID
+  const UMAMI_API_KEY = env.UMAMI_API_KEY
   const json = (body: unknown, init: ResponseInit = {}) =>
     new Response(JSON.stringify(body), {
       ...init,
@@ -26,8 +31,8 @@ export const onRequestGet: PagesFunction<Env> = async ({ env }) => {
       },
     })
 
-  if (!UMAMI_API_URL || !UMAMI_API_KEY || !UMAMI_WEBSITE_ID) {
-    return json({ visitors: null, pageviews: null, error: 'env-missing' }, { status: 503 })
+  if (!UMAMI_API_KEY) {
+    return json({ visitors: null, pageviews: null, error: 'api-key-missing' }, { status: 503 })
   }
 
   const now = Date.now()
