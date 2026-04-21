@@ -1,6 +1,7 @@
 'use client'
 
 import Link from 'next/link'
+import { VisitorCount } from '@/components/VisitorCount'
 
 export function TerminalFooter() {
   return (
@@ -14,10 +15,11 @@ export function TerminalFooter() {
         color: 'var(--text-muted)',
       }}
     >
-      <div className="flex flex-wrap items-center justify-between gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
         <span>
           <span style={{ color: 'var(--accent)' }}>$</span> uptime · daily since 2026
         </span>
+        <VisitorCount />
         <span>영린{"'s"} CFD Blog · CC BY-SA 4.0</span>
       </div>
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2" style={{ color: 'var(--text-faint)' }}>

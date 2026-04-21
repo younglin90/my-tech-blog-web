@@ -1,4 +1,5 @@
 import '@/styles/globals.css'
+import Script from 'next/script'
 import { Fraunces, Geist, JetBrains_Mono } from 'next/font/google'
 import { ThemeProvider } from '@/components/ThemeProvider'
 import { BackToTop } from '@/components/BackToTop'
@@ -7,6 +8,9 @@ import { KeyboardShortcuts } from '@/components/KeyboardShortcuts'
 import { TerminalHeader } from '@/components/TerminalHeader'
 import { TerminalFooter } from '@/components/TerminalFooter'
 import type { Metadata, Viewport } from 'next'
+
+const UMAMI_SCRIPT_URL = process.env.NEXT_PUBLIC_UMAMI_SCRIPT_URL
+const UMAMI_WEBSITE_ID = process.env.NEXT_PUBLIC_UMAMI_WEBSITE_ID
 
 // Display / hero — editorial authority (see DESIGN.md)
 const fraunces = Fraunces({
@@ -92,6 +96,14 @@ export default function RootLayout({
         />
         <link rel="alternate" type="application/rss+xml" title="영린's CFD Blog RSS" href="/feed.xml" />
         <link rel="alternate" type="application/feed+json" title="영린's CFD Blog JSON Feed" href="/feed.json" />
+        {UMAMI_SCRIPT_URL && UMAMI_WEBSITE_ID && (
+          <Script
+            src={UMAMI_SCRIPT_URL}
+            data-website-id={UMAMI_WEBSITE_ID}
+            strategy="afterInteractive"
+            defer
+          />
+        )}
       </head>
       <body
         className={`${fraunces.variable} ${geist.variable} ${jetbrainsMono.variable} min-h-screen antialiased`}
