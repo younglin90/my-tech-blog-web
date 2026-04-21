@@ -228,7 +228,7 @@ export default async function PostPage({ params }: PostProps) {
       {/* Share */}
       <div className="mt-12 flex flex-wrap items-center justify-between gap-3 border-t pt-6" style={{ borderColor: 'var(--border)' }}>
         <p className="text-xs" style={{ color: 'var(--text-muted)' }}>도움이 됐다면 공유해주세요.</p>
-        <div className="flex items-center gap-2">
+        <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:justify-end">
           <BookmarkButton postId={post.slug} />
           <PrintButton />
           <ShareButton title={post.title} />

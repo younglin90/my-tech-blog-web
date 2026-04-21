@@ -35,7 +35,7 @@ export function ShareButton({ title, url }: ShareButtonProps) {
   const hackerNewsUrl = `https://news.ycombinator.com/submitlink?u=${encodeURIComponent(href)}&t=${encodeURIComponent(title)}`
 
   return (
-    <div className="share-button flex items-center gap-2">
+    <div className="share-button flex flex-wrap items-center gap-2">
       {canNativeShare && (
         <button
           onClick={handleNativeShare}
