@@ -19,53 +19,70 @@ GitHub Actions + Anthropic API 방식은 크레딧 문제로 사용 안 함.
 ### 목표
 오늘 날짜로 CFD 블로그 포스트 **1개를 자동 생성 → main branch에 push** (Cloudflare Pages 자동 배포).
 
-### 요일 → 그룹 매핑
-| 요일 | 그룹 | 프롬프트 파일 |
-|------|------|---------------|
-| 월/수/금 | `cfd_technique` — CFD 기법 + 알고리즘 구현 | `scripts/prompts/cfd_technique.txt` |
-| 화/목 | `fluid_mechanics` — 유체역학 이론 + 흥미로운 유동 현상 | `scripts/prompts/fluid_mechanics.txt` |
-| 토/일 | `paper_review` — CFD 논문 리뷰 + 구현 재현 | `scripts/prompts/paper_review.txt` |
+### 요일 → 주제 폴더 매핑
+| 요일 | 주제 | 소스 폴더 | 프롬프트 파일 |
+|------|------|-----------|---------------|
+| 월/수/금 | CFD 기법 + 알고리즘 구현 | `source-docs/cfd-technique/` | `scripts/prompts/cfd_technique.txt` |
+| 화/목 | 유체역학 이론 + 유동 현상 | `source-docs/fluid-mechanics/` | `scripts/prompts/fluid_mechanics.txt` |
+| 토/일 | 논문 리뷰 + 구현 재현 | `source-docs/paper-review/` | `scripts/prompts/paper_review.txt` |
 
 모든 그룹은 **인터랙티브 시각화 컴포넌트 1~2개를 필수 포함**한다 (목록: `scripts/prompts/_viz_components.txt`).
 
 ### 실행 순서
 
 1. **중복 체크 (날짜)** — `src/content/posts/YYYY-MM-DD-*.mdx`가 이미 있으면 "이미 있음" 한 줄 출력 후 종료.
-2. **소스 문서 선택** — `source-docs/index.yaml` 로드. 오늘 요일 그룹에 해당하는 `day_hint` 값(또는 `any`)을 가진 문서 중, `last_used`가 null이거나 가장 오래된 것 **하나** 선택.
-   - 월/수/금 그룹 → `day_hint ∈ {monday, wednesday, friday, any}`
-   - 화/목 그룹 → `day_hint ∈ {tuesday, thursday, any}`
-   - 토/일 그룹 → `day_hint ∈ {saturday, sunday, any}`
-   - 금요일인데 `source-docs/qa-log.md`에 새 항목이 있으면 그것을 우선 소스로 사용.
-   - 후보가 없으면: "건너뜀 — 오늘 그룹에 맞는 문서 없음" 한 줄 출력 후 종료.
-2a. **중복 체크 (주제)** — 소스 문서 선택 후, 기존 포스트 제목·태그와 주제 중복 여부를 확인한다.
+
+2. **소스 문서 선택** — 오늘 요일에 해당하는 주제 폴더에서 파일을 선택한다.
+   - `source-docs/index.yaml`의 `last_used` 딕셔너리를 로드한다.
+   - 해당 폴더 전체의 `.md` / `.txt` 파일 목록을 재귀적으로 수집한다.
+   - `last_used`가 없는(미사용) 파일을 우선 후보로 삼는다. 모두 사용된 경우 날짜가 가장 오래된 것부터 후보로 삼는다.
+   - 상위 후보 중 **랜덤으로 1개** 선택 (매번 다른 파일이 뽑히도록).
+   - 해당 폴더가 비어있으면: "건너뜀 — `{폴더명}` 에 소스 파일 없음" 한 줄 출력 후 종료.
+
+2a. **중복 체크 (주제)** — 선택한 파일의 제목·키워드가 기존 포스트와 겹치는지 확인한다.
    - `src/content/posts/*.mdx` 전체의 `title`과 `tags` frontmatter를 읽는다.
-   - 선택된 소스 문서의 핵심 키워드(파일명·tags 기준)가 기존 포스트 제목/태그에 이미 등장하면 해당 소스는 건너뛰고 **그 다음 후보 문서**를 선택한다 (최대 3회 시도).
+   - 선택 파일명·첫 줄 제목의 핵심 키워드가 기존 포스트와 중복이면 다음 후보를 선택한다 (최대 3회).
    - 3회 모두 중복이면: "건너뜀 — 주제 중복 없는 문서 없음" 한 줄 출력 후 종료.
-3. **소스 읽기** — 선택된 문서 (`source-docs/{path}`) 내용 로드.
-4. **프롬프트 로드 + 치환** — 그룹별 프롬프트에서 `{VIZ_COMPONENTS}`를 `_viz_components.txt` 내용으로, `{SOURCE_CONTENT}`를 소스 문서 내용으로, `{DATE}`를 오늘 날짜로 치환.
-5. **MDX 포스트 작성** — 프롬프트 지침을 그대로 따른다. 아래 **글 규칙** 반드시 준수.
-6. **저장** — `src/content/posts/YYYY-MM-DD-{영문-slug}.mdx`에 저장. **`draft: false`** (즉시 공개).
-7. **인덱스 업데이트** — 방금 사용한 문서의 `last_used`를 오늘 날짜(`YYYY-MM-DD`)로 업데이트.
+
+3. **소스 읽기** — 선택된 파일을 아래 규칙으로 읽는다.
+   - **200줄 이하**: 파일 전체 읽기.
+   - **200줄 초과**: 앞 150줄 + `##` 섹션 헤딩 목록을 읽어 핵심 섹션 1~2개를 추가 로드 (총 300줄 이내).
+
+4. **프롬프트 로드 + 치환** — 그룹별 프롬프트 파일에서:
+   - `{VIZ_COMPONENTS}` → `scripts/prompts/_viz_components.txt` 내용
+   - `{SOURCE_CONTENT}` → 읽어온 소스 내용
+   - `{DATE}` → 오늘 날짜 (`YYYY-MM-DD`)
+
+5. **MDX 포스트 작성** — 프롬프트 지침 + 아래 **글 규칙** 준수.
+
+6. **저장** — `src/content/posts/YYYY-MM-DD-{영문-slug}.mdx` 에 저장. **`draft: false`** (즉시 공개).
+
+7. **인덱스 업데이트** — `source-docs/index.yaml`의 `last_used` 딕셔너리에 `{상대경로}: "YYYY-MM-DD"` 추가/갱신.
+
 8. **git 커밋/푸시** — `main` 브랜치에 바로 push. 커밋 메시지: `post: {요일} 자동 생성 - {포스트 제목}`.
+
 9. **결과 보고** — 파일 경로 + 제목 한 줄.
 
-### 글 규칙 (프롬프트 지침과 함께 지킬 것)
-- **총 분량**: 4~7분 읽기 분량 (한국어 기준 **1,000~1,700단어**, 공백 제외 약 2,500~4,500자).
-- **도입부**: 3~5문장 안에 포스트의 핵심과 독자가 얻을 것을 밝힐 것.
-- **문장**: 짧게. 복합문 지양. 기술 용어는 처음 등장 시 한 줄 풀이.
-- **문단**: 한 문단 = 한 주제, **최대 5문장**. 긴 설명은 섹션을 나눈다.
-- **수식**: KaTeX — 인라인 `$...$`, 블록 `$$...$$`. 수식 뒤에는 반드시 변수/기호의 의미를 한 줄로.
-  - **멀티라인 블록 수식 규칙**: `$$`는 반드시 **독립 라인**에 위치해야 한다. 수식 내용과 같은 줄에 `$$`를 쓰면 remark-math 파싱 오류가 발생한다.
+### 글 규칙
+- **분량**: 4~7분 읽기 = 한국어 **1,000~1,700단어** (공백 제외 약 2,500~4,500자). 코드·수식은 카운트 제외.
+- **도입부**: 첫 3~5문장 안에 "이 포스트가 무엇을 다루고, 독자가 무엇을 얻을지"를 모두 밝힌다.
+- **문장**: 짧게. 평균 40자 이하 지향. 접속사("~하며, ~하고")로 묶지 말고 마침표로 자른다.
+- **문단**: 한 문단 = 한 주제, **최대 5문장**. 길어지면 섹션(`##`)을 나눈다.
+- **기술 용어**: 처음 등장 시 괄호 안에 한 줄 풀이 (예: "Reynolds 수(관성력/점성력 비)").
+- **수식**: KaTeX — 인라인 `$...$`, 블록 `$$...$$`. 수식 뒤 한 줄로 각 기호 의미 명시.
+  - **멀티라인 블록 수식 규칙**: `$$`는 반드시 **독립 라인**에 위치. 같은 줄에 수식 내용을 쓰면 remark-math 파싱 오류.
     ```
-    $$                   ← 올바름 (단독 라인)
+    $$
     \int ... d\Omega \\
     + \oint ... d\Gamma
-    $$                   ← 올바름 (단독 라인)
+    $$
     ```
-    단일라인 수식은 `$$수식$$` 형태도 허용: `$$E = mc^2$$`
-- **코드 블록**: 언어 명시 (` ```python `, ` ```cpp `, ` ```fortran `). 돌아가는 코드여야 함 (토이 문제 OK).
-- **시각화 컴포넌트**: 본문 중 1~2개 삽입. 삽입 전 1문장 안내, 삽입 후 관찰 포인트 1~2문장.
-- **결론**: 마지막에 "핵심 3줄 요약" 또는 "기억할 점" 섹션으로 마무리.
+    단일라인은 `$$E = mc^2$$` 형태도 허용.
+- **코드 블록**: 언어 명시 필수 (` ```python `, ` ```cpp `, ` ```fortran `). 입력→처리→결과 출력까지 **실제 돌아가는 코드** 작성.
+- **인터랙티브 시각화**: 본문에 **1~2개 필수** 삽입 (`_viz_components.txt` 목록만 사용).
+  - 삽입 전 1문장 안내: "아래 시뮬레이션에서 직접 조작해보자."
+  - 삽입 후 1~2문장 관찰 포인트: "Reynolds를 200까지 올리면 ~"
+- **결론**: 마지막 섹션은 "핵심 3줄 요약" 또는 "기억할 점"으로 마무리.
 
 ### 실패 처리
 어느 단계에서 멈추든 명시적으로 어떤 단계에서 왜 실패했는지 보고한다. 부분 결과물이 남았다면 파일 경로를 알려준다.
@@ -101,26 +118,36 @@ draft: false
 ## 소스 문서 구조
 ```
 source-docs/
-  index.yaml                        ← 문서 목록 + last_used 날짜 관리
-  qa-log.md                         ← 금요일 Q&A 입력 (직접 추가 가능)
-  notes/
-    sample-cfd-note-01.md           ← 월/수 샘플
-    sample-openfoam-note-01.md      ← 목 샘플
-    sample-paper-review-01.md       ← 화 샘플 (last_used: 2026-03-24)
+  index.yaml              ← 파일별 last_used 날짜만 기록 (매우 단순)
+  cfd-technique/          ← 월/수/금 소스 (CFD 기법, 수치해석, 알고리즘)
+    FEM/
+    LBM/
+    cfd/
+    code/
+    high-order/
+    implicit-solver/
+    math/
+    mesh/
+    numerical-analysis/
+    ...
+  fluid-mechanics/        ← 화/목 소스 (유체역학 이론, 유동 현상)
+    turbulence/
+    multiphase/
+    combustion/
+    gas-dynamics/
+    heat-transfer/
+    ...
+  paper-review/           ← 토/일 소스 (논문 리뷰)
+    (여기에 논문 정리 .md 파일 추가)
 ```
 
 **새 소스 문서 추가하는 법:**
-1. 파일을 `source-docs/notes/`에 넣기 (md/pdf/docx 모두 가능)
-2. `source-docs/index.yaml`에 항목 추가:
-```yaml
-- id: 고유-id
-  title: "문서 제목"
-  path: notes/파일명.md
-  type: markdown
-  day_hint: monday   # monday/tuesday/wednesday/thursday/friday/any
-  tags: [태그1, 태그2]
-  last_used: null
-```
+해당 주제 폴더에 `.md` 파일을 넣기만 하면 된다. `index.yaml` 수정 불필요.
+- CFD 기법 → `source-docs/cfd-technique/` 하위 적절한 폴더에 넣기
+- 유체역학 → `source-docs/fluid-mechanics/` 하위에 넣기
+- 논문 리뷰 → `source-docs/paper-review/` 에 넣기
+
+`index.yaml`은 포스팅 루틴이 자동으로 갱신하므로 직접 편집할 필요 없다.
 
 ## 아키텍처
 - **Framework:** Next.js 16 (App Router) + Contentlayer2
