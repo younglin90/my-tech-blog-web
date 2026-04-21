@@ -10,14 +10,15 @@
 
 interface Env {
   UMAMI_API_URL?: string
-  UMAMI_API_KEY: string
+  UMAMI_API_KEY?: string
   UMAMI_WEBSITE_ID?: string
 }
 
 const DEFAULT_UMAMI_API_URL = 'https://api.umami.is/v1'
 const DEFAULT_UMAMI_WEBSITE_ID = 'ef0b4cb2-34b1-4d5e-a70e-26a543816b22'
 
-export const onRequestGet: PagesFunction<Env> = async ({ env }) => {
+export async function onRequestGet(context: { env: Env }): Promise<Response> {
+  const { env } = context
   const UMAMI_API_URL = env.UMAMI_API_URL || DEFAULT_UMAMI_API_URL
   const UMAMI_WEBSITE_ID = env.UMAMI_WEBSITE_ID || DEFAULT_UMAMI_WEBSITE_ID
   const UMAMI_API_KEY = env.UMAMI_API_KEY
@@ -49,7 +50,6 @@ export const onRequestGet: PagesFunction<Env> = async ({ env }) => {
         'x-umami-api-key': UMAMI_API_KEY,
         Accept: 'application/json',
       },
-      cf: { cacheTtl: 300, cacheEverything: true },
     })
     if (!res.ok) {
       return json({ visitors: null, pageviews: null, error: `upstream-${res.status}` }, { status: 502 })
