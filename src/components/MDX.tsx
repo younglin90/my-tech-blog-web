@@ -18,6 +18,11 @@ const { VelocityField, StreamLine, NumericalScheme, PressureContour, BoundaryCon
   PressureContour: dynamic(() => import('@/components/viz').then((m) => ({ default: m.PressureContour }))),
   BoundaryCondition: dynamic(() => import('@/components/viz').then((m) => ({ default: m.BoundaryCondition }))),
 }
+const KrylovConvergenceRace = dynamic(() =>
+  import('@/components/post-viz/2026-04-22-cfd-linear-solvers-krylov/KrylovConvergenceRace').then((m) => ({
+    default: m.KrylovConvergenceRace,
+  })),
+)
 
 const displayStyle = { fontFamily: 'var(--font-display)' }
 
@@ -297,6 +302,7 @@ const components = {
   NumericalScheme,
   PressureContour,
   BoundaryCondition,
+  KrylovConvergenceRace,
   Callout,
   Note: (props: any) => <Callout type="note" {...props} />,
   Tip: (props: any) => <Callout type="tip" {...props} />,
