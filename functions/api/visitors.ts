@@ -36,10 +36,13 @@ export async function onRequestGet(context: { env: Env }): Promise<Response> {
     return json({ visitors: null, pageviews: null, error: 'api-key-missing' }, { status: 503 })
   }
 
+  // Cloudflare Workers는 UTC로 동작. 푸터 표시는 한국시간(KST, UTC+9) 기준으로
+  // "오늘 00:00 ~ 현재"를 집계해서 Umami 대시보드(Asia/Seoul)와 동기화한다.
+  const KST_OFFSET_MS = 9 * 60 * 60 * 1000
+  const DAY_MS = 24 * 60 * 60 * 1000
   const now = Date.now()
-  const startOfDay = new Date()
-  startOfDay.setHours(0, 0, 0, 0)
-  const startAt = startOfDay.getTime()
+  const kstMidnightMs = Math.floor((now + KST_OFFSET_MS) / DAY_MS) * DAY_MS - KST_OFFSET_MS
+  const startAt = kstMidnightMs
 
   const base = UMAMI_API_URL.replace(/\/$/, '')
   const url = `${base}/websites/${UMAMI_WEBSITE_ID}/stats?startAt=${startAt}&endAt=${now}`
