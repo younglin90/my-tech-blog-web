@@ -1,0 +1,182 @@
+---
+title: "벽거리를 O(N log N)에 푸는 법: Eikonal 방정식과 Fast Marching"
+date: 2026-04-22
+description: "RANS 난류 모델의 필수 입력인 벽거리를 효율적으로 계산하는 알고리즘"
+tags: ["CFD", "알고리즘", "Eikonal", "Fast-Marching", "메시"]
+draft: false
+---
+
+import { EikonalFrontPropagation } from '@/components/post-viz/2026-04-22-wall-distance-eikonal-fast-marching/EikonalFrontPropagation'
+
+1996년, UC Berkeley의 James Sethian은 의료 영상에서 혈관 경계를 추적하는 알고리즘을 다듬고 있었다. 그 결과물인 Fast Marching Method는 지금 엉뚱한 곳에서 쓰인다. 항공기 날개 주위의 RANS 해석기가 매번 돌아갈 때, 바로 이 알고리즘이 각 격자점의 벽거리(wall distance)를 만들어낸다. Spalart-Allmaras 모델과 k-ω SST 모델은 격자마다 "가장 가까운 벽이 어디인가"라는 값을 입력으로 요구한다. 이 글은 그 값을 순진하게 구할 때 생기는 비용, Eikonal 방정식(|∇d|=1/F 형태의 쌍곡성 PDE)으로 문제를 바꾸는 아이디어, 그리고 Dijkstra의 연속판인 Fast Marching으로 $O(N \log N)$에 해를 얻는 방법을 정리한다.
+
+## 벽거리는 왜 난류 모델에 필요한가
+
+경계층 난류의 통계량은 벽에서의 거리 $y$에 강하게 의존한다. RANS(Reynolds-Averaged Navier-Stokes) 모델은 그 의존성을 대수식으로 끼워 넣는다. Spalart-Allmaras는 destruction 항에서 $d_w$(벽거리)를 직접 사용한다. k-ω SST는 blending function $F_1$, $F_2$ 안에 $d_w^2$가 들어간다. LES와의 혼합 모델(DES, DDES, IDDES)에서도 벽거리가 스위치 역할을 한다.
+
+문제는 $d_w$가 메시의 기하량이라는 것이다. 메시가 움직이거나 변형되면 매 시간 스텝마다 다시 계산해야 한다. 회전 기계(컴프레서, 펌프)처럼 로터-스테이터 경계가 상대 운동을 하는 경우가 여기 해당한다.
+
+## 순진한 방법의 함정
+
+바로 떠오르는 방법은 "모든 벽면과 모든 셀의 거리를 계산해 최솟값을 고른다"이다. 실제로 교과서 예제에서는 이걸 쓴다.
+
+비용은 $O(N_{\text{cell}} \cdot N_{\text{wall}})$이다. 항공기 전체를 푼다고 해보자. 10M 셀, 0.5M 벽면이면 5조 번의 거리 계산이다. 이게 매 시간 스텝마다 돈다면 해석이 끝나지 않는다. KD-tree 같은 공간 자료구조로 $O(N_{\text{cell}} \log N_{\text{wall}})$까지 낮출 수 있지만, 복잡한 형상의 벽 근접 쿼리는 여전히 부담이다.
+
+## Eikonal 방정식으로 생각을 바꾼다
+
+벽거리를 PDE의 해로 보자. "벽에서 0이고, 모든 방향으로 기울기 크기가 1"인 함수가 바로 거리장이다.
+
+$$
+|\nabla d(\mathbf{x})| = \frac{1}{F(\mathbf{x})}, \qquad d|_{\Gamma_w} = 0
+$$
+
+$d$는 벽까지의 "도달 시간", $F$는 전파 속도(기본 1), $\Gamma_w$는 벽 집합이다. $F=1$로 고정하면 $d$는 그대로 유클리드 거리다.
+
+이 방정식은 쌍곡성(hyperbolic)이다. 정보가 특성선(벽에서 바깥으로 뻗는 직선)을 따라 한 방향으로만 흐른다. 이 단방향성이 효율적 알고리즘의 열쇠다. "이미 값이 정해진 점에서만 값이 들어온다"는 성질을 이용하면, 모든 점을 한 번씩만 방문해도 충분하다.
+
+## Fast Marching: Dijkstra의 연속판
+
+Sethian의 아이디어는 두 줄로 요약된다.
+
+1. 모든 격자점을 Accepted / Considered / Far 세 집합으로 나눈다.
+2. Considered 중 도달 시간이 가장 작은 점을 Accepted로 확정하고, 그 이웃을 업데이트한다.
+
+가장 작은 값을 빠르게 꺼내려면 min-heap이 자연스럽다. 그래프 최단 거리 알고리즘인 Dijkstra와 구조가 같다. 차이는 이웃 업데이트 방식이다. 그래프에서는 단순 덧셈이지만, Eikonal에서는 upwind 2차 방정식을 풀어 값을 얻는다.
+
+2D 정렬 격자에서 업데이트 식은 다음과 같다.
+
+$$
+(T - T_x)^2 + (T - T_y)^2 = \left(\frac{h}{F}\right)^2
+$$
+
+$T_x$, $T_y$는 각각 수평·수직 방향의 업윈드 이웃값(네 이웃 중 작은 쪽), $h$는 격자 간격이다. 두 근 중 $T \ge \max(T_x, T_y)$인 쪽만 채택한다. 이 조건을 인과성(causality)이라고 부른다. 값은 오직 "이미 정해진, 더 작은" 이웃에서만 들어와야 한다는 Eikonal 단방향성을 강제한다.
+
+한 방향에서만 정보가 들어오는 경우(다른 이웃이 Far라면) 식은 단순해진다.
+
+$$
+T = T_x + \frac{h}{F}
+$$
+
+min-heap 삽입·삭제가 각각 $O(\log N)$이고, 각 점은 평균 상수 번 처리되므로 총 비용은 $O(N \log N)$이다.
+
+## Python 구현
+
+```python
+import heapq
+import numpy as np
+
+INF = np.inf
+FAR, CONSIDERED, ACCEPTED = 0, 1, 2
+
+
+def solve_eikonal_neighbor(T, j, i, h, F):
+    """한 점에서 2차 upwind 해를 얻는다."""
+    ny, nx = T.shape
+    Tx = min(
+        T[j, i - 1] if i > 0 else INF,
+        T[j, i + 1] if i < nx - 1 else INF,
+    )
+    Ty = min(
+        T[j - 1, i] if j > 0 else INF,
+        T[j + 1, i] if j < ny - 1 else INF,
+    )
+    a, b = sorted([Tx, Ty])
+    inv_f = h / F
+    if not np.isfinite(b) or b >= a + inv_f:
+        return a + inv_f
+    diff = b - a
+    disc = 2 * inv_f * inv_f - diff * diff
+    if disc < 0:
+        return a + inv_f
+    return 0.5 * (a + b + np.sqrt(disc))
+
+
+def march_wall_distance(walls, h=1.0, F=1.0):
+    """2D 정렬 격자에서 Fast Marching으로 벽거리를 계산한다."""
+    ny, nx = walls.shape
+    T = np.full_like(walls, INF, dtype=np.float64)
+    status = np.zeros_like(walls, dtype=np.uint8)
+    heap = []
+
+    T[walls] = 0.0
+    status[walls] = ACCEPTED
+
+    # 벽의 네 방향 이웃을 Considered로 초기화
+    for j in range(ny):
+        for i in range(nx):
+            if not walls[j, i]:
+                continue
+            for dj, di in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                nj, ni = j + dj, i + di
+                if 0 <= nj < ny and 0 <= ni < nx and status[nj, ni] != ACCEPTED:
+                    new_t = solve_eikonal_neighbor(T, nj, ni, h, F)
+                    if new_t < T[nj, ni]:
+                        T[nj, ni] = new_t
+                        status[nj, ni] = CONSIDERED
+                        heapq.heappush(heap, (new_t, nj, ni))
+
+    while heap:
+        t, j, i = heapq.heappop(heap)
+        if status[j, i] == ACCEPTED:
+            continue  # 오래된 엔트리
+        status[j, i] = ACCEPTED
+        for dj, di in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nj, ni = j + dj, i + di
+            if not (0 <= nj < ny and 0 <= ni < nx):
+                continue
+            if status[nj, ni] == ACCEPTED:
+                continue
+            new_t = solve_eikonal_neighbor(T, nj, ni, h, F)
+            if new_t < T[nj, ni]:
+                T[nj, ni] = new_t
+                status[nj, ni] = CONSIDERED
+                heapq.heappush(heap, (new_t, nj, ni))
+    return T
+
+
+# 검증: 평면 채널
+walls = np.zeros((61, 121), dtype=bool)
+walls[0, :] = True
+walls[-1, :] = True
+
+d = march_wall_distance(walls, h=1.0)
+
+# 중앙선(y=30)에서 벽거리는 30이어야 한다
+print(f"중앙 벽거리 = {d[30, 60]:.4f} (정답 30.0)")
+print(f"최대 상대 오차 = {np.max(np.abs(d[30, :] - 30)):.4f}")
+```
+
+평면 채널에서는 해석해 $d=\min(y, H-y)$가 깔끔하게 나온다. 위 코드의 중앙선 출력은 정확히 30.0에 거의 일치한다. 2D 첫 근사는 Upwind 1차 도함수라 코너 근처에서 약간의 오차가 있지만 실무에는 충분하다.
+
+## 직접 파면이 퍼지는 걸 보자
+
+아래 시뮬레이션에서 직접 조작해보자. "단일 원통"부터 눌러보고, 속도 $F$를 높이거나 장애물을 바꿔보라.
+
+<EikonalFrontPropagation />
+
+노란색 띠가 지금 업데이트되는 Considered 집합, 즉 "파면(front)" 자체다. 벽과 원통 경계에서 동시에 파면이 출발해, 서로 만나는 지점에서 거리가 확정된다. 두 원통 패턴에서는 두 파면의 충돌선이 바로 두 원통의 중간거리(medial axis) 근처에 형성된다. 슬릿 벽 패턴은 파면이 틈을 돌아 뒷면까지 도달하는 걸 보여준다. 이 "돌아 들어감"이 순진한 유클리드 거리와 갈라지는 지점이다. 실제 항공기·터빈 형상에서도 벽 뒤쪽의 난류 모델 입력은 바로 이 돌아 들어간 거리를 요구한다.
+
+## 비정렬 격자로의 확장
+
+정렬 격자 위의 공식은 아름답지만, CFD의 절반은 비정렬 격자 위에 있다. Sethian & Vladimirsky (2000)는 이 문제를 풀었다. 한 점 $\mathbf{x}_0$의 값을 그 점을 포함하는 simplex(삼각형, 사면체)의 다른 꼭짓점 값으로부터 얻는다.
+
+방향 벡터 $\mathbf{p}_r = \mathbf{x}_r - \mathbf{x}_0$를 행으로 모은 행렬 $P$와 방향도함수 $v_r = (T_0 - T_r)/|\mathbf{p}_r|$에서 정규방정식을 풀면, Eikonal $|\nabla T|^2 = 1/F^2$는 $T_0$에 대한 2차 방정식이 된다. 근 두 개 중 근사 그래디언트가 simplex 내부를 향하는 것만 채택한다. 이 시물렉스 인과성(simplex causality)이 정렬 격자의 단순 upwind 조건을 일반화한 것이다.
+
+## 실무 체크리스트
+
+- **움직이는 메쉬**: 전체 재계산 대신 변형이 큰 영역만 갱신하는 레이지 업데이트가 쓸모 있다. Fast Marching은 순차적이라 병렬화가 까다롭지만, narrow band 변형체는 구현하기 좋다.
+- **Periodic BC**: periodic 측에서 벽으로 값이 전파되도록 그래프를 이어 붙여야 한다. 안 그러면 주기 경계 근처 벽거리가 과대평가된다.
+- **다중 재질**: 로터-스테이터 해석에서는 상대 운동하는 두 벽 집합 모두 $\Gamma_w$에 포함시킨다. 터빈 팁 갭처럼 거리가 급변하는 곳은 격자가 충분히 촘촘해야 한다.
+- **P-Poisson 대안**: $|\nabla d|^p = 1$ ($p=4 \sim 10$)을 implicit하게 풀면 Fast Marching보다 느리지만 병렬 구현이 쉽다. 대형 병렬 솔버에서는 이쪽이 선호되기도 한다.
+- **국소 음수 오차**: 수치 discretization에 따라 매우 얇은 경계층에서 $d_w$가 음수로 나올 수 있다. 항상 $\max(d_w, 0)$로 클램프.
+
+## 핵심 3줄 요약
+
+- 벽거리는 Eikonal 방정식 $|\nabla d|=1/F$의 해로 볼 수 있고, 이 관점이 $O(N \log N)$ 알고리즘을 열어준다.
+- Fast Marching은 min-heap으로 Considered 집합을 관리하며 upwind 2차 방정식을 풀어 파면을 한 번씩만 확정한다.
+- 움직이는 메쉬, 주기 경계, 병렬화 요구에 따라 Fast Marching 본체 또는 P-Poisson 완화를 선택한다.
+
+## 참고
+
+- J. A. Sethian, A. Vladimirsky, "Fast methods for the Eikonal and related Hamilton–Jacobi equations on unstructured meshes", *PNAS* 97(11), 5699–5703, 2000.
+- P. Tucker, "Assessment of geometric multilevel convergence robustness and a wall distance method for flows with multiple internal boundaries", *Applied Mathematical Modelling* 22, 1998.
