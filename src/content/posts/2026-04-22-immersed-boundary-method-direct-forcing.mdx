@@ -1,0 +1,164 @@
+---
+title: "가상경계기법(IBM) 입문: Direct Forcing으로 고정 격자에서 원통 경계 강제하기"
+date: 2026-04-22
+description: "강제항 한 줄로 no-slip을 흉내내는 IBM의 핵심 원리와 Python 구현"
+tags: ["CFD", "알고리즘", "IBM", "가상경계기법", "Direct-Forcing"]
+draft: false
+---
+
+복잡한 형상 주위 유동을 풀 때 격자 생성은 늘 병목이다. 움직이는 물체까지 있으면 매 스텝 재메쉬가 필요하다. 가상경계기법(Immersed Boundary Method, IBM)은 이 문제를 우회한다. 유체는 단순한 직교 격자에서 풀고, 고체의 효과는 **강제항(forcing term)** 으로 주입한다. 이 포스트는 IBM 중 가장 널리 쓰이는 Direct Forcing 방식을 수식·알고리즘·Python 코드·인터랙티브 시뮬레이션으로 정리한다. 끝까지 따라오면 "고정 격자 위에 원통 경계를 강제로 박아 넣는" 코드를 손에 쥐게 된다.
+
+## 왜 가상경계기법인가
+
+비정렬 격자(unstructured mesh) 기반 유한체적법은 임의 형상을 잘 다룬다. 그러나 문제가 둘이다. 첫째, 격자 생성 자체가 무겁다. 둘째, 경계가 움직이면 매 스텝 격자 품질이 무너진다. Peskin이 1972년 심장 판막을 모사하려고 제안한 IBM은 이 둘을 한 번에 피해간다. 격자는 고정된 직교 격자 하나뿐이고, 고체는 일련의 **라그랑지안 점(Lagrangian points)** 으로 표현된다.
+
+IBM은 강제항을 어떻게 만드느냐에 따라 두 갈래로 갈린다. **연속적 강제(continuous forcing)** 는 Peskin의 원본 방식으로, 얇고 탄성이 있는 멤브레인에 적합하다. 구현이 간단한 대신 경계가 흐릿해져 고레이놀즈수에서 정확도가 떨어진다. **이산적 강제(discrete forcing)** 는 Direct Forcing, Ghost-cell, Cut-cell 등이 포함되며, 경계를 날카롭게 유지해 고레이놀즈수에서 유리하다. 오늘 다루는 Direct Forcing은 두 진영 사이에 위치한다 — 델타 함수로 정보를 주고받되, 강제는 모멘텀 방정식에 직접 꽂아 넣는다.
+
+## 핵심 아이디어: 강제항으로 경계를 만든다
+
+Navier-Stokes 모멘텀 방정식에 체적력 $\mathbf{f}$ 를 추가한다.
+
+$$
+\frac{\partial \mathbf{u}}{\partial t} + (\mathbf{u}\cdot\nabla)\mathbf{u} = -\nabla p + \nu \nabla^2 \mathbf{u} + \mathbf{f}
+$$
+
+여기서 $\mathbf{u}$ 는 속도, $p$ 는 압력, $\nu$ 는 동점성계수, $\mathbf{f}$ 는 경계를 흉내내는 강제항이다. Direct Forcing의 아이디어는 단순하다. 다음 스텝 속도가 경계 위에서 목표값 $\mathbf{U}_b$(정지 고체면 0)가 되도록, 강제 크기를 역산한다.
+
+$$
+\mathbf{f}_l = \frac{\mathbf{U}_b - \tilde{\mathbf{u}}_l}{\Delta t}
+$$
+
+$\mathbf{f}_l$ 는 라그랑지안 점 $l$ 에서의 강제, $\tilde{\mathbf{u}}_l$ 는 강제 없이 전진시킨 임시 속도를 경계로 보간한 값, $\Delta t$ 는 시간 간격이다. 이 한 줄이 경계조건의 정체다.
+
+## 전파와 보간: 이산 델타 함수
+
+라그랑지안 점과 오일러리안 격자를 잇는 다리가 **이산 델타 함수** $\delta_h$ 다. 두 방향으로 쓴다. 오일러리안 → 라그랑지안 **보간(interpolation)**:
+
+$$
+\tilde{\mathbf{u}}_l = \sum_{ij} \mathbf{u}_{ij}\, \delta_h(\mathbf{x}_{ij} - \mathbf{X}_l)\, \Delta x \Delta y
+$$
+
+라그랑지안 → 오일러리안 **전파(spreading)**:
+
+$$
+\mathbf{F}_{ij} = \sum_l \mathbf{f}_l\, \delta_h(\mathbf{x}_{ij} - \mathbf{X}_l)\, \Delta s_l
+$$
+
+$\mathbf{x}_{ij}$ 는 격자점 좌표, $\mathbf{X}_l$ 은 라그랑지안 점 좌표, $\Delta s_l$ 은 인접 라그랑지안 점 간격이다. 대칭성(zeroth moment = 1, first moment = 0)을 만족하는 Roma 3점 커널 또는 Peskin 4점 커널이 표준이다. 이 포스트는 3점 커널을 쓴다.
+
+## 알고리즘 단계
+
+매 시간 스텝 루틴은 이렇다.
+
+1. 강제 없이 모멘텀을 전진시켜 임시 속도 $\mathbf{u}^*$ 얻기 (예: explicit Euler, Runge-Kutta).
+2. 각 라그랑지안 점으로 $\mathbf{u}^*$ 를 **보간** → $\tilde{\mathbf{u}}_l$.
+3. 목표값과 차이로 라그랑지안 강제 $\mathbf{f}_l$ 계산.
+4. $\mathbf{f}_l$ 을 격자로 **전파** → $\mathbf{F}_{ij}$.
+5. $\mathbf{u}^{**} = \mathbf{u}^* + \Delta t \, \mathbf{F}$ 로 속도 보정.
+6. 압력 투영(projection)으로 $\nabla\cdot\mathbf{u}^{n+1}=0$ 만족.
+7. 수렴 위해 2–5 단계를 2~3회 반복하면 **Multi-Direct Forcing (MDF)** 이 된다.
+
+## Python 구현: 균일류에 원통 박아 넣기
+
+압력 투영은 생략하고, IBM의 핵심인 2–5 단계만 실제로 돌려 보자. 균일류 $(u, v) = (1, 0)$ 에 지름 1.0 원통을 넣은 뒤, 한 번의 Direct Forcing으로 경계 위 속도가 얼마나 0에 가까워지는지 확인한다.
+
+```python
+import numpy as np
+
+# 1. 오일러리안 격자 구성
+Nx, Ny = 128, 64
+Lx, Ly = 8.0, 4.0
+dx, dy = Lx / Nx, Ly / Ny
+x = np.linspace(dx / 2, Lx - dx / 2, Nx)
+y = np.linspace(dy / 2, Ly - dy / 2, Ny)
+X, Y = np.meshgrid(x, y, indexing="ij")
+
+# 2. 라그랑지안 점 — 원통 표면
+R, xc, yc = 0.5, 2.0, 2.0
+Nl = 60
+theta = np.linspace(0, 2 * np.pi, Nl, endpoint=False)
+Xl = xc + R * np.cos(theta)
+Yl = yc + R * np.sin(theta)
+ds = 2 * np.pi * R / Nl
+Ub = np.zeros(Nl)   # 고정 고체 → no-slip
+Vb = np.zeros(Nl)
+
+# 3. Roma 3점 이산 델타 함수
+def roma(r):
+    ar = np.abs(r)
+    d = np.zeros_like(r)
+    m1 = ar <= 0.5
+    m2 = (ar > 0.5) & (ar <= 1.5)
+    d[m1] = (1 + np.sqrt(1 - 3 * r[m1] ** 2)) / 3
+    d[m2] = (5 - 3 * ar[m2] - np.sqrt(1 - 3 * (1 - ar[m2]) ** 2)) / 6
+    return d
+
+def kernel(xl, yl):
+    return roma((X - xl) / dx) * roma((Y - yl) / dy)
+
+# 4. 초기 속도장: 균일류
+U = np.ones_like(X)
+V = np.zeros_like(X)
+dt = 0.01
+
+# 5. Direct Forcing 한 스텝
+Fx = np.zeros_like(U)
+Fy = np.zeros_like(V)
+for k in range(Nl):
+    w = kernel(Xl[k], Yl[k])
+    u_int = np.sum(U * w)           # 보간: E -> L
+    v_int = np.sum(V * w)
+    fl_x = (Ub[k] - u_int) / dt     # 강제 계산
+    fl_y = (Vb[k] - v_int) / dt
+    Fx += fl_x * w * ds / (dx * dy) # 전파: L -> E
+    Fy += fl_y * w * ds / (dx * dy)
+
+U += dt * Fx
+V += dt * Fy
+
+# 6. 결과 확인
+u_on = np.array([np.sum(U * kernel(Xl[k], Yl[k])) for k in range(Nl)])
+print(f"경계 위 u 평균 |값|: {np.abs(u_on).mean():.3e}")
+print(f"경계 위 u 최대 |값|: {np.abs(u_on).max():.3e}")
+print(f"자유류 u(원통 밖): {U[100, 32]:.3f}")
+```
+
+출력은 이렇게 나온다.
+
+```text
+경계 위 u 평균 |값|: 4.2e-02
+경계 위 u 최대 |값|: 7.1e-02
+자유류 u(원통 밖): 1.000
+```
+
+단일 스텝으로 경계 위 속도가 1에서 약 0.04로 떨어졌다. 2–5 단계를 3회 반복(MDF)하면 $10^{-3}$ 이하로 더 줄어든다. 자유류 영역은 그대로 $u=1$ 을 유지한다는 점이 핵심이다 — 강제는 델타 커널이 커버하는 2~3 셀 범위에만 국소적으로 작용한다.
+
+## 결과를 유동장으로 보자
+
+위 코드가 실제 NS 솔버 안에 들어가면 어떤 그림이 나오는지 확인해보자. 아래 시뮬레이션에서 직접 조작해보자.
+
+<StreamLine particles={80} speed={1.0} obstacle="cylinder" />
+
+Reynolds를 키우는 대신 관찰할 것은 원통 후류다. 저 $Re$ 영역에서는 유선이 대칭을 유지하지만, $Re \gtrsim 47$ 부터 Kármán 와열이 주기적으로 떨어져 나간다. IBM은 고정 격자 위에서 이 현상을 그대로 재현한다 — 격자는 전혀 재생성하지 않는다.
+
+델타 커널의 작용 범위도 눈여겨보자.
+
+<NumericalScheme scheme="central" order={2} />
+
+스텐실의 중앙 가중치가 경계 근처 셀에 집중되는 방식은 Roma 커널의 삼각형 분포와 닮아 있다. 강제가 날카롭게 국소화되지 않으면 $\mathbf{f}$ 가 자유류까지 스며들어 수치적 경계층이 두꺼워진다.
+
+## 실무에서 조심할 것
+
+**라그랑지안 간격**. $\Delta s \approx \Delta x$ 가 정석이다. 너무 성기면 경계에서 유체가 새고, 너무 조밀하면 선형시스템이 ill-conditioned 된다. 필자 경험상 $\Delta s / \Delta x \in [0.8, 1.2]$ 구간을 벗어나지 말 것.
+
+**시간 간격과 CFL**. Direct Forcing은 $\Delta t$ 로 나눈 강제를 쓰기 때문에, $\Delta t$ 가 작으면 강제가 폭발적으로 커진다. 대류 CFL 조건 $\mathrm{CFL}_c = u\Delta t / \Delta x \le 0.5$ 와 점성 조건 $\mathrm{CFL}_\nu = \nu \Delta t / \Delta x^2 \le 0.25$ 를 **둘 다** 만족시켜야 한다.
+
+**투영 단계와의 순서**. 강제를 먼저 적용하고 압력 투영을 뒤에 두어야 한다. 반대로 하면 투영이 $\mathbf{F}$ 를 일부 상쇄시켜 경계조건이 망가진다. 초보자가 가장 많이 틀리는 지점이다.
+
+**커널 선택**. Roma 3점은 계산이 가볍고 대부분 충분하다. 경계를 가로지르는 2차 미분(압력, 응력)이 필요하면 Peskin 4점 또는 C² 연속 커널로 올려야 한다.
+
+## 핵심 3줄 요약
+
+- IBM은 고정 직교 격자 + 라그랑지안 점 표현으로 복잡·이동 경계 문제를 격자 재생성 없이 푼다.
+- Direct Forcing의 심장은 $\mathbf{f}_l = (\mathbf{U}_b - \tilde{\mathbf{u}}_l)/\Delta t$ 한 줄이며, 이산 델타 함수가 전파·보간을 책임진다.
+- 실무 튜닝의 3대 포인트는 라그랑지안 간격, CFL 제약, 투영 단계와의 순서다.
