@@ -1,5 +1,4 @@
 import '@/styles/globals.css'
-import Script from 'next/script'
 import { Fraunces, Geist, JetBrains_Mono } from 'next/font/google'
 import { ThemeProvider } from '@/components/ThemeProvider'
 import { BackToTop } from '@/components/BackToTop'
@@ -101,11 +100,12 @@ export default function RootLayout({
         <link rel="alternate" type="application/rss+xml" title="영린's CFD Blog RSS" href="/feed.xml" />
         <link rel="alternate" type="application/feed+json" title="영린's CFD Blog JSON Feed" href="/feed.json" />
         {UMAMI_SCRIPT_URL && UMAMI_WEBSITE_ID && (
-          <Script
+          // biome-ignore lint/style/useNativeScript: raw <script> ensures the tag lands in the SSR HTML <head>
+          // so the tracker loads before hydration (next/script with afterInteractive defers insertion to client-side only).
+          <script
+            defer
             src={UMAMI_SCRIPT_URL}
             data-website-id={UMAMI_WEBSITE_ID}
-            strategy="afterInteractive"
-            defer
           />
         )}
       </head>
