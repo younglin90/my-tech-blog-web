@@ -1,0 +1,182 @@
+---
+title: "壁距離を O(N log N) で解く方法：Eikonal 方程式と Fast Marching"
+date: 2026-04-22
+description: "RANS 乱流モデルの必須入力である壁距離を効率的に計算するアルゴリズム"
+tags: ["CFD", "アルゴリズム", "Eikonal", "Fast-Marching", "メッシュ"]
+draft: false
+---
+
+import { EikonalFrontPropagation } from '@/components/post-viz/2026-04-22-wall-distance-eikonal-fast-marching/EikonalFrontPropagation'
+
+1996年、カリフォルニア大学バークレー校の James Sethian 氏は、医療画像における血管境界のトラッキングアルゴリズムを改良していました。その成果である Fast Marching Method は、現在、意外な場所で使われています。航空機の翼周囲の RANS（Reynolds-Averaged Navier-Stokes）ソルバーが実行されるたびに、まさにこのアルゴリズムが各格子点の壁距離（wall distance）を生成しています。Spalart-Allmaras モデルや k-ω SST モデルは、各格子において「最も近い壁はどこか」という値を入力として必要とします。この記事では、その値を愚直に求めた場合のコスト、問題を Eikonal 方程式（|∇d|=1/F 形式の双曲型 PDE）に変換するアイデア、そして Dijkstra 法の連続版である Fast Marching を用いて $O(N \log N)$ で解を得る方法をまとめます。
+
+## なぜ乱流モデルに壁距離が必要なのか
+
+境界層乱流の統計量は、壁からの距離 $y$ に強く依存します。RANS モデルはその依存性を代数式として組み込みます。Spalart-Allmaras では、破壊（destruction）項で $d_w$（壁距離）を直接使用します。k-ω SST では、ブレンディング関数 $F_1, F_2$ の中に $d_w^2$ が入ります。LES との混合モデル（DES, DDES, IDDES）でも、壁距離がスイッチの役割を果たします。
+
+問題は、$d_w$ がメッシュの幾何量であるということです。メッシュが移動したり変形したりする場合、各タイムステップごとに再計算する必要があります。回転機械（コンプレッサー、ポンプ）のように、ローターとステーターの境界が相対運動をする場合がこれに該当します。
+
+## 愚直な方法の落とし穴
+
+すぐに思いつく方法は、「すべての壁面とすべてのセルの距離を計算して最小値を選ぶ」というものです。実際、教科書の例題ではこれが使われています。
+
+このコストは $O(N_{\text{cell}} \cdot N_{\text{wall}})$ です。航空機全体を解くとしましょう。1,000万セル、50万壁面であれば、5兆回の距離計算になります。これがタイムステップごとに実行されると、解析は終わりません。KD-tree のような空間データ構造を用いることで $O(N_{\text{cell}} \log N_{\text{wall}})$ まで下げることができますが、複雑な形状の壁近傍クエリは依然として大きな負担です。
+
+## Eikonal 方程式へと視点を変える
+
+壁距離を PDE（偏微分方程式）の解として捉えてみましょう。「壁で 0 であり、すべての方向で勾配の大きさが 1」である関数こそが距離場です。
+
+$$
+|\nabla d(\mathbf{x})| = \frac{1}{F(\mathbf{x})}, \qquad d|_{\Gamma_w} = 0
+$$
+
+ここで、$d$ は壁までの「到達時間」、$F$ は伝播速度（デフォルトは 1）、$\Gamma_w$ は壁の集合です。$F=1$ と固定すれば、$d$ はそのままユークリッド距離となります。
+
+この方程式は双曲型（hyperbolic）です。情報は特性線（壁から外側へ伸びる直線）に沿って一方向にのみ流れます。この一方向性が効率的なアルゴリズムの鍵となります。「すでに値が定まった点からのみ値が伝わる」という性質を利用すれば、すべての点を一度訪問するだけで十分です。
+
+## Fast Marching：Dijkstra 法の連続版
+
+Sethian 氏のアイデアは、次の2ステップに要約されます。
+
+1. すべての格子点を Accepted / Considered / Far の3つの集合に分ける。
+2. Considered の中で到達時間が最も小さい点を Accepted として確定し、その隣接点をアップデートする。
+
+最小値を素早く取り出すには、min-heap（最小ヒープ）が適しています。これはグラフの最短経路アルゴリズムである Dijkstra 法と同じ構造です。違いは隣接点のアップデート方法にあります。グラフでは単純な加算ですが、Eikonal 方程式ではアップウィンド（upwind）2次方程式を解いて値を求めます。
+
+2D 構造格子におけるアップデート式は以下の通りです。
+
+$$
+(T - T_x)^2 + (T - T_y)^2 = \left(\frac{h}{F}\right)^2
+$$
+
+ここで、$T_x, T_y$ はそれぞれ水平・垂直方向のアップウィンド隣接値（小さい方）、$h$ は格子間隔です。2つの解のうち、$T \ge \max(T_x, T_y)$ である方のみを採用します。この条件を因果律（causality）と呼びます。これは、値は「すでに確定した、より小さい」隣接点からのみ伝わらなければならないという Eikonal 方程式の一方向性を強制するものです。
+
+一方向からのみ情報が伝わる場合（他の隣接点が Far の場合）、式は単純になります。
+
+$$
+T = T_x + \frac{h}{F}
+$$
+
+min-heap への挿入・削除はそれぞれ $O(\log N)$ であり、各点は平均して定数回処理されるため、総コストは $O(N \log N)$ となります。
+
+## Python による実装
+
+```python
+import heapq
+import numpy as np
+
+INF = np.inf
+FAR, CONSIDERED, ACCEPTED = 0, 1, 2
+
+
+def solve_eikonal_neighbor(T, j, i, h, F):
+    """ある点において 2次アップウィンド解を求めます。"""
+    ny, nx = T.shape
+    Tx = min(
+        T[j, i - 1] if i > 0 else INF,
+        T[j, i + 1] if i < nx - 1 else INF,
+    )
+    Ty = min(
+        T[j - 1, i] if j > 0 else INF,
+        T[j + 1, i] if j < ny - 1 else INF,
+    )
+    a, b = sorted([Tx, Ty])
+    inv_f = h / F
+    if not np.isfinite(b) or b >= a + inv_f:
+        return a + inv_f
+    diff = b - a
+    disc = 2 * inv_f * inv_f - diff * diff
+    if disc < 0:
+        return a + inv_f
+    return 0.5 * (a + b + np.sqrt(disc))
+
+
+def march_wall_distance(walls, h=1.0, F=1.0):
+    """2D 構造格子において Fast Marching で壁距離を計算します。"""
+    ny, nx = walls.shape
+    T = np.full_like(walls, INF, dtype=np.float64)
+    status = np.zeros_like(walls, dtype=np.uint8)
+    heap = []
+
+    T[walls] = 0.0
+    status[walls] = ACCEPTED
+
+    # 壁の四方向の隣接点を Considered として初期化
+    for j in range(ny):
+        for i in range(nx):
+            if not walls[j, i]:
+                continue
+            for dj, di in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                nj, ni = j + dj, i + di
+                if 0 <= nj < ny and 0 <= ni < nx and status[nj, ni] != ACCEPTED:
+                    new_t = solve_eikonal_neighbor(T, nj, ni, h, F)
+                    if new_t < T[nj, ni]:
+                        T[nj, ni] = new_t
+                        status[nj, ni] = CONSIDERED
+                        heapq.heappush(heap, (new_t, nj, ni))
+
+    while heap:
+        t, j, i = heapq.heappop(heap)
+        if status[j, i] == ACCEPTED:
+            continue  # 古いエントリー
+        status[j, i] = ACCEPTED
+        for dj, di in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nj, ni = j + dj, i + di
+            if not (0 <= nj < ny and 0 <= ni < nx):
+                continue
+            if status[nj, ni] == ACCEPTED:
+                continue
+            new_t = solve_eikonal_neighbor(T, nj, ni, h, F)
+            if new_t < T[nj, ni]:
+                T[nj, ni] = new_t
+                status[nj, ni] = CONSIDERED
+                heapq.heappush(heap, (new_t, nj, ni))
+    return T
+
+
+# 検証：平行平板チャネル
+walls = np.zeros((61, 121), dtype=bool)
+walls[0, :] = True
+walls[-1, :] = True
+
+d = march_wall_distance(walls, h=1.0)
+
+# 中央線 (y=30) での壁距離は 30 である必要があります
+print(f"中央壁距離 = {d[30, 60]:.4f} (正解 30.0)")
+print(f"最大相対誤差 = {np.max(np.abs(d[30, :] - 30)):.4f}")
+```
+
+チャネル流では解析解 $d=\min(y, H-y)$ が綺麗に得られます。上記のコードの出力は、中央線でほぼ正確に 30.0 と一致します。2D の一次アップウィンド近似であるため、コーナー付近でわずかな誤差が生じますが、実務上は十分な精度です。
+
+## 波面の広がりを視覚化してみる
+
+以下のシミュレーションで実際に操作してみてください。「単一円柱（Single Cylinder）」を選択し、速度 $F$ を上げたり、障害物を変えたりしてみましょう。
+
+<EikonalFrontPropagation />
+
+黄色い帯が現在アップデートされている Considered 集合、つまり「波面（front）」そのものです。壁と円柱の境界から同時に波面が出発し、互いに衝突する地点で距離が確定します。2つの円柱のパターンでは、2つの波面の衝突線が円柱間の中間軸（medial axis）付近に形成されます。スリット壁のパターンでは、波面が隙間を回り込んで背面に到達する様子が分かります。この「回り込み」が、単純なユークリッド距離と異なる点です。実際の航空機やタービンの形状でも、壁の背後の乱流モデル入力には、この回り込んだ距離が必要とされます。
+
+## 非構造格子への拡張
+
+構造格子上の公式は美しいですが、CFD の半分は非構造格子上で計算されます。Sethian & Vladimirsky (2000) はこの問題を解決しました。ある点 $\mathbf{x}_0$ の値を、その点を含むシンプレックス（三角形、四面体）の他の頂点における値から求めます。
+
+方向ベクトル $\mathbf{p}_r = \mathbf{x}_r - \mathbf{x}_0$ を行としてまとめた行列 $P$ と、方向微分 $v_r = (T_0 - T_r)/|\mathbf{p}_r|$ から正規方程式を解くと、Eikonal 方程式 $|\nabla T|^2 = 1/F^2$ は $T_0$ に関する2次方程式となります。2つの解のうち、近似勾配がシンプレックス内部を向いている方のみを採用します。この「シンプレックス因果律（simplex causality）」が、構造格子における単純なアップウィンド条件を一般化したものです。
+
+## 実務チェックリスト
+
+- **移動メッシュ**: 全体を再計算する代わりに、変形が大きい領域のみを更新するレイジーアップデートが有効です。Fast Marching は逐次的な処理であるため並列化が難しいですが、ナローバンド（narrow band）変形体は実装に適しています。
+- **周期境界条件 (Periodic BC)**: 周期境界側から壁に向かって値が伝播するようにグラフを接続する必要があります。そうしないと、周期境界付近の壁距離が過大評価されてしまいます。
+- **マルチマテリアル**: ローターとステーターの解析では、相対運動する両方の壁集合を $\Gamma_w$ に含めます。タービンのチップクリアランスのように距離が急激に変化する場所では、十分な格子解像度が必要です。
+- **P-Poisson 方程式による代替**: $|\nabla d|^p = 1$ ($p=4 \sim 10$) を陰的に解く方法は、Fast Marching より低速ですが、並列化が容易です。大規模な並列ソルバーでは、こちらが好まれることもあります。
+- **局所的な負の誤差**: 数値スキームの離散化によっては、非常に薄い境界層で $d_w$ が負の値になることがあります。常に $\max(d_w, 0)$ でクランプしてください。
+
+## 要約
+
+- 壁距離は Eikonal 方程式 $|\nabla d|=1/F$ の解と見なすことができ、この観点から $O(N \log N)$ アルゴリズムが可能になります。
+- Fast Marching は min-heap で Considered 集合を管理し、アップウィンド2次方程式を解くことで波面を順次確定させます。
+- 移動メッシュ、周期境界、並列化の要件に応じて、Fast Marching 本体または P-Poisson 緩和法を選択します。
+
+## 参考文献
+
+- J. A. Sethian, A. Vladimirsky, "Fast methods for the Eikonal and related Hamilton–Jacobi equations on unstructured meshes", *PNAS* 97(11), 5699–5703, 2000.
+- P. Tucker, "Assessment of geometric multilevel convergence robustness and a wall distance method for flows with multiple internal boundaries", *Applied Mathematical Modelling* 22, 1998.

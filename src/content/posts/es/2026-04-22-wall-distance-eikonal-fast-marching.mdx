@@ -1,0 +1,182 @@
+---
+title: "Cómo resolver la distancia a la pared en O(N log N): Ecuación de Eikonal y Fast Marching"
+date: 2026-04-22
+description: "Algoritmo eficiente para calcular la distancia a la pared, un dato esencial para los modelos de turbulencia RANS."
+tags: ["CFD", "Algoritmo", "Eikonal", "Fast-Marching", "Malla"]
+draft: false
+---
+
+import { EikonalFrontPropagation } from '@/components/post-viz/2026-04-22-wall-distance-eikonal-fast-marching/EikonalFrontPropagation'
+
+En 1996, James Sethian de la UC Berkeley estaba perfeccionando un algoritmo para rastrear los límites de los vasos sanguíneos en imágenes médicas. El resultado, el Método de Fast Marching (Marcha Rápida), se utiliza hoy en lugares inesperados. Cada vez que un simulador RANS se ejecuta alrededor del ala de un avión, este mismo algoritmo genera la distancia a la pared (wall distance) para cada punto de la malla. Los modelos Spalart-Allmaras y k-ω SST requieren como entrada para cada celda el valor de "¿dónde está la pared más cercana?". Este artículo resume el costo de obtener ese valor de forma ingenua, la idea de transformar el problema en la ecuación de Eikonal (una PDE hiperbólica de la forma |∇d|=1/F) y cómo obtener la solución en $O(N \log N)$ mediante Fast Marching, la versión continua de Dijkstra.
+
+## Por qué los modelos de turbulencia necesitan la distancia a la pared
+
+Las estadísticas de la turbulencia en la capa límite dependen fuertemente de la distancia a la pared $y$. Los modelos RANS (Reynolds-Averaged Navier-Stokes) incorporan esta dependencia a través de expresiones algebraicas. Spalart-Allmaras utiliza $d_w$ (distancia a la pared) directamente en su término de destrucción. En k-ω SST, $d_w^2$ aparece dentro de las funciones de mezcla $F_1$ y $F_2$. La distancia a la pared también actúa como un interruptor en los modelos híbridos con LES (DES, DDES, IDDES).
+
+El problema es que $d_w$ es una propiedad geométrica de la malla. Si la malla se mueve o se deforma, debe recalcularse en cada paso de tiempo. Este es el caso de las máquinas rotativas (compresores, bombas) donde el límite rotor-estator implica un movimiento relativo.
+
+## Las trampas del método ingenuo
+
+El método más inmediato es "calcular la distancia entre cada cara de la pared y cada celda, y elegir el mínimo". De hecho, esto se utiliza en los ejemplos de los libros de texto.
+
+El costo es $O(N_{\text{celda}} \cdot N_{\text{pared}})$. Supóngase que se resuelve un avión completo. Con 10 millones de celdas y medio millón de caras de pared, serían 5 billones de cálculos de distancia. Si esto se ejecuta en cada paso de tiempo, la simulación nunca terminaría. Aunque las estructuras de datos espaciales como los KD-trees pueden reducirlo a $O(N_{\text{celda}} \log N_{\text{pared}})$, las consultas de proximidad a la pared para geometrías complejas siguen siendo costosas.
+
+## Cambiando la perspectiva: La ecuación de Eikonal
+
+Considérese la distancia a la pared como la solución de una PDE. Una función que sea "cero en la pared y tenga una magnitud de gradiente de 1 en todas las direcciones" es precisamente el campo de distancias.
+
+$$
+|\nabla d(\mathbf{x})| = \frac{1}{F(\mathbf{x})}, \qquad d|_{\Gamma_w} = 0
+$$
+
+Aquí, $d$ es el "tiempo de llegada" a la pared, $F$ es la velocidad de propagación (por defecto 1) y $\Gamma_w$ es el conjunto de paredes. Si se fija $F=1$, $d$ es simplemente la distancia euclidiana.
+
+Esta ecuación es hiperbólica. La información fluye en una sola dirección a lo largo de las líneas características (líneas rectas que se extienden hacia afuera desde la pared). Esta unidireccionalidad es la clave para un algoritmo eficiente. Aprovechando la propiedad de que "los valores solo entran desde puntos donde el valor ya está determinado", es suficiente visitar cada punto una sola vez.
+
+## Fast Marching: El Dijkstra continuo
+
+La idea de Sethian se puede resumir en dos pasos:
+
+1. Dividir todos los puntos de la malla en tres conjuntos: Accepted (Aceptados), Considered (Considerados) y Far (Lejanos).
+2. Del conjunto Considered, identificar el punto con el menor tiempo de llegada, pasarlo a Accepted y actualizar sus vecinos.
+
+Para extraer rápidamente el valor mínimo, es natural utilizar un min-heap (montículo de mínimo). La estructura es idéntica al algoritmo de Dijkstra para distancias mínimas en grafos. La diferencia radica en cómo se actualizan los vecinos. En un grafo es una suma simple; en Eikonal, se resuelve una ecuación cuadrática de tipo upwind.
+
+La fórmula de actualización en una malla estructurada 2D es la siguiente:
+
+$$
+(T - T_x)^2 + (T - T_y)^2 = \left(\frac{h}{F}\right)^2
+$$
+
+Donde $T_x$ y $T_y$ son los valores de los vecinos upwind en las direcciones horizontal y vertical (el menor de los vecinos), y $h$ es el espaciado de la malla. De las dos raíces, solo se acepta la que cumple $T \ge \max(T_x, T_y)$. Esta condición se llama causalidad. Impone la unidireccionalidad de Eikonal, asegurando que la información solo provenga de vecinos "ya determinados y más pequeños".
+
+Si la información proviene de una sola dirección (por ejemplo, si los otros vecinos son Far), la ecuación se simplifica:
+
+$$
+T = T_x + \frac{h}{F}
+$$
+
+Dado que la inserción y eliminación en el min-heap son $O(\log N)$ y cada punto se procesa un número constante de veces en promedio, el costo total es $O(N \log N)$.
+
+## Implementación en Python
+
+```python
+import heapq
+import numpy as np
+
+INF = np.inf
+FAR, CONSIDERED, ACCEPTED = 0, 1, 2
+
+
+def solve_eikonal_neighbor(T, j, i, h, F):
+    """Obtiene la solución cuadrática upwind en un solo punto."""
+    ny, nx = T.shape
+    Tx = min(
+        T[j, i - 1] if i > 0 else INF,
+        T[j, i + 1] if i < nx - 1 else INF,
+    )
+    Ty = min(
+        T[j - 1, i] if j > 0 else INF,
+        T[j + 1, i] if j < ny - 1 else INF,
+    )
+    a, b = sorted([Tx, Ty])
+    inv_f = h / F
+    if not np.isfinite(b) or b >= a + inv_f:
+        return a + inv_f
+    diff = b - a
+    disc = 2 * inv_f * inv_f - diff * diff
+    if disc < 0:
+        return a + inv_f
+    return 0.5 * (a + b + np.sqrt(disc))
+
+
+def march_wall_distance(walls, h=1.0, F=1.0):
+    """Calcula la distancia a la pared mediante Fast Marching en una malla estructurada 2D."""
+    ny, nx = walls.shape
+    T = np.full_like(walls, INF, dtype=np.float64)
+    status = np.zeros_like(walls, dtype=np.uint8)
+    heap = []
+
+    T[walls] = 0.0
+    status[walls] = ACCEPTED
+
+    # Inicializar los vecinos de las paredes como Considered
+    for j in range(ny):
+        for i in range(nx):
+            if not walls[j, i]:
+                continue
+            for dj, di in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                nj, ni = j + dj, i + di
+                if 0 <= nj < ny and 0 <= ni < nx and status[nj, ni] != ACCEPTED:
+                    new_t = solve_eikonal_neighbor(T, nj, ni, h, F)
+                    if new_t < T[nj, ni]:
+                        T[nj, ni] = new_t
+                        status[nj, ni] = CONSIDERED
+                        heapq.heappush(heap, (new_t, nj, ni))
+
+    while heap:
+        t, j, i = heapq.heappop(heap)
+        if status[j, i] == ACCEPTED:
+            continue  # Entrada antigua
+        status[j, i] = ACCEPTED
+        for dj, di in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nj, ni = j + dj, i + di
+            if not (0 <= nj < ny and 0 <= ni < nx):
+                continue
+            if status[nj, ni] == ACCEPTED:
+                continue
+            new_t = solve_eikonal_neighbor(T, nj, ni, h, F)
+            if new_t < T[nj, ni]:
+                T[nj, ni] = new_t
+                status[nj, ni] = CONSIDERED
+                heapq.heappush(heap, (new_t, nj, ni))
+    return T
+
+
+# Verificación: Canal plano
+walls = np.zeros((61, 121), dtype=bool)
+walls[0, :] = True
+walls[-1, :] = True
+
+d = march_wall_distance(walls, h=1.0)
+
+# En la línea central (y=30), la distancia a la pared debe ser 30
+print(f"Distancia a la pared en la línea central = {d[30, 60]:.4f} (Exacto: 30.0)")
+print(f"Error relativo máximo = {np.max(np.abs(d[30, :] - 30)):.4f}")
+```
+
+En un canal plano, la solución analítica $d=\min(y, H-y)$ se obtiene de forma nítida. La salida de la línea central del código anterior coincide casi exactamente con 30.0. Al ser una aproximación upwind de primer orden en 2D, existen ligeros errores cerca de las esquinas, pero es suficiente para la práctica.
+
+## Visualizando la propagación del frente de onda
+
+Se puede interactuar con la simulación a continuación. Pruébese seleccionando "Single Cylinder" y trátese de aumentar la velocidad $F$ o cambiar los obstáculos.
+
+<EikonalFrontPropagation />
+
+La banda amarilla es el conjunto Considered que se está actualizando, es decir, el propio "frente de onda". Los frentes parten simultáneamente desde la pared y los límites del cilindro, y las distancias se finalizan donde se encuentran. En el patrón de dos cilindros, la línea de colisión de los dos frentes se forma cerca del eje medial (medial axis) de los cilindros. El patrón de pared con rendija muestra cómo el frente de onda rodea el hueco para llegar al lado posterior. Este "rodear" es donde diverge de la distancia euclidiana ingenua. En geometrías reales de aviones o turbinas, las entradas del modelo de turbulencia para las regiones detrás de las paredes requieren esta distancia "rodeada".
+
+## Extensión a mallas no estructuradas
+
+Aunque las fórmulas sobre mallas estructuradas son elegantes, la mitad del CFD ocurre sobre mallas no estructuradas. Sethian y Vladimirsky (2000) resolvieron este problema. El valor en un punto $\mathbf{x}_0$ se obtiene a partir de los valores de los otros vértices del simplex (triángulo, tetraedro) que contiene ese punto.
+
+Resolviendo las ecuaciones normales a partir de una matriz $P$ de vectores de dirección $\mathbf{p}_r = \mathbf{x}_r - \mathbf{x}_0$ y derivadas direccionales $v_r = (T_0 - T_r)/|\mathbf{p}_r|$, la ecuación de Eikonal $|\nabla T|^2 = 1/F^2$ se convierte en una ecuación cuadrática para $T_0$. Solo se acepta la raíz donde el gradiente aproximado apunta hacia el interior del simplex. Esta causalidad del simplex generaliza la condición upwind simple de las mallas estructuradas.
+
+## Lista de verificación para la práctica
+
+- **Mallas móviles**: En lugar de un recalculo total, son útiles las actualizaciones perezosas (lazy updates) para las áreas con gran deformación. Fast Marching es secuencial y, por tanto, difícil de paralelizar, pero las variantes de banda estrecha (narrow band) son más fáciles de implementar.
+- **Condiciones de contorno periódicas (Periodic BC)**: El grafo debe conectarse de modo que los valores se propaguen desde el lado periódico de vuelta hacia la pared. De lo contrario, las distancias a la pared cerca de los límites periódicos se sobreestimarán.
+- **Materiales múltiples**: En el análisis rotor-estator, se deben incluir ambos conjuntos de paredes móviles en $\Gamma_w$. Los lugares donde la distancia cambia bruscamente, como el huelgo de la punta de una turbina, requieren mallas suficientemente finas.
+- **Alternativa P-Poisson**: Resolver $|\nabla d|^p = 1$ ($p=4 \sim 10$) de forma implícita es más lento que Fast Marching pero más fácil de paralelizar. En simuladores paralelos a gran escala, suele preferirse esta opción.
+- **Errores negativos locales**: Dependiendo de la discretización numérica, $d_w$ puede resultar en valores negativos en capas límite extremadamente delgadas. Siempre debe limitarse con $\max(d_w, 0)$.
+
+## 3 puntos clave
+
+- La distancia a la pared puede verse como la solución de la ecuación de Eikonal $|\nabla d|=1/F$, lo que abre la puerta a algoritmos $O(N \log N)$.
+- Fast Marching gestiona el conjunto Considered mediante un min-heap y finaliza el frente de onda resolviendo ecuaciones cuadráticas upwind punto por punto.
+- Se debe elegir entre Fast Marching o la relajación P-Poisson según los requisitos de malla móvil, límites periódicos y paralelización.
+
+## Referencias
+
+- J. A. Sethian, A. Vladimirsky, "Fast methods for the Eikonal and related Hamilton–Jacobi equations on unstructured meshes", *PNAS* 97(11), 5699–5703, 2000.
+- P. Tucker, "Assessment of geometric multilevel convergence robustness and a wall distance method for flows with multiple internal boundaries", *Applied Mathematical Modelling* 22, 1998.

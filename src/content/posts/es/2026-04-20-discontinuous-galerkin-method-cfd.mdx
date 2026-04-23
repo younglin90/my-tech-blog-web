@@ -1,0 +1,132 @@
+---
+title: "Método de Galerkin Discontinuo (DGM): Discretización de alta precisión para el análisis de flujos compresibles en mallas no estructuradas"
+date: 2026-04-20
+description: "Resumen paso a paso desde la derivación de la forma débil de DGM hasta la cuadratura de Gauss y la implementación en mallas no estructuradas."
+tags: ["CFD", "FEM", "DGM", "Alta Precisión", "Flujo Compresible"]
+draft: false
+series: "numerical-methods"
+seriesOrder: 2
+---
+
+El Método de Galerkin Discontinuo (Discontinuous Galerkin Method, DGM) es una técnica de análisis numérico que combina las ventajas del Método de Elementos Finitos (FEM) y el Método de Volúmenes Finitos (FVM). Utiliza funciones de base polinómicas de alto orden dentro de cada celda e intercambia información en los límites de la celda mediante flujos numéricos. Es una opción poderosa para el análisis de alta precisión de flujos compresibles en mallas no estructuradas.
+
+## Ecuación de Gobierno y Separación de Flujos
+
+Ecuación de conservación para flujo compresible:
+
+$$\frac{\partial \mathbf{U}}{\partial t} + \nabla \cdot \mathbf{F}^c(\mathbf{U}) - \nabla \cdot \mathbf{F}^v(\mathbf{U}, \nabla \mathbf{U}) = \mathbf{S}(\mathbf{U})$$
+
+Donde:
+- $\mathbf{U} = [\rho,\ \rho u,\ \rho v,\ \rho w,\ \rho E]^T$: Vector de variables conservativas
+- $\mathbf{F}^c$: Flujo convectivo (convective)
+- $\mathbf{F}^v$: Flujo viscoso (viscous)
+- $\mathbf{S}$: Término fuente
+
+## Expansión de Funciones de Base y Derivación de la Forma Débil
+
+Dentro de la celda $\Omega_e$, la solución se aproxima como una combinación lineal de funciones de base:
+
+$$\mathbf{U}_h(\mathbf{x}, t) = \sum_{l=1}^{N_p} \hat{\mathbf{U}}_l(t)\, \phi_l(\mathbf{x})$$
+
+$N_p$ es el número de grados de libertad dentro de la celda, determinado por el grado del polinomio de aproximación $K$ ($N_p = (K+1)(K+2)(K+3)/6$ en 3D).
+
+Multiplicando por una función de prueba $\phi_k$ e integrando sobre $\Omega_e$:
+
+$$\int_{\Omega_e} \phi_k \frac{\partial \mathbf{U}_h}{\partial t}\, d\Omega + \int_{\Omega_e} \phi_k \nabla \cdot \mathbf{F}\, d\Omega = \int_{\Omega_e} \phi_k \mathbf{S}\, d\Omega$$
+
+Al aplicar la fórmula de Green (integración por partes), se divide en integral de volumen e integral de superficie (contorno):
+
+$$
+\int_{\Omega_e} \phi_k \frac{\partial \mathbf{U}_h}{\partial t}\, d\Omega
+- \int_{\Omega_e} \nabla \phi_k \cdot \mathbf{F}\, d\Omega
++ \oint_{\partial \Omega_e} \phi_k \hat{\mathbf{F}} \cdot \mathbf{n}\, d\Gamma
+= \int_{\Omega_e} \phi_k \mathbf{S}\, d\Omega
+$$
+
+$\hat{\mathbf{F}}$ en el contorno es el **flujo numérico** calculado utilizando información de las celdas adyacentes (por ejemplo, Roe, HLLC, etc.).
+
+## Matriz de Masa e Integración Temporal
+
+Organizando como una Ecuación Diferencial Ordinaria (ODE) para el $l$-ésimo coeficiente de la función de base:
+
+$$\mathbf{M} \frac{d\hat{\mathbf{U}}}{dt} = \mathbf{R}(\hat{\mathbf{U}})$$
+
+Donde la matriz de masa (mass matrix) es:
+
+$$M_{kl} = \int_{\Omega_e} \phi_k \phi_l\, d\Omega$$
+
+Si se utilizan funciones de base ortogonales (como la base de Taylor o los polinomios de Legendre), $\mathbf{M}$ se convierte en una matriz diagonal, eliminando el costo de calcular la matriz inversa. El vector residual $\mathbf{R}$ es la suma del término de integral de volumen y el término de flujo de superficie:
+
+$$R_k = \int_{\Omega_e} \nabla \phi_k \cdot \mathbf{F}\, d\Omega - \oint_{\partial \Omega_e} \phi_k \hat{\mathbf{F}} \cdot \mathbf{n}\, d\Gamma + \int_{\Omega_e} \phi_k \mathbf{S}\, d\Omega$$
+
+## Aplicación de la Cuadratura de Gauss
+
+Las integrales de volumen y superficie se calculan numéricamente mediante la cuadratura de Gauss-Legendre. Para integrar con precisión un polinomio de grado $K$, se requiere una **integración de al menos orden $2K-1$**.
+
+Número de puntos de Gauss por tipo de celda (por grados representativos):
+
+| Tipo de celda | 1er orden | 2do orden | 3er orden |
+|---------------|-----------|-----------|-----------|
+| Tetraedro     | 1         | 4         | 10        |
+| Hexaedro      | 1         | 8         | 27        |
+| Prisma        | 3         | 9         | 18        |
+| Pirámide      | 1         | 5         | 15        |
+
+Para los tipos de cara (face), se utiliza el triple de los puntos de la celda (proyección 3D).
+
+## Secuencia de Implementación del Algoritmo
+
+En la implementación real, se procede en el siguiente orden:
+
+1. **Clasificación de celdas y caras**: Tetra/Hexa/Prisma/Pirámide/Poliedro.
+2. **Preparación de funciones de base**: Calcular $\phi_l, \nabla\phi_l$ adecuadas para cada tipo de celda × grado de aproximación.
+3. **Caché de puntos de Gauss**: Almacenar las coordenadas y pesos del elemento de referencia (reference element) en la memoria.
+4. **Inicialización de variables**: Establecer $\hat{\mathbf{U}}_l^0$ (condiciones de flujo libre, etc.).
+5. **Bucle (avance temporal)**:
+   - Integral de volumen: $\int_{\Omega_e} \nabla\phi_k \cdot \mathbf{F}\ d\Omega$ — Calcular y sumar flujos en cada punto de Gauss.
+   - Flujo de superficie: $\oint_{\partial\Omega_e} \phi_k \hat{\mathbf{F}}\cdot\mathbf{n}\ d\Gamma$ — Calcular el flujo numérico.
+   - Actualización RK: Integración temporal explícita como SSP-RK3.
+
+```python
+import numpy as np
+
+def compute_volume_residual(U_hat, phi, dphi, gauss_w, flux_func):
+    """Cálculo del residual de volumen (celda individual)"""
+    Np, Ng = phi.shape   # (número de funciones de base, número de puntos de Gauss)
+    R = np.zeros_like(U_hat)
+    for g in range(Ng):
+        # Reconstrucción de magnitudes físicas en el punto de Gauss
+        U_g = phi[:, g] @ U_hat          # shape: (nvar,)
+        F_g = flux_func(U_g)             # (nvar, ndim)
+        # Contribución al residual de volumen
+        for k in range(Np):
+            R[k] += gauss_w[g] * (dphi[k, :, g] @ F_g.T)
+    return R
+```
+
+## Selección del Flujo Numérico — Advertencias Prácticas
+
+En DGM, el flujo numérico está directamente relacionado con la estabilidad y la precisión.
+
+- **Flujo de Roe**: Captura bien las discontinuidades de contacto, pero puede provocar choques de expansión (expansion shock) si no hay corrección de entropía.
+- **HLLC**: Más estable que Roe, pero en casos raros puede ocurrir una disipación excesiva.
+- **LxF (Lax-Friedrichs)**: Implementación simple, pero la disipación es grande, lo que reduce la ganancia de alto orden.
+
+Errores comunes:
+1. **Puntos de Gauss insuficientes**: En flujos no lineales, se producen errores de aliasing que reducen el orden.
+2. **Ignorar la diagonalización de la matriz de masa**: Si se utilizan funciones de base de FEM comunes, se requiere resolver un sistema lineal en cada paso, lo cual es ineficiente.
+3. **Inconsistencia en la dirección normal de la cara**: Verificar siempre que el signo de la normal de la celda adyacente sea opuesto en la cara compartida.
+
+## Verificación de Precisión — Vórtice de Taylor-Green
+
+$$
+u_0 = V_0 \sin\!\left(\frac{x}{L}\right)\cos\!\left(\frac{y}{L}\right), \quad
+v_0 = -V_0 \cos\!\left(\frac{x}{L}\right)\sin\!\left(\frac{y}{L}\right)
+$$
+
+Al comparar la solución analítica incompresible con los resultados de DGM, el DGM de orden $K$ debería mostrar teóricamente una convergencia de $O(h^{K+1})$. En la práctica, si el error no disminuye $2^{K+1}$ veces cuando la malla se refina al doble, revise el orden de cuadratura o el tratamiento de contorno.
+
+## Referencias
+
+1. Luo, H. et al., "A discontinuous Galerkin method based on a Taylor basis for the compressible flows on arbitrary grids," *J. Comput. Phys.* 227 (2008).
+2. Luo, H. et al., "Hybrid discontinuous Galerkin–finite volume techniques for compressible flows on unstructured meshes," *AIAA Paper* (2012).

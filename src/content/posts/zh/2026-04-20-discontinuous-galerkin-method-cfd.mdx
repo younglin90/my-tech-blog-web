@@ -1,0 +1,132 @@
+---
+title: "不连续伽辽金法 (DGM)：非结构网格压缩流动分析的高精度离散化"
+date: 2026-04-20
+description: "从 DGM 弱形式推导到高斯积分及非结构网格实现的逐步总结"
+tags: ["CFD", "FEM", "DGM", "高阶精度", "压缩流动"]
+draft: false
+series: "numerical-methods"
+seriesOrder: 2
+---
+
+不连续伽辽金法 (Discontinuous Galerkin Method, DGM) 是一种结合了有限元法 (FEM) 和有限体积法 (FVM) 优点的数值计算方法。它在单元内部使用高阶多项式基函数，并在单元边界处通过数值通量交换信息。对于非结构网格上的高精度压缩流动分析，它是一个非常有力的选择。
+
+## 控制方程与通量分离
+
+压缩流动的守恒方程：
+
+$$\frac{\partial \mathbf{U}}{\partial t} + \nabla \cdot \mathbf{F}^c(\mathbf{U}) - \nabla \cdot \mathbf{F}^v(\mathbf{U}, \nabla \mathbf{U}) = \mathbf{S}(\mathbf{U})$$
+
+其中：
+- $\mathbf{U} = [\rho,\ \rho u,\ \rho v,\ \rho w,\ \rho E]^T$：守恒变量矢量
+- $\mathbf{F}^c$：对流 (convective) 通量
+- $\mathbf{F}^v$：粘性 (viscous) 通量
+- $\mathbf{S}$：源项
+
+## 基函数展开与弱形式推导
+
+在单元 $\Omega_e$ 内部，将解近似为基函数的线性组合：
+
+$$\mathbf{U}_h(\mathbf{x}, t) = \sum_{l=1}^{N_p} \hat{\mathbf{U}}_l(t)\, \phi_l(\mathbf{x})$$
+
+$N_p$ 是单元内的自由度数，由近似多项式阶数 $K$ 决定（在 3D 中，$N_p = (K+1)(K+2)(K+3)/6$）。
+
+乘以测试函数 $\phi_k$ 并在 $\Omega_e$ 上积分：
+
+$$\int_{\Omega_e} \phi_k \frac{\partial \mathbf{U}_h}{\partial t}\, d\Omega + \int_{\Omega_e} \phi_k \nabla \cdot \mathbf{F}\, d\Omega = \int_{\Omega_e} \phi_k \mathbf{S}\, d\Omega$$
+
+应用格林公式（分部积分），将其分为体积分和边界积分：
+
+$$
+\int_{\Omega_e} \phi_k \frac{\partial \mathbf{U}_h}{\partial t}\, d\Omega
+- \int_{\Omega_e} \nabla \phi_k \cdot \mathbf{F}\, d\Omega
++ \oint_{\partial \Omega_e} \phi_k \hat{\mathbf{F}} \cdot \mathbf{n}\, d\Gamma
+= \int_{\Omega_e} \phi_k \mathbf{S}\, d\Omega
+$$
+
+边界上的 $\hat{\mathbf{F}}$ 是利用相邻单元信息得到的**数值通量**（如 Roe, HLLC 等）。
+
+## 质量矩阵与时间积分
+
+整理为关于第 $l$ 个基函数系数的常微分方程 (ODE)：
+
+$$\mathbf{M} \frac{d\hat{\mathbf{U}}}{dt} = \mathbf{R}(\hat{\mathbf{U}})$$
+
+其中质量矩阵 (mass matrix) 为：
+
+$$M_{kl} = \int_{\Omega_e} \phi_k \phi_l\, d\Omega$$
+
+使用正交基函数（如泰勒基或勒让德多项式等）可以使 $\mathbf{M}$ 成为对角矩阵，从而消除逆矩阵的计算成本。残差矢量 $\mathbf{R}$ 是体积分项和面通量项之和：
+
+$$R_k = \int_{\Omega_e} \nabla \phi_k \cdot \mathbf{F}\, d\Omega - \oint_{\partial \Omega_e} \phi_k \hat{\mathbf{F}} \cdot \mathbf{n}\, d\Gamma + \int_{\Omega_e} \phi_k \mathbf{S}\, d\Omega$$
+
+## 高斯积分的应用
+
+体积分和面积分使用高斯-勒让德 (Gauss-Legendre) 积分法进行数值计算。为了精确积分 $K$ 阶多项式，**至少需要 $2K-1$ 阶以上的积分**。
+
+各单元类型的高斯点数量（按代表性阶数）：
+
+| 单元类型   | 1阶 | 2阶 | 3阶 |
+|-----------|-----|-----|-----|
+| 四面体 (Tetrahedron) | 1  | 4   | 10  |
+| 六面体 (Hexahedron)  | 1  | 8   | 27  |
+| 棱柱 (Prism)       | 3  | 9   | 18  |
+| 棱锥 (Pyramid)     | 1  | 5   | 15  |
+
+对于面 (face) 类型，使用单元点的 3 倍（3D 投影）。
+
+## 算法实现步骤
+
+在实际实现中，按以下顺序进行：
+
+1. **单元/面分类**：四面体/六面体/棱柱/棱锥/多面体
+2. **基函数准备**：计算适合各单元类型 × 近似阶数的 $\phi_l, \nabla\phi_l$
+3. **高斯点缓存**：将参考单元 (reference element) 的坐标和权重存储在内存中
+4. **变量初始化**：设置 $\hat{\mathbf{U}}_l^0$（如自由流条件等）
+5. **循环（时间推进）**：
+   - 体积分：$\int_{\Omega_e} \nabla\phi_k \cdot \mathbf{F}\ d\Omega$ — 在每个高斯点计算通量后累加
+   - 面通量：$\oint_{\partial\Omega_e} \phi_k \hat{\mathbf{F}}\cdot\mathbf{n}\ d\Gamma$ — 计算数值通量
+   - RK 更新：SSP-RK3 等显式时间积分
+
+```python
+import numpy as np
+
+def compute_volume_residual(U_hat, phi, dphi, gauss_w, flux_func):
+    """计算体积分残差（单单元）"""
+    Np, Ng = phi.shape   # (基函数数量, 高斯点数量)
+    R = np.zeros_like(U_hat)
+    for g in range(Ng):
+        # 在高斯点还原物理量
+        U_g = phi[:, g] @ U_hat          # shape: (nvar,)
+        F_g = flux_func(U_g)             # (nvar, ndim)
+        # 累加至体积分残差
+        for k in range(Np):
+            R[k] += gauss_w[g] * (dphi[k, :, g] @ F_g.T)
+    return R
+```
+
+## 数值通量选择 — 实践注意事项
+
+在 DGM 中，数值通量直接关系到稳定性和精度。
+
+- **Roe 通量**：能很好地捕捉接触不连续，但如果没有熵修正，可能会引发膨胀激波 (expansion shock)。
+- **HLLC**：比 Roe 更稳定，但在极少数情况下可能产生过多的耗散。
+- **LxF (Lax-Friedrichs)**：实现简单，但耗散大，会削弱高阶增益。
+
+常见错误：
+1. **高斯点数量不足** — 在非线性通量中会产生阶数降低的混叠 (aliasing) 误差。
+2. **忽略质量矩阵对角化** — 使用普通的 FEM 基函数时，每一步都需要求解线性方程组，效率低下。
+3. **面法线方向不一致** — 务必确认在共享面上，相邻单元的法线符号是相反的。
+
+## 精度验证 — 泰勒-格林涡 (Taylor-Green Vortex)
+
+$$
+u_0 = V_0 \sin\!\left(\frac{x}{L}\right)\cos\!\left(\frac{y}{L}\right), \quad
+v_0 = -V_0 \cos\!\left(\frac{x}{L}\right)\sin\!\left(\frac{y}{L}\right)
+$$
+
+将不可压缩解析解与 DGM 结果进行比较时，$K$ 阶 DGM 理论上应显示 $O(h^{K+1})$ 的收敛性。在实践中，如果网格加密一倍后误差没有减少到原来的 $2^{K+1}$ 分之一，请检查积分阶数或边界处理。
+
+## 参考文献
+
+1. Luo, H. et al., "A discontinuous Galerkin method based on a Taylor basis for the compressible flows on arbitrary grids," *J. Comput. Phys.* 227 (2008).
+2. Luo, H. et al., "Hybrid discontinuous Galerkin–finite volume techniques for compressible flows on unstructured meshes," *AIAA Paper* (2012).

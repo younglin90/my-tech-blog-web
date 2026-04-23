@@ -1,0 +1,587 @@
+---
+title: "[Tutorial de OpenFOAM] Análisis de flujo en escalón orientado hacia atrás — Capturando zonas de recirculación con simpleFoam"
+date: 2026-03-26
+description: "Guía paso a paso para el análisis de flujo incompresible sobre un escalón orientado hacia atrás (Backward Facing Step) utilizando simpleFoam de OpenFOAM."
+tags: ["OpenFOAM", "Tutorial", "simpleFoam", "후방계단", "난류"]
+draft: false
+---
+
+En este tutorial se simula el flujo de recirculación en una geometría de **escalón orientado hacia atrás (Backward Facing Step)** utilizando `simpleFoam`. El objetivo es observar directamente la zona de recirculación y el punto de reajuste (reattachment point) que se forman aguas abajo del escalón.
+
+---
+
+## Requisitos previos
+
+- **Versión de OpenFOAM:** v2312 o superior (Compatible tanto con OpenFOAM.com como con OpenFOAM.org)
+- **Conocimientos previos:** Comandos básicos de terminal, comprensión de la estructura de casos de OpenFOAM (0/constant/system)
+- **Software necesario:** ParaView 5.x o superior (para la visualización de resultados)
+
+---
+
+## Paso 1: Creación del directorio del caso
+
+```bash
+# Cargar el entorno de OpenFOAM (varía según la ruta de instalación)
+source /opt/openfoam2312/etc/bashrc
+
+# Copiar el directorio del tutorial o crear uno directamente
+mkdir -p backwardFacingStep
+cd backwardFacingStep
+```
+
+La estructura del caso es la siguiente:
+
+```bash
+tree backwardFacingStep/
+```
+
+```
+backwardFacingStep/
+├── 0/
+│   ├── U          # Condiciones iniciales/de contorno de velocidad
+│   ├── p          # Condiciones iniciales/de contorno de presión
+│   ├── k          # Energía cinética turbulenta
+│   └── epsilon    # Tasa de disipación turbulenta
+├── constant/
+│   ├── transportProperties
+│   └── turbulenceProperties
+└── system/
+    ├── blockMeshDict
+    ├── fvSchemes
+    └── fvSolution
+```
+
+---
+
+## Paso 2: Generación de malla — blockMeshDict
+
+`system/blockMeshDict` define la geometría del escalón mediante una combinación de bloques paralelepípedos. A continuación se muestra un ejemplo simplificado de un caso 2D (altura del escalón H = 0.1 m).
+
+```cpp
+/*--------------------------------*- C++ -*----------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:  v2312                                 |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      blockMeshDict;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+scale   0.1;   // Escala global (se multiplica por 0.1 para obtener el tamaño final en metros)
+
+vertices
+(
+    // Bloque del canal de entrada (sobre el escalón)
+    (0  1  0)  // 0
+    (5  1  0)  // 1
+    (5  2  0)  // 2
+    (0  2  0)  // 3
+    (0  1  1)  // 4
+    (5  1  1)  // 5
+    (5  2  1)  // 6
+    (0  2  1)  // 7
+
+    // Bloque aguas abajo del escalón (altura completa)
+    (5  0  0)  // 8
+    (20 0  0)  // 9
+    (20 2  0)  // 10
+    (5  2  0)  // 11 (= vértice 2)
+    (5  0  1)  // 12
+    (20 0  1)  // 13
+    (20 2  1)  // 14
+    (5  2  1)  // 15 (= vértice 6)
+);
+
+blocks
+(
+    // Canal de entrada
+    hex (0 1 2 3 4 5 6 7)   (50 10 1) simpleGrading (1 1 1)
+    // Aguas abajo del escalón (malla más densa)
+    hex (8 9 10 11 12 13 14 15) (150 20 1) simpleGrading (1 1 1)
+);
+
+boundary
+(
+    inlet
+    {
+        type patch;
+        faces ((0 3 7 4));
+    }
+    outlet
+    {
+        type patch;
+        faces ((9 10 14 13));
+    }
+    wall
+    {
+        type wall;
+        faces
+        (
+            (0 1 5 4)   // Pared superior de entrada
+            (1 8 12 5)  // Superficie vertical del escalón
+            (8 9 13 12) // Suelo inferior
+            (3 2 6 7)   // Pared superior (entrada)
+            (11 10 14 15) // Pared superior (aguas abajo)
+        );
+    }
+    frontAndBack
+    {
+        type empty;  // Análisis 2D
+        faces
+        (
+            (0 1 2 3)
+            (4 5 6 7)
+            (8 9 10 11)
+            (12 13 14 15)
+        );
+    }
+);
+```
+
+```bash
+# Ejecutar generación de malla
+blockMesh
+```
+
+**Salida esperada:**
+```
+Create time
+
+Creating block mesh from "system/blockMeshDict"
+...
+Writing polyMesh with 3600 cells
+End
+```
+
+---
+
+## Paso 3: Configuración de condiciones de contorno
+
+### 0/U — Condiciones de contorno de velocidad
+
+```cpp
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       volVectorField;
+    object      U;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+dimensions      [0 1 -1 0 0 0 0];  // m/s
+
+internalField   uniform (0 0 0);   // Valor inicial: estado de reposo
+
+boundaryField
+{
+    inlet
+    {
+        type        fixedValue;
+        value       uniform (1 0 0);  // Entrada uniforme de 1 m/s en dirección x
+    }
+    outlet
+    {
+        type        zeroGradient;  // Salida: flujo libre
+    }
+    wall
+    {
+        type        noSlip;        // Pared: condición de no deslizamiento
+    }
+    frontAndBack
+    {
+        type        empty;
+    }
+}
+```
+
+### 0/p — Condiciones de contorno de presión
+
+```cpp
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       volScalarField;
+    object      p;
+}
+
+dimensions      [0 2 -2 0 0 0 0];  // Presión cinemática (p/rho), m²/s²
+
+internalField   uniform 0;
+
+boundaryField
+{
+    inlet
+    {
+        type        zeroGradient;
+    }
+    outlet
+    {
+        type        fixedValue;
+        value       uniform 0;  // Presión de referencia 0 en la salida
+    }
+    wall
+    {
+        type        zeroGradient;
+    }
+    frontAndBack
+    {
+        type        empty;
+    }
+}
+```
+
+### 0/k — Energía cinética turbulenta
+
+```cpp
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       volScalarField;
+    object      k;
+}
+
+dimensions      [0 2 -2 0 0 0 0];  // m²/s²
+
+// Intensidad de turbulencia de entrada 5%, velocidad 1 m/s → k = 1.5*(I*U)² = 1.5*(0.05*1)² ≈ 0.00375
+internalField   uniform 0.00375;
+
+boundaryField
+{
+    inlet
+    {
+        type        fixedValue;
+        value       uniform 0.00375;
+    }
+    outlet
+    {
+        type        zeroGradient;
+    }
+    wall
+    {
+        type        kqRWallFunction;
+        value       uniform 0.00375;
+    }
+    frontAndBack
+    {
+        type        empty;
+    }
+}
+```
+
+---
+
+## Paso 4: Configuración de propiedades de transporte y modelo de turbulencia
+
+### constant/transportProperties
+
+```cpp
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      transportProperties;
+}
+
+transportModel  Newtonian;
+nu              1e-5;   // Coeficiente de viscosidad cinemática (m²/s), Re = U*H/nu = 1*0.01/1e-5 = 1000
+```
+
+### constant/turbulenceProperties
+
+```cpp
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      turbulenceProperties;
+}
+
+simulationType  RAS;
+
+RAS
+{
+    RASModel        kEpsilon;   // Modelo de dos ecuaciones k-epsilon
+    turbulence      on;
+    printCoeffs     on;
+}
+```
+
+---
+
+## Paso 5: Configuración de esquemas numéricos
+
+### system/fvSchemes
+
+```cpp
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      fvSchemes;
+}
+
+ddtSchemes      { default steadyState; }  // Análisis de estado estacionario
+
+gradSchemes
+{
+    default         Gauss linear;
+    grad(U)         cellLimited Gauss linear 1;  // Limitador de gradiente
+}
+
+divSchemes
+{
+    default         none;
+    div(phi,U)      bounded Gauss linearUpwind grad(U);  // Precisión de segundo orden
+    div(phi,k)      bounded Gauss upwind;
+    div(phi,epsilon) bounded Gauss upwind;
+    div((nuEff*dev(T(grad(U))))) Gauss linear;
+}
+
+laplacianSchemes { default Gauss linear corrected; }
+
+interpolationSchemes { default linear; }
+
+snGradSchemes { default corrected; }
+```
+
+### system/fvSolution
+
+```cpp
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      fvSolution;
+}
+
+solvers
+{
+    p
+    {
+        solver          GAMG;
+        smoother        GaussSeidel;
+        tolerance       1e-7;
+        relTol          0.01;
+    }
+    U
+    {
+        solver          smoothSolver;
+        smoother        GaussSeidel;
+        tolerance       1e-8;
+        relTol          0.1;
+    }
+    "(k|epsilon)"
+    {
+        solver          smoothSolver;
+        smoother        GaussSeidel;
+        tolerance       1e-8;
+        relTol          0.1;
+    }
+}
+
+SIMPLE
+{
+    nNonOrthogonalCorrectors    0;
+    pRefCell                    0;
+    pRefValue                   0;
+
+    residualControl
+    {
+        p           1e-4;
+        U           1e-4;
+        "(k|epsilon)" 1e-4;
+    }
+}
+
+relaxationFactors
+{
+    fields      { p 0.3; }           // Factor de relajación de presión (para evitar divergencia)
+    equations
+    {
+        U       0.7;
+        k       0.7;
+        epsilon 0.7;
+    }
+}
+```
+
+---
+
+## Paso 6: Ejecución del análisis
+
+```bash
+# Verificación de la calidad de la malla (opcional, pero recomendado)
+checkMesh
+
+# Ejecutar simpleFoam
+simpleFoam 2>&1 | tee log.simpleFoam
+```
+
+**Salida esperada (proceso de convergencia):**
+```
+Time = 1
+
+smoothSolver:  Solving for Ux, Initial residual = 1, Final residual = 0.0234, No Iterations 3
+smoothSolver:  Solving for Uy, Initial residual = 0.412, Final residual = 0.00891, No Iterations 3
+GAMG:  Solving for p, Initial residual = 0.987, Final residual = 0.00821, No Iterations 15
+...
+
+Time = 500
+
+smoothSolver:  Solving for Ux, Initial residual = 1.23e-05, ...
+GAMG:  Solving for p, Initial residual = 8.91e-05, ...
+
+SIMPLE solution converged in 500 iterations
+```
+
+El criterio de convergencia se alcanza cuando el residuo de todas las variables es inferior a `1e-4`.
+
+---
+
+## Paso 7: Visualización de resultados (ParaView)
+
+```bash
+# Crear un archivo ficticio para ParaView y ejecutar
+touch backwardFacingStep.foam
+paraFoam
+```
+
+En ParaView, se siguen estos pasos para verificar los resultados:
+
+1. Desplegable **Coloring** → Seleccionar `U` → Mostrar la magnitud de la velocidad con `Magnitude`.
+2. Añadir filtro **Glyph** → Visualización de la dirección del vector (verificar zona de recirculación).
+3. Filtro **Stream Tracer** → Dibujar líneas de corriente.
+
+**Post-procesamiento tras la conversión de archivos con foamToVTK:**
+
+```bash
+foamToVTK -latestTime
+```
+
+Extracción automática de la longitud de reajuste con Python:
+
+```python
+import numpy as np
+
+# Leer datos de la pared inferior (y=0) del archivo de salida de foamToVTK
+# (Ajustar la ruta según el entorno)
+data = np.loadtxt("VTK/backwardFacingStep_500/internal.vtk",
+                  skiprows=10)  # Excluir cabecera VTK
+
+x = data[:, 0]
+ux = data[:, 3]  # Velocidad en dirección x
+
+# Filtrado de celdas cerca de la pared inferior (y ≈ 0)
+wall_mask = data[:, 1] < 0.005
+x_wall = x[wall_mask]
+ux_wall = ux[wall_mask]
+
+# Posición del cambio de signo = punto de reajuste
+sign_changes = np.where(np.diff(np.sign(ux_wall)))[0]
+if len(sign_changes) > 0:
+    x_reattach = x_wall[sign_changes[0]]
+    H = 0.01  # Altura del escalón (m)
+    print(f"Longitud de reajuste: {x_reattach/H:.1f}H")
+```
+
+---
+
+## Errores comunes y soluciones
+
+### Error 1: `FOAM FATAL ERROR: Cannot find file "0/epsilon"`
+
+```
+--> FOAM FATAL ERROR:
+    cannot find file
+    "backwardFacingStep/0/epsilon"
+```
+
+**Causa:** Falta el archivo `0/epsilon`.
+**Solución:** Se crea `0/epsilon` con el mismo formato que el archivo `k`.
+
+```cpp
+// 0/epsilon
+dimensions      [0 2 -3 0 0 0 0];  // m²/s³
+
+// epsilon = C_mu^(3/4) * k^(3/2) / L, L ≈ 0.1*H
+internalField   uniform 0.0009;
+
+boundaryField
+{
+    inlet       { type fixedValue; value uniform 0.0009; }
+    outlet      { type zeroGradient; }
+    wall        { type epsilonWallFunction; value uniform 0.0009; }
+    frontAndBack { type empty; }
+}
+```
+
+---
+
+### Error 2: Divergencia del análisis (Floating point exception)
+
+```
+Floating point exception (core dumped)
+```
+
+**Causa:** Los factores de relajación son demasiado grandes o la malla no es lo suficientemente densa, lo que provoca la divergencia.
+**Solución:** Reducir los factores de relajación en `fvSolution`.
+
+```cpp
+relaxationFactors
+{
+    fields      { p 0.2; }   // Reducción de 0.3 → 0.2
+    equations   { U 0.5; }   // Reducción de 0.7 → 0.5
+}
+```
+
+---
+
+### Error 3: El residuo no disminuye y oscila
+
+**Causa:** `nNonOrthogonalCorrectors` es 0, pero la no ortogonalidad de la malla es alta.
+**Solución:** Aumentar el número de correcciones.
+
+```cpp
+SIMPLE
+{
+    nNonOrthogonalCorrectors    2;  // 0 → 2
+    ...
+}
+```
+
+---
+
+## Resumen de resultados previstos
+
+| Ítem | Valor |
+|------|-----|
+| Número de Reynolds ($Re = UH/\nu$) | 1,000 |
+| Longitud de reajuste ($x_r / H$) | 6–8 |
+| Velocidad máxima inversa | $\approx -0.1$ m/s |
+| Número de iteraciones de convergencia | 300–600 veces |
+
+La longitud de reajuste varía según el $Re$; en comparación con el valor experimental de $Re = 800$ (Armaly et al., 1983), coincide en aproximadamente 6H.
+
+$$
+x_r \approx 6\text{–}8 \cdot H \quad (Re \sim 10^3)
+$$
+
+---
+
+## Sugerencias para los próximos pasos
+
+- **Estudio de independencia de la malla:** Duplicar el número de celdas en `blockMeshDict` y comparar los resultados.
+- **Comparación de modelos de turbulencia:** Sustituir `kEpsilon` por `kOmegaSST` para verificar la diferencia en la longitud de reajuste.
+- **Análisis transitorio:** Cambiar de `simpleFoam` a `pimpleFoam` para observar el desprendimiento de vórtices (vortex shedding).

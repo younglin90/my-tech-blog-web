@@ -1,0 +1,334 @@
+---
+title: "Interpolación de Rhie-Chow para flujos multifásicos compresibles"
+date: 2026-03-10
+description: "Desde el problema del tablero de ajedrez en mallas colocalizadas hasta los flujos multifásicos de fuerza equilibrada, resumimos sistemáticamente la esencia matemática y la implementación en OpenFOAM de la interpolación de Rhie-Chow."
+tags: [CFD, Multiphase, Rhie-Chow, OpenFOAM, Numerical-Methods]
+series: "compressible-multiphase"
+seriesOrder: 5
+---
+
+# Interpolación de Rhie-Chow: ¿Por qué es necesaria y por qué es complicada en flujos multifásicos?
+
+La interpolación de Rhie-Chow (interpolación ponderada por el momento, MWI) es una técnica clave para corregir las velocidades en las caras (faces) con el fin de **suprimir las oscilaciones de presión tipo tablero de ajedrez** en mallas colocalizadas (collocated). Aunque es relativamente sencilla en flujos monofásicos, el tratamiento consistente de la **presión, la gravedad, la tensión superficial y los términos de corrección transitorios** se vuelve decisivo al extenderla a flujos multifásicos.
+
+Este artículo abarca desde el trabajo original de Rhie & Chow (1983) hasta el marco unificado de Bartholomew et al. (2018), así como la implementación en interFoam/compressibleInterFoam de OpenFOAM.
+
+---
+
+## 1. Derivación de la velocidad en la cara desde la ecuación de cantidad de movimiento semidiscretizada
+
+El punto de partida de todas las variantes de Rhie-Chow es la **ecuación de cantidad de movimiento semidiscretizada** en el centro de la celda $P$:
+
+$$
+a_P \mathbf{U}_P = H(\mathbf{U}) - V_P \nabla p\big|_P + V_P \rho_P \mathbf{g} + V_P \mathbf{F}_{\sigma,P}
+$$
+
+- $a_P$: Coeficiente diagonal (incluye contribuciones de la derivada temporal, advección y difusión).
+- $H(\mathbf{U}) = \sum a_{Nb}\mathbf{U}_{Nb} + \text{fuentes}$: Contribución de las celdas vecinas + fuentes explícitas.
+
+Al despejar la velocidad en el centro de la celda:
+
+$$
+\mathbf{U}_P = \frac{H}{a_P}\bigg|_P - \frac{V_P}{a_P}\nabla p\big|_P + \frac{V_P}{a_P}\rho_P\mathbf{g} + \frac{V_P}{a_P}\mathbf{F}_{\sigma,P}
+$$
+
+### El problema: Oscilaciones tipo tablero de ajedrez
+
+Si esta velocidad del centro de la celda se lleva a la cara mediante una **interpolación lineal simple**, el gradiente de presión solo conecta $p_{i-1}$ y $p_{i+1}$, saltándose $p_i$, lo que provoca el **desacoplamiento par-impar (tablero de ajedrez)**.
+
+### La solución de Rhie-Chow
+
+Se **reconstruye la propia ecuación de cantidad de movimiento** en la cara, sustituyendo el gradiente de presión interpolado del stencil amplio por un **gradiente de presión compacto centrado en la cara**:
+
+$$
+\mathbf{U}_f = \overline{\left(\frac{H}{a_P}\right)}_f - \left(\frac{1}{a_P}\right)_f \nabla p\big|_f^{\text{compact}} + \left(\frac{1}{a_P}\right)_f (\rho\mathbf{g})_f + \left(\frac{1}{a_P}\right)_f (\mathbf{F}_\sigma)_f + \delta\mathbf{U}_{\text{transient}}
+$$
+
+Donde $\nabla p\big|_f^{\text{compact}} = (p_Q - p_P)/|\mathbf{d}_{PQ}|$ es el gradiente en la cara calculado directamente con los valores de las celdas adyacentes, y la barra superior denota la interpolación lineal de los valores del centro de la celda.
+
+El **término de corrección de presión** $-(1/a_P)_f[\nabla p|_f - \overline{\nabla p}_f]$ actúa como un **filtro de paso bajo** proporcional a $\Delta x^2 \cdot \partial^3 p/\partial x^3$, suprimiendo el patrón de tablero de ajedrez.
+
+---
+
+## 2. Contribuciones por artículos clave
+
+### Rhie & Chow (1983): El original
+
+El original publicado en AIAA Journal estaba destinado exclusivamente al **algoritmo SIMPLE de estado estacionario**:
+
+$$
+u_f = \hat{u}_f - d_f(p_E - p_P)
+$$
+
+$\hat{u} = u + d \cdot \Delta p$ es la pseudovelocidad sin el gradiente de presión, y $d = V/a_P$. Incluía **solo el término de corrección de presión**, sin tratamiento para términos transitorios o de relajación. Posteriormente, Majumdar (1988) señaló la dependencia de la solución convergente de los factores de relajación, y Choi (1999) señaló la dependencia del paso de tiempo en flujos transitorios.
+
+### Jasak (1996): La base de OpenFOAM - Enfoque H/A
+
+En su tesis doctoral en el Imperial College, sistematizó el método de volúmenes finitos para **mallas poliédricas no estructuradas**. Se caracteriza por implementar Rhie-Chow **de forma implícita, sin términos de corrección explícitos**:
+
+$$
+\mathbf{U} = \frac{H}{A} - \frac{1}{A}\nabla p \quad \Rightarrow \quad \phi_f = \left(\frac{H}{A}\right)_f \cdot \mathbf{S}_f - \left(\frac{1}{A}\right)_f (\nabla p)_f \cdot \mathbf{S}_f
+$$
+
+**HbyA = H/A** es el predictor de velocidad sin la influencia de la presión, y la ecuación de presión se deriva como $\nabla\cdot[(1/A)_f \nabla p] = \nabla\cdot(H/A)_f$. El efecto Rhie-Chow surge de forma natural debido a que la discretización de la Laplaciana (face snGrad) y el gradiente para la corrección de velocidad (teorema de Gauss) utilizan **stencils diferentes**.
+
+La corrección transitoria se maneja con `fvc::ddtCorr`, pero **no es completamente consistente**, lo que deja una cierta dependencia del paso de tiempo.
+
+### Cubero & Fueyo (2007): Compact Momentum Interpolation (CMI)
+
+Propusieron una fórmula de velocidad en la cara que es **independiente tanto del paso de tiempo como de los factores de relajación**. La clave es **interpolar cada coeficiente de la ecuación de cantidad de movimiento de forma individual y consistente**:
+
+$$
+u_f = \bar{u}_f + d_f[\overline{\nabla p}_f - (\nabla p)_f] + \frac{a_t}{a_s + a_t + a_\tau}\bigg|_f (\bar{u}^O_f - u^O_f) + \frac{a_\tau}{a_s + a_t + a_\tau}\bigg|_f (\bar{u}^{\text{prev}}_f - u^{\text{prev}}_f)
+$$
+
+- $a_t = \rho V/\Delta t$: Coeficiente temporal.
+- $a_\tau = \rho V/\Delta\tau$: Coeficiente de relajación.
+- $a_s$: Coeficiente espacial.
+
+**Al converger**, como $u_f = u^{\text{prev}}_f$ y $u_f = u^O_f$, los términos de corrección transitorios/de relajación desaparecen automáticamente. Esto garantiza que la solución estacionaria sea independiente de $\Delta t$ y de los factores de relajación.
+
+### Bartholomew et al. (2018): Marco unificado
+
+En JCP 375, presentaron una **fórmula MWI unificada aplicable tanto a mallas estructuradas como no estructuradas**. Tres contribuciones clave:
+
+**1) Los coeficientes de MWI deben consistir únicamente en coeficientes espaciales.** Si se incluye el coeficiente de derivada temporal $\rho V/\Delta t$ en el denominador, el filtro de presión se debilita cuando $\Delta t \to 0$, lo que provoca la reaparición del tablero de ajedrez.
+
+**2) Concepto de "gradiente de presión impulsor" (Driving pressure gradient):** Cuando existen fuerzas volumétricas, el filtro MWI debe actuar únicamente sobre $\nabla P = \nabla p - \mathbf{S}_{\text{total}}$ (gradiente de presión impulsor menos el total de fuentes). Este es el núcleo de la **discretización de fuerza equilibrada (balanced-force)**.
+
+**3) Ponderación de densidad:** Los gradientes de presión en el centro de la celda se ponderan por $\nabla P_P/\rho_P$, y la densidad en la cara se interpola mediante **media armónica**, logrando resultados estables hasta relaciones de densidad de $10^{24}$.
+
+### Denner & van Wachem (2014): Balanced-Force VOF
+
+Al evaluar la tensión superficial CSF ($\sigma\kappa\nabla\alpha$) y el gradiente de presión **con el mismo operador de gradiente discreto en la misma ubicación (cara)**, lograron un equilibrio de fuerzas exacto para gotas estáticas **hasta la tolerancia del solucionador**. Es estable para relaciones de densidad superiores a $10^6$ y reduce drásticamente las velocidades espurias (spurious velocity).
+
+---
+
+## 3. Tratamiento de los cuatro términos de corrección en flujo multifásico
+
+Los cuatro términos de corrección de la velocidad en la cara en flujo multifásico tienen, cada uno, su propio papel físico y principios de tratamiento.
+
+### Término de corrección de presión (Obligatorio)
+
+$$
+\delta\mathbf{U}_p = -\left(\frac{1}{a_P}\right)_f\left[\nabla p\big|_f - \overline{\nabla p}_f\right]
+$$
+
+Es la esencia de Rhie-Chow. Suprime el tablero de ajedrez a cambio de errores de conservación de masa proporcionales a $\Delta x^2 \partial^4 p/\partial x^4$. En flujos multifásicos, el error puede aumentar debido a cambios bruscos de presión cerca de la interfaz, por lo que se requiere un enfoque de fuerza equilibrada.
+
+### Término de corrección transitorio (Obligatorio para flujo transitorio)
+
+$$
+\delta\mathbf{U}_t = \left(\frac{t}{a_P^\alpha}\right)_f \mathbf{U}_f^0 - \overline{\left(\frac{t}{a_P^\alpha}\right)\mathbf{U}^0}_f
+$$
+
+Sin este término, la intensidad del filtro MWI cambia cuando $\Delta t \to 0$, lo que provoca **oscilaciones de presión en forma de diente de sierra**. Cubero & Fueyo (2007) y Bartholomew et al. (2018) recomiendan **separar completamente** el coeficiente temporal del coeficiente MWI y tratarlo como un término de corrección aparte.
+
+### Término de corrección de gravedad (Obligatorio para flujo multifásico)
+
+$$
+\delta\mathbf{U}_g = \left(\frac{V}{a_P}\right)_f(\rho\mathbf{g})_f - \overline{\left(\frac{V}{a_P}\right)\rho\mathbf{g}}_f
+$$
+
+**Debe incluirse** en flujos multifásicos con discontinuidades de densidad. Mencinger & Zun (2007) demostraron que, sin este término, se producen picos de velocidad no físicos en la interfaz. En el equilibrio hidrostático ($\mathbf{U}=0$), $\nabla p = \rho\mathbf{g}$ debe cumplirse también de forma discreta.
+
+En OpenFOAM, se utiliza la presión modificada $p_{rgh} = p - \rho\mathbf{g}\cdot\mathbf{r}$ y se evalúa directamente en la cara como $-g_h \cdot \text{snGrad}(\rho)$.
+
+### Término de corrección de tensión superficial (El más debatido)
+
+En el enfoque de fuerza equilibrada, **no se debe aplicar** la corrección de Rhie-Chow para la tensión superficial. La razón es clara:
+
+> Si el gradiente de presión y la tensión superficial se discretizan con el mismo operador de gradiente centrado en la cara,
+> en el equilibrio estático se cumple exactamente $\nabla p = \sigma\kappa\nabla\alpha$.
+> Si se añade la corrección de Rhie-Chow, el equilibrio se rompe y se generan corrientes parásitas (parasitic currents).
+
+Por lo tanto, la tensión superficial en la cara se **evalúa directamente** como $(1/a_P)_f \cdot (\sigma\kappa)_f \cdot \text{snGrad}(\alpha)$, y la corrección de la diferencia con el valor del centro de la celda interpolado se **establece en cero**.
+
+### Resumen de términos de corrección
+
+| Término de corrección | Flujo monofásico | Flujo multifásico Balanced-force | Problema si no se trata |
+|--------|:---------:|:----------------------:|--------------|
+| Presión (Rhie-Chow) | Obligatorio | Obligatorio | Oscilación de presión tipo tablero |
+| Transitorio (Choi) | Obligatorio (Transitorio) | Obligatorio | Dependencia de $\Delta t$, oscilación de sierra |
+| Gravedad (Gu) | Con densidad variable | Obligatorio (eval. en cara) | Picos de velocidad en la interfaz |
+| Tensión superficial | No aplica | **Corrección 0** (eval. directa en cara) | Corrientes parásitas |
+
+---
+
+## 4. Principios de diseño para la supresión de Spurious Velocity
+
+Las corrientes parásitas (spurious velocity) son campos de velocidad no físicos causados por un **desequilibrio discreto** entre la tensión superficial y el gradiente de presión en flujos multifásicos con curvatura de interfaz. Su magnitud es proporcional a $\sigma$ e inversamente proporcional a $\mu$, volviéndose graves en flujos de baja viscosidad.
+
+### Algoritmo Balanced-Force
+
+El principio fundamental presentado por Francois et al. (2006):
+
+> Los operadores de gradiente para el gradiente de presión y la tensión superficial deben **discretizarse de la misma manera y evaluarse en la misma ubicación**.
+
+Específicamente, dado que $\nabla p$ se calcula con el snGrad de la cara en la ecuación de presión, el $\sigma\kappa\nabla\alpha$ de CSF también debe calcularse **en la cara con el mismo snGrad**. Siguiendo este principio, se logra una velocidad cero **hasta la precisión de la máquina** en una gota estática con una curvatura exacta dada.
+
+### El propio Rhie-Chow puede ser la causa
+
+Un hallazgo importante de Mencinger & Zun (2007): si las fuerzas volumétricas son discontinuas (salto de densidad, tensión superficial), la cuarta derivada de la presión aumenta y el propio término de corrección de Rhie-Chow **genera grandes errores**.
+
+Por lo tanto, el marco unificado de Bartholomew et al. (2018) **no aplica la corrección de Rhie-Chow a las fuerzas volumétricas**, sino que aplica el filtro solo al gradiente de presión impulsor:
+
+$$
+\nabla P = \nabla p - \rho\mathbf{g} - \sigma\kappa\nabla\alpha
+$$
+
+Aun así, la **precisión de la estimación de la curvatura** determina el límite final de las velocidades espurias, siendo el método height-function (Popinet, 2009) el más eficaz al proporcionar una convergencia de segundo orden.
+
+---
+
+## 5. Interpolación del coeficiente de movilidad: Por qué se necesita la media armónica
+
+La interpolación del coeficiente de movilidad $(1/a_P)_f$ en la cara tiene un gran impacto en la estabilidad del flujo multifásico. Como $a_P$ es proporcional a la densidad ($a_P \propto \rho$), en flujos con gran relación de densidad, los valores de $1/a_P$ a ambos lados de la interfaz difieren en varios órdenes de magnitud.
+
+### El problema de la media aritmética
+
+En la interfaz agua-aire ($\rho_w/\rho_a = 1000$):
+
+$$
+\left(\frac{1}{a_P}\right)_f^{\text{arith}} \approx \frac{1}{2}\left(\frac{1}{a_{P,w}} + \frac{1}{a_{P,a}}\right)
+$$
+
+Se ve dominado por el gran valor de $1/a_P$ de la fase ligera (aire), **subestimando** la inercia de la fase pesada (agua).
+
+### La solución de la media armónica
+
+$$
+\rho_f^* = \frac{2}{\frac{1}{\rho_P} + \frac{1}{\rho_Q}}
+$$
+
+Para el agua-aire, $\rho_f^* \approx 2.0$, lo que difiere enormemente de los $\approx 500.5$ de la media aritmética. Al **reflejar adecuadamente la fase con mayor resistencia a la aceleración (la fase pesada)**, Bartholomew et al. (2018) y Denner et al. (2022) mostraron resultados estables incluso con relaciones de densidad superiores a $10^6$.
+
+Si se utiliza la interpolación aritmética, se produce una **inconsistencia** entre el coeficiente Laplaciano de la ecuación de presión y la ponderación de densidad de la corrección MWI, lo que genera velocidades espurias.
+
+---
+
+## 6. Análisis de la implementación en OpenFOAM
+
+### interFoam: Flujo bifásico incompresible
+
+El interFoam de OpenFOAM se basa en el enfoque H/A de Jasak.
+
+**Ensamblaje de la ecuación de cantidad de movimiento** (excluyendo el gradiente de presión):
+
+```cpp
+fvVectorMatrix UEqn(
+    fvm::ddt(rho, U)
+  + fvm::div(rhoPhi, U)
+  + turbulence->divDevRhoReff(rho, U)
+);
+```
+
+**Cálculo de rAU y HbyA:**
+
+```cpp
+volScalarField rAU("rAU", 1.0/UEqn.A());
+surfaceScalarField rAUf("rAUf", fvc::interpolate(rAU)); // Interpolación lineal (valor por defecto)
+volVectorField HbyA(constrainHbyA(rAU*UEqn.H(), U, p_rgh));
+```
+
+**Construcción de phiHbyA** (4 términos de corrección):
+
+```cpp
+// (H/A)_f · S_f + Corrección transitoria
+surfaceScalarField phiHbyA("phiHbyA",
+    fvc::flux(HbyA)
+  + fvc::interpolate(rho*rAU)*fvc::ddtCorr(U, phi, Uf)
+);
+
+// Gravedad + Tensión superficial: evaluación directa en la cara
+surfaceScalarField phig(
+    (
+        mixture.surfaceTensionForce()    // sigma*kappa*snGrad(alpha)
+      - ghf*fvc::snGrad(rho)            // -g·r_f * snGrad(rho)
+    ) * rAUf * mesh.magSf()
+);
+
+phiHbyA += phig;
+```
+
+Puntos clave:
+- `ghf = g & mesh.Cf()`: Potencial de gravedad evaluado directamente en el centro de la cara.
+- `mixture.surfaceTensionForce()`: Calcula $\sigma\kappa\cdot\text{snGrad}(\alpha)$ **en la cara**.
+- Ambas fuerzas volumétricas se **evalúan directamente en la cara**, siguiendo aproximadamente el principio de fuerza equilibrada.
+
+**Ecuación de presión y corrección de flujo:**
+
+```cpp
+fvScalarMatrix p_rghEqn(
+    fvm::laplacian(rAUf, p_rgh) == fvc::div(phiHbyA)
+);
+p_rghEqn.solve();
+phi = phiHbyA - p_rghEqn.flux();
+```
+
+Dado que `pEqn.flux()` es $-(1/A)_f \cdot \text{snGrad}(p_{rgh}) \cdot |S_f|$, el flujo final es una combinación de **velocidad sin presión + fuerza volumétrica evaluada en la cara + gradiente de presión evaluado en la cara**. La **asimetría del stencil**, donde la Laplaciana usa snGrad de la cara y el gradiente para la corrección de velocidad usa valores de la cara de la celda, proporciona implícitamente el efecto Rhie-Chow.
+
+**Limitación de `ddtCorr`:** `fvc::ddtCorr(U, phi)` calcula $(1/\Delta t)\cdot[\phi_{\text{old}} - (\mathbf{U}_{\text{old}})_f\cdot\mathbf{S}_f]$. A diferencia de CMI, **no es completamente consistente**, por lo que deja una dependencia del paso de tiempo y puede afectar a la precisión temporal, como confirmaron Komen et al. (2020).
+
+### compressibleInterFoam: Flujo bifásico compresible
+
+La construcción de phiHbyA es idéntica a la de interFoam, pero la **ecuación de presión consta de tres partes**:
+
+$$
+\nabla\cdot\mathbf{U} = -\left(\frac{\alpha_1}{\rho_1}\frac{D\rho_1}{Dt} + \frac{\alpha_2}{\rho_2}\frac{D\rho_2}{Dt}\right)
+$$
+
+Se añaden términos de compresibilidad de cada fase a la parte incompresible (Laplaciana). El acoplamiento presión-densidad se realiza mediante `phid = fvc::interpolate(psi)*phi` ($\psi = d\rho/dp$), y se añade un término de compresibilidad diferencial `dgdt` a la ecuación $\alpha$ para reflejar la diferencia en la tasa de cambio de densidad de las dos fases.
+
+---
+
+## 7. Comparación por métodos
+
+| Método | Contribución clave | Ventajas | Desventajas |
+|------|----------|------|------|
+| **Rhie & Chow (1983)** | MWI original | Simple, eficaz | Solo estacionario; dep. de $\Delta t$/relajación |
+| **Jasak (1996)** | Implementación implícita H/A | Universal, mallas no estructuradas | ddtCorr incompleto |
+| **Cubero & Fueyo (2007)** | Interp. consistente por coef. CMI | Independencia total de $\Delta t$/relajación | Aumento de la difusión numérica |
+| **Bartholomew et al. (2018)** | Marco unificado | Generalización para mallas no estruc. | Aumento de la complejidad de impl. |
+| **Denner & van Wachem (2014)** | Balanced-force VOF | Estable para relación densidad $>10^6$ | Dep. de la precisión de la curvatura |
+| **Aguerre et al. (2018)** | Reconstrucción de flujo | Elimina oscilaciones de alta frecuencia | Difícil de integrar en códigos existentes |
+
+Los enfoques consistentes (CMI, MWI unificada) tienen una **difusión numérica mayor** que el original, pero conservan la precisión temporal y proporcionan soluciones independientes de la malla/paso de tiempo. La causa principal de las velocidades espurias restantes es el **error en la estimación de la curvatura**.
+
+---
+
+## Conclusión: Principios de diseño y recomendaciones prácticas
+
+El principio más importante en el diseño de velocidades en la cara para flujos multifásicos compresibles:
+
+> **"Aplica el filtro de Rhie-Chow únicamente al gradiente de presión impulsor."**
+
+La tensión superficial y la gravedad deben evaluarse con el **mismo operador discreto** que el gradiente de presión en la cara para lograr la fuerza equilibrada, y la corrección MWI debe aplicarse solo a la presión impulsora pura, excluyéndolas:
+
+$$
+\nabla P = \nabla p - \rho\mathbf{g} - \sigma\kappa\nabla\alpha
+$$
+
+### Tres mejoras para los usuarios de OpenFOAM
+
+1. **Cambiar la interpolación en la cara de `rAU` a media armónica**: Configurar `interpolate(rAU) harmonic` en `fvSchemes`. Esto mejora significativamente la estabilidad en grandes relaciones de densidad.
+
+2. **Sustituir `ddtCorr` por la corrección transitoria estilo CMI**: Garantiza la independencia del paso de tiempo. El ddtCorr por defecto actual en OpenFOAM es aproximado y mantiene la dependencia de $\Delta t$.
+
+3. **Introducir estimación de curvatura de alta precisión como height-function**: La precisión de la curvatura es lo que determina el límite final de las velocidades espurias.
+
+En las extensiones compresibles, se añade el acoplamiento presión-densidad a través de la ecuación de estado (EOS), pero la estructura MWI de la velocidad en la cara en sí sigue siendo la misma que en los flujos incompresibles. Técnicas de discretización de interfaz como ACID (Denner & van Wachem, 2018) garantizan la precisión de la propagación de ondas acústicas.
+
+---
+
+### Referencias
+
+- Rhie, C.M. & Chow, W.L. (1983). AIAA Journal 21(11)
+- Jasak, H. (1996). PhD Thesis, Imperial College London
+- Cubero, A. & Fueyo, N. (2007). Numerical Heat Transfer Part B 52(6)
+- Francois, M.M. et al. (2006). JCP 213(1)
+- Mencinger, J. & Zun, I. (2007). JCP 224(1)
+- Denner, F. & van Wachem, B. (2014). Numerical Heat Transfer Part B 65(3)
+- Bartholomew, P. et al. (2018). JCP 375
+- Aguerre, H.J. et al. (2018). JCP 365
+- Komen, E.M.J. et al. (2020). Nuclear Engineering and Design 370

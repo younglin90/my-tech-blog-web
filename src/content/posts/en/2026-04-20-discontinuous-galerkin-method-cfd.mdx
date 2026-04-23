@@ -1,0 +1,132 @@
+---
+title: "Discontinuous Galerkin Method (DGM): High-Precision Discretization for Unstructured Grid Compressible Flow Analysis"
+date: 2026-04-20
+description: "Step-by-step summary from DGM weak form derivation to Gauss quadrature and unstructured grid implementation."
+tags: ["CFD", "FEM", "DGM", "High-Order Accuracy", "Compressible Flow"]
+draft: false
+series: "numerical-methods"
+seriesOrder: 2
+---
+
+The Discontinuous Galerkin Method (DGM) is a numerical method that combines the advantages of the Finite Element Method (FEM) and the Finite Volume Method (FVM). It uses high-order polynomial basis functions within each cell and exchanges information at cell boundaries using numerical fluxes. It is a powerful option for high-precision analysis of compressible flows on unstructured grids.
+
+## Governing Equation and Flux Splitting
+
+Conservation equation for compressible flow:
+
+$$\frac{\partial \mathbf{U}}{\partial t} + \nabla \cdot \mathbf{F}^c(\mathbf{U}) - \nabla \cdot \mathbf{F}^v(\mathbf{U}, \nabla \mathbf{U}) = \mathbf{S}(\mathbf{U})$$
+
+Where:
+- $\mathbf{U} = [\rho,\ \rho u,\ \rho v,\ \rho w,\ \rho E]^T$: Vector of conservative variables
+- $\mathbf{F}^c$: Convective flux
+- $\mathbf{F}^v$: Viscous flux
+- $\mathbf{S}$: Source term
+
+## Basis Function Expansion and Weak Form Derivation
+
+The solution within the cell $\Omega_e$ is approximated as a linear combination of basis functions:
+
+$$\mathbf{U}_h(\mathbf{x}, t) = \sum_{l=1}^{N_p} \hat{\mathbf{U}}_l(t)\, \phi_l(\mathbf{x})$$
+
+$N_p$ is the number of degrees of freedom within the cell, determined by the approximation polynomial degree $K$ ($N_p = (K+1)(K+2)(K+3)/6$ in 3D).
+
+Multiplying by a test function $\phi_k$ and integrating over $\Omega_e$:
+
+$$\int_{\Omega_e} \phi_k \frac{\partial \mathbf{U}_h}{\partial t}\, d\Omega + \int_{\Omega_e} \phi_k \nabla \cdot \mathbf{F}\, d\Omega = \int_{\Omega_e} \phi_k \mathbf{S}\, d\Omega$$
+
+Applying Green's formula (integration by parts) splits it into volume and boundary integrals:
+
+$$
+\int_{\Omega_e} \phi_k \frac{\partial \mathbf{U}_h}{\partial t}\, d\Omega
+- \int_{\Omega_e} \nabla \phi_k \cdot \mathbf{F}\, d\Omega
++ \oint_{\partial \Omega_e} \phi_k \hat{\mathbf{F}} \cdot \mathbf{n}\, d\Gamma
+= \int_{\Omega_e} \phi_k \mathbf{S}\, d\Omega
+$$
+
+$\hat{\mathbf{F}}$ on the boundary is the **numerical flux** using information from adjacent cells (e.g., Roe, HLLC).
+
+## Mass Matrix and Time Integration
+
+Arranging as an ODE for the $l$-th basis function coefficient:
+
+$$\mathbf{M} \frac{d\hat{\mathbf{U}}}{dt} = \mathbf{R}(\hat{\mathbf{U}})$$
+
+Where the mass matrix is:
+
+$$M_{kl} = \int_{\Omega_e} \phi_k \phi_l\, d\Omega$$
+
+Using orthogonal basis functions (such as Taylor basis or Legendre polynomials) makes $\mathbf{M}$ diagonal, eliminating the cost of calculating the inverse matrix. The residual vector $\mathbf{R}$ is the sum of the volume integral term and the surface flux term:
+
+$$R_k = \int_{\Omega_e} \nabla \phi_k \cdot \mathbf{F}\, d\Omega - \oint_{\partial \Omega_e} \phi_k \hat{\mathbf{F}} \cdot \mathbf{n}\, d\Gamma + \int_{\Omega_e} \phi_k \mathbf{S}\, d\Omega$$
+
+## Application of Gauss Quadrature
+
+Volume and surface integrals are calculated numerically using Gauss-Legendre quadrature. To integrate a polynomial of degree $K$ exactly, an **integration of at least order $2K-1$** is required.
+
+Number of Gauss points by cell type (by representative degree):
+
+| Cell Type   | 1st Order | 2nd Order | 3rd Order |
+|------------|-----------|-----------|-----------|
+| Tetrahedron | 1         | 4         | 10        |
+| Hexahedron  | 1         | 8         | 27        |
+| Prism       | 3         | 9         | 18        |
+| Pyramid     | 1         | 5         | 15        |
+
+For face types, three times the cell points (3D projection) are used.
+
+## Algorithm Implementation Sequence
+
+In actual implementation, proceed in the following order:
+
+1. **Cell/Face Classification**: Tetra/Hexa/Prism/Pyramid/Polyhedron
+2. **Basis Function Preparation**: Calculate $\phi_l$, $\nabla\phi_l$ for each cell type × approximation degree
+3. **Gauss Point Cache**: Store reference element coordinates and weights in memory
+4. **Variable Initialization**: Set $\hat{\mathbf{U}}_l^0$ (e.g., free-stream conditions)
+5. **Loop (Time Stepping)**:
+   - Volume Integral: $\int_{\Omega_e} \nabla\phi_k \cdot \mathbf{F}\ d\Omega$ — Calculate and sum fluxes at each Gauss point
+   - Surface Flux: $\oint_{\partial\Omega_e} \phi_k \hat{\mathbf{F}}\cdot\mathbf{n}\ d\Gamma$ — Calculate numerical flux
+   - RK Update: Explicit time integration such as SSP-RK3
+
+```python
+import numpy as np
+
+def compute_volume_residual(U_hat, phi, dphi, gauss_w, flux_func):
+    """Compute volume residual (single cell)"""
+    Np, Ng = phi.shape   # (Number of basis functions, Number of Gauss points)
+    R = np.zeros_like(U_hat)
+    for g in range(Ng):
+        # Restore physical quantities at Gauss point
+        U_g = phi[:, g] @ U_hat          # shape: (nvar,)
+        F_g = flux_func(U_g)             # (nvar, ndim)
+        # Contribution to volume residual
+        for k in range(Np):
+            R[k] += gauss_w[g] * (dphi[k, :, g] @ F_g.T)
+    return R
+```
+
+## Numerical Flux Selection — Practical Considerations
+
+Numerical flux in DGM is directly related to stability and accuracy.
+
+- **Roe Flux**: Captures contact discontinuities well, but can cause expansion shocks without entropy correction.
+- **HLLC**: More stable than Roe, but excessive dissipation may occur in rare cases.
+- **LxF (Lax-Friedrichs)**: Simple to implement, but large dissipation reduces high-order gains.
+
+Common mistakes:
+1. **Insufficient Gauss points** — Aliasing errors where the order decreases in non-linear fluxes.
+2. **Ignoring Mass Matrix diagonalization** — When using general FEM basis functions, a linear system must be solved at every step, which is inefficient.
+3. **Face normal direction mismatch** — Always check that the sign of the normal of the adjacent cell is opposite on the shared face.
+
+## Accuracy Verification — Taylor-Green Vortex
+
+$$
+u_0 = V_0 \sin\!\left(\frac{x}{L}\right)\cos\!\left(\frac{y}{L}\right), \quad
+v_0 = -V_0 \cos\!\left(\frac{x}{L}\right)\sin\!\left(\frac{y}{L}\right)
+$$
+
+When comparing the incompressible analytical solution with DGM results, $K$-th order DGM should theoretically show $O(h^{K+1})$ convergence. In practice, if the error does not decrease by $2^{K+1}$ times when the grid is refined by 2x, check the quadrature order or boundary treatment.
+
+## References
+
+1. Luo, H. et al., "A discontinuous Galerkin method based on a Taylor basis for the compressible flows on arbitrary grids," *J. Comput. Phys.* 227 (2008).
+2. Luo, H. et al., "Hybrid discontinuous Galerkin–finite volume techniques for compressible flows on unstructured meshes," *AIAA Paper* (2012).

@@ -1,0 +1,116 @@
+---
+title: "[Reseña de artículo] Physics-Informed Neural Networks para modelado de turbulencia"
+date: 2026-03-24
+description: "Un nuevo enfoque para reconstruir campos de flujo a partir de datos dispersos utilizando redes neuronales con leyes físicas integradas directamente en la función de pérdida."
+tags: ["논문리뷰", "CFD", "PINN", "딥러닝", "난류모델"]
+draft: false
+---
+
+## Información del artículo
+
+- **Autores:** Raissi, M., Perdikaris, P., Karniadakis, G. E.
+- **Revista:** Journal of Computational Physics, Vol. 378, pp. 686–707, 2019
+- **DOI:** [10.1016/j.jcp.2018.10.045](https://doi.org/10.1016/j.jcp.2018.10.045)
+- **arXiv:** [1711.10561](https://arxiv.org/abs/1711.10561)
+
+---
+
+## Resumen en una línea
+
+Se propone un método para **reconstruir todo el campo de velocidad utilizando solo unos pocos sensores de presión**, integrando las ecuaciones de Navier-Stokes directamente en la función de pérdida de la red neuronal (Physics-Informed).
+
+---
+
+## Contexto de la investigación
+
+La CFD convencional se sitúa en algún punto entre dos extremos.
+
+**Métodos tradicionales (k-ε, k-ω SST):** Dependen de coeficientes de cierre empíricos. Es necesario reajustar los coeficientes cuando cambia el número de Reynolds o la geometría, lo que limita la capacidad de generalización.
+
+**Aprendizaje profundo basado puramente en datos:** Requiere una gran cantidad de datos etiquetados y los modelos entrenados **no garantizan la conservación de la masa o el momento**. La función de pérdida no detecta si se producen predicciones físicamente absurdas.
+
+Las PINN son un intento de cerrar esta brecha. Incluso con datos dispersos, las leyes físicas actúan como regularizador.
+
+---
+
+## Metodología principal
+
+La función de pérdida total de una PINN es la suma de dos términos:
+
+$$\mathcal{L} = \mathcal{L}_{\text{data}} + \lambda \, \mathcal{L}_{\text{physics}}$$
+
+La **pérdida de datos** $\mathcal{L}_{\text{data}}$ es la diferencia entre los valores observados (ej. sensores de presión) y las predicciones de la red neuronal.
+
+La **pérdida física** $\mathcal{L}_{\text{physics}}$ es el residuo de las ecuaciones de Navier-Stokes incompresibles:
+
+$$\mathcal{L}_{\text{physics}} = \left\| \frac{\partial \mathbf{u}}{\partial t} + (\mathbf{u} \cdot \nabla)\mathbf{u} + \nabla p - \frac{1}{Re}\nabla^2\mathbf{u} \right\|^2 + \left\| \nabla \cdot \mathbf{u} \right\|^2$$
+
+El segundo término es la ecuación de continuidad (conservación de la masa). Dado que la red neuronal se entrena para que este residuo sea cero, las predicciones siempre cumplen aproximadamente las ecuaciones N-S.
+
+Las derivadas se calculan mediante **diferenciación automática (automatic differentiation)** de PyTorch/TensorFlow, sin necesidad de una discretización numérica independiente.
+
+---
+
+## Resultados principales
+
+| Caso | Condiciones | Resultado |
+|--------|------|------|
+| Flujo alrededor de un cilindro 2D | Re=100, solo sensores de presión | Error de reconstrucción del campo de velocidad < 1%, recuperación precisa de la frecuencia de vórtices |
+| Cavidad impulsada por tapa | Re=1000 | El perfil de velocidad coincide con los resultados de DNS en menos del 1% |
+| Inversión del número de Reynolds | Solo con datos de velocidad | Éxito en la identificación del propio valor de Re como parámetro de aprendizaje |
+
+Destaca especialmente la capacidad para resolver **problemas inversos (inverse problem)**. Es posible estimar el número de Reynolds a partir del campo de flujo o restaurar un campo de presión oculto utilizando solo datos de velocidad, problemas imposibles o extremadamente difíciles con los métodos convencionales.
+
+---
+
+## Posibilidad de aplicación práctica
+
+**¿Cuándo es útil?**
+- Situaciones con datos de medición experimental dispersos (cuando solo hay unos pocos sensores).
+- Problemas inversos: cuando es necesario calcular propiedades físicas (viscosidad, Re) a partir de valores medidos.
+- Interpolación de datos basada en física: para completar espacios vacíos en datos experimentales utilizando leyes físicas.
+
+**¿Se puede sustituir inmediatamente a OpenFOAM/Fluent?**
+
+Todavía no. El tiempo de entrenamiento es de decenas a cientos de veces más lento que el de un solver FVM. Un flujo de canal simple puede tardar varias horas en una GPU. Actualmente no es adecuado para análisis de ingeniería en tiempo real.
+
+Sin embargo, existe una investigación activa sobre el **uso híbrido con OpenFOAM**. Se utiliza FVM para obtener una solución aproximada y las PINN para realizar una corrección detallada.
+
+```python
+# Ejemplo de cálculo de pérdida física implementado en PyTorch
+def physics_loss(model, x, t, Re):
+    x.requires_grad_(True)
+    t.requires_grad_(True)
+
+    output = model(x, t)
+    u, v, p = output[:, 0], output[:, 1], output[:, 2]
+
+    # Cálculo de derivadas parciales mediante diferenciación automática
+    u_t = torch.autograd.grad(u.sum(), t, create_graph=True)[0]
+    u_x = torch.autograd.grad(u.sum(), x, create_graph=True)[0][:, 0]
+    u_y = torch.autograd.grad(u.sum(), x, create_graph=True)[0][:, 1]
+    p_x = torch.autograd.grad(p.sum(), x, create_graph=True)[0][:, 0]
+
+    # Residuo de la ecuación de momento en x
+    residual_u = u_t + u * u_x + v * u_y + p_x - (1/Re) * (u_x + u_y)
+
+    return (residual_u**2).mean()
+```
+
+---
+
+## Limitaciones y estudios futuros
+
+**Limitaciones actuales:**
+- Dificultad para escalar a **flujos turbulentos 3D con alto Re**. Las redes neuronales tienen límites para representar componentes de alta frecuencia (pequeños vórtices).
+- El entrenamiento se vuelve inestable en **EDP rígidas (stiff PDE)** (cuando Re es muy grande o la capa límite es delgada).
+- Las PINN estándar no proporcionan **cuantificación de incertidumbre (UQ)**. No es posible saber qué tan confiable es una predicción.
+
+**Direcciones futuras:**
+- **XPINNs (Extended PINNs):** División del dominio para aprendizaje paralelo → asegurar la escalabilidad para problemas a gran escala.
+- **Solvers híbridos OpenFOAM:** Combinación de FVM + PINN.
+- **Aprendizaje por transferencia (transfer learning):** Adaptación rápida de un modelo entrenado en un Re a otro Re diferente.
+
+---
+
+> **Opinión breve:** "Un artículo que define la intersección entre CFD y aprendizaje profundo. Aunque no sustituirá a OpenFOAM de inmediato, ya es práctico para problemas inversos y reconstrucción de datos dispersos."

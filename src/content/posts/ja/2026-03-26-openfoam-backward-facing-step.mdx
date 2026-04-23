@@ -1,0 +1,587 @@
+---
+title: "【OpenFOAMチュートリアル】後方ステップ流の解析 — simpleFoamで再循環領域を捉える"
+date: 2026-03-26
+description: "OpenFOAMのsimpleFoamを使用して、後方ステップ（Backward Facing Step）における非圧縮性流れを段階的に解析するガイド"
+tags: ["OpenFOAM", "チュートリアル", "simpleFoam", "후방계단", "난류"]
+draft: false
+---
+
+このチュートリアルでは、**後方ステップ（Backward Facing Step）**形状における再循環流れを`simpleFoam`でシミュレーションします。ステップ下流に形成される再循環領域（recirculation zone）と再付着点（reattachment point）を直接確認することが目標です。
+
+---
+
+## 前提条件
+
+- **OpenFOAMバージョン:** v2312以上（OpenFOAM.comまたはOpenFOAM.orgのどちらでも可）
+- **事前知識:** 基本的なターミナル操作、OpenFOAMのケース構造（0/constant/system）の理解
+- **必要ソフトウェア:** ParaView 5.x以上（結果の可視化用）
+
+---
+
+## ステップ 1: ケースディレクトリの作成
+
+```bash
+# OpenFOAM環境のロード（インストールパスによって異なります）
+source /opt/openfoam2312/etc/bashrc
+
+# チュートリアルディレクトリをコピーするか、直接作成します
+mkdir -p backwardFacingStep
+cd backwardFacingStep
+```
+
+ケース構造は以下の通りです。
+
+```bash
+tree backwardFacingStep/
+```
+
+```
+backwardFacingStep/
+├── 0/
+│   ├── U          # 速度の初期・境界条件
+│   ├── p          # 圧力の初期・境界条件
+│   ├── k          # 乱力エネルギー
+│   └── epsilon    # 乱力散逸率
+├── constant/
+│   ├── transportProperties
+│   └── turbulenceProperties
+└── system/
+    ├── blockMeshDict
+    ├── fvSchemes
+    └── fvSolution
+```
+
+---
+
+## ステップ 2: メッシュ生成 — blockMeshDict
+
+`system/blockMeshDict`では、ステップ形状を直方体ブロックの組み合わせで定義します。以下は簡略化された2Dケースの例です（ステップ高さ H = 0.1 m）。
+
+```cpp
+/*--------------------------------*- C++ -*----------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:  v2312                                 |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      blockMeshDict;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+scale   0.1;   // 全体スケール（m単位 → 0.1を掛けると最終的な大きさになります）
+
+vertices
+(
+    // 入口チャネルブロック（ステップ上部）
+    (0  1  0)  // 0
+    (5  1  0)  // 1
+    (5  2  0)  // 2
+    (0  2  0)  // 3
+    (0  1  1)  // 4
+    (5  1  1)  // 5
+    (5  2  1)  // 6
+    (0  2  1)  // 7
+
+    // ステップ下流ブロック（ステップ全高）
+    (5  0  0)  // 8
+    (20 0  0)  // 9
+    (20 2  0)  // 10
+    (5  2  0)  // 11 (= vertex 2)
+    (5  0  1)  // 12
+    (20 0  1)  // 13
+    (20 2  1)  // 14
+    (5  2  1)  // 15 (= vertex 6)
+);
+
+blocks
+(
+    // 入口チャネル
+    hex (0 1 2 3 4 5 6 7)   (50 10 1) simpleGrading (1 1 1)
+    // ステップ下流（より密なメッシュ）
+    hex (8 9 10 11 12 13 14 15) (150 20 1) simpleGrading (1 1 1)
+);
+
+boundary
+(
+    inlet
+    {
+        type patch;
+        faces ((0 3 7 4));
+    }
+    outlet
+    {
+        type patch;
+        faces ((9 10 14 13));
+    }
+    wall
+    {
+        type wall;
+        faces
+        (
+            (0 1 5 4)   // 上端入口壁
+            (1 8 12 5)  // ステップ垂直面
+            (8 9 13 12) // 下端床面
+            (3 2 6 7)   // 上端壁（入口）
+            (11 10 14 15) // 上端壁（下流）
+        );
+    }
+    frontAndBack
+    {
+        type empty;  // 2D解析
+        faces
+        (
+            (0 1 2 3)
+            (4 5 6 7)
+            (8 9 10 11)
+            (12 13 14 15)
+        );
+    }
+);
+```
+
+```bash
+# メッシュ生成の実行
+blockMesh
+```
+
+**予想される出力:**
+```
+Create time
+
+Creating block mesh from "system/blockMeshDict"
+...
+Writing polyMesh with 3600 cells
+End
+```
+
+---
+
+## ステップ 3: 境界条件の設定
+
+### 0/U — 速度境界条件
+
+```cpp
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       volVectorField;
+    object      U;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+dimensions      [0 1 -1 0 0 0 0];  // m/s
+
+internalField   uniform (0 0 0);   // 初期値: 静止状態
+
+boundaryField
+{
+    inlet
+    {
+        type        fixedValue;
+        value       uniform (1 0 0);  // x方向に1 m/sの均一流入
+    }
+    outlet
+    {
+        type        zeroGradient;  // 出口: 自由流出
+    }
+    wall
+    {
+        type        noSlip;        // 壁面: 粘着条件
+    }
+    frontAndBack
+    {
+        type        empty;
+    }
+}
+```
+
+### 0/p — 圧力境界条件
+
+```cpp
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       volScalarField;
+    object      p;
+}
+
+dimensions      [0 2 -2 0 0 0 0];  // 動圧 (p/rho), m²/s²
+
+internalField   uniform 0;
+
+boundaryField
+{
+    inlet
+    {
+        type        zeroGradient;
+    }
+    outlet
+    {
+        type        fixedValue;
+        value       uniform 0;  // 出口基準圧力を0に設定
+    }
+    wall
+    {
+        type        zeroGradient;
+    }
+    frontAndBack
+    {
+        type        empty;
+    }
+}
+```
+
+### 0/k — 乱力エネルギー
+
+```cpp
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       volScalarField;
+    object      k;
+}
+
+dimensions      [0 2 -2 0 0 0 0];  // m²/s²
+
+// 入口乱流強度 5%, 流速 1 m/s → k = 1.5*(I*U)² = 1.5*(0.05*1)² ≈ 0.00375
+internalField   uniform 0.00375;
+
+boundaryField
+{
+    inlet
+    {
+        type        fixedValue;
+        value       uniform 0.00375;
+    }
+    outlet
+    {
+        type        zeroGradient;
+    }
+    wall
+    {
+        type        kqRWallFunction;
+        value       uniform 0.00375;
+    }
+    frontAndBack
+    {
+        type        empty;
+    }
+}
+```
+
+---
+
+## ステップ 4: 物性値および乱流モデルの設定
+
+### constant/transportProperties
+
+```cpp
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      transportProperties;
+}
+
+transportModel  Newtonian;
+nu              1e-5;   // 動粘性係数 (m²/s), Re = U*H/nu = 1*0.01/1e-5 = 1000
+```
+
+### constant/turbulenceProperties
+
+```cpp
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      turbulenceProperties;
+}
+
+simulationType  RAS;
+
+RAS
+{
+    RASModel        kEpsilon;   // k-epsilon 2方程式モデル
+    turbulence      on;
+    printCoeffs     on;
+}
+```
+
+---
+
+## ステップ 5: 数値計算手法の設定
+
+### system/fvSchemes
+
+```cpp
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      fvSchemes;
+}
+
+ddtSchemes      { default steadyState; }  // 定常解析
+
+gradSchemes
+{
+    default         Gauss linear;
+    grad(U)         cellLimited Gauss linear 1;  // 勾配リミッター
+}
+
+divSchemes
+{
+    default         none;
+    div(phi,U)      bounded Gauss linearUpwind grad(U);  // 2次精度
+    div(phi,k)      bounded Gauss upwind;
+    div(phi,epsilon) bounded Gauss upwind;
+    div((nuEff*dev(T(grad(U))))) Gauss linear;
+}
+
+laplacianSchemes { default Gauss linear corrected; }
+
+interpolationSchemes { default linear; }
+
+snGradSchemes { default corrected; }
+```
+
+### system/fvSolution
+
+```cpp
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      fvSolution;
+}
+
+solvers
+{
+    p
+    {
+        solver          GAMG;
+        smoother        GaussSeidel;
+        tolerance       1e-7;
+        relTol          0.01;
+    }
+    U
+    {
+        solver          smoothSolver;
+        smoother        GaussSeidel;
+        tolerance       1e-8;
+        relTol          0.1;
+    }
+    "(k|epsilon)"
+    {
+        solver          smoothSolver;
+        smoother        GaussSeidel;
+        tolerance       1e-8;
+        relTol          0.1;
+    }
+}
+
+SIMPLE
+{
+    nNonOrthogonalCorrectors    0;
+    pRefCell                    0;
+    pRefValue                   0;
+
+    residualControl
+    {
+        p           1e-4;
+        U           1e-4;
+        "(k|epsilon)" 1e-4;
+    }
+}
+
+relaxationFactors
+{
+    fields      { p 0.3; }           // 圧力緩和係数（発散防止）
+    equations
+    {
+        U       0.7;
+        k       0.7;
+        epsilon 0.7;
+    }
+}
+```
+
+---
+
+## ステップ 6: 解析の実行
+
+```bash
+# メッシュ品質の確認（任意ですが推奨します）
+checkMesh
+
+# simpleFoamの実行
+simpleFoam 2>&1 | tee log.simpleFoam
+```
+
+**予想される出力（収束過程）:**
+```
+Time = 1
+
+smoothSolver:  Solving for Ux, Initial residual = 1, Final residual = 0.0234, No Iterations 3
+smoothSolver:  Solving for Uy, Initial residual = 0.412, Final residual = 0.00891, No Iterations 3
+GAMG:  Solving for p, Initial residual = 0.987, Final residual = 0.00821, No Iterations 15
+...
+
+Time = 500
+
+smoothSolver:  Solving for Ux, Initial residual = 1.23e-05, ...
+GAMG:  Solving for p, Initial residual = 8.91e-05, ...
+
+SIMPLE solution converged in 500 iterations
+```
+
+収束判定は、すべての変数の残差（residual）が`1e-4`以下になった時です。
+
+---
+
+## ステップ 7: 結果の可視化 (ParaView)
+
+```bash
+# ParaView用のダミーファイルを作成して実行
+touch backwardFacingStep.foam
+paraFoam
+```
+
+ParaViewで以下の手順に従って結果を確認します。
+
+1. **Coloring**ドロップダウン → `U`を選択 → `Magnitude`で速度の大きさを表示。
+2. **Glyph**フィルタを追加 → ベクトル方向の可視化（再循環領域の確認）。
+3. **Stream Tracer**フィルタ → 流線を表示。
+
+**foamToVTKでファイル変換後の後処理:**
+
+```bash
+foamToVTK -latestTime
+```
+
+Pythonを使用した再付着長さの自動抽出:
+
+```python
+import numpy as np
+
+# foamToVTKの出力ファイルから下端壁(y=0)のデータを読み込む
+# (実際のパスは環境に合わせて調整してください)
+data = np.loadtxt("VTK/backwardFacingStep_500/internal.vtk",
+                  skiprows=10)  # VTKヘッダーを除外
+
+x = data[:, 0]
+ux = data[:, 3]  # x方向速度
+
+# y ≈ 0のセルをフィルタリング（下端壁付近）
+wall_mask = data[:, 1] < 0.005
+x_wall = x[wall_mask]
+ux_wall = ux[wall_mask]
+
+# 符号の変化点 = 再付着点
+sign_changes = np.where(np.diff(np.sign(ux_wall)))[0]
+if len(sign_changes) > 0:
+    x_reattach = x_wall[sign_changes[0]]
+    H = 0.01  # ステップ高さ (m)
+    print(f"再付着長さ: {x_reattach/H:.1f}H")
+```
+
+---
+
+## よくあるエラーと解決策
+
+### エラー 1: `FOAM FATAL ERROR: Cannot find file "0/epsilon"`
+
+```
+--> FOAM FATAL ERROR:
+    cannot find file
+    "backwardFacingStep/0/epsilon"
+```
+
+**原因:** `0/epsilon`ファイルが不足しています。
+**解決策:** `k`ファイルと同じ形式で`0/epsilon`を作成します。
+
+```cpp
+// 0/epsilon
+dimensions      [0 2 -3 0 0 0 0];  // m²/s³
+
+// epsilon = C_mu^(3/4) * k^(3/2) / L, L ≈ 0.1*H
+internalField   uniform 0.0009;
+
+boundaryField
+{
+    inlet       { type fixedValue; value uniform 0.0009; }
+    outlet      { type zeroGradient; }
+    wall        { type epsilonWallFunction; value uniform 0.0009; }
+    frontAndBack { type empty; }
+}
+```
+
+---
+
+### エラー 2: 解析の発散 (Floating point exception)
+
+```
+Floating point exception (core dumped)
+```
+
+**原因:** 緩和係数が大きすぎるか、メッシュが粗いために発散しています。
+**解決策:** `fvSolution`で緩和係数を下げます。
+
+```cpp
+relaxationFactors
+{
+    fields      { p 0.2; }   // 0.3 → 0.2に減少
+    equations   { U 0.5; }   // 0.7 → 0.5に減少
+}
+```
+
+---
+
+### エラー 3: 残差（residual）が減少せずに振動する
+
+**原因:** `nNonOrthogonalCorrectors`が0であるが、メッシュの非直交性が高い場合。
+**解決策:** 補正回数を増やします。
+
+```cpp
+SIMPLE
+{
+    nNonOrthogonalCorrectors    2;  // 0 → 2
+    ...
+}
+```
+
+---
+
+## 予想される結果のまとめ
+
+| 項目 | 値 |
+|------|-----|
+| レイノルズ数 ($Re = UH/\nu$) | 1,000 |
+| 再付着長さ ($x_r / H$) | 6–8 |
+| 最大逆流速度 | $\approx -0.1$ m/s |
+| 収束までの反復回数 | 300–600回 |
+
+再付着長さは$Re$によって異なりますが、$Re = 800$の実験値（Armaly et al., 1983）と比較すると、約6Hで一致します。
+
+$$
+x_r \approx 6\text{–}8 \cdot H \quad (Re \sim 10^3)
+$$
+
+---
+
+## 次のステップの提案
+
+- **メッシュ依存性の検討:** `blockMeshDict`でメッシュ数を2倍に増やして結果を比較。
+- **乱流モデルの比較:** `kEpsilon` → `kOmegaSST`に変更して、再付착長さの違いを確認。
+- **非定常解析:** `simpleFoam` → `pimpleFoam`に切り替えて、渦放出（vortex shedding）を観察。

@@ -1,0 +1,116 @@
+---
+title: "[Paper Review] Physics-Informed Neural Networks for Turbulence Modeling"
+date: 2026-03-24
+description: "A novel approach to reconstructing flow fields from sparse data using neural networks with physical laws embedded directly in the loss function."
+tags: ["논문리뷰", "CFD", "PINN", "딥러닝", "난류모델"]
+draft: false
+---
+
+## Paper Information
+
+- **Authors:** Raissi, M., Perdikaris, P., Karniadakis, G. E.
+- **Journal:** Journal of Computational Physics, Vol. 378, pp. 686–707, 2019
+- **DOI:** [10.1016/j.jcp.2018.10.045](https://doi.org/10.1016/j.jcp.2018.10.045)
+- **arXiv:** [1711.10561](https://arxiv.org/abs/1711.10561)
+
+---
+
+## One-Line Summary
+
+The paper proposes a method to **reconstruct the entire velocity field from just a few pressure sensors** by embedding the Navier-Stokes equations directly into the neural network's loss function (Physics-Informed).
+
+---
+
+## Background
+
+Existing CFD methods sit somewhere between two extremes.
+
+**Traditional Methods (k-ε, k-ω SST):** Rely on empirical closure coefficients. These coefficients must be re-tuned when the Reynolds number or geometry changes, limiting generalization capability.
+
+**Pure Data-Driven Deep Learning:** Requires large amounts of labeled data, and the trained models **do not guarantee mass or momentum conservation**. The loss function is unaware if the model produces physically nonsensical predictions.
+
+PINNs attempt to bridge this gap. Even with sparse data, physical laws act as a regularizer.
+
+---
+
+## Core Methodology
+
+The total loss function of a PINN is the sum of two terms:
+
+$$\mathcal{L} = \mathcal{L}_{\text{data}} + \lambda \, \mathcal{L}_{\text{physics}}$$
+
+**Data Loss** $\mathcal{L}_{\text{data}}$ is the difference between observations (e.g., pressure sensors) and neural network predictions.
+
+**Physics Loss** $\mathcal{L}_{\text{physics}}$ is the residual of the incompressible Navier-Stokes equations:
+
+$$\mathcal{L}_{\text{physics}} = \left\| \frac{\partial \mathbf{u}}{\partial t} + (\mathbf{u} \cdot \nabla)\mathbf{u} + \nabla p - \frac{1}{Re}\nabla^2\mathbf{u} \right\|^2 + \left\| \nabla \cdot \mathbf{u} \right\|^2$$
+
+The second term is the continuity equation (mass conservation). Since the neural network is trained to minimize this residual toward zero, the predictions always approximately satisfy the N-S equations.
+
+Derivatives are calculated using **automatic differentiation** in PyTorch/TensorFlow, eliminating the need for separate numerical discretization.
+
+---
+
+## Key Results
+
+| Case | Conditions | Results |
+|--------|------|------|
+| Flow around 2D circular cylinder | Re=100, pressure sensors only | Velocity field reconstruction error < 1%, accurately recovered vortex frequency |
+| Lid-driven cavity | Re=1000 | Velocity profile matches DNS results within 1% |
+| Reynolds number inversion | Velocity data only | Successfully identified the Re value itself as a learned parameter |
+
+The **inverse problem** capability is particularly impressive. It is possible to estimate the Reynolds number from the flow field or restore a hidden pressure field from velocity data alone—problems that are impossible or extremely difficult with traditional methods.
+
+---
+
+## Practical Applicability
+
+**When is it useful?**
+- Situations with sparse experimental measurement data (only a few sensors available).
+- Inverse problems: When physical properties (viscosity, Re) need to be calculated back from measurements.
+- Physics-based data interpolation: Filling in gaps in experimental data using physical laws.
+
+**Can it replace OpenFOAM/Fluent immediately?**
+
+Not yet. Training time is tens to hundreds of times slower than an FVM solver. A simple channel flow can take several hours on a GPU. It is currently unsuitable for real-time engineering analysis.
+
+However, research into **hybrid use with OpenFOAM** is active—using FVM for an approximate solution and PINN for fine-grained calibration.
+
+```python
+# Example of physics loss calculation implemented in PyTorch
+def physics_loss(model, x, t, Re):
+    x.requires_grad_(True)
+    t.requires_grad_(True)
+
+    output = model(x, t)
+    u, v, p = output[:, 0], output[:, 1], output[:, 2]
+
+    # Calculate partial derivatives using automatic differentiation
+    u_t = torch.autograd.grad(u.sum(), t, create_graph=True)[0]
+    u_x = torch.autograd.grad(u.sum(), x, create_graph=True)[0][:, 0]
+    u_y = torch.autograd.grad(u.sum(), x, create_graph=True)[0][:, 1]
+    p_x = torch.autograd.grad(p.sum(), x, create_graph=True)[0][:, 0]
+
+    # X-momentum equation residual
+    residual_u = u_t + u * u_x + v * u_y + p_x - (1/Re) * (u_x + u_y)
+
+    return (residual_u**2).mean()
+```
+
+---
+
+## Limitations and Future Work
+
+**Current Limitations:**
+- Difficulty scaling to **3D high-Re turbulent flows**. Neural networks have limits in representing high-frequency components (small eddies).
+- Training becomes unstable for **stiff PDEs** (very high Re or thin boundary layers).
+- Standard PINNs do not provide **Uncertainty Quantification (UQ)**, making it hard to know how reliable a prediction is.
+
+**Future Directions:**
+- **XPINNs (Extended PINNs):** Domain decomposition for parallel training → scalability for large-scale problems.
+- **OpenFOAM Hybrid Solvers:** Combining FVM + PINN.
+- **Transfer learning:** Quickly adapting a model trained at one Re to another Re.
+
+---
+
+> **Bottom Line:** "A paper that defines the intersection of CFD and deep learning. While it won't replace OpenFOAM right now, it is already practical for inverse problems and sparse data reconstruction."

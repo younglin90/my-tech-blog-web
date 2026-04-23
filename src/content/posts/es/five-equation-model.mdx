@@ -1,0 +1,260 @@
+---
+title: "Guía de implementación del modelo de 5 ecuaciones: Solucionador de flujo multifásico con Python"
+date: 2026-03-07
+description: "Implementación directa del modelo de interfaz difusa de 5 ecuaciones en Python, simulando el problema de interacción de una onda de choque con una burbuja en 1D."
+tags: [CFD, Multiphase, Diffuse-Interface, Python, Implementation]
+series: "compressible-multiphase"
+seriesOrder: 4
+---
+
+# Implementación directa del modelo de 5 ecuaciones
+
+La teoría por sí sola no es suficiente para comprenderlo completamente.
+En este artículo, implementaremos directamente el **modelo de interfaz difusa de 5 ecuaciones** en 1D utilizando Python y simularemos el problema de una onda de choque que atraviesa una burbuja de gas.
+
+## Resumen de las ecuaciones de gobierno
+
+Variables conservadas y flujos del modelo de 5 ecuaciones en 1D:
+
+$$
+\mathbf{U} = \begin{bmatrix} \alpha_1 \rho_1 \\ \alpha_2 \rho_2 \\ \rho u \\ E \\ \alpha_1 \end{bmatrix}, \quad
+\mathbf{F} = \begin{bmatrix} \alpha_1 \rho_1 u \\ \alpha_2 \rho_2 u \\ \rho u^2 + p \\ (E+p)u \\ 0 \end{bmatrix}
+$$
+
+La quinta ecuación ($\alpha_1$) es de tipo no conservativo, por lo que se trata por separado:
+
+$$
+\frac{\partial \alpha_1}{\partial t} + u \frac{\partial \alpha_1}{\partial x} = 0
+$$
+
+## Ecuación de estado: Stiffened Gas EOS
+
+Se utiliza la EOS de gas endurecido (stiffened gas) para ambos fluidos:
+
+$$
+p_k = (\gamma_k - 1)\rho_k e_k - \gamma_k p_{\infty,k}
+$$
+
+La presión total se obtiene mediante la regla de mezcla (mixture rule):
+
+$$
+p = \frac{\rho e - \sum_k \alpha_k \frac{\gamma_k p_{\infty,k}}{\gamma_k - 1}}{\sum_k \frac{\alpha_k}{\gamma_k - 1}}
+$$
+
+## Implementación en Python
+
+### Configuración inicial y EOS
+
+```python
+import numpy as np
+import matplotlib.pyplot as plt
+
+# Dominio
+N = 1000
+x = np.linspace(0, 1, N)
+dx = x[1] - x[0]
+
+# Parámetros de la EOS
+# Fluido 1: Aire (gas ideal)
+gamma1, pinf1 = 1.4, 0.0
+# Fluido 2: Agua (gas endurecido)
+gamma2, pinf2 = 4.4, 6e8
+
+def pressure(alpha1, arho1, arho2, E, u):
+    """Calcula la presión de la mezcla a partir de las variables conservadas."""
+    alpha2 = 1.0 - alpha1
+    rho = arho1 + arho2
+    ke = 0.5 * rho * u**2
+    rhoe = E - ke
+
+    num = rhoe - alpha1*gamma1*pinf1/(gamma1-1) - alpha2*gamma2*pinf2/(gamma2-1)
+    den = alpha1/(gamma1-1) + alpha2/(gamma2-1)
+    return num / den
+
+def sound_speed(alpha1, arho1, arho2, p):
+    """Calcula la velocidad del sonido de la mezcla (fórmula de Wood)."""
+    alpha2 = 1.0 - alpha1
+    rho = arho1 + arho2
+    rho1 = arho1 / np.maximum(alpha1, 1e-12)
+    rho2 = arho2 / np.maximum(alpha2, 1e-12)
+
+    c1sq = gamma1 * (p + pinf1) / rho1
+    c2sq = gamma2 * (p + pinf2) / rho2
+
+    # Fórmula de Wood
+    inv_rhoc2 = alpha1/(rho1*c1sq) + alpha2/(rho2*c2sq)
+    return np.sqrt(1.0 / (rho * inv_rhoc2))
+```
+
+### Cálculo del flujo HLLC
+
+```python
+def hllc_flux(UL, UR, alpha1L, alpha1R):
+    """Flujo numérico HLLC para las 4 ecuaciones de conservación."""
+    arho1L, arho2L, momL, EL = UL
+    arho1R, arho2R, momR, ER = UR
+
+    rhoL = arho1L + arho2L
+    rhoR = arho1R + arho2R
+    uL = momL / rhoL
+    uR = momR / rhoR
+    pL = pressure(alpha1L, arho1L, arho2L, EL, uL)
+    pR = pressure(alpha1R, arho1R, arho2R, ER, uR)
+    cL = sound_speed(alpha1L, arho1L, arho2L, pL)
+    cR = sound_speed(alpha1R, arho1R, arho2R, pR)
+
+    # Estimaciones de la velocidad de onda
+    SL = min(uL - cL, uR - cR)
+    SR = max(uL + cL, uR + cR)
+    Sstar = (pR - pL + rhoL*uL*(SL-uL) - rhoR*uR*(SR-uR)) \
+          / (rhoL*(SL-uL) - rhoR*(SR-uR))
+
+    FL = np.array([arho1L*uL, arho2L*uL, momL*uL + pL, (EL+pL)*uL])
+    FR = np.array([arho1R*uR, arho2R*uR, momR*uR + pR, (ER+pR)*uR])
+
+    if SL >= 0:
+        return FL, Sstar
+    elif Sstar >= 0:
+        coeff = rhoL * (SL - uL) / (SL - Sstar)
+        UstarL = coeff * np.array([
+            arho1L/rhoL,
+            arho2L/rhoL,
+            Sstar,
+            EL/rhoL + (Sstar - uL)*(Sstar + pL/(rhoL*(SL-uL)))
+        ])
+        return FL + SL*(UstarL - UL), Sstar
+    elif SR > 0:
+        coeff = rhoR * (SR - uR) / (SR - Sstar)
+        UstarR = coeff * np.array([
+            arho1R/rhoR,
+            arho2R/rhoR,
+            Sstar,
+            ER/rhoR + (Sstar - uR)*(Sstar + pR/(rhoR*(SR-uR)))
+        ])
+        return FR + SR*(UstarR - UR), Sstar
+    else:
+        return FR, Sstar
+```
+
+### Integración temporal (1er orden)
+
+```python
+def solve(U, alpha1, dx, t_end, cfl=0.5):
+    """Integración temporal de Euler hacia adelante."""
+    t = 0.0
+    while t < t_end:
+        rho = U[0] + U[1]
+        u = U[2] / rho
+        p = pressure(alpha1, U[0], U[1], U[3], u)
+        c = sound_speed(alpha1, U[0], U[1], p)
+
+        dt = cfl * dx / np.max(np.abs(u) + c)
+        if t + dt > t_end:
+            dt = t_end - t
+
+        # Calcular flujos en las interfaces de las celdas
+        flux = np.zeros((4, N+1))
+        uface = np.zeros(N+1)
+
+        for i in range(N+1):
+            iL = max(i-1, 0)
+            iR = min(i, N-1)
+            UL_local = U[:4, iL]
+            UR_local = U[:4, iR]
+            flux[:, i], uface[i] = hllc_flux(
+                UL_local, UR_local, alpha1[iL], alpha1[iR]
+            )
+
+        # Actualizar variables conservadas
+        for k in range(4):
+            U[k, 1:-1] -= dt/dx * (flux[k, 2:-1] - flux[k, 1:-2])
+
+        # Actualizar alpha1 (no conservativo, upwind)
+        for i in range(1, N-1):
+            if uface[i] >= 0:
+                alpha1[i] -= dt/dx * uface[i] * (alpha1[i] - alpha1[i-1])
+            else:
+                alpha1[i] -= dt/dx * uface[i] * (alpha1[i+1] - alpha1[i])
+
+        alpha1 = np.clip(alpha1, 1e-8, 1-1e-8)
+        t += dt
+
+    return U, alpha1
+```
+
+### Condiciones iniciales: Onda de choque - Burbuja de gas
+
+```python
+# Condición inicial: choque golpeando una burbuja de aire en agua
+U = np.zeros((4, N))
+alpha1 = np.zeros(N)
+
+for i in range(N):
+    if x[i] < 0.25:
+        # Agua post-choque (alta presión)
+        rho2 = 1100.0; u_val = 50.0; p_val = 1e9
+        alpha1[i] = 1e-8
+        arho1 = alpha1[i] * 1.0  # aire insignificante
+        arho2 = (1 - alpha1[i]) * rho2
+    elif 0.4 < x[i] < 0.6:
+        # Burbuja de aire
+        rho1 = 1.0; u_val = 0.0; p_val = 1e5
+        alpha1[i] = 1 - 1e-8
+        arho1 = alpha1[i] * rho1
+        arho2 = (1 - alpha1[i]) * 1000.0
+    else:
+        # Agua ambiente
+        rho2 = 1000.0; u_val = 0.0; p_val = 1e5
+        alpha1[i] = 1e-8
+        arho1 = alpha1[i] * 1.0
+        arho2 = (1 - alpha1[i]) * rho2
+
+    rho = arho1 + arho2
+    E = compute_total_energy(alpha1[i], arho1, arho2, p_val, u_val)
+
+    U[0, i] = arho1
+    U[1, i] = arho2
+    U[2, i] = rho * u_val
+    U[3, i] = E
+```
+
+## Consideraciones importantes
+
+### 1. Limitación del rango de $\alpha$
+
+Si $\alpha_1$ llega a ser exactamente 0 o 1, se producirá una división por cero en los cálculos de la EOS.
+Siempre se debe realizar un clipping a $\epsilon < \alpha_1 < 1 - \epsilon$ ($\epsilon \sim 10^{-8}$).
+
+### 2. Velocidad del sonido de la mezcla: Fórmula de Wood
+
+La velocidad del sonido en la región de mezcla puede ser mucho menor de lo que dicta la intuición.
+Este es un fenómeno físicamente correcto y afecta la condición CFL.
+
+$$
+\frac{1}{\rho c^2} = \frac{\alpha_1}{\rho_1 c_1^2} + \frac{\alpha_2}{\rho_2 c_2^2}
+$$
+
+Cerca de $\alpha_1 = 0.5$, $c_{mix}$ se vuelve **mucho menor** que la velocidad del sonido de ambos fluidos.
+
+### 3. Extensión a alta precisión
+
+El código anterior es de primer orden. En investigaciones reales:
+
+- **Reconstrucción MUSCL** + slope limiter para 2do orden.
+- Reconstrucción **WENO** para 5to orden o superior.
+- Integración temporal de **Runge-Kutta** para mejorar la precisión en el tiempo.
+
+## Interpretación de resultados
+
+Al ejecutar la simulación, mientras la onda de choque comprime la burbuja de gas:
+
+1. Una **onda de choque transmitida (transmitted shock)** avanza hacia la parte posterior de la burbuja.
+2. Una **onda de rarefacción reflejada (reflected rarefaction)** se mueve hacia la izquierda.
+3. La burbuja se **comprime** rápidamente, aumentando su presión interna.
+4. Se forma un **chorro (jet)** en la pared posterior (en 2D/3D).
+
+Este fenómeno es una física clave en explosiones submarinas, litotricia por ondas de choque, etc.
+
+## Siguientes pasos
+
+En el próximo artículo, he preparado contenido interactivo para aprender los conceptos básicos del análisis numérico **como si fuera un juego**. Podrás experimentar directamente la estabilidad numérica, la condición CFL, entre otros.

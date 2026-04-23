@@ -1,0 +1,334 @@
+---
+title: "Rhie-Chow Interpolation for Compressible Multiphase Flows"
+date: 2026-03-10
+description: "From the checkerboard problem on collocated grids to balanced-force multiphase flows, we systematically summarize the mathematical essence and OpenFOAM implementation of Rhie-Chow interpolation."
+tags: [CFD, Multiphase, Rhie-Chow, OpenFOAM, Numerical-Methods]
+series: "compressible-multiphase"
+seriesOrder: 5
+---
+
+# Rhie-Chow Interpolation: Why is it necessary, and why is it tricky in multiphase flows?
+
+Rhie-Chow interpolation (momentum-weighted interpolation, MWI) is a key technique for correcting face velocities to **suppress checkerboard pressure oscillations** on collocated grids. While relatively straightforward in single-phase flows, consistent treatment of **pressure, gravity, surface tension, and unsteady correction terms** becomes critically important when extending it to multiphase flows.
+
+This article covers everything from the original Rhie & Chow (1983) to the unified framework of Bartholomew et al. (2018), and the interFoam/compressibleInterFoam implementation in OpenFOAM.
+
+---
+
+## 1. Deriving Face Velocity from the Semi-discretized Momentum Equation
+
+The starting point for all Rhie-Chow variants is the **semi-discretized momentum equation** at the cell center $P$:
+
+$$
+a_P \mathbf{U}_P = H(\mathbf{U}) - V_P \nabla p\big|_P + V_P \rho_P \mathbf{g} + V_P \mathbf{F}_{\sigma,P}
+$$
+
+- $a_P$: Diagonal coefficient (including contributions from time derivative, convection, and diffusion)
+- $H(\mathbf{U}) = \sum a_{Nb}\mathbf{U}_{Nb} + \text{sources}$: Contribution from neighbor cells + explicit sources
+
+Solving for the cell-center velocity:
+
+$$
+\mathbf{U}_P = \frac{H}{a_P}\bigg|_P - \frac{V_P}{a_P}\nabla p\big|_P + \frac{V_P}{a_P}\rho_P\mathbf{g} + \frac{V_P}{a_P}\mathbf{F}_{\sigma,P}
+$$
+
+### The Problem: Checkerboard Oscillations
+
+If this cell-center velocity is brought to the face using **simple linear interpolation**, the pressure gradient only connects $p_{i-1}$ and $p_{i+1}$, skipping $p_i$, which leads to **odd-even decoupling (checkerboard)**.
+
+### Rhie-Chow's Solution
+
+By **reconstructing the momentum equation itself** at the face, the interpolated pressure gradient from the wide stencil is replaced with a **compact face-centered pressure gradient**:
+
+$$
+\mathbf{U}_f = \overline{\left(\frac{H}{a_P}\right)}_f - \left(\frac{1}{a_P}\right)_f \nabla p\big|_f^{\text{compact}} + \left(\frac{1}{a_P}\right)_f (\rho\mathbf{g})_f + \left(\frac{1}{a_P}\right)_f (\mathbf{F}_\sigma)_f + \delta\mathbf{U}_{\text{transient}}
+$$
+
+Here, $\nabla p\big|_f^{\text{compact}} = (p_Q - p_P)/|\mathbf{d}_{PQ}|$ is the face gradient calculated directly from adjacent cell values, and the overbar denotes linear interpolation of cell-center values.
+
+The **pressure correction term** $-(1/a_P)_f[\nabla p|_f - \overline{\nabla p}_f]$ acts as a **low-pass filter** proportional to $\Delta x^2 \cdot \partial^3 p/\partial x^3$, suppressing the checkerboard pattern.
+
+---
+
+## 2. Contributions by Key Papers
+
+### Rhie & Chow (1983): The Original
+
+The original work published in the AIAA Journal was intended for the **steady SIMPLE algorithm**:
+
+$$
+u_f = \hat{u}_f - d_f(p_E - p_P)
+$$
+
+Where $\hat{u} = u + d \cdot \Delta p$ is the pseudo-velocity with the pressure gradient removed, and $d = V/a_P$. It included **only the pressure correction term**, without treatment for unsteady or relaxation terms. Later, Majumdar (1988) pointed out the dependence on relaxation factors, and Choi (1999) noted the time-step dependence in unsteady flows.
+
+### Jasak (1996): The Foundation of OpenFOAM - H/A Approach
+
+In his PhD thesis at Imperial College, he systematized the finite volume method for **unstructured polyhedral grids**. A key feature is the **implicit implementation** of Rhie-Chow without explicit correction terms:
+
+$$
+\mathbf{U} = \frac{H}{A} - \frac{1}{A}\nabla p \quad \Rightarrow \quad \phi_f = \left(\frac{H}{A}\right)_f \cdot \mathbf{S}_f - \left(\frac{1}{A}\right)_f (\nabla p)_f \cdot \mathbf{S}_f
+$$
+
+**HbyA = H/A** is the velocity predictor with pressure influence removed, and the pressure equation is derived as $\nabla\cdot[(1/A)_f \nabla p] = \nabla\cdot(H/A)_f$. The Rhie-Chow effect arises naturally because the Laplacian discretization (face snGrad) and the gradient for velocity correction (Gauss theorem) use **different stencils**.
+
+Unsteady correction is handled with `fvc::ddtCorr`, but it is **not fully consistent**, leaving some time-step dependence.
+
+### Cubero & Fueyo (2007): Compact Momentum Interpolation (CMI)
+
+They proposed a face velocity formula that is **independent of both time-step and relaxation factors**. The key is to **interpolate each coefficient of the momentum equation individually and consistently**:
+
+$$
+u_f = \bar{u}_f + d_f[\overline{\nabla p}_f - (\nabla p)_f] + \frac{a_t}{a_s + a_t + a_\tau}\bigg|_f (\bar{u}^O_f - u^O_f) + \frac{a_\tau}{a_s + a_t + a_\tau}\bigg|_f (\bar{u}^{\text{prev}}_f - u^{\text{prev}}_f)
+$$
+
+- $a_t = \rho V/\Delta t$: Time coefficient
+- $a_\tau = \rho V/\Delta\tau$: Relaxation coefficient
+- $a_s$: Spatial coefficient
+
+**Upon convergence**, since $u_f = u^{\text{prev}}_f$ and $u_f = u^O_f$, the unsteady/relaxation correction terms automatically vanish. This ensures that the steady solution is independent of $\Delta t$ and relaxation factors.
+
+### Bartholomew et al. (2018): Unified Framework
+
+In JCP 375, they presented a **unified MWI formula applicable to both structured and unstructured grids**. Three key contributions:
+
+**1) MWI coefficients should consist only of spatial coefficients.** If the time derivative coefficient $\rho V/\Delta t$ is included in the denominator, the pressure filter weakens as $\Delta t \to 0$, causing the checkerboard pattern to reappear.
+
+**2) Concept of "Driving pressure gradient":** When body forces are present, the MWI filter should act only on $\nabla P = \nabla p - \mathbf{S}_{\text{total}}$ (the driving pressure gradient minus the total source). This is the core of **balanced-force discretization**.
+
+**3) Density weighting:** Cell-center pressure gradients are weighted by $\nabla P_P/\rho_P$, and face density is interpolated using **harmonic averaging**, achieving stable results up to density ratios of $10^{24}$.
+
+### Denner & van Wachem (2014): Balanced-Force VOF
+
+By evaluating the CSF surface tension ($\sigma\kappa\nabla\alpha$) and the pressure gradient **using the same discrete gradient operator at the same location (face)**, they achieved exact force balance for static droplets **down to solver tolerance**. This is stable for density ratios above $10^6$ and significantly reduces spurious velocities.
+
+---
+
+## 3. Handling Four Correction Terms in Multiphase Flow
+
+The four correction terms for multiphase face velocity each have their own physical role and handling principles.
+
+### Pressure Correction Term (Mandatory)
+
+$$
+\delta\mathbf{U}_p = -\left(\frac{1}{a_P}\right)_f\left[\nabla p\big|_f - \overline{\nabla p}_f\right]
+$$
+
+This is the essence of Rhie-Chow. It suppresses the checkerboard pattern at the cost of mass conservation errors proportional to $\Delta x^2 \partial^4 p/\partial x^4$. In multiphase flows, errors can grow due to sharp pressure changes near the interface, necessitating a balanced-force approach.
+
+### Unsteady Correction Term (Mandatory for unsteady flows)
+
+$$
+\delta\mathbf{U}_t = \left(\frac{t}{a_P^\alpha}\right)_f \mathbf{U}_f^0 - \overline{\left(\frac{t}{a_P^\alpha}\right)\mathbf{U}^0}_f
+$$
+
+Without this term, the MWI filter strength varies as $\Delta t \to 0$, leading to **sawtooth-shaped pressure oscillations**. Cubero & Fueyo (2007) and Bartholomew et al. (2018) recommend **completely separating** the time coefficient from the MWI coefficient and handling it as a separate correction term.
+
+### Gravity Correction Term (Mandatory for multiphase flow)
+
+$$
+\delta\mathbf{U}_g = \left(\frac{V}{a_P}\right)_f(\rho\mathbf{g})_f - \overline{\left(\frac{V}{a_P}\right)\rho\mathbf{g}}_f
+$$
+
+This **must be included** in multiphase flows with density discontinuities. Mencinger & Zun (2007) proved that unphysical velocity spikes occur at the interface when this term is absent. Hydrostatic equilibrium ($\mathbf{U}=0$) requires $\nabla p = \rho\mathbf{g}$ to hold discretely.
+
+In OpenFOAM, modified pressure $p_{rgh} = p - \rho\mathbf{g}\cdot\mathbf{r}$ is used, and this is evaluated directly at the face as $-g_h \cdot \text{snGrad}(\rho)$.
+
+### Surface Tension Correction Term (Most controversial)
+
+In the balanced-force approach, Rhie-Chow correction for surface tension **should not be applied**. The reason is clear:
+
+> If the pressure gradient and surface tension are discretized with the same face-centered gradient operator,
+> $\nabla p = \sigma\kappa\nabla\alpha$ holds exactly at static equilibrium.
+> Adding Rhie-Chow correction breaks this balance, causing parasitic currents.
+
+Therefore, surface tension at the face is **directly evaluated** as $(1/a_P)_f \cdot (\sigma\kappa)_f \cdot \text{snGrad}(\alpha)$, and the correction for the difference with the interpolated cell-center value is **set to zero**.
+
+### Summary of Correction Terms
+
+| Correction Term | Single-Phase Flow | Balanced-force Multiphase | Issue if unhandled |
+|--------|:---------:|:----------------------:|--------------|
+| Pressure (Rhie-Chow) | Mandatory | Mandatory | Checkerboard pressure oscillations |
+| Unsteady (Choi) | Mandatory (Unsteady) | Mandatory | $\Delta t$ dependence, sawtooth oscillations |
+| Gravity (Gu) | If variable density | Mandatory (Face eval) | Interface velocity spikes |
+| Surface Tension | N/A | **Zero correction** (Direct face eval) | Parasitic currents |
+
+---
+
+## 4. Design Principles for Suppressing Spurious Velocity
+
+Parasitic currents (spurious velocities) are unphysical velocity fields caused by a **discrete imbalance** between surface tension and pressure gradient in multiphase flows with interface curvature. Their magnitude is proportional to $\sigma$ and inversely proportional to $\mu$, becoming severe in low-viscosity flows.
+
+### Balanced-Force Algorithm
+
+The core principle presented by Francois et al. (2006):
+
+> The gradient operators for the pressure gradient and surface tension must be **discretized identically and evaluated at the same location**.
+
+Specifically, since $\nabla p$ is calculated with face snGrad in the pressure equation, the CSF's $\sigma\kappa\nabla\alpha$ must also be calculated **at the face with the same snGrad**. Following this principle achieves zero velocity **down to machine precision** for a static droplet with given exact curvature.
+
+### Rhie-Chow itself can be the cause
+
+A significant finding by Mencinger & Zun (2007): when body forces are discontinuous (density jump, surface tension), the fourth derivative of pressure becomes large, and the Rhie-Chow correction term itself **generates large errors**.
+
+Therefore, the unified framework of Bartholomew et al. (2018) **does not apply Rhie-Chow correction to body forces**, but applies the filter only to the driving pressure gradient:
+
+$$
+\nabla P = \nabla p - \rho\mathbf{g} - \sigma\kappa\nabla\alpha
+$$
+
+Nevertheless, **curvature estimation accuracy** determines the ultimate limit of spurious velocities, with the height-function method (Popinet, 2009) being most effective by providing second-order convergence.
+
+---
+
+## 5. Mobility Coefficient Interpolation: Why Harmonic Averaging is Needed
+
+Interpolation of the mobility coefficient $(1/a_P)_f$ at the face significantly impacts the stability of multiphase flows. Since $a_P$ is proportional to density ($a_P \propto \rho$), the $1/a_P$ values on either side of the interface differ by several orders of magnitude in flows with high density ratios.
+
+### Problems with Arithmetic Averaging
+
+At a water-air ($\rho_w/\rho_a = 1000$) interface:
+
+$$
+\left(\frac{1}{a_P}\right)_f^{\text{arith}} \approx \frac{1}{2}\left(\frac{1}{a_{P,w}} + \frac{1}{a_{P,a}}\right)
+$$
+
+It is dominated by the large $1/a_P$ value of the light phase (air), **underestimating** the inertia of the heavy phase (water).
+
+### Solution with Harmonic Averaging
+
+$$
+\rho_f^* = \frac{2}{\frac{1}{\rho_P} + \frac{1}{\rho_Q}}
+$$
+
+For water-air, $\rho_f^* \approx 2.0$, which is significantly different from $\approx 500.5$ for arithmetic averaging. By **properly reflecting the phase with greater resistance to acceleration (the heavy phase)**, Bartholomew et al. (2018) and Denner et al. (2022) achieved stable results even at density ratios above $10^6$.
+
+Using arithmetic interpolation causes an **inconsistency** between the Laplacian coefficient of the pressure equation and the density weighting of the MWI correction, leading to spurious velocities.
+
+---
+
+## 6. Analysis of OpenFOAM Implementation
+
+### interFoam: Incompressible Two-Phase Flow
+
+OpenFOAM's interFoam is based on Jasak's H/A approach.
+
+**Momentum equation assembly** (excluding pressure gradient):
+
+```cpp
+fvVectorMatrix UEqn(
+    fvm::ddt(rho, U)
+  + fvm::div(rhoPhi, U)
+  + turbulence->divDevRhoReff(rho, U)
+);
+```
+
+**rAU and HbyA calculation:**
+
+```cpp
+volScalarField rAU("rAU", 1.0/UEqn.A());
+surfaceScalarField rAUf("rAUf", fvc::interpolate(rAU)); // Linear interpolation (default)
+volVectorField HbyA(constrainHbyA(rAU*UEqn.H(), U, p_rgh));
+```
+
+**phiHbyA construction** (4 correction terms):
+
+```cpp
+// (H/A)_f · S_f + Unsteady correction
+surfaceScalarField phiHbyA("phiHbyA",
+    fvc::flux(HbyA)
+  + fvc::interpolate(rho*rAU)*fvc::ddtCorr(U, phi, Uf)
+);
+
+// Gravity + Surface tension: direct evaluation at face
+surfaceScalarField phig(
+    (
+        mixture.surfaceTensionForce()    // sigma*kappa*snGrad(alpha)
+      - ghf*fvc::snGrad(rho)            // -g·r_f * snGrad(rho)
+    ) * rAUf * mesh.magSf()
+);
+
+phiHbyA += phig;
+```
+
+Key points:
+- `ghf = g & mesh.Cf()`: Gravity potential evaluated directly at the face center.
+- `mixture.surfaceTensionForce()`: Calculates $\sigma\kappa\cdot\text{snGrad}(\alpha)$ **at the face**.
+- Both body forces are **evaluated directly at the face**, approximately following the balanced-force principle.
+
+**Pressure equation and flux correction:**
+
+```cpp
+fvScalarMatrix p_rghEqn(
+    fvm::laplacian(rAUf, p_rgh) == fvc::div(phiHbyA)
+);
+p_rghEqn.solve();
+phi = phiHbyA - p_rghEqn.flux();
+```
+
+Since `pEqn.flux()` is $-(1/A)_f \cdot \text{snGrad}(p_{rgh}) \cdot |S_f|$, the final flux is a combination of **velocity without pressure + face-evaluated body forces + face-evaluated pressure gradient**. The **stencil asymmetry**, where the Laplacian uses face snGrad and the gradient for velocity correction uses cell face values, implicitly provides the Rhie-Chow effect.
+
+**Limitations of `ddtCorr`:** `fvc::ddtCorr(U, phi)` calculates $(1/\Delta t)\cdot[\phi_{\text{old}} - (\mathbf{U}_{\text{old}})_f\cdot\mathbf{S}_f]$. Unlike CMI, it is **not fully consistent**, leaving a time-step dependence that can affect time accuracy as confirmed by Komen et al. (2020).
+
+### compressibleInterFoam: Compressible Two-Phase Flow
+
+The phiHbyA construction is identical to interFoam, but the **pressure equation consists of three parts**:
+
+$$
+\nabla\cdot\mathbf{U} = -\left(\frac{\alpha_1}{\rho_1}\frac{D\rho_1}{Dt} + \frac{\alpha_2}{\rho_2}\frac{D\rho_2}{Dt}\right)
+$$
+
+Compressibility terms for each phase are added to the incompressible part (Laplacian). Pressure-density coupling is achieved via `phid = fvc::interpolate(psi)*phi` ($\psi = d\rho/dp$), and a differential compressibility term `dgdt` is added to the $\alpha$-equation to reflect the difference in density rate of change between the two phases.
+
+---
+
+## 7. Comparison of Methods
+
+| Method | Key Contribution | Pros | Cons |
+|------|----------|------|------|
+| **Rhie & Chow (1983)** | Original MWI | Simple, effective | Steady-only; $\Delta t$/relaxation dependent |
+| **Jasak (1996)** | H/A implicit implementation | Universal, unstructured grids | ddtCorr incomplete |
+| **Cubero & Fueyo (2007)** | Consistent interpolation by CMI coeff | Full $\Delta t$/relaxation independence | Increased numerical diffusion |
+| **Bartholomew et al. (2018)** | Unified framework | Generalization for unstructured grids | Increased implementation complexity |
+| **Denner & van Wachem (2014)** | Balanced-Force VOF | Stable for density ratios $>10^6$ | Curvature accuracy dependent |
+| **Aguerre et al. (2018)** | Flux reconstruction | Eliminates high-freq oscillations | Hard to integrate into existing codes |
+
+Consistent approaches (CMI, unified MWI) have **more numerical diffusion** than the original, but they preserve time accuracy and provide solutions independent of mesh/time-step. The remaining spurious velocity is mainly due to **curvature estimation errors**.
+
+---
+
+## Conclusion: Design Principles and Practical Recommendations
+
+The most important principle in designing face velocities for compressible multiphase flows:
+
+> **"Apply the Rhie-Chow filter only to the driving pressure gradient."**
+
+Surface tension and gravity should be evaluated with the **same discrete operator** as the pressure gradient at the face to achieve balanced-force, and MWI correction should be applied only to the pure driving pressure excluding them:
+
+$$
+\nabla P = \nabla p - \rho\mathbf{g} - \sigma\kappa\nabla\alpha
+$$
+
+### Three Improvements for OpenFOAM Users
+
+1. **Change face interpolation of `rAU` to harmonic averaging** - Set `interpolate(rAU) harmonic` in `fvSchemes`. This significantly improves stability for large density ratios.
+
+2. **Replace `ddtCorr` with CMI-style unsteady correction** - Ensures time-step independence. The current default ddtCorr in OpenFOAM is approximate and leaves $\Delta t$ dependence.
+
+3. **Introduce high-precision curvature estimation like height-function** - Curvature accuracy is what determines the ultimate limit of spurious velocities.
+
+In compressible extensions, pressure-density coupling via the equation of state (EOS) is added, but the MWI structure of the face velocity itself remains the same as in incompressible flows. Interface discretization techniques like ACID (Denner & van Wachem, 2018) ensure the accuracy of acoustic wave propagation.
+
+---
+
+### References
+
+- Rhie, C.M. & Chow, W.L. (1983). AIAA Journal 21(11)
+- Jasak, H. (1996). PhD Thesis, Imperial College London
+- Cubero, A. & Fueyo, N. (2007). Numerical Heat Transfer Part B 52(6)
+- Francois, M.M. et al. (2006). JCP 213(1)
+- Mencinger, J. & Zun, I. (2007). JCP 224(1)
+- Denner, F. & van Wachem, B. (2014). Numerical Heat Transfer Part B 65(3)
+- Bartholomew, P. et al. (2018). JCP 375
+- Aguerre, H.J. et al. (2018). JCP 365
+- Komen, E.M.J. et al. (2020). Nuclear Engineering and Design 370

@@ -1,0 +1,173 @@
+---
+title: "界面捕捉技术对比：VOF vs Level Set vs Diffuse Interface"
+date: 2026-03-06
+description: "对比压缩性多相流中捕捉界面的三种代表性技术的原理、优缺点及应用案例。"
+tags: [CFD, Multiphase, VOF, Level-Set, Diffuse-Interface]
+series: "compressible-multiphase"
+seriesOrder: 2
+---
+
+# 如何处理界面
+
+在压缩性多相流模拟中，最基本的问题之一是
+“如何在数值上表示两种流体之间的**界面 (interface)**”。
+
+主要存在三类方法：
+
+1. **Volume of Fluid (VOF)**
+2. **Level Set**
+3. **Diffuse Interface (扩散界面)**
+
+## 1. Volume of Fluid (VOF)
+
+### 原理
+
+追踪每个网格中特定流体所占的**体积分数 (volume fraction)** $\alpha$。
+
+$$
+\frac{\partial \alpha}{\partial t} + \mathbf{u} \cdot \nabla \alpha = 0
+$$
+
+如果 $\alpha = 1$，表示该网格充满流体 A；
+如果 $\alpha = 0$，表示充满流体 B；如果 $0 < \alpha < 1$，则界面穿过该网格。
+
+### 界面重构 (Interface Reconstruction)
+
+VOF 的核心是根据 $\alpha$ 值重构网格内部的界面位置：
+
+- **SLIC** (Simple Line Interface Calculation)：将界面近似为平行于坐标轴的直线。
+- **PLIC** (Piecewise Linear Interface Calculation)：将界面近似为具有任意斜率的直线。
+
+在 PLIC 中，界面的法向量 $\mathbf{n}$ 通过 $\alpha$ 场的梯度来估计：
+
+$$
+\mathbf{n} = \frac{\nabla \alpha}{|\nabla \alpha|}
+$$
+
+### 优缺点
+
+- **优点**：质量严格守恒（守恒型）。
+- **缺点**：界面重构复杂且计算量大。难以扩展到 3D。曲率计算不准确。
+
+## 2. Level Set Method
+
+### 原理
+
+将界面定义为**符号距离函数 (signed distance function)** $\phi$ 的零等值线。
+
+$$
+\frac{\partial \phi}{\partial t} + \mathbf{u} \cdot \nabla \phi = 0
+$$
+
+- $\phi > 0$：流体 A
+- $\phi < 0$：流体 B
+- $\phi = 0$：界面
+
+### 重初始化 (Re-initialization)
+
+在平流 (advection) 过程中，$\phi$ 会失去符号距离函数的性质 ($|\nabla\phi| = 1$)。
+为了恢复这一性质，需要求解**重初始化**方程：
+
+$$
+\frac{\partial \phi}{\partial \tau} + \text{sign}(\phi_0)(|\nabla\phi| - 1) = 0
+$$
+
+其中 $\tau$ 是虚拟时间 (pseudo-time)。
+
+### 曲率与表面张力
+
+Level Set 的一大优点是几何量的计算非常自然：
+
+$$
+\kappa = -\nabla \cdot \left(\frac{\nabla\phi}{|\nabla\phi|}\right)
+$$
+
+表面张力通过 CSF (Continuum Surface Force) 模型转化为体积力：
+
+$$
+\mathbf{f}_s = \sigma \kappa \delta(\phi) \nabla\phi
+$$
+
+### 优缺点
+
+- **优点**：曲率/法线计算容易。能自然处理拓扑结构变化 (topology change)。
+- **缺点**：**质量不守恒**。在重初始化过程中，界面位置可能会移动。
+
+### CLSVOF：两种方法的结合
+
+结合了 VOF 的质量守恒和 Level Set 的几何优点的 **Coupled Level Set and VOF (CLSVOF)** 方法被广泛应用。
+
+## 3. Diffuse Interface Method (扩散界面)
+
+### 哲学的转变
+
+前两种方法将界面视为**尖锐 (sharp)** 的，而扩散界面法则认为界面本质上具有**有限的厚度**。
+
+在这种方法中，不需要单独的界面追踪方程，**体积分数被包含在守恒律系统的一部分**中。
+
+### 5-equation Model (Allaire et al., 2002; Kapila et al., 2001)
+
+这是应用最广泛的简化模型 (reduced model)：
+
+$$
+\frac{\partial (\alpha_1 \rho_1)}{\partial t} + \nabla \cdot (\alpha_1 \rho_1 \mathbf{u}) = 0
+$$
+
+$$
+\frac{\partial (\alpha_2 \rho_2)}{\partial t} + \nabla \cdot (\alpha_2 \rho_2 \mathbf{u}) = 0
+$$
+
+$$
+\frac{\partial (\rho \mathbf{u})}{\partial t} + \nabla \cdot (\rho \mathbf{u} \otimes \mathbf{u} + p\mathbf{I}) = 0
+$$
+
+$$
+\frac{\partial E}{\partial t} + \nabla \cdot ((E + p)\mathbf{u}) = 0
+$$
+
+$$
+\frac{\partial \alpha_1}{\partial t} + \mathbf{u} \cdot \nabla \alpha_1 = 0
+$$
+
+最后一个方程是核心。注意 $\alpha_1$ 的平流方程是**非守恒型 (non-conservative)** 的。
+这正是**防止界面处压力振荡**的关键。
+
+### 为什么需要非守恒型？
+
+如果以守恒型求解 $\alpha_1$：
+
+$$
+\frac{\partial \alpha_1}{\partial t} + \nabla \cdot (\alpha_1 \mathbf{u}) = \alpha_1 \nabla \cdot \mathbf{u}
+$$
+
+如果右侧的 $\alpha_1 \nabla \cdot \mathbf{u}$ 项在离散化过程中处理不当，就会产生由 EOS 混合引起的非物理压力振荡。
+
+非守恒平流使 $\alpha_1$ 在界面处保持尖锐的同时，满足压力/速度平衡。
+
+### 7-equation Model (Baer-Nunziato type)
+
+这是一个完全非平衡模型，每相可以拥有**独立的压力和速度**：
+
+$$
+\frac{\partial \alpha_k \rho_k}{\partial t} + \nabla \cdot (\alpha_k \rho_k \mathbf{u}_k) = 0, \quad k = 1, 2
+$$
+
+通过松弛 (relaxation) 过程收敛到压力/速度平衡。
+在数学上最完整，但计算成本高。
+
+## 比较摘要
+
+| 技术 | 质量守恒 | 界面清晰度 | 拓扑变化 | 实现复杂度 | 压缩性适用度 |
+|------|:---------:|:----------:|:---------:|:----------:|:------------:|
+| VOF (PLIC) | O | 高 | 困难 | 高 | 中 |
+| Level Set | X | 高 | 自然 | 中 | 中 |
+| CLSVOF | O | 高 | 自然 | 极高 | 中 |
+| 5-eq Diffuse | O | 中 | 自然 | 低 | **极好** |
+| 7-eq Diffuse | O | 中 | 自然 | 高 | **极好** |
+
+## 结论
+
+在压缩性多相流中，**Diffuse Interface (尤其是 5-equation model)** 是最自然且稳健 (robust) 的选择。
+它在冲击波-界面相互作用、空化、水下爆炸等问题中表现出色。
+
+在下一篇文章中，我们将介绍如何通过代码实际实现这些技术。

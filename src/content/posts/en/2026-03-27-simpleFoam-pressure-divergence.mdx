@@ -1,0 +1,167 @@
+---
+title: "[CFD Q&A] When simpleFoam Pressure Residual Fails to Converge"
+date: 2026-03-27
+description: "A troubleshooting guide for SIMPLE algorithm divergence in practice — relaxation factor settings were the key."
+tags: ["CFD Practice", "QA", "OpenFOAM", "SIMPLE", "Convergence"]
+draft: false
+---
+
+I encountered a problem last week that took up quite a bit of time. While running simpleFoam, the pressure residual failed to drop below `1e-3` and, in fact, started to rise. Initially, I thought it might be a mesh issue, but the conclusion turned out to be the relaxation factor.
+
+## Problem Situation
+
+- **Software**: OpenFOAM v2312
+- **Geometry**: 2D rectangular channel, inlet–outlet boundaries
+- **Turbulence Model**: k-ε (standard)
+- **Solver**: simpleFoam (steady-state)
+
+For the first 20–30 iterations, it seemed to be converging well, but then the pressure residual suddenly began to spike.
+
+```
+Time = 50
+
+smoothSolver:  Solving for Ux, Initial residual = 0.0023, Final residual = 1.2e-5, No Iterations 3
+smoothSolver:  Solving for Uy, Initial residual = 0.0019, Final residual = 9.8e-6, No Iterations 3
+GAMG:  Solving for p, Initial residual = 0.412, Final residual = 0.038, No Iterations 8
+time step continuity errors : sum local = 4.2e-5, global = 1.1e-5, cumulative = 3.4e-4
+...
+Time = 80
+
+GAMG:  Solving for p, Initial residual = 0.891, Final residual = 0.21, No Iterations 20
+```
+
+While the velocity was converging smoothly, the pressure remained unstable. This is a typical pattern of pressure-velocity coupling instability.
+
+## Root Cause Analysis Process
+
+### Step 1: Check Mesh Quality
+
+First, I ran `checkMesh`.
+
+```bash
+checkMesh -case .
+```
+
+Maximum non-orthogonality was 32 degrees, and max skewness was 0.8 — not bad at all. It didn't seem like a mesh problem.
+
+### Step 2: Review Boundary Conditions
+
+I set the pressure at the inlet to `zeroGradient` and the outlet to `fixedValue 0`. These are standard settings, so no issues there.
+
+However, checking the initial p field revealed unusually large values near the inlet. These were remnants from a previous experiment I had conducted using `funkySetFields`.
+
+### Step 3: Check fvSolution
+
+```cpp
+// fvSolution (original settings)
+relaxationFactors
+{
+    fields
+    {
+        p               0.7;
+    }
+    equations
+    {
+        U               0.9;
+        k               0.7;
+        epsilon         0.7;
+    }
+}
+```
+
+U=0.9 is a fairly aggressive value. In SIMPLE, increasing velocity relaxation speeds up convergence, but if the pressure updates cannot keep up, the solution will diverge.
+
+Two causes overlapped:
+1. The relaxation factors were excessively high.
+2. Incorrect values remained in the initial p field.
+
+## Solution
+
+### Lowering Relaxation Factors
+
+```cpp
+// fvSolution (after modification)
+relaxationFactors
+{
+    fields
+    {
+        p               0.3;
+    }
+    equations
+    {
+        U               0.7;
+        k               0.5;
+        epsilon         0.5;
+    }
+}
+```
+
+It is best to start conservatively when running a case for the first time. Once convergence is confirmed, you can gradually increase the values.
+
+### Initializing the p Field
+
+```bash
+# Cleanly initialize the p file in the 0 directory
+cp 0.orig/p 0/p
+```
+
+Alternatively, you can open the `0/p` file directly and set it to `internalField uniform 0;`.
+
+```cpp
+// 0/p
+dimensions      [0 2 -2 0 0 0 0];
+internalField   uniform 0;
+
+boundaryField
+{
+    inlet
+    {
+        type            zeroGradient;
+    }
+    outlet
+    {
+        type            fixedValue;
+        value           uniform 0;
+    }
+    walls
+    {
+        type            zeroGradient;
+    }
+}
+```
+
+## Verification
+
+After the modifications, rerunning the simulation produced the following results:
+
+```
+Time = 50
+
+smoothSolver:  Solving for Ux, Initial residual = 0.0018, Final residual = 8.3e-6, No Iterations 3
+GAMG:  Solving for p, Initial residual = 0.089, Final residual = 0.0041, No Iterations 5
+time step continuity errors : sum local = 2.1e-6, global = 4.3e-7, cumulative = 8.9e-6
+
+Time = 200
+
+GAMG:  Solving for p, Initial residual = 3.2e-4, Final residual = 1.1e-5, No Iterations 3
+```
+
+By around iteration 200, the pressure residual had stably decreased to the `1e-4` level.
+
+## Generalized Lessons
+
+**simpleFoam Convergence Checklist** — Use this order to catch most issues:
+
+1. **Initial Conditions First**: Verify that the p and U fields in the `0/` directory have the intended values. If remnants of previous experiments exist, be sure to initialize them.
+
+2. **Conservative Relaxation Factors**: Start with defaults like `U=0.7, p=0.3`. It's safer to confirm convergence before ramping them up. `p` relaxation especially should be kept low to stabilize the SIMPLE loop.
+
+3. **Separate Velocity vs. Pressure Convergence**: If U residuals are low but p diverges, it's likely a relaxation issue. If both diverge, check the mesh or boundary conditions first.
+
+4. **Monitor GAMG Iterations**: If the number of inner iterations required to solve p suddenly increases within the same outer iteration, the convergence direction is likely wrong.
+
+Due to the nature of the pressure correction loop, the SIMPLE algorithm is highly sensitive to relaxation. Always start conservatively — even if it seems slow, ensuring stable convergence before acceleration is ultimately the faster path.
+
+---
+
+*If you are facing similar issues, please share your environment (version, geometry, turbulence model) in the comments. Solutions can vary by case.*

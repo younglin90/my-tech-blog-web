@@ -1,0 +1,587 @@
+---
+title: "[OpenFOAM 教程] 后步台阶流动分析 — 利用 simpleFoam 捕捉再循环区域"
+date: 2026-03-26
+description: "使用 OpenFOAM simpleFoam 逐步分析后步台阶 (Backward Facing Step) 不可压缩流动的指南"
+tags: ["OpenFOAM", "教程", "simpleFoam", "后步台阶", "湍流"]
+draft: false
+---
+
+在本教程中，我们将使用 `simpleFoam` 模拟 **后步台阶 (Backward Facing Step)** 几何形状中的再循环流动。目标是直接观察台阶下游形成的再循环区域 (recirculation zone) 和再附着点 (reattachment point)。
+
+---
+
+## 前提条件
+
+- **OpenFOAM 版本:** v2312 或更高版本 (OpenFOAM.com 或 OpenFOAM.org 均可)
+- **预备知识:** 基本终端命令，理解 OpenFOAM 案例结构 (0/constant/system)
+- **所需软件:** ParaView 5.x 或更高版本 (结果可视化)
+
+---
+
+## 第 1 步：创建案例目录
+
+```bash
+# 加载 OpenFOAM 环境 (取决于安装路径)
+source /opt/openfoam2312/etc/bashrc
+
+# 复制教程目录或直接创建
+mkdir -p backwardFacingStep
+cd backwardFacingStep
+```
+
+案例结构如下：
+
+```bash
+tree backwardFacingStep/
+```
+
+```
+backwardFacingStep/
+├── 0/
+│   ├── U          # 速度初始/边界条件
+│   ├── p          # 压力初始/边界条件
+│   ├── k          # 湍动能
+│   └── epsilon    # 湍流耗散率
+├── constant/
+│   ├── transportProperties
+│   └── turbulenceProperties
+└── system/
+    ├── blockMeshDict
+    ├── fvSchemes
+    └── fvSolution
+```
+
+---
+
+## 第 2 步：网格生成 — blockMeshDict
+
+`system/blockMeshDict` 通过长方体块的组合定义台阶形状。下面是一个简化的 2D 案例示例 (台阶高度 H = 0.1 m)。
+
+```cpp
+/*--------------------------------*- C++ -*----------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:  v2312                                 |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      blockMeshDict;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+scale   0.1;   // 整体比例 (m 单位 → 乘以 0.1 得到最终尺寸)
+
+vertices
+(
+    // 入口通道块 (台阶上方)
+    (0  1  0)  // 0
+    (5  1  0)  // 1
+    (5  2  0)  // 2
+    (0  2  0)  // 3
+    (0  1  1)  // 4
+    (5  1  1)  // 5
+    (5  2  1)  // 6
+    (0  2  1)  // 7
+
+    // 台阶下游块 (台阶全高)
+    (5  0  0)  // 8
+    (20 0  0)  // 9
+    (20 2  0)  // 10
+    (5  2  0)  // 11 (= vertex 2)
+    (5  0  1)  // 12
+    (20 0  1)  // 13
+    (20 2  1)  // 14
+    (5  2  1)  // 15 (= vertex 6)
+);
+
+blocks
+(
+    // 入口通道
+    hex (0 1 2 3 4 5 6 7)   (50 10 1) simpleGrading (1 1 1)
+    // 台阶下游 (更密的网格)
+    hex (8 9 10 11 12 13 14 15) (150 20 1) simpleGrading (1 1 1)
+);
+
+boundary
+(
+    inlet
+    {
+        type patch;
+        faces ((0 3 7 4));
+    }
+    outlet
+    {
+        type patch;
+        faces ((9 10 14 13));
+    }
+    wall
+    {
+        type wall;
+        faces
+        (
+            (0 1 5 4)   // 上端入口壁
+            (1 8 12 5)  // 台阶垂直面
+            (8 9 13 12) // 下端底部
+            (3 2 6 7)   // 上端壁 (入口)
+            (11 10 14 15) // 上端壁 (下游)
+        );
+    }
+    frontAndBack
+    {
+        type empty;  // 2D 分析
+        faces
+        (
+            (0 1 2 3)
+            (4 5 6 7)
+            (8 9 10 11)
+            (12 13 14 15)
+        );
+    }
+);
+```
+
+```bash
+# 执行网格生成
+blockMesh
+```
+
+**预期输出:**
+```
+Create time
+
+Creating block mesh from "system/blockMeshDict"
+...
+Writing polyMesh with 3600 cells
+End
+```
+
+---
+
+## 第 3 步：设置边界条件
+
+### 0/U — 速度边界条件
+
+```cpp
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       volVectorField;
+    object      U;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+dimensions      [0 1 -1 0 0 0 0];  // m/s
+
+internalField   uniform (0 0 0);   // 初始值：静止状态
+
+boundaryField
+{
+    inlet
+    {
+        type        fixedValue;
+        value       uniform (1 0 0);  // x 方向 1 m/s 均匀流入
+    }
+    outlet
+    {
+        type        zeroGradient;  // 出口：自由流出
+    }
+    wall
+    {
+        type        noSlip;        // 壁面：无滑移条件
+    }
+    frontAndBack
+    {
+        type        empty;
+    }
+}
+```
+
+### 0/p — 压力边界条件
+
+```cpp
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       volScalarField;
+    object      p;
+}
+
+dimensions      [0 2 -2 0 0 0 0];  // 运动压力 (p/rho), m²/s²
+
+internalField   uniform 0;
+
+boundaryField
+{
+    inlet
+    {
+        type        zeroGradient;
+    }
+    outlet
+    {
+        type        fixedValue;
+        value       uniform 0;  // 出口参考压力 0
+    }
+    wall
+    {
+        type        zeroGradient;
+    }
+    frontAndBack
+    {
+        type        empty;
+    }
+}
+```
+
+### 0/k — 湍动能
+
+```cpp
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       volScalarField;
+    object      k;
+}
+
+dimensions      [0 2 -2 0 0 0 0];  // m²/s²
+
+// 入口湍流强度 5%, 流速 1 m/s → k = 1.5*(I*U)² = 1.5*(0.05*1)² ≈ 0.00375
+internalField   uniform 0.00375;
+
+boundaryField
+{
+    inlet
+    {
+        type        fixedValue;
+        value       uniform 0.00375;
+    }
+    outlet
+    {
+        type        zeroGradient;
+    }
+    wall
+    {
+        type        kqRWallFunction;
+        value       uniform 0.00375;
+    }
+    frontAndBack
+    {
+        type        empty;
+    }
+}
+```
+
+---
+
+## 第 4 步：设置物性参数和湍流模型
+
+### constant/transportProperties
+
+```cpp
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      transportProperties;
+}
+
+transportModel  Newtonian;
+nu              1e-5;   // 运动粘度系数 (m²/s), Re = U*H/nu = 1*0.01/1e-5 = 1000
+```
+
+### constant/turbulenceProperties
+
+```cpp
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      turbulenceProperties;
+}
+
+simulationType  RAS;
+
+RAS
+{
+    RASModel        kEpsilon;   // k-epsilon 二方程模型
+    turbulence      on;
+    printCoeffs     on;
+}
+```
+
+---
+
+## 第 5 步：设置数值方案和求解器
+
+### system/fvSchemes
+
+```cpp
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      fvSchemes;
+}
+
+ddtSchemes      { default steadyState; }  // 稳态分析
+
+gradSchemes
+{
+    default         Gauss linear;
+    grad(U)         cellLimited Gauss linear 1;  // 梯度限制器
+}
+
+divSchemes
+{
+    default         none;
+    div(phi,U)      bounded Gauss linearUpwind grad(U);  // 二阶精度
+    div(phi,k)      bounded Gauss upwind;
+    div(phi,epsilon) bounded Gauss upwind;
+    div((nuEff*dev(T(grad(U))))) Gauss linear;
+}
+
+laplacianSchemes { default Gauss linear corrected; }
+
+interpolationSchemes { default linear; }
+
+snGradSchemes { default corrected; }
+```
+
+### system/fvSolution
+
+```cpp
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      fvSolution;
+}
+
+solvers
+{
+    p
+    {
+        solver          GAMG;
+        smoother        GaussSeidel;
+        tolerance       1e-7;
+        relTol          0.01;
+    }
+    U
+    {
+        solver          smoothSolver;
+        smoother        GaussSeidel;
+        tolerance       1e-8;
+        relTol          0.1;
+    }
+    "(k|epsilon)"
+    {
+        solver          smoothSolver;
+        smoother        GaussSeidel;
+        tolerance       1e-8;
+        relTol          0.1;
+    }
+}
+
+SIMPLE
+{
+    nNonOrthogonalCorrectors    0;
+    pRefCell                    0;
+    pRefValue                   0;
+
+    residualControl
+    {
+        p           1e-4;
+        U           1e-4;
+        "(k|epsilon)" 1e-4;
+    }
+}
+
+relaxationFactors
+{
+    fields      { p 0.3; }           // 压力松弛因子 (防止发散)
+    equations
+    {
+        U       0.7;
+        k       0.7;
+        epsilon 0.7;
+    }
+}
+```
+
+---
+
+## 第 6 步：执行分析
+
+```bash
+# 检查网格质量 (可选，建议执行)
+checkMesh
+
+# 运行 simpleFoam
+simpleFoam 2>&1 | tee log.simpleFoam
+```
+
+**预期输出 (收敛过程):**
+```
+Time = 1
+
+smoothSolver:  Solving for Ux, Initial residual = 1, Final residual = 0.0234, No Iterations 3
+smoothSolver:  Solving for Uy, Initial residual = 0.412, Final residual = 0.00891, No Iterations 3
+GAMG:  Solving for p, Initial residual = 0.987, Final residual = 0.00821, No Iterations 15
+...
+
+Time = 500
+
+smoothSolver:  Solving for Ux, Initial residual = 1.23e-05, ...
+GAMG:  Solving for p, Initial residual = 8.91e-05, ...
+
+SIMPLE solution converged in 500 iterations
+```
+
+收敛标准是所有变量的残差 (residual) 均低于 `1e-4`。
+
+---
+
+## 第 7 步：结果可视化 (ParaView)
+
+```bash
+# 创建 ParaView 用的空文件并运行
+touch backwardFacingStep.foam
+paraFoam
+```
+
+在 ParaView 中按以下顺序查看结果：
+
+1. **Coloring** 下拉菜单 → 选择 `U` → 使用 `Magnitude` 显示速度大小
+2. 添加 **Glyph** 过滤器 → 可视化矢量方向 (确认再循环区域)
+3. **Stream Tracer** 过滤器 → 绘制流线
+
+**使用 foamToVTK 转换文件后的后处理：**
+
+```bash
+foamToVTK -latestTime
+```
+
+使用 Python 自动提取再附着长度：
+
+```python
+import numpy as np
+
+# 从 foamToVTK 输出文件中读取底部壁面 (y=0) 数据
+# (实际路径请根据环境调整)
+data = np.loadtxt("VTK/backwardFacingStep_500/internal.vtk",
+                  skiprows=10)  # 排除 VTK 文件头
+
+x = data[:, 0]
+ux = data[:, 3]  # x 方向速度
+
+# 过滤 y ≈ 0 的单元 (底部壁面附近)
+wall_mask = data[:, 1] < 0.005
+x_wall = x[wall_mask]
+ux_wall = ux[wall_mask]
+
+# 符号变化位置 = 再附着点
+sign_changes = np.where(np.diff(np.sign(ux_wall)))[0]
+if len(sign_changes) > 0:
+    x_reattach = x_wall[sign_changes[0]]
+    H = 0.01  # 台阶高度 (m)
+    print(f"再附着长度: {x_reattach/H:.1f}H")
+```
+
+---
+
+## 常见错误及解决办法
+
+### 错误 1: `FOAM FATAL ERROR: Cannot find file "0/epsilon"`
+
+```
+--> FOAM FATAL ERROR:
+    cannot find file
+    "backwardFacingStep/0/epsilon"
+```
+
+**原因:** 缺少 `0/epsilon` 文件。
+**解决办法:** 使用与 `k` 文件相同的格式创建 `0/epsilon`。
+
+```cpp
+// 0/epsilon
+dimensions      [0 2 -3 0 0 0 0];  // m²/s³
+
+// epsilon = C_mu^(3/4) * k^(3/2) / L, L ≈ 0.1*H
+internalField   uniform 0.0009;
+
+boundaryField
+{
+    inlet       { type fixedValue; value uniform 0.0009; }
+    outlet      { type zeroGradient; }
+    wall        { type epsilonWallFunction; value uniform 0.0009; }
+    frontAndBack { type empty; }
+}
+```
+
+---
+
+### 错误 2: 分析发散 (Floating point exception)
+
+```
+Floating point exception (core dumped)
+```
+
+**原因:** 松弛因子过大或网格不够细导致发散。
+**解决办法:** 在 `fvSolution` 中降低松弛因子。
+
+```cpp
+relaxationFactors
+{
+    fields      { p 0.2; }   // 0.3 → 0.2
+    equations   { U 0.5; }   // 0.7 → 0.5
+}
+```
+
+---
+
+### 错误 3: 残差不下降而是振荡
+
+**原因:** `nNonOrthogonalCorrectors` 为 0，但网格非正交性较高。
+**解决办法:** 增加修正次数。
+
+```cpp
+SIMPLE
+{
+    nNonOrthogonalCorrectors    2;  // 0 → 2
+    ...
+}
+```
+
+---
+
+## 预期结果汇总
+
+| 项目 | 数值 |
+|------|-----|
+| 雷诺数 ($Re = UH/\nu$) | 1,000 |
+| 再附着长度 ($x_r / H$) | 6–8 |
+| 最大反向速度 | $\approx -0.1$ m/s |
+| 收敛迭代次数 | 300–600 次 |
+
+再附着长度随 $Re$ 变化；与 $Re = 800$ 的实验值 (Armaly et al., 1983) 相比，约为 6H，基本吻合。
+
+$$
+x_r \approx 6\text{–}8 \cdot H \quad (Re \sim 10^3)
+$$
+
+---
+
+## 下一步建议
+
+- **网格独立性验证:** 在 `blockMeshDict` 中将网格数量增加一倍并对比结果。
+- **湍流模型对比:** 将 `kEpsilon` 替换为 `kOmegaSST`，查看再附着长度的差异。
+- **瞬态分析:** 从 `simpleFoam` 切换到 `pimpleFoam` 以观察涡旋脱落 (vortex shedding)。

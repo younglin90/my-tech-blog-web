@@ -1,0 +1,587 @@
+---
+title: "[OpenFOAM Tutorial] Backward Facing Step Flow Analysis — Capturing Recirculation Zones with simpleFoam"
+date: 2026-03-26
+description: "A step-by-step guide to analyzing incompressible flow over a Backward Facing Step using OpenFOAM simpleFoam."
+tags: ["OpenFOAM", "Tutorial", "simpleFoam", "BackwardFacingStep", "Turbulence"]
+draft: false
+---
+
+In this tutorial, we will simulate recirculation flow in a **Backward Facing Step** geometry using `simpleFoam`. The goal is to directly observe the recirculation zone and reattachment point formed downstream of the step.
+
+---
+
+## Prerequisites
+
+- **OpenFOAM Version:** v2312 or later (Both OpenFOAM.com and OpenFOAM.org are compatible)
+- **Prior Knowledge:** Basic terminal commands, understanding of OpenFOAM case structure (0/constant/system)
+- **Required Software:** ParaView 5.x or later (for results visualization)
+
+---
+
+## Step 1: Create Case Directory
+
+```bash
+# Load OpenFOAM environment (varies by installation path)
+source /opt/openfoam2312/etc/bashrc
+
+# Copy tutorial directory or create directly
+mkdir -p backwardFacingStep
+cd backwardFacingStep
+```
+
+The case structure is as follows:
+
+```bash
+tree backwardFacingStep/
+```
+
+```
+backwardFacingStep/
+├── 0/
+│   ├── U          # Velocity initial/boundary conditions
+│   ├── p          # Pressure initial/boundary conditions
+│   ├── k          # Turbulent kinetic energy
+│   └── epsilon    # Turbulent dissipation rate
+├── constant/
+│   ├── transportProperties
+│   └── turbulenceProperties
+└── system/
+    ├── blockMeshDict
+    ├── fvSchemes
+    └── fvSolution
+```
+
+---
+
+## Step 2: Mesh Generation — blockMeshDict
+
+`system/blockMeshDict` defines the step geometry as a combination of hexahedral blocks. Below is a simplified 2D case example (step height H = 0.1 m).
+
+```cpp
+/*--------------------------------*- C++ -*----------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:  v2312                                 |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      blockMeshDict;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+scale   0.1;   // Global scale (multiplied by 0.1 for final size in meters)
+
+vertices
+(
+    // Inlet channel block (above the step)
+    (0  1  0)  // 0
+    (5  1  0)  // 1
+    (5  2  0)  // 2
+    (0  2  0)  // 3
+    (0  1  1)  // 4
+    (5  1  1)  // 5
+    (5  2  1)  // 6
+    (0  2  1)  // 7
+
+    // Downstream block (full height)
+    (5  0  0)  // 8
+    (20 0  0)  // 9
+    (20 2  0)  // 10
+    (5  2  0)  // 11 (= vertex 2)
+    (5  0  1)  // 12
+    (20 0  1)  // 13
+    (20 2  1)  // 14
+    (5  2  1)  // 15 (= vertex 6)
+);
+
+blocks
+(
+    // Inlet channel
+    hex (0 1 2 3 4 5 6 7)   (50 10 1) simpleGrading (1 1 1)
+    // Downstream (finer mesh)
+    hex (8 9 10 11 12 13 14 15) (150 20 1) simpleGrading (1 1 1)
+);
+
+boundary
+(
+    inlet
+    {
+        type patch;
+        faces ((0 3 7 4));
+    }
+    outlet
+    {
+        type patch;
+        faces ((9 10 14 13));
+    }
+    wall
+    {
+        type wall;
+        faces
+        (
+            (0 1 5 4)   // Top inlet wall
+            (1 8 12 5)  // Step vertical face
+            (8 9 13 12) // Bottom floor
+            (3 2 6 7)   // Top wall (inlet)
+            (11 10 14 15) // Top wall (downstream)
+        );
+    }
+    frontAndBack
+    {
+        type empty;  // 2D Analysis
+        faces
+        (
+            (0 1 2 3)
+            (4 5 6 7)
+            (8 9 10 11)
+            (12 13 14 15)
+        );
+    }
+);
+```
+
+```bash
+# Execute mesh generation
+blockMesh
+```
+
+**Expected Output:**
+```
+Create time
+
+Creating block mesh from "system/blockMeshDict"
+...
+Writing polyMesh with 3600 cells
+End
+```
+
+---
+
+## Step 3: Boundary Condition Setup
+
+### 0/U — Velocity Boundary Conditions
+
+```cpp
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       volVectorField;
+    object      U;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+dimensions      [0 1 -1 0 0 0 0];  // m/s
+
+internalField   uniform (0 0 0);   // Initial value: rest state
+
+boundaryField
+{
+    inlet
+    {
+        type        fixedValue;
+        value       uniform (1 0 0);  // Uniform inflow of 1 m/s in x-direction
+    }
+    outlet
+    {
+        type        zeroGradient;  // Outlet: free outflow
+    }
+    wall
+    {
+        type        noSlip;        // Wall: no-slip condition
+    }
+    frontAndBack
+    {
+        type        empty;
+    }
+}
+```
+
+### 0/p — Pressure Boundary Conditions
+
+```cpp
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       volScalarField;
+    object      p;
+}
+
+dimensions      [0 2 -2 0 0 0 0];  // Kinematic pressure (p/rho), m²/s²
+
+internalField   uniform 0;
+
+boundaryField
+{
+    inlet
+    {
+        type        zeroGradient;
+    }
+    outlet
+    {
+        type        fixedValue;
+        value       uniform 0;  // Reference pressure of 0 at outlet
+    }
+    wall
+    {
+        type        zeroGradient;
+    }
+    frontAndBack
+    {
+        type        empty;
+    }
+}
+```
+
+### 0/k — Turbulent Kinetic Energy
+
+```cpp
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       volScalarField;
+    object      k;
+}
+
+dimensions      [0 2 -2 0 0 0 0];  // m²/s²
+
+// Inlet turbulence intensity 5%, velocity 1 m/s → k = 1.5*(I*U)² = 1.5*(0.05*1)² ≈ 0.00375
+internalField   uniform 0.00375;
+
+boundaryField
+{
+    inlet
+    {
+        type        fixedValue;
+        value       uniform 0.00375;
+    }
+    outlet
+    {
+        type        zeroGradient;
+    }
+    wall
+    {
+        type        kqRWallFunction;
+        value       uniform 0.00375;
+    }
+    frontAndBack
+    {
+        type        empty;
+    }
+}
+```
+
+---
+
+## Step 4: Transport Properties and Turbulence Model Setup
+
+### constant/transportProperties
+
+```cpp
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      transportProperties;
+}
+
+transportModel  Newtonian;
+nu              1e-5;   // Kinematic viscosity (m²/s), Re = U*H/nu = 1*0.01/1e-5 = 1000
+```
+
+### constant/turbulenceProperties
+
+```cpp
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      turbulenceProperties;
+}
+
+simulationType  RAS;
+
+RAS
+{
+    RASModel        kEpsilon;   // k-epsilon two-equation model
+    turbulence      on;
+    printCoeffs     on;
+}
+```
+
+---
+
+## Step 5: Numerical Schemes and Solvers Setup
+
+### system/fvSchemes
+
+```cpp
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      fvSchemes;
+}
+
+ddtSchemes      { default steadyState; }  // Steady-state analysis
+
+gradSchemes
+{
+    default         Gauss linear;
+    grad(U)         cellLimited Gauss linear 1;  // Gradient limiter
+}
+
+divSchemes
+{
+    default         none;
+    div(phi,U)      bounded Gauss linearUpwind grad(U);  // 2nd-order accuracy
+    div(phi,k)      bounded Gauss upwind;
+    div(phi,epsilon) bounded Gauss upwind;
+    div((nuEff*dev(T(grad(U))))) Gauss linear;
+}
+
+laplacianSchemes { default Gauss linear corrected; }
+
+interpolationSchemes { default linear; }
+
+snGradSchemes { default corrected; }
+```
+
+### system/fvSolution
+
+```cpp
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      fvSolution;
+}
+
+solvers
+{
+    p
+    {
+        solver          GAMG;
+        smoother        GaussSeidel;
+        tolerance       1e-7;
+        relTol          0.01;
+    }
+    U
+    {
+        solver          smoothSolver;
+        smoother        GaussSeidel;
+        tolerance       1e-8;
+        relTol          0.1;
+    }
+    "(k|epsilon)"
+    {
+        solver          smoothSolver;
+        smoother        GaussSeidel;
+        tolerance       1e-8;
+        relTol          0.1;
+    }
+}
+
+SIMPLE
+{
+    nNonOrthogonalCorrectors    0;
+    pRefCell                    0;
+    pRefValue                   0;
+
+    residualControl
+    {
+        p           1e-4;
+        U           1e-4;
+        "(k|epsilon)" 1e-4;
+    }
+}
+
+relaxationFactors
+{
+    fields      { p 0.3; }           // Pressure relaxation factor (to prevent divergence)
+    equations
+    {
+        U       0.7;
+        k       0.7;
+        epsilon 0.7;
+    }
+}
+```
+
+---
+
+## Step 6: Run Analysis
+
+```bash
+# Check mesh quality (optional but recommended)
+checkMesh
+
+# Run simpleFoam
+simpleFoam 2>&1 | tee log.simpleFoam
+```
+
+**Expected Output (Convergence Process):**
+```
+Time = 1
+
+smoothSolver:  Solving for Ux, Initial residual = 1, Final residual = 0.0234, No Iterations 3
+smoothSolver:  Solving for Uy, Initial residual = 0.412, Final residual = 0.00891, No Iterations 3
+GAMG:  Solving for p, Initial residual = 0.987, Final residual = 0.00821, No Iterations 15
+...
+
+Time = 500
+
+smoothSolver:  Solving for Ux, Initial residual = 1.23e-05, ...
+GAMG:  Solving for p, Initial residual = 8.91e-05, ...
+
+SIMPLE solution converged in 500 iterations
+```
+
+Convergence is achieved when the residuals for all variables fall below `1e-4`.
+
+---
+
+## Step 7: Results Visualization (ParaView)
+
+```bash
+# Create dummy file for ParaView and execute
+touch backwardFacingStep.foam
+paraFoam
+```
+
+Follow these steps in ParaView to check results:
+
+1. **Coloring** dropdown → select `U` → display velocity magnitude using `Magnitude`.
+2. Add **Glyph** filter → visualize vector directions (check recirculation zone).
+3. **Stream Tracer** filter → plot streamlines.
+
+**Post-processing after converting files using foamToVTK:**
+
+```bash
+foamToVTK -latestTime
+```
+
+Automated reattachment length extraction using Python:
+
+```python
+import numpy as np
+
+# Read bottom wall (y=0) data from foamToVTK output file
+# (Adjust path according to your environment)
+data = np.loadtxt("VTK/backwardFacingStep_500/internal.vtk",
+                  skiprows=10)  # Exclude VTK header
+
+x = data[:, 0]
+ux = data[:, 3]  # x-direction velocity
+
+# Filter cells near the bottom wall (y ≈ 0)
+wall_mask = data[:, 1] < 0.005
+x_wall = x[wall_mask]
+ux_wall = ux[wall_mask]
+
+# Position of sign change = reattachment point
+sign_changes = np.where(np.diff(np.sign(ux_wall)))[0]
+if len(sign_changes) > 0:
+    x_reattach = x_wall[sign_changes[0]]
+    H = 0.01  # Step height (m)
+    print(f"Reattachment Length: {x_reattach/H:.1f}H")
+```
+
+---
+
+## Common Errors and Solutions
+
+### Error 1: `FOAM FATAL ERROR: Cannot find file "0/epsilon"`
+
+```
+--> FOAM FATAL ERROR:
+    cannot find file
+    "backwardFacingStep/0/epsilon"
+```
+
+**Cause:** `0/epsilon` file missing.
+**Solution:** Create `0/epsilon` using the same format as the `k` file.
+
+```cpp
+// 0/epsilon
+dimensions      [0 2 -3 0 0 0 0];  // m²/s³
+
+// epsilon = C_mu^(3/4) * k^(3/2) / L, L ≈ 0.1*H
+internalField   uniform 0.0009;
+
+boundaryField
+{
+    inlet       { type fixedValue; value uniform 0.0009; }
+    outlet      { type zeroGradient; }
+    wall        { type epsilonWallFunction; value uniform 0.0009; }
+    frontAndBack { type empty; }
+}
+```
+
+---
+
+### Error 2: Analysis Divergence (Floating point exception)
+
+```
+Floating point exception (core dumped)
+```
+
+**Cause:** Relaxation factors too high or mesh not fine enough, causing divergence.
+**Solution:** Lower relaxation factors in `fvSolution`.
+
+```cpp
+relaxationFactors
+{
+    fields      { p 0.2; }   // Decrease 0.3 → 0.2
+    equations   { U 0.5; }   // Decrease 0.7 → 0.5
+}
+```
+
+---
+
+### Error 3: Residuals Oscillating Instead of Decreasing
+
+**Cause:** `nNonOrthogonalCorrectors` is 0 but mesh has high non-orthogonality.
+**Solution:** Increase the number of correctors.
+
+```cpp
+SIMPLE
+{
+    nNonOrthogonalCorrectors    2;  // Increase 0 → 2
+    ...
+}
+```
+
+---
+
+## Expected Results Summary
+
+| Item | Value |
+|------|-----|
+| Reynolds Number ($Re = UH/\nu$) | 1,000 |
+| Reattachment Length ($x_r / H$) | 6–8 |
+| Max Reverse Velocity | $\approx -0.1$ m/s |
+| Convergence Iterations | 300–600 |
+
+Reattachment length varies with $Re$; comparing with $Re = 800$ experimental values (Armaly et al., 1983) shows agreement at approximately 6H.
+
+$$
+x_r \approx 6\text{–}8 \cdot H \quad (Re \sim 10^3)
+$$
+
+---
+
+## Suggested Next Steps
+
+- **Grid Independence Study:** Double the mesh count in `blockMeshDict` and compare results.
+- **Turbulence Model Comparison:** Replace `kEpsilon` with `kOmegaSST` to check differences in reattachment length.
+- **Transient Analysis:** Switch from `simpleFoam` to `pimpleFoam` to observe vortex shedding.

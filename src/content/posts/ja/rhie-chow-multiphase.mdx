@@ -1,0 +1,334 @@
+---
+title: "圧縮性多相流のための Rhie-Chow 補間法まとめ"
+date: 2026-03-10
+description: "Collocated 格子のチェッカーボード問題から balanced-force 多相流まで、Rhie-Chow 補間の数学的本質と OpenFOAM での実装を体系的にまとめます。"
+tags: [CFD, Multiphase, Rhie-Chow, OpenFOAM, Numerical-Methods]
+series: "compressible-multiphase"
+seriesOrder: 5
+---
+
+# Rhie-Chow 補間：なぜ必要で、多相流ではなぜ難しいのか
+
+Rhie-Chow 補間（momentum-weighted interpolation, MWI）は、collocated 格子において**チェッカーボード状の圧力振動を抑制**するために面（face）流速を補正する核心的な手法です。単相流では比較的単純ですが、多相流へと拡張する場合、**圧力、重力、表面張力、非定常補正項の一貫した処理**が決定的に重要になります。
+
+この記事では、Rhie & Chow (1983) のオリジナルから Bartholomew et al. (2018) の統合フレームワーク、そして OpenFOAM の interFoam/compressibleInterFoam における実装までを詳しく解説します。
+
+---
+
+## 1. 半離散化運動量方程式からの面流速の導出
+
+すべての Rhie-Chow 変形版の出発点は、セル中心 $P$ における**半離散化（semi-discretized）運動量方程式**です。
+
+$$
+a_P \mathbf{U}_P = H(\mathbf{U}) - V_P \nabla p\big|_P + V_P \rho_P \mathbf{g} + V_P \mathbf{F}_{\sigma,P}
+$$
+
+- $a_P$: 対角係数（時間微分、対流、拡散の寄与を含む）
+- $H(\mathbf{U}) = \sum a_{Nb}\mathbf{U}_{Nb} + \text{sources}$: 隣接セルの寄与 + 明示的なソース項
+
+セル中心流速について解くと以下のようになります。
+
+$$
+\mathbf{U}_P = \frac{H}{a_P}\bigg|_P - \frac{V_P}{a_P}\nabla p\big|_P + \frac{V_P}{a_P}\rho_P\mathbf{g} + \frac{V_P}{a_P}\mathbf{F}_{\sigma,P}
+$$
+
+### 問題点：チェッカーボード振動
+
+このセル中心流速を**単純な線形補間**で面に適用すると、圧力勾配が $p_{i-1}$ と $p_{i+1}$ のみを結び、$p_i$ を飛び越えてしまうため、**奇偶分離（チェッカーボード現象）**が発生します。
+
+### Rhie-Chow の解決策
+
+面において**運動量方程式自体を再構成**し、広いステンシルの補間された圧力勾配を、**狭い（compact）面中心の圧力勾配**で置き換えます。
+
+$$
+\mathbf{U}_f = \overline{\left(\frac{H}{a_P}\right)}_f - \left(\frac{1}{a_P}\right)_f \nabla p\big|_f^{\text{compact}} + \left(\frac{1}{a_P}\right)_f (\rho\mathbf{g})_f + \left(\frac{1}{a_P}\right)_f (\mathbf{F}_\sigma)_f + \delta\mathbf{U}_{\text{transient}}
+$$
+
+ここで $\nabla p\big|_f^{\text{compact}} = (p_Q - p_P)/|\mathbf{d}_{PQ}|$ は隣接セルの値から直接計算した面勾配であり、オーバーバーはセル中心値の線形補間を表します。
+
+**圧力補正項** $-(1/a_P)_f[\nabla p|_f - \overline{\nabla p}_f]$ は $\Delta x^2 \cdot \partial^3 p/\partial x^3$ に比例する**ローパスフィルタ**として機能し、チェッカーボード現象を抑制します。
+
+---
+
+## 2. 主要論文による寄与
+
+### Rhie & Chow (1983): オリジナル
+
+AIAA Journal に発表されたオリジナルは、**定常流の SIMPLE アルゴリズム**専用でした。
+
+$$
+u_f = \hat{u}_f - d_f(p_E - p_P)
+$$
+
+$\hat{u} = u + d \cdot \Delta p$ は圧力勾配を除去した疑似速度、$d = V/a_P$ です。**圧力補正項のみ**が含まれており、非定常項や緩和（relaxation）項の処理はありませんでした。その後、Majumdar (1988) が収束解の緩和係数依存性を、Choi (1999) が非定常流における時間ステップ依存性を指摘しました。
+
+### Jasak (1996): OpenFOAM の基礎 - H/A アプローチ
+
+インペリアル・カレッジの博士論文で、**非構造多面体格子**における有限体積法を体系化しました。Rhie-Chow を**明示的な補正項なしで暗黙的に**実装しているのが特徴です。
+
+$$
+\mathbf{U} = \frac{H}{A} - \frac{1}{A}\nabla p \quad \Rightarrow \quad \phi_f = \left(\frac{H}{A}\right)_f \cdot \mathbf{S}_f - \left(\frac{1}{A}\right)_f (\nabla p)_f \cdot \mathbf{S}_f
+$$
+
+**HbyA = H/A** は圧力の影響を除去した速度予測子であり、圧力方程式は $\nabla\cdot[(1/A)_f \nabla p] = \nabla\cdot(H/A)_f$ として導出されます。Rhie-Chow 効果は、ラプラス演算子の離散化（face snGrad）と速度補正の勾配（ガウスの定理）が**異なるステンシル**を使用することから自然に発生します。
+
+非定常補正は `fvc::ddtCorr` で処理されますが、**完全に一貫していない**ため、時間ステップ依存性が残ります。
+
+### Cubero & Fueyo (2007): Compact Momentum Interpolation (CMI)
+
+**時間ステップと緩和係数の両方に依存しない**面流速公式を提案しました。運動量方程式の各係数を**個別に、一貫性を持って補間する**ことが核心です。
+
+$$
+u_f = \bar{u}_f + d_f[\overline{\nabla p}_f - (\nabla p)_f] + \frac{a_t}{a_s + a_t + a_\tau}\bigg|_f (\bar{u}^O_f - u^O_f) + \frac{a_\tau}{a_s + a_t + a_\tau}\bigg|_f (\bar{u}^{\text{prev}}_f - u^{\text{prev}}_f)
+$$
+
+- $a_t = \rho V/\Delta t$: 時間係数
+- $a_\tau = \rho V/\Delta\tau$: 緩和係数
+- $a_s$: 空間係数
+
+**収束時**には $u_f = u^{\text{prev}}_f$ かつ $u_f = u^O_f$ となるため、非定常/緩和補正項は自動的に消失します。これにより、定常解が $\Delta t$ や緩和係数に依存しないことが保証されます。
+
+### Bartholomew et al. (2018): 統合フレームワーク
+
+JCP 375 において、**構造・非構造格子の両方に適用可能な統合 MWI 公式**を提示しました。三つの主要な寄与は以下の通りです。
+
+**1) MWI 係数は空間係数のみで構成すべきである。** 時間微分係数 $\rho V/\Delta t$ を分母に含めると、 $\Delta t \to 0$ のときに圧力フィルタが弱まり、チェッカーボード現象が再発します。
+
+**2) 「駆動圧力勾配 (Driving pressure gradient)」の概念:** 外力がある場合、MWI フィルタは $\nabla P = \nabla p - \mathbf{S}_{\text{total}}$ （全ソース項を差し引いた駆動圧力勾配）に対してのみ作用すべきです。これが **balanced-force 離散化**の核心です。
+
+**3) 密度重み付け:** セル中心の圧力勾配を $\nabla P_P/\rho_P$ で重み付けし、面の密度は**調和平均**で補間することで、密度比 $10^{24}$ まで安定した結果を達成しました。
+
+### Denner & van Wachem (2014): Balanced-Force VOF
+
+CSF 表面張力 ($\sigma\kappa\nabla\alpha$) と圧力勾配を、**同一の離散勾配演算子を用いて同一の位置（面）で**評価することで、静的な液滴において**ソルバーの許容誤差（tolerance）まで**正確な力の釣り合いを達成しました。密度比 $10^6$ 以上で安定しており、spurious velocity（寄生速度）を大幅に減少させました。
+
+---
+
+## 3. 四つの補正項の多相流における処理
+
+多相流の面流速における4つの補正項は、それぞれ固有の物理的役割と処理原則を持っています。
+
+### 圧力補正項（必須）
+
+$$
+\delta\mathbf{U}_p = -\left(\frac{1}{a_P}\right)_f\left[\nabla p\big|_f - \overline{\nabla p}_f\right]
+$$
+
+Rhie-Chow の本質です。 $\Delta x^2 \partial^4 p/\partial x^4$ に比例する質量保存誤差を代償に、チェッカーボード現象を抑制します。多相流では界面付近の圧力が急激に変化するため誤差が大きくなる可能性があり、balanced-force アプローチが必要です。
+
+### 非定常補正項（非定常流では必須）
+
+$$
+\delta\mathbf{U}_t = \left(\frac{t}{a_P^\alpha}\right)_f \mathbf{U}_f^0 - \overline{\left(\frac{t}{a_P^\alpha}\right)\mathbf{U}^0}_f
+$$
+
+この項がないと、 $\Delta t \to 0$ のときに MWI フィルタの強度が変化し、**鋸歯（のこぎり）状の圧力振動**が現れます。Cubero & Fueyo (2007) と Bartholomew et al. (2018) は、MWI 係数から時間係数を**完全に分離**し、個別の補正項として処理することを推奨しています。
+
+### 重力補正項（多相流では必須）
+
+$$
+\delta\mathbf{U}_g = \left(\frac{V}{a_P}\right)_f(\rho\mathbf{g})_f - \overline{\left(\frac{V}{a_P}\right)\rho\mathbf{g}}_f
+$$
+
+密度の不連続がある多相流では**必ず含める**必要があります。Mencinger & Zun (2007) は、この項がない場合に界面で非物理的な速度スパイクが発生することを証明しました。静水圧平衡 ($\mathbf{U}=0$) において $\nabla p = \rho\mathbf{g}$ が離散的にも成立しなければなりません。
+
+OpenFOAM では修正圧力 $p_{rgh} = p - \rho\mathbf{g}\cdot\mathbf{r}$ を使用し、これを $-g_h \cdot \text{snGrad}(\rho)$ の形で面で直接評価します。
+
+### 表面張力補正項（最も議論の分かれる点）
+
+Balanced-force アプローチでは、表面張力に対する Rhie-Chow 補正は**適用すべきではありません**。理由は明確です。
+
+> 圧力勾配と表面張力が同一の面中心勾配演算子で離散化されていれば、
+> 静止平衡時に $\nabla p = \sigma\kappa\nabla\alpha$ が正確に成立する。
+> ここに Rhie-Chow 補正を追加すると、均衡が崩れて parasitic current（寄生流）が発生する。
+
+したがって、面における表面張力は $(1/a_P)_f \cdot (\sigma\kappa)_f \cdot \text{snGrad}(\alpha)$ として**直接評価**し、補間されたセル中心値との差分補正は**0に設定**します。
+
+### 補正項のまとめ
+
+| 補正項 | 単相流 | Balanced-force 多相流 | 未処理時の問題 |
+|--------|:---------:|:----------------------:|--------------|
+| 圧力 (Rhie-Chow) | 必須 | 必須 | チェッカーボード圧力振動 |
+| 非定常 (Choi) | 必須（非定常） | 必須 | $\Delta t$ 依存性、鋸歯状振動 |
+| 重力 (Gu) | 密度変化時 | 必須（面で評価） | 界面速度スパイク |
+| 表面張力 | 該当なし | **補正なし**（面で直接評価）| Parasitic current |
+
+---
+
+## 4. Spurious Velocity 抑制の設計原則
+
+Parasitic current（寄生流、spurious velocity）は、界面曲率のある多相流において表面張力と圧力勾配の**離散的な不均衡**によって発生する非物理的な速度場です。大きさは $\sigma$ に比例し $\mu$ に反比例するため、低粘性流において深刻化します。
+
+### Balanced-Force アルゴリズム
+
+Francois et al. (2006) が提示した核心原則は以下の通りです。
+
+> 圧力勾配と表面張力の勾配演算子を**同様に離散化し、同様の位置で**評価しなければならない。
+
+具体的には、圧力方程式において $\nabla p$ が面の snGrad で計算されるため、CSF の $\sigma\kappa\nabla\alpha$ も**同様の snGrad を用いて面で**計算する必要があります。この原則に従えば、正確な曲率が与えられた静止液滴において**マシンの精度限界まで**零速度を達成できます。
+
+### Rhie-Chow 自体が原因になることもある
+
+Mencinger & Zun (2007) の重要な発見：外力が不連続な場合（密度のジャンプ、表面張力）、圧力の4階導関数が大きくなり、Rhie-Chow 補正項自体が**大きな誤差を生成**します。
+
+したがって、Bartholomew et al. (2018) の統合フレームワークでは、**外力に対しては Rhie-Chow 補正を適用せず**、駆動圧力勾配に対してのみフィルタを適用します。
+
+$$
+\nabla P = \nabla p - \rho\mathbf{g} - \sigma\kappa\nabla\alpha
+$$
+
+それでもなお、**曲率推定の精度**が spurious velocity の最終的な限界を決定し、height-function 法 (Popinet, 2009) が2次収束性を提供するため最も効果的です。
+
+---
+
+## 5. Mobility 係数の補間：調和平均が必要な理由
+
+面における mobility 係数 $(1/a_P)_f$ の補間は、多相流の安定性に大きな影響を与えます。 $a_P$ は密度に比例するため ($a_P \propto \rho$)、密度比が大きい流れでは界面の両側で $1/a_P$ の値が数桁異なります。
+
+### 算術平均の問題点
+
+水と空気 ($\rho_w/\rho_a = 1000$) の界面において：
+
+$$
+\left(\frac{1}{a_P}\right)_f^{\text{arith}} \approx \frac{1}{2}\left(\frac{1}{a_{P,w}} + \frac{1}{a_{P,a}}\right)
+$$
+
+軽い相（空気）の大きな $1/a_P$ の値に支配されてしまい、重い相（水）の慣性を**過小評価**してしまいます。
+
+### 調和平均による解決策
+
+$$
+\rho_f^* = \frac{2}{\frac{1}{\rho_P} + \frac{1}{\rho_Q}}
+$$
+
+水と空気の場合、 $\rho_f^* \approx 2.0$ となり、算術平均の $\approx 500.5$ とは大きく異なります。**加速に対する抵抗がより大きい相（重い相）を適切に反映する**ことで、Bartholomew et al. (2018) や Denner et al. (2022) は密度比 $10^6$ 以上でも安定した結果を示しました。
+
+算術補間を使用すると、圧力方程式のラプラス演算子の係数と MWI 補正の密度重み付けの間に**不一致**が生じ、spurious velocity が発生します。
+
+---
+
+## 6. OpenFOAM 実装の分析
+
+### interFoam：非圧縮性二相流
+
+OpenFOAM の interFoam は Jasak の H/A アプローチに基づいています。
+
+**運動量方程式の組み立て**（圧力勾配を除く）：
+
+```cpp
+fvVectorMatrix UEqn(
+    fvm::ddt(rho, U)
+  + fvm::div(rhoPhi, U)
+  + turbulence->divDevRhoReff(rho, U)
+);
+```
+
+**rAU と HbyA の計算：**
+
+```cpp
+volScalarField rAU("rAU", 1.0/UEqn.A());
+surfaceScalarField rAUf("rAUf", fvc::interpolate(rAU)); // 線形補間（デフォルト）
+volVectorField HbyA(constrainHbyA(rAU*UEqn.H(), U, p_rgh));
+```
+
+**phiHbyA の構成**（4つの補正項）：
+
+```cpp
+// (H/A)_f · S_f + 非定常補正
+surfaceScalarField phiHbyA("phiHbyA",
+    fvc::flux(HbyA)
+  + fvc::interpolate(rho*rAU)*fvc::ddtCorr(U, phi, Uf)
+);
+
+// 重力 + 表面張力：面で直接評価
+surfaceScalarField phig(
+    (
+        mixture.surfaceTensionForce()    // sigma*kappa*snGrad(alpha)
+      - ghf*fvc::snGrad(rho)            // -g·r_f * snGrad(rho)
+    ) * rAUf * mesh.magSf()
+);
+
+phiHbyA += phig;
+```
+
+核心的なポイント：
+- `ghf = g & mesh.Cf()`: 面中心で直接評価された重力ポテンシャル
+- `mixture.surfaceTensionForce()`: $\sigma\kappa\cdot\text{snGrad}(\alpha)$ を**面で**計算
+- 両方の外力が**面で直接評価**され、balanced-force 原則に近似的に従う
+
+**圧力方程式とフラックス補正：**
+
+```cpp
+fvScalarMatrix p_rghEqn(
+    fvm::laplacian(rAUf, p_rgh) == fvc::div(phiHbyA)
+);
+p_rghEqn.solve();
+phi = phiHbyA - p_rghEqn.flux();
+```
+
+`pEqn.flux()` は $-(1/A)_f \cdot \text{snGrad}(p_{rgh}) \cdot |S_f|$ であるため、最終的なフラックスは**圧力のない速度 + 面評価の外力 + 面評価の圧力勾配**の組み合わせとなります。ラプラス演算子が面の snGrad を使用し、速度補正の勾配がセル面を使用するという**ステンシルの非対称性**が、Rhie-Chow 効果を暗黙的に提供します。
+
+**`ddtCorr` の限界：** `fvc::ddtCorr(U, phi)` は $(1/\Delta t)\cdot[\phi_{\text{old}} - (\mathbf{U}_{\text{old}})_f\cdot\mathbf{S}_f]$ を計算します。 CMI とは異なり、**完全に一貫していない**ため時間ステップ依存性が残り、Komen et al. (2020) が確認したように時間精度に影響を与える可能性があります。
+
+### compressibleInterFoam：圧縮性二相流
+
+phiHbyA の構成は interFoam と同様ですが、**圧力方程式が三つの部分**で構成されます。
+
+$$
+\nabla\cdot\mathbf{U} = -\left(\frac{\alpha_1}{\rho_1}\frac{D\rho_1}{Dt} + \frac{\alpha_2}{\rho_2}\frac{D\rho_2}{Dt}\right)
+$$
+
+非圧縮部分（ラプラス演算子）に各相の圧縮性項が追加されます。 `phid = fvc::interpolate(psi)*phi` ($\psi = d\rho/dp$) を通じて圧力と密度の結合が行われ、 $\alpha$ 方程式には微分圧縮性項 `dgdt` が追加され、二相の密度変化率の差を反映します。
+
+---
+
+## 7. 各手法の比較
+
+| 手法 | 主要な寄与 | 長所 | 短所 |
+|------|----------|------|------|
+| **Rhie & Chow (1983)** | オリジナル MWI | 単純、効果的 | 定常専用。 $\Delta t$ や緩和に依存 |
+| **Jasak (1996)** | H/A 暗黙的実装 | 汎用性、非構造格子 | ddtCorr が不完全 |
+| **Cubero & Fueyo (2007)** | CMI 係数ごとの一貫補間 | $\Delta t$ や緩和に完全独立 | 数値拡散の増加 |
+| **Bartholomew et al. (2018)** | 統合フレームワーク | 非構造格子の一般化 | 実装の複雑さの増加 |
+| **Denner & van Wachem (2014)** | Balanced-force VOF | 密度比 $>10^6$ で安定 | 曲率精度の依存性 |
+| **Aguerre et al. (2018)** | Flux reconstruction | 高周波振動の除去 | 既存コードへの統合が困難 |
+
+一貫したアプローチ（CMI、統合 MWI）はオリジナルよりも**数値拡散が大きい**ですが、時間精度を保持し、格子や時間ステップに依存しない解を提供します。残る spurious velocity の主な原因は、**曲率推定の誤差**です。
+
+---
+
+## 結論：設計原則と実用的な推奨事項
+
+圧縮性多相流の面流速設計における最も重要な原則：
+
+> **「駆動圧力勾配に対してのみ Rhie-Chow フィルタを適用せよ」**
+
+表面張力と重力は、面において圧力勾配と**同一の離散演算子**で評価して balanced-force を達成し、MWI 補正はこれらを除いた純粋な駆動圧力に対してのみ適用すべきです。
+
+$$
+\nabla P = \nabla p - \rho\mathbf{g} - \sigma\kappa\nabla\alpha
+$$
+
+### OpenFOAM ユーザーのための三つの改善点
+
+1. **`rAU` の面補間を調和平均に変更する** - `fvSchemes` で `interpolate(rAU) harmonic` と設定します。これにより、大きな密度比における安定性が大幅に向上します。
+
+2. **`ddtCorr` を CMI スタイルの非定常補正に置き換える** - 時間ステップ独立性を確保します。現在の OpenFOAM デフォルトの ddtCorr は近似的であり、 $\Delta t$ 依存性が残ります。
+
+3. **Height-function など高精度な曲率推定を導入する** - Spurious velocity の最終的な限界を決定するのは曲率の精度です。
+
+圧縮性への拡張では、状態方程式 (EOS) を通じた圧力と密度の結合が追加されますが、面流速の MWI 構造自体は非圧縮性の場合と同じです。 ACID (Denner & van Wachem, 2018) のような界面離散化手法が、音響波伝播の正確性を保証します。
+
+---
+
+### 参考文献
+
+- Rhie, C.M. & Chow, W.L. (1983). AIAA Journal 21(11)
+- Jasak, H. (1996). PhD Thesis, Imperial College London
+- Cubero, A. & Fueyo, N. (2007). Numerical Heat Transfer Part B 52(6)
+- Francois, M.M. et al. (2006). JCP 213(1)
+- Mencinger, J. & Zun, I. (2007). JCP 224(1)
+- Denner, F. & van Wachem, B. (2014). Numerical Heat Transfer Part B 65(3)
+- Bartholomew, P. et al. (2018). JCP 375
+- Aguerre, H.J. et al. (2018). JCP 365
+- Komen, E.M.J. et al. (2020). Nuclear Engineering and Design 370

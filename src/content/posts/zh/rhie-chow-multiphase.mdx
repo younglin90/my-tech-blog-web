@@ -1,0 +1,334 @@
+---
+title: "压缩性多相流 Rhie-Chow 插值法详解"
+date: 2026-03-10
+description: "从同置网格的棋盘格问题到平衡力多相流，系统总结 Rhie-Chow 插值的数学本质及 OpenFOAM 实现。"
+tags: [CFD, Multiphase, Rhie-Chow, OpenFOAM, Numerical-Methods]
+series: "compressible-multiphase"
+seriesOrder: 5
+---
+
+# Rhie-Chow 插值：为什么需要它，以及在多相流中为什么棘手
+
+Rhie-Chow 插值（动量加权插值，MWI）是在同置网格（collocated grid）上为了**抑制棋盘格压力振荡**而修正面（face）速度的核心技术。在单相流中这相对简单，但扩展到多相流时，**压力、重力、表面张力以及非定常修正项的一致性处理**变得至关重要。
+
+本文涵盖了从 Rhie & Chow (1983) 的原型到 Bartholomew 等人 (2018) 的统一框架，以及 OpenFOAM 中 interFoam/compressibleInterFoam 的实现细节。
+
+---
+
+## 1. 从半离散动量方程推导面速度
+
+所有 Rhie-Chow 变体公式的起点都是单元中心 $P$ 点处的**半离散（semi-discretized）动量方程**：
+
+$$
+a_P \mathbf{U}_P = H(\mathbf{U}) - V_P \nabla p\big|_P + V_P \rho_P \mathbf{g} + V_P \mathbf{F}_{\sigma,P}
+$$
+
+- $a_P$：对角项系数（包含时间导数、对流、扩散的贡献）
+- $H(\mathbf{U}) = \sum a_{Nb}\mathbf{U}_{Nb} + \text{sources}$：相邻单元的贡献 + 显式源项
+
+求解单元中心速度：
+
+$$
+\mathbf{U}_P = \frac{H}{a_P}\bigg|_P - \frac{V_P}{a_P}\nabla p\big|_P + \frac{V_P}{a_P}\rho_P\mathbf{g} + \frac{V_P}{a_P}\mathbf{F}_{\sigma,P}
+$$
+
+### 问题：棋盘格振荡
+
+如果直接通过**简单线性插值**将单元中心速度投影到面上，压力梯度只会连接 $p_{i-1}$ 和 $p_{i+1}$ 而跳过 $p_i$，从而导致**奇偶解耦（棋盘格现象）**。
+
+### Rhie-Chow 的解决方案
+
+在面上**重构动量方程本身**，用**紧致（compact）的面中心压力梯度**代替宽模板的插值压力梯度：
+
+$$
+\mathbf{U}_f = \overline{\left(\frac{H}{a_P}\right)}_f - \left(\frac{1}{a_P}\right)_f \nabla p\big|_f^{\text{compact}} + \left(\frac{1}{a_P}\right)_f (\rho\mathbf{g})_f + \left(\frac{1}{a_P}\right)_f (\mathbf{F}_\sigma)_f + \delta\mathbf{U}_{\text{transient}}
+$$
+
+其中 $\nabla p\big|_f^{\text{compact}} = (p_Q - p_P)/|\mathbf{d}_{PQ}|$ 是直接利用相邻单元值计算的面梯度，上划线表示单元中心值的线性插值。
+
+**压力修正项** $-(1/a_P)_f[\nabla p|_f - \overline{\nabla p}_f]$ 起到了类似于 $\Delta x^2 \cdot \partial^3 p/\partial x^3$ 的**低通滤波器**作用，从而抑制棋盘格。
+
+---
+
+## 2. 核心论文的贡献
+
+### Rhie & Chow (1983)：原型
+
+发表在 AIAA Journal 上的原文是专为**稳态 SIMPLE 算法**设计的：
+
+$$
+u_f = \hat{u}_f - d_f(p_E - p_P)
+$$
+
+$\hat{u} = u + d \cdot \Delta p$ 是去掉压力梯度的伪速度，$d = V/a_P$。它**仅包含压力修正项**，没有处理非定常项或松弛（relaxation）项。后来 Majumdar (1988) 指出了收敛解对松弛因子的依赖性，Choi (1999) 指出了非定常流中对时间步长的依赖性。
+
+### Jasak (1996)：OpenFOAM 的基石 - H/A 方法
+
+在其伦敦帝国理工学院的博士论文中，系统化了**非结构多面体网格**的有限体积法。其特点是**隐式实现** Rhie-Chow，而没有显式的修正项：
+
+$$
+\mathbf{U} = \frac{H}{A} - \frac{1}{A}\nabla p \quad \Rightarrow \quad \phi_f = \left(\frac{H}{A}\right)_f \cdot \mathbf{S}_f - \left(\frac{1}{A}\right)_f (\nabla p)_f \cdot \mathbf{S}_f
+$$
+
+**HbyA = H/A** 是去除了压力影响的速度预测值，压力方程推导为 $\nabla\cdot[(1/A)_f \nabla p] = \nabla\cdot(H/A)_f$。Rhie-Chow 效应自然产生，因为拉普拉斯离散（面 snGrad）和速度修正的梯度（高斯定理）使用了**不同的模板**。
+
+非定常修正通过 `fvc::ddtCorr` 处理，但**并非完全一致**，因此仍存在时间步长依赖性。
+
+### Cubero & Fueyo (2007)：紧致动量插值 (CMI)
+
+提出了一个**独立于时间步长和松弛因子**的面速度公式。核心思想是**分别且一致地插值动量方程的各个系数**：
+
+$$
+u_f = \bar{u}_f + d_f[\overline{\nabla p}_f - (\nabla p)_f] + \frac{a_t}{a_s + a_t + a_\tau}\bigg|_f (\bar{u}^O_f - u^O_f) + \frac{a_\tau}{a_s + a_t + a_\tau}\bigg|_f (\bar{u}^{\text{prev}}_f - u^{\text{prev}}_f)
+$$
+
+- $a_t = \rho V/\Delta t$：时间系数
+- $a_\tau = \rho V/\Delta\tau$：松弛系数
+- $a_s$：空间系数
+
+**收敛时**，$u_f = u^{\text{prev}}_f$ 且 $u_f = u^O_f$，因此非定常/松弛修正项会自动消失。这保证了稳态解与 $\Delta t$ 及松弛因子无关。
+
+### Bartholomew et al. (2018)：统一框架
+
+在 JCP 375 中提出了**适用于结构化和非结构化网格的统一 MWI 公式**。三个核心贡献：
+
+**1) MWI 系数应仅由空间系数组成。** 如果将时间导数系数 $\rho V/\Delta t$ 放在分母中，当 $\Delta t \to 0$ 时，压力滤波器会变弱，导致棋盘格再次出现。
+
+**2) “驱动压力梯度 (Driving pressure gradient)”概念：** 当存在体心力时，MWI 滤波器应仅作用于 $\nabla P = \nabla p - \mathbf{S}_{\text{total}}$（减去所有源项后的驱动压力梯度）。这是**平衡力（balanced-force）离散**的核心。
+
+**3) 密度加权：** 单元中心压力梯度按 $\nabla P_P/\rho_P$ 加权，面密度使用**调和平均**插值，从而在密度比高达 $10^{24}$ 时仍能获得稳定的结果。
+
+### Denner & van Wachem (2014)：平衡力 VOF
+
+通过在**同一位置（面）使用相同的离散梯度算子**评估 CSF 表面张力 ($\sigma\kappa\nabla\alpha$) 和压力梯度，在静态液滴中实现了**达到求解器容差（tolerance）级**的精确力平衡。该方法在密度比超过 $10^6$ 时依然稳定，并大幅减少了寄生速度（spurious velocity）。
+
+---
+
+## 3. 多相流中四种修正项的处理
+
+多相流面速度的四种修正项各有其物理意义和处理原则。
+
+### 压力修正项（必选）
+
+$$
+\delta\mathbf{U}_p = -\left(\frac{1}{a_P}\right)_f\left[\nabla p\big|_f - \overline{\nabla p}_f\right]
+$$
+
+这是 Rhie-Chow 的本质。它以产生与 $\Delta x^2 \partial^4 p/\partial x^4$ 成正比的质量守恒误差为代价来抑制棋盘格。在多相流中，由于界面附近压力剧烈变化，误差可能增大，因此需要平衡力方法。
+
+### 非定常修正项（非定常流必选）
+
+$$
+\delta\mathbf{U}_t = \left(\frac{t}{a_P^\alpha}\right)_f \mathbf{U}_f^0 - \overline{\left(\frac{t}{a_P^\alpha}\right)\mathbf{U}^0}_f
+$$
+
+如果没有这一项，当 $\Delta t \to 0$ 时 MWI 滤波器强度会发生变化，导致出现**锯齿状压力振荡**。Cubero & Fueyo (2007) 和 Bartholomew 等人 (2018) 建议将时间系数从 MWI 系数中**完全分离**出来，作为独立的修正项处理。
+
+### 重力修正项（多相流必选）
+
+$$
+\delta\mathbf{U}_g = \left(\frac{V}{a_P}\right)_f(\rho\mathbf{g})_f - \overline{\left(\frac{V}{a_P}\right)\rho\mathbf{g}}_f
+$$
+
+在存在密度不连续的多相流中**必须包含**此项。Mencinger & Zun (2007) 证明了如果没有此项，界面处会产生非物理速度尖峰。在静压平衡 ($\mathbf{U}=0$) 下，$\nabla p = \rho\mathbf{g}$ 在离散意义上必须成立。
+
+在 OpenFOAM 中，使用修正压力 $p_{rgh} = p - \rho\mathbf{g}\cdot\mathbf{r}$，并在面上直接以 $-g_h \cdot \text{snGrad}(\rho)$ 的形式进行评估。
+
+### 表面张力修正项（最具争议）
+
+在平衡力方法中，**不应**对表面张力应用 Rhie-Chow 修正。原因显而易见：
+
+> 如果压力梯度和表面张力使用相同的面中心梯度算子进行离散化，
+> 那么在静态平衡时 $\nabla p = \sigma\kappa\nabla\alpha$ 精确成立。
+> 此时添加 Rhie-Chow 修正会破坏平衡，导致寄生电流（parasitic current）。
+
+因此，面上的表面张力通过 $(1/a_P)_f \cdot (\sigma\kappa)_f \cdot \text{snGrad}(\alpha)$ **直接评估**，而与插值的单元中心值之间的差异修正则**设为 0**。
+
+### 修正项总结
+
+| 修正项 | 单相流 | 平衡力多相流 | 未处理时的问题 |
+|--------|:---------:|:----------------------:|--------------|
+| 压力 (Rhie-Chow) | 必选 | 必选 | 棋盘格压力振荡 |
+| 非定常 (Choi) | 必选 (非定常) | 必选 | $\Delta t$ 依赖性，锯齿振荡 |
+| 重力 (Gu) | 密度变化时 | 必选 (面评估) | 界面速度尖峰 |
+| 表面张力 | 不适用 | **零修正** (直接面评估) | 寄生电流 |
+
+---
+
+## 4. 抑制寄生速度的设计原则
+
+寄生电流（寄生速度，spurious velocity）是在具有界面曲率的多相流中，由于表面张力和压力梯度的**离散不平衡**而产生的非物理速度场。其大小与 $\sigma$ 成正比，与 $\mu$ 成反比，在低粘度流动中尤为严重。
+
+### 平衡力算法
+
+Francois 等人 (2006) 提出的核心原则：
+
+> 压力梯度和表面张力的梯度算子必须**离散化方式相同，且评估位置相同**。
+
+具体来说，由于压力方程中的 $\nabla p$ 是用面 snGrad 计算的，因此 CSF 的 $\sigma\kappa\nabla\alpha$ 也必须**在面上使用相同的 snGrad** 计算。遵循这一原则，在给定精确曲率的静态液滴中，可以实现**达到机器精度级**的零速度。
+
+### Rhie-Chow 本身也可能是原因
+
+Mencinger & Zun (2007) 的重要发现：当体心力不连续（密度突变、表面张力）时，压力的四阶导数会变大，Rhie-Chow 修正项本身就会**产生巨大误差**。
+
+因此，Bartholomew 等人 (2018) 的统一框架**不对体心力应用 Rhie-Chow 修正**，而仅对驱动压力梯度应用滤波器：
+
+$$
+\nabla P = \nabla p - \rho\mathbf{g} - \sigma\kappa\nabla\alpha
+$$
+
+尽管如此，**曲率估计的准确度**仍决定了寄生速度的极限，高度函数法 (height-function, Popinet, 2009) 提供了二阶收敛性，最为有效。
+
+---
+
+## 5. 迁移率系数插值：为什么要用调和平均
+
+面上迁移率系数 $(1/a_P)_f$ 的插值对多相流的稳定性有很大影响。由于 $a_P$ 正比于密度 ($a_P \propto \rho$)，在大密度比流动中，界面两侧的 $1/a_P$ 值可能相差数个数量级。
+
+### 算术平均的问题
+
+在水-空气 ($\rho_w/\rho_a = 1000$) 界面处：
+
+$$
+\left(\frac{1}{a_P}\right)_f^{\text{arith}} \approx \frac{1}{2}\left(\frac{1}{a_{P,w}} + \frac{1}{a_{P,a}}\right)
+$$
+
+结果被轻相（空气）较大的 $1/a_P$ 值主导，从而**低估**了重相（水）的惯性。
+
+### 调和平均的解决方案
+
+$$
+\rho_f^* = \frac{2}{\frac{1}{\rho_P} + \frac{1}{\rho_Q}}
+$$
+
+对于水-空气，$\rho_f^* \approx 2.0$，这与算术平均的 $\approx 500.5$ 截然不同。通过**妥善反映对加速度具有更大阻力的相（重相）**，Bartholomew 等人 (2018) 和 Denner 等人 (2022) 在密度比超过 $10^6$ 时仍获得了稳定的结果。
+
+如果使用算术插值，压力方程的拉普拉斯系数与 MWI 修正的密度加权之间会出现**不匹配**，从而产生寄生速度。
+
+---
+
+## 6. OpenFOAM 实现分析
+
+### interFoam：不压缩双相流
+
+OpenFOAM 的 interFoam 基于 Jasak 的 H/A 方法。
+
+**动量方程组装**（不含压力梯度）：
+
+```cpp
+fvVectorMatrix UEqn(
+    fvm::ddt(rho, U)
+  + fvm::div(rhoPhi, U)
+  + turbulence->divDevRhoReff(rho, U)
+);
+```
+
+**计算 rAU 和 HbyA：**
+
+```cpp
+volScalarField rAU("rAU", 1.0/UEqn.A());
+surfaceScalarField rAUf("rAUf", fvc::interpolate(rAU)); // 线性插值（默认值）
+volVectorField HbyA(constrainHbyA(rAU*UEqn.H(), U, p_rgh));
+```
+
+**构建 phiHbyA**（4 种修正项）：
+
+```cpp
+// (H/A)_f · S_f + 非定常修正
+surfaceScalarField phiHbyA("phiHbyA",
+    fvc::flux(HbyA)
+  + fvc::interpolate(rho*rAU)*fvc::ddtCorr(U, phi, Uf)
+);
+
+// 重力 + 表面张力：直接在面上评估
+surfaceScalarField phig(
+    (
+        mixture.surfaceTensionForce()    // sigma*kappa*snGrad(alpha)
+      - ghf*fvc::snGrad(rho)            // -g·r_f * snGrad(rho)
+    ) * rAUf * mesh.magSf()
+);
+
+phiHbyA += phig;
+```
+
+核心要点：
+- `ghf = g & mesh.Cf()`：直接在面中心评估的重力势
+- `mixture.surfaceTensionForce()`：**在面上**计算 $\sigma\kappa\cdot\text{snGrad}(\alpha)$
+- 两种体心力均**直接在面上评估**，近似遵循平衡力原则
+
+**压力方程与通量修正：**
+
+```cpp
+fvScalarMatrix p_rghEqn(
+    fvm::laplacian(rAUf, p_rgh) == fvc::div(phiHbyA)
+);
+p_rghEqn.solve();
+phi = phiHbyA - p_rghEqn.flux();
+```
+
+由于 `pEqn.flux()` 是 $-(1/A)_f \cdot \text{snGrad}(p_{rgh}) \cdot |S_f|$，最终通量是**无压力速度 + 面评估体心力 + 面评估压力梯度**的组合。拉普拉斯算子使用面 snGrad 而速度修正梯度使用单元面值，这种**模板不对称性**隐式地提供了 Rhie-Chow 效应。
+
+**`ddtCorr` 的局限性：** `fvc::ddtCorr(U, phi)` 计算的是 $(1/\Delta t)\cdot[\phi_{\text{old}} - (\mathbf{U}_{\text{old}})_f\cdot\mathbf{S}_f]$。与 CMI 不同，它**并非完全一致**，因此仍存在时间步长依赖性，如 Komen 等人 (2020) 所证，这可能会影响时间精确度。
+
+### compressibleInterFoam：压缩双相流
+
+phiHbyA 的构建与 interFoam 相同，但**压力方程由三部分组成**：
+
+$$
+\nabla\cdot\mathbf{U} = -\left(\frac{\alpha_1}{\rho_1}\frac{D\rho_1}{Dt} + \frac{\alpha_2}{\rho_2}\frac{D\rho_2}{Dt}\right)
+$$
+
+在不压缩部分（拉普拉斯项）中加入了各相的压缩性项。通过 `phid = fvc::interpolate(psi)*phi` ($\psi = d\rho/dp$) 实现压力-密度耦合，并在 $\alpha$ 方程中加入微分压缩性项 `dgdt` 以反映两相密度变化率的差异。
+
+---
+
+## 7. 方法对比
+
+| 方法 | 核心贡献 | 优点 | 缺点 |
+|------|----------|------|------|
+| **Rhie & Chow (1983)** | 原生 MWI | 简单、有效 | 仅限稳态；依赖 $\Delta t$/松弛因子 |
+| **Jasak (1996)** | H/A 隐式实现 | 通用、适用于非结构网格 | ddtCorr 不完全 |
+| **Cubero & Fueyo (2007)** | 依据 CMI 系数的一致插值 | 完全独立于 $\Delta t$/松弛因子 | 数值扩散增加 |
+| **Bartholomew et al. (2018)** | 统一框架 | 非结构网格泛化 | 实现复杂度增加 |
+| **Denner & van Wachem (2014)** | 平衡力 VOF | 密度比 $>10^6$ 时稳定 | 依赖曲率准确度 |
+| **Aguerre et al. (2018)** | 通量重构 (Flux reconstruction) | 消除高频振荡 | 难以整合进现有代码 |
+
+一致性方法（CMI、统一 MWI）虽然比原版**数值扩散更大**，但保留了时间精确度，并提供了与网格/时间步长无关的解。残余寄生速度的主要原因是**曲率估计误差**。
+
+---
+
+## 结论：设计原则与实用建议
+
+在设计压缩性多相流的面速度时，最重要的原则是：
+
+> **“仅对驱动压力梯度应用 Rhie-Chow 滤波器。”**
+
+表面张力和重力应在面上使用与压力梯度**相同的离散算子**进行评估以实现平衡力，而 MWI 修正应仅作用于排除这些力后的纯驱动压力：
+
+$$
+\nabla P = \nabla p - \rho\mathbf{g} - \sigma\kappa\nabla\alpha
+$$
+
+### 给 OpenFOAM 用户的三点改进建议
+
+1. **将 `rAU` 的面插值改为调和平均** —— 在 `fvSchemes` 中设置 `interpolate(rAU) harmonic`。这将大幅提高在大密度比下的稳定性。
+
+2. **用 CMI 风格的非定常修正替换 `ddtCorr`** —— 确保时间步长独立性。目前 OpenFOAM 默认的 ddtCorr 是近似的，仍存在 $\Delta t$ 依赖性。
+
+3. **引入高度函数法等高精度曲率估计** —— 曲率准确度决定了寄生速度的终极极限。
+
+在压缩性扩展中，虽然通过状态方程 (EOS) 加入了压力-密度耦合，但面速度的 MWI 结构本身与不压缩流动相同。像 ACID (Denner & van Wachem, 2018) 这样的界面离散技术可以保证声波传播的准确性。
+
+---
+
+### 参考文献
+
+- Rhie, C.M. & Chow, W.L. (1983). AIAA Journal 21(11)
+- Jasak, H. (1996). PhD Thesis, Imperial College London
+- Cubero, A. & Fueyo, N. (2007). Numerical Heat Transfer Part B 52(6)
+- Francois, M.M. et al. (2006). JCP 213(1)
+- Mencinger, J. & Zun, I. (2007). JCP 224(1)
+- Denner, F. & van Wachem, B. (2014). Numerical Heat Transfer Part B 65(3)
+- Bartholomew, P. et al. (2018). JCP 375
+- Aguerre, H.J. et al. (2018). JCP 365
+- Komen, E.M.J. et al. (2020). Nuclear Engineering and Design 370

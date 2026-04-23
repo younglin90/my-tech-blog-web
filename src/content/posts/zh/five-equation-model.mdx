@@ -1,0 +1,262 @@
+---
+title: "5-Equation Model 实现指南：用 Python 编写多相流求解器"
+date: 2026-03-07
+description: "使用 Python 手动实现 5-equation diffuse interface model，并模拟一维冲击波-气泡相互作用问题。"
+tags: [CFD, Multiphase, Diffuse-Interface, Python, Implementation]
+series: "compressible-multiphase"
+seriesOrder: 4
+---
+
+# 手动实现 5-Equation Model
+
+仅仅靠理论是不够的。
+在本文中，我们将使用 Python 手动实现一维 **5-equation diffuse interface model**，
+并模拟冲击波穿透气泡的问题。
+
+## 控制方程整理
+
+一维 5-equation model 的守恒变量和通量：
+
+$$
+\mathbf{U} = \begin{bmatrix} \alpha_1 \rho_1 \\ \alpha_2 \rho_2 \\ \rho u \\ E \\ \alpha_1 \end{bmatrix}, \quad
+\mathbf{F} = \begin{bmatrix} \alpha_1 \rho_1 u \\ \alpha_2 \rho_2 u \\ \rho u^2 + p \\ (E+p)u \\ 0 \end{bmatrix}
+$$
+
+第 5 个方程 ($\alpha_1$) 是非守恒型的，因此需要单独处理：
+
+$$
+\frac{\partial \alpha_1}{\partial t} + u \frac{\partial \alpha_1}{\partial x} = 0
+$$
+
+## 状态方程：Stiffened Gas EOS
+
+两种流体都使用 stiffened gas EOS：
+
+$$
+p_k = (\gamma_k - 1)\rho_k e_k - \gamma_k p_{\infty,k}
+$$
+
+使用混合规则 (mixture rule) 计算总压：
+
+$$
+p = \frac{\rho e - \sum_k \alpha_k \frac{\gamma_k p_{\infty,k}}{\gamma_k - 1}}{\sum_k \frac{\alpha_k}{\gamma_k - 1}}
+$$
+
+## Python 实现
+
+### 初始设置与 EOS
+
+```python
+import numpy as np
+import matplotlib.pyplot as plt
+
+# Domain
+N = 1000
+x = np.linspace(0, 1, N)
+dx = x[1] - x[0]
+
+# EOS parameters
+# Fluid 1: Air (ideal gas)
+gamma1, pinf1 = 1.4, 0.0
+# Fluid 2: Water (stiffened gas)
+gamma2, pinf2 = 4.4, 6e8
+
+def pressure(alpha1, arho1, arho2, E, u):
+    """从守恒变量计算混合压力。"""
+    alpha2 = 1.0 - alpha1
+    rho = arho1 + arho2
+    ke = 0.5 * rho * u**2
+    rhoe = E - ke
+
+    num = rhoe - alpha1*gamma1*pinf1/(gamma1-1) - alpha2*gamma2*pinf2/(gamma2-1)
+    den = alpha1/(gamma1-1) + alpha2/(gamma2-1)
+    return num / den
+
+def sound_speed(alpha1, arho1, arho2, p):
+    """计算混合声速 (Wood 公式)。"""
+    alpha2 = 1.0 - alpha1
+    rho = arho1 + arho2
+    rho1 = arho1 / np.maximum(alpha1, 1e-12)
+    rho2 = arho2 / np.maximum(alpha2, 1e-12)
+
+    c1sq = gamma1 * (p + pinf1) / rho1
+    c2sq = gamma2 * (p + pinf2) / rho2
+
+    # Wood 公式
+    inv_rhoc2 = alpha1/(rho1*c1sq) + alpha2/(rho2*c2sq)
+    return np.sqrt(1.0 / (rho * inv_rhoc2))
+```
+
+### HLLC 通量计算
+
+```python
+def hllc_flux(UL, UR, alpha1L, alpha1R):
+    """4 个守恒方程的 HLLC 数值通量。"""
+    arho1L, arho2L, momL, EL = UL
+    arho1R, arho2R, momR, ER = UR
+
+    rhoL = arho1L + arho2L
+    rhoR = arho1R + arho2R
+    uL = momL / rhoL
+    uR = momR / rhoR
+    pL = pressure(alpha1L, arho1L, arho2L, EL, uL)
+    pR = pressure(alpha1R, arho1R, arho2R, ER, uR)
+    cL = sound_speed(alpha1L, arho1L, arho2L, pL)
+    cR = sound_speed(alpha1R, arho1R, arho2R, pR)
+
+    # 波速估计
+    SL = min(uL - cL, uR - cR)
+    SR = max(uL + cL, uR + cR)
+    Sstar = (pR - pL + rhoL*uL*(SL-uL) - rhoR*uR*(SR-uR)) \
+          / (rhoL*(SL-uL) - rhoR*(SR-uR))
+
+    FL = np.array([arho1L*uL, arho2L*uL, momL*uL + pL, (EL+pL)*uL])
+    FR = np.array([arho1R*uR, arho2R*uR, momR*uR + pR, (ER+pR)*uR])
+
+    if SL >= 0:
+        return FL, Sstar
+    elif Sstar >= 0:
+        coeff = rhoL * (SL - uL) / (SL - Sstar)
+        UstarL = coeff * np.array([
+            arho1L/rhoL,
+            arho2L/rhoL,
+            Sstar,
+            EL/rhoL + (Sstar - uL)*(Sstar + pL/(rhoL*(SL-uL)))
+        ])
+        return FL + SL*(UstarL - UL), Sstar
+    elif SR > 0:
+        coeff = rhoR * (SR - uR) / (SR - Sstar)
+        UstarR = coeff * np.array([
+            arho1R/rhoR,
+            arho2R/rhoR,
+            Sstar,
+            ER/rhoR + (Sstar - uR)*(Sstar + pR/(rhoR*(SR-uR)))
+        ])
+        return FR + SR*(UstarR - UR), Sstar
+    else:
+        return FR, Sstar
+```
+
+### 时间积分 (一阶)
+
+```python
+def solve(U, alpha1, dx, t_end, cfl=0.5):
+    """前向欧拉时间积分。"""
+    t = 0.0
+    while t < t_end:
+        rho = U[0] + U[1]
+        u = U[2] / rho
+        p = pressure(alpha1, U[0], U[1], U[3], u)
+        c = sound_speed(alpha1, U[0], U[1], p)
+
+        dt = cfl * dx / np.max(np.abs(u) + c)
+        if t + dt > t_end:
+            dt = t_end - t
+
+        # 计算单元界面的通量
+        flux = np.zeros((4, N+1))
+        uface = np.zeros(N+1)
+
+        for i in range(N+1):
+            iL = max(i-1, 0)
+            iR = min(i, N-1)
+            UL_local = U[:4, iL]
+            UR_local = U[:4, iR]
+            flux[:, i], uface[i] = hllc_flux(
+                UL_local, UR_local, alpha1[iL], alpha1[iR]
+            )
+
+        # 更新守恒变量
+        for k in range(4):
+            U[k, 1:-1] -= dt/dx * (flux[k, 2:-1] - flux[k, 1:-2])
+
+        # 更新 alpha1 (非守恒，迎风格式)
+        for i in range(1, N-1):
+            if uface[i] >= 0:
+                alpha1[i] -= dt/dx * uface[i] * (alpha1[i] - alpha1[i-1])
+            else:
+                alpha1[i] -= dt/dx * uface[i] * (alpha1[i+1] - alpha1[i])
+
+        alpha1 = np.clip(alpha1, 1e-8, 1-1e-8)
+        t += dt
+
+    return U, alpha1
+```
+
+### 初始条件：冲击波-气泡
+
+```python
+# 初始条件：冲击波撞击水中的气泡
+U = np.zeros((4, N))
+alpha1 = np.zeros(N)
+
+for i in range(N):
+    if x[i] < 0.25:
+        # 波后水 (高压)
+        rho2 = 1100.0; u_val = 50.0; p_val = 1e9
+        alpha1[i] = 1e-8
+        arho1 = alpha1[i] * 1.0  # 可忽略的空气
+        arho2 = (1 - alpha1[i]) * rho2
+    elif 0.4 < x[i] < 0.6:
+        # 气泡
+        rho1 = 1.0; u_val = 0.0; p_val = 1e5
+        alpha1[i] = 1 - 1e-8
+        arho1 = alpha1[i] * rho1
+        arho2 = (1 - alpha1[i]) * 1000.0
+    else:
+        # 环境水
+        rho2 = 1000.0; u_val = 0.0; p_val = 1e5
+        alpha1[i] = 1e-8
+        arho1 = alpha1[i] * 1.0
+        arho2 = (1 - alpha1[i]) * rho2
+
+    rho = arho1 + arho2
+    E = compute_total_energy(alpha1[i], arho1, arho2, p_val, u_val)
+
+    U[0, i] = arho1
+    U[1, i] = arho2
+    U[2, i] = rho * u_val
+    U[3, i] = E
+```
+
+## 注意事项
+
+### 1. $\alpha$ 的范围限制
+
+如果 $\alpha_1$ 正好为 0 或 1，EOS 计算中会出现除以零的错误。
+始终使用 $\epsilon < \alpha_1 < 1 - \epsilon$ ($\epsilon \sim 10^{-8}$) 进行 clipping。
+
+### 2. 混合声速：Wood 公式
+
+混合区域的声速可能比直觉上的要低得多。
+这是正常的物理现象，并且会影响 CFL 条件。
+
+$$
+\frac{1}{\rho c^2} = \frac{\alpha_1}{\rho_1 c_1^2} + \frac{\alpha_2}{\rho_2 c_2^2}
+$$
+
+在 $\alpha_1 = 0.5$ 附近，$c_{mix}$ 会比两种流体的声速都 **小得多**。
+
+### 3. 向高阶精确度扩展
+
+上述代码是 1 阶精确度的。在实际研究中：
+
+- **MUSCL 重构** + slope limiter 实现 2 阶
+- **WENO** 重构实现 5 阶以上
+- **Runge-Kutta** 时间积分提高时间精确度
+
+## 结果解释
+
+运行模拟后，冲击波在压缩气泡的同时：
+
+1. **透射冲击波 (transmitted shock)** 向气泡后方推进
+2. **反射稀疏波 (reflected rarefaction)** 向左移动
+3. 气泡迅速 **压缩**，内部压力上升
+4. 在后壁形成 **射流 (jet)** (在 2D/3D 中)
+
+这种现象是水下爆炸、冲击波碎石术等领域的关键物理过程。
+
+## 下一步
+
+在下一篇文章中，我准备了一些 **像游戏一样** 学习数值分析基础概念的互动内容。
+您可以亲自体验数值稳定性、CFL 条件等。

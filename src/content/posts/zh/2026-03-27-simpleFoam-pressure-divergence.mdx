@@ -1,0 +1,167 @@
+---
+title: "[CFD Q&A] 当 simpleFoam 压力残差无法收敛时"
+date: 2026-03-27
+description: "解决 SIMPLE 算法发散的实战记录 —— 关键在于松弛因子的设置"
+tags: ["CFD实战", "QA", "OpenFOAM", "SIMPLE", "收敛"]
+draft: false
+---
+
+上周遇到了一个非常耗时的问题。在运行 simpleFoam 时，压力残差（pressure residual）始终无法降至 `1e-3` 以下，反而开始上升。起初我以为是网格问题，但最终发现症结在于松弛因子（relaxation factor）。
+
+## 问题现象
+
+- **软件**: OpenFOAM v2312
+- **几何**: 2D 矩形通道，inlet–outlet 边界
+- **湍流模型**: k-ε (standard)
+- **求解器**: simpleFoam (稳态)
+
+在前 20~30 次迭代（iteration）中，收敛情况良好，但随后压力残差突然开始跳动。
+
+```
+Time = 50
+
+smoothSolver:  Solving for Ux, Initial residual = 0.0023, Final residual = 1.2e-5, No Iterations 3
+smoothSolver:  Solving for Uy, Initial residual = 0.0019, Final residual = 9.8e-6, No Iterations 3
+GAMG:  Solving for p, Initial residual = 0.412, Final residual = 0.038, No Iterations 8
+time step continuity errors : sum local = 4.2e-5, global = 1.1e-5, cumulative = 3.4e-4
+...
+Time = 80
+
+GAMG:  Solving for p, Initial residual = 0.891, Final residual = 0.21, No Iterations 20
+```
+
+速度（velocity）收敛良好，但压力（pressure）始终不稳定。这是典型的压力-速度耦合不稳定性表现。
+
+## 原因分析过程
+
+### 第一步：检查网格质量
+
+首先运行 `checkMesh`。
+
+```bash
+checkMesh -case .
+```
+
+最大非正交性（non-orthogonality）为 32 度，最大扭曲度（max skewness）为 0.8 —— 表现尚可。看来网格不是主要问题。
+
+### 第二步：检查边界条件
+
+入口（inlet）压力设为 `zeroGradient`，出口（outlet）设为 `fixedValue 0`。这是标准设置，没有问题。
+
+但在检查初始 p 场时，发现入口处存在异常大的数值。这是之前使用 `funkySetFields` 进行实验后留下的残留值。
+
+### 第三步：检查 fvSolution
+
+```cpp
+// fvSolution (原始设置)
+relaxationFactors
+{
+    fields
+    {
+        p               0.7;
+    }
+    equations
+    {
+        U               0.9;
+        k               0.7;
+        epsilon         0.7;
+    }
+}
+```
+
+U=0.9 是一个相当激进的数值。在 SIMPLE 算法中，提高速度松弛可以加快收敛，但如果压力更新跟不上，就会导致发散。
+
+两个原因叠加导致了发散：
+1. 松弛因子设置过高
+2. 初始 p 场中存在错误的残留值
+
+## 解决方案
+
+### 降低松弛因子
+
+```cpp
+// fvSolution (修改后)
+relaxationFactors
+{
+    fields
+    {
+        p               0.3;
+    }
+    equations
+    {
+        U               0.7;
+        k               0.5;
+        epsilon         0.5;
+    }
+}
+```
+
+初次运行算例时，建议从保守的数值开始。确认收敛后，再逐渐提高。
+
+### 初始化 p 场
+
+```bash
+# 彻底初始化 0 目录下的 p 文件
+cp 0.orig/p 0/p
+```
+
+或者直接打开 `0/p` 文件，将 `internalField` 设置为 `uniform 0;`。
+
+```cpp
+// 0/p
+dimensions      [0 2 -2 0 0 0 0];
+internalField   uniform 0;
+
+boundaryField
+{
+    inlet
+    {
+        type            zeroGradient;
+    }
+    outlet
+    {
+        type            fixedValue;
+        value           uniform 0;
+    }
+    walls
+    {
+        type            zeroGradient;
+    }
+}
+```
+
+## 验证
+
+修改后重新运行，结果如下：
+
+```
+Time = 50
+
+smoothSolver:  Solving for Ux, Initial residual = 0.0018, Final residual = 8.3e-6, No Iterations 3
+GAMG:  Solving for p, Initial residual = 0.089, Final residual = 0.0041, No Iterations 5
+time step continuity errors : sum local = 2.1e-6, global = 4.3e-7, cumulative = 8.9e-6
+
+Time = 200
+
+GAMG:  Solving for p, Initial residual = 3.2e-4, Final residual = 1.1e-5, No Iterations 3
+```
+
+在迭代 200 次左右时，压力残差稳定降至 `1e-4` 水平。
+
+## 经验总结
+
+**simpleFoam 收敛检查清单** —— 按此顺序检查可解决大部分问题：
+
+1. **首查初始条件**：确认 `0/` 目录下的 p、U 场是否符合预期。如果存在旧实验残留，务必初始化。
+
+2. **松弛因子要保守**：首次运行建议使用 `U=0.7, p=0.3` 的默认值。安全确认收敛后再提速。尤其是 `p` 的松弛因子应保持较低，以稳定 SIMPLE 循环。
+
+3. **区分速度与压力收敛**：如果 U 残差低而 p 发散，通常是松弛因子的问题。如果两者都发散，应先检查网格或边界条件。
+
+4. **观察 GAMG 迭代次数**：如果在同一次外迭代中，求解 p 所需的内迭代次数突然增加，说明收敛方向可能出现了偏差。
+
+由于压力修正循环的特性，SIMPLE 算法对松弛因子非常敏感。初次运行应始终保持保守 —— 虽然起步慢，但确保稳定收敛后再加速，最终效率反而更高。
+
+---
+
+*如果你也遇到了类似的问题，欢迎在评论区分享你的环境（版本、几何、湍流模型）。具体案例可能需要不同的处理方式。*

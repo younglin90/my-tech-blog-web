@@ -1,0 +1,182 @@
+---
+title: "在 O(N log N) 内求解壁面距离：Eikonal 方程与快速行进法"
+date: 2026-04-22
+description: "RANS 湍流模型必需的壁面距离输入及其高效计算算法"
+tags: ["CFD", "算法", "Eikonal", "Fast-Marching", "网格"]
+draft: false
+---
+
+import { EikonalFrontPropagation } from '@/components/post-viz/2026-04-22-wall-distance-eikonal-fast-marching/EikonalFrontPropagation'
+
+1996年，加州大学伯克利分校的 James Sethian 正在完善一种用于追踪医学影像中血管边界的算法。其成果——快速行进法（Fast Marching Method），如今却在一些意想不到的地方发挥着作用。每当 RANS（雷诺平均纳维-斯托克斯）求解器在飞机机翼周围运行时，正是这种算法在为每个网格点生成壁面距离（wall distance）。Spalart-Allmaras 模型和 k-ω SST 模型都要求将“最近的壁面在哪里”这一数值作为每个网格的输入。本文将总结朴素求解方法的成本、将问题转化为 Eikonal 方程（形式为 |∇d|=1/F 的双曲型 PDE）的思想，以及如何利用 Dijkstra 算法的连续版——快速行进法，在 $O(N \log N)$ 时间内获得解。
+
+## 为什么湍流模型需要壁面距离
+
+边界层湍流的统计量强烈依赖于距壁面的距离 $y$。RANS 模型通过代数式引入这种依赖性。Spalart-Allmaras 模型在破坏（destruction）项中直接使用 $d_w$（壁面距离）。k-ω SST 模型则在混合函数 $F_1, F_2$ 中包含 $d_w^2$。在与 LES 的混合模型（DES, DDES, IDDES）中，壁面距离也起着开关的作用。
+
+问题在于，$d_w$ 是网格的几何量。如果网格发生移动或变形，则需要在每个时间步重新计算。旋转机械（压缩机、泵）中转子-定子边界存在相对运动的情况就属于此类。
+
+## 朴素方法的陷阱
+
+直观的想法是“计算每个单元到所有壁面的距离并取最小值”。实际上，教科书中的示例通常采用这种方法。
+
+其计算成本为 $O(N_{\text{cell}} \cdot N_{\text{wall}})$。假设求解整架飞机，如果有 10M 个单元和 0.5M 个壁面，则需要进行 5 万亿次距离计算。如果每个时间步都运行一次，仿真将永远无法完成。虽然使用 KD-tree 等空间数据结构可以将成本降低到 $O(N_{\text{cell}} \log N_{\text{wall}})$，但对于复杂形状的壁面邻近查询，负担依然沉重。
+
+## 转变思路：Eikonal 方程
+
+我们将壁面距离视为 PDE 的解。一个“在壁面处为 0，且在所有方向上梯度模长均为 1”的函数正是距离场。
+
+$$
+|\nabla d(\mathbf{x})| = \frac{1}{F(\mathbf{x})}, \qquad d|_{\Gamma_w} = 0
+$$
+
+这里，$d$ 是到达壁面的“时间”，$F$ 是传播速度（默认取 1），$\Gamma_w$ 是壁面集合。固定 $F=1$，则 $d$ 就是欧几里得距离。
+
+该方程是双曲型的（hyperbolic）。信息沿特征线（从壁面延伸出的直线）单向流动。这种单向性是高效算法的关键。利用“值仅从已确定的点传入”这一性质，每个点仅需访问一次。
+
+## 快速行进法：连续版 Dijkstra
+
+Sethian 的思想可以概括为两步：
+
+1. 将所有网格点分为三类集合：已接受（Accepted）、待考虑（Considered）和远处（Far）。
+2. 从待考虑集合中找出到达时间最小的点，将其转入已接受集合，并更新其邻居。
+
+为了快速取出最小值，使用最小堆（min-heap）是很自然的。这与图最短路径算法 Dijkstra 的结构相同。区别在于邻居的更新方式。在图中是简单的加法，而在 Eikonal 方程中，需要求解上风（upwind）二次方程来获得值。
+
+在 2D 结构化网格中，更新公式如下：
+
+$$
+(T - T_x)^2 + (T - T_y)^2 = \left(\frac{h}{F}\right)^2
+$$
+
+其中 $T_x, T_y$ 分别是水平和垂直方向的上风邻居值（取邻居中的较小值），$h$ 是网格间距。在两个根中，仅采纳满足 $T \ge \max(T_x, T_y)$ 的那一个。这一条件被称为因果性（causality）。它强制执行了 Eikonal 方程的单向性，确保值仅来自“已确定且更小”的邻居。
+
+如果信息仅从一个方向传入（例如其他邻居为 Far），则方程简化为：
+
+$$
+T = T_x + \frac{h}{F}
+$$
+
+由于最小堆的插入和删除操作均为 $O(\log N)$，且每个点平均被处理常数次，因此总成本为 $O(N \log N)$。
+
+## Python 实现
+
+```python
+import heapq
+import numpy as np
+
+INF = np.inf
+FAR, CONSIDERED, ACCEPTED = 0, 1, 2
+
+
+def solve_eikonal_neighbor(T, j, i, h, F):
+    """求解单个点的二次上风解。"""
+    ny, nx = T.shape
+    Tx = min(
+        T[j, i - 1] if i > 0 else INF,
+        T[j, i + 1] if i < nx - 1 else INF,
+    )
+    Ty = min(
+        T[j - 1, i] if j > 0 else INF,
+        T[j + 1, i] if j < ny - 1 else INF,
+    )
+    a, b = sorted([Tx, Ty])
+    inv_f = h / F
+    if not np.isfinite(b) or b >= a + inv_f:
+        return a + inv_f
+    diff = b - a
+    disc = 2 * inv_f * inv_f - diff * diff
+    if disc < 0:
+        return a + inv_f
+    return 0.5 * (a + b + np.sqrt(disc))
+
+
+def march_wall_distance(walls, h=1.0, F=1.0):
+    """在 2D 结构化网格上通过快速行进法计算壁面距离。"""
+    ny, nx = walls.shape
+    T = np.full_like(walls, INF, dtype=np.float64)
+    status = np.zeros_like(walls, dtype=np.uint8)
+    heap = []
+
+    T[walls] = 0.0
+    status[walls] = ACCEPTED
+
+    # 将壁面的四向邻居初始化为 Considered
+    for j in range(ny):
+        for i in range(nx):
+            if not walls[j, i]:
+                continue
+            for dj, di in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                nj, ni = j + dj, i + di
+                if 0 <= nj < ny and 0 <= ni < nx and status[nj, ni] != ACCEPTED:
+                    new_t = solve_eikonal_neighbor(T, nj, ni, h, F)
+                    if new_t < T[nj, ni]:
+                        T[nj, ni] = new_t
+                        status[nj, ni] = CONSIDERED
+                        heapq.heappush(heap, (new_t, nj, ni))
+
+    while heap:
+        t, j, i = heapq.heappop(heap)
+        if status[j, i] == ACCEPTED:
+            continue  # 旧条目
+        status[j, i] = ACCEPTED
+        for dj, di in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nj, ni = j + dj, i + di
+            if not (0 <= nj < ny and 0 <= ni < nx):
+                continue
+            if status[nj, ni] == ACCEPTED:
+                continue
+            new_t = solve_eikonal_neighbor(T, nj, ni, h, F)
+            if new_t < T[nj, ni]:
+                T[nj, ni] = new_t
+                status[nj, ni] = CONSIDERED
+                heapq.heappush(heap, (new_t, nj, ni))
+    return T
+
+
+# 验证：平面槽道
+walls = np.zeros((61, 121), dtype=bool)
+walls[0, :] = True
+walls[-1, :] = True
+
+d = march_wall_distance(walls, h=1.0)
+
+# 中心线 (y=30) 处的壁面距离应为 30
+print(f"中心线壁面距离 = {d[30, 60]:.4f} (准确值 30.0)")
+print(f"最大相对误差 = {np.max(np.abs(d[30, :] - 30)):.4f}")
+```
+
+在平面槽道中，解析解 $d=\min(y, H-y)$ 能够清晰呈现。上述代码的中心线输出几乎完全等于 30.0。虽然 2D 的一阶上风近似在拐角附近存在微小误差，但对于工程实践已足够。
+
+## 观察波阵面传播
+
+在下方的模拟中亲自操作一下。先点击“单圆柱”，尝试提高速度 $F$ 或更换障碍物。
+
+<EikonalFrontPropagation />
+
+黄色色带是当前正在更新的待考虑（Considered）集合，即“波阵面（front）”本身。波阵面从壁面和圆柱边界同时出发，在相遇处确定距离。在双圆柱模式中，两个波阵面的碰撞线形成于两个圆柱的中轴线（medial axis）附近。狭缝壁模式展示了波阵面如何绕过间隙到达背面。这种“绕行”正是它与朴素欧几里得距离的区别所在。在真实的飞机或涡轮几何形状中，壁面后方的湍流模型输入要求的正是这种绕行后的距离。
+
+## 扩展到非结构化网格
+
+虽然结构化网格上的公式很优美，但 CFD 的另一半建立在非结构化网格之上。Sethian 和 Vladimirsky (2000) 解决了这个问题。点 $\mathbf{x}_0$ 处的值通过包含该点的单纯形（simplex，如三角形、四面体）的其他顶点值获得。
+
+通过求解由方向向量 $\mathbf{p}_r = \mathbf{x}_r - \mathbf{x}_0$ 组成的矩阵 $P$ 和方向导数 $v_r = (T_0 - T_r)/|\mathbf{p}_r|$ 构成的正规方程组，Eikonal 方程 $|\nabla T|^2 = 1/F^2$ 转化为关于 $T_0$ 的二次方程。仅采纳近似梯度指向单纯形内部的那个根。这种单纯形因果性（simplex causality）将结构化网格的简单上风条件推广到了通用情况。
+
+## 实践检查清单
+
+- **运动网格**：与其进行全局重新计算，不如对变形剧烈的区域进行延迟更新（lazy update）。快速行进法是顺序执行的，难以并行化，但窄带（narrow band）变体则较易实现。
+- **周期性边界条件 (Periodic BC)**：必须连接图结构，使值能从周期性的一侧传回壁面。否则，周期性边界附近的壁面距离会被高估。
+- **多种材质**：在转子-定子分析中，将两组运动壁面都包含在 $\Gamma_w$ 中。在距离剧烈变化的区域（如涡轮叶尖间隙），网格必须足够细密。
+- **P-Poisson 替代方案**：隐式求解 $|\nabla d|^p = 1$ ($p=4 \sim 10$) 虽然比快速行进法慢，但更易并行化。在大规模并行求解器中，这种方法往往更受青睐。
+- **局部负误差**：根据数值离散方式的不同，极薄边界层处的 $d_w$ 可能会出现负值。务必使用 $\max(d_w, 0)$ 进行限制。
+
+## 核心三要点
+
+- 壁面距离可视为 Eikonal 方程 $|\nabla d|=1/F$ 的解，这一视角开启了 $O(N \log N)$ 算法的大门。
+- 快速行进法利用最小堆管理待考虑集合，通过逐点求解上风二次方程来确定波阵面。
+- 根据运动网格、周期性边界和并行化需求，选择快速行进法本身或 P-Poisson 松弛法。
+
+## 参考资料
+
+- J. A. Sethian, A. Vladimirsky, "Fast methods for the Eikonal and related Hamilton–Jacobi equations on unstructured meshes", *PNAS* 97(11), 5699–5703, 2000.
+- P. Tucker, "Assessment of geometric multilevel convergence robustness and a wall distance method for flows with multiple internal boundaries", *Applied Mathematical Modelling* 22, 1998.

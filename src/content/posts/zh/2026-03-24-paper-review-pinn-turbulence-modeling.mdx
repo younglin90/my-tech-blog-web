@@ -1,0 +1,116 @@
+---
+title: "[论文回顾] Physics-Informed Neural Networks for Turbulence Modeling"
+date: 2026-03-24
+description: "一种利用将物理定律直接嵌入损失函数的神经网络，从稀疏数据中重构流场的新方法"
+tags: ["논문리뷰", "CFD", "PINN", "딥러닝", "난류모델"]
+draft: false
+---
+
+## 论文信息
+
+- **作者:** Raissi, M., Perdikaris, P., Karniadakis, G. E.
+- **期刊:** Journal of Computational Physics, Vol. 378, pp. 686–707, 2019
+- **DOI:** [10.1016/j.jcp.2018.10.045](https://doi.org/10.1016/j.jcp.2018.10.045)
+- **arXiv:** [1711.10561](https://arxiv.org/abs/1711.10561)
+
+---
+
+## 一句话总结
+
+该论文提出了一种通过将 Navier-Stokes 方程直接嵌入（Physics-Informed）神经网络损失函数的方法，实现**仅通过几个压力传感器即可反求整个速度场**。
+
+---
+
+## 研究背景
+
+传统的 CFD 处于两个极端之间。
+
+**传统方法 (k-ε, k-ω SST):** 依赖于经验闭合系数。当雷诺数或几何形状发生变化时，需要重新调整系数，泛化能力有限。
+
+**纯数据驱动的深度学习:** 需要大量的标注数据，且训练好的模型**无法保证质量守恒或动量守恒**。即使预测结果在物理上完全讲不通，损失函数也无法感知。
+
+PINNs 是弥合这一差距的尝试。即使数据稀疏，物理定律也能起到正则化（regularizer）的作用。
+
+---
+
+## 核心方法论
+
+PINN 的总损失函数是两项之和：
+
+$$\mathcal{L} = \mathcal{L}_{\text{data}} + \lambda \, \mathcal{L}_{\text{physics}}$$
+
+**数据损失** $\mathcal{L}_{\text{data}}$ 是观测值（例如压力传感器）与神经网络预测值之间的差异。
+
+**物理损失** $\mathcal{L}_{\text{physics}}$ 是不可压缩 Navier-Stokes 方程的残差（residual）：
+
+$$\mathcal{L}_{\text{physics}} = \left\| \frac{\partial \mathbf{u}}{\partial t} + (\mathbf{u} \cdot \nabla)\mathbf{u} + \nabla p - \frac{1}{Re}\nabla^2\mathbf{u} \right\|^2 + \left\| \nabla \cdot \mathbf{u} \right\|^2$$
+
+第二项是连续性方程（质量守恒）。由于神经网络被训练为使该残差趋于 0，因此预测值始终近似满足 N-S 方程。
+
+导数是通过 PyTorch/TensorFlow 的**自动微分 (automatic differentiation)** 计算的，不需要额外的数值离散化。
+
+---
+
+## 主要结果
+
+| 案例 | 条件 | 结果 |
+|--------|------|------|
+| 2D 圆柱绕流 | Re=100, 仅使用压力传感器 | 速度场重构误差 < 1%, 准确复原涡旋频率 |
+| 顶盖驱动流 (Lid-driven cavity) | Re=1000 | 速度剖面与 DNS 结果的一致性在 1% 以内 |
+| 雷诺数反演 | 仅通过速度数据 | 成功将 Re 值本身识别为学习参数 |
+
+特别是**反问题 (inverse problem)** 的解决能力令人印象深刻。可以从流场中反推雷诺数，或者仅凭速度数据复原隐藏的压力场。这些问题在传统方法中是不可能或极难实现的。
+
+---
+
+## 实际应用可能性
+
+**何时有用：**
+- 实验测量数据稀疏的情况（仅有少数传感器）
+- 反问题：需要从测量值反求物理属性（粘度、Re）时
+- 基于物理的数据插值：利用物理定律填充实验数据的空白区域
+
+**能立即替代 OpenFOAM/Fluent 吗？**
+
+目前还不行。训练时间比 FVM 求解器慢数十到数百倍。一个简单的槽道流在 GPU 上可能需要数小时。目前不适合实时工程分析。
+
+但是，**与 OpenFOAM 混合使用的研究**非常活跃。即通过 FVM 求得粗略解，再利用 PINN 进行精细校正。
+
+```python
+# 使用 PyTorch 实现的物理损失计算示例
+def physics_loss(model, x, t, Re):
+    x.requires_grad_(True)
+    t.requires_grad_(True)
+
+    output = model(x, t)
+    u, v, p = output[:, 0], output[:, 1], output[:, 2]
+
+    # 通过自动微分计算偏导数
+    u_t = torch.autograd.grad(u.sum(), t, create_graph=True)[0]
+    u_x = torch.autograd.grad(u.sum(), x, create_graph=True)[0][:, 0]
+    u_y = torch.autograd.grad(u.sum(), x, create_graph=True)[0][:, 1]
+    p_x = torch.autograd.grad(p.sum(), x, create_graph=True)[0][:, 0]
+
+    # x 方向动量方程残差
+    residual_u = u_t + u * u_x + v * u_y + p_x - (1/Re) * (u_x + u_y)
+
+    return (residual_u**2).mean()
+```
+
+---
+
+## 局限性及未来研究
+
+**目前的局限性：**
+- 难以扩展到 **3D 高 Re 湍流**。神经网络在表达高频分量（小涡）方面存在限制。
+- 在 **Stiff PDE**（Re 极大或边界层极薄的情况）中训练变得不稳定。
+- 标准 PINN 不提供**不确定性量化 (UQ)**。无法得知预测结果的可靠程度。
+
+**未来方向：**
+- **XPINNs (Extended PINNs):** 划分区域进行并行学习 → 具备大规模问题扩展性
+- **OpenFOAM 混合求解器:** FVM + PINN 结合
+- **迁移学习 (Transfer learning):** 将在某一 Re 下训练的模型快速适配到其他 Re
+
+---
+
+> **一句话点评:** "定义了 CFD 与深度学习交点的论文。虽然目前无法替代 OpenFOAM，但在反问题和稀疏数据重构方面已经具有实用价值。"

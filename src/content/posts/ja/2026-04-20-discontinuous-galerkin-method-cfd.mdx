@@ -1,0 +1,132 @@
+---
+title: "不連続ガレルキン法(DGM)：非構造格子における圧縮性流体解析の高精度離散化"
+date: 2026-04-20
+description: "DGMの弱形式の導出からガウス求積、非構造格子への実装までを段階的に解説"
+tags: ["CFD", "FEM", "DGM", "高次精度", "圧縮性流体"]
+draft: false
+series: "numerical-methods"
+seriesOrder: 2
+---
+
+不連続ガレルキン法(Discontinuous Galerkin Method, DGM)は、有限要素法(FEM)と有限体積法(FVM)の長所を組み合わせた数値解析手法です。セル内部では高次の多項式基底関数を使用し、セル境界では数値フラックスを用いて情報を交換します。非構造格子において圧縮性流体を高精度に解析する際の強力な選択肢となります。
+
+## 支配方程式とフラックスの分離
+
+圧縮性流体の保存方程式：
+
+$$\frac{\partial \mathbf{U}}{\partial t} + \nabla \cdot \mathbf{F}^c(\mathbf{U}) - \nabla \cdot \mathbf{F}^v(\mathbf{U}, \nabla \mathbf{U}) = \mathbf{S}(\mathbf{U})$$
+
+ここで、
+- $\mathbf{U} = [\rho,\ \rho u,\ \rho v,\ \rho w,\ \rho E]^T$: 保存変数のベクトル
+- $\mathbf{F}^c$: 対流(convective)フラックス
+- $\mathbf{F}^v$: 粘性(viscous)フラックス
+- $\mathbf{S}$: ソース項
+
+## 基底関数の展開と弱形式の導出
+
+セル $\Omega_e$ 内部で、解を基底関数の線形結合で近似します：
+
+$$\mathbf{U}_h(\mathbf{x}, t) = \sum_{l=1}^{N_p} \hat{\mathbf{U}}_l(t)\, \phi_l(\mathbf{x})$$
+
+$N_p$ はセル内の自由度数であり、近似多項式の次数 $K$ によって決定されます (3Dの場合 $N_p = (K+1)(K+2)(K+3)/6$)。
+
+テスト関数 $\phi_k$ を掛けて $\Omega_e$ で積分すると：
+
+$$\int_{\Omega_e} \phi_k \frac{\partial \mathbf{U}_h}{\partial t}\, d\Omega + \int_{\Omega_e} \phi_k \nabla \cdot \mathbf{F}\, d\Omega = \int_{\Omega_e} \phi_k \mathbf{S}\, d\Omega$$
+
+グリーンの公式（部分積分）を適用すると、体積積分と境界積分に分かれます：
+
+$$
+\int_{\Omega_e} \phi_k \frac{\partial \mathbf{U}_h}{\partial t}\, d\Omega
+- \int_{\Omega_e} \nabla \phi_k \cdot \mathbf{F}\, d\Omega
++ \oint_{\partial \Omega_e} \phi_k \hat{\mathbf{F}} \cdot \mathbf{n}\, d\Gamma
+= \int_{\Omega_e} \phi_k \mathbf{S}\, d\Omega
+$$
+
+境界における $\hat{\mathbf{F}}$ は、隣接セルの情報を用いた**数値フラックス**です（Roe、HLLCなど）。
+
+## 質量行列と時間積分
+
+$l$ 番目の基底関数係数に関する常微分方程式(ODE)として整理すると：
+
+$$\mathbf{M} \frac{d\hat{\mathbf{U}}}{dt} = \mathbf{R}(\hat{\mathbf{U}})$$
+
+ここで、質量行列(mass matrix)は：
+
+$$M_{kl} = \int_{\Omega_e} \phi_k \phi_l\, d\Omega$$
+
+直交基底関数（テイラー基底やルジャンドル多項式など）を使用すると、$\mathbf{M}$ が対角行列になり、逆行列の計算コストがなくなります。残差ベクトル $\mathbf{R}$ は、体積積分項と面フラックス項の和となります：
+
+$$R_k = \int_{\Omega_e} \nabla \phi_k \cdot \mathbf{F}\, d\Omega - \oint_{\partial \Omega_e} \phi_k \hat{\mathbf{F}} \cdot \mathbf{n}\, d\Gamma + \int_{\Omega_e} \phi_k \mathbf{S}\, d\Omega$$
+
+## ガウス求積法の適用
+
+体積・面積分はガウス＝ルジャンドル求積法で数値計算します。次数 $K$ の多項式を正確に積分するには、**少なくとも $2K-1$ 次以上の積分**が必要です。
+
+セルタイプ別のガウスポイント数（代表的な次数別）：
+
+| セルタイプ   | 1次 | 2次 | 3次 |
+|------------|-----|-----|-----|
+| 四面体(Tetrahedron) | 1  | 4   | 10  |
+| 六面体(Hexahedron)  | 1  | 8   | 27  |
+| プリズム(Prism)       | 3  | 9   | 18  |
+| ピラミッド(Pyramid)     | 1  | 5   | 15  |
+
+面(face)タイプについては、セルポイントの3倍（3D投影）を使用します。
+
+## アルゴリズムの実装手順
+
+実際の実装では、以下の順序で進めます：
+
+1. **セル・面の分類**: テトラ/ヘキサ/プリズム/ピラミッド/多面体
+2. **基底関数の準備**: 各セルタイプ × 近似次数に合った $\phi_l, \nabla\phi_l$ を計算
+3. **ガウスポイントのキャッシュ**: 参照要素(reference element)の座標と重みをメモリに保存
+4. **変数の初期化**: $\hat{\mathbf{U}}_l^0$ の設定（一様流条件など）
+5. **ループ（時間前進）**:
+   - 体積積分：$\int_{\Omega_e} \nabla\phi_k \cdot \mathbf{F}\ d\Omega$ — 各ガウスポイントでフラックスを計算して合算
+   - 面フラックス：$\oint_{\partial\Omega_e} \phi_k \hat{\mathbf{F}}\cdot\mathbf{n}\ d\Gamma$ — 数値フラックスを算定
+   - RKアップデート：SSP-RK3などの明示的時間積分
+
+```python
+import numpy as np
+
+def compute_volume_residual(U_hat, phi, dphi, gauss_w, flux_func):
+    """体積残差の計算（単一セル）"""
+    Np, Ng = phi.shape   # (基底関数の数, ガウスポイントの数)
+    R = np.zeros_like(U_hat)
+    for g in range(Ng):
+        # ガウスポイントでの物理量の復元
+        U_g = phi[:, g] @ U_hat          # shape: (nvar,)
+        F_g = flux_func(U_g)             # (nvar, ndim)
+        # 体積残差への寄与
+        for k in range(Np):
+            R[k] += gauss_w[g] * (dphi[k, :, g] @ F_g.T)
+    return R
+```
+
+## 数値フラックスの選択 — 実務上の注意点
+
+DGMにおいて数値フラックスは、安定性と精度に直結します。
+
+- **Roeフラックス**: 接触不連続をよく捉えますが、エントロピー修正がないと膨張衝撃波(expansion shock)を誘発することがあります。
+- **HLLC**: Roeよりも安定的ですが、稀に過度な消散が発生することがあります。
+- **LxF(Lax-Friedrichs)**: 実装は単純ですが、消散が大きいため高次の利得が減少します。
+
+よくある間違い：
+1. **ガウスポイント数の不足** — 非線形フラックスにおいて次数が低下するエリアシング(aliasing)エラーが発生します。
+2. **質量行列の対角化の無視** — 一般的なFEM基底関数を使用すると、ステップごとに連立一次方程式を解く必要があり、非効率です。
+3. **面法線方向の不一致** — 共有面において隣接セルの法線符号が反対であることを常に確認してください。
+
+## 精度の検証 — テイラー＝グリーン渦(Taylor-Green Vortex)
+
+$$
+u_0 = V_0 \sin\!\left(\frac{x}{L}\right)\cos\!\left(\frac{y}{L}\right), \quad
+v_0 = -V_0 \cos\!\left(\frac{x}{L}\right)\sin\!\left(\frac{y}{L}\right)
+$$
+
+非圧縮解析解とDGMの結果を比較するとき、$K$次DGMは理論的に $O(h^{K+1})$ の収束を示すはずです。実務で格子を2倍に細分化したときに誤差が $2^{K+1}$ 倍に減少しない場合は、求積次数や境界処理を点検してください。
+
+## 参考文献
+
+1. Luo, H. et al., "A discontinuous Galerkin method based on a Taylor basis for the compressible flows on arbitrary grids," *J. Comput. Phys.* 227 (2008).
+2. Luo, H. et al., "Hybrid discontinuous Galerkin–finite volume techniques for compressible flows on unstructured meshes," *AIAA Paper* (2012).

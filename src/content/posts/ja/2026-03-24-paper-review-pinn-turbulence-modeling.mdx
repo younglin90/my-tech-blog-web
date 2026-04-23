@@ -1,0 +1,116 @@
+---
+title: "【論文レビュー】Physics-Informed Neural Networks for Turbulence Modeling"
+date: 2026-03-24
+description: "物理法則を損失関数に直接組み込んだニューラルネットワークにより、希薄なデータから流動場を再構成する新しいアプローチ"
+tags: ["논문리뷰", "CFD", "PINN", "딥러닝", "난류모델"]
+draft: false
+---
+
+## 論文情報
+
+- **著者:** Raissi, M., Perdikaris, P., Karniadakis, G. E.
+- **学術誌:** Journal of Computational Physics, Vol. 378, pp. 686–707, 2019
+- **DOI:** [10.1016/j.jcp.2018.10.045](https://doi.org/10.1016/j.jcp.2018.10.045)
+- **arXiv:** [1711.10561](https://arxiv.org/abs/1711.10561)
+
+---
+
+## 一行要約
+
+Navier-Stokes方程式をニューラルネットワークの損失関数に直接組み込む（Physics-Informed）ことで、**わずかな圧力センサーだけで全速度場を逆算**する方法を提案しています。
+
+---
+
+## 研究背景
+
+従来のCFDは、2つの極端な手法の間に位置しています。
+
+**伝統的な手法 (k-ε, k-ω SST):** 経験的なクロージャ係数に依存しています。Reynolds数や形状が変わると係数を再チューニングする必要があり、汎化能力が制限されます。
+
+**純粋なデータ駆動型ディープラーニング:** 大量のラベル付きデータが必要であり、学習されたモデルが**質量保存や運動量保存を保証しません**。物理的に矛盾した予測を出しても、損失関数はそれを検知できません。
+
+PINNsは、このギャップを埋める試みです。データが希薄であっても、物理法則が正則化（regularizer）の役割を果たします。
+
+---
+
+## 核心的な手法
+
+PINNの総損失関数は、2つの項の和で表されます。
+
+$$\mathcal{L} = \mathcal{L}_{\text{data}} + \lambda \, \mathcal{L}_{\text{physics}}$$
+
+**データ損失** $\mathcal{L}_{\text{data}}$ は、観測値（例：圧力センサー）とニューラルネットワークによる予測値の差です。
+
+**物理損失** $\mathcal{L}_{\text{physics}}$ は、非圧縮性Navier-Stokes方程式の残差（residual）です。
+
+$$\mathcal{L}_{\text{physics}} = \left\| \frac{\partial \mathbf{u}}{\partial t} + (\mathbf{u} \cdot \nabla)\mathbf{u} + \nabla p - \frac{1}{Re}\nabla^2\mathbf{u} \right\|^2 + \left\| \nabla \cdot \mathbf{u} \right\|^2$$
+
+第2項は連続の式（質量保存）です。ニューラルネットワークがこの残差を0にするように訓練されるため、予測値は常にN-S方程式を近似的に満足します。
+
+微分は、PyTorchやTensorFlowの**自動微分（automatic differentiation）**で計算します。別途の数値離散化は必要ありません。
+
+---
+
+## 主要な結果
+
+| ケース | 条件 | 結果 |
+|--------|------|------|
+| 2D円柱周りの流れ | Re=100, 圧力センサーのみ使用 | 速度場の再構成誤差 < 1%, 渦の周波数を正確に復元 |
+| Lid-driven cavity | Re=1000 | 速度プロファイルがDNSの結果と1%以内で一致 |
+| Reynolds数の逆算 | 速度データのみから | Re値自体を学習パラメータとして識別することに成功 |
+
+特に**逆問題（inverse problem）**の能力が印象的です。流動場からReynolds数を逆に推定したり、隠された圧力場を速度データだけで復元したりすることが可能です。これは従来の手法では不可能、あるいは非常に困難な問題です。
+
+---
+
+## 実務適用の可能性
+
+**どのような時に有用か:**
+- 実験計測データが希薄な状況（センサーが数個しかない場合）
+- 逆問題：計測値から物性値（粘度、Re）を逆算する必要がある場合
+- 物理ベースのデータ補間：実験データの空白を物理法則で埋める場合
+
+**OpenFOAMやFluentですぐに代替可能か？**
+
+まだその段階ではありません。訓練時間はFVMソルバーと比較して数十倍から数百倍遅いです。単純なチャンネル流れ一つにGPUで数時間を要します。リアルタイムの工学解析用としては、現在は不向きです。
+
+ただし、**OpenFOAMとハイブリッドで使用する研究**が活発に行われています。FVMで大まかな解を求め、PINNで詳細な補正を行うという方式です。
+
+```python
+# PyTorchで実装した物理損失計算の例
+def physics_loss(model, x, t, Re):
+    x.requires_grad_(True)
+    t.requires_grad_(True)
+
+    output = model(x, t)
+    u, v, p = output[:, 0], output[:, 1], output[:, 2]
+
+    # 自動微分で偏微分を計算
+    u_t = torch.autograd.grad(u.sum(), t, create_graph=True)[0]
+    u_x = torch.autograd.grad(u.sum(), x, create_graph=True)[0][:, 0]
+    u_y = torch.autograd.grad(u.sum(), x, create_graph=True)[0][:, 1]
+    p_x = torch.autograd.grad(p.sum(), x, create_graph=True)[0][:, 0]
+
+    # x方向の運動量方程式の残差
+    residual_u = u_t + u * u_x + v * u_y + p_x - (1/Re) * (u_x + u_y)
+
+    return (residual_u**2).mean()
+```
+
+---
+
+## 限界と今後の研究
+
+**現在の限界:**
+- **3Dの高Re数難流動**への拡張が困難です。高周波成分（小さな渦）をニューラルネットワークが表現するのには限界があります。
+- **Stiff PDE**（Reが非常に大きい、または境界層が薄い場合）において訓練が不安定になります。
+- 標準的なPINNは**不確実性定量化（UQ）**を提供しません。予測がどの程度信頼できるのかを知ることができません。
+
+**今後の方向性:**
+- **XPINNs (Extended PINNs):** ドメインを分割して並列学習 → 大規模問題への拡張性を確保
+- **OpenFOAMハイブリッドソルバー:** FVM + PINNの結合
+- **Transfer learning:** あるReで学習したモデルを別のReに素早く適応させる
+
+---
+
+> **一行評:** 「CFDとディープラーニングの接点を定義した論文。今すぐOpenFOAMを代替することはありませんが、逆問題や希薄データの再構成においてはすでに実用的です。」

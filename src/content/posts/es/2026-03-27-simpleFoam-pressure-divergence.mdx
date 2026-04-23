@@ -1,0 +1,167 @@
+---
+title: "[CFD Q&A] Cuando el residual de presión de simpleFoam no converge"
+date: 2026-03-27
+description: "Guía para resolver la divergencia del algoritmo SIMPLE en la práctica: el factor de relajación fue la clave."
+tags: ["Práctica CFD", "QA", "OpenFOAM", "SIMPLE", "Convergencia"]
+draft: false
+---
+
+La semana pasada se presentó un problema que consumió bastante tiempo. Al ejecutar simpleFoam, el residual de presión no bajaba de `1e-3` y, de hecho, comenzaba a subir. Inicialmente se pensó que podría ser un problema de malla, pero la conclusión fue que el factor de relajación era el origen del problema.
+
+## Situación del problema
+
+- **Software**: OpenFOAM v2312
+- **Geometría**: Canal rectangular 2D, condiciones de contorno inlet–outlet
+- **Modelo de turbulencia**: k-ε (estándar)
+- **Solver**: simpleFoam (estado estacionario)
+
+Durante las primeras 20 a 30 iteraciones, la convergencia parecía ir bien, pero de repente el residual de presión comenzó a dispararse.
+
+```
+Time = 50
+
+smoothSolver:  Solving for Ux, Initial residual = 0.0023, Final residual = 1.2e-5, No Iterations 3
+smoothSolver:  Solving for Uy, Initial residual = 0.0019, Final residual = 9.8e-6, No Iterations 3
+GAMG:  Solving for p, Initial residual = 0.412, Final residual = 0.038, No Iterations 8
+time step continuity errors : sum local = 4.2e-5, global = 1.1e-5, cumulative = 3.4e-4
+...
+Time = 80
+
+GAMG:  Solving for p, Initial residual = 0.891, Final residual = 0.21, No Iterations 20
+```
+
+Mientras que la velocidad convergía adecuadamente, la presión se mantenía inestable. Este es un patrón típico de inestabilidad en el acoplamiento presión-velocidad.
+
+## Proceso de análisis de causa raíz
+
+### Paso 1: Verificación de la calidad de la malla
+
+En primer lugar, se ejecutó `checkMesh`.
+
+```bash
+checkMesh -case .
+```
+
+La no-ortogonalidad máxima fue de 32 grados y la asimetría (skewness) máxima de 0.8; valores aceptables. No parecía ser un problema de malla.
+
+### Paso 2: Revisión de las condiciones de contorno
+
+Se estableció la presión en la entrada (inlet) como `zeroGradient` y en la salida (outlet) como `fixedValue 0`. Estas son configuraciones estándar, por lo que no presentaban inconvenientes.
+
+Sin embargo, al revisar el campo inicial de p, se detectaron valores inusualmente altos cerca de la entrada. Eran restos de un experimento previo realizado con `funkySetFields`.
+
+### Paso 3: Verificación de fvSolution
+
+```cpp
+// fvSolution (configuración original)
+relaxationFactors
+{
+    fields
+    {
+        p               0.7;
+    }
+    equations
+    {
+        U               0.9;
+        k               0.7;
+        epsilon         0.7;
+    }
+}
+```
+
+U=0.9 es un valor bastante agresivo. En el algoritmo SIMPLE, aumentar la relajación de la velocidad acelera la convergencia, pero si las actualizaciones de presión no pueden seguir el ritmo, la solución diverge.
+
+Se solaparon dos causas:
+1. Factores de relajación excesivamente altos.
+2. Valores incorrectos remanentes en el campo inicial de p.
+
+## Solución
+
+### Reducción de los factores de relajación
+
+```cpp
+// fvSolution (después de la modificación)
+relaxationFactors
+{
+    fields
+    {
+        p               0.3;
+    }
+    equations
+    {
+        U               0.7;
+        k               0.5;
+        epsilon         0.5;
+    }
+}
+```
+
+Se recomienda comenzar de forma conservadora al ejecutar un caso por primera vez. Una vez confirmada la convergencia, los valores se pueden aumentar gradualmente.
+
+### Inicialización del campo p
+
+```bash
+# Inicializar limpiamente el archivo p en el directorio 0
+cp 0.orig/p 0/p
+```
+
+Alternativamente, se puede abrir el archivo `0/p` directamente y establecer `internalField uniform 0;`.
+
+```cpp
+// 0/p
+dimensions      [0 2 -2 0 0 0 0];
+internalField   uniform 0;
+
+boundaryField
+{
+    inlet
+    {
+        type            zeroGradient;
+    }
+    outlet
+    {
+        type            fixedValue;
+        value           uniform 0;
+    }
+    walls
+    {
+        type            zeroGradient;
+    }
+}
+```
+
+## Verificación
+
+Tras las modificaciones, al volver a ejecutar la simulación se obtuvieron los siguientes resultados:
+
+```
+Time = 50
+
+smoothSolver:  Solving for Ux, Initial residual = 0.0018, Final residual = 8.3e-6, No Iterations 3
+GAMG:  Solving for p, Initial residual = 0.089, Final residual = 0.0041, No Iterations 5
+time step continuity errors : sum local = 2.1e-6, global = 4.3e-7, cumulative = 8.9e-6
+
+Time = 200
+
+GAMG:  Solving for p, Initial residual = 3.2e-4, Final residual = 1.1e-5, No Iterations 3
+```
+
+Alrededor de la iteración 200, el residual de presión se estabilizó y descendió al nivel de `1e-4`.
+
+## Lecciones aprendidas
+
+**Lista de verificación para la convergencia en simpleFoam**: se sugiere este orden para detectar la mayoría de los problemas:
+
+1. **Condiciones iniciales primero**: Verificar que los campos p y U en el directorio `0/` tengan los valores previstos. Si existen residuos de experimentos anteriores, es imperativo inicializarlos.
+
+2. **Factores de relajación conservadores**: Iniciar con valores por defecto como `U=0.7, p=0.3`. Es más seguro confirmar la convergencia antes de incrementarlos. La relajación de `p` debe mantenerse baja para estabilizar el bucle SIMPLE.
+
+3. **Diferenciar convergencia de velocidad vs. presión**: Si los residuales de U son bajos pero p diverge, es probable que sea un problema de relajación. Si ambos divergen, se debe revisar la malla o las condiciones de contorno primero.
+
+4. **Monitorear iteraciones de GAMG**: Si el número de iteraciones internas necesarias para resolver p aumenta repentinamente dentro de la misma iteración externa, es probable que la dirección de convergencia sea incorrecta.
+
+Dada la naturaleza del bucle de corrección de presión, el algoritmo SIMPLE es altamente sensible a la relajación. Siempre se debe comenzar de forma conservadora; aunque parezca más lento, asegurar una convergencia estable antes de acelerar es, en última instancia, el camino más rápido.
+
+---
+
+*Si presenta problemas similares, por favor comparta su entorno (versión, geometría, modelo de turbulencia) en los comentarios. Las soluciones pueden variar según el caso.*
