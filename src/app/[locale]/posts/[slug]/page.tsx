@@ -9,6 +9,9 @@ import Link from 'next/link'
 import { PostNavShortcuts } from '@/components/PostNavShortcuts'
 import { MarkAsRead } from '@/components/MarkAsRead'
 import { ScrollDepth } from '@/components/ScrollDepth'
+import { Giscus } from '@/components/Giscus'
+import { AuthorBio } from '@/components/AuthorBio'
+import { SeriesNav } from '@/components/SeriesNav'
 import { PrintButton } from '@/components/PrintButton'
 import { BookmarkButton } from '@/components/BookmarkButton'
 import { dayMeta } from '@/lib/day-meta'
@@ -251,6 +254,8 @@ export default async function PostPage({ params }: PostProps) {
         )
       })()}
 
+      <SeriesNav locale={loc} postSlug={post.slug} />
+
       <TableOfContents />
 
       <Mdx code={post.body.code} />
@@ -341,6 +346,10 @@ export default async function PostPage({ params }: PostProps) {
           </Link>
         ) : <div />}
       </nav>
+
+      <AuthorBio />
+
+      <Giscus postId={post.slug} />
     </article>
   )
 }

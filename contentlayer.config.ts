@@ -19,6 +19,8 @@ export const Post = defineDocumentType(() => ({
     description: { type: 'string', required: true },
     draft: { type: 'boolean', default: false },
     tags: { type: 'list', of: { type: 'string' } },
+    series: { type: 'string' },             // 시리즈 slug (예: "riemann", "compressible-multiphase")
+    seriesOrder: { type: 'number' },        // 시리즈 내 순번 (1부터)
   },
   // locale·slug는 폴더(ko/en/...)와 파일명에서 자동 추출.
   // frontmatter에 명시적으로 적어도 contentlayer가 fields에 정의 안 했으면 무시되므로 안전.

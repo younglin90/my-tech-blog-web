@@ -18,6 +18,8 @@ interface StaticPostItem {
   readingTime?: string
   url: string
   isDynamic: false
+  series?: string
+  seriesOrder?: number
 }
 
 interface DynamicPostItem {
@@ -293,14 +295,24 @@ export function PostList({ staticPosts }: { staticPosts: StaticPostItem[] }) {
             )
           }
 
+          // 시리즈 추출 (StaticPostItem만 series 가능)
+          const series = (post as any).series as string | undefined
+          const seriesOrder = (post as any).seriesOrder as number | undefined
+          // viz 컴포넌트가 import된 경우 dot 표시 (간이) — 실제 데이터는 별도 source에서 미리 inject 필요
+          // 여기서는 StaticPostItem.tags에 'viz' tag가 있으면 표시하는 식으로 약식
           return (
             <Link key={post.id} href={href} className="post-row group block">
               <div
-                className="grid gap-5 px-1 py-5"
+                className="grid gap-5 px-1 py-5 relative"
                 style={{
                   gridTemplateColumns: '92px 1fr',
                   alignItems: 'start',
                   borderBottom: '1px solid var(--border-soft)',
+                  borderLeft: `3px solid ${day.colorVar}`,
+                  paddingLeft: '12px',
+                  marginLeft: '-12px',
+                  borderTopLeftRadius: '4px',
+                  borderBottomLeftRadius: '4px',
                 }}
               >
                 <div style={{ paddingTop: 3 }}>
@@ -353,6 +365,19 @@ export function PostList({ staticPosts }: { staticPosts: StaticPostItem[] }) {
                       {isBookmarked && (
                         <span className="ml-1 align-middle text-[11px]" style={{ color: 'var(--accent)' }} title="Saved">
                           ⊕
+                        </span>
+                      )}
+                      {series && (
+                        <span
+                          className="ml-2 inline-block align-middle rounded-md px-1.5 py-0.5 text-[10px] font-medium"
+                          style={{
+                            background: 'var(--accent-glow)',
+                            color: 'var(--accent)',
+                            fontFamily: 'var(--font-mono)',
+                          }}
+                          title={`Part of ${series}`}
+                        >
+                          {series}{seriesOrder ? ` · ${String(seriesOrder).padStart(2, '0')}` : ''}
                         </span>
                       )}
                     </span>

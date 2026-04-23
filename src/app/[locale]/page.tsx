@@ -48,6 +48,8 @@ export default async function Home({ params }: HomeProps) {
       readingTime: post.readingTime,
       url: loc === post.locale ? post.url : `/${loc}/posts/${post.slug}`,
       isDynamic: false as const,
+      series: (post as any).series,
+      seriesOrder: (post as any).seriesOrder,
     }))
 
   const jsonLd = {
