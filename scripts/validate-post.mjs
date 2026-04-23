@@ -117,10 +117,23 @@ for (const file of files) {
     errors.push('viz 컴포넌트 0개 — post-viz custom 또는 pre-built(VelocityField 등) 1개 이상 필요')
   }
 
-  // 3. 코드블록 언어 명시
-  const codeBlocks = body.match(/^```\s*$/gm)
-  if (codeBlocks && codeBlocks.length > 0) {
-    errors.push(`코드블록 ${codeBlocks.length}개에 언어 명시 없음 (\`\`\`python / \`\`\`cpp 등)`)
+  // 3. 코드블록 언어 명시 (opening fence만 검사; closing fence는 lang 불필요)
+  {
+    let inBlock = false
+    let langlessOpens = 0
+    for (const line of body.split('\n')) {
+      if (/^```/.test(line)) {
+        if (!inBlock) {
+          if (/^```\s*$/.test(line)) langlessOpens++
+          inBlock = true
+        } else {
+          inBlock = false
+        }
+      }
+    }
+    if (langlessOpens > 0) {
+      errors.push(`코드블록 ${langlessOpens}개에 언어 명시 없음 (\`\`\`python / \`\`\`cpp 등)`)
+    }
   }
 
   // 4. 멀티라인 블록 수식: $$로 시작하면서 줄 끝이 $$로 닫히지 않고 TeX 명령 포함
