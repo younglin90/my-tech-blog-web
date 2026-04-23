@@ -1,7 +1,8 @@
 import { ImageResponse } from 'next/og'
 import { allPosts } from 'contentlayer/generated'
+import { LOCALES } from '@/lib/i18n'
 
-export const revalidate = 86400
+export const dynamic = 'force-static'
 export const alt = "Younglin's CFD Blog post"
 
 // CJK 글리프 (한국어/일본어/중국어) 렌더링용 폰트.
@@ -39,6 +40,11 @@ const FALLBACK_DESC: Record<string, string> = {
   ja: 'CFD研究者の作業ノート',
   zh: 'CFD研究者的工作笔记',
   es: 'Notas de campo de un investigador en CFD',
+}
+
+export function generateStaticParams() {
+  const slugs = Array.from(new Set(allPosts.filter((p) => !p.draft).map((p) => p.slug)))
+  return LOCALES.flatMap((locale) => slugs.map((slug) => ({ locale, slug })))
 }
 
 export const size = { width: 1200, height: 630 }
