@@ -55,6 +55,7 @@ GitHub Actions + Anthropic API 방식은 크레딧 문제로 사용 안 함.
 
 4. **프롬프트 로드 + 치환** — 그룹별 프롬프트 파일에서:
    - `{VIZ_COMPONENTS}` → `scripts/prompts/_viz_components.txt` 내용
+   - `{MULTILINGUAL}` → `scripts/prompts/_multilingual.txt` 내용 (5개 locale 동시 작성 지침)
    - `{SOURCE_CONTENT}` → 읽어온 소스 내용
    - `{DATE}` → 오늘 날짜 (`YYYY-MM-DD`)
    - `{RECENT_POSTS}` → 아래 4b에서 빌드한 YAML 블록
@@ -111,7 +112,14 @@ GitHub Actions + Anthropic API 방식은 크레딧 문제로 사용 안 함.
 
 5c. **fallback (특수 경우에만)** — 포스트 주제가 `_viz_components.txt`의 주제→컴포넌트 매핑 표와 **정확히** 일치하고, custom 제작 비용이 큰 경우 pre-built 7개 중 하나를 **대안으로** 사용 가능. 단 `{USED_VIZ_COMPONENTS}` 중복 회피 규칙은 동일하게 적용. 주제가 조금이라도 벗어나면 pre-built 대신 custom 작성이 원칙.
 
-6. **저장** — `src/content/posts/YYYY-MM-DD-{영문-slug}.mdx`에 저장. **`draft: false`** (즉시 공개).
+6. **저장 (5개 locale 동시)** — 동일 slug로 5개 파일을 작성한다:
+   - `src/content/posts/ko/YYYY-MM-DD-{영문-slug}.mdx` (한국어, primary)
+   - `src/content/posts/en/YYYY-MM-DD-{영문-slug}.mdx` (English)
+   - `src/content/posts/ja/YYYY-MM-DD-{영문-slug}.mdx` (日本語)
+   - `src/content/posts/zh/YYYY-MM-DD-{영문-slug}.mdx` (简体中文)
+   - `src/content/posts/es/YYYY-MM-DD-{영문-slug}.mdx` (Español)
+
+   각 파일 frontmatter에 `locale`(ko/en/ja/zh/es)과 `slug`(공통 영문) 필드 포함. **`draft: false`**. post-viz 컴포넌트는 단 1번만 작성하고 5개 locale 모두 같은 import 경로 사용.
 
 7. **인덱스 업데이트** — `source-docs/index.yaml`의 `last_used`에 다음 형식으로 갱신한다.
    ```yaml
@@ -122,7 +130,15 @@ GitHub Actions + Anthropic API 방식은 크레딧 문제로 사용 안 함.
    ```
    기존 entry가 있으면 목록에 append한다.
 
-8. **git 커밋/푸시** — `main` 브랜치에 바로 push. 커밋 메시지: `post: {요일} 자동 생성 - {포스트 제목}`.
+8. **git 커밋/푸시** — `main` 브랜치에 바로 push. 5개 locale + post-viz + index.yaml을 한 커밋으로:
+   ```bash
+   git add \
+     src/content/posts/{ko,en,ja,zh,es}/YYYY-MM-DD-*.mdx \
+     src/components/post-viz/YYYY-MM-DD-*/ \
+     source-docs/index.yaml
+   git commit -m "post: {요일} 자동 생성 [5 locales] - {ko 제목}"
+   git push origin main
+   ```
 
 9. **결과 보고** — 파일 경로 + 제목 한 줄.
 
