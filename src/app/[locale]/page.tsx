@@ -1,10 +1,10 @@
-import { allPosts } from 'contentlayer/generated'
-import { compareDesc, parseISO } from 'date-fns'
 import { notFound } from 'next/navigation'
 import { PostList } from '@/components/PostList'
 import { QuoteHero } from '@/components/QuoteHero'
 import { DAY_META } from '@/lib/day-meta'
 import { LOCALES, isLocale, t, type Locale } from '@/lib/i18n'
+import postIndex from '@/lib/post-index.json'
+import { dedupePostsForLocale } from '@/lib/post-index'
 import type { Metadata } from 'next'
 
 interface HomeProps {
@@ -26,19 +26,14 @@ export async function generateMetadata({ params }: HomeProps): Promise<Metadata>
 }
 
 const DAY_ORDER: Array<keyof typeof DAY_META> = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']
+const HOME_INITIAL_POSTS = 20
 
 export default async function Home({ params }: HomeProps) {
   const { locale } = await params
   if (!isLocale(locale)) notFound()
   const loc = locale as Locale
 
-  const bySlug = new Map<string, typeof allPosts[number]>()
-  allPosts.filter((p) => !p.draft && p.locale === 'ko').forEach((p) => bySlug.set(p.slug, p))
-  if (loc !== 'ko') {
-    allPosts.filter((p) => !p.draft && p.locale === loc).forEach((p) => bySlug.set(p.slug, p))
-  }
-  const posts = Array.from(bySlug.values())
-    .sort((a, b) => compareDesc(parseISO(a.date), parseISO(b.date)))
+  const posts = dedupePostsForLocale(postIndex.items as any, loc)
     .map((post) => ({
       id: post.slug,
       title: post.title,
@@ -48,9 +43,8 @@ export default async function Home({ params }: HomeProps) {
       readingTime: post.readingTime,
       url: loc === post.locale ? post.url : `/${loc}/posts/${post.slug}`,
       isDynamic: false as const,
-      series: (post as any).series,
-      seriesOrder: (post as any).seriesOrder,
     }))
+  const initialPosts = posts.slice(0, HOME_INITIAL_POSTS)
 
   const jsonLd = {
     '@context': 'https://schema.org',
@@ -94,7 +88,11 @@ export default async function Home({ params }: HomeProps) {
         })}
       </div>
 
-      <PostList staticPosts={posts} />
+      <PostList
+        staticPosts={initialPosts}
+        initialTotalCount={posts.length}
+        indexPath="/post-index.json"
+      />
     </div>
   )
 }

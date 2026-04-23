@@ -22,9 +22,7 @@ interface PostProps {
   params: Promise<{ locale: string; slug: string }>
 }
 
-function uniqueSlugs(): string[] {
-  return Array.from(new Set(allPosts.filter((p) => !p.draft).map((p) => p.slug)))
-}
+export const revalidate = 3600
 
 function findPost(locale: Locale, slug: string) {
   // 1순위: 해당 locale 파일
@@ -53,11 +51,6 @@ function getRelatedPosts(locale: Locale, slug: string, tags: string[], limit = 3
     .sort((a, b) => b.score - a.score)
     .slice(0, limit)
     .map(({ post }) => post)
-}
-
-export async function generateStaticParams() {
-  const slugs = uniqueSlugs()
-  return LOCALES.flatMap((locale) => slugs.map((slug) => ({ locale, slug })))
 }
 
 export async function generateMetadata({ params }: PostProps): Promise<Metadata> {

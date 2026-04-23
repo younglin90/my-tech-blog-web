@@ -8,6 +8,7 @@ import { getAllDynamicPosts } from '@/lib/dynamic-posts'
 import { getBookmarks } from '@/components/BookmarkButton'
 import { dayMeta } from '@/lib/day-meta'
 import { localePathPrefix, t } from '@/lib/i18n'
+import { dedupePostsForLocale, loadPostIndexClient, type PostIndexItem } from '@/lib/post-index'
 
 interface StaticPostItem {
   id: string
@@ -54,9 +55,19 @@ function loadPrefs(): { sort: 'newest' | 'oldest'; compact: boolean } {
   }
 }
 
-export function PostList({ staticPosts }: { staticPosts: StaticPostItem[] }) {
+export function PostList({
+  staticPosts,
+  initialTotalCount,
+  indexPath = '/post-index.json',
+}: {
+  staticPosts: StaticPostItem[]
+  initialTotalCount?: number
+  indexPath?: string
+}) {
   const [mounted, setMounted] = useState(false)
   const [dynamicPosts, setDynamicPosts] = useState<DynamicPostItem[]>([])
+  const [archivePosts, setArchivePosts] = useState<StaticPostItem[] | null>(null)
+  const [archiveLoading, setArchiveLoading] = useState(false)
   const [activeTag, setActiveTag] = useState<string | null>(null)
   const [sortMode, setSortMode] = useState<'newest' | 'oldest'>('newest')
   const [compact, setCompact] = useState(false)
@@ -66,6 +77,27 @@ export function PostList({ staticPosts }: { staticPosts: StaticPostItem[] }) {
   const TAG_VISIBLE_LIMIT = 8
   const pathname = usePathname() ?? '/'
   const { locale } = localePathPrefix(pathname)
+
+  const loadArchive = async () => {
+    if (archivePosts || archiveLoading) return
+    setArchiveLoading(true)
+    try {
+      const payload = await loadPostIndexClient(indexPath)
+      const items = dedupePostsForLocale(payload.items as PostIndexItem[], locale).map((post) => ({
+        id: post.slug,
+        title: post.title,
+        date: post.date,
+        description: post.description,
+        tags: post.tags ?? [],
+        readingTime: post.readingTime,
+        url: locale === post.locale ? post.url : `/${locale}/posts/${post.slug}`,
+        isDynamic: false as const,
+      }))
+      setArchivePosts(items)
+    } finally {
+      setArchiveLoading(false)
+    }
+  }
 
   useEffect(() => {
     setMounted(true)
@@ -99,13 +131,15 @@ export function PostList({ staticPosts }: { staticPosts: StaticPostItem[] }) {
     } catch {}
   }
 
+  const sourcePosts = archivePosts ?? staticPosts
+
   const all: PostItem[] = useMemo(
     () =>
-      [...staticPosts, ...(mounted ? dynamicPosts : [])].sort((a, b) => {
+      [...sourcePosts, ...(mounted ? dynamicPosts : [])].sort((a, b) => {
         const diff = new Date(b.date).getTime() - new Date(a.date).getTime()
         return sortMode === 'newest' ? diff : -diff
       }),
-    [staticPosts, dynamicPosts, mounted, sortMode]
+    [sourcePosts, dynamicPosts, mounted, sortMode]
   )
 
   const allTags = useMemo(() => {
@@ -119,7 +153,7 @@ export function PostList({ staticPosts }: { staticPosts: StaticPostItem[] }) {
   }, [all])
 
   const filtered = activeTag ? all.filter((p) => p.tags.includes(activeTag)) : all
-  const totalCount = all.length
+  const totalCount = archivePosts ? all.length : Math.max(initialTotalCount ?? 0, all.length)
 
   if (all.length === 0) {
     return (
@@ -135,7 +169,7 @@ export function PostList({ staticPosts }: { staticPosts: StaticPostItem[] }) {
   }
 
   const totalWords =
-    staticPosts.reduce((sum, p) => {
+    sourcePosts.reduce((sum, p) => {
       // readingTime like "12 min" — approximate wordCount from minutes * 250 for display
       const m = p.readingTime?.match(/(\d+)/)
       return sum + (m ? Number(m[1]) * 250 : 0)
@@ -146,6 +180,29 @@ export function PostList({ staticPosts }: { staticPosts: StaticPostItem[] }) {
       {/* Tag filter — mono pills */}
       {allTags.length > 0 && (
         <div className="mb-6 flex flex-col gap-3">
+          {archivePosts === null && (
+            <div
+              className="flex items-center justify-between gap-3 rounded-md px-3 py-2"
+              style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
+            >
+              <span className="mono" style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                Showing recent posts first for faster load.
+              </span>
+              <button
+                onClick={loadArchive}
+                disabled={archiveLoading}
+                className="mono rounded-md px-2.5 py-1 text-[11px] transition-colors duration-100"
+                style={{
+                  border: '1px solid',
+                  borderColor: 'var(--border)',
+                  color: archiveLoading ? 'var(--text-faint)' : 'var(--accent)',
+                  background: archiveLoading ? 'transparent' : 'var(--accent-glow)',
+                }}
+              >
+                {archiveLoading ? 'loading…' : 'load archive'}
+              </button>
+            </div>
+          )}
           <div className="flex items-center justify-between gap-2">
             <div className="flex flex-wrap items-center gap-1.5 flex-1">
               <span

@@ -4,11 +4,11 @@ import * as React from 'react'
 import { useRouter, usePathname } from 'next/navigation'
 import { Search as SearchIcon } from 'lucide-react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { allPosts } from 'contentlayer/generated'
 import { format, parseISO } from 'date-fns'
 import { localePathPrefix, t } from '@/lib/i18n'
 import { trackEvent } from '@/lib/analytics'
 import mathManifest from '@/lib/math-manifest.json'
+import { dedupePostsForLocale, loadPostIndexClient, type PostIndexItem } from '@/lib/post-index'
 
 function Highlight({ text, query }: { text: string; query: string }) {
   if (!query) return <>{text}</>
@@ -34,6 +34,9 @@ export function Search() {
   const [activeIdx, setActiveIdx] = React.useState(0)
   const [isMac, setIsMac] = React.useState(false)
   const [recentlyRead, setRecentlyRead] = React.useState<string[]>([])
+  const [indexItems, setIndexItems] = React.useState<PostIndexItem[]>([])
+  const [indexLoading, setIndexLoading] = React.useState(false)
+  const [indexError, setIndexError] = React.useState<string | null>(null)
   const router = useRouter()
   const pathname = usePathname() ?? '/'
   const { locale } = localePathPrefix(pathname)
@@ -53,6 +56,16 @@ export function Search() {
       setRecentlyRead(raw ? JSON.parse(raw) : [])
     } catch {}
   }, [])
+
+  React.useEffect(() => {
+    if (!open || indexItems.length > 0 || indexLoading) return
+    setIndexLoading(true)
+    setIndexError(null)
+    loadPostIndexClient()
+      .then((payload) => setIndexItems(payload.items as PostIndexItem[]))
+      .catch((e: unknown) => setIndexError(e instanceof Error ? e.message : 'failed to load index'))
+      .finally(() => setIndexLoading(false))
+  }, [open, indexItems.length, indexLoading])
 
   React.useEffect(() => {
     const down = (e: KeyboardEvent) => {
@@ -77,25 +90,22 @@ export function Search() {
   // 검색어 변경 시 디바운스 후 노결과 쿼리 트래킹 (콘텐츠 갭 분석용)
   React.useEffect(() => {
     if (!query || query.length < 2) return
+    if (indexItems.length === 0) return
     const timer = setTimeout(() => {
       const q = query.toLowerCase().replace(/^#/, '')
-      const has = allPosts.some(
+      const has = indexItems.some(
         (p) => !p.draft && (p.title.toLowerCase().includes(q) || (p.tags ?? []).some((t) => t.toLowerCase().includes(q)))
       )
       if (!has) trackEvent('search-no-results', { query })
     }, 1500)
     return () => clearTimeout(timer)
-  }, [query])
+  }, [query, indexItems])
 
   // locale 기준 dedupe: 현재 locale 우선, 없으면 ko fallback. 같은 slug 1개만 유지.
   const publishedPosts = React.useMemo(() => {
-    const bySlug = new Map<string, typeof allPosts[number]>()
-    allPosts.filter((p) => !p.draft && p.locale === 'ko').forEach((p) => bySlug.set(p.slug, p))
-    if (locale !== 'ko') {
-      allPosts.filter((p) => !p.draft && p.locale === locale).forEach((p) => bySlug.set(p.slug, p))
-    }
-    return Array.from(bySlug.values())
-  }, [locale])
+    if (indexItems.length === 0) return []
+    return dedupePostsForLocale(indexItems, locale)
+  }, [indexItems, locale])
 
   // Compute top tags for suggestion chips when search is empty
   const topTags = React.useMemo(() => {
@@ -264,6 +274,16 @@ export function Search() {
 
               {/* Results */}
               <div className="max-h-72 overflow-y-auto p-1.5" role="listbox" aria-label="Search results">
+                {indexLoading && (
+                  <p className="px-4 py-3 text-xs" style={{ color: 'var(--text-muted)' }}>
+                    Loading search index...
+                  </p>
+                )}
+                {indexError && (
+                  <p className="px-4 py-3 text-xs" style={{ color: 'var(--error)' }}>
+                    Search index error: {indexError}
+                  </p>
+                )}
                 {!q && topTags.length > 0 && (
                   <div className="px-3 pb-2 pt-1.5">
                     <p className="mb-2 text-[10px] font-semibold uppercase tracking-widest" style={{ color: 'var(--text-faint)' }}>
