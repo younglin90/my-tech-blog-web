@@ -75,8 +75,8 @@ export default async function AboutPage({ params }: AboutProps) {
     { label: t(loc, 'about.stats.posts'), value: published.length.toString() },
     { label: t(loc, 'about.stats.words'), value: totalWords.toLocaleString() },
     { label: t(loc, 'about.stats.tags'), value: allTagSet.size.toString() },
-    { label: 'Read time', value: `${Math.round(totalReadMinutes / 60)}h` },
-    { label: 'Last post', value: lastPostDate },
+    { label: t(loc, 'about.stats.readTime'), value: `${Math.round(totalReadMinutes / 60)}h` },
+    { label: t(loc, 'about.stats.lastPost'), value: lastPostDate },
   ]
 
   return (
@@ -92,7 +92,7 @@ export default async function AboutPage({ params }: AboutProps) {
         {t(loc, 'about.title')}
       </h1>
       <p className="mb-8 text-base leading-relaxed" style={{ color: 'var(--text-muted)' }}>
-        {t(loc, 'home.subtitle')} — Posts are auto-generated daily by Claude Code in five languages and reviewed before deployment.
+        {t(loc, 'about.intro')}
       </p>
 
       <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-5">
@@ -112,7 +112,7 @@ export default async function AboutPage({ params }: AboutProps) {
 
       <div className="mb-10 rounded-lg p-4" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
         <p className="mb-3 text-[10px] font-semibold uppercase tracking-widest" style={{ color: 'var(--text-faint)' }}>
-          Activity (last 12 months)
+          {t(loc, 'about.activity')}
         </p>
         <div className="flex items-end gap-1.5 h-12">
           {months.map(({ key, label, count }) => (
@@ -140,7 +140,7 @@ export default async function AboutPage({ params }: AboutProps) {
           className="mb-4 text-xl font-semibold"
           style={{ fontFamily: 'var(--font-display)', color: 'var(--text)' }}
         >
-          Research Interests
+          {t(loc, 'about.researchInterests')}
         </h2>
         <ul className="space-y-2">
           {[
@@ -163,7 +163,7 @@ export default async function AboutPage({ params }: AboutProps) {
           className="mb-4 text-xl font-semibold"
           style={{ fontFamily: 'var(--font-display)', color: 'var(--text)' }}
         >
-          Tech Stack
+          {t(loc, 'about.techStack')}
         </h2>
         <div className="flex flex-wrap gap-2">
           {[
@@ -192,10 +192,10 @@ export default async function AboutPage({ params }: AboutProps) {
               className="text-xl font-semibold"
               style={{ fontFamily: 'var(--font-display)', color: 'var(--text)' }}
             >
-              Recent Posts
+              {t(loc, 'about.recentPosts')}
             </h2>
             <Link href={`/${loc}`} className="link-hover-text-accent text-xs">
-              All posts →
+              {t(loc, 'about.allPosts')} →
             </Link>
           </div>
           <div className="divide-y" style={{ borderColor: 'var(--border)' }}>
@@ -218,10 +218,10 @@ export default async function AboutPage({ params }: AboutProps) {
           className="mb-4 text-xl font-semibold"
           style={{ fontFamily: 'var(--font-display)', color: 'var(--text)' }}
         >
-          Contact
+          {t(loc, 'about.contact')}
         </h2>
         <p className="text-sm leading-relaxed" style={{ color: 'var(--text-muted)' }}>
-          Feel free to reach out via{' '}
+          {t(loc, 'about.contactBody')}{' '}
           <a
             href="https://github.com/younglin90"
             target="_blank"

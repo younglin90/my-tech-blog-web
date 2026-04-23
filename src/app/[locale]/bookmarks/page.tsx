@@ -51,8 +51,7 @@ export default async function BookmarksPage({ params }: BookmarksProps) {
         {t(loc, 'bookmarks.title')}
       </h1>
       <p className="mb-8 text-sm" style={{ color: 'var(--text-muted)' }}>
-        {t(loc, 'bookmarks.empty').replace(/저장한 글이 없습니다|No saved posts|保存された記事はありません|暂无收藏文章|No hay artículos guardados/, '')}
-        {/* fallback subtitle */}
+        {t(loc, 'bookmarks.subtitle')}
       </p>
       <BookmarksClient posts={posts} />
     </div>
