@@ -1,0 +1,78 @@
+name: Auto-translate new ko posts
+
+# 트리거: src/content/posts/ko/**.mdx가 main에 push되면 자동 실행
+# 동작: translate-existing-posts.mjs --slug <변경된 slug들> 실행 → 번역 결과를 같은 main에 commit
+#
+# 필요 secret:
+#   ANTHROPIC_API_KEY  (repo Settings → Secrets and variables → Actions)
+#
+# 우회: commit message에 [skip translate] 포함 시 건너뜀.
+# 자동 번역이 만든 commit은 [auto-translate] 마커가 들어가서 무한 루프 방지.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/content/posts/ko/**.mdx'
+
+concurrency:
+  group: auto-translate
+  cancel-in-progress: false
+
+jobs:
+  translate:
+    if: "!contains(github.event.head_commit.message, '[skip translate]') && !contains(github.event.head_commit.message, '[auto-translate]')"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Detect changed ko posts
+        id: changed
+        run: |
+          # 직전 commit에서 추가/수정된 ko/*.mdx 파일 추출
+          CHANGED=$(git diff --name-only --diff-filter=ACMR HEAD^ HEAD -- 'src/content/posts/ko/*.mdx' || true)
+          if [ -z "$CHANGED" ]; then
+            echo "No changed ko posts."; echo "slugs=" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # 파일명만 추출 (.mdx 제거)
+          SLUGS=$(echo "$CHANGED" | xargs -n1 basename | sed 's/\.mdx$//' | tr '\n' ' ')
+          echo "Changed slugs: $SLUGS"
+          echo "slugs=$SLUGS" >> "$GITHUB_OUTPUT"
+
+      - name: Skip if nothing to translate
+        if: steps.changed.outputs.slugs == ''
+        run: echo "Nothing to translate."
+
+      - name: Run translation script
+        if: steps.changed.outputs.slugs != ''
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_MODEL: claude-sonnet-4-6
+        run: |
+          # --slug 인자를 여러 개 전달 (변경된 slug 별로)
+          ARGS=""
+          for s in ${{ steps.changed.outputs.slugs }}; do
+            ARGS="$ARGS --slug $s"
+          done
+          node scripts/translate-existing-posts.mjs $ARGS
+
+      - name: Commit & push translations
+        if: steps.changed.outputs.slugs != ''
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if [ -n "$(git status --porcelain src/content/posts/{en,ja,zh,es}/)" ]; then
+            git add src/content/posts/{en,ja,zh,es}/
+            git commit -m "[auto-translate] ${{ steps.changed.outputs.slugs }}"
+            git push origin main
+          else
+            echo "No translation changes (already up-to-date or skipped)."
+          fi
