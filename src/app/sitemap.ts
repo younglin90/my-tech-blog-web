@@ -6,43 +6,72 @@ export const dynamic = 'force-static'
 const SITE_URL = 'https://tech-blog.dev'
 const LOCALES = ['ko', 'en', 'ja', 'zh', 'es'] as const
 
-export default function sitemap(): MetadataRoute.Sitemap {
-  const koPosts = allPosts.filter((p) => !p.draft && p.locale === 'ko')
-  const slugs = Array.from(new Set(koPosts.map((p) => p.slug)))
-  const tags = Array.from(new Set(koPosts.flatMap((p) => p.tags ?? [])))
+// Next.js generateSitemaps()로 5개 locale별 sitemap을 분리 생성한다.
+// 결과: /sitemap.xml(인덱스), /sitemap/ko.xml, /sitemap/en.xml, ...
+export async function generateSitemaps() {
+  return LOCALES.map((id) => ({ id }))
+}
+
+export default async function sitemap({ id }: { id: string }): Promise<MetadataRoute.Sitemap> {
+  const locale = id as (typeof LOCALES)[number]
+
+  // ko 베이스 + 해당 locale 덮어쓰기 → 같은 slug 중복 제거
+  const bySlug = new Map<string, typeof allPosts[number]>()
+  allPosts.filter((p) => !p.draft && p.locale === 'ko').forEach((p) => bySlug.set(p.slug, p))
+  if (locale !== 'ko') {
+    allPosts.filter((p) => !p.draft && p.locale === locale).forEach((p) => bySlug.set(p.slug, p))
+  }
+  const posts = Array.from(bySlug.values())
+  const slugs = posts.map((p) => p.slug)
+  const tags = Array.from(new Set(posts.flatMap((p) => p.tags ?? [])))
+
+  // hreflang alternates: 각 URL에 대해 5개 locale 모두 매핑
+  const alternateLanguages = (path: string) =>
+    Object.fromEntries(LOCALES.map((l) => [l, `${SITE_URL}/${l}${path}`]))
 
   const entries: MetadataRoute.Sitemap = []
 
-  // 루트
-  entries.push({ url: SITE_URL, lastModified: new Date(), changeFrequency: 'daily', priority: 1.0 })
+  entries.push({
+    url: `${SITE_URL}/${locale}`,
+    lastModified: new Date(),
+    changeFrequency: 'daily',
+    priority: 1.0,
+    alternates: { languages: alternateLanguages('') },
+  })
 
-  for (const locale of LOCALES) {
-    entries.push({ url: `${SITE_URL}/${locale}`, lastModified: new Date(), changeFrequency: 'daily', priority: 0.9 })
-    entries.push({ url: `${SITE_URL}/${locale}/about`, changeFrequency: 'monthly', priority: 0.5 })
-    entries.push({ url: `${SITE_URL}/${locale}/tags`, changeFrequency: 'weekly', priority: 0.6 })
-  }
+  entries.push({
+    url: `${SITE_URL}/${locale}/about`,
+    changeFrequency: 'monthly',
+    priority: 0.5,
+    alternates: { languages: alternateLanguages('/about') },
+  })
+
+  entries.push({
+    url: `${SITE_URL}/${locale}/tags`,
+    changeFrequency: 'weekly',
+    priority: 0.6,
+    alternates: { languages: alternateLanguages('/tags') },
+  })
 
   for (const slug of slugs) {
-    const post = koPosts.find((p) => p.slug === slug)
-    const lastModified = post ? new Date(post.date) : new Date()
-    for (const locale of LOCALES) {
-      entries.push({
-        url: `${SITE_URL}/${locale}/posts/${slug}`,
-        lastModified,
-        changeFrequency: 'monthly',
-        priority: 0.8,
-      })
-    }
+    const post = posts.find((p) => p.slug === slug)
+    entries.push({
+      url: `${SITE_URL}/${locale}/posts/${slug}`,
+      lastModified: post ? new Date(post.date) : new Date(),
+      changeFrequency: 'monthly',
+      priority: 0.8,
+      alternates: { languages: alternateLanguages(`/posts/${slug}`) },
+    })
   }
 
   for (const tag of tags) {
-    for (const locale of LOCALES) {
-      entries.push({
-        url: `${SITE_URL}/${locale}/tags/${encodeURIComponent(tag)}`,
-        changeFrequency: 'weekly',
-        priority: 0.5,
-      })
-    }
+    const tagPath = `/tags/${encodeURIComponent(tag)}`
+    entries.push({
+      url: `${SITE_URL}/${locale}${tagPath}`,
+      changeFrequency: 'weekly',
+      priority: 0.5,
+      alternates: { languages: alternateLanguages(tagPath) },
+    })
   }
 
   return entries

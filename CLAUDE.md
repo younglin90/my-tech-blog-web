@@ -191,6 +191,120 @@ draft: false
 - `draft: false` 로 즉시 공개 (Cloudflare Pages가 main push 감지 → 자동 배포)
 - 한 포스트에 인터랙티브 시각화 컴포넌트 **1~2개 필수**
 
+---
+
+## 다국어(i18n) 시스템 — 번역 워크플로 명세
+
+### 개요
+사이트는 **5개 언어**(`ko / en / ja / zh / es`)를 지원한다. URL은 `/{locale}/...` 형태로 라우팅되며, 첫 방문 시 Cloudflare Pages middleware (`functions/_middleware.ts`)가 cookie > Accept-Language > cf-ipcountry 우선순위로 자동 redirect한다.
+
+### 신규 자동 포스트 — 5개 locale 동시 작성 (필수)
+
+매일 자동 생성되는 포스트는 **반드시 5개 locale 모두로 작성**한다. 자세한 지침은 `scripts/prompts/_multilingual.txt` 참고. 핵심:
+
+1. **산출 파일 5개** (모두 동일 slug):
+   - `src/content/posts/ko/YYYY-MM-DD-{slug}.mdx` (한국어, primary)
+   - `src/content/posts/en/YYYY-MM-DD-{slug}.mdx` (English)
+   - `src/content/posts/ja/YYYY-MM-DD-{slug}.mdx` (日本語)
+   - `src/content/posts/zh/YYYY-MM-DD-{slug}.mdx` (简体中文)
+   - `src/content/posts/es/YYYY-MM-DD-{slug}.mdx` (Español)
+
+2. **수식·코드·post-viz import 구문은 5개 파일 모두 동일**. 코드 주석만 해당 언어로 번역.
+
+3. **post-viz 컴포넌트 (`src/components/post-viz/{slug}/X.tsx`)는 1번만 작성**, 5개 locale 모두 같은 import 사용. UI 텍스트는 영어로 통일.
+
+4. **frontmatter 규칙**:
+   - `title`/`description`은 자연스러운 해당 언어로 번역 (직역 금지)
+   - `tags`는 모든 locale 공통 (영문 slug)
+   - `date`/`draft`는 그대로
+   - locale·slug는 폴더 구조에서 자동 추출 (frontmatter에 적어도 무시됨)
+
+5. **language별 스타일 가이드**:
+   - en: 미국 표기(color/behavior), 직접·친근한 톤
+   - ja: です/ます체
+   - zh: 简体(zh-CN), 中性表达
+   - es: 중립 스페인어 (LATAM 친화), tú/usted 직접 호칭 회피
+
+6. **금지 클리셰** (도입부 첫 문장 사용 금지):
+   - en: "It is essential to...", "Let us examine..."
+   - ja: "〜は不可欠である"
+   - zh: "...是必不可少的"
+   - es: "Es esencial...", "Vamos a ver..."
+
+7. **자체 검증 (7.5단계)는 5개 파일 모두에 동일 적용**:
+   - viz import 구문 존재 / 도입부 클리셰 회피 / 섹션 헤딩 4개 이상 겹침 금지
+
+8. **git 커밋 (한 커밋에 5 locale + post-viz + index.yaml)**:
+   ```bash
+   git add \
+     src/content/posts/{ko,en,ja,zh,es}/YYYY-MM-DD-*.mdx \
+     src/components/post-viz/YYYY-MM-DD-*/ \
+     source-docs/index.yaml
+   git commit -m "post: {요일-전체} 자동 생성 [5 locales] - {ko 제목}"
+   git push origin main
+   ```
+
+### 기존 포스트 일괄 번역 — `scripts/translate-existing-posts.mjs`
+
+`src/content/posts/ko/` 의 기존 포스트를 4개 언어로 일괄 번역하는 스크립트. Anthropic API 호출.
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+
+# 비용·대상 미리 확인
+node scripts/translate-existing-posts.mjs --dry-run
+
+# 전체 번역 (이미 있는 파일은 skip)
+node scripts/translate-existing-posts.mjs
+
+# 특정 언어만 / 특정 슬러그만 / 강제 덮어쓰기
+node scripts/translate-existing-posts.mjs --only en
+node scripts/translate-existing-posts.mjs --slug rhie-chow
+node scripts/translate-existing-posts.mjs --force
+```
+
+- 모델: 환경변수 `ANTHROPIC_MODEL` (기본 `claude-sonnet-4-6`, 비용 약 $7 / 88 호출)
+- 수식·코드·import는 그대로 유지, 주석만 번역
+- 자세한 사용법은 `scripts/README.md`
+
+### Locale fallback 정책
+
+특정 locale에 해당 슬러그 파일이 없으면 **한국어(ko) 원문을 표시**하고 상단에 안내 배너:
+
+> "이 포스트는 아직 {언어}로 번역되지 않아 한국어 원문을 표시합니다."
+
+이 fallback은 `src/app/[locale]/posts/[slug]/page.tsx`의 `findPost(loc, slug)` 함수에 구현되어 있다. 자동 포스트가 5개 locale 동시 작성을 지키면 이 배너는 보이지 않는다.
+
+### URL·라우팅 구조
+
+```
+/                        → middleware가 자동 redirect → /{detected_locale}/
+/ko/                     → 한국어 홈
+/en/posts/{slug}         → 영어 포스트 (없으면 ko fallback)
+/ja/tags/{tag}           → 일본어 태그 페이지
+/zh/about                → 중국어 소개
+/es/bookmarks            → 스페인어 북마크
+/admin                   → 관리자 (locale 무관, 영어 통일)
+/preview/{slug}          → 미리보기 (관리자 전용, ko 베이스)
+/read?id={dynamicId}     → 동적 포스트 (관리자 전용)
+```
+
+### sitemap·RSS·OG image
+
+- `sitemap.xml`은 5 locale × 모든 페이지 자동 생성 (Next.js native)
+- `feed-{locale}.xml` / `feed-{locale}.json`: locale별 RSS·JSON Feed
+- `feed.xml`: 기본 ko (역호환)
+- OpenGraph image (`opengraph-image.tsx`)는 locale 라벨을 포함해 5종 자동 생성
+
+### `src/i18n/{locale}.json` UI 사전
+
+UI 문자열(메뉴/버튼/안내문)은 5개 locale JSON 사전에 키 등록.
+컴포넌트에서는 `t(locale, 'nav.posts')` 형태로 사용. 새 UI 텍스트 추가 시 **5개 사전 모두에** 키를 추가해야 한다.
+
+### LanguageSwitcher
+
+헤더 우측 Globe 아이콘 드롭다운으로 사용자가 수동 변경 가능. 선택 시 `locale` 쿠키(1년)에 저장되어 이후 방문에서도 유지된다.
+
 ## 시각화 컴포넌트 (이 목록 외 사용 금지)
 ```mdx
 <VelocityField reynolds={100} animated={true} gridSize={20} />

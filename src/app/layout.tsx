@@ -98,8 +98,12 @@ export default function RootLayout({
           integrity="sha384-GvrOXuhMATgEsSwCs4sm5uE9lXNVF9FgJGatdrcxAfjYAMjzJH8pU/iEvVqnGZkH"
           crossOrigin="anonymous"
         />
-        <link rel="alternate" type="application/rss+xml" title="영린's CFD Blog RSS" href="/feed.xml" />
-        <link rel="alternate" type="application/feed+json" title="영린's CFD Blog JSON Feed" href="/feed.json" />
+        <link rel="alternate" type="application/rss+xml" hrefLang="ko" title="영린's CFD Blog RSS" href="/feed.xml" />
+        <link rel="alternate" type="application/feed+json" hrefLang="ko" title="영린's CFD Blog JSON Feed" href="/feed.json" />
+        <link rel="alternate" type="application/rss+xml" hrefLang="en" title="Younglin's CFD Blog RSS (EN)" href="/feed-en.xml" />
+        <link rel="alternate" type="application/rss+xml" hrefLang="ja" title="Younglin's CFD Blog RSS (JA)" href="/feed-ja.xml" />
+        <link rel="alternate" type="application/rss+xml" hrefLang="zh" title="Younglin's CFD Blog RSS (ZH)" href="/feed-zh.xml" />
+        <link rel="alternate" type="application/rss+xml" hrefLang="es" title="Younglin's CFD Blog RSS (ES)" href="/feed-es.xml" />
         {UMAMI_SCRIPT_URL && UMAMI_WEBSITE_ID && (
           // biome-ignore lint/style/useNativeScript: raw <script> ensures the tag lands in the SSR HTML <head>
           // so the tracker loads before hydration (next/script with afterInteractive defers insertion to client-side only).

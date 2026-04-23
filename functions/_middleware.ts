@@ -4,13 +4,40 @@
 const LOCALES = ['ko', 'en', 'ja', 'zh', 'es'] as const
 type Locale = (typeof LOCALES)[number]
 
+// ISO 3166-1 alpha-2 country code → site locale 매핑.
+// 매핑 안 된 국가는 Accept-Language로 fallback (그것도 없으면 'en').
+const COUNTRY_TO_LOCALE: Record<string, Locale> = {
+  // 한국어
+  KR: 'ko', KP: 'ko',
+
+  // 일본어
+  JP: 'ja',
+
+  // 중국어 (간체 zh-CN을 사용하지만 사이트 노출은 'zh' 단일)
+  CN: 'zh', TW: 'zh', HK: 'zh', MO: 'zh', SG: 'zh', // 싱가포르는 다언어, 일단 zh
+
+  // 스페인어 (스페인 + LATAM 19개국)
+  ES: 'es', MX: 'es', AR: 'es', CO: 'es', CL: 'es', PE: 'es', VE: 'es',
+  EC: 'es', GT: 'es', CU: 'es', BO: 'es', DO: 'es', HN: 'es', PY: 'es',
+  SV: 'es', NI: 'es', CR: 'es', PA: 'es', UY: 'es', PR: 'es', GQ: 'es',
+
+  // 영어 (공식·de-facto 영어권 — 그 외는 자연 fallback)
+  US: 'en', GB: 'en', CA: 'en', AU: 'en', NZ: 'en', IE: 'en',
+  IN: 'en', PK: 'en', BD: 'en', LK: 'en', PH: 'en', MY: 'en',
+  ZA: 'en', NG: 'en', KE: 'en', GH: 'en', ZW: 'en', UG: 'en', ET: 'en',
+  // 유럽 비영어권은 영어 fallback (자국어 미지원)
+  DE: 'en', FR: 'en', IT: 'en', NL: 'en', SE: 'en', NO: 'en', FI: 'en',
+  DK: 'en', PL: 'en', CZ: 'en', HU: 'en', AT: 'en', CH: 'en', BE: 'en',
+  PT: 'en', GR: 'en', RO: 'en', RU: 'en', UA: 'en', TR: 'en',
+  // 중동
+  AE: 'en', SA: 'en', IL: 'en', QA: 'en',
+  // 동남아 잔여
+  ID: 'en', TH: 'en', VN: 'en',
+}
+
 function pickByCountry(country: string | undefined): Locale | null {
   if (!country) return null
-  if (country === 'KR') return 'ko'
-  if (country === 'JP') return 'ja'
-  if (country === 'CN' || country === 'TW' || country === 'HK' || country === 'MO') return 'zh'
-  if (['ES', 'MX', 'AR', 'CO', 'CL', 'PE', 'VE', 'EC', 'GT', 'CU', 'BO', 'DO', 'HN', 'PY', 'SV', 'NI', 'CR', 'PA', 'UY'].includes(country)) return 'es'
-  return null
+  return COUNTRY_TO_LOCALE[country.toUpperCase()] ?? null
 }
 
 function pickByAcceptLanguage(accept: string | null): Locale | null {
@@ -35,6 +62,7 @@ export const onRequest: PagesFunction = async (ctx) => {
     url.pathname.startsWith('/read') ||
     url.pathname === '/feed.xml' ||
     url.pathname === '/feed.json' ||
+    /^\/feed-(ko|en|ja|zh|es)\.(xml|json)$/.test(url.pathname) ||
     url.pathname === '/sitemap.xml' ||
     url.pathname === '/robots.txt' ||
     url.pathname === '/manifest.webmanifest' ||

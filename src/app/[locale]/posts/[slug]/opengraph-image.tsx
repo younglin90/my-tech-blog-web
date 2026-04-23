@@ -5,6 +5,22 @@ import { LOCALES } from '@/lib/i18n'
 export const dynamic = 'force-static'
 export const alt = "Younglin's CFD Blog post"
 
+const LOCALE_BADGE: Record<string, { label: string; color: string }> = {
+  ko: { label: 'KO · 한국어', color: '#fbbf24' },
+  en: { label: 'EN · English', color: '#34d399' },
+  ja: { label: 'JA · 日本語', color: '#f87171' },
+  zh: { label: 'ZH · 中文', color: '#a78bfa' },
+  es: { label: 'ES · Español', color: '#22d3ee' },
+}
+
+const FALLBACK_DESC: Record<string, string> = {
+  ko: 'CFD 연구자의 작업 노트',
+  en: 'Field notes from a CFD researcher',
+  ja: 'CFD研究者の作業ノート',
+  zh: 'CFD研究者的工作笔记',
+  es: 'Notas de campo de un investigador en CFD',
+}
+
 export function generateStaticParams() {
   const slugs = Array.from(new Set(allPosts.filter((p) => !p.draft).map((p) => p.slug)))
   return LOCALES.flatMap((locale) => slugs.map((slug) => ({ locale, slug })))
@@ -19,8 +35,9 @@ export default async function Image({ params }: { params: Promise<{ locale: stri
     allPosts.find((p) => p.locale === locale && p.slug === slug) ??
     allPosts.find((p) => p.locale === 'ko' && p.slug === slug)
   const title = post?.title ?? "Younglin's CFD Blog"
-  const description = post?.description ?? 'Field notes from a CFD researcher'
+  const description = post?.description ?? FALLBACK_DESC[locale] ?? FALLBACK_DESC.en
   const tags = post?.tags?.slice(0, 3) ?? []
+  const badge = LOCALE_BADGE[locale] ?? LOCALE_BADGE.en
 
   return new ImageResponse(
     (
@@ -36,14 +53,21 @@ export default async function Image({ params }: { params: Promise<{ locale: stri
           fontFamily: 'serif',
         }}
       >
-        <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: '4px', background: '#fbbf24' }} />
+        <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: '4px', background: badge.color }} />
 
         <div style={{ position: 'absolute', top: '48px', left: '60px', display: 'flex', alignItems: 'baseline', gap: '10px' }}>
-          <span style={{ fontSize: '22px', fontWeight: 700, color: '#fbbf24', fontFamily: 'monospace' }}>$_</span>
+          <span style={{ fontSize: '22px', fontWeight: 700, color: badge.color, fontFamily: 'monospace' }}>$_</span>
           <span style={{ fontSize: '22px', fontWeight: 700, color: '#e2e8f0', letterSpacing: '-0.02em' }}>Younglin</span>
-          <span style={{ fontSize: '22px', fontWeight: 700, color: '#fbbf24', letterSpacing: '-0.02em' }}>&apos;s</span>
+          <span style={{ fontSize: '22px', fontWeight: 700, color: badge.color, letterSpacing: '-0.02em' }}>&apos;s</span>
           <span style={{ fontSize: '22px', fontWeight: 700, color: '#e2e8f0', letterSpacing: '-0.02em' }}>CFD Blog</span>
-          <span style={{ fontSize: '14px', fontWeight: 500, color: '#7a90a8', marginLeft: 8, fontFamily: 'monospace' }}>{locale}</span>
+        </div>
+
+        <div style={{ position: 'absolute', top: '54px', right: '60px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <span style={{
+            fontSize: '12px', fontWeight: 600, fontFamily: 'monospace', color: badge.color,
+            padding: '4px 10px', borderRadius: '9999px',
+            background: 'rgba(0,0,0,0.3)', border: `1px solid ${badge.color}55`,
+          }}>{badge.label}</span>
         </div>
 
         {tags.length > 0 && (
@@ -56,9 +80,9 @@ export default async function Image({ params }: { params: Promise<{ locale: stri
                   borderRadius: '9999px',
                   fontSize: '13px',
                   fontWeight: 500,
-                  color: '#fbbf24',
-                  background: 'rgba(251,191,36,0.12)',
-                  border: '1px solid rgba(251,191,36,0.25)',
+                  color: badge.color,
+                  background: `${badge.color}1f`,
+                  border: `1px solid ${badge.color}40`,
                   fontFamily: 'monospace',
                 }}
               >
