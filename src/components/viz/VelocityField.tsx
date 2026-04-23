@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
+import { useUrlParam } from '@/lib/use-url-param'
 
 interface Props {
   reynolds?: number
@@ -11,7 +12,7 @@ interface Props {
 export function VelocityField({ reynolds = 100, animated = true, gridSize = 20 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const animRef = useRef<number>(0)
-  const [re, setRe] = useState(reynolds)
+  const [re, setRe] = useUrlParam<number>('re', reynolds, 'number')
   const [time, setTime] = useState(0)
 
   useEffect(() => {

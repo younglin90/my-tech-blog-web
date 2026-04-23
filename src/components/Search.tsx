@@ -8,6 +8,7 @@ import { allPosts } from 'contentlayer/generated'
 import { format, parseISO } from 'date-fns'
 import { localePathPrefix, t } from '@/lib/i18n'
 import { trackEvent } from '@/lib/analytics'
+import mathManifest from '@/lib/math-manifest.json'
 
 function Highlight({ text, query }: { text: string; query: string }) {
   if (!query) return <>{text}</>
@@ -104,7 +105,19 @@ export function Search() {
   }, [publishedPosts])
 
   const isTagQuery = query.startsWith('#')
+  const isMathQuery = query.includes('\\') || /^(nabla|partial|rho|mu|nu|tau|sigma|gamma|delta|alpha|beta|theta|omega|phi|psi|epsilon)$/i.test(query.trim())
   const q = isTagQuery ? query.slice(1).toLowerCase() : query.toLowerCase()
+  const mathToken = isMathQuery ? query.trim().replace(/^\\/, '').toLowerCase() : null
+
+  // Math 검색: math-manifest의 token에 매칭되는 포스트 slug 집합
+  const mathSlugs = React.useMemo(() => {
+    if (!mathToken) return new Set<string>()
+    const set = new Set<string>()
+    for (const entry of mathManifest as Array<{ slug: string; tokens: string[] }>) {
+      if (entry.tokens.some((t) => t.toLowerCase().includes(mathToken))) set.add(entry.slug)
+    }
+    return set
+  }, [mathToken])
 
   const filteredPosts = q
     ? publishedPosts
@@ -112,6 +125,9 @@ export function Search() {
           if (isTagQuery) {
             const tagMatches = (post.tags ?? []).filter((t) => t.toLowerCase().includes(q)).length
             return { post, score: tagMatches * 3 }
+          }
+          if (mathToken) {
+            return { post, score: mathSlugs.has(post.slug) ? 5 : 0 }
           }
           const titleMatch = post.title.toLowerCase().includes(q)
           const descMatch = post.description.toLowerCase().includes(q)
@@ -229,6 +245,11 @@ export function Search() {
               {isTagQuery && q && (
                 <div className="px-4 py-1.5 text-[10px]" style={{ background: 'var(--accent-glow)', color: 'var(--accent)' }}>
                   Filtering by tag: <strong>#{q}</strong>
+                </div>
+              )}
+              {mathToken && (
+                <div className="px-4 py-1.5 text-[10px]" style={{ background: 'var(--accent-glow)', color: 'var(--accent)' }}>
+                  Math symbol: <strong>\{mathToken}</strong> — {mathSlugs.size} post{mathSlugs.size !== 1 ? 's' : ''}
                 </div>
               )}
 
