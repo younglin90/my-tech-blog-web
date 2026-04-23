@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import Link from 'next/link'
+import { t } from '@/lib/i18n'
 
 type SortMode = 'count' | 'alpha'
 
@@ -25,12 +26,12 @@ export function TagsClient({ tags, locale }: { tags: [string, number][]; locale:
             className="display mb-1"
             style={{ fontSize: 32, fontWeight: 700, letterSpacing: '-0.02em', color: 'var(--text)' }}
           >
-            Tags
+            {t(locale, 'tags.title')}
           </h1>
           <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
             {sorted.length !== tags.length
-              ? `${sorted.length} of ${tags.length} tags`
-              : `${tags.length} tag${tags.length !== 1 ? 's' : ''} across all posts`}
+              ? `${sorted.length} ${t(locale, 'tags.shownOf')} ${tags.length} ${t(locale, 'tags.totalLabel')}`
+              : `${tags.length} ${t(locale, 'tags.totalLabel')}`}
           </p>
         </div>
         <div
@@ -47,7 +48,7 @@ export function TagsClient({ tags, locale }: { tags: [string, number][]; locale:
                 color: sort === mode ? 'var(--text)' : 'var(--text-muted)',
               }}
             >
-              {mode === 'count' ? 'By count' : 'A–Z'}
+              {mode === 'count' ? t(locale, 'tags.sortByCount') : t(locale, 'tags.sortAlpha')}
             </button>
           ))}
         </div>
@@ -55,7 +56,7 @@ export function TagsClient({ tags, locale }: { tags: [string, number][]; locale:
       {tags.length > 6 && (
         <input
           type="search"
-          placeholder="Filter tags…"
+          placeholder={t(locale, 'tags.filterPlaceholder')}
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
           className="mb-5 w-full rounded-md px-3 py-2 text-sm focus:outline-none"
@@ -67,7 +68,7 @@ export function TagsClient({ tags, locale }: { tags: [string, number][]; locale:
         />
       )}
       {sorted.length === 0 && (
-        <p className="text-sm" style={{ color: 'var(--text-muted)' }}>No tags match &ldquo;{filter}&rdquo;.</p>
+        <p className="text-sm" style={{ color: 'var(--text-muted)' }}>{t(locale, 'tags.noMatch')} &ldquo;{filter}&rdquo;</p>
       )}
       {sorted.length > 0 && (() => {
         if (sort === 'alpha') {

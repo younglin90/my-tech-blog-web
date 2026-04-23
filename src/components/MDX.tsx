@@ -150,6 +150,13 @@ function slugify(children: React.ReactNode): string {
 
 function AnchorLink({ id }: { id: string }) {
   const [copied, setCopied] = useState(false)
+  // 동적 import 회피 — usePathname을 직접 호출 (서버 컴포넌트와 호환되지 않으므로
+  // MDX는 이미 'use client' 트리이며 안전).
+  const pathnameRef = typeof window !== 'undefined' ? window.location.pathname : '/'
+  const localeMatch = pathnameRef.match(/^\/(ko|en|ja|zh|es)/)?.[1] ?? 'ko'
+  const COPIED_LABEL: Record<string, string> = {
+    ko: '복사됨!', en: 'Copied!', ja: 'コピー済み!', zh: '已复制!', es: '¡Copiado!',
+  }
 
   const handleClick = useCallback((e: React.MouseEvent) => {
     e.preventDefault()
@@ -177,7 +184,7 @@ function AnchorLink({ id }: { id: string }) {
           className="absolute -top-7 left-2 rounded px-1.5 py-0.5 text-[10px] font-medium whitespace-nowrap"
           style={{ background: 'var(--accent)', color: '#08111f', pointerEvents: 'none' }}
         >
-          Copied!
+          {COPIED_LABEL[localeMatch] ?? COPIED_LABEL.en}
         </span>
       )}
     </span>

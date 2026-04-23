@@ -5,6 +5,27 @@ import { LOCALES } from '@/lib/i18n'
 export const dynamic = 'force-static'
 export const alt = "Younglin's CFD Blog post"
 
+// CJK 글리프 (한국어/일본어/중국어) 렌더링용 폰트.
+// @vercel/og(satori)는 기본 폰트로 CJK를 그릴 수 없어 'tofu'(□)가 표시됨.
+// Google Fonts CDN에서 변형 wght 폰트 binary를 한 번만 fetch하여 모듈 캐시.
+const FONT_URLS: Record<string, string> = {
+  ko: 'https://cdn.jsdelivr.net/fontsource/fonts/noto-sans-kr@latest/korean-700-normal.woff',
+  ja: 'https://cdn.jsdelivr.net/fontsource/fonts/noto-sans-jp@latest/japanese-700-normal.woff',
+  zh: 'https://cdn.jsdelivr.net/fontsource/fonts/noto-sans-sc@latest/chinese-simplified-700-normal.woff',
+}
+const FONT_CACHE: Record<string, Promise<ArrayBuffer | null>> = {}
+
+async function loadFont(locale: string): Promise<ArrayBuffer | null> {
+  const url = FONT_URLS[locale]
+  if (!url) return null
+  if (!FONT_CACHE[locale]) {
+    FONT_CACHE[locale] = fetch(url)
+      .then((r) => (r.ok ? r.arrayBuffer() : null))
+      .catch(() => null)
+  }
+  return FONT_CACHE[locale]
+}
+
 const LOCALE_BADGE: Record<string, { label: string; color: string }> = {
   ko: { label: 'KO · 한국어', color: '#fbbf24' },
   en: { label: 'EN · English', color: '#34d399' },
@@ -101,6 +122,7 @@ export default async function Image({ params }: { params: Promise<{ locale: stri
             letterSpacing: '-0.02em',
             marginBottom: '16px',
             maxWidth: '1000px',
+            fontFamily: 'Noto Sans CJK, serif',
           }}
         >
           {title}
@@ -112,12 +134,22 @@ export default async function Image({ params }: { params: Promise<{ locale: stri
             color: '#7a90a8',
             lineHeight: 1.5,
             maxWidth: '900px',
+            fontFamily: 'Noto Sans CJK, serif',
           }}
         >
           {description}
         </div>
       </div>
     ),
-    { ...size }
+    {
+      ...size,
+      fonts: await (async () => {
+        const data = await loadFont(locale)
+        if (!data) return undefined
+        return [
+          { name: 'Noto Sans CJK', data, style: 'normal' as const, weight: 700 as const },
+        ]
+      })(),
+    }
   )
 }

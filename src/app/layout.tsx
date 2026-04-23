@@ -45,28 +45,30 @@ export const viewport: Viewport = {
   ],
 }
 
+// Root metadata는 locale-neutral 영어 기본. 페이지별 metadata는
+// src/app/[locale]/layout.tsx의 generateMetadata가 locale-specific 값으로 덮어쓴다.
 export const metadata: Metadata = {
   title: {
-    default: "영린's CFD Blog",
-    template: "%s | 영린's CFD Blog",
+    default: "Younglin's CFD Blog",
+    template: "%s | Younglin's CFD Blog",
   },
-  description: '압축성 다상유동 CFD 연구자의 작업 노트 — Riemann solver, interface capturing, 논문 리뷰',
+  description: 'Field notes from a compressible multiphase CFD researcher — Riemann solvers, interface capturing, paper reviews.',
   metadataBase: new URL('https://tech-blog.dev'),
-  authors: [{ name: "영린's CFD Blog", url: 'https://tech-blog.dev/about' }],
-  creator: "영린's CFD Blog",
+  authors: [{ name: "Younglin's CFD Blog", url: 'https://tech-blog.dev/about' }],
+  creator: "Younglin's CFD Blog",
   category: 'technology',
   openGraph: {
-    title: "영린's CFD Blog",
-    description: '압축성 다상유동 CFD 연구자의 작업 노트',
+    title: "Younglin's CFD Blog",
+    description: 'Field notes from a compressible multiphase CFD researcher',
     url: 'https://tech-blog.dev',
-    siteName: "영린's CFD Blog",
-    locale: 'ko_KR',
+    siteName: "Younglin's CFD Blog",
+    locale: 'en_US',
     type: 'website',
   },
   twitter: {
     card: 'summary_large_image',
-    title: "영린's CFD Blog",
-    description: '압축성 다상유동 CFD 연구자의 작업 노트',
+    title: "Younglin's CFD Blog",
+    description: 'Field notes from a compressible multiphase CFD researcher',
   },
   robots: {
     index: true,

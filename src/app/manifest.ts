@@ -3,10 +3,12 @@ import type { MetadataRoute } from 'next'
 export const dynamic = 'force-static'
 
 export default function manifest(): MetadataRoute.Manifest {
+  // PWA manifest는 앱 단위라 단일 언어로 통일 — 영어 기본.
+  // 사용자 locale은 middleware가 redirect로 처리한다.
   return {
-    name: "영린's CFD Blog",
-    short_name: "영린's CFD Blog",
-    description: 'CFD 엔지니어를 위한 기술 저널 — 수식, 코드, 인터랙티브 시각화',
+    name: "Younglin's CFD Blog",
+    short_name: "CFD Blog",
+    description: 'A technical journal for CFD engineers — equations, code, interactive visualizations',
     start_url: '/',
     display: 'standalone',
     background_color: '#08111f',

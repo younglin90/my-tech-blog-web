@@ -2,10 +2,12 @@
 
 import { useEffect, useState, useMemo } from 'react'
 import Link from 'next/link'
+import { usePathname } from 'next/navigation'
 import { format, parseISO } from 'date-fns'
 import { getAllDynamicPosts } from '@/lib/dynamic-posts'
 import { getBookmarks } from '@/components/BookmarkButton'
 import { dayMeta } from '@/lib/day-meta'
+import { localePathPrefix, t } from '@/lib/i18n'
 
 interface StaticPostItem {
   id: string
@@ -60,6 +62,8 @@ export function PostList({ staticPosts }: { staticPosts: StaticPostItem[] }) {
   const [readPosts, setReadPosts] = useState<Set<string>>(new Set())
   const [bookmarks, setBookmarks] = useState<Set<string>>(new Set())
   const TAG_VISIBLE_LIMIT = 8
+  const pathname = usePathname() ?? '/'
+  const { locale } = localePathPrefix(pathname)
 
   useEffect(() => {
     setMounted(true)
@@ -158,7 +162,7 @@ export function PostList({ staticPosts }: { staticPosts: StaticPostItem[] }) {
                   color: !activeTag ? 'var(--accent)' : 'var(--text-muted)',
                 }}
               >
-                all
+                {t(locale, 'list.all')}
               </button>
               {(showAllTags ? allTags : allTags.slice(0, TAG_VISIBLE_LIMIT)).map(([tag, count]) => (
                 <button
@@ -182,7 +186,7 @@ export function PostList({ staticPosts }: { staticPosts: StaticPostItem[] }) {
                   className="mono rounded-md px-2.5 py-1 text-[11px]"
                   style={{ color: 'var(--text-faint)', border: '1px solid var(--border)' }}
                 >
-                  {showAllTags ? 'less' : `+${allTags.length - TAG_VISIBLE_LIMIT}`}
+                  {showAllTags ? t(locale, 'list.less') : `+${allTags.length - TAG_VISIBLE_LIMIT}`}
                 </button>
               )}
             </div>
