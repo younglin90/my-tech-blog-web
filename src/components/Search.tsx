@@ -1,11 +1,12 @@
 'use client'
 
 import * as React from 'react'
-import { useRouter } from 'next/navigation'
+import { useRouter, usePathname } from 'next/navigation'
 import { Search as SearchIcon } from 'lucide-react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { allPosts } from 'contentlayer/generated'
 import { format, parseISO } from 'date-fns'
+import { localePathPrefix, t } from '@/lib/i18n'
 
 function Highlight({ text, query }: { text: string; query: string }) {
   if (!query) return <>{text}</>
@@ -32,6 +33,8 @@ export function Search() {
   const [isMac, setIsMac] = React.useState(false)
   const [recentlyRead, setRecentlyRead] = React.useState<string[]>([])
   const router = useRouter()
+  const pathname = usePathname() ?? '/'
+  const { locale } = localePathPrefix(pathname)
 
   React.useEffect(() => {
     setIsMac(navigator.platform.toUpperCase().includes('MAC'))
@@ -69,7 +72,15 @@ export function Search() {
     setActiveIdx(0)
   }, [query])
 
-  const publishedPosts = allPosts.filter((post) => !post.draft)
+  // locale 기준 dedupe: 현재 locale 우선, 없으면 ko fallback. 같은 slug 1개만 유지.
+  const publishedPosts = React.useMemo(() => {
+    const bySlug = new Map<string, typeof allPosts[number]>()
+    allPosts.filter((p) => !p.draft && p.locale === 'ko').forEach((p) => bySlug.set(p.slug, p))
+    if (locale !== 'ko') {
+      allPosts.filter((p) => !p.draft && p.locale === locale).forEach((p) => bySlug.set(p.slug, p))
+    }
+    return Array.from(bySlug.values())
+  }, [locale])
 
   // Compute top tags for suggestion chips when search is empty
   const topTags = React.useMemo(() => {
@@ -139,7 +150,7 @@ export function Search() {
         }}
       >
         <SearchIcon className="h-3.5 w-3.5" />
-        <span className="hidden sm:inline">Search</span>
+        <span className="hidden sm:inline">{t(locale, 'nav.search')}</span>
         <kbd
           className="hidden rounded px-1.5 py-0.5 text-[10px] font-medium sm:inline"
           style={{ background: 'var(--surface)', color: 'var(--text-faint)', border: '1px solid var(--border)' }}
@@ -181,7 +192,7 @@ export function Search() {
                 <SearchIcon className="h-4 w-4 shrink-0" style={{ color: 'var(--text-muted)' }} />
                 <input
                   autoFocus
-                  placeholder="Search posts… or #tag"
+                  placeholder={t(locale, 'search.placeholder')}
                   className="h-12 w-full border-none bg-transparent text-sm focus:outline-none"
                   style={{ color: 'var(--text)' }}
                   value={query}
@@ -290,7 +301,7 @@ export function Search() {
                   ))
                 ) : (
                   <div className="px-4 py-10 text-center text-sm" style={{ color: 'var(--text-muted)' }}>
-                    {query ? `No results for "${query}"` : 'Start typing to search…'}
+                    {query ? `${t(locale, 'search.noResults')}: "${query}"` : t(locale, 'search.placeholder')}
                   </div>
                 )}
               </div>
@@ -307,7 +318,7 @@ export function Search() {
                     <span>esc close</span>
                   </div>
                   {query && (
-                    <span className="tabular-nums">{filteredPosts.length} result{filteredPosts.length !== 1 ? 's' : ''}</span>
+                    <span className="tabular-nums">{filteredPosts.length} {t(locale, 'search.results')}</span>
                   )}
                 </div>
               )}

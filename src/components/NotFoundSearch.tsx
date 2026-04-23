@@ -11,8 +11,10 @@ export function NotFoundSearch() {
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
     if (!query.trim()) return
-    // Navigate home with ?q= to trigger search modal
-    router.push(`/?q=${encodeURIComponent(query.trim())}`)
+    // Detect locale from cookie or default to en, then navigate
+    const cookieMatch = document.cookie.match(/(?:^|;\s*)locale=(ko|en|ja|zh|es)/)
+    const locale = cookieMatch?.[1] ?? 'en'
+    router.push(`/${locale}/?q=${encodeURIComponent(query.trim())}`)
   }
 
   return (

@@ -6,6 +6,7 @@ import { MobileNav } from '@/components/MobileNav'
 import { KeyboardShortcuts } from '@/components/KeyboardShortcuts'
 import { TerminalHeader } from '@/components/TerminalHeader'
 import { TerminalFooter } from '@/components/TerminalFooter'
+import { LocaleHtmlLang } from '@/components/LocaleHtmlLang'
 import type { Metadata, Viewport } from 'next'
 
 // Umami 트래킹 정보는 공개 값(브라우저에 그대로 노출되는 script 태그)이라 코드에 고정해도 안전.
@@ -114,6 +115,7 @@ export default function RootLayout({
         style={{ fontFamily: 'var(--font-body, system-ui, sans-serif)' }}
       >
         <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
+          <LocaleHtmlLang />
           <a
             href="#main-content"
             className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[100] focus:rounded-md focus:px-4 focus:py-2 focus:text-sm focus:font-medium"

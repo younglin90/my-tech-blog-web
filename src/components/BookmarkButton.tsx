@@ -1,7 +1,9 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { usePathname } from 'next/navigation'
 import { Bookmark, BookmarkCheck } from 'lucide-react'
+import { localePathPrefix, t } from '@/lib/i18n'
 
 const BOOKMARKS_KEY = 'cfd-lab-bookmarks'
 
@@ -30,6 +32,8 @@ interface BookmarkButtonProps {
 export function BookmarkButton({ postId }: BookmarkButtonProps) {
   const [bookmarked, setBookmarked] = useState(false)
   const [mounted, setMounted] = useState(false)
+  const pathname = usePathname() ?? '/'
+  const { locale } = localePathPrefix(pathname)
 
   useEffect(() => {
     setMounted(true)
@@ -52,15 +56,15 @@ export function BookmarkButton({ postId }: BookmarkButtonProps) {
         border: `1px solid ${bookmarked ? 'var(--accent)' : 'var(--border)'}`,
         color: bookmarked ? 'var(--accent)' : 'var(--text-muted)',
       }}
-      aria-label={bookmarked ? 'Remove bookmark' : 'Bookmark this post'}
-      title={bookmarked ? 'Remove bookmark' : 'Save for later'}
+      aria-label={bookmarked ? t(locale, 'bookmarks.remove') : t(locale, 'post.save')}
+      title={bookmarked ? t(locale, 'bookmarks.remove') : t(locale, 'post.save')}
     >
       {bookmarked ? (
         <BookmarkCheck className="h-3.5 w-3.5" />
       ) : (
         <Bookmark className="h-3.5 w-3.5" />
       )}
-      {bookmarked ? 'Saved' : 'Save'}
+      {bookmarked ? t(locale, 'post.saved') : t(locale, 'post.save')}
     </button>
   )
 }

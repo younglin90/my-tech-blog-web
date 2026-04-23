@@ -1,7 +1,9 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { usePathname } from 'next/navigation'
 import { Link2, Check, Twitter, Linkedin, Share2 } from 'lucide-react'
+import { localePathPrefix, t } from '@/lib/i18n'
 
 interface ShareButtonProps {
   title: string
@@ -12,6 +14,8 @@ export function ShareButton({ title, url }: ShareButtonProps) {
   const [copied, setCopied] = useState(false)
   const [canNativeShare, setCanNativeShare] = useState(false)
   const [href, setHref] = useState(url ?? '')
+  const pathname = usePathname() ?? '/'
+  const { locale } = localePathPrefix(pathname)
 
   useEffect(() => {
     setCanNativeShare(typeof navigator.share === 'function')
@@ -41,10 +45,10 @@ export function ShareButton({ title, url }: ShareButtonProps) {
           onClick={handleNativeShare}
           className="share-btn flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium"
           style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text-muted)' }}
-          aria-label="Share"
+          aria-label={t(locale, 'post.copyLink')}
         >
           <Share2 className="h-3.5 w-3.5" />
-          Share
+          {t(locale, 'post.copyLink')}
         </button>
       )}
       <button
@@ -57,7 +61,7 @@ export function ShareButton({ title, url }: ShareButtonProps) {
         }}
       >
         {copied ? <Check className="h-3.5 w-3.5" /> : <Link2 className="h-3.5 w-3.5" />}
-        {copied ? 'Copied!' : 'Copy link'}
+        {copied ? t(locale, 'post.copied') : t(locale, 'post.copyLink')}
       </button>
       <a
         href={twitterUrl}

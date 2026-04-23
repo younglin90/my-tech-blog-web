@@ -1,7 +1,9 @@
 'use client'
 
 import { useEffect, useRef, useState, useCallback } from 'react'
+import { usePathname } from 'next/navigation'
 import { ChevronDown } from 'lucide-react'
+import { localePathPrefix, t } from '@/lib/i18n'
 
 function useScrollProgress() {
   const [progress, setProgress] = useState(0)
@@ -25,6 +27,9 @@ interface Heading {
 }
 
 export function TableOfContents() {
+  const pathname = usePathname() ?? '/'
+  const { locale } = localePathPrefix(pathname)
+  const tocLabel = t(locale, 'post.tableOfContents')
   const [headings, setHeadings] = useState<Heading[]>([])
   const [activeId, setActiveId] = useState('')
   const [mobileOpen, setMobileOpen] = useState(false)
@@ -107,7 +112,7 @@ export function TableOfContents() {
           style={{ color: 'var(--text-muted)' }}
           aria-expanded={mobileOpen}
         >
-          On this page
+          {tocLabel}
           <ChevronDown
             className="h-3.5 w-3.5 transition-transform duration-150"
             style={{ transform: mobileOpen ? 'rotate(180deg)' : 'none' }}
@@ -134,7 +139,7 @@ export function TableOfContents() {
       >
         <div className="mb-3 flex items-center justify-between">
           <p className="text-[10px] font-semibold uppercase tracking-widest" style={{ color: 'var(--text-faint)' }}>
-            On this page
+            {tocLabel}
           </p>
           <span className="text-[9px] tabular-nums" style={{ color: 'var(--text-faint)' }}>
             {Math.round(progress)}%

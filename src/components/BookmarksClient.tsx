@@ -2,8 +2,10 @@
 
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
+import { usePathname } from 'next/navigation'
 import { format, parseISO } from 'date-fns'
 import { BookmarkX } from 'lucide-react'
+import { localePathPrefix, t } from '@/lib/i18n'
 
 const BOOKMARKS_KEY = 'cfd-lab-bookmarks'
 
@@ -38,6 +40,8 @@ interface BookmarksClientProps {
 
 export function BookmarksClient({ posts }: BookmarksClientProps) {
   const [bookmarkIds, setBookmarkIds] = useState<string[] | null>(null)
+  const pathname = usePathname() ?? '/'
+  const { locale } = localePathPrefix(pathname)
 
   useEffect(() => {
     setBookmarkIds(getBookmarkIds())
@@ -65,16 +69,16 @@ export function BookmarksClient({ posts }: BookmarksClientProps) {
     return (
       <div className="py-20 text-center">
         <p className="text-4xl" style={{ color: 'var(--border)' }}>⊕</p>
-        <p className="mt-3 text-sm font-medium" style={{ color: 'var(--text)' }}>No bookmarks yet</p>
+        <p className="mt-3 text-sm font-medium" style={{ color: 'var(--text)' }}>{t(locale, 'bookmarks.empty')}</p>
         <p className="mt-1 text-xs" style={{ color: 'var(--text-muted)' }}>
-          Save posts for later by clicking the <strong>Save</strong> button on any post.
+          {t(locale, 'bookmarks.subtitle')}
         </p>
         <Link
-          href="/"
+          href={`/${locale}`}
           className="mt-5 inline-block rounded-md px-4 py-2 text-sm font-medium transition-opacity hover:opacity-80"
           style={{ background: 'var(--accent)', color: '#08111f' }}
         >
-          Browse Posts
+          {t(locale, 'nav.posts')}
         </Link>
       </div>
     )
@@ -83,7 +87,7 @@ export function BookmarksClient({ posts }: BookmarksClientProps) {
   return (
     <div>
       <p className="mb-6 text-xs tabular-nums" style={{ color: 'var(--text-faint)' }}>
-        {bookmarked.length} saved post{bookmarked.length !== 1 ? 's' : ''}
+        {bookmarked.length} {t(locale, 'bookmarks.savedCount')}
       </p>
       <div className="divide-y" style={{ borderColor: 'var(--border)' }}>
         {bookmarked.map((post) => (
@@ -111,7 +115,7 @@ export function BookmarksClient({ posts }: BookmarksClientProps) {
               {post.tags.length > 0 && (
                 <div className="mt-2 flex flex-wrap gap-1.5">
                   {post.tags.slice(0, 4).map((tag) => (
-                    <Link key={tag} href={`/tags/${encodeURIComponent(tag)}`} className="tag-pill-sm">
+                    <Link key={tag} href={`/${locale}/tags/${encodeURIComponent(tag)}`} className="tag-pill-sm">
                       {tag}
                     </Link>
                   ))}
@@ -122,8 +126,8 @@ export function BookmarksClient({ posts }: BookmarksClientProps) {
               onClick={() => handleRemove(post.id)}
               className="shrink-0 rounded p-1.5 opacity-0 transition-opacity duration-100 group-hover:opacity-100"
               style={{ color: 'var(--text-faint)' }}
-              aria-label={`Remove bookmark: ${post.title}`}
-              title="Remove bookmark"
+              aria-label={`${t(locale, 'bookmarks.remove')}: ${post.title}`}
+              title={t(locale, 'bookmarks.remove')}
             >
               <BookmarkX className="h-4 w-4" />
             </button>
