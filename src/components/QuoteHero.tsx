@@ -1,25 +1,40 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { QUOTES } from '@/lib/quotes'
+import { usePathname } from 'next/navigation'
+import { QUOTES_BY_LOCALE, type Locale } from '@/lib/quotes'
+import { localePathPrefix, t } from '@/lib/i18n'
 
 export function QuoteHero() {
-  // Avoid hydration mismatch — start with deterministic index, then randomize after mount
+  const pathname = usePathname() ?? '/'
+  const { locale } = localePathPrefix(pathname)
+  const quoteList = QUOTES_BY_LOCALE[locale as Locale] ?? QUOTES_BY_LOCALE.ko
+
   const [seed, setSeed] = useState(0)
   const [mounted, setMounted] = useState(false)
 
   useEffect(() => {
     setMounted(true)
-    setSeed(Math.floor(Math.random() * QUOTES.length))
-  }, [])
+    setSeed(Math.floor(Math.random() * quoteList.length))
+  }, [quoteList.length])
 
-  const item = QUOTES[seed % QUOTES.length]
+  const item = quoteList[seed % quoteList.length]
   const words = item.q.split(' ')
   const accentCount = Math.min(2, Math.max(1, Math.floor(words.length * 0.18)))
   const head = words.slice(0, words.length - accentCount).join(' ')
-  const tail = words.slice(words.length - accentCount).join(' ').replace(/[.!?"”']+$/, '')
+  const tail = words
+    .slice(words.length - accentCount)
+    .join(' ')
+    .replace(/[.!?"”']+$/, '')
   const trailMatch = item.q.match(/[.!?"”']+$/)
   const trail = trailMatch ? trailMatch[0] : ''
+
+  const shuffleTitle =
+    locale === 'ko' ? '다음 격언'
+      : locale === 'ja' ? '次の格言'
+      : locale === 'zh' ? '下一句'
+      : locale === 'es' ? 'Siguiente cita'
+      : 'Next quote'
 
   return (
     <div
@@ -31,10 +46,10 @@ export function QuoteHero() {
           ~/fortune.txt
         </div>
         <button
-          onClick={() => setSeed(Math.floor(Math.random() * QUOTES.length))}
+          onClick={() => setSeed(Math.floor(Math.random() * quoteList.length))}
           disabled={!mounted}
           className="mono transition-colors duration-100"
-          title="다음 격언"
+          title={shuffleTitle}
           style={{
             fontSize: 11,
             color: 'var(--text-muted)',
@@ -79,8 +94,7 @@ export function QuoteHero() {
         — {item.a}
       </div>
       <p style={{ marginTop: 18, fontSize: 15, color: 'var(--text-muted)', lineHeight: 1.65, maxWidth: 580 }}>
-        압축성 다상유동 연구자의 작업 노트. Riemann solver 유도, interface capturing 기법, 논문 리뷰까지 —
-        실무에서 마주치는 디테일만 기록합니다.
+        {t(locale, 'home.subtitle')}
       </p>
     </div>
   )

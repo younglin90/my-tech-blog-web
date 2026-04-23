@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, useMemo } from 'react'
+import { useEffect, useState, useMemo, useRef } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { format, parseISO } from 'date-fns'
@@ -36,6 +36,7 @@ type PostItem = StaticPostItem | DynamicPostItem
 
 const READ_POSTS_KEY = 'cfd-lab-read-posts'
 const PREFS_KEY = 'cfd-lab-list-prefs'
+const PAGE_SIZE = 10  // infinite scroll: 스크롤 하단 감지 시 추가 표시 개수
 
 function getReadPosts(): Set<string> {
   try {
@@ -67,7 +68,7 @@ export function PostList({
   const [mounted, setMounted] = useState(false)
   const [dynamicPosts, setDynamicPosts] = useState<DynamicPostItem[]>([])
   const [archivePosts, setArchivePosts] = useState<StaticPostItem[] | null>(null)
-  const [archiveLoading, setArchiveLoading] = useState(false)
+  const [visibleCount, setVisibleCount] = useState(staticPosts.length)
   const [activeTag, setActiveTag] = useState<string | null>(null)
   const [sortMode, setSortMode] = useState<'newest' | 'oldest'>('newest')
   const [compact, setCompact] = useState(false)
@@ -77,28 +78,9 @@ export function PostList({
   const TAG_VISIBLE_LIMIT = 8
   const pathname = usePathname() ?? '/'
   const { locale } = localePathPrefix(pathname)
+  const sentinelRef = useRef<HTMLDivElement>(null)
 
-  const loadArchive = async () => {
-    if (archivePosts || archiveLoading) return
-    setArchiveLoading(true)
-    try {
-      const payload = await loadPostIndexClient(indexPath)
-      const items = dedupePostsForLocale(payload.items as PostIndexItem[], locale).map((post) => ({
-        id: post.slug,
-        title: post.title,
-        date: post.date,
-        description: post.description,
-        tags: post.tags ?? [],
-        readingTime: post.readingTime,
-        url: locale === post.locale ? post.url : `/${locale}/posts/${post.slug}`,
-        isDynamic: false as const,
-      }))
-      setArchivePosts(items)
-    } finally {
-      setArchiveLoading(false)
-    }
-  }
-
+  // mount: 사용자 설정 + 동적 포스트 + 북마크 로드
   useEffect(() => {
     setMounted(true)
     const prefs = loadPrefs()
@@ -116,6 +98,32 @@ export function PostList({
     setReadPosts(getReadPosts())
     setBookmarks(getBookmarks())
   }, [])
+
+  // mount 후 전체 post-index를 백그라운드 로드 (사용자가 스크롤하면 즉시 사용 가능)
+  useEffect(() => {
+    let cancelled = false
+    loadPostIndexClient(indexPath)
+      .then((payload) => {
+        if (cancelled) return
+        const items = dedupePostsForLocale(payload.items as PostIndexItem[], locale).map(
+          (post): StaticPostItem => ({
+            id: post.slug,
+            title: post.title,
+            date: post.date,
+            description: post.description,
+            tags: post.tags ?? [],
+            readingTime: post.readingTime,
+            url: locale === post.locale ? post.url : `/${locale}/posts/${post.slug}`,
+            isDynamic: false,
+          })
+        )
+        setArchivePosts(items)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [indexPath, locale])
 
   const updateSort = (mode: 'newest' | 'oldest') => {
     setSortMode(mode)
@@ -153,7 +161,35 @@ export function PostList({
   }, [all])
 
   const filtered = activeTag ? all.filter((p) => p.tags.includes(activeTag)) : all
-  const totalCount = archivePosts ? all.length : Math.max(initialTotalCount ?? 0, all.length)
+
+  // 태그 변경 또는 정렬 변경 시 첫 페이지로 되감기
+  useEffect(() => {
+    setVisibleCount(Math.min(Math.max(staticPosts.length, PAGE_SIZE), filtered.length || PAGE_SIZE))
+  }, [activeTag, sortMode, staticPosts.length, filtered.length])
+
+  const visible = filtered.slice(0, visibleCount)
+  const hasMore = visibleCount < filtered.length
+
+  // IntersectionObserver: sentinel이 뷰포트에 들어오면 더 로드
+  useEffect(() => {
+    if (!hasMore) return
+    const el = sentinelRef.current
+    if (!el) return
+    const io = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) {
+          if (e.isIntersecting) {
+            setVisibleCount((c) => Math.min(c + PAGE_SIZE, filtered.length))
+          }
+        }
+      },
+      { rootMargin: '400px 0px' }
+    )
+    io.observe(el)
+    return () => io.disconnect()
+  }, [hasMore, filtered.length])
+
+  const totalCount = Math.max(initialTotalCount ?? 0, all.length)
 
   if (all.length === 0) {
     return (
@@ -170,124 +206,98 @@ export function PostList({
 
   const totalWords =
     sourcePosts.reduce((sum, p) => {
-      // readingTime like "12 min" — approximate wordCount from minutes * 250 for display
       const m = p.readingTime?.match(/(\d+)/)
       return sum + (m ? Number(m[1]) * 250 : 0)
     }, 0) || 0
 
   return (
     <div>
-      {/* Tag filter — mono pills */}
+      {/* Tag filter + sort / view mode */}
       {allTags.length > 0 && (
-        <div className="mb-6 flex flex-col gap-3">
-          {archivePosts === null && (
-            <div
-              className="flex items-center justify-between gap-3 rounded-md px-3 py-2"
-              style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
+        <div className="mb-6 flex items-center justify-between gap-2">
+          <div className="flex flex-wrap items-center gap-1.5 flex-1">
+            <span
+              className="mono shrink-0"
+              style={{ fontSize: 11, color: 'var(--text-faint)', letterSpacing: '0.15em', marginRight: 4 }}
             >
-              <span className="mono" style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-                Showing recent posts first for faster load.
-              </span>
+              FILTER
+            </span>
+            <button
+              onClick={() => setActiveTag(null)}
+              className="mono rounded-md px-2.5 py-1 text-[12px] transition-colors duration-100"
+              style={{
+                border: '1px solid',
+                borderColor: !activeTag ? 'var(--accent)' : 'var(--border)',
+                background: !activeTag ? 'var(--accent-glow)' : 'transparent',
+                color: !activeTag ? 'var(--accent)' : 'var(--text-muted)',
+              }}
+            >
+              {t(locale, 'list.all')}
+            </button>
+            {(showAllTags ? allTags : allTags.slice(0, TAG_VISIBLE_LIMIT)).map(([tag, count]) => (
               <button
-                onClick={loadArchive}
-                disabled={archiveLoading}
-                className="mono rounded-md px-2.5 py-1 text-[11px] transition-colors duration-100"
-                style={{
-                  border: '1px solid',
-                  borderColor: 'var(--border)',
-                  color: archiveLoading ? 'var(--text-faint)' : 'var(--accent)',
-                  background: archiveLoading ? 'transparent' : 'var(--accent-glow)',
-                }}
-              >
-                {archiveLoading ? 'loading…' : 'load archive'}
-              </button>
-            </div>
-          )}
-          <div className="flex items-center justify-between gap-2">
-            <div className="flex flex-wrap items-center gap-1.5 flex-1">
-              <span
-                className="mono shrink-0"
-                style={{ fontSize: 11, color: 'var(--text-faint)', letterSpacing: '0.15em', marginRight: 4 }}
-              >
-                FILTER
-              </span>
-              <button
-                onClick={() => setActiveTag(null)}
+                key={tag}
+                onClick={() => setActiveTag(activeTag === tag ? null : tag)}
                 className="mono rounded-md px-2.5 py-1 text-[12px] transition-colors duration-100"
                 style={{
                   border: '1px solid',
-                  borderColor: !activeTag ? 'var(--accent)' : 'var(--border)',
-                  background: !activeTag ? 'var(--accent-glow)' : 'transparent',
-                  color: !activeTag ? 'var(--accent)' : 'var(--text-muted)',
+                  borderColor: activeTag === tag ? 'var(--accent)' : 'var(--border)',
+                  background: activeTag === tag ? 'var(--accent-glow)' : 'transparent',
+                  color: activeTag === tag ? 'var(--accent)' : 'var(--text-muted)',
                 }}
+                title={`${count} posts`}
               >
-                {t(locale, 'list.all')}
+                #{tag}
               </button>
-              {(showAllTags ? allTags : allTags.slice(0, TAG_VISIBLE_LIMIT)).map(([tag, count]) => (
+            ))}
+            {allTags.length > TAG_VISIBLE_LIMIT && (
+              <button
+                onClick={() => setShowAllTags((s) => !s)}
+                className="mono rounded-md px-2.5 py-1 text-[11px]"
+                style={{ color: 'var(--text-faint)', border: '1px solid var(--border)' }}
+              >
+                {showAllTags ? t(locale, 'list.less') : `+${allTags.length - TAG_VISIBLE_LIMIT}`}
+              </button>
+            )}
+          </div>
+          <div className="flex shrink-0 items-center gap-1.5">
+            <div
+              className="mono flex items-center gap-0.5 rounded-md p-0.5"
+              style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
+            >
+              {(['newest', 'oldest'] as const).map((mode) => (
                 <button
-                  key={tag}
-                  onClick={() => setActiveTag(activeTag === tag ? null : tag)}
-                  className="mono rounded-md px-2.5 py-1 text-[12px] transition-colors duration-100"
+                  key={mode}
+                  onClick={() => updateSort(mode)}
+                  className="rounded px-2 py-1 text-[10px] transition-colors duration-100"
                   style={{
-                    border: '1px solid',
-                    borderColor: activeTag === tag ? 'var(--accent)' : 'var(--border)',
-                    background: activeTag === tag ? 'var(--accent-glow)' : 'transparent',
-                    color: activeTag === tag ? 'var(--accent)' : 'var(--text-muted)',
+                    background: sortMode === mode ? 'var(--surface-hover)' : 'transparent',
+                    color: sortMode === mode ? 'var(--text)' : 'var(--text-muted)',
                   }}
-                  title={`${count} posts`}
                 >
-                  #{tag}
+                  {mode === 'newest' ? '↓ new' : '↑ old'}
                 </button>
               ))}
-              {allTags.length > TAG_VISIBLE_LIMIT && (
-                <button
-                  onClick={() => setShowAllTags((s) => !s)}
-                  className="mono rounded-md px-2.5 py-1 text-[11px]"
-                  style={{ color: 'var(--text-faint)', border: '1px solid var(--border)' }}
-                >
-                  {showAllTags ? t(locale, 'list.less') : `+${allTags.length - TAG_VISIBLE_LIMIT}`}
-                </button>
-              )}
             </div>
-            <div className="flex shrink-0 items-center gap-1.5">
-              <div
-                className="mono flex items-center gap-0.5 rounded-md p-0.5"
-                style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
-              >
-                {(['newest', 'oldest'] as const).map((mode) => (
-                  <button
-                    key={mode}
-                    onClick={() => updateSort(mode)}
-                    className="rounded px-2 py-1 text-[10px] transition-colors duration-100"
-                    style={{
-                      background: sortMode === mode ? 'var(--surface-hover)' : 'transparent',
-                      color: sortMode === mode ? 'var(--text)' : 'var(--text-muted)',
-                    }}
-                  >
-                    {mode === 'newest' ? '↓ new' : '↑ old'}
-                  </button>
-                ))}
-              </div>
-              <button
-                onClick={() => updateCompact(!compact)}
-                className="mono rounded-md px-2 py-1 text-[10px] transition-colors duration-100"
-                style={{
-                  background: 'var(--surface)',
-                  border: `1px solid ${compact ? 'var(--accent)' : 'var(--border)'}`,
-                  color: compact ? 'var(--accent)' : 'var(--text-muted)',
-                }}
-                title={compact ? 'Switch to full view' : 'Switch to compact view'}
-              >
-                {compact ? '≡ full' : '≡ compact'}
-              </button>
-            </div>
+            <button
+              onClick={() => updateCompact(!compact)}
+              className="mono rounded-md px-2 py-1 text-[10px] transition-colors duration-100"
+              style={{
+                background: 'var(--surface)',
+                border: `1px solid ${compact ? 'var(--accent)' : 'var(--border)'}`,
+                color: compact ? 'var(--accent)' : 'var(--text-muted)',
+              }}
+              title={compact ? 'Switch to full view' : 'Switch to compact view'}
+            >
+              {compact ? '≡ full' : '≡ compact'}
+            </button>
           </div>
         </div>
       )}
 
       {/* Post list */}
       <div>
-        {filtered.map((post, idx) => {
+        {visible.map((post, idx) => {
           const href = post.isDynamic ? `/read?id=${post.id}` : post.url
           const isNew = !post.isDynamic && Date.now() - new Date(post.date).getTime() < 7 * 24 * 60 * 60 * 1000
           const isRead = mounted && readPosts.has(post.id)
@@ -352,11 +362,8 @@ export function PostList({
             )
           }
 
-          // 시리즈 추출 (StaticPostItem만 series 가능)
           const series = (post as any).series as string | undefined
           const seriesOrder = (post as any).seriesOrder as number | undefined
-          // viz 컴포넌트가 import된 경우 dot 표시 (간이) — 실제 데이터는 별도 source에서 미리 inject 필요
-          // 여기서는 StaticPostItem.tags에 'viz' tag가 있으면 표시하는 식으로 약식
           return (
             <Link key={post.id} href={href} className="post-row group block">
               <div
@@ -475,9 +482,21 @@ export function PostList({
         })}
       </div>
 
+      {/* Infinite scroll sentinel */}
+      {hasMore && (
+        <div
+          ref={sentinelRef}
+          className="mono mt-6 py-4 text-center"
+          style={{ fontSize: 11, color: 'var(--text-faint)' }}
+          aria-live="polite"
+        >
+          loading more…
+        </div>
+      )}
+
       {/* Bottom stats line */}
       <div className="mono mt-4" style={{ fontSize: 11, color: 'var(--text-faint)' }}>
-        <span style={{ color: 'var(--accent)' }}>$</span> {filtered.length} entries
+        <span style={{ color: 'var(--accent)' }}>$</span> {visible.length} / {filtered.length} entries
         {totalWords > 0 && <> · total {(totalWords / 1000).toFixed(1)}K words</>}
         {activeTag && ` · #${activeTag}`}
       </div>
