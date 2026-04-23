@@ -7,6 +7,7 @@ import { KeyboardShortcuts } from '@/components/KeyboardShortcuts'
 import { TerminalHeader } from '@/components/TerminalHeader'
 import { TerminalFooter } from '@/components/TerminalFooter'
 import { LocaleHtmlLang } from '@/components/LocaleHtmlLang'
+import { ServiceWorkerRegister } from '@/components/ServiceWorkerRegister'
 import type { Metadata, Viewport } from 'next'
 
 // Umami 트래킹 정보는 공개 값(브라우저에 그대로 노출되는 script 태그)이라 코드에 고정해도 안전.
@@ -74,6 +75,24 @@ export const metadata: Metadata = {
     index: true,
     follow: true,
   },
+  // Search Console 인증: 환경변수 NEXT_PUBLIC_GOOGLE_VERIFICATION 등에 등록하면 자동 inject
+  ...(process.env.NEXT_PUBLIC_GOOGLE_VERIFICATION ||
+   process.env.NEXT_PUBLIC_BING_VERIFICATION ||
+   process.env.NEXT_PUBLIC_NAVER_VERIFICATION
+    ? {
+        verification: {
+          ...(process.env.NEXT_PUBLIC_GOOGLE_VERIFICATION
+            ? { google: process.env.NEXT_PUBLIC_GOOGLE_VERIFICATION }
+            : {}),
+          ...(process.env.NEXT_PUBLIC_BING_VERIFICATION
+            ? { other: { 'msvalidate.01': process.env.NEXT_PUBLIC_BING_VERIFICATION } }
+            : {}),
+          ...(process.env.NEXT_PUBLIC_NAVER_VERIFICATION
+            ? { other: { 'naver-site-verification': process.env.NEXT_PUBLIC_NAVER_VERIFICATION } }
+            : {}),
+        },
+      }
+    : {}),
   icons: {
     icon: [
       { url: '/favicon.ico', sizes: 'any' },
@@ -91,15 +110,10 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <head>
-        <link rel="preconnect" href="https://cdn.jsdelivr.net" crossOrigin="anonymous" />
         <link rel="preconnect" href="https://fonts.googleapis.com" crossOrigin="anonymous" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
-        <link
-          rel="stylesheet"
-          href="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.css"
-          integrity="sha384-GvrOXuhMATgEsSwCs4sm5uE9lXNVF9FgJGatdrcxAfjYAMjzJH8pU/iEvVqnGZkH"
-          crossOrigin="anonymous"
-        />
+        {/* KaTeX self-host (scripts/copy-katex.mjs가 빌드 시 public/katex/로 복사) */}
+        <link rel="stylesheet" href="/katex/katex.min.css" />
         <link rel="alternate" type="application/rss+xml" hrefLang="ko" title="영린's CFD Blog RSS" href="/feed.xml" />
         <link rel="alternate" type="application/feed+json" hrefLang="ko" title="영린's CFD Blog JSON Feed" href="/feed.json" />
         <link rel="alternate" type="application/rss+xml" hrefLang="en" title="Younglin's CFD Blog RSS (EN)" href="/feed-en.xml" />
@@ -122,6 +136,7 @@ export default function RootLayout({
       >
         <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
           <LocaleHtmlLang />
+          <ServiceWorkerRegister />
           <a
             href="#main-content"
             className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[100] focus:rounded-md focus:px-4 focus:py-2 focus:text-sm focus:font-medium"

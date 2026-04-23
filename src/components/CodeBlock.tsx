@@ -4,6 +4,7 @@ import { useRef, useState, useEffect } from 'react'
 import { usePathname } from 'next/navigation'
 import { Copy, Check, ChevronDown } from 'lucide-react'
 import { localePathPrefix, t } from '@/lib/i18n'
+import { trackEvent } from '@/lib/analytics'
 
 const MAX_COLLAPSED_HEIGHT = 420 // px — ~20 lines
 
@@ -28,16 +29,18 @@ export function CodeBlock({ children, ...props }: React.HTMLAttributes<HTMLPreEl
     await navigator.clipboard.writeText(text)
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
+    trackEvent('code-copy', { lang: (props as any)['data-language'] })
   }
 
   return (
     <div className="group relative">
       <div
-        style={
-          overflows && !expanded
-            ? { maxHeight: MAX_COLLAPSED_HEIGHT, overflow: 'hidden', position: 'relative' }
-            : undefined
-        }
+        style={{
+          maxHeight: overflows && !expanded ? MAX_COLLAPSED_HEIGHT : '4000px',
+          overflow: overflows && !expanded ? 'hidden' : 'visible',
+          position: 'relative',
+          transition: 'max-height 0.32s cubic-bezier(0.22, 1, 0.36, 1)',
+        }}
       >
         <pre ref={preRef} {...props} style={{ ...((props as any).style ?? {}), whiteSpace: wrapped ? 'pre-wrap' : undefined }}>
           {children}

@@ -2,13 +2,14 @@
 
 import { usePathname } from 'next/navigation'
 import { localePathPrefix, t } from '@/lib/i18n'
+import { trackEvent } from '@/lib/analytics'
 
 export function PrintButton() {
   const pathname = usePathname() ?? '/'
   const { locale } = localePathPrefix(pathname)
   return (
     <button
-      onClick={() => window.print()}
+      onClick={() => { trackEvent('print'); window.print() }}
       className="share-btn flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium"
       style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text-muted)' }}
       aria-label={t(locale, 'post.print')}

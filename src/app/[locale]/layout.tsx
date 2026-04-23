@@ -61,5 +61,44 @@ export async function generateMetadata({ params }: LocaleLayoutProps): Promise<M
 export default async function LocaleLayout({ children, params }: LocaleLayoutProps) {
   const { locale } = await params
   if (!isLocale(locale)) notFound()
-  return <>{children}</>
+  const loc = locale as Locale
+
+  // 사이트 전역 구조화 데이터 (모든 페이지에 inject) — Person + Organization
+  const personJsonLd = {
+    '@context': 'https://schema.org',
+    '@type': 'Person',
+    '@id': 'https://tech-blog.dev/#person',
+    name: SITE_NAMES[loc],
+    url: `https://tech-blog.dev/${loc}/about`,
+    sameAs: ['https://github.com/younglin90'],
+    knowsLanguage: ['ko', 'en', 'ja', 'zh', 'es'],
+    knowsAbout: [
+      'Computational Fluid Dynamics',
+      'Compressible Multiphase Flow',
+      'Riemann Solvers',
+      'Interface Capturing',
+      'OpenFOAM',
+      'Numerical Methods',
+      'Finite Volume Method',
+      'Discontinuous Galerkin Method',
+    ],
+  }
+
+  const organizationJsonLd = {
+    '@context': 'https://schema.org',
+    '@type': 'Organization',
+    '@id': 'https://tech-blog.dev/#organization',
+    name: SITE_NAMES[loc],
+    url: `https://tech-blog.dev/${loc}`,
+    logo: 'https://tech-blog.dev/icon-512.png',
+    founder: { '@id': 'https://tech-blog.dev/#person' },
+  }
+
+  return (
+    <>
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(personJsonLd) }} />
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(organizationJsonLd) }} />
+      {children}
+    </>
+  )
 }

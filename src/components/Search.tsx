@@ -7,6 +7,7 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { allPosts } from 'contentlayer/generated'
 import { format, parseISO } from 'date-fns'
 import { localePathPrefix, t } from '@/lib/i18n'
+import { trackEvent } from '@/lib/analytics'
 
 function Highlight({ text, query }: { text: string; query: string }) {
   if (!query) return <>{text}</>
@@ -72,6 +73,19 @@ export function Search() {
     setActiveIdx(0)
   }, [query])
 
+  // 검색어 변경 시 디바운스 후 노결과 쿼리 트래킹 (콘텐츠 갭 분석용)
+  React.useEffect(() => {
+    if (!query || query.length < 2) return
+    const timer = setTimeout(() => {
+      const q = query.toLowerCase().replace(/^#/, '')
+      const has = allPosts.some(
+        (p) => !p.draft && (p.title.toLowerCase().includes(q) || (p.tags ?? []).some((t) => t.toLowerCase().includes(q)))
+      )
+      if (!has) trackEvent('search-no-results', { query })
+    }, 1500)
+    return () => clearTimeout(timer)
+  }, [query])
+
   // locale 기준 dedupe: 현재 locale 우선, 없으면 ko fallback. 같은 slug 1개만 유지.
   const publishedPosts = React.useMemo(() => {
     const bySlug = new Map<string, typeof allPosts[number]>()
@@ -119,6 +133,7 @@ export function Search() {
       })()
 
   const onSelect = (url: string) => {
+    if (query) trackEvent('search-select', { query, url })
     setOpen(false)
     setQuery('')
     router.push(url)

@@ -8,6 +8,7 @@ import { format, parseISO, compareDesc } from 'date-fns'
 import Link from 'next/link'
 import { PostNavShortcuts } from '@/components/PostNavShortcuts'
 import { MarkAsRead } from '@/components/MarkAsRead'
+import { ScrollDepth } from '@/components/ScrollDepth'
 import { PrintButton } from '@/components/PrintButton'
 import { BookmarkButton } from '@/components/BookmarkButton'
 import { dayMeta } from '@/lib/day-meta'
@@ -133,6 +134,7 @@ export default async function PostPage({ params }: PostProps) {
       <ReadingProgress />
       <PostNavShortcuts prevUrl={prevPost ? `/${loc}/posts/${prevPost.slug}` : undefined} nextUrl={nextPost ? `/${loc}/posts/${nextPost.slug}` : undefined} />
       <MarkAsRead id={post.slug} />
+      <ScrollDepth postId={post.slug} />
 
       <nav aria-label="Breadcrumb" className="mb-6">
         <Link
