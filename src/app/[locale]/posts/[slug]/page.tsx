@@ -11,53 +11,73 @@ import { MarkAsRead } from '@/components/MarkAsRead'
 import { PrintButton } from '@/components/PrintButton'
 import { BookmarkButton } from '@/components/BookmarkButton'
 import { dayMeta } from '@/lib/day-meta'
+import { LOCALES, isLocale, t, type Locale } from '@/lib/i18n'
 import type { Metadata } from 'next'
 
 interface PostProps {
-  params: Promise<{ slug: string }>
+  params: Promise<{ locale: string; slug: string }>
 }
 
-function getPublishedPosts() {
-  return allPosts
-    .filter((post) => !post.draft)
-    .sort((a, b) => compareDesc(parseISO(a.date), parseISO(b.date)))
+function uniqueSlugs(): string[] {
+  return Array.from(new Set(allPosts.filter((p) => !p.draft).map((p) => p.slug)))
 }
 
-function getPostFromParams(slug: string) {
-  return allPosts.find((post) => post._raw.flattenedPath === slug) ?? null
+function findPost(locale: Locale, slug: string) {
+  // 1순위: 해당 locale 파일
+  const direct = allPosts.find((p) => !p.draft && p.locale === locale && p.slug === slug)
+  if (direct) return { post: direct, isFallback: false as const }
+  // 2순위: ko fallback
+  const ko = allPosts.find((p) => !p.draft && p.locale === 'ko' && p.slug === slug)
+  return ko ? { post: ko, isFallback: locale !== 'ko' } : null
 }
 
-function getRelatedPosts(slug: string, tags: string[], limit = 3) {
-  return allPosts
-    .filter((p) => !p.draft && p._raw.flattenedPath !== slug)
-    .map((p) => ({
-      post: p,
-      score: (p.tags ?? []).filter((t) => tags.includes(t)).length,
-    }))
+function getPublishedPostsForLocale(locale: Locale) {
+  // ko 베이스 + locale 덮어쓰기 → 같은 slug 한 항목만
+  const bySlug = new Map<string, typeof allPosts[number]>()
+  allPosts.filter((p) => !p.draft && p.locale === 'ko').forEach((p) => bySlug.set(p.slug, p))
+  if (locale !== 'ko') {
+    allPosts.filter((p) => !p.draft && p.locale === locale).forEach((p) => bySlug.set(p.slug, p))
+  }
+  return Array.from(bySlug.values()).sort((a, b) => compareDesc(parseISO(a.date), parseISO(b.date)))
+}
+
+function getRelatedPosts(locale: Locale, slug: string, tags: string[], limit = 3) {
+  return getPublishedPostsForLocale(locale)
+    .filter((p) => p.slug !== slug)
+    .map((p) => ({ post: p, score: (p.tags ?? []).filter((t) => tags.includes(t)).length }))
     .filter(({ score }) => score > 0)
     .sort((a, b) => b.score - a.score)
     .slice(0, limit)
     .map(({ post }) => post)
 }
 
+export async function generateStaticParams() {
+  const slugs = uniqueSlugs()
+  return LOCALES.flatMap((locale) => slugs.map((slug) => ({ locale, slug })))
+}
+
 export async function generateMetadata({ params }: PostProps): Promise<Metadata> {
-  const { slug } = await params
-  const post = getPostFromParams(slug)
-  if (!post) return {}
+  const { locale, slug } = await params
+  if (!isLocale(locale)) return {}
+  const found = findPost(locale as Locale, slug)
+  if (!found) return {}
+  const { post } = found
   return {
     title: post.title,
     description: post.description,
     keywords: post.tags ?? [],
     alternates: {
-      canonical: `https://tech-blog.dev/posts/${slug}`,
+      canonical: `https://tech-blog.dev/${locale}/posts/${slug}`,
+      languages: Object.fromEntries(LOCALES.map((l) => [l, `https://tech-blog.dev/${l}/posts/${slug}`])),
     },
     openGraph: {
       title: post.title,
       description: post.description,
       type: 'article',
       publishedTime: post.date,
-      url: `https://tech-blog.dev/posts/${slug}`,
+      url: `https://tech-blog.dev/${locale}/posts/${slug}`,
       tags: post.tags,
+      locale: locale,
     },
     twitter: {
       card: 'summary_large_image',
@@ -67,22 +87,19 @@ export async function generateMetadata({ params }: PostProps): Promise<Metadata>
   }
 }
 
-export async function generateStaticParams() {
-  return allPosts
-    .filter((post) => !post.draft)
-    .map((post) => ({ slug: post._raw.flattenedPath }))
-}
-
 export default async function PostPage({ params }: PostProps) {
-  const { slug } = await params
-  const post = getPostFromParams(slug)
-  if (!post) notFound()
+  const { locale, slug } = await params
+  if (!isLocale(locale)) notFound()
+  const loc = locale as Locale
+  const found = findPost(loc, slug)
+  if (!found) notFound()
+  const { post, isFallback } = found
 
-  const posts = getPublishedPosts()
-  const currentIndex = posts.findIndex((p) => p._raw.flattenedPath === slug)
+  const posts = getPublishedPostsForLocale(loc)
+  const currentIndex = posts.findIndex((p) => p.slug === slug)
   const prevPost = currentIndex < posts.length - 1 ? posts[currentIndex + 1] : null
   const nextPost = currentIndex > 0 ? posts[currentIndex - 1] : null
-  const related = getRelatedPosts(slug, post.tags ?? [])
+  const related = getRelatedPosts(loc, slug, post.tags ?? [])
 
   const articleJsonLd = {
     '@context': 'https://schema.org',
@@ -90,35 +107,36 @@ export default async function PostPage({ params }: PostProps) {
     headline: post.title,
     description: post.description,
     datePublished: post.date,
-    inLanguage: 'ko',
+    inLanguage: loc,
     keywords: (post.tags ?? []).join(', '),
     wordCount: post.wordCount,
-    author: { '@type': 'Person', name: "영린's CFD Blog", url: 'https://tech-blog.dev/about' },
-    publisher: { '@type': 'Organization', name: "영린's CFD Blog", url: 'https://tech-blog.dev' },
-    url: `https://tech-blog.dev/posts/${slug}`,
+    author: { '@type': 'Person', name: "Younglin's CFD Blog", url: `https://tech-blog.dev/${loc}/about` },
+    publisher: { '@type': 'Organization', name: "Younglin's CFD Blog", url: `https://tech-blog.dev/${loc}` },
+    url: `https://tech-blog.dev/${loc}/posts/${slug}`,
   }
 
   const breadcrumbJsonLd = {
     '@context': 'https://schema.org',
     '@type': 'BreadcrumbList',
     itemListElement: [
-      { '@type': 'ListItem', position: 1, name: "영린's CFD Blog", item: 'https://tech-blog.dev' },
-      { '@type': 'ListItem', position: 2, name: post.title, item: `https://tech-blog.dev/posts/${slug}` },
+      { '@type': 'ListItem', position: 1, name: "Younglin's CFD Blog", item: `https://tech-blog.dev/${loc}` },
+      { '@type': 'ListItem', position: 2, name: post.title, item: `https://tech-blog.dev/${loc}/posts/${slug}` },
     ],
   }
+
+  const localeLabel = ({ ko: '한국어', en: 'English', ja: '日本語', zh: '中文', es: 'Español' } as const)[loc]
 
   return (
     <article className="py-6">
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(articleJsonLd) }} />
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(breadcrumbJsonLd) }} />
       <ReadingProgress />
-      <PostNavShortcuts prevUrl={prevPost?.url} nextUrl={nextPost?.url} />
+      <PostNavShortcuts prevUrl={prevPost ? `/${loc}/posts/${prevPost.slug}` : undefined} nextUrl={nextPost ? `/${loc}/posts/${nextPost.slug}` : undefined} />
       <MarkAsRead id={post.slug} />
 
-      {/* cd .. */}
       <nav aria-label="Breadcrumb" className="mb-6">
         <Link
-          href="/"
+          href={`/${loc}`}
           className="mono transition-colors duration-100"
           style={{ fontSize: 12, color: 'var(--text-muted)' }}
         >
@@ -126,7 +144,20 @@ export default async function PostPage({ params }: PostProps) {
         </Link>
       </nav>
 
-      {/* Meta strip: NOTE / DAY / DATE / READ — day-colored left border */}
+      {isFallback && (
+        <div
+          className="mb-6 rounded-md px-4 py-2.5 text-xs"
+          style={{
+            background: 'var(--surface)',
+            border: '1px solid var(--border)',
+            borderLeft: '3px solid var(--accent)',
+            color: 'var(--text-muted)',
+          }}
+        >
+          {t(loc, 'post.translationFallback', { locale: localeLabel })}
+        </div>
+      )}
+
       {(() => {
         const day = dayMeta(post.date)
         const no = posts.length - currentIndex
@@ -166,14 +197,14 @@ export default async function PostPage({ params }: PostProps) {
               <>
                 <span aria-hidden="true">·</span>
                 <span>
-                  {post.tags.map((t) => (
+                  {post.tags.map((tg) => (
                     <Link
-                      key={t}
-                      href={`/tags/${encodeURIComponent(t)}`}
+                      key={tg}
+                      href={`/${loc}/tags/${encodeURIComponent(tg)}`}
                       className="mr-2 link-hover-text-accent"
                       style={{ color: 'var(--accent)' }}
                     >
-                      #{t}
+                      #{tg}
                     </Link>
                   ))}
                 </span>
@@ -183,7 +214,6 @@ export default async function PostPage({ params }: PostProps) {
         )
       })()}
 
-      {/* Title */}
       <h1
         className="display"
         style={{
@@ -198,7 +228,6 @@ export default async function PostPage({ params }: PostProps) {
         {post.title}
       </h1>
 
-      {/* Italic lede with day-color border */}
       {post.description && (() => {
         const day = dayMeta(post.date)
         return (
@@ -222,12 +251,10 @@ export default async function PostPage({ params }: PostProps) {
 
       <TableOfContents />
 
-      {/* Body */}
       <Mdx code={post.body.code} />
 
-      {/* Share */}
       <div className="mt-12 flex flex-wrap items-center justify-between gap-3 border-t pt-6" style={{ borderColor: 'var(--border)' }}>
-        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>도움이 됐다면 공유해주세요.</p>
+        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{t(loc, 'post.share')}</p>
         <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:justify-end">
           <BookmarkButton postId={post.slug} />
           <PrintButton />
@@ -235,17 +262,16 @@ export default async function PostPage({ params }: PostProps) {
         </div>
       </div>
 
-      {/* Related posts */}
       {related.length > 0 && (
         <div className="mt-10">
           <h2 className="mb-4 text-sm font-semibold uppercase tracking-widest" style={{ color: 'var(--text-muted)' }}>
-            Related
+            {t(loc, 'post.related')}
           </h2>
           <div className="grid gap-3 sm:grid-cols-3">
             {related.map((r) => (
               <Link
                 key={r.slug}
-                href={r.url}
+                href={`/${loc}/posts/${r.slug}`}
                 className="group flex flex-col gap-1.5 rounded-lg p-3.5 transition-colors duration-100"
                 style={{ border: '1px solid var(--border)', background: 'var(--surface)' }}
               >
@@ -272,14 +298,13 @@ export default async function PostPage({ params }: PostProps) {
         </div>
       )}
 
-      {/* Prev / Next */}
       <nav
         className="mt-12 grid grid-cols-2 gap-3 border-t pt-6"
         style={{ borderColor: 'var(--border)' }}
       >
         {prevPost ? (
           <Link
-            href={prevPost.url}
+            href={`/${loc}/posts/${prevPost.slug}`}
             className="prev-next-card group rounded-lg p-4 text-left"
             style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
           >
@@ -287,7 +312,7 @@ export default async function PostPage({ params }: PostProps) {
               className="mono flex items-center gap-1.5"
               style={{ fontSize: 11, color: 'var(--text-faint)' }}
             >
-              ← prev · #{String(posts.length - (currentIndex + 1)).padStart(3, '0')}
+              ← {t(loc, 'post.previous')} · #{String(posts.length - (currentIndex + 1)).padStart(3, '0')}
               <kbd className="rounded px-1 py-0.5 text-[9px]" style={{ background: 'var(--surface-hover)', border: '1px solid var(--border)', color: 'var(--text-faint)' }}>K</kbd>
             </div>
             <div className="display mt-1.5" style={{ fontSize: 15, fontWeight: 500, color: 'var(--text)', lineHeight: 1.4 }}>
@@ -297,7 +322,7 @@ export default async function PostPage({ params }: PostProps) {
         ) : <div />}
         {nextPost ? (
           <Link
-            href={nextPost.url}
+            href={`/${loc}/posts/${nextPost.slug}`}
             className="prev-next-card group rounded-lg p-4 text-right"
             style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
           >
@@ -306,7 +331,7 @@ export default async function PostPage({ params }: PostProps) {
               style={{ fontSize: 11, color: 'var(--text-faint)' }}
             >
               <kbd className="rounded px-1 py-0.5 text-[9px]" style={{ background: 'var(--surface-hover)', border: '1px solid var(--border)', color: 'var(--text-faint)' }}>J</kbd>
-              next → · #{String(posts.length - (currentIndex - 1)).padStart(3, '0')}
+              {t(loc, 'post.next')} → · #{String(posts.length - (currentIndex - 1)).padStart(3, '0')}
             </div>
             <div className="display mt-1.5" style={{ fontSize: 15, fontWeight: 500, color: 'var(--text)', lineHeight: 1.4 }}>
               {nextPost.title}

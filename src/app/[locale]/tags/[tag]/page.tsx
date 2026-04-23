@@ -3,35 +3,49 @@ import Link from 'next/link'
 import { format, parseISO, compareDesc } from 'date-fns'
 import { notFound } from 'next/navigation'
 import type { Metadata } from 'next'
+import { LOCALES, isLocale, t, type Locale } from '@/lib/i18n'
 
 interface TagPageProps {
-  params: Promise<{ tag: string }>
+  params: Promise<{ locale: string; tag: string }>
 }
 
 export async function generateMetadata({ params }: TagPageProps): Promise<Metadata> {
-  const { tag } = await params
+  const { locale, tag } = await params
   const decoded = decodeURIComponent(tag)
   return {
     title: `#${decoded}`,
-    description: `"${decoded}" 태그의 포스트 모음`,
-    alternates: { canonical: `https://tech-blog.dev/tags/${tag}` },
+    description: `Posts tagged "${decoded}"`,
+    alternates: {
+      canonical: `https://tech-blog.dev/${locale}/tags/${tag}`,
+      languages: Object.fromEntries(LOCALES.map((l) => [l, `https://tech-blog.dev/${l}/tags/${tag}`])),
+    },
   }
 }
 
 export async function generateStaticParams() {
   const tags = new Set<string>()
   allPosts
-    .filter((post) => !post.draft)
+    .filter((post) => !post.draft && post.locale === 'ko')
     .forEach((post) => post.tags?.forEach((tag) => tags.add(tag)))
-  return Array.from(tags).map((tag) => ({ tag: encodeURIComponent(tag) }))
+  return LOCALES.flatMap((locale) =>
+    Array.from(tags).map((tag) => ({ locale, tag: encodeURIComponent(tag) }))
+  )
 }
 
 export default async function TagPage({ params }: TagPageProps) {
-  const { tag } = await params
+  const { locale, tag } = await params
+  if (!isLocale(locale)) notFound()
+  const loc = locale as Locale
   const decoded = decodeURIComponent(tag)
 
-  const posts = allPosts
-    .filter((post) => !post.draft && post.tags?.includes(decoded))
+  // 해당 locale 포스트 우선 + ko fallback
+  const bySlug = new Map<string, typeof allPosts[number]>()
+  allPosts.filter((p) => !p.draft && p.locale === 'ko').forEach((p) => bySlug.set(p.slug, p))
+  if (loc !== 'ko') {
+    allPosts.filter((p) => !p.draft && p.locale === loc).forEach((p) => bySlug.set(p.slug, p))
+  }
+  const posts = Array.from(bySlug.values())
+    .filter((post) => post.tags?.includes(decoded))
     .sort((a, b) => compareDesc(parseISO(a.date), parseISO(b.date)))
 
   if (posts.length === 0) notFound()
@@ -45,17 +59,16 @@ export default async function TagPage({ params }: TagPageProps) {
     '@context': 'https://schema.org',
     '@type': 'BreadcrumbList',
     itemListElement: [
-      { '@type': 'ListItem', position: 1, name: "영린's CFD Blog", item: 'https://tech-blog.dev' },
-      { '@type': 'ListItem', position: 2, name: 'Tags', item: 'https://tech-blog.dev/tags' },
-      { '@type': 'ListItem', position: 3, name: `#${decoded}`, item: `https://tech-blog.dev/tags/${tag}` },
+      { '@type': 'ListItem', position: 1, name: "Younglin's CFD Blog", item: `https://tech-blog.dev/${loc}` },
+      { '@type': 'ListItem', position: 2, name: 'Tags', item: `https://tech-blog.dev/${loc}/tags` },
+      { '@type': 'ListItem', position: 3, name: `#${decoded}`, item: `https://tech-blog.dev/${loc}/tags/${tag}` },
     ],
   }
 
-  // Related tags: co-occurring tags sorted by frequency
   const relatedTagCounts: Record<string, number> = {}
   posts.forEach((post) => {
-    post.tags?.forEach((t) => {
-      if (t !== decoded) relatedTagCounts[t] = (relatedTagCounts[t] ?? 0) + 1
+    post.tags?.forEach((tg) => {
+      if (tg !== decoded) relatedTagCounts[tg] = (relatedTagCounts[tg] ?? 0) + 1
     })
   })
   const relatedTags = Object.entries(relatedTagCounts)
@@ -68,7 +81,7 @@ export default async function TagPage({ params }: TagPageProps) {
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(breadcrumbJsonLd) }} />
       <div className="mb-8">
         <Link
-          href="/tags"
+          href={`/${loc}/tags`}
           className="mono"
           style={{ fontSize: 12, color: 'var(--text-muted)' }}
         >
@@ -89,7 +102,7 @@ export default async function TagPage({ params }: TagPageProps) {
         </h1>
         {totalReadMinutes > 0 && (
           <p className="mt-1 text-sm" style={{ color: 'var(--text-muted)' }}>
-            ~{totalReadMinutes} min total
+            ~{totalReadMinutes} {t(loc, 'post.minRead')}
           </p>
         )}
       </div>
@@ -101,7 +114,7 @@ export default async function TagPage({ params }: TagPageProps) {
               className="mb-1.5 text-xl font-semibold tracking-tight"
               style={{ fontFamily: 'var(--font-display)' }}
             >
-              <Link href={post.url} className="link-hover-accent">
+              <Link href={`/${loc}/posts/${post.slug}`} className="link-hover-accent">
                 {post.title}
               </Link>
             </h2>
@@ -124,12 +137,12 @@ export default async function TagPage({ params }: TagPageProps) {
       {relatedTags.length > 0 && (
         <div className="mt-10 border-t pt-8" style={{ borderColor: 'var(--border)' }}>
           <p className="mb-3 text-xs font-semibold uppercase tracking-widest" style={{ color: 'var(--text-faint)' }}>
-            Related Tags
+            {t(loc, 'tags.relatedTags')}
           </p>
           <div className="flex flex-wrap gap-2">
-            {relatedTags.map((t) => (
-              <Link key={t} href={`/tags/${encodeURIComponent(t)}`} className="tag-pill">
-                #{t}
+            {relatedTags.map((tg) => (
+              <Link key={tg} href={`/${loc}/tags/${encodeURIComponent(tg)}`} className="tag-pill">
+                #{tg}
               </Link>
             ))}
           </div>

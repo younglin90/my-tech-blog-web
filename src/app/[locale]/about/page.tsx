@@ -1,19 +1,35 @@
 import { allPosts } from 'contentlayer/generated'
 import { compareDesc, parseISO, format } from 'date-fns'
 import Link from 'next/link'
+import { notFound } from 'next/navigation'
 import type { Metadata } from 'next'
 import { ReadingStats } from '@/components/ReadingStats'
+import { LOCALES, isLocale, t, type Locale } from '@/lib/i18n'
 
-export const metadata: Metadata = {
-  title: 'About',
-  description: 'CFD 연구자가 운영하는 기술 블로그 — 압축성 다상유동, 수치 기법, OpenFOAM 튜토리얼을 다룹니다.',
-  alternates: { canonical: 'https://tech-blog.dev/about' },
+interface AboutProps {
+  params: Promise<{ locale: string }>
+}
+
+export async function generateStaticParams() {
+  return LOCALES.map((locale) => ({ locale }))
+}
+
+export async function generateMetadata({ params }: AboutProps): Promise<Metadata> {
+  const { locale } = await params
+  return {
+    title: 'About',
+    description: 'Field notes from a CFD researcher — compressible multiphase flow, numerical methods, OpenFOAM.',
+    alternates: {
+      canonical: `https://tech-blog.dev/${locale}/about`,
+      languages: Object.fromEntries(LOCALES.map((l) => [l, `https://tech-blog.dev/${l}/about`])),
+    },
+  }
 }
 
 const personJsonLd = {
   '@context': 'https://schema.org',
   '@type': 'Person',
-  name: "영린's CFD Blog",
+  name: "Younglin's CFD Blog",
   url: 'https://tech-blog.dev',
   sameAs: ['https://github.com/younglin90'],
   knowsAbout: [
@@ -25,9 +41,14 @@ const personJsonLd = {
   ],
 }
 
-export default function AboutPage() {
+export default async function AboutPage({ params }: AboutProps) {
+  const { locale } = await params
+  if (!isLocale(locale)) notFound()
+  const loc = locale as Locale
+
+  // ko 베이스로 통계 (모든 locale 동일 통계 노출)
   const published = allPosts
-    .filter((p) => !p.draft)
+    .filter((p) => !p.draft && p.locale === 'ko')
     .sort((a, b) => compareDesc(parseISO(a.date), parseISO(b.date)))
   const totalWords = published.reduce((sum, p) => sum + (p.wordCount ?? 0), 0)
   const allTagSet = new Set(published.flatMap((p) => p.tags ?? []))
@@ -36,10 +57,8 @@ export default function AboutPage() {
     return sum + (isNaN(mins) ? 0 : mins)
   }, 0)
   const recentPosts = published.slice(0, 3)
-
   const lastPostDate = published[0] ? format(parseISO(published[0].date), 'MMM d') : '—'
 
-  // Build monthly activity for the last 12 months
   const now = new Date()
   const months = Array.from({ length: 12 }, (_, i) => {
     const d = new Date(now.getFullYear(), now.getMonth() - (11 - i), 1)
@@ -53,9 +72,9 @@ export default function AboutPage() {
   const maxMonthCount = Math.max(...months.map((m) => m.count), 1)
 
   const stats = [
-    { label: 'Posts', value: published.length.toString() },
-    { label: 'Words', value: totalWords.toLocaleString() },
-    { label: 'Tags', value: allTagSet.size.toString() },
+    { label: t(loc, 'about.stats.posts'), value: published.length.toString() },
+    { label: t(loc, 'about.stats.words'), value: totalWords.toLocaleString() },
+    { label: t(loc, 'about.stats.tags'), value: allTagSet.size.toString() },
     { label: 'Read time', value: `${Math.round(totalReadMinutes / 60)}h` },
     { label: 'Last post', value: lastPostDate },
   ]
@@ -70,15 +89,12 @@ export default function AboutPage() {
         className="display mb-4"
         style={{ fontSize: 36, fontWeight: 700, letterSpacing: '-0.02em', color: 'var(--text)' }}
       >
-        About
+        {t(loc, 'about.title')}
       </h1>
       <p className="mb-8 text-base leading-relaxed" style={{ color: 'var(--text-muted)' }}>
-        Compressible multiphase flow CFD 수치해석을 연구하고 있습니다.
-        이 블로그에서는 압축성 다상유동, 수치 기법, 그리고 CFD 전반에 대한
-        이야기를 다룹니다. 포스트는 Claude Code가 매일 자동 생성하며, 검토 후 배포됩니다.
+        {t(loc, 'home.subtitle')} — Posts are auto-generated daily by Claude Code in five languages and reviewed before deployment.
       </p>
 
-      {/* Stats */}
       <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-5">
         {stats.map(({ label, value }) => (
           <div
@@ -94,14 +110,13 @@ export default function AboutPage() {
         ))}
       </div>
 
-      {/* Monthly activity chart */}
       <div className="mb-10 rounded-lg p-4" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
         <p className="mb-3 text-[10px] font-semibold uppercase tracking-widest" style={{ color: 'var(--text-faint)' }}>
           Activity (last 12 months)
         </p>
         <div className="flex items-end gap-1.5 h-12">
           {months.map(({ key, label, count }) => (
-            <div key={key} className="flex flex-1 flex-col items-center gap-1" title={`${label}: ${count} post${count !== 1 ? 's' : ''}`}>
+            <div key={key} className="flex flex-1 flex-col items-center gap-1" title={`${label}: ${count} posts`}>
               <div
                 className="w-full rounded-sm transition-all duration-300"
                 style={{
@@ -179,14 +194,14 @@ export default function AboutPage() {
             >
               Recent Posts
             </h2>
-            <Link href="/" className="link-hover-text-accent text-xs">
+            <Link href={`/${loc}`} className="link-hover-text-accent text-xs">
               All posts →
             </Link>
           </div>
           <div className="divide-y" style={{ borderColor: 'var(--border)' }}>
             {recentPosts.map((post) => (
               <div key={post.slug} className="py-3">
-                <Link href={post.url} className="link-hover-accent text-sm font-medium">
+                <Link href={`/${loc}/posts/${post.slug}`} className="link-hover-accent text-sm font-medium">
                   {post.title}
                 </Link>
                 <p className="mt-0.5 text-xs" style={{ color: 'var(--text-faint)' }}>

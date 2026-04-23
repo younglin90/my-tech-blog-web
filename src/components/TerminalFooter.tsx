@@ -1,9 +1,14 @@
 'use client'
 
 import Link from 'next/link'
+import { usePathname } from 'next/navigation'
 import { VisitorCount } from '@/components/VisitorCount'
+import { localePathPrefix, t } from '@/lib/i18n'
 
 export function TerminalFooter() {
+  const pathname = usePathname() ?? '/'
+  const { locale } = localePathPrefix(pathname)
+
   return (
     <footer
       className="mt-20 flex flex-col gap-4 rounded-lg px-5 py-4"
@@ -17,21 +22,21 @@ export function TerminalFooter() {
     >
       <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
         <span>
-          <span style={{ color: 'var(--accent)' }}>$</span> uptime · daily since 2026
+          <span style={{ color: 'var(--accent)' }}>$</span> {t(locale, 'footer.uptime')}
         </span>
         <VisitorCount />
-        <span>영린{"'s"} CFD Blog · CC BY-SA 4.0</span>
+        <span>{t(locale, 'footer.copyright')}</span>
       </div>
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2" style={{ color: 'var(--text-faint)' }}>
-        <Link href="/tags" className="link-hover-text">tags</Link>
-        <Link href="/bookmarks" className="link-hover-text">saved</Link>
-        <Link href="/about" className="link-hover-text">about</Link>
+        <Link href={`/${locale}/tags`} className="link-hover-text">{t(locale, 'nav.tags').toLowerCase()}</Link>
+        <Link href={`/${locale}/bookmarks`} className="link-hover-text">{t(locale, 'nav.bookmarks').toLowerCase()}</Link>
+        <Link href={`/${locale}/about`} className="link-hover-text">{t(locale, 'nav.about').toLowerCase()}</Link>
         <a href="/feed.xml" className="link-hover-text-accent">rss</a>
         <a href="https://github.com/younglin90" target="_blank" rel="noopener noreferrer" className="link-hover-text">
           github
         </a>
         <span className="ml-auto hidden sm:inline">
-          press <kbd>?</kbd> for shortcuts
+          {t(locale, 'footer.shortcutsHint')}
         </span>
       </div>
     </footer>

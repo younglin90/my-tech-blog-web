@@ -1,22 +1,25 @@
 import { ImageResponse } from 'next/og'
 import { allPosts } from 'contentlayer/generated'
+import { LOCALES } from '@/lib/i18n'
 
 export const dynamic = 'force-static'
-export const alt = "영린's CFD Blog post"
+export const alt = "Younglin's CFD Blog post"
 
 export function generateStaticParams() {
-  return allPosts
-    .filter((p) => !p.draft)
-    .map((p) => ({ slug: p._raw.flattenedPath }))
+  const slugs = Array.from(new Set(allPosts.filter((p) => !p.draft).map((p) => p.slug)))
+  return LOCALES.flatMap((locale) => slugs.map((slug) => ({ locale, slug })))
 }
+
 export const size = { width: 1200, height: 630 }
 export const contentType = 'image/png'
 
-export default async function Image({ params }: { params: Promise<{ slug: string }> }) {
-  const { slug } = await params
-  const post = allPosts.find((p) => p._raw.flattenedPath === slug)
-  const title = post?.title ?? "영린's CFD Blog"
-  const description = post?.description ?? 'CFD 엔지니어를 위한 기술 저널'
+export default async function Image({ params }: { params: Promise<{ locale: string; slug: string }> }) {
+  const { locale, slug } = await params
+  const post =
+    allPosts.find((p) => p.locale === locale && p.slug === slug) ??
+    allPosts.find((p) => p.locale === 'ko' && p.slug === slug)
+  const title = post?.title ?? "Younglin's CFD Blog"
+  const description = post?.description ?? 'Field notes from a CFD researcher'
   const tags = post?.tags?.slice(0, 3) ?? []
 
   return new ImageResponse(
@@ -33,18 +36,16 @@ export default async function Image({ params }: { params: Promise<{ slug: string
           fontFamily: 'serif',
         }}
       >
-        {/* Accent line */}
         <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: '4px', background: '#fbbf24' }} />
 
-        {/* Logo */}
         <div style={{ position: 'absolute', top: '48px', left: '60px', display: 'flex', alignItems: 'baseline', gap: '10px' }}>
           <span style={{ fontSize: '22px', fontWeight: 700, color: '#fbbf24', fontFamily: 'monospace' }}>$_</span>
-          <span style={{ fontSize: '22px', fontWeight: 700, color: '#e2e8f0', letterSpacing: '-0.02em' }}>영린</span>
+          <span style={{ fontSize: '22px', fontWeight: 700, color: '#e2e8f0', letterSpacing: '-0.02em' }}>Younglin</span>
           <span style={{ fontSize: '22px', fontWeight: 700, color: '#fbbf24', letterSpacing: '-0.02em' }}>&apos;s</span>
           <span style={{ fontSize: '22px', fontWeight: 700, color: '#e2e8f0', letterSpacing: '-0.02em' }}>CFD Blog</span>
+          <span style={{ fontSize: '14px', fontWeight: 500, color: '#7a90a8', marginLeft: 8, fontFamily: 'monospace' }}>{locale}</span>
         </div>
 
-        {/* Tags */}
         {tags.length > 0 && (
           <div style={{ display: 'flex', gap: '8px', marginBottom: '20px' }}>
             {tags.map((tag) => (
@@ -67,7 +68,6 @@ export default async function Image({ params }: { params: Promise<{ slug: string
           </div>
         )}
 
-        {/* Title */}
         <div
           style={{
             fontSize: title.length > 50 ? '44px' : '52px',
@@ -82,7 +82,6 @@ export default async function Image({ params }: { params: Promise<{ slug: string
           {title}
         </div>
 
-        {/* Description */}
         <div
           style={{
             fontSize: '20px',

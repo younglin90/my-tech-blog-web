@@ -1,0 +1,98 @@
+import { allPosts } from 'contentlayer/generated'
+import { compareDesc, parseISO } from 'date-fns'
+import { notFound } from 'next/navigation'
+import { PostList } from '@/components/PostList'
+import { QuoteHero } from '@/components/QuoteHero'
+import { DAY_META } from '@/lib/day-meta'
+import { LOCALES, isLocale, t, type Locale } from '@/lib/i18n'
+import type { Metadata } from 'next'
+
+interface HomeProps {
+  params: Promise<{ locale: string }>
+}
+
+export async function generateStaticParams() {
+  return LOCALES.map((locale) => ({ locale }))
+}
+
+export async function generateMetadata({ params }: HomeProps): Promise<Metadata> {
+  const { locale } = await params
+  return {
+    alternates: {
+      canonical: `https://tech-blog.dev/${locale}`,
+      languages: Object.fromEntries(LOCALES.map((l) => [l, `https://tech-blog.dev/${l}`])),
+    },
+  }
+}
+
+const DAY_ORDER: Array<keyof typeof DAY_META> = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']
+
+export default async function Home({ params }: HomeProps) {
+  const { locale } = await params
+  if (!isLocale(locale)) notFound()
+  const loc = locale as Locale
+
+  const bySlug = new Map<string, typeof allPosts[number]>()
+  allPosts.filter((p) => !p.draft && p.locale === 'ko').forEach((p) => bySlug.set(p.slug, p))
+  if (loc !== 'ko') {
+    allPosts.filter((p) => !p.draft && p.locale === loc).forEach((p) => bySlug.set(p.slug, p))
+  }
+  const posts = Array.from(bySlug.values())
+    .sort((a, b) => compareDesc(parseISO(a.date), parseISO(b.date)))
+    .map((post) => ({
+      id: post.slug,
+      title: post.title,
+      date: post.date,
+      description: post.description,
+      tags: post.tags ?? [],
+      readingTime: post.readingTime,
+      url: loc === post.locale ? post.url : `/${loc}/posts/${post.slug}`,
+      isDynamic: false as const,
+    }))
+
+  const jsonLd = {
+    '@context': 'https://schema.org',
+    '@type': 'WebSite',
+    name: "Younglin's CFD Blog",
+    description: t(loc, 'home.subtitle'),
+    url: `https://tech-blog.dev/${loc}`,
+    inLanguage: loc,
+  }
+
+  return (
+    <div>
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }} />
+
+      <QuoteHero />
+
+      <div
+        className="mb-5 flex flex-wrap items-center gap-x-5 gap-y-2 px-4 py-3 rounded-lg"
+        style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
+      >
+        <span
+          className="mono"
+          style={{ fontSize: 10, color: 'var(--text-faint)', letterSpacing: '0.2em', fontWeight: 600 }}
+        >
+          WEEKLY
+        </span>
+        {DAY_ORDER.map((k) => {
+          const m = DAY_META[k]
+          return (
+            <span key={k} className="inline-flex items-center gap-1.5" style={{ fontSize: 12 }}>
+              <span
+                className="inline-block rounded-full"
+                style={{ width: 6, height: 6, background: m.colorVar }}
+              />
+              <span className="mono" style={{ color: 'var(--text-muted)', fontSize: 10.5 }}>
+                {m.short}
+              </span>
+              <span style={{ color: 'var(--text)' }}>{m.label}</span>
+            </span>
+          )
+        })}
+      </div>
+
+      <PostList staticPosts={posts} />
+    </div>
+  )
+}

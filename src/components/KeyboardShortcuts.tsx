@@ -1,9 +1,10 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import { useRouter } from 'next/navigation'
+import { useRouter, usePathname } from 'next/navigation'
 import { useTheme } from 'next-themes'
 import { X } from 'lucide-react'
+import { localePathPrefix } from '@/lib/i18n'
 
 const shortcuts = [
   { keys: ['Ctrl', 'K'], mac: ['⌘', 'K'], description: 'Open search' },
@@ -24,6 +25,8 @@ export function KeyboardShortcuts() {
   const [open, setOpen] = useState(false)
   const [isMac, setIsMac] = useState(false)
   const router = useRouter()
+  const pathname = usePathname() ?? '/'
+  const { locale } = localePathPrefix(pathname)
   const { theme, setTheme } = useTheme()
   const themeRef = useRef(theme)
 
@@ -63,10 +66,10 @@ export function KeyboardShortcuts() {
       bufferTimer = setTimeout(() => { buffer = '' }, 800)
 
       if (buffer === 'GG') { window.scrollTo({ top: 0, behavior: 'smooth' }); buffer = '' }
-      else if (buffer === 'GH') { router.push('/'); buffer = '' }
-      else if (buffer === 'GT') { router.push('/tags'); buffer = '' }
-      else if (buffer === 'GA') { router.push('/about'); buffer = '' }
-      else if (buffer === 'GB') { router.push('/bookmarks'); buffer = '' }
+      else if (buffer === 'GH') { router.push(`/${locale}`); buffer = '' }
+      else if (buffer === 'GT') { router.push(`/${locale}/tags`); buffer = '' }
+      else if (buffer === 'GA') { router.push(`/${locale}/about`); buffer = '' }
+      else if (buffer === 'GB') { router.push(`/${locale}/bookmarks`); buffer = '' }
     }
 
     document.addEventListener('keydown', handler)
@@ -74,7 +77,7 @@ export function KeyboardShortcuts() {
       document.removeEventListener('keydown', handler)
       clearTimeout(bufferTimer)
     }
-  }, [router])
+  }, [router, locale])
 
   if (!open) return null
 

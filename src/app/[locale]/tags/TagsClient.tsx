@@ -5,7 +5,7 @@ import Link from 'next/link'
 
 type SortMode = 'count' | 'alpha'
 
-export function TagsClient({ tags }: { tags: [string, number][] }) {
+export function TagsClient({ tags, locale }: { tags: [string, number][]; locale: string }) {
   const [sort, setSort] = useState<SortMode>('count')
   const [filter, setFilter] = useState('')
 
@@ -89,7 +89,7 @@ export function TagsClient({ tags }: { tags: [string, number][] }) {
                     {items.map(([tag, count]) => (
                       <Link
                         key={tag}
-                        href={`/tags/${encodeURIComponent(tag)}`}
+                        href={`/${locale}/tags/${encodeURIComponent(tag)}`}
                         className="tag-pill flex items-center gap-1.5"
                         title={`${count} post${count !== 1 ? 's' : ''}`}
                       >
@@ -120,7 +120,7 @@ export function TagsClient({ tags }: { tags: [string, number][] }) {
               return (
                 <Link
                   key={tag}
-                  href={`/tags/${encodeURIComponent(tag)}`}
+                  href={`/${locale}/tags/${encodeURIComponent(tag)}`}
                   className="tag-pill flex items-center gap-1.5 transition-opacity duration-100 hover:opacity-100"
                   style={{ fontSize: `${fontSize}rem`, opacity }}
                   title={`${count} post${count !== 1 ? 's' : ''}`}

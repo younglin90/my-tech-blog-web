@@ -7,10 +7,13 @@ const SITE_DESCRIPTION = 'CFD 엔지니어를 위한 기술 저널 — 수식, �
 
 function getPosts() {
   const raw = readFileSync(join(process.cwd(), '.contentlayer/generated/Post/_index.json'), 'utf-8')
+  // RSS는 ko 포스트만 노출 (locale별 RSS는 후속 작업)
   return JSON.parse(raw)
-    .filter((p) => !p.draft)
+    .filter((p) => !p.draft && (p.locale === 'ko' || !p.locale))
     .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
 }
+
+const POST_PATH = (p) => `/ko/posts/${p.slug || (p._raw?.flattenedPath ?? '').replace(/^ko\//, '')}`
 
 /** Strip MDX/JSX/frontmatter for a plain-text excerpt */
 function extractExcerpt(raw, maxChars = 1500) {
@@ -43,9 +46,9 @@ function generateRss(posts) {
       <content:encoded><![CDATA[${excerpt}
 
 ---
-Read more: ${SITE_URL}/posts/${post._raw.flattenedPath}]]></content:encoded>
-      <link>${SITE_URL}/posts/${post._raw.flattenedPath}</link>
-      <guid isPermaLink="true">${SITE_URL}/posts/${post._raw.flattenedPath}</guid>
+Read more: ${SITE_URL}${POST_PATH(post)}]]></content:encoded>
+      <link>${SITE_URL}${POST_PATH(post)}</link>
+      <guid isPermaLink="true">${SITE_URL}${POST_PATH(post)}</guid>
       <pubDate>${new Date(post.date).toUTCString()}</pubDate>
       <author>noreply@tech-blog.dev (CFD.Lab)</author>${categories ? '\n' + categories : ''}
     </item>`
@@ -69,7 +72,7 @@ Read more: ${SITE_URL}/posts/${post._raw.flattenedPath}]]></content:encoded>
 function generateSitemap(posts) {
   const postEntries = posts.map((post) => `
   <url>
-    <loc>${SITE_URL}/posts/${post._raw.flattenedPath}</loc>
+    <loc>${SITE_URL}${POST_PATH(post)}</loc>
     <lastmod>${new Date(post.date).toISOString().split('T')[0]}</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.8</priority>
@@ -118,8 +121,8 @@ function generateJsonFeed(posts) {
     language: 'ko',
     authors: [{ name: 'CFD.Lab', url: `${SITE_URL}/about` }],
     items: posts.map((post) => ({
-      id: `${SITE_URL}/posts/${post._raw.flattenedPath}`,
-      url: `${SITE_URL}/posts/${post._raw.flattenedPath}`,
+      id: `${SITE_URL}${POST_PATH(post)}`,
+      url: `${SITE_URL}${POST_PATH(post)}`,
       title: post.title,
       summary: post.description,
       content_text: post.body?.raw ? extractExcerpt(post.body.raw, 2000) : post.description,
