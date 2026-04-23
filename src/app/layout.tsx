@@ -8,6 +8,7 @@ import { TerminalHeader } from '@/components/TerminalHeader'
 import { TerminalFooter } from '@/components/TerminalFooter'
 import { LocaleHtmlLang } from '@/components/LocaleHtmlLang'
 import { ServiceWorkerRegister } from '@/components/ServiceWorkerRegister'
+import { AskBot } from '@/components/AskBot'
 import type { Metadata, Viewport } from 'next'
 
 // Umami 트래킹 정보는 공개 값(브라우저에 그대로 노출되는 script 태그)이라 코드에 고정해도 안전.
@@ -150,6 +151,7 @@ export default function RootLayout({
             <KeyboardShortcuts />
             <MobileNav />
             <BackToTop />
+            <AskBot />
             <TerminalFooter />
           </div>
         </ThemeProvider>

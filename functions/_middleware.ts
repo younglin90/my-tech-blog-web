@@ -63,6 +63,7 @@ export const onRequest: PagesFunction = async (ctx) => {
     url.pathname === '/feed.xml' ||
     url.pathname === '/feed.json' ||
     /^\/feed-(ko|en|ja|zh|es)\.(xml|json)$/.test(url.pathname) ||
+    url.pathname === '/rag-index.json' ||
     url.pathname === '/sitemap.xml' ||
     url.pathname === '/robots.txt' ||
     url.pathname === '/manifest.webmanifest' ||

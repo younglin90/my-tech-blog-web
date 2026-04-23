@@ -32,6 +32,7 @@ export function TerminalFooter() {
         <Link href={`/${locale}/series`} className="link-hover-text">series</Link>
         <Link href={`/${locale}/tools`} className="link-hover-text">tools</Link>
         <Link href={`/${locale}/viz`} className="link-hover-text">viz</Link>
+        <Link href={`/${locale}/glossary`} className="link-hover-text">glossary</Link>
         <Link href={`/${locale}/bookmarks`} className="link-hover-text">{t(locale, 'nav.bookmarks').toLowerCase()}</Link>
         <Link href={`/${locale}/about`} className="link-hover-text">{t(locale, 'nav.about').toLowerCase()}</Link>
         <a href="/feed.xml" className="link-hover-text-accent">rss</a>
