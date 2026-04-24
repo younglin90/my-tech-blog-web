@@ -1,0 +1,130 @@
+---
+title: "[论文评述] 当WENO把小涡抹平时 — Fu(2019) TENO低耗散有限体积格式"
+date: 2026-04-25
+description: "5阶WENO-JS在光滑区域也过度耗散的原因,以及TENO用锐截断修正它的方法"
+tags: ["논문리뷰", "CFD", "TENO", "WENO", "shock-capturing", "high-order"]
+draft: false
+---
+
+import { TENOvsWENOAdvection1D } from '@/components/post-viz/2026-04-25-teno-low-dissipation-shock-capturing/TENOvsWENOAdvection1D'
+
+在斯坦福Center for Turbulence Research,Lin Fu在运行湍流直接数值模拟时注意到一件奇怪的事。5阶WENO-JS捕捉激波没有问题,但远离激波的小涡也随时间变得模糊。格式标榜5阶精度,实际分辨率却更像3阶中心差分。本文评述Fu(2019)论文揪出原因的工作,并**在相同初始条件下并排运行WENO-JS与TENO-5进行对比**。先给结论:非线性权的连续性一直是隐藏成本。
+
+## 论文信息与背景
+
+- 作者: Lin Fu(Stanford Center for Turbulence Research)
+- 期刊: Computer Physics Communications 235 (2019) 25–39
+- DOI: 10.1016/j.cpc.2018.10.009
+- 关键词: TENO, High-order schemes, Shock-capturing, Low-dissipation, Finite-volume method
+
+## WENO-JS的隐藏损耗
+
+经典WENO-JS(Jiang–Shu, 1996)在三个小模板$S_0, S_1, S_2$上分别计算光滑性指标$\beta_k$,再用非线性权混合多项式。
+
+$$
+w_k = \frac{\alpha_k}{\sum_j \alpha_j}, \qquad \alpha_k = \frac{d_k}{(\beta_k + \varepsilon)^2}
+$$
+
+其中$d_k$是恢复5阶精度的最优线性权,$\varepsilon \sim 10^{-6}$防止除零。问题在于这些权是**连续的**。即便模板发生极小扰动,在本应保持$w_k = d_k$的光滑区域中,$w_k$也会微小地移动,让次数更低的模板占据权重。
+
+结果是,光滑波动经过数十步后振幅逐渐被削去,相位误差累积。在LES(大涡模拟)这类**激波与湍流涡共存**的模拟中,这种耗散是致命的。
+
+## TENO的两个思路: 强尺度分离与锐截断
+
+Fu做了两项改变。
+
+其一,重排模板结构。在三个3点小模板$S_0, S_1, S_2$之外,新增**一个5点大模板$S_3$**。若$S_3$干净,故事就此结束 — 其他模板根本不参与。
+
+其二,权被**二值化**。光滑性判定由截断参数$C_T$完成。
+
+$$
+\gamma_k = \left(1 + \frac{\tau_K}{\beta_k + \varepsilon}\right)^q, \qquad \chi_k = \frac{\gamma_k}{\sum_j \gamma_j}
+$$
+
+$$
+\delta_k = \begin{cases} 0, & \chi_k < C_T \\ 1, & \text{otherwise} \end{cases}
+$$
+
+其中$\tau_K = |\beta_0 - \beta_2|$是全局参考指标,$q=6$放大比值。关键是$\delta_k$严格为0或1 — 模板要么**被完全丢弃,要么以最优权激活**。没有连续过渡,所以光滑区直接采用$S_3$的5阶线性格式,只在不连续附近切换到ENO式模板选择。
+
+## 从连续权到0/1判定
+
+当$S_3$被判为光滑($\delta_3 = 1$)时,重构就是简单的5阶线性格式。
+
+$$
+u_{i+1/2}^L = \frac{1}{60}\bigl(2\bar u_{i-2} - 13\bar u_{i-1} + 47\bar u_i + 27\bar u_{i+1} - 3\bar u_{i+2}\bigr)
+$$
+
+$\bar u_j$是单元平均值。由于此格式完全线性,**$C_T$接近零时它几乎像中心差分一样不耗散**。反之当$\delta_3 = 0$时,只把幸存的小模板按最优线性权$d_k$混合。
+
+$$
+u_{i+1/2}^L = \sum_{k=0}^{2} w_k\, u_{k,i+1/2}^L, \qquad w_k = \frac{d_k\, \delta_k}{\sum_j d_j\, \delta_j}
+$$
+
+这保证了ENO性。若某个模板跨过不连续,其$\delta_k$归零,权被光滑地转移到更干净的模板。
+
+## 用NumPy实现5阶模板重构
+
+实际代码很短。从5个单元计算3个光滑性指标与3个候选多项式;TENO用$C_T$切割,WENO-JS用反平方混合。
+
+```python
+import numpy as np
+
+def teno_beta_indicators(um2, um1, u0, up1, up2):
+    # 3个3点模板的Jiang-Shu光滑性指标
+    b0 = (13/12)*(um2 - 2*um1 + u0)**2 + 0.25*(um2 - 4*um1 + 3*u0)**2
+    b1 = (13/12)*(um1 - 2*u0 + up1)**2 + 0.25*(um1 - up1)**2
+    b2 = (13/12)*(u0 - 2*up1 + up2)**2 + 0.25*(3*u0 - 4*up1 + up2)**2
+    return b0, b1, b2
+
+def teno_weighted_reconstruction(u, i, CT=1e-5, q=6):
+    N = len(u)
+    um2, um1, u0 = u[(i-2) % N], u[(i-1) % N], u[i]
+    up1, up2 = u[(i+1) % N], u[(i+2) % N]
+    b0, b1, b2 = teno_beta_indicators(um2, um1, u0, up1, up2)
+    b3 = max(b0, b1, b2)
+    tau = abs(b0 - b2)
+    eps = 1e-40
+    g = np.array([(1 + tau/(b + eps))**q for b in (b0, b1, b2, b3)])
+    chi = g / g.sum()
+    delta = (chi >= CT).astype(float)
+    if delta[3] == 1:  # S3光滑 -> 直接使用5阶线性
+        return (2*um2 - 13*um1 + 47*u0 + 27*up1 - 3*up2) / 60
+    d = np.array([1/10, 6/10, 3/10])
+    alpha = d * delta[:3]
+    if alpha.sum() < 1e-14:
+        return u0  # 最后的施主单元回退
+    w = alpha / alpha.sum()
+    p0 = (2*um2 - 7*um1 + 11*u0) / 6
+    p1 = (-um1 + 5*u0 + 2*up1) / 6
+    p2 = (2*u0 + 5*up1 - up2) / 6
+    return w[0]*p0 + w[1]*p1 + w[2]*p2
+```
+
+接上Euler时间推进和周期边界,光滑的高斯鼓包在TENO下几乎原样返回,而WENO-JS中峰值被削去约30%。骨架相同,仅权的计算不同,结果却肉眼可辨。
+
+## 在下面的仿真里拖动C_T试试
+
+下面的交互仿真用相同初始条件(光滑sin²鼓包+方形脉冲),以线性对流推进,并排对比WENO-JS(橙)与TENO-5(青)。
+
+<TENOvsWENOAdvection1D />
+
+先在$C_T = 10^{-5}$(默认值)下跑完一个周期。方形脉冲边缘两种格式都只模糊一两格,但左侧正弦鼓包在WENO-JS下明显变矮。把$C_T$升到$10^{-3}$,TENO的截断变严,方形脉冲附近更频繁地退回小模板,TENO的耗散也增大。反之降到$10^{-7}$,TENO几乎始终使用5阶线性格式,此时方形脉冲周围出现微小振荡。$C_T$显然是**稳定性与低耗散之间的砝码**。
+
+## 批判性评述 — 调参陷阱
+
+把论文没有高调声张的地方说清楚。
+
+首先,$C_T$依赖问题。Fu推荐$C_T = 10^{-5}$,但在强激波与极弱声波并存的算例里,这个值会让声波略微漂移,而降到$10^{-6}$又会在激波附近引入振荡。将TENO移植到OpenFOAM或SU2的研究组反馈需要逐例重调。
+
+其次,有限体积框架下$S_3$的光滑性指标$\beta_3$计算开销较大。5点多项式导数的积分需要求出,表达式铺满六页。改写为有限差分会简单得多,但若要配合论文的低耗散Riemann通量切换策略,有限体积结构是自然选择。
+
+再者,与时间积分的交互尚未充分验证。SSP-RK3没问题,因为空间误差主导;但与SSP-RK2或隐式方法结合时,$\delta_k$的不连续性会影响Newton收敛,有事后报告。
+
+实际使用时: 用**固定$C_T$**做网格细化研究,检查观察到的空间阶数是否真达到5。若达不到,$C_T$很可能偏大,使TENO始终处于非线性模式。
+
+## 记住要点
+
+- WENO-JS的耗散不是bug,而是**连续权的结构性代价**。小的$\beta$扰动就会让$w_k$偏离最优线性组合。
+- TENO用截断$C_T$**二值化模板**。光滑区直接用5阶线性格式,只在不连续附近切换到ENO式选择。
+- 仅一个$C_T$参数就在稳定性与低耗散之间做权衡,所以必须与网格细化一起做灵敏度分析。

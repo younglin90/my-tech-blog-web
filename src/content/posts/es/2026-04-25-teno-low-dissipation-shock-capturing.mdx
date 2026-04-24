@@ -1,0 +1,130 @@
+---
+title: "[Reseña] Cuando WENO difumina los pequeños vórtices — Fu (2019) esquema TENO de baja disipación en volúmenes finitos"
+date: 2026-04-25
+description: "Por qué WENO-JS de 5° orden difumina escalas suaves y cómo el corte nítido de TENO lo corrige"
+tags: ["논문리뷰", "CFD", "TENO", "WENO", "shock-capturing", "high-order"]
+draft: false
+---
+
+import { TENOvsWENOAdvection1D } from '@/components/post-viz/2026-04-25-teno-low-dissipation-shock-capturing/TENOvsWENOAdvection1D'
+
+En el Centro de Investigación de Turbulencia de Stanford, Lin Fu corría simulaciones numéricas directas de turbulencia y notó algo extraño. WENO-JS de 5° orden capturaba ondas de choque sin problema, pero los pequeños vórtices lejos del choque también se volvían difusos con el tiempo. El esquema anunciaba precisión de 5° orden, y sin embargo la resolución efectiva se sentía más como una diferencia central de 3° orden. Esta entrada reseña el artículo de Fu (2019) que identificó la causa, y **ejecuta WENO-JS y TENO-5 en paralelo sobre la misma condición inicial**. Conclusión rápida: la suavidad de los pesos no lineales siempre fue el costo oculto.
+
+## Información del artículo y contexto
+
+- Autor: Lin Fu (Stanford Center for Turbulence Research)
+- Revista: Computer Physics Communications 235 (2019) 25–39
+- DOI: 10.1016/j.cpc.2018.10.009
+- Palabras clave: TENO, High-order schemes, Shock-capturing, Low-dissipation, Finite-volume method
+
+## El costo oculto de WENO-JS
+
+WENO-JS clásico (Jiang–Shu, 1996) calcula indicadores de suavidad $\beta_k$ sobre tres estenciles pequeños $S_0, S_1, S_2$ y mezcla sus polinomios con pesos no lineales.
+
+$$
+w_k = \frac{\alpha_k}{\sum_j \alpha_j}, \qquad \alpha_k = \frac{d_k}{(\beta_k + \varepsilon)^2}
+$$
+
+Aquí $d_k$ es el peso lineal óptimo que recupera la precisión de 5° orden, y $\varepsilon \sim 10^{-6}$ evita la división por cero. El problema es que estos pesos son **continuos**. Una mínima perturbación del estencil desplaza $w_k$ lejos de $d_k$ incluso en regiones suaves donde idealmente debería mantenerse $w_k = d_k$, permitiendo que un polinomio de orden inferior se cuele en la reconstrucción final.
+
+Después de decenas de pasos de tiempo, una onda suave acumula amortiguamiento progresivo y error de fase. Para las simulaciones de grandes vórtices, donde **choques y vórtices turbulentos coexisten**, esta disipación es inaceptable.
+
+## Dos ideas detrás de TENO: separación de escalas fuerte y corte nítido
+
+Fu cambió dos cosas.
+
+Primero, la configuración de estenciles. Junto a los tres estenciles pequeños de 3 puntos $S_0, S_1, S_2$ añade **un estencil grande de 5 puntos $S_3$**. Si $S_3$ está limpio, la historia termina ahí — los estenciles pequeños ni siquiera se consultan.
+
+Segundo, los pesos se **binarizan**. El juicio de suavidad proviene del parámetro de corte $C_T$.
+
+$$
+\gamma_k = \left(1 + \frac{\tau_K}{\beta_k + \varepsilon}\right)^q, \qquad \chi_k = \frac{\gamma_k}{\sum_j \gamma_j}
+$$
+
+$$
+\delta_k = \begin{cases} 0, & \chi_k < C_T \\ 1, & \text{otherwise} \end{cases}
+$$
+
+$\tau_K = |\beta_0 - \beta_2|$ es la referencia global y $q=6$ agudiza la relación. La clave es que $\delta_k$ vale 0 o 1 — un estencil **se descarta por completo o se usa con su peso óptimo**. No hay transición continua, así que en regiones suaves se utiliza el esquema lineal de 5° orden sobre $S_3$ tal cual, y la selección tipo ENO entra en juego solamente cerca de discontinuidades.
+
+## De pesos continuos a un veredicto 0/1
+
+Cuando $S_3$ se juzga suave ($\delta_3 = 1$), la reconstrucción es simplemente el esquema lineal de 5° orden.
+
+$$
+u_{i+1/2}^L = \frac{1}{60}\bigl(2\bar u_{i-2} - 13\bar u_{i-1} + 47\bar u_i + 27\bar u_{i+1} - 3\bar u_{i+2}\bigr)
+$$
+
+$\bar u_j$ es el valor promediado por celda. Dado que este esquema es puramente lineal, **para $C_T$ cercano a cero se comporta casi tan poco disipativo como una diferencia centrada**. Cuando $\delta_3 = 0$, solo los estenciles pequeños supervivientes se mezclan con sus pesos lineales óptimos $d_k$.
+
+$$
+u_{i+1/2}^L = \sum_{k=0}^{2} w_k\, u_{k,i+1/2}^L, \qquad w_k = \frac{d_k\, \delta_k}{\sum_j d_j\, \delta_j}
+$$
+
+Esto preserva la propiedad ENO. Cualquier estencil que cruza una discontinuidad ve su $\delta_k$ anulado, y el peso se transfiere suavemente a un estencil más limpio.
+
+## Reconstrucción de estencil de 5° orden en NumPy
+
+El código es compacto. A partir de cinco celdas se calculan tres indicadores de suavidad y tres polinomios candidatos; TENO aplica umbral con $C_T$ y WENO-JS mezcla con cuadrados inversos.
+
+```python
+import numpy as np
+
+def teno_beta_indicators(um2, um1, u0, up1, up2):
+    # Indicadores de suavidad de Jiang-Shu para tres estenciles de 3 puntos
+    b0 = (13/12)*(um2 - 2*um1 + u0)**2 + 0.25*(um2 - 4*um1 + 3*u0)**2
+    b1 = (13/12)*(um1 - 2*u0 + up1)**2 + 0.25*(um1 - up1)**2
+    b2 = (13/12)*(u0 - 2*up1 + up2)**2 + 0.25*(3*u0 - 4*up1 + up2)**2
+    return b0, b1, b2
+
+def teno_weighted_reconstruction(u, i, CT=1e-5, q=6):
+    N = len(u)
+    um2, um1, u0 = u[(i-2) % N], u[(i-1) % N], u[i]
+    up1, up2 = u[(i+1) % N], u[(i+2) % N]
+    b0, b1, b2 = teno_beta_indicators(um2, um1, u0, up1, up2)
+    b3 = max(b0, b1, b2)
+    tau = abs(b0 - b2)
+    eps = 1e-40
+    g = np.array([(1 + tau/(b + eps))**q for b in (b0, b1, b2, b3)])
+    chi = g / g.sum()
+    delta = (chi >= CT).astype(float)
+    if delta[3] == 1:  # S3 suave -> usar 5° orden lineal tal cual
+        return (2*um2 - 13*um1 + 47*u0 + 27*up1 - 3*up2) / 60
+    d = np.array([1/10, 6/10, 3/10])
+    alpha = d * delta[:3]
+    if alpha.sum() < 1e-14:
+        return u0  # celda donadora como último recurso
+    w = alpha / alpha.sum()
+    p0 = (2*um2 - 7*um1 + 11*u0) / 6
+    p1 = (-um1 + 5*u0 + 2*up1) / 6
+    p2 = (2*u0 + 5*up1 - up2) / 6
+    return w[0]*p0 + w[1]*p1 + w[2]*p2
+```
+
+Con un paso de Euler y frontera periódica alrededor de esto, una joroba gaussiana suave vuelve casi intacta bajo TENO, mientras que WENO-JS ha recortado cerca del 30% del pico. Mismo esqueleto, solo cambia la lógica de los pesos, y aun así el resultado visible cambia.
+
+## Mueve el deslizador C_T y observa
+
+La demostración interactiva a continuación transporta la misma condición inicial (una protuberancia sin² suave más un pulso cuadrado) con convección lineal y compara WENO-JS (naranja) contra TENO-5 (cian).
+
+<TENOvsWENOAdvection1D />
+
+Ejecuta un período completo con $C_T = 10^{-5}$ (valor predeterminado). Los bordes del pulso cuadrado se difuminan solo una o dos celdas en ambos esquemas, pero la protuberancia sinusoidal izquierda queda notablemente más baja bajo WENO-JS. Sube $C_T$ a $10^{-3}$ y el corte de TENO se vuelve estricto, cayendo a estenciles pequeños más a menudo cerca del pulso cuadrado, con lo que su disipación también crece. Baja $C_T$ a $10^{-7}$ y TENO insiste casi siempre en el esquema lineal de 5° orden; en ese valor aparecen pequeñas oscilaciones alrededor del pulso cuadrado. $C_T$ se muestra visiblemente como **la balanza entre estabilidad y baja disipación**.
+
+## Notas críticas — La trampa del ajuste
+
+Algunas cosas que el artículo no proclama con fuerza.
+
+Primero, $C_T$ depende del problema. Fu recomienda $C_T = 10^{-5}$, pero en flujos donde una onda de choque fuerte coexiste con una onda acústica muy débil, ese valor hace flotar ligeramente la onda acústica; bajar a $10^{-6}$ trae oscilaciones cerca del choque. Grupos que portan TENO a OpenFOAM o SU2 reportan tener que reajustar por caso.
+
+Segundo, calcular $\beta_3$ sobre $S_3$ en un marco de volúmenes finitos es costoso. Se integran las derivadas de un polinomio de 5 puntos y la expresión resultante se extiende sobre seis páginas impresas. Una reescritura en diferencias finitas es más barata, pero si también se quiere la estrategia de conmutación de flujo de Riemann de baja disipación del artículo, la estructura de volúmenes finitos es la opción natural.
+
+Tercero, la interacción con la integración temporal no está validada por completo. SSP-RK3 funciona bien porque el error espacial domina, pero combinarlo con SSP-RK2 o métodos implícitos degrada la convergencia de Newton por la discontinuidad en $\delta_k$, según reportes posteriores.
+
+Si se utiliza en la práctica: ejecuta un estudio de refinamiento de malla **con $C_T$ fijo** y verifica si el orden observado realmente llega a 5. Si no llega, lo más probable es que $C_T$ sea demasiado grande y TENO permanezca atrapado en modo no lineal todo el tiempo.
+
+## Lo que hay que recordar
+
+- La disipación de WENO-JS no es un bug — es el **precio estructural de los pesos continuos**. Pequeñas perturbaciones en $\beta$ desplazan $w_k$ fuera de la combinación lineal óptima.
+- TENO **binariza los estenciles** mediante el corte $C_T$. Las regiones suaves obtienen el esquema lineal de 5° orden tal cual; cerca de discontinuidades entra la selección tipo ENO.
+- Un solo parámetro $C_T$ equilibra estabilidad contra baja disipación, así que el análisis de sensibilidad junto al refinamiento de malla es indispensable.
