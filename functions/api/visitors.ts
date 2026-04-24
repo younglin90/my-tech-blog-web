@@ -17,17 +17,18 @@ interface Env {
 const DEFAULT_UMAMI_API_URL = 'https://api.umami.is/v1'
 const DEFAULT_UMAMI_WEBSITE_ID = 'ef0b4cb2-34b1-4d5e-a70e-26a543816b22'
 
-export async function onRequestGet(context: { env: Env }): Promise<Response> {
-  const { env } = context
+export async function onRequestGet(context: { env: Env; request: Request }): Promise<Response> {
+  const { env, request } = context
   const UMAMI_API_URL = env.UMAMI_API_URL || DEFAULT_UMAMI_API_URL
   const UMAMI_WEBSITE_ID = env.UMAMI_WEBSITE_ID || DEFAULT_UMAMI_WEBSITE_ID
   const UMAMI_API_KEY = env.UMAMI_API_KEY
+  const debug = new URL(request.url).searchParams.get('debug') === '1'
   const json = (body: unknown, init: ResponseInit = {}) =>
     new Response(JSON.stringify(body), {
       ...init,
       headers: {
         'Content-Type': 'application/json',
-        'Cache-Control': 'public, max-age=60, s-maxage=300',
+        'Cache-Control': debug ? 'no-store' : 'public, max-age=60, s-maxage=300',
         ...(init.headers || {}),
       },
     })
@@ -36,13 +37,10 @@ export async function onRequestGet(context: { env: Env }): Promise<Response> {
     return json({ visitors: null, pageviews: null, error: 'api-key-missing' }, { status: 503 })
   }
 
-  // Cloudflare Workers는 UTC로 동작. 푸터 표시는 한국시간(KST, UTC+9) 기준으로
-  // "오늘 00:00 ~ 현재"를 집계해서 Umami 대시보드(Asia/Seoul)와 동기화한다.
-  const KST_OFFSET_MS = 9 * 60 * 60 * 1000
+  // 24시간 슬라이딩 윈도우 (자정 경계로 0이 되는 문제 회피).
   const DAY_MS = 24 * 60 * 60 * 1000
   const now = Date.now()
-  const kstMidnightMs = Math.floor((now + KST_OFFSET_MS) / DAY_MS) * DAY_MS - KST_OFFSET_MS
-  const startAt = kstMidnightMs
+  const startAt = now - DAY_MS
 
   const base = UMAMI_API_URL.replace(/\/$/, '')
   const url = `${base}/websites/${UMAMI_WEBSITE_ID}/stats?startAt=${startAt}&endAt=${now}`
@@ -54,18 +52,42 @@ export async function onRequestGet(context: { env: Env }): Promise<Response> {
         Accept: 'application/json',
       },
     })
+    const raw = await res.text()
     if (!res.ok) {
-      return json({ visitors: null, pageviews: null, error: `upstream-${res.status}` }, { status: 502 })
+      return json({
+        visitors: null,
+        pageviews: null,
+        error: `upstream-${res.status}`,
+        ...(debug && { raw, url }),
+      }, { status: 502 })
     }
-    const data = (await res.json()) as {
-      visitors?: { value: number }
-      pageviews?: { value: number }
+    let data: unknown = {}
+    try { data = JSON.parse(raw) } catch { /* keep empty */ }
+
+    // Umami stats 응답 가능 형태:
+    //   {visitors:{value,prev}, pageviews:{value,prev}, ...}  ← Cloud v1 표준
+    //   {visitors:N, pageviews:N}                              ← 일부 self-host 변형
+    const pickNum = (v: unknown): number => {
+      if (typeof v === 'number') return v
+      if (v && typeof v === 'object' && 'value' in (v as object)) {
+        const n = (v as { value: unknown }).value
+        return typeof n === 'number' ? n : 0
+      }
+      return 0
     }
+    const d = data as Record<string, unknown>
+    const out = {
+      visitors: pickNum(d.visitors),
+      pageviews: pickNum(d.pageviews),
+      ...(debug && { raw_response: data, url, startAt, endAt: now }),
+    }
+    return json(out)
+  } catch (e) {
     return json({
-      visitors: data.visitors?.value ?? 0,
-      pageviews: data.pageviews?.value ?? 0,
-    })
-  } catch {
-    return json({ visitors: null, pageviews: null, error: 'fetch-failed' }, { status: 500 })
+      visitors: null,
+      pageviews: null,
+      error: 'fetch-failed',
+      ...(debug && { exception: String(e) }),
+    }, { status: 500 })
   }
 }

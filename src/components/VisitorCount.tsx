@@ -40,7 +40,7 @@ export function VisitorCount() {
 
   return (
     <span
-      title="오늘의 방문자 · 페이지뷰 (Umami, KST 기준)"
+      title="최근 24시간 방문자 · 페이지뷰 (Umami)"
       className="inline-flex items-center gap-1.5"
     >
       <span
@@ -54,7 +54,7 @@ export function VisitorCount() {
           boxShadow: errored ? 'none' : '0 0 6px var(--accent)',
         }}
       />
-      today {visitorsLabel} · {pageviewsLabel} views
+      24h {visitorsLabel} · {pageviewsLabel} views
     </span>
   )
 }
