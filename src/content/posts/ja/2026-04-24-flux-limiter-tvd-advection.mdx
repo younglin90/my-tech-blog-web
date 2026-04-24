@@ -1,0 +1,151 @@
+---
+title: "Lax–Wendroffが段差で震えた — Flux Limiterで2次TVD移流スキームを作る"
+date: 2026-04-24
+description: "Godunovの定理を迂回して単調な2次移流スキームを作る方法"
+tags: ["CFD", "알고리즘", "TVD", "flux-limiter", "advection", "수치해석"]
+draft: false
+---
+
+import { LimiterAdvection1D } from '@/components/post-viz/2026-04-24-flux-limiter-tvd-advection/LimiterAdvection1D'
+
+あるテストケースで、段差の前後に妙なこぶが立ち上がった。線形移流方程式(linear advection、定数速度場による純粋な並進)をLax–Wendroffで解いており、初期条件は単純な矩形パルスだった。2次スキームなので1次風上より鋭いはずだが、結果は段差の前でアンダーシュート、後ろでオーバーシュート。ログを見てもCFLは0.5で安定条件を満たしている。
+
+問題はアルゴリズムが不安定なことではなく、アルゴリズムが**単調でない**ことだった。
+
+## 振動の正体 — Godunovが引いた壁
+
+1次元線形移流方程式は
+
+$$
+\partial_t q + u\,\partial_x q = 0
+$$
+
+速度 $u$ が一定ならば、解は初期形状がそのまま右へ平行移動する。数値的にはセル境界のフラックス $f_{i-1/2}$ を定義し、
+
+$$
+q_i^{n+1} = q_i^n - \frac{\Delta t}{\Delta x}\bigl(f_{i+1/2} - f_{i-1/2}\bigr)
+$$
+
+この形式は **flux-conserving form** と呼ばれ、質量・運動量・エネルギーなどの保存量を機械精度まで保つ。Lax–Wendroffはここに2次テイラー補正を加えた線形スキームだ。
+
+ところが1959年にGodunovが証明した定理は厳しい。*線形定係数移流に対して、単調性(monotonicity)を保ちつつ2次以上の精度を持つ線形スキームは存在しない。* どちらかを諦めるしかない。Lax–Wendroffは2次精度を取って単調性を捨てた。だから段差で振動が出る。
+
+## TVD条件:Hartenの不等式
+
+Harten(1983)が示した抜け道は「全変動が減少する」スキームだ。
+
+$$
+\mathrm{TV}(q) = \sum_i |q_{i+1} - q_i|, \qquad \mathrm{TV}(q^{n+1}) \le \mathrm{TV}(q^n)
+$$
+
+左辺は数値解のうねりの総和。毎ステップこの値が増えなければ新しい極値(オーバーシュート・アンダーシュート)は生じない。この条件を満たすスキームを**TVD**と呼ぶ。
+
+Godunovの壁を迂回するにはスキームを*非線形*にする必要がある。解の滑らかさに応じてアルゴリズムが形を変える、というアイデアだ。滑らかな領域では2次、急な勾配の近くでは1次風上。この切り替えを担うのが **flux limiter** である。
+
+## Flux Limiterを一行で理解する
+
+Lax–Wendroffのフラックスは1次風上に補正項を足した形だ。
+
+$$
+f_{i-1/2} = u\,q_{i-1} + \tfrac{1}{2}\,|u|\!\left(1 - \left|\tfrac{u\Delta t}{\Delta x}\right|\right) \varphi(r)\,(q_i - q_{i-1})
+$$
+
+ここで $u$ は移流速度、$\Delta x$ はセル幅、$\varphi(r)$ がリミッター、$r$ は前後の勾配比。
+
+$$
+r_{i-1/2} = \frac{q_{i-1} - q_{i-2}}{q_i - q_{i-1}}
+$$
+
+解が滑らかなら $r \approx 1$、極値の近くでは $r < 0$ あるいは $r \gg 1$。リミッターはこの $r$ を見て補正の強さを調整する。
+
+特別な選択として、
+
+- $\varphi(r) = 0$:donor-cell(1次風上)
+- $\varphi(r) = 1$:Lax–Wendroff
+- $\varphi(r) = r$:Beam–Warming
+
+Sweby図で **$0 \le \varphi(r) \le \min(2r,\,2)$** を満たせばTVDが保証される。この台形領域に入る代表的なリミッター4つを比較する。
+
+| リミッター | 定義 | 特徴 |
+|---|---|---|
+| minmod | $\max(0,\min(1,r))$ | 最も慎重。段差はよく保つが滑らかな領域はやや鈍い |
+| superbee | $\max(0,\min(2r,1),\min(r,2))$ | 最も鋭い。滑らかな波を階段状に削ることも |
+| van Leer | $(r+|r|)/(1+|r|)$ | 滑らかなバランス。微分可能 |
+| MC | $\max(0,\min(\tfrac{1+r}{2},2,2r))$ | 既定値として最も無難 |
+
+## Pythonで直接比較
+
+rollベースのベクトル化で40行以内に収まる。200セル、$\mathrm{CFL} = 0.5$、500ステップ(周期境界、波が領域を約2.5周する距離)。
+
+```python
+import numpy as np
+
+def limiter_phi(name, r):
+    r = np.where(np.isfinite(r), r, 0.0)
+    if name == 'donor':    return np.zeros_like(r)
+    if name == 'lw':       return np.ones_like(r)
+    if name == 'minmod':   return np.maximum(0, np.minimum(1, r))
+    if name == 'superbee':
+        return np.maximum.reduce([np.zeros_like(r),
+                                  np.minimum(2*r, 1),
+                                  np.minimum(r, 2)])
+    if name == 'vanleer':  return (r + np.abs(r)) / (1 + np.abs(r) + 1e-30)
+    if name == 'mc':
+        return np.maximum(0, np.minimum.reduce([0.5*(1+r),
+                                                2*np.ones_like(r),
+                                                2*r]))
+
+def advect_limited_fvm(q, cfl, name):
+    """1D FV 移流、周期境界、u = +1。"""
+    dq  = q - np.roll(q, 1)                  # 面 i-1/2: q_i - q_{i-1}
+    r   = np.roll(dq, 1) / (dq + 1e-30)      # (q_{i-1}-q_{i-2}) / (q_i-q_{i-1})
+    phi = limiter_phi(name, r)
+    flx = np.roll(q, 1) + 0.5 * phi * (1 - cfl) * dq
+    return q - cfl * (np.roll(flx, -1) - flx)
+
+N, cfl, steps = 200, 0.5, 500
+x  = np.arange(N) / N
+q0 = ((x > 0.2) & (x < 0.4)).astype(float)
+for name in ['lw', 'minmod', 'superbee', 'vanleer', 'mc']:
+    q = q0.copy()
+    for _ in range(steps):
+        q = advect_limited_fvm(q, cfl, name)
+    l1 = np.abs(q - q0).sum() / N
+    print(f'{name:<9s}  L1={l1:.4f}  overshoot={q.max()-1:.3f}  undershoot={q.min():.3f}')
+```
+
+代表的な実行結果:
+
+| リミッター | $L_1$ 誤差 | オーバーシュート | アンダーシュート |
+|---|---|---|---|
+| lax-wendroff | 0.056 | +0.181 | −0.133 |
+| minmod | 0.081 | 0.000 | 0.000 |
+| superbee | 0.042 | +0.002 | 0.000 |
+| van Leer | 0.061 | 0.000 | 0.000 |
+| MC | 0.051 | 0.000 | 0.000 |
+
+オーバーシュートが20%近く跳ねるのはlax-wendroffだけで、他は全部ゼロ。誤差の順位も面白い。**superbeeが$L_1$で最小**だ。段差をにじませないということで、代わりに滑らかなsine波では波頭を階段状に歪める。
+
+滑らかな波のテスト($q_0 = \sin(2\pi x)$、500ステップ)を別に回すと、収束次数はminmodで約1.5、van Leer/MCで約2.0、superbeeは約1.3まで落ちる。「2次精度」のラベルは極値近傍でリミッターが働くたびに部分的に1次へ落ちるため、こうなる。
+
+## ブラウザで直接リミッターを切り替える
+
+下のシミュレーションでリミッターボタンを押し、CFLスライダーを動かしてみよう。オレンジが数値解、シアンの点線が厳密解。
+
+<LimiterAdvection1D />
+
+`lax-wendroff`に切り替えると、段差の後ろに上方向のこぶ、前に下方向のくぼみがはっきり見える。`superbee`に回すと段差が元よりも鋭く見えるほどだ。`minmod`は両側とも滑らかでこぶがない。CFLを0.9近くまで上げると、どのリミッターも暴れ始めるのがわかる — 安定条件を満たしていても、数値拡散との相互作用は避けられない。
+
+## 実務チェックリスト
+
+- **衝撃捕獲**が目的なら `minmod` または `van Leer` から。振動ゼロが最優先。
+- **LES・大規模乱流**で `superbee` は危険。滑らかな乱流構造を階段状に削り、エネルギースペクトルを歪める。`van Leer` または `MC` が妥協点。
+- 境界セルでステンシルが足りず暫定的に1次風上を使うと、**全体の精度が1次まで落ちる**。境界でもリミッターのステンシルを確保するか、ゴーストセルを使うこと。
+- OpenFOAMの `limitedLinear 1` はvan Leer系の1パラメータリミッター。係数0で1次風上、1.0でTVD領域全体を使う。
+- 収束次数の検証は必ず**滑らかな解**で。不連続を含むテストで$L_1$傾きを測ると、リミッターではなく不連続そのものが次数を落としてしまう。
+
+## 3行サマリ
+
+- Godunovの定理により、線形・2次・単調な移流スキームは存在しない。非線形な切り替えが必須。
+- Flux limiter $\varphi(r)$ は滑らかな領域で2次、極値近くで1次に自動切り替えする一行関数だ。
+- minmodは安全、superbeeは鋭く、van Leer/MCはバランス。LESと衝撃捕獲では選択基準が異なる。

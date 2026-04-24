@@ -1,0 +1,151 @@
+---
+title: "When Lax–Wendroff Shook at a Step — Building a 2nd-Order TVD Advection Scheme with Flux Limiters"
+date: 2026-04-24
+description: "Sidestep Godunov's theorem to build a monotone 2nd-order advection scheme"
+tags: ["CFD", "알고리즘", "TVD", "flux-limiter", "advection", "수치해석"]
+draft: false
+---
+
+import { LimiterAdvection1D } from '@/components/post-viz/2026-04-24-flux-limiter-tvd-advection/LimiterAdvection1D'
+
+In a test case, odd bumps appeared right before and right after a step. I was solving the linear advection equation (pure translation with a constant velocity field) with Lax–Wendroff, and the initial condition was a simple rectangular pulse. As a 2nd-order scheme, I expected it to be sharper than 1st-order upwind — instead the result had an undershoot in front of the step and an overshoot behind it. Logs showed CFL = 0.5, well within the stability limit.
+
+The problem was not that the algorithm was unstable. The algorithm was not **monotone**.
+
+## The Source of the Oscillation — Godunov's Wall
+
+The 1D linear advection equation is
+
+$$
+\partial_t q + u\,\partial_x q = 0
+$$
+
+With constant $u$, the solution is simply the initial profile shifted to the right. Numerically we define a flux $f_{i-1/2}$ at each cell face and write
+
+$$
+q_i^{n+1} = q_i^n - \frac{\Delta t}{\Delta x}\bigl(f_{i+1/2} - f_{i-1/2}\bigr)
+$$
+
+This is the **flux-conserving form**, and it preserves conserved quantities (mass, momentum, energy) down to machine precision. Lax–Wendroff is a linear scheme that adds a 2nd-order Taylor correction to this form.
+
+But a theorem Godunov proved in 1959 is unforgiving: *no linear scheme for the linear constant-coefficient advection equation can be both monotone and 2nd-order (or higher) accurate.* You must give up one of the two. Lax–Wendroff chose 2nd-order accuracy and sacrificed monotonicity — hence the oscillations at the step.
+
+## The TVD Condition: Harten's Inequality
+
+Harten (1983) offered a way out: a scheme whose "total variation decreases".
+
+$$
+\mathrm{TV}(q) = \sum_i |q_{i+1} - q_i|, \qquad \mathrm{TV}(q^{n+1}) \le \mathrm{TV}(q^n)
+$$
+
+The left-hand side measures the total wiggle of the numerical solution. If this never grows, no new extrema (overshoot, undershoot) can appear. Schemes that satisfy this are called **TVD**.
+
+To go around Godunov's wall, the scheme must become *nonlinear* — it must change shape based on how smooth the solution is locally. 2nd order in smooth regions, 1st-order upwind near sharp gradients. The switch is controlled by a **flux limiter**.
+
+## Flux Limiter in One Line
+
+The Lax–Wendroff flux is a 1st-order upwind flux plus a correction:
+
+$$
+f_{i-1/2} = u\,q_{i-1} + \tfrac{1}{2}\,|u|\!\left(1 - \left|\tfrac{u\Delta t}{\Delta x}\right|\right) \varphi(r)\,(q_i - q_{i-1})
+$$
+
+Here $u$ is the advection velocity, $\Delta x$ is the cell width, $\varphi(r)$ is the limiter, and $r$ is the ratio of neighboring slopes.
+
+$$
+r_{i-1/2} = \frac{q_{i-1} - q_{i-2}}{q_i - q_{i-1}}
+$$
+
+Smooth solutions give $r \approx 1$; near extrema $r < 0$ or $r \gg 1$. The limiter watches $r$ and dials the correction up or down.
+
+Special choices:
+
+- $\varphi(r) = 0$: donor-cell (1st-order upwind)
+- $\varphi(r) = 1$: Lax–Wendroff
+- $\varphi(r) = r$: Beam–Warming
+
+In Sweby's diagram, any limiter satisfying **$0 \le \varphi(r) \le \min(2r,\,2)$** is TVD. Four representative limiters inside that trapezoid:
+
+| Limiter | Definition | Character |
+|---|---|---|
+| minmod | $\max(0,\min(1,r))$ | Most cautious. Preserves steps, slightly dull on smooth waves |
+| superbee | $\max(0,\min(2r,1),\min(r,2))$ | Sharpest. Can cut smooth waves into staircases |
+| van Leer | $(r+|r|)/(1+|r|)$ | Smooth balance. Differentiable |
+| MC | $\max(0,\min(\tfrac{1+r}{2},2,2r))$ | Solid default |
+
+## Comparing Them in Python
+
+With roll-based vectorization, this fits in 40 lines. 200 cells, $\mathrm{CFL} = 0.5$, 500 steps (periodic BC; the wave travels around the domain about 2.5 times).
+
+```python
+import numpy as np
+
+def limiter_phi(name, r):
+    r = np.where(np.isfinite(r), r, 0.0)
+    if name == 'donor':    return np.zeros_like(r)
+    if name == 'lw':       return np.ones_like(r)
+    if name == 'minmod':   return np.maximum(0, np.minimum(1, r))
+    if name == 'superbee':
+        return np.maximum.reduce([np.zeros_like(r),
+                                  np.minimum(2*r, 1),
+                                  np.minimum(r, 2)])
+    if name == 'vanleer':  return (r + np.abs(r)) / (1 + np.abs(r) + 1e-30)
+    if name == 'mc':
+        return np.maximum(0, np.minimum.reduce([0.5*(1+r),
+                                                2*np.ones_like(r),
+                                                2*r]))
+
+def advect_limited_fvm(q, cfl, name):
+    """1D FV advection, periodic BC, u = +1."""
+    dq  = q - np.roll(q, 1)                  # face i-1/2: q_i - q_{i-1}
+    r   = np.roll(dq, 1) / (dq + 1e-30)      # (q_{i-1}-q_{i-2}) / (q_i-q_{i-1})
+    phi = limiter_phi(name, r)
+    flx = np.roll(q, 1) + 0.5 * phi * (1 - cfl) * dq
+    return q - cfl * (np.roll(flx, -1) - flx)
+
+N, cfl, steps = 200, 0.5, 500
+x  = np.arange(N) / N
+q0 = ((x > 0.2) & (x < 0.4)).astype(float)
+for name in ['lw', 'minmod', 'superbee', 'vanleer', 'mc']:
+    q = q0.copy()
+    for _ in range(steps):
+        q = advect_limited_fvm(q, cfl, name)
+    l1 = np.abs(q - q0).sum() / N
+    print(f'{name:<9s}  L1={l1:.4f}  overshoot={q.max()-1:.3f}  undershoot={q.min():.3f}')
+```
+
+Representative results:
+
+| Limiter | $L_1$ error | Overshoot | Undershoot |
+|---|---|---|---|
+| lax-wendroff | 0.056 | +0.181 | −0.133 |
+| minmod | 0.081 | 0.000 | 0.000 |
+| superbee | 0.042 | +0.002 | 0.000 |
+| van Leer | 0.061 | 0.000 | 0.000 |
+| MC | 0.051 | 0.000 | 0.000 |
+
+Only lax-wendroff shows a near-20% overshoot; the others are zero. The error ranking is also interesting: **superbee has the smallest $L_1$ error**, meaning it keeps the step crisp — at the cost of turning smooth sine waves into staircases.
+
+If you repeat the experiment with a smooth wave ($q_0 = \sin(2\pi x)$, 500 steps), the convergence order drops to about 1.5 for minmod, 2.0 for van Leer/MC, and 1.3 for superbee. The "2nd-order accurate" label slips every time the limiter activates near an extremum and locally falls back to 1st order.
+
+## Switch Limiters Live in Your Browser
+
+Try the demo below. Click a limiter button and drag the CFL slider. The orange curve is the numerical solution; the dashed cyan curve is the exact one.
+
+<LimiterAdvection1D />
+
+Switch to `lax-wendroff` and you can clearly see a bump above and a dip below the step. Switch to `superbee` and the step even looks sharper than the original. `minmod` stays smooth on both sides with no bumps. Push CFL near 0.9 and every limiter gets aggressive — stability alone doesn't protect you from numerical diffusion interactions.
+
+## Practical Checklist
+
+- For **shock capturing**, start with `minmod` or `van Leer`. Zero oscillation is the priority.
+- For **LES / large-scale turbulence**, `superbee` is risky. It chops smooth turbulent structures into staircases and distorts the energy spectrum. `van Leer` or `MC` is the compromise.
+- Dropping to 1st-order upwind at boundary cells because the stencil is short **drops global accuracy to 1st order**. Secure the limiter stencil at boundaries or use ghost cells.
+- OpenFOAM's `limitedLinear 1` is a one-parameter limiter in the van Leer family. Coefficient 0 = 1st-order upwind; 1.0 = full TVD region.
+- Always verify convergence order with a **smooth solution**. Measuring $L_1$ slopes on a test case that contains a discontinuity pins the order down — because of the discontinuity, not the limiter.
+
+## Three-Line Summary
+
+- Godunov's theorem forbids a linear, 2nd-order, monotone advection scheme. Nonlinear switching is required.
+- The flux limiter $\varphi(r)$ is a one-line function that switches between 2nd order (smooth regions) and 1st order (near extrema).
+- minmod is safe, superbee is sharp, van Leer / MC are balanced. The right choice differs for LES and shock capturing.

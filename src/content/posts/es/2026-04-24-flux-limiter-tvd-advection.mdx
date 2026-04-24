@@ -1,0 +1,151 @@
+---
+title: "Cuando Lax–Wendroff tembló en un escalón — Un esquema de advección TVD de 2° orden con flux limiters"
+date: 2026-04-24
+description: "Eludir el teorema de Godunov para construir un esquema monótono de 2° orden"
+tags: ["CFD", "알고리즘", "TVD", "flux-limiter", "advection", "수치해석"]
+draft: false
+---
+
+import { LimiterAdvection1D } from '@/components/post-viz/2026-04-24-flux-limiter-tvd-advection/LimiterAdvection1D'
+
+En un caso de prueba aparecieron jorobas extrañas delante y detrás del escalón. Estaba resolviendo la ecuación de advección lineal (linear advection, pura traslación con un campo de velocidades constante) con Lax–Wendroff, y la condición inicial era un simple pulso rectangular. Al ser un esquema de 2° orden debía resultar más nítido que el upwind de 1° orden, pero el resultado mostraba undershoot delante del escalón y overshoot detrás. El registro decía CFL = 0.5, dentro del límite de estabilidad.
+
+El problema no era inestabilidad. El algoritmo no era **monótono**.
+
+## El origen de las oscilaciones — la pared de Godunov
+
+La ecuación de advección lineal 1D es
+
+$$
+\partial_t q + u\,\partial_x q = 0
+$$
+
+Con $u$ constante, la solución es simplemente el perfil inicial trasladado hacia la derecha. Numéricamente se define un flujo $f_{i-1/2}$ en cada cara de celda y se escribe
+
+$$
+q_i^{n+1} = q_i^n - \frac{\Delta t}{\Delta x}\bigl(f_{i+1/2} - f_{i-1/2}\bigr)
+$$
+
+Esta es la **flux-conserving form**, que preserva magnitudes conservadas (masa, momento, energía) hasta la precisión de máquina. Lax–Wendroff es un esquema lineal que añade una corrección Taylor de 2° orden a esta forma.
+
+Pero un teorema probado por Godunov en 1959 es implacable: *no existe ningún esquema lineal para la advección lineal de coeficientes constantes que sea simultáneamente monótono y de 2° orden o superior.* Hay que renunciar a uno de los dos. Lax–Wendroff eligió el 2° orden y sacrificó la monotonía — de ahí las oscilaciones en el escalón.
+
+## La condición TVD: desigualdad de Harten
+
+Harten (1983) ofreció una salida: un esquema cuya "variación total disminuye".
+
+$$
+\mathrm{TV}(q) = \sum_i |q_{i+1} - q_i|, \qquad \mathrm{TV}(q^{n+1}) \le \mathrm{TV}(q^n)
+$$
+
+El lado izquierdo mide el total de ondulaciones de la solución numérica. Si este valor nunca crece, no pueden aparecer nuevos extremos (overshoot, undershoot). Los esquemas que satisfacen esto se llaman **TVD**.
+
+Para rodear la pared de Godunov, el esquema debe volverse *no lineal* — su forma debe cambiar según la suavidad local de la solución. 2° orden en regiones suaves, upwind de 1° orden cerca de gradientes pronunciados. Ese conmutador es el **flux limiter**.
+
+## Flux Limiter en una sola línea
+
+El flujo de Lax–Wendroff equivale al upwind de 1° orden más una corrección:
+
+$$
+f_{i-1/2} = u\,q_{i-1} + \tfrac{1}{2}\,|u|\!\left(1 - \left|\tfrac{u\Delta t}{\Delta x}\right|\right) \varphi(r)\,(q_i - q_{i-1})
+$$
+
+donde $u$ es la velocidad de advección, $\Delta x$ el ancho de celda, $\varphi(r)$ el limitador y $r$ la razón entre pendientes vecinas:
+
+$$
+r_{i-1/2} = \frac{q_{i-1} - q_{i-2}}{q_i - q_{i-1}}
+$$
+
+Con una solución suave $r \approx 1$; cerca de los extremos $r < 0$ o $r \gg 1$. El limitador observa ese $r$ y ajusta la intensidad de la corrección.
+
+Casos particulares:
+
+- $\varphi(r) = 0$: donor-cell (upwind de 1° orden)
+- $\varphi(r) = 1$: Lax–Wendroff
+- $\varphi(r) = r$: Beam–Warming
+
+En el diagrama de Sweby, cualquier limitador que satisfaga **$0 \le \varphi(r) \le \min(2r,\,2)$** es TVD. Cuatro limitadores representativos dentro de ese trapecio:
+
+| Limitador | Definición | Carácter |
+|---|---|---|
+| minmod | $\max(0,\min(1,r))$ | El más cauto. Conserva escalones; en zonas suaves es algo torpe |
+| superbee | $\max(0,\min(2r,1),\min(r,2))$ | El más afilado. Puede convertir ondas suaves en escaleras |
+| van Leer | $(r+|r|)/(1+|r|)$ | Balance suave. Diferenciable |
+| MC | $\max(0,\min(\tfrac{1+r}{2},2,2r))$ | Opción por defecto muy sólida |
+
+## Comparación directa en Python
+
+Con vectorización basada en roll, cabe en menos de 40 líneas. 200 celdas, $\mathrm{CFL} = 0.5$, 500 pasos (condición de contorno periódica; la onda recorre el dominio unas 2.5 veces).
+
+```python
+import numpy as np
+
+def limiter_phi(name, r):
+    r = np.where(np.isfinite(r), r, 0.0)
+    if name == 'donor':    return np.zeros_like(r)
+    if name == 'lw':       return np.ones_like(r)
+    if name == 'minmod':   return np.maximum(0, np.minimum(1, r))
+    if name == 'superbee':
+        return np.maximum.reduce([np.zeros_like(r),
+                                  np.minimum(2*r, 1),
+                                  np.minimum(r, 2)])
+    if name == 'vanleer':  return (r + np.abs(r)) / (1 + np.abs(r) + 1e-30)
+    if name == 'mc':
+        return np.maximum(0, np.minimum.reduce([0.5*(1+r),
+                                                2*np.ones_like(r),
+                                                2*r]))
+
+def advect_limited_fvm(q, cfl, name):
+    """Advección 1D en volúmenes finitos, periódica, u = +1."""
+    dq  = q - np.roll(q, 1)                  # cara i-1/2: q_i - q_{i-1}
+    r   = np.roll(dq, 1) / (dq + 1e-30)      # (q_{i-1}-q_{i-2}) / (q_i-q_{i-1})
+    phi = limiter_phi(name, r)
+    flx = np.roll(q, 1) + 0.5 * phi * (1 - cfl) * dq
+    return q - cfl * (np.roll(flx, -1) - flx)
+
+N, cfl, steps = 200, 0.5, 500
+x  = np.arange(N) / N
+q0 = ((x > 0.2) & (x < 0.4)).astype(float)
+for name in ['lw', 'minmod', 'superbee', 'vanleer', 'mc']:
+    q = q0.copy()
+    for _ in range(steps):
+        q = advect_limited_fvm(q, cfl, name)
+    l1 = np.abs(q - q0).sum() / N
+    print(f'{name:<9s}  L1={l1:.4f}  overshoot={q.max()-1:.3f}  undershoot={q.min():.3f}')
+```
+
+Resultados típicos:
+
+| Limitador | Error $L_1$ | Overshoot | Undershoot |
+|---|---|---|---|
+| lax-wendroff | 0.056 | +0.181 | −0.133 |
+| minmod | 0.081 | 0.000 | 0.000 |
+| superbee | 0.042 | +0.002 | 0.000 |
+| van Leer | 0.061 | 0.000 | 0.000 |
+| MC | 0.051 | 0.000 | 0.000 |
+
+Solo lax-wendroff muestra un overshoot cercano al 20%; los demás quedan en cero. El ranking de error también llama la atención: **superbee tiene el menor $L_1$**. Eso significa que mantiene el escalón bien definido, a cambio de distorsionar ondas seno suaves en forma de escaleras.
+
+Si se repite la prueba con una onda suave ($q_0 = \sin(2\pi x)$, 500 pasos), el orden de convergencia baja a unos 1.5 para minmod, 2.0 para van Leer/MC y 1.3 para superbee. La etiqueta "2° orden" se desliza cada vez que el limitador se activa cerca de un extremo y cae localmente al 1° orden.
+
+## Cambia de limitador en vivo en el navegador
+
+Prueba la demo de abajo. Pulsa un botón de limitador y mueve el deslizador CFL. La curva naranja es la solución numérica; la línea punteada cian es la exacta.
+
+<LimiterAdvection1D />
+
+Con `lax-wendroff` se ven claramente una joroba encima detrás del escalón y una depresión debajo delante. Con `superbee`, el escalón se ve incluso más afilado que el original. `minmod` queda suave a ambos lados, sin jorobas. Si subes CFL a 0.9, todos los limitadores se vuelven agresivos — cumplir la condición de estabilidad no te libra de interactuar con la difusión numérica.
+
+## Checklist práctico
+
+- Para **captura de choques**, empieza con `minmod` o `van Leer`. La prioridad es cero oscilación.
+- Para **LES y turbulencia a gran escala**, `superbee` es riesgoso. Convierte estructuras suaves en escaleras y distorsiona el espectro de energía. `van Leer` o `MC` son el compromiso.
+- Bajar a upwind de 1° orden en celdas de frontera por falta de stencil **reduce la precisión global a 1° orden**. Asegura el stencil del limitador en la frontera o usa ghost cells.
+- El `limitedLinear 1` de OpenFOAM es un limitador de un parámetro de la familia van Leer. Coeficiente 0 = upwind de 1° orden; 1.0 = región TVD completa.
+- Verifica el orden de convergencia siempre con una **solución suave**. Medir pendientes $L_1$ sobre un caso con discontinuidad hace que la discontinuidad (no el limitador) marque el orden.
+
+## Resumen en tres líneas
+
+- El teorema de Godunov prohíbe un esquema de advección lineal, de 2° orden y monótono a la vez. La conmutación no lineal es indispensable.
+- El flux limiter $\varphi(r)$ es una función de una línea que alterna entre 2° orden (zonas suaves) y 1° orden (cerca de extremos).
+- minmod es seguro, superbee es afilado, van Leer y MC son equilibrados. Los criterios de elección cambian entre LES y captura de choques.

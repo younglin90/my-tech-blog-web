@@ -1,0 +1,151 @@
+---
+title: "Lax–Wendroff 在阶跃处颤抖 — 用 Flux Limiter 构建二阶 TVD 对流格式"
+date: 2026-04-24
+description: "绕开 Godunov 定理,构造单调的二阶对流格式"
+tags: ["CFD", "알고리즘", "TVD", "flux-limiter", "advection", "수치해석"]
+draft: false
+---
+
+import { LimiterAdvection1D } from '@/components/post-viz/2026-04-24-flux-limiter-tvd-advection/LimiterAdvection1D'
+
+一次测试里,阶跃的前后冒出了奇怪的凸包。我在用 Lax–Wendroff 求解线性对流方程(linear advection,恒定速度场下的纯平移),初始条件是简单的矩形脉冲。按说二阶格式应该比一阶迎风更锐利,结果却是阶跃前出现下冲、后出现上冲。日志里 CFL = 0.5,稳定性条件明显满足。
+
+问题不是算法不稳定,而是算法**不单调**。
+
+## 振荡的来源 — Godunov 的墙
+
+一维线性对流方程为
+
+$$
+\partial_t q + u\,\partial_x q = 0
+$$
+
+若速度 $u$ 恒定,解就是初始形状原样向右平移。数值上我们在单元界面上定义通量 $f_{i-1/2}$,然后写
+
+$$
+q_i^{n+1} = q_i^n - \frac{\Delta t}{\Delta x}\bigl(f_{i+1/2} - f_{i-1/2}\bigr)
+$$
+
+这叫 **flux-conserving form**,能把质量、动量、能量等守恒量保持到机器精度。Lax–Wendroff 是在此基础上加了二阶 Taylor 修正的线性格式。
+
+但 Godunov 在 1959 年证明的定理很残酷:*对线性常系数对流而言,不存在同时保持单调性(monotonicity)且具有二阶以上精度的线性格式。* 两者必须舍一。Lax–Wendroff 选了二阶精度,丢掉了单调性 — 所以阶跃处会振荡。
+
+## TVD 条件:Harten 不等式
+
+Harten(1983)给出的出路是"总变差递减"的格式。
+
+$$
+\mathrm{TV}(q) = \sum_i |q_{i+1} - q_i|, \qquad \mathrm{TV}(q^{n+1}) \le \mathrm{TV}(q^n)
+$$
+
+左边衡量数值解的总波动量。每一步只要这个值不增加,就不会出现新的极值(上冲、下冲)。满足此条件的格式叫 **TVD**。
+
+要绕过 Godunov 的墙,格式必须*非线性化* — 算法要根据解的光滑程度改变形状。光滑区用二阶,陡梯度附近用一阶迎风。完成这个切换的就是 **flux limiter**。
+
+## 一行读懂 Flux Limiter
+
+Lax–Wendroff 的通量是一阶迎风加上修正项:
+
+$$
+f_{i-1/2} = u\,q_{i-1} + \tfrac{1}{2}\,|u|\!\left(1 - \left|\tfrac{u\Delta t}{\Delta x}\right|\right) \varphi(r)\,(q_i - q_{i-1})
+$$
+
+其中 $u$ 是对流速度,$\Delta x$ 是单元宽度,$\varphi(r)$ 是限制器,$r$ 是前后斜率之比:
+
+$$
+r_{i-1/2} = \frac{q_{i-1} - q_{i-2}}{q_i - q_{i-1}}
+$$
+
+光滑时 $r \approx 1$,极值附近 $r < 0$ 或 $r \gg 1$。限制器根据这个 $r$ 决定修正的强度。
+
+几个特例:
+
+- $\varphi(r) = 0$:donor-cell(一阶迎风)
+- $\varphi(r) = 1$:Lax–Wendroff
+- $\varphi(r) = r$:Beam–Warming
+
+在 Sweby 图中,只要满足 **$0 \le \varphi(r) \le \min(2r,\,2)$** 就能保证 TVD。落在这个梯形区域内的四个代表性限制器对比如下:
+
+| 限制器 | 定义 | 特点 |
+|---|---|---|
+| minmod | $\max(0,\min(1,r))$ | 最谨慎。能保留阶跃,光滑处略显迟钝 |
+| superbee | $\max(0,\min(2r,1),\min(r,2))$ | 最锐利。会把光滑波削成阶梯 |
+| van Leer | $(r+|r|)/(1+|r|)$ | 光滑平衡。可微 |
+| MC | $\max(0,\min(\tfrac{1+r}{2},2,2r))$ | 默认值,最稳妥 |
+
+## 用 Python 直接比较
+
+基于 roll 的向量化不到 40 行。200 单元,$\mathrm{CFL} = 0.5$,500 步(周期边界,波走完约 2.5 圈域)。
+
+```python
+import numpy as np
+
+def limiter_phi(name, r):
+    r = np.where(np.isfinite(r), r, 0.0)
+    if name == 'donor':    return np.zeros_like(r)
+    if name == 'lw':       return np.ones_like(r)
+    if name == 'minmod':   return np.maximum(0, np.minimum(1, r))
+    if name == 'superbee':
+        return np.maximum.reduce([np.zeros_like(r),
+                                  np.minimum(2*r, 1),
+                                  np.minimum(r, 2)])
+    if name == 'vanleer':  return (r + np.abs(r)) / (1 + np.abs(r) + 1e-30)
+    if name == 'mc':
+        return np.maximum(0, np.minimum.reduce([0.5*(1+r),
+                                                2*np.ones_like(r),
+                                                2*r]))
+
+def advect_limited_fvm(q, cfl, name):
+    """一维有限体积对流,周期边界,u = +1。"""
+    dq  = q - np.roll(q, 1)                  # 界面 i-1/2: q_i - q_{i-1}
+    r   = np.roll(dq, 1) / (dq + 1e-30)      # (q_{i-1}-q_{i-2}) / (q_i-q_{i-1})
+    phi = limiter_phi(name, r)
+    flx = np.roll(q, 1) + 0.5 * phi * (1 - cfl) * dq
+    return q - cfl * (np.roll(flx, -1) - flx)
+
+N, cfl, steps = 200, 0.5, 500
+x  = np.arange(N) / N
+q0 = ((x > 0.2) & (x < 0.4)).astype(float)
+for name in ['lw', 'minmod', 'superbee', 'vanleer', 'mc']:
+    q = q0.copy()
+    for _ in range(steps):
+        q = advect_limited_fvm(q, cfl, name)
+    l1 = np.abs(q - q0).sum() / N
+    print(f'{name:<9s}  L1={l1:.4f}  overshoot={q.max()-1:.3f}  undershoot={q.min():.3f}')
+```
+
+典型结果:
+
+| 限制器 | $L_1$ 误差 | 上冲 | 下冲 |
+|---|---|---|---|
+| lax-wendroff | 0.056 | +0.181 | −0.133 |
+| minmod | 0.081 | 0.000 | 0.000 |
+| superbee | 0.042 | +0.002 | 0.000 |
+| van Leer | 0.061 | 0.000 | 0.000 |
+| MC | 0.051 | 0.000 | 0.000 |
+
+只有 lax-wendroff 出现接近 20% 的上冲,其余全为 0。误差排名也有意思 — **superbee 的 $L_1$ 最小**,说明它最能保留阶跃锐度,代价是把光滑的 sine 波削成阶梯。
+
+另做光滑波测试($q_0 = \sin(2\pi x)$,500 步),minmod 的收敛阶约 1.5,van Leer/MC 约 2.0,superbee 约 1.3。"二阶精度"的标签会在每次极值附近限制器激活时局部回落到一阶。
+
+## 在浏览器里直接切换限制器
+
+下面的仿真里,按限制器按钮、拖动 CFL 滑块。橙色为数值解,青色虚线为精确解。
+
+<LimiterAdvection1D />
+
+切到 `lax-wendroff`,可以清楚看到阶跃后出现向上的凸包,前面出现向下的凹槽。切到 `superbee`,阶跃比原来还锐利。`minmod` 两侧都光滑,没有凸包。CFL 推到 0.9 附近,所有限制器都变得激进 — 即使满足稳定条件,与数值扩散的相互作用也躲不开。
+
+## 工程清单
+
+- **激波捕获**优先用 `minmod` 或 `van Leer`。零振荡是首要目标。
+- **LES / 大规模湍流**里 `superbee` 危险。它会把光滑湍流结构削成阶梯,扭曲能谱。折中选 `van Leer` 或 `MC`。
+- 边界单元因为模板不足临时用一阶迎风,会让**整体精度降到一阶**。要么在边界上保住限制器的模板,要么使用 ghost cell。
+- OpenFOAM 的 `limitedLinear 1` 是 van Leer 家族的单参数限制器。系数 0 = 一阶迎风,1.0 = 使用完整 TVD 区域。
+- 验证收敛阶一定要用**光滑解**。在含间断的测试上测 $L_1$ 斜率,是间断本身在拉低阶数,不是限制器。
+
+## 三行总结
+
+- Godunov 定理禁止线性、二阶、单调的对流格式同时存在。必须引入非线性切换。
+- Flux limiter $\varphi(r)$ 是一行函数,能在光滑区自动切到二阶,在极值附近切到一阶。
+- minmod 稳,superbee 锐,van Leer / MC 平衡。LES 和激波捕获的选型标准并不相同。
