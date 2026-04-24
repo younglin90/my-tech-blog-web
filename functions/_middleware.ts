@@ -57,6 +57,7 @@ export const onRequest: PagesFunction = async (ctx) => {
   if (
     url.pathname.startsWith('/_next/') ||
     url.pathname.startsWith('/api/') ||
+    url.pathname.startsWith('/stats/') ||
     url.pathname.startsWith('/admin') ||
     url.pathname.startsWith('/preview') ||
     url.pathname.startsWith('/read') ||
