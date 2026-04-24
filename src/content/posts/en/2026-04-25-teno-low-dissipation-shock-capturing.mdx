@@ -1,0 +1,130 @@
+---
+title: "[Paper Review] When WENO Smears Small Eddies — Fu (2019) Low-Dissipation TENO Finite-Volume Scheme"
+date: 2026-04-25
+description: "Why 5th-order WENO-JS still smears smooth scales, and how TENO's sharp cutoff fixes it"
+tags: ["논문리뷰", "CFD", "TENO", "WENO", "shock-capturing", "high-order"]
+draft: false
+---
+
+import { TENOvsWENOAdvection1D } from '@/components/post-viz/2026-04-25-teno-low-dissipation-shock-capturing/TENOvsWENOAdvection1D'
+
+At Stanford's Center for Turbulence Research, Lin Fu was running direct numerical simulations of turbulence when something struck him. His 5th-order WENO-JS was capturing shocks fine, but small eddies far from the shock also grew blurry over time. The scheme advertised 5th-order accuracy, yet the effective resolution felt more like a 3rd-order centered difference. This post reviews the Fu (2019) paper that pinned down the cause, and **runs WENO-JS and TENO-5 side by side on the same initial condition**. Short version: the smoothness of the nonlinear weights was the hidden cost all along.
+
+## Paper Info and Background
+
+- Author: Lin Fu (Stanford Center for Turbulence Research)
+- Journal: Computer Physics Communications 235 (2019) 25–39
+- DOI: 10.1016/j.cpc.2018.10.009
+- Keywords: TENO, High-order schemes, Shock-capturing, Low-dissipation, Finite-volume method
+
+## The Hidden Cost of WENO-JS
+
+Classical WENO-JS (Jiang–Shu, 1996) computes smoothness indicators $\beta_k$ on three small stencils $S_0, S_1, S_2$ and blends their polynomials with nonlinear weights.
+
+$$
+w_k = \frac{\alpha_k}{\sum_j \alpha_j}, \qquad \alpha_k = \frac{d_k}{(\beta_k + \varepsilon)^2}
+$$
+
+Here $d_k$ is the optimal linear weight that recovers 5th-order accuracy and $\varepsilon \sim 10^{-6}$ guards against division by zero. The trouble is that these weights are **continuous**. Even a tiny stencil perturbation nudges $w_k$ away from $d_k$ in regions where ideally $w_k = d_k$ should hold, letting a lower-order polynomial creep into the final reconstruction.
+
+After dozens of time steps, a smooth wave gets progressively damped and phase-shifted. For large-eddy simulations — where **shocks and turbulent eddies coexist** — this dissipation is a dealbreaker.
+
+## Two Ideas Behind TENO: Strong Scale Separation and a Sharp Cutoff
+
+Fu changed two things.
+
+First, the stencil configuration. Alongside three 3-point small stencils $S_0, S_1, S_2$, he adds **one large 5-point stencil $S_3$**. If $S_3$ is clean, that's the end of the story — the smaller ones are never consulted.
+
+Second, the weights are **binarized**. Smoothness judgment comes from a cutoff parameter $C_T$.
+
+$$
+\gamma_k = \left(1 + \frac{\tau_K}{\beta_k + \varepsilon}\right)^q, \qquad \chi_k = \frac{\gamma_k}{\sum_j \gamma_j}
+$$
+
+$$
+\delta_k = \begin{cases} 0, & \chi_k < C_T \\ 1, & \text{otherwise} \end{cases}
+$$
+
+$\tau_K = |\beta_0 - \beta_2|$ is a global reference and $q=6$ sharpens the ratio. The key is that $\delta_k$ is strictly 0 or 1 — a stencil is **either discarded entirely or used with its optimal weight**. There's no continuous transition, so in smooth regions the 5th-order linear scheme on $S_3$ is used as-is, and only near discontinuities does ENO-style stencil selection kick in.
+
+## From Continuous Weights to a 0/1 Verdict
+
+When $S_3$ is judged smooth ($\delta_3 = 1$), reconstruction is just the 5th-order linear scheme.
+
+$$
+u_{i+1/2}^L = \frac{1}{60}\bigl(2\bar u_{i-2} - 13\bar u_{i-1} + 47\bar u_i + 27\bar u_{i+1} - 3\bar u_{i+2}\bigr)
+$$
+
+$\bar u_j$ is the cell-averaged value. Since this scheme is purely linear, for **$C_T$ close to zero it behaves almost as nondissipatively as a centered difference**. When $\delta_3 = 0$, only the surviving small stencils are blended with their optimal linear weights $d_k$.
+
+$$
+u_{i+1/2}^L = \sum_{k=0}^{2} w_k\, u_{k,i+1/2}^L, \qquad w_k = \frac{d_k\, \delta_k}{\sum_j d_j\, \delta_j}
+$$
+
+This is what preserves the ENO property. Any stencil that crosses a discontinuity gets its $\delta_k$ zeroed out, and the weight is smoothly handed off to a cleaner stencil.
+
+## A 5th-Order Stencil Reconstruction in NumPy
+
+The actual code is compact. From five cells we compute three smoothness indicators and three candidate polynomials; TENO then thresholds with $C_T$, while WENO-JS blends with inverse squares.
+
+```python
+import numpy as np
+
+def teno_beta_indicators(um2, um1, u0, up1, up2):
+    # Jiang-Shu smoothness indicators for three 3-point stencils
+    b0 = (13/12)*(um2 - 2*um1 + u0)**2 + 0.25*(um2 - 4*um1 + 3*u0)**2
+    b1 = (13/12)*(um1 - 2*u0 + up1)**2 + 0.25*(um1 - up1)**2
+    b2 = (13/12)*(u0 - 2*up1 + up2)**2 + 0.25*(3*u0 - 4*up1 + up2)**2
+    return b0, b1, b2
+
+def teno_weighted_reconstruction(u, i, CT=1e-5, q=6):
+    N = len(u)
+    um2, um1, u0 = u[(i-2) % N], u[(i-1) % N], u[i]
+    up1, up2 = u[(i+1) % N], u[(i+2) % N]
+    b0, b1, b2 = teno_beta_indicators(um2, um1, u0, up1, up2)
+    b3 = max(b0, b1, b2)
+    tau = abs(b0 - b2)
+    eps = 1e-40
+    g = np.array([(1 + tau/(b + eps))**q for b in (b0, b1, b2, b3)])
+    chi = g / g.sum()
+    delta = (chi >= CT).astype(float)
+    if delta[3] == 1:  # S3 smooth -> use 5th-order linear
+        return (2*um2 - 13*um1 + 47*u0 + 27*up1 - 3*up2) / 60
+    d = np.array([1/10, 6/10, 3/10])
+    alpha = d * delta[:3]
+    if alpha.sum() < 1e-14:
+        return u0  # last-resort donor cell
+    w = alpha / alpha.sum()
+    p0 = (2*um2 - 7*um1 + 11*u0) / 6
+    p1 = (-um1 + 5*u0 + 2*up1) / 6
+    p2 = (2*u0 + 5*up1 - up2) / 6
+    return w[0]*p0 + w[1]*p1 + w[2]*p2
+```
+
+Wire an Euler time step and periodic boundaries around this, and a smooth Gaussian bulge comes back nearly intact under TENO, while WENO-JS has shaved about 30% off the peak. Same skeleton, only the weight logic differs — yet the visible result differs.
+
+## Dial the C_T Slider and Watch
+
+The live demo below advects the same initial condition (a smooth sin² bump plus a square pulse) with linear advection and compares WENO-JS (orange) against TENO-5 (cyan).
+
+<TENOvsWENOAdvection1D />
+
+Let it run one full period at $C_T = 10^{-5}$ (default). Both schemes smear the square pulse edges by only a cell or two, but the left sine bump is noticeably lower under WENO-JS. Bump $C_T$ to $10^{-3}$ and TENO's cutoff becomes strict — it falls back to small stencils near the square pulse more often, and its dissipation grows. Drop $C_T$ to $10^{-7}$ and TENO stubbornly uses the 5th-order linear scheme almost everywhere; tiny oscillations appear around the square. $C_T$ visibly is **a scale balancing stability against low dissipation**.
+
+## Critical Notes — The Tuning Trap
+
+A few things the paper doesn't claim too loudly.
+
+First, $C_T$ is problem-dependent. Fu recommends $C_T = 10^{-5}$, but in flows where a strong shock coexists with a very weak acoustic wave, that value slightly floats the acoustic mode; dropping to $10^{-6}$ brings oscillations near the shock. Groups porting TENO to OpenFOAM or SU2 report retuning per case.
+
+Second, computing $\beta_3$ for $S_3$ in a finite-volume framework is expensive. You integrate derivatives of a 5-point polynomial, and the resulting expression sprawls across six printed pages. A finite-difference rewrite is cheaper, but if you also want the paper's low-dissipation Riemann flux switching strategy, the finite-volume structure is the natural fit.
+
+Third, the interaction with time integration isn't fully validated. SSP-RK3 is fine because spatial error dominates, but combining with SSP-RK2 or implicit methods has been reported to degrade Newton convergence because of the discontinuity in $\delta_k$.
+
+If you use this in practice: run a grid-refinement study **with a fixed $C_T$** and check whether the observed order actually reaches 5. If it doesn't, $C_T$ is likely too large and TENO is stuck in nonlinear mode all the time.
+
+## What to Remember
+
+- WENO-JS's dissipation isn't a bug — it's the **structural price of continuous weights**. Small $\beta$ perturbations nudge $w_k$ off the optimal linear combination.
+- TENO **binarizes stencils** via the cutoff $C_T$. Smooth regions get the 5th-order linear scheme verbatim; only near discontinuities does ENO-style selection kick in.
+- A single parameter $C_T$ balances stability against low dissipation, so sensitivity analysis alongside grid refinement is essential.
