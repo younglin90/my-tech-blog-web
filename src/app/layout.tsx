@@ -12,8 +12,11 @@ import type { Metadata, Viewport } from 'next'
 
 // Umami 트래킹 정보는 공개 값(브라우저에 그대로 노출되는 script 태그)이라 코드에 고정해도 안전.
 // 필요 시 환경변수로 오버라이드 가능.
+// 광고 차단 우회를 위해 same-origin 프록시(/stats/script.js, /stats/api/send)로 서빙.
+// 프록시 구현: functions/stats/script.js.ts, functions/stats/api/send.ts
 const UMAMI_SCRIPT_URL =
-  process.env.NEXT_PUBLIC_UMAMI_SCRIPT_URL ?? 'https://cloud.umami.is/script.js'
+  process.env.NEXT_PUBLIC_UMAMI_SCRIPT_URL ?? '/stats/script.js'
+const UMAMI_HOST_URL = process.env.NEXT_PUBLIC_UMAMI_HOST_URL ?? '/stats'
 const UMAMI_WEBSITE_ID =
   process.env.NEXT_PUBLIC_UMAMI_WEBSITE_ID ?? 'ef0b4cb2-34b1-4d5e-a70e-26a543816b22'
 
@@ -127,6 +130,7 @@ export default function RootLayout({
             defer
             src={UMAMI_SCRIPT_URL}
             data-website-id={UMAMI_WEBSITE_ID}
+            data-host-url={UMAMI_HOST_URL}
           />
         )}
       </head>
