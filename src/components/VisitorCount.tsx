@@ -7,35 +7,40 @@ interface Stats {
   pageviews: number | null
 }
 
-// Umami Cloud 통계 프록시(/api/visitors)에서 오늘자 수치를 가져온다.
-// Umami 대시보드에 아직 이벤트가 기록되지 않으면 API는 {visitors: 0, pageviews: 0}을
-// 정상 응답으로 돌려준다. 이 경우 "today 0 · 0 views" 같은 의미 없는 0만 표시되므로
-// 실제 트래픽이 집계되기 전까지는 컴포넌트 자체를 숨긴다.
+// Umami Cloud 통계 프록시(/api/visitors, Cloudflare Pages Function)에서 오늘자 수치를 가져온다.
+// API 미구성/오류여도 자리는 유지하고 "—" 로 표시 → 사용자가 작동 여부를 직접 확인 가능.
 export function VisitorCount() {
   const [stats, setStats] = useState<Stats | null>(null)
+  const [errored, setErrored] = useState(false)
 
   useEffect(() => {
     let cancelled = false
-    fetch('/api/visitors')
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d: Stats | null) => {
-        if (cancelled || !d) return
-        if (d.visitors === null || d.pageviews === null) return
-        if (d.visitors === 0 && d.pageviews === 0) return
-        setStats(d)
+    fetch('/api/visitors', { cache: 'no-store' })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`http-${r.status}`))))
+      .then((d: Stats) => {
+        if (cancelled) return
+        setStats({
+          visitors: typeof d.visitors === 'number' ? d.visitors : null,
+          pageviews: typeof d.pageviews === 'number' ? d.pageviews : null,
+        })
       })
-      .catch(() => {})
+      .catch(() => {
+        if (!cancelled) setErrored(true)
+      })
     return () => {
       cancelled = true
     }
   }, [])
 
-  if (!stats || stats.visitors === null || stats.pageviews === null) return null
-
   const nf = new Intl.NumberFormat('en-US')
+  const visitors = stats?.visitors
+  const pageviews = stats?.pageviews
+  const visitorsLabel = typeof visitors === 'number' ? nf.format(visitors) : errored ? '—' : '…'
+  const pageviewsLabel = typeof pageviews === 'number' ? nf.format(pageviews) : errored ? '—' : '…'
+
   return (
     <span
-      title="오늘의 방문자 · 페이지뷰 (Umami)"
+      title="오늘의 방문자 · 페이지뷰 (Umami, KST 기준)"
       className="inline-flex items-center gap-1.5"
     >
       <span
@@ -45,11 +50,11 @@ export function VisitorCount() {
           width: 6,
           height: 6,
           borderRadius: 999,
-          background: 'var(--accent)',
-          boxShadow: '0 0 6px var(--accent)',
+          background: errored ? 'var(--text-faint)' : 'var(--accent)',
+          boxShadow: errored ? 'none' : '0 0 6px var(--accent)',
         }}
       />
-      today {nf.format(stats.visitors)} · {nf.format(stats.pageviews)} views
+      today {visitorsLabel} · {pageviewsLabel} views
     </span>
   )
 }
