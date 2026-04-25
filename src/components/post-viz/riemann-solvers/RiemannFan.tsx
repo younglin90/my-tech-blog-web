@@ -41,9 +41,17 @@ export function RiemannFan() {
       ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(x, PAD); ctx.stroke()
     }
 
-    if (pStar > pL) draw(-1.5, '#ef4444', []) else { for (const k of [-1.5, -1.2]) draw(k, '#22d3ee', [3, 3]) }
+    if (pStar > pL) {
+      draw(-1.5, '#ef4444', [])
+    } else {
+      for (const k of [-1.5, -1.2]) draw(k, '#22d3ee', [3, 3])
+    }
     draw(0.2, '#a78bfa', [6, 4])
-    if (pStar > pR) draw(1.6, '#ef4444', []) else { for (const k of [1.2, 1.6]) draw(k, '#22d3ee', [3, 3]) }
+    if (pStar > pR) {
+      draw(1.6, '#ef4444', [])
+    } else {
+      for (const k of [1.2, 1.6]) draw(k, '#22d3ee', [3, 3])
+    }
     ctx.setLineDash([])
 
     ctx.fillStyle = '#94a3b8'
