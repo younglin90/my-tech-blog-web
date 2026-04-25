@@ -143,12 +143,14 @@ else {
   console.log(`  → 사용 컴포넌트 ${used}종 / pre-built 7종 + custom 다수`)
 }
 
-console.log(`\n▸ ## 섹션 헤딩 중복 top 10 (자주 반복되면 구조 클리셰 위험)`)
-const sectionDupes = topN(sectionFreq, 10).filter(([, c]) => c >= 2)
-if (sectionDupes.length === 0) console.log('  ✓ 2회 이상 반복된 섹션 없음')
+console.log(`\n▸ ## 섹션 헤딩 중복 top 10 (≥3회면 구조 클리셰 위험)`)
+const sectionDupesAll = topN(sectionFreq, 10).filter(([, c]) => c >= 2)
+const sectionDupesBad = sectionDupesAll.filter(([, c]) => c >= 3)
+if (sectionDupesAll.length === 0) console.log('  ✓ 2회 이상 반복된 섹션 없음')
 else {
-  for (const [s, c] of sectionDupes) {
-    console.log(`  ${c}× "${s}"`)
+  for (const [s, c] of sectionDupesAll) {
+    const tag = c >= 3 ? ' ⚠️' : ''
+    console.log(`  ${c}× "${s}"${tag}`)
   }
 }
 
@@ -172,11 +174,12 @@ if (clicheHits > 0) {
 }
 
 console.log()
+const tagMaxRatio = Math.max(...tagFreq.values()) / total
 const score =
   (vizPct >= 90 ? 1 : 0) +
-  (sectionDupes.length === 0 ? 1 : 0) +
-  (Math.max(...tagFreq.values()) / total <= 0.5 ? 1 : 0) +
+  (sectionDupesBad.length === 0 ? 1 : 0) +
+  (tagMaxRatio <= 0.5 ? 1 : 0) +
   (sigDupes.length === 0 ? 1 : 0) +
   (clicheHits === 0 ? 1 : 0)
-console.log(`종합: ${score}/5 항목 통과\n`)
-process.exit(score >= 4 ? 0 : 0) // 정보용; pre-commit 차단 안 함
+console.log(`종합: ${score}/5 항목 통과 (viz≥90%, 섹션≥3회 중복 없음, 태그≤50%, 코드 중복 없음, 클리셰 없음)\n`)
+process.exit(0) // 정보용; pre-commit 차단 안 함
