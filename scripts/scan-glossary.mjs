@@ -24,8 +24,8 @@ for (const line of raw.split('\n')) {
   }
   if (!inTerms) continue
 
-  // 2-space indent: 새 용어 시작
-  const termStart = line.match(/^  ([A-Za-z][\w]*?):\s*$/)
+  // 2-space indent: 새 용어 시작 (하이픈 포함 허용: e.g. Rhie-Chow)
+  const termStart = line.match(/^  ([A-Za-z][\w-]*?):\s*$/)
   if (termStart) {
     currentKey = termStart[1]
     currentEntry = { ko: '', en: '', wiki: '' }
