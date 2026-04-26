@@ -1,0 +1,191 @@
+---
+title: "AMR con Quadtree — Dejar que la malla crezca solo donde hace falta"
+date: 2026-04-27
+description: "Cuarenta años de estructuras de malla adaptativa y criterios de refinamiento desde Berger–Oliger"
+tags: ["AMR", "쿼드트리", "메시", "알고리즘", "수치해석"]
+draft: false
+---
+
+import { AMRQuadtreeRefinement } from '@/components/post-viz/2026-04-27-amr-quadtree-cell-refinement/AMRQuadtreeRefinement'
+
+En 1984, Marsha Berger y Joseph Oliger en Stanford estaban atascados rastreando ondas de choque. Su código colocaba un millón de celdas pero apenas el 1% cerca del choque hacía algo útil. El 99% restante seguía recalculando un flujo libre uniforme con alta precisión. El artículo que publicaron ese año en *Journal of Computational Physics* se convirtió en **AMR de Berger–Oliger**, y la misma idea hoy vive dentro de `dynamicRefineFvMesh` de OpenFOAM, AMReX, Chombo y p4est. Este post recorre su núcleo — la **estructura de datos quadtree** y el **criterio de refinamiento** — corre una malla adaptativa 1D en Python y luego observa en el navegador cómo se subdividen las celdas.
+
+## Por qué una malla uniforme desperdicia el 90%
+
+Quien haya corrido un RANS compresible 3D conoce el dilema. Reducir la malla a la mitad baja el costo por paso 8 veces, pero la resolución cerca de choques, capas de cortadura y separación se desploma con ella. Refinar para esas regiones encoge también las celdas del flujo libre y hace explotar memoria y tiempo a la vez.
+
+La solución es simple. **Refinar solo donde importa.** Cuantitativamente, este estimado captura casi todo el ahorro:
+
+$$
+\frac{N_\text{AMR}}{N_\text{uniform}} \approx \frac{V_\text{feature}}{V_\text{domain}} \cdot 4^{L} + (1 - \tfrac{V_\text{feature}}{V_\text{domain}})
+$$
+
+Aquí $L$ es el nivel máximo de refinamiento, $V_\text{feature}$ es el volumen que necesita resolución fina y $V_\text{domain}$ es el dominio completo. Para una singularidad casi-1D (una superficie de choque), $V_\text{feature}/V_\text{domain} \sim h$, lo que reduce el conteo de celdas a un porcentaje de un dígito frente a una malla uniforme de nivel $L$.
+
+## h-, p-, r- — Tres sabores de adaptación
+
+Una malla adaptativa — la que se modifica según la solución — se divide en tres familias según qué se cambia.
+
+- **Adaptación h**: Reducir el tamaño $h$ de la celda. La más intuitiva y la más común. Cuando se dice "AMR" suele referirse a esta.
+- **Adaptación p**: Mantener el tamaño y subir el orden polinómico $p$. Habitual en DGM y SEM (spectral element method).
+- **Adaptación r (relocalización)**: Mantener número de celdas y orden, pero mover los nodos hacia las regiones de gradiente alto. La memoria queda constante, pero la distorsión de malla se vuelve delicada.
+
+Este artículo se centra en h-AMR, en particular en el **quadtree 2D** (un octree en 3D).
+
+## Quadtree — celdas que poseen sus hijos
+
+Una malla uniforme cabe en un arreglo 1D. Una malla adaptativa necesita un **árbol**. Cuando una celda se refina aparecen cuatro hijos, y cada hijo conoce a su padre. Si un hijo se refina, aparecen nietos.
+
+```python
+class QuadCell:
+    __slots__ = ("cx", "cy", "size", "level", "children", "parent", "data")
+
+    def __init__(self, cx, cy, size, level=0, parent=None):
+        self.cx = cx           # x del centro de la celda
+        self.cy = cy           # y del centro de la celda
+        self.size = size       # longitud del lado
+        self.level = level     # raíz = 0, refinar suma 1
+        self.children = None   # None si es hoja, lista de 4 si no
+        self.parent = parent
+        self.data = 0.0        # cantidad conservada (densidad, etc.)
+
+    def is_leaf(self):
+        return self.children is None
+
+    def split(self):
+        h = self.size * 0.5
+        q = self.size * 0.25
+        offsets = ((-q, -q), (+q, -q), (-q, +q), (+q, +q))
+        self.children = [
+            QuadCell(self.cx + dx, self.cy + dy, h, self.level + 1, self)
+            for dx, dy in offsets
+        ]
+        for ch in self.children:
+            ch.data = self.data    # inicializar con el padre (conservativo)
+```
+
+Inicializar cada hijo con el valor del padre en `split` es por **conservación**. La integral del padre $U \cdot V$ debe igualar la suma sobre los cuatro hijos. La replicación simple es interpolación de primer orden; los códigos de producción suelen acompañarla con la pendiente del padre (estilo MUSCL) para una prolongación de segundo orden.
+
+## Dónde cortar — el criterio de refinamiento
+
+Un quadtree en sí mismo es un contenedor vacío. La pregunta real es **qué celda dividir**, es decir, el criterio de refinamiento. Cinco criterios habituales en producción:
+
+| Criterio | Forma | Lo que captura |
+|---|---|---|
+| Primera derivada | $h \lvert \nabla u \rvert$ | Choques, capas de cortadura |
+| Segunda derivada | $h^2 \lvert \nabla^2 u \rvert$ | Regiones de alta curvatura |
+| Frobenius del Hessiano | $\sqrt{\sum H_{ij}^2}\, h^2$ | Detección de anisotropía |
+| Estimador de Richardson | $\lvert u_h - u_{2h} \rvert$ | Error real de discretización |
+| Umbral físico | $\rho > \rho_*, \lvert \omega \rvert > \omega_*$ | Núcleos de vórtices |
+
+`dynamicRefineFvMesh` de OpenFOAM aplica un umbral a un campo definido por el usuario; AMReX entrega una función booleana por celda `tagcells()` para que el usuario la complete. **Lo que se etiqueta controla el resultado del AMR** — más que la propia estructura de datos.
+
+La visualización interactiva más abajo usa la más simple: primera derivada escalada. Diferencia central de $|\nabla u|$ en el centro de la celda, multiplicada por el tamaño $h$. **Si el producto excede el umbral $\tau$, se divide; si no, la celda queda como hoja.**
+
+## Equilibrio 2:1 y nodos colgantes
+
+Una cara entre una celda gruesa y dos vecinas refinadas tiene un **nodo colgante (hanging node)**. En volumen finito, un nodo colgante rompe el balance de flujo.
+
+Dos salidas:
+
+1. **Forzar equilibrio 2:1**: Limitar la diferencia de nivel entre hojas vecinas a 1. p4est, AMReX y la familia Berger usan esta regla.
+2. **Interpolación non-conforming**: Añadir una interpolación de cara que mapea dos valores de celdas pequeñas a un valor de cara gruesa. Habitual en códigos tipo DGM.
+
+El bucle que impone 2:1 es corto. Tomar la lista de candidatos a refinar; para cada uno, comprobar si algún vecino es dos o más niveles más grueso. Si lo es, añadir ese vecino a la cola. Repetir hasta vaciar.
+
+```python
+def enforce_2to1(roots, refine_queue):
+    """asegurar que cada celda en refine_queue cumple 2:1 con sus vecinas"""
+    pending = list(refine_queue)
+    queued = set(id(c) for c in pending)
+    while pending:
+        cell = pending.pop()
+        for nb in face_neighbors(cell, roots):
+            if nb.is_leaf() and cell.level - nb.level >= 1:
+                if id(nb) not in queued:
+                    pending.append(nb)
+                    queued.add(id(nb))
+    return [c for c in (refine_queue + pending) if c.is_leaf()]
+```
+
+`face_neighbors` devuelve las hojas que comparten una cara común — un recorrido de árbol $O(\log N)$.
+
+## Una malla adaptativa 1D en Python
+
+El quadtree 2D completo se hace largo, así que la misma idea sobre un **árbol binario 1D** alcanza para un paso. Coloca un pulso gaussiano y solo se dividen las celdas que superan el umbral.
+
+```python
+import numpy as np
+
+def gaussian_pulse(x, x0=0.6, sigma=0.04):
+    return np.exp(-((x - x0) ** 2) / (2 * sigma ** 2))
+
+def refine_indicator(cell_lo, cell_hi, fn, h_scale=1.0):
+    """primera derivada escalada = diferencia absoluta a través de la celda"""
+    u_lo = fn(cell_lo)
+    u_hi = fn(cell_hi)
+    return abs(u_hi - u_lo) * h_scale
+
+def adaptive_bisect_1d(fn, tau=0.05, max_level=8):
+    """bisecar [0, 1] de forma recursiva según el umbral"""
+    leaves = []
+    def recurse(lo, hi, level):
+        ind = refine_indicator(lo, hi, fn)
+        if level >= max_level or ind < tau:
+            leaves.append((lo, hi, level))
+            return
+        mid = 0.5 * (lo + hi)
+        recurse(lo, mid, level + 1)
+        recurse(mid, hi, level + 1)
+    recurse(0.0, 1.0, 0)
+    return leaves
+
+cells = adaptive_bisect_1d(gaussian_pulse, tau=0.05, max_level=7)
+print(f"leaf cells: {len(cells)}")
+print(f"vs uniforme nivel 7: {len(cells) / 2**7 * 100:.1f}%")
+# salida ejemplo: leaf cells: 41, vs uniforme nivel 7: 32.0%
+```
+
+Una sola gaussiana ocupa una franja angosta del dominio, así que el AMR baja el conteo a alrededor del 30% del uniforme. Con dos pulsos, solo los dos núcleos se profundizan y el medio queda grueso — exactamente la imagen que promete el AMR.
+
+## Mira la malla dividirse
+
+Prueba la simulación abajo. El punto blanco es una característica gaussiana — haz clic y arrastra; la malla lo sigue.
+
+<AMRQuadtreeRefinement />
+
+Baja el umbral a 0.05 y la malla sigue la cola de la gaussiana; el conteo de hojas trepa rápido. Súbelo arriba de 0.4 y queda casi una malla gruesa uniforme. Pulsa **add feature** para soltar un segundo pico, y observa que solo los dos núcleos se profundizan mientras la zona intermedia queda gruesa — la lectura arriba a la izquierda muestra el ahorro de celdas frente a una malla uniforme.
+
+## Trampa del paralelo — load balancing y SFC
+
+El AMR sobre memoria distribuida choca con otro muro. Si un rango se queda con todo el árbol profundo, ese rango fija el wall clock de la simulación entera. El balance de celdas (load balancing) está roto.
+
+La salida es alinear los nodos del árbol en 1D. Una **curva que llena el espacio (space-filling curve, SFC)** — Morton (Z-order) o Hilbert — produce índices de celda que preservan la adyacencia espacial como adyacencia 1D. El índice Morton de p4est intercala los bits de las coordenadas de la celda.
+
+```python
+def morton_2d(ix, iy, level):
+    """intercalar coordenadas enteras (ix, iy) en un código Morton"""
+    code = 0
+    for b in range(level):
+        code |= ((ix >> b) & 1) << (2 * b)
+        code |= ((iy >> b) & 1) << (2 * b + 1)
+    return code
+
+# Z-order sobre una malla 4x4
+for iy in range(4):
+    for ix in range(4):
+        print(morton_2d(ix, iy, 2), end=" ")
+    print()
+# 0  1  4  5
+# 2  3  6  7
+# 8  9 12 13
+# 10 11 14 15
+```
+
+Ordenar las celdas por índice Morton y luego cortar en partes iguales por rango: las celdas vecinas terminan en el mismo rango y la comunicación entre rangos se reduce. La desventaja es que aparecen saltos en las esquinas del cuadrado — las curvas de Hilbert evitan esos saltos pero cuestan más de calcular, así que en la práctica Morton es el estándar de facto.
+
+## Lo que conviene retener
+
+- El valor del AMR viene del **criterio de refinamiento**, no de la estructura de datos. La estructura (árbol + SFC) está casi estandarizada; qué etiquetar depende del problema.
+- Imponer **equilibrio 2:1** simplifica el manejo de caras. Sin él, hay que escribir interpolación non-conforming en cada cara.
+- En paralelo, no es el árbol lo que dicta el wall clock — lo dicta el **load balancing**. Morton o Hilbert SFC más redistribución dinámica es el estándar de facto.

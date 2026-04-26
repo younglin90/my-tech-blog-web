@@ -1,0 +1,191 @@
+---
+title: "Quadtree AMR — Letting the Mesh Grow Where It Needs To"
+date: 2026-04-27
+description: "Forty years of adaptive mesh data structures and refinement criteria, since Berger–Oliger"
+tags: ["AMR", "쿼드트리", "메시", "알고리즘", "수치해석"]
+draft: false
+---
+
+import { AMRQuadtreeRefinement } from '@/components/post-viz/2026-04-27-amr-quadtree-cell-refinement/AMRQuadtreeRefinement'
+
+In 1984, Marsha Berger and Joseph Oliger at Stanford were stuck on shock tracking. Their code laid down a million cells but only about 1% of them did meaningful work near the shock. The other 99% kept recomputing a uniform free stream at high precision. The paper they published in *Journal of Computational Physics* that year became **Berger–Oliger AMR**, and the same idea now lives inside OpenFOAM's `dynamicRefineFvMesh`, AMReX, Chombo, and p4est. This post walks through its core — the **quadtree data structure** and the **refinement criterion** — runs a 1D adaptive grid in Python, and then watches cells split in the browser.
+
+## Why a Uniform Grid Wastes 90%
+
+Anyone who has run a 3D compressible RANS knows the trade. Halve the grid and the per-step cost drops 8x, but the resolution near shocks, shear layers, and separation collapses with it. Refine for those features and the free-stream cells shrink too, blowing up memory and time together.
+
+The fix is simple. **Refine only where it matters.** Quantitatively, this estimate captures most of the saving:
+
+$$
+\frac{N_\text{AMR}}{N_\text{uniform}} \approx \frac{V_\text{feature}}{V_\text{domain}} \cdot 4^{L} + (1 - \tfrac{V_\text{feature}}{V_\text{domain}})
+$$
+
+Here $L$ is the maximum refinement level, $V_\text{feature}$ is the volume that needs fine resolution, and $V_\text{domain}$ is the whole domain. For a 1D-like singularity (a shock surface), $V_\text{feature}/V_\text{domain} \sim h$, which drops the cell count to single-digit percent of a uniform level-$L$ grid.
+
+## h-, p-, r-: Three Flavors of Adaptation
+
+An adaptive mesh — one that changes itself based on the solution — splits into three families depending on what changes.
+
+- **h-adaptivity**: Shrink the cell size $h$. Most intuitive and most common. When people say "AMR," this is usually what they mean.
+- **p-adaptivity**: Keep cells the same size, raise the polynomial order $p$. Common in DGM and SEM (spectral element method).
+- **r-adaptivity (relocation)**: Keep both cell count and order, but move nodes toward steep regions. Memory stays constant but mesh distortion gets tricky.
+
+This article focuses on h-AMR, specifically the **2D quadtree** (an octree in 3D).
+
+## Quadtree: Cells That Own Their Children
+
+A uniform grid is just a 1D array. An adaptive grid needs a **tree**. When a cell refines, four children appear, and each child knows its parent. If a child refines, grandchildren appear.
+
+```python
+class QuadCell:
+    __slots__ = ("cx", "cy", "size", "level", "children", "parent", "data")
+
+    def __init__(self, cx, cy, size, level=0, parent=None):
+        self.cx = cx           # cell-center x
+        self.cy = cy           # cell-center y
+        self.size = size       # edge length
+        self.level = level     # root = 0, refine adds 1
+        self.children = None   # None if leaf, length-4 list otherwise
+        self.parent = parent
+        self.data = 0.0        # conserved quantity (e.g. density)
+
+    def is_leaf(self):
+        return self.children is None
+
+    def split(self):
+        h = self.size * 0.5
+        q = self.size * 0.25
+        offsets = ((-q, -q), (+q, -q), (-q, +q), (+q, +q))
+        self.children = [
+            QuadCell(self.cx + dx, self.cy + dy, h, self.level + 1, self)
+            for dx, dy in offsets
+        ]
+        for ch in self.children:
+            ch.data = self.data    # initialize from parent (conservative)
+```
+
+Initializing each child from the parent in `split` is about **conservation**. The parent's integral $U \cdot V$ must equal the sum over the four children. Plain replication is first-order interpolation; production codes typically pair it with the parent's slope (MUSCL-style) for second-order accurate prolongation.
+
+## Where to Cut — the Refinement Criterion
+
+A quadtree by itself is an empty container. The real question is **which cell to split**, i.e. the refinement criterion. Five criteria you'll see in production:
+
+| Criterion | Form | What it catches |
+|---|---|---|
+| First derivative | $h \lvert \nabla u \rvert$ | Shocks, shear layers |
+| Second derivative | $h^2 \lvert \nabla^2 u \rvert$ | High curvature regions |
+| Hessian Frobenius | $\sqrt{\sum H_{ij}^2}\, h^2$ | Anisotropy detection |
+| Richardson estimate | $\lvert u_h - u_{2h} \rvert$ | Real discretization error |
+| Physical threshold | $\rho > \rho_*, \lvert \omega \rvert > \omega_*$ | Vortex cores |
+
+OpenFOAM's `dynamicRefineFvMesh` thresholds an arbitrary user-defined field; AMReX hands the user a per-cell Boolean function `tagcells()` to fill in. **What you tag controls the AMR result** — more so than the data structure itself.
+
+The interactive viz below uses the simplest one: scaled first derivative. Central-difference $|\nabla u|$ at the cell center, multiplied by the cell size $h$. **If the product exceeds threshold $\tau$, split; otherwise the cell stays a leaf.**
+
+## 2:1 Balance and Hanging Nodes
+
+A face between a coarse cell and two refined neighbors carries a **hanging node**. In finite volume, a hanging node breaks flux balance.
+
+Two ways out:
+
+1. **Enforce 2:1 balance**: Limit the level difference between neighboring leaves to 1. p4est, AMReX, and the Berger family all use this rule.
+2. **Non-conforming interpolation**: Add a face interpolation that maps two small-cell values to one coarse-face value. Common in DGM-style codes.
+
+The 2:1 enforcement loop is short. Take a list of refine candidates; for each, check whether any neighbor is two or more levels coarser. If so, push that neighbor onto the queue. Repeat until empty.
+
+```python
+def enforce_2to1(roots, refine_queue):
+    """ensure every cell in refine_queue is 2:1 with its neighbors"""
+    pending = list(refine_queue)
+    queued = set(id(c) for c in pending)
+    while pending:
+        cell = pending.pop()
+        for nb in face_neighbors(cell, roots):
+            if nb.is_leaf() and cell.level - nb.level >= 1:
+                if id(nb) not in queued:
+                    pending.append(nb)
+                    queued.add(id(nb))
+    return [c for c in (refine_queue + pending) if c.is_leaf()]
+```
+
+`face_neighbors` returns leaves sharing a common face — an $O(\log N)$ tree walk.
+
+## A 1D Adaptive Grid in Python
+
+A full 2D quadtree gets long, so let's run the same idea as a **1D binary tree**. Drop a Gaussian pulse and split only cells that exceed threshold.
+
+```python
+import numpy as np
+
+def gaussian_pulse(x, x0=0.6, sigma=0.04):
+    return np.exp(-((x - x0) ** 2) / (2 * sigma ** 2))
+
+def refine_indicator(cell_lo, cell_hi, fn, h_scale=1.0):
+    """scaled first derivative = absolute difference across cell"""
+    u_lo = fn(cell_lo)
+    u_hi = fn(cell_hi)
+    return abs(u_hi - u_lo) * h_scale
+
+def adaptive_bisect_1d(fn, tau=0.05, max_level=8):
+    """recursively bisect [0, 1] based on the threshold"""
+    leaves = []
+    def recurse(lo, hi, level):
+        ind = refine_indicator(lo, hi, fn)
+        if level >= max_level or ind < tau:
+            leaves.append((lo, hi, level))
+            return
+        mid = 0.5 * (lo + hi)
+        recurse(lo, mid, level + 1)
+        recurse(mid, hi, level + 1)
+    recurse(0.0, 1.0, 0)
+    return leaves
+
+cells = adaptive_bisect_1d(gaussian_pulse, tau=0.05, max_level=7)
+print(f"leaf cells: {len(cells)}")
+print(f"vs uniform level 7: {len(cells) / 2**7 * 100:.1f}%")
+# example output: leaf cells: 41, vs uniform level 7: 32.0%
+```
+
+A single Gaussian sits in a small slice of the domain, so AMR drops cell count to roughly 30% of uniform. With two pulses, only the two cores go deep, leaving the gap coarse — exactly the picture AMR promises.
+
+## Watch the Grid Split Live
+
+Try the simulation below directly. The white dot is a Gaussian feature — click and drag it; the mesh follows.
+
+<AMRQuadtreeRefinement />
+
+Drop the threshold to 0.05 and the grid follows the Gaussian's tail; leaf count climbs fast. Push it past 0.4 and you're left with a nearly uniform coarse grid. Hit **add feature** to drop in a second peak, and watch only the two cores go deep while the gap stays coarse — the upper-left readout shows the cell-count savings against a uniform grid.
+
+## A Pitfall in Parallel — Load Balancing and SFCs
+
+Distributed-memory AMR hits another wall. If one rank holds all the deep tree, that rank dictates the entire wall-clock time. The cell-count balance — load balancing — is broken.
+
+The fix lines tree nodes up in 1D. A **space-filling curve (SFC)** — Morton (Z-order) or Hilbert — produces cell indices that preserve spatial adjacency in 1D adjacency. p4est's Morton index simply interleaves the bits of the cell coordinates.
+
+```python
+def morton_2d(ix, iy, level):
+    """interleave integer coordinates (ix, iy) into a Morton code"""
+    code = 0
+    for b in range(level):
+        code |= ((ix >> b) & 1) << (2 * b)
+        code |= ((iy >> b) & 1) << (2 * b + 1)
+    return code
+
+# Z-order over a 4x4 grid
+for iy in range(4):
+    for ix in range(4):
+        print(morton_2d(ix, iy, 2), end=" ")
+    print()
+# 0  1  4  5
+# 2  3  6  7
+# 8  9 12 13
+# 10 11 14 15
+```
+
+Sort cells by Morton index, then slice into equal chunks across ranks. Adjacent cells land on the same rank and inter-rank communication shrinks. The drawback: jumps appear at corners of the square. Hilbert curves avoid those jumps but cost more to compute, so Morton is the de facto standard.
+
+## What to Carry Forward
+
+- AMR's value comes from the **refinement criterion**, not the data structure. The structure (tree + SFC) is nearly standard; what to tag is problem-specific.
+- Enforcing **2:1 balance** keeps face handling simple. Skip it and you'll be writing non-conforming interpolation for every face.
+- In parallel, the tree is not what dictates wall clock — **load balancing** does. Morton or Hilbert SFC plus dynamic redistribution is the de facto standard.

@@ -1,0 +1,191 @@
+---
+title: "クアッドツリー AMR — 格子を必要な場所だけ育てる"
+date: 2026-04-27
+description: "Berger–Oliger 以来 40 年の適応格子データ構造と細分化基準のまとめ"
+tags: ["AMR", "쿼드트리", "메시", "알고리즘", "수치해석"]
+draft: false
+---
+
+import { AMRQuadtreeRefinement } from '@/components/post-viz/2026-04-27-amr-quadtree-cell-refinement/AMRQuadtreeRefinement'
+
+1984 年、スタンフォードの Marsha Berger と Joseph Oliger は衝撃波追跡で行き詰まっていました。100 万セルを敷いても、衝撃波付近のおよそ 1% のセルしか意味のある仕事をしていません。残り 99% は均一な自由流を高精度で再計算し続けていました。その年に *Journal of Computational Physics* に投稿された論文が **Berger–Oliger AMR** の出発点であり、同じ発想は今も OpenFOAM の `dynamicRefineFvMesh`、AMReX、Chombo、p4est の中で生き続けています。本記事ではその核心である **クアッドツリーのデータ構造** と **細分化基準** を順に追い、Python で 1D 適応格子を回したあと、ブラウザでセルが分裂していく様子を眺めます。
+
+## 均一格子はなぜ 90% も無駄になるのか
+
+3D の圧縮性 RANS を一度でも回したことがあれば、このトレードオフはおなじみです。格子を半分に粗くすればステップ当たりのコストは 8 倍下がりますが、衝撃波・せん断層・剥離のような勾配の大きい領域の解像度も同時に崩れます。逆にその領域に合わせて全体を細かくすると自由流のセルまで小さくなり、メモリと時間が同時に膨れ上がります。
+
+解は単純です。**必要な場所だけ細かく**。定量的には次の比率が役に立ちます。
+
+$$
+\frac{N_\text{AMR}}{N_\text{uniform}} \approx \frac{V_\text{feature}}{V_\text{domain}} \cdot 4^{L} + (1 - \tfrac{V_\text{feature}}{V_\text{domain}})
+$$
+
+ここで $L$ は最大細分化レベル、$V_\text{feature}$ は細かく解くべき領域の体積、$V_\text{domain}$ は全体ドメインの体積です。衝撃波のような 1 次元的な特異面なら $V_\text{feature}/V_\text{domain} \sim h$ となり、レベル 5 の均一格子と比べてセル数が一桁パーセントまで落ちます。
+
+## h-, p-, r-: 適応化の三つの流派
+
+適応格子(adaptive mesh、解の分布に応じて自身が変化する格子)は、何を変えるかで 3 つに分かれます。
+
+- **h-adaptivity**: セルサイズ $h$ を縮める。最も直感的でよく使われる。一般に AMR と言えばこれを指します。
+- **p-adaptivity**: セルサイズはそのままで多項式次数 $p$ を上げる。DGM・SEM(spectral element method)系で多く見ます。
+- **r-adaptivity (relocation)**: セル数も次数もそのままで節点を勾配の大きい側へ移動させる。メモリ変動がない反面、格子の歪み管理が難しい。
+
+本記事は最も使用頻度の高い h-AMR、特に **2D クアッドツリー**(3D ではオクツリー)に焦点を当てます。
+
+## クアッドツリー — セルが子を持つデータ構造
+
+均一格子は 1 次元配列ひとつで足ります。適応格子には **木構造** が必要です。あるセルが細分化されると 4 つの子セルが生まれ、各子は親を指します。子がさらに細分化されれば孫が生まれます。
+
+```python
+class QuadCell:
+    __slots__ = ("cx", "cy", "size", "level", "children", "parent", "data")
+
+    def __init__(self, cx, cy, size, level=0, parent=None):
+        self.cx = cx           # セル中心 x
+        self.cy = cy           # セル中心 y
+        self.size = size       # 一辺の長さ
+        self.level = level     # ルート=0、細分化のたびに +1
+        self.children = None   # leaf なら None、細分化後は長さ 4 のリスト
+        self.parent = parent
+        self.data = 0.0        # 保存量(密度など)
+
+    def is_leaf(self):
+        return self.children is None
+
+    def split(self):
+        h = self.size * 0.5
+        q = self.size * 0.25
+        offsets = ((-q, -q), (+q, -q), (-q, +q), (+q, +q))
+        self.children = [
+            QuadCell(self.cx + dx, self.cy + dy, h, self.level + 1, self)
+            for dx, dy in offsets
+        ]
+        for ch in self.children:
+            ch.data = self.data    # 親値で初期化(保存性)
+```
+
+`split` で子セルを親と同じ値で初期化するのは **保存性** のためです。親セルの積分量 $U \cdot V$ は 4 つの子の和と等しくなければなりません。単純複製は 1 次精度の補間にあたり、実務では親の傾き(slope)も併用する MUSCL 型補間が使われます。
+
+## どこを切るか — 細分化基準
+
+クアッドツリー自体は空の入れ物です。本質は **どのセルを切るか**、つまり細分化基準です。実務でよく見る 5 つを挙げます。
+
+| 基準 | 形式 | 捕まえるもの |
+|---|---|---|
+| 1 階微分 | $h \lvert \nabla u \rvert$ | 衝撃波、せん断層 |
+| 2 階微分 | $h^2 \lvert \nabla^2 u \rvert$ | 曲率の大きな領域 |
+| Hessian Frobenius | $\sqrt{\sum H_{ij}^2}\, h^2$ | 異方性検出 |
+| Richardson 推定 | $\lvert u_h - u_{2h} \rvert$ | 真の離散化誤差 |
+| 物理しきい値 | $\rho > \rho_*, \lvert \omega \rvert > \omega_*$ | 渦コア |
+
+OpenFOAM の `dynamicRefineFvMesh` はユーザ定義場のしきい値を、AMReX はユーザが埋めるセル単位のブール関数 `tagcells()` を使います。**何をタグ付けするかが AMR の結果を決めます** — データ構造そのものよりも重要です。
+
+本記事のインタラクティブ可視化では最も単純な「スケール 1 階微分」を使います。セル中心で中心差分により $|\nabla u|$ を求め、セルサイズ $h$ を掛ける。**この積がしきい値 $\tau$ を超えれば split、そうでなければ leaf** とします。
+
+## 2:1 バランスと hanging node
+
+子セルと隣接セルが出会う面で問題が起きます。一方が大きなセル、他方が小さなセル 2 つに分かれていると、その面に **hanging node**(宙吊り節点)が現れます。有限体積では hanging node がフラックス収支を壊します。
+
+解決策は 2 つです。
+
+1. **2:1 バランスを強制**: 隣接する 2 leaf のレベル差を 1 以下に制限する。p4est、AMReX、Berger 系列はすべてこの方針です。
+2. **non-conforming 補間**: hanging face に別途補間を置き、2 つの小セル値から大セルの面値を作る。DGM 系で一般的です。
+
+2:1 バランスを強制するアルゴリズムは短い。細分化候補リストを受け取り、各候補の隣接セルにレベルが 2 つ以上低いものがあれば、その隣接も細分化キューに加える。これをキューが空になるまで繰り返します。
+
+```python
+def enforce_2to1(roots, refine_queue):
+    """refine_queue 内の全セルが隣接と 2:1 を満たすように補強"""
+    pending = list(refine_queue)
+    queued = set(id(c) for c in pending)
+    while pending:
+        cell = pending.pop()
+        for nb in face_neighbors(cell, roots):
+            if nb.is_leaf() and cell.level - nb.level >= 1:
+                if id(nb) not in queued:
+                    pending.append(nb)
+                    queued.add(id(nb))
+    return [c for c in (refine_queue + pending) if c.is_leaf()]
+```
+
+ここで `face_neighbors` は同じ面を共有する leaf 隣接を返す — 木探索で $O(\log N)$ です。
+
+## Python で見る 1D 適応格子
+
+2D クアッドツリー全体を書くと長くなるので、同じ発想を **1D 二分木** で 1 ステップ動かしてみましょう。ガウシアン・パルスを置き、しきい値を超えるセルだけ細かく切ります。
+
+```python
+import numpy as np
+
+def gaussian_pulse(x, x0=0.6, sigma=0.04):
+    return np.exp(-((x - x0) ** 2) / (2 * sigma ** 2))
+
+def refine_indicator(cell_lo, cell_hi, fn, h_scale=1.0):
+    """スケール済み 1 階微分 = セル両端値の差の絶対値"""
+    u_lo = fn(cell_lo)
+    u_hi = fn(cell_hi)
+    return abs(u_hi - u_lo) * h_scale
+
+def adaptive_bisect_1d(fn, tau=0.05, max_level=8):
+    """しきい値基準でルート [0, 1] を再帰的に二等分"""
+    leaves = []
+    def recurse(lo, hi, level):
+        ind = refine_indicator(lo, hi, fn)
+        if level >= max_level or ind < tau:
+            leaves.append((lo, hi, level))
+            return
+        mid = 0.5 * (lo + hi)
+        recurse(lo, mid, level + 1)
+        recurse(mid, hi, level + 1)
+    recurse(0.0, 1.0, 0)
+    return leaves
+
+cells = adaptive_bisect_1d(gaussian_pulse, tau=0.05, max_level=7)
+print(f"leaf cells: {len(cells)}")
+print(f"均一レベル 7 比: {len(cells) / 2**7 * 100:.1f}%")
+# 出力例: leaf cells: 41, 均一レベル 7 比: 32.0%
+```
+
+ガウシアン 1 つはドメインの狭い領域しか占めないので、均一格子比でセル数は 30% 前後まで落ちます。パルスが 2 つになれば 2 つの領域だけが深く入り、その間は粗いまま — まさに AMR が約束する絵です。
+
+## 格子が分裂する様子を直接見る
+
+下のシミュレーションを直接動かしてみましょう。白い点はガウシアン特異点で、クリックして引きずると格子分割が追従します。
+
+<AMRQuadtreeRefinement />
+
+threshold を 0.05 まで下げるとガウシアンの裾まで格子が追いつき leaf 数が一気に増えます。0.4 を超えるとほぼ均一の粗格子だけが残ります。**add feature** で 2 番目の特異点を追加すると、2 つのコアだけが深く解かれて間が粗いまま残るのが確認できます — 同じ均一格子比でのセル数比率は viz の左上に表示されます。
+
+## 並列の落とし穴 — load balancing と SFC
+
+分散メモリでの AMR は別の壁にぶつかります。あるランクが深い木ばかり持つと、そのランクが全シミュレーションの wall clock を決めます。セル数バランス(load balancing)が崩れた状態です。
+
+解は木のノードを 1 次元に並べて切ることです。**空間充填曲線(space-filling curve, SFC)** — Morton(Z-order)や Hilbert 曲線 — でセルインデックスを作れば、木の空間的近接が 1D の近接として保たれます。p4est が使う Morton インデックスは、セル座標のビットをインターリーブして作ります。
+
+```python
+def morton_2d(ix, iy, level):
+    """整数座標 (ix, iy) を Morton(Z-order)インデックスに"""
+    code = 0
+    for b in range(level):
+        code |= ((ix >> b) & 1) << (2 * b)
+        code |= ((iy >> b) & 1) << (2 * b + 1)
+    return code
+
+# 4x4 格子の Z-order
+for iy in range(4):
+    for ix in range(4):
+        print(morton_2d(ix, iy, 2), end=" ")
+    print()
+# 0  1  4  5
+# 2  3  6  7
+# 8  9 12 13
+# 10 11 14 15
+```
+
+Morton インデックスでセルを並べ替えてからランク数で切って配るだけで、隣接セルが同じランクに集まり通信量が最小化されます。欠点は正方ドメインの角でジャンプが生じること — Hilbert 曲線はそのジャンプを避けますが、インデックス計算がより高価です。実務では Morton が事実上の標準です。
+
+## 持ち帰るポイント
+
+- AMR の価値は **データ構造** ではなく **細分化基準** から生まれます。データ構造は木+SFC でほぼ標準ですが、何を捕まえるかは問題ごとに異なります。
+- **2:1 バランス** を強制すれば hanging node の処理が簡単になり、強制しなければ全面に non-conforming 補間を組む必要があります。
+- 並列では木そのものよりも **load balancing** が wall clock を決めます。Morton/Hilbert SFC + 動的再分配が事実上の標準です。

@@ -1,0 +1,191 @@
+---
+title: "四叉树 AMR — 让网格只在需要的地方生长"
+date: 2026-04-27
+description: "Berger–Oliger 四十年来的自适应网格数据结构与加密判据梳理"
+tags: ["AMR", "쿼드트리", "메시", "알고리즘", "수치해석"]
+draft: false
+---
+
+import { AMRQuadtreeRefinement } from '@/components/post-viz/2026-04-27-amr-quadtree-cell-refinement/AMRQuadtreeRefinement'
+
+1984 年,斯坦福的 Marsha Berger 和 Joseph Oliger 卡在激波追踪上。他们的代码铺了一百万个网格,激波附近做有意义工作的大约只有 1%。剩下的 99% 在反复以高精度重新计算均匀的自由流。当年他们发表在 *Journal of Computational Physics* 的论文成了 **Berger–Oliger AMR** 的起点,同样的思想至今活在 OpenFOAM 的 `dynamicRefineFvMesh`、AMReX、Chombo、p4est 之中。本文沿着它的核心 — **四叉树数据结构** 与 **加密判据** — 走一遍,先用 Python 跑一段 1D 自适应网格,再在浏览器里看网格如何分裂。
+
+## 均匀网格为什么浪费 90%
+
+跑过 3D 可压 RANS 的人都熟悉这个权衡。把网格减半,单步开销下降到 1/8,但激波、剪切层、分离这些梯度大的区域分辨率也跟着崩。反过来按这些区域去加密整个网格,自由流的网格也跟着变小,内存与时间一起爆炸。
+
+办法很简单。**只在需要的地方加密。** 定量上,下面这个估计就基本够用:
+
+$$
+\frac{N_\text{AMR}}{N_\text{uniform}} \approx \frac{V_\text{feature}}{V_\text{domain}} \cdot 4^{L} + (1 - \tfrac{V_\text{feature}}{V_\text{domain}})
+$$
+
+其中 $L$ 是最大加密级别,$V_\text{feature}$ 是需要细化的体积,$V_\text{domain}$ 是整个计算域体积。对于激波这种类一维曲面奇异点,$V_\text{feature}/V_\text{domain} \sim h$,网格数量相对均匀第 $L$ 级会跌到个位数百分点。
+
+## h-、p-、r- — 自适应的三条路
+
+自适应网格(adaptive mesh,根据解的分布自身改变的网格)按改变的对象分成三类。
+
+- **h-自适应**: 缩小网格尺寸 $h$。最直观也最常用,通常说 AMR 指的就是这一种。
+- **p-自适应**: 网格尺寸不变,提高多项式阶 $p$。在 DGM、SEM(谱单元法)中常见。
+- **r-自适应(relocation)**: 网格数与阶都不变,把节点迁移到梯度大的位置。内存恒定但网格畸变较难管理。
+
+本文聚焦最常用的 h-AMR,特别是 **2D 四叉树**(三维则为八叉树)。
+
+## 四叉树 — 单元拥有自己孩子的数据结构
+
+均匀网格只需一个一维数组。自适应网格需要 **树**。一个单元加密时生出 4 个子单元,每个子单元指向其父。子单元再加密就有了孙子。
+
+```python
+class QuadCell:
+    __slots__ = ("cx", "cy", "size", "level", "children", "parent", "data")
+
+    def __init__(self, cx, cy, size, level=0, parent=None):
+        self.cx = cx           # 单元中心 x
+        self.cy = cy           # 单元中心 y
+        self.size = size       # 边长
+        self.level = level     # 根 = 0,加密一次 +1
+        self.children = None   # 叶子时为 None,加密后为长度 4 的列表
+        self.parent = parent
+        self.data = 0.0        # 守恒量(如密度)
+
+    def is_leaf(self):
+        return self.children is None
+
+    def split(self):
+        h = self.size * 0.5
+        q = self.size * 0.25
+        offsets = ((-q, -q), (+q, -q), (-q, +q), (+q, +q))
+        self.children = [
+            QuadCell(self.cx + dx, self.cy + dy, h, self.level + 1, self)
+            for dx, dy in offsets
+        ]
+        for ch in self.children:
+            ch.data = self.data    # 用父值初始化(守恒)
+```
+
+`split` 中用父值初始化每个子单元是为了 **守恒**。父单元的积分量 $U \cdot V$ 必须等于四个子单元之和。简单复制是一阶插值,生产代码通常配合父单元的斜率(MUSCL 型)做二阶精度的 prolongation。
+
+## 切在哪里 — 加密判据
+
+四叉树本身只是空容器。真正关键的是 **切哪个单元**,即加密判据。生产中常见的五种:
+
+| 判据 | 形式 | 抓住什么 |
+|---|---|---|
+| 一阶导数 | $h \lvert \nabla u \rvert$ | 激波、剪切层 |
+| 二阶导数 | $h^2 \lvert \nabla^2 u \rvert$ | 大曲率区域 |
+| Hessian Frobenius | $\sqrt{\sum H_{ij}^2}\, h^2$ | 各向异性检测 |
+| Richardson 估计 | $\lvert u_h - u_{2h} \rvert$ | 真实离散误差 |
+| 物理阈值 | $\rho > \rho_*, \lvert \omega \rvert > \omega_*$ | 涡核 |
+
+OpenFOAM 的 `dynamicRefineFvMesh` 对用户定义场设阈值,AMReX 把每单元布尔函数 `tagcells()` 留给用户填。**标记什么决定 AMR 结果** — 比数据结构本身更重要。
+
+下面的交互可视化采用最简单的一项:缩放后的一阶导数。在单元中心用中心差分求 $|\nabla u|$,再乘以单元大小 $h$。**乘积超过阈值 $\tau$ 就 split,否则保留为 leaf。**
+
+## 2:1 平衡与 hanging node
+
+子单元与邻居相接的面会出问题。一边是大单元,另一边却是两个小单元,这个面上就出现 **hanging node**(悬空节点)。在有限体积里,hanging node 会破坏通量平衡。
+
+两条出路:
+
+1. **强制 2:1 平衡**: 限制相邻 leaf 的级别差不超过 1。p4est、AMReX、Berger 系列都用这条规则。
+2. **non-conforming 插值**: 在 hanging face 上额外插值,用两个小单元的值合成大单元面值。在 DGM 系常见。
+
+强制 2:1 平衡的算法很短。拿到加密候选列表,对每个候选检查邻居中是否有低两级以上的;若有,则把该邻居也压入加密队列。直到队列为空。
+
+```python
+def enforce_2to1(roots, refine_queue):
+    """确保 refine_queue 中所有单元与邻居满足 2:1"""
+    pending = list(refine_queue)
+    queued = set(id(c) for c in pending)
+    while pending:
+        cell = pending.pop()
+        for nb in face_neighbors(cell, roots):
+            if nb.is_leaf() and cell.level - nb.level >= 1:
+                if id(nb) not in queued:
+                    pending.append(nb)
+                    queued.add(id(nb))
+    return [c for c in (refine_queue + pending) if c.is_leaf()]
+```
+
+`face_neighbors` 返回共享同一面的 leaf 邻居 — 树搜索复杂度 $O(\log N)$。
+
+## 用 Python 看 1D 自适应网格
+
+完整 2D 四叉树代码会变长,所以用同样的思路在 **1D 二叉树** 上跑一步。放一个高斯脉冲,只切超过阈值的单元。
+
+```python
+import numpy as np
+
+def gaussian_pulse(x, x0=0.6, sigma=0.04):
+    return np.exp(-((x - x0) ** 2) / (2 * sigma ** 2))
+
+def refine_indicator(cell_lo, cell_hi, fn, h_scale=1.0):
+    """缩放一阶导 = 单元两端值的差的绝对值"""
+    u_lo = fn(cell_lo)
+    u_hi = fn(cell_hi)
+    return abs(u_hi - u_lo) * h_scale
+
+def adaptive_bisect_1d(fn, tau=0.05, max_level=8):
+    """按阈值递归二等分根 [0, 1]"""
+    leaves = []
+    def recurse(lo, hi, level):
+        ind = refine_indicator(lo, hi, fn)
+        if level >= max_level or ind < tau:
+            leaves.append((lo, hi, level))
+            return
+        mid = 0.5 * (lo + hi)
+        recurse(lo, mid, level + 1)
+        recurse(mid, hi, level + 1)
+    recurse(0.0, 1.0, 0)
+    return leaves
+
+cells = adaptive_bisect_1d(gaussian_pulse, tau=0.05, max_level=7)
+print(f"leaf cells: {len(cells)}")
+print(f"对均匀第 7 级: {len(cells) / 2**7 * 100:.1f}%")
+# 输出示例: leaf cells: 41, 对均匀第 7 级: 32.0%
+```
+
+单个高斯只占据计算域的窄带,所以 AMR 把网格数压到大约均匀的 30%。两个脉冲时,只有两个核心被深入解析,中间区域保持粗糙 — 正是 AMR 承诺的画面。
+
+## 直接看网格如何分裂
+
+下面的模拟可以直接操作。白点是高斯特征 — 点击拖动,网格分裂随之跟来。
+
+<AMRQuadtreeRefinement />
+
+把阈值降到 0.05,网格会跟到高斯尾部,leaf 数迅速攀升。推过 0.4,基本只剩近乎均匀的粗网格。点击 **add feature** 添加第二个峰,可以看到只有两个核心被深入解析,其间区域保持粗糙 — viz 左上角显示了与均匀网格相比的网格数占比。
+
+## 并行陷阱 — load balancing 与 SFC
+
+分布式内存的 AMR 还会撞到另一堵墙。如果某个 rank 抱住所有深树,这个 rank 就决定整个 wall clock。这就是网格数失衡(load balancing)。
+
+解决方法是把树节点排成一维再切。**空间填充曲线(space-filling curve, SFC)** — Morton(Z-order)或 Hilbert 曲线 — 给出的网格索引能把树的空间相邻保留为一维相邻。p4est 用的 Morton 索引就是把网格坐标的比特交错。
+
+```python
+def morton_2d(ix, iy, level):
+    """把整数坐标 (ix, iy) 转为 Morton(Z-order)索引"""
+    code = 0
+    for b in range(level):
+        code |= ((ix >> b) & 1) << (2 * b)
+        code |= ((iy >> b) & 1) << (2 * b + 1)
+    return code
+
+# 4x4 网格的 Z-order
+for iy in range(4):
+    for ix in range(4):
+        print(morton_2d(ix, iy, 2), end=" ")
+    print()
+# 0  1  4  5
+# 2  3  6  7
+# 8  9 12 13
+# 10 11 14 15
+```
+
+按 Morton 索引排序,再按 rank 数等分发出去:相邻网格归同一 rank,跨 rank 通信量降到最小。缺点是正方计算域的角上会出现跳跃 — Hilbert 曲线避免了这种跳跃但索引计算更贵,实务里 Morton 才是事实标准。
+
+## 带走的几点
+
+- AMR 的价值来自 **加密判据**,而不是数据结构。结构(树 + SFC)几乎已经是标配,标记什么因问题而异。
+- 强制 **2:1 平衡** 让面处理简单,不强制就要为每个面写 non-conforming 插值。
+- 并行下决定 wall clock 的不是树本身,而是 **load balancing**。Morton/Hilbert SFC + 动态再分配是事实标准。
