@@ -1,11 +1,14 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
-import remarkMath from 'remark-math'
-import rehypeKatex from 'rehype-katex'
-import { allPosts } from 'contentlayer/generated'
+import dynamic from 'next/dynamic'
+import postIndex from '@/lib/post-index.json'
+
+// MarkdownPreview: 미리보기 시점에만 로드 (initial admin 청크에서 KaTeX 300KB+ 제외).
+const MarkdownPreview = dynamic(() => import('@/components/admin/MarkdownPreview'), {
+  ssr: false,
+  loading: () => <div className="text-sm" style={{ color: 'var(--text-muted)' }}>preview loading…</div>,
+})
 import Link from 'next/link'
 import {
   type DynamicPost,
@@ -52,9 +55,12 @@ export default function AdminPage() {
   const [saveMsg, setSaveMsg] = useState('')
   const [importMsg, setImportMsg] = useState('')
 
-  // Static posts from contentlayer
-  const staticPosts: AdminPost[] = allPosts
-    .filter((p) => !p.draft)
+  // Static posts from lightweight post-index (admin 페이지 번들 19MB → ~200KB 로 축소)
+  const staticPosts: AdminPost[] = (postIndex.items as Array<{
+    slug: string; locale: string; title: string; date: string;
+    description: string; tags?: string[]; url: string; draft?: boolean;
+  }>)
+    .filter((p) => !p.draft && p.locale === 'ko')
     .map((p) => ({
       id: p.slug,
       title: p.title,
@@ -215,9 +221,7 @@ export default function AdminPage() {
             )}
           </div>
           <div className="prose prose-zinc dark:prose-invert max-w-none">
-            <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]}>
-              {post.content}
-            </ReactMarkdown>
+            <MarkdownPreview>{post.content}</MarkdownPreview>
           </div>
         </article>
       </div>
@@ -282,9 +286,7 @@ export default function AdminPage() {
             <div className="min-h-[50vh] rounded-md border border-zinc-200 bg-white p-6 dark:border-zinc-800 dark:bg-zinc-950">
               {content.trim() ? (
                 <div className="prose prose-zinc dark:prose-invert max-w-none">
-                  <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]}>
-                    {content}
-                  </ReactMarkdown>
+                  <MarkdownPreview>{content}</MarkdownPreview>
                 </div>
               ) : (
                 <p className="text-zinc-400">Nothing to preview yet.</p>
