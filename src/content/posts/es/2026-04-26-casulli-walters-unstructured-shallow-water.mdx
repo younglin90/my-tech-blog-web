@@ -1,0 +1,160 @@
+---
+title: "[Reseña de paper] Terminar la simulación antes de la tormenta — Casulli–Walters (2000), aguas someras semi-implícitas en mallas ortogonales no estructuradas"
+date: 2026-04-26
+description: "Algoritmo de aguas someras que no diverge con pasos de tiempo grandes"
+tags: ["논문리뷰", "CFD", "shallow-water", "semi-implicit", "unstructured-grid"]
+draft: false
+---
+
+import { ShallowWaterCasulli1D } from '@/components/post-viz/2026-04-26-casulli-walters-unstructured-shallow-water/ShallowWaterCasulli1D'
+
+En junio de 1990, el laboratorio BAW de Hamburgo tenía que reproducir 13 días de marea en el estuario Jade–Weser. La malla contaba con 150 000 triángulos no estructurados, el paso de tiempo debía ser de 5 minutos y la simulación tenía que correr más rápido que el tiempo real para que el siguiente caso cupiera en la agenda. Con un solver explícito, la celeridad de la onda de superficie libre $c=\sqrt{gh}$ fija la cota CFL. En zonas de 28 m de profundidad, $c \approx 16{,}6$ m/s; con la celda más pequeña de lado cercano a $\sqrt{10}$ m, el límite explícito es 0,2 s — son 5,6 millones de pasos para 13 días. Este post sigue cómo Casulli y Walters (2000) rompieron esa barrera con un **algoritmo semi-implícito en malla ortogonal no estructurada**, y corre una versión 1D en vivo. Resumen: tratar implícitamente solo los términos de presión hace que el sistema resultante sea SPD, ideal para PCG.
+
+## Información del paper
+
+- Autores: Vincenzo Casulli (Univ. de Trento), Roy A. Walters (USGS)
+- Revista: International Journal for Numerical Methods in Fluids, **32**, 331–348 (2000)
+- Título: "An unstructured grid, three-dimensional model based on the shallow water equations"
+- Palabras clave: semi-implicit, shallow water, unstructured orthogonal grid, wetting/drying
+
+## Por qué el solver explícito falla en estuarios
+
+Las ondas de superficie libre en aguas someras son rápidas. A 10 m de profundidad, $c \approx 10$ m/s; a 100 m, $c \approx 31$ m/s. La velocidad real del flujo $u$ suele ser menor a 1 m/s. La escala temporal física es $L/u$, pero el paso explícito está acotado por $\Delta x/c$. Su cociente $c/u \approx 10\sim30$ implica que el código explícito divide el tiempo entre 10 y 30 veces más fino de lo que requiere el flujo.
+
+Las mallas no estructuradas empeoran el panorama. Las celdas de tamaños distintos conviven, y la celda más pequeña fija el paso global. La malla del Big Lost River tiene 12 622 triángulos en 1,2 km × 1 km con un lado mínimo cerca de 5 m, dando un límite explícito de unos 0,5 s.
+
+La salida es: explícito para los términos lentos, implícito para los rápidos. Tratando solo el gradiente de presión de superficie libre en forma implícita, la celeridad desaparece de la cota de estabilidad.
+
+## Mallas ortogonales no estructuradas — el dúo Voronoi–Delaunay
+
+Las diferencias finitas planas sobre una malla no estructurada chocan con dos muros. La distancia entre celdas varía con la forma, así el estencil de gradiente se vuelve asimétrico. Y las transformaciones curvilíneas introducen términos extra que dañan precisión y estabilidad.
+
+Casulli y Walters esquivaron ambos. Una **malla ortogonal no estructurada** es aquella en la que el segmento que une los centros de dos celdas adyacentes es perpendicular a la arista que comparten. El diagrama de Voronoi y su dual triangulación de Delaunay cumplen esta condición de forma exacta (cuando todos los triángulos son agudos).
+
+El dividendo es nítido. Definiendo solo la velocidad normal $u_j$ en cada cara, el gradiente de presión de superficie libre $\partial \eta / \partial n$ colapsa a la simple diferencia $(\eta_{i_2} - \eta_{i_1})/\delta_j$. No hace falta corrección por curvatura.
+
+## División semi-implícita: el método θ separa dos escalas temporales
+
+El método θ de Casulli parametriza la integración temporal con un factor de implicitud $\theta \in [1/2, 1]$. La ecuación de momento evalúa el gradiente de superficie libre como $\theta \eta^{n+1} + (1-\theta)\eta^n$, y la ecuación de superficie libre evalúa la velocidad como $\theta u^{n+1} + (1-\theta)u^n$.
+
+El momento discretizado (con viscosidad vertical y esfuerzo de viento ya plegados):
+
+$$
+\mathbf{A}_j^n \mathbf{U}_j^{n+1} = \mathbf{G}_j^n - \theta g \frac{\Delta t}{\delta_j}\!\left[\eta_{i(j,2)}^{n+1} - \eta_{i(j,1)}^{n+1}\right]\Delta\mathbf{Z}_j^n
+$$
+
+Aquí $\mathbf{U}_j^{n+1}$ apila las velocidades normales en la arista $j$, $\mathbf{A}_j^n$ es una matriz tridiagonal que recoge viscosidad vertical, esfuerzo de viento y fricción de fondo, y $\mathbf{G}_j^n$ contiene los términos explícitos (advección, Coriolis, fricción horizontal). Se desacopla en $N_s$ pequeños sistemas tridiagonales $N_z \times N_z$.
+
+La ecuación de superficie libre:
+
+$$
+P_i \eta_i^{n+1} = P_i \eta_i^n
+- \theta \Delta t \sum_{l=1}^{S_i} s_{i,l}\lambda_{j(i,l)} [\Delta\mathbf{Z}^\top \mathbf{U}]_{j(i,l)}^{n+1}
+- (1-\theta)\Delta t \sum_{l=1}^{S_i} s_{i,l}\lambda_{j(i,l)} [\Delta\mathbf{Z}^\top \mathbf{U}]_{j(i,l)}^{n}
+$$
+
+$P_i$ es el área del polígono $i$, $\lambda_j$ la longitud de la arista $j$, $s_{i,l}$ un signo hacia afuera.
+
+## Reducción a ecuación de onda y la recompensa SPD
+
+Resolver ambas ecuaciones juntas da un sistema acoplado con $N_z N_s + N_p$ incógnitas. La clave es **resolver la ecuación de momento para $\mathbf{U}_j^{n+1}$ como función de $\eta^{n+1}$ y luego sustituir en la ecuación de superficie libre**. Como $\mathbf{A}$ es SPD, su inversa también lo es.
+
+Tras la sustitución:
+
+$$
+P_i \eta_i^{n+1} - g \Delta t^2 \theta^2 \sum_{l=1}^{S_i} \frac{s_{i,l}\lambda_{j(i,l)}}{\delta_{j(i,l)}}\!\left[(\Delta\mathbf{Z})^\top \mathbf{A}^{-1}\Delta\mathbf{Z}\right]_{j(i,l)}^{n}\!\!\left(\eta^{n+1}_{i[j(i,l),2]} - \eta^{n+1}_{i[j(i,l),1]}\right) = R_i
+$$
+
+Una ecuación de onda discreta. Solo $\eta^{n+1}$ es incógnita, el tamaño es de $N_p$ celdas, y el sistema es **simétrico, fuertemente diagonal dominante y definido positivo**. PCG (gradiente conjugado precondicionado) converge en decenas de iteraciones, incluso para mallas enormes.
+
+Una vez que $\eta^{n+1}$ está resuelto, el momento por arista colapsa en pequeños sistemas tridiagonales independientes. La velocidad vertical sale por recursión a través de la ecuación de continuidad discreta.
+
+## Una versión 1D en Python
+
+Las aguas someras 1D linealizadas $\partial_t \eta + H\partial_x u = 0$, $\partial_t u + g\partial_x \eta = 0$ cuentan la misma historia.
+
+```python
+import numpy as np
+from scipy.linalg import solve_banded
+
+class CasulliShallowWater1D:
+    """Aguas someras 1D lineales — método θ semi-implícito."""
+
+    def __init__(self, N=200, L=1.0, H=1.0, g=9.81, theta=0.6):
+        self.N, self.L, self.H, self.g, self.theta = N, L, H, g, theta
+        self.dx = L / N
+        self.eta = np.zeros(N)            # superficie libre en centros de celda
+        self.u = np.zeros(N + 1)          # velocidad normal en aristas, paredes = 0
+
+    def initial_bump(self, x0=0.3, sigma=0.05, amp=0.05):
+        x = (np.arange(self.N) + 0.5) * self.dx
+        self.eta = amp * np.exp(-((x - x0) ** 2) / (2 * sigma ** 2))
+        self.u[:] = 0.0
+
+    def step(self, dt):
+        N, dx, g, H, th = self.N, self.dx, self.g, self.H, self.theta
+        k = g * H * dt * dt * th * th / (dx * dx)   # coeficiente de la ecuación de onda
+        alpha = H * dt / dx
+
+        # G_j: parte explícita reunida en las aristas (paredes = 0)
+        G = np.zeros(N + 1)
+        G[1:N] = self.u[1:N] - g * (dt / dx) * (1 - th) * (self.eta[1:] - self.eta[:-1])
+
+        # Tridiagonal: -k η_{i-1} + (1+2k) η_i - k η_{i+1} = R_i
+        ab = np.zeros((3, N))
+        ab[0, 1:] = -k                         # supra-diagonal
+        ab[2, :-1] = -k                        # sub-diagonal
+        ab[1, :] = 1.0 + 2 * k
+        ab[1, 0] = 1.0 + k                     # pared izquierda
+        ab[1, -1] = 1.0 + k                    # pared derecha
+
+        rhs = self.eta.copy()
+        rhs -= alpha * th * (G[1:] - G[:-1])
+        rhs -= alpha * (1 - th) * (self.u[1:] - self.u[:-1])
+
+        new_eta = solve_banded((1, 1), ab, rhs)
+
+        new_u = self.u.copy()
+        new_u[1:N] = self.u[1:N] - g * (dt / dx) * (
+            th * (new_eta[1:] - new_eta[:-1]) + (1 - th) * (self.eta[1:] - self.eta[:-1])
+        )
+        new_u[0] = new_u[-1] = 0.0
+        self.eta, self.u = new_eta, new_u
+        return self.eta
+
+if __name__ == "__main__":
+    sim = CasulliShallowWater1D(N=200, theta=0.6)
+    sim.initial_bump()
+    c = np.sqrt(sim.g * sim.H)
+    dt_explicit_limit = sim.dx / c
+    dt = 4.0 * dt_explicit_limit                # 4× el límite explícito
+    for _ in range(int(0.6 / dt)):
+        sim.step(dt)
+    print(f"max|η| = {np.max(np.abs(sim.eta)):.4f}  (sigue acotado)")
+```
+
+Un solver explícito diverge de inmediato con $\Delta t = 4 \Delta t_\text{ex}$. Con el mismo paso, Casulli llega al final con leve retraso de fase y poca atenuación (la atenuación crece a medida que θ se acerca a 1).
+
+## Sube el paso de tiempo
+
+Prueba la simulación abajo. Una pequeña elevación de superficie libre a la izquierda se expande, choca contra las paredes y se refleja.
+
+<ShallowWaterCasulli1D />
+
+Sube el deslizador CFL por encima de 1. La curva roja explícita estalla fuera de pantalla apenas CFL pasa de 1. La curva cian de Casulli mantiene la forma incluso a CFL=6 — pero al subir θ hacia 1, la amplitud decae más rápido (el precio de la implicitud completa). θ cerca de 0,5 conserva mejor la amplitud, aunque es el borde de estabilidad, así que los códigos en producción se quedan en 0,55–0,6.
+
+## Lo que falta
+
+El algoritmo no es gratis.
+
+Primero, precisión temporal. θ=0,5 es de segundo orden pero está justo en el borde de estabilidad, así que los frentes de ondas gravitatorias se doblan ligeramente. Por encima de 0,6 cae a primer orden. Si la precisión cuantitativa importa, hay que reducir el paso o pasar a un IMEX de orden superior (Implicit-Explicit Runge-Kutta).
+
+Segundo, la advección Eulerian–Lagrangian. La advección vive en la parte explícita, pero el upwinding plano introduce viscosidad numérica fuerte. La cura es retroceder trayectorias lagrangianas e interpolar el valor al final del trayecto. El esquema sigue estable más allá del cruce de una celda por paso, pero la precisión depende del orden de interpolación y de cuán bien se integre la trayectoria.
+
+Tercero, la hipótesis hidrostática. El modelo asume $\partial p/\partial z = -\rho g$. Flujos con fuerte aceleración vertical (rompientes, cataratas torrenciales) requieren corrección no hidrostática.
+
+## Para recordar
+
+- Tratar implícitamente solo el término de presión de superficie libre quita la celeridad $\sqrt{gh}$ de la cota de estabilidad. El paso de tiempo lo fija solo la velocidad de flujo $u$.
+- La ecuación de onda discreta en $\eta^{n+1}$ es SPD y diagonalmente dominante, ideal para PCG. El momento se desacopla en sistemas tridiagonales por arista.
+- La ortogonalidad Voronoi–Delaunay mantiene limpia la discretización del gradiente de presión sobre mallas no estructuradas — la base sobre la que se construyeron tres décadas de modelos de la familia Casulli.

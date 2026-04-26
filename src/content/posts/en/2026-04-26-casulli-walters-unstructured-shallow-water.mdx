@@ -1,0 +1,160 @@
+---
+title: "[Paper Review] Beating the Storm Clock — Casulli–Walters (2000) Semi-Implicit Shallow Water on Unstructured Orthogonal Grids"
+date: 2026-04-26
+description: "A shallow-water algorithm that stays stable at large time steps"
+tags: ["논문리뷰", "CFD", "shallow-water", "semi-implicit", "unstructured-grid"]
+draft: false
+---
+
+import { ShallowWaterCasulli1D } from '@/components/post-viz/2026-04-26-casulli-walters-unstructured-shallow-water/ShallowWaterCasulli1D'
+
+In June 1990, Hamburg's BAW lab needed to reproduce 13 days of tide history in the Jade–Weser Estuary. Their grid had 150 thousand unstructured triangles, the time step needed to be 5 minutes, and the simulation had to run faster than real time so the next case could fit in the schedule. With an explicit solver, the free-surface celerity $c=\sqrt{gh}$ sets the CFL bound. In the 28 m deep parts, $c \approx 16.6$ m/s; with a smallest cell side near $\sqrt{10}$ m, the explicit limit is 0.2 s — that is 5.6 million steps for 13 days. This post follows how Casulli and Walters (2000) broke that wall with a **semi-implicit unstructured-orthogonal-grid algorithm**, and runs a 1D version live. Punchline: treat only the pressure terms implicitly, and the resulting system turns out to be SPD — perfect for PCG.
+
+## Paper info
+
+- Authors: Vincenzo Casulli (Univ. of Trento), Roy A. Walters (USGS)
+- Journal: International Journal for Numerical Methods in Fluids, **32**, 331–348 (2000)
+- Title: "An unstructured grid, three-dimensional model based on the shallow water equations"
+- Keywords: semi-implicit, shallow water, unstructured orthogonal grid, wetting/drying
+
+## Why an explicit solver fails on estuaries
+
+Free-surface waves in shallow water are fast. At 10 m depth, $c \approx 10$ m/s; at 100 m, $c \approx 31$ m/s. The actual flow speed $u$ is usually below 1 m/s. The physical time scale is $L/u$, but the explicit step is bounded by $\Delta x / c$. Their ratio $c/u \approx 10\sim30$ means an explicit code chops time 10 to 30 times finer than the flow needs.
+
+Unstructured grids make it worse. The smallest cell anywhere sets the global step. The Big Lost River grid in the paper has 12,622 triangles in a 1.2 km × 1 km reach with the smallest side near 5 m, giving an explicit limit around 0.5 s.
+
+The fix: explicit for slow terms, implicit for the fast ones. Treat only the free-surface pressure gradient implicitly, and celerity drops out of the stability bound.
+
+## Orthogonal unstructured grids — the Voronoi–Delaunay pair
+
+Plain finite differences on an unstructured mesh hit two walls. Cell-to-cell distances vary with cell shape, so the gradient stencil becomes asymmetric. And curvilinear transformations introduce extra terms that hurt accuracy and stability.
+
+Casulli and Walters dodged both. An **orthogonal unstructured grid** is a mesh where the segment joining centers of two adjacent cells is perpendicular to their shared edge. The Voronoi diagram and its dual Delaunay triangulation satisfy this condition exactly (when all triangles are acute).
+
+The payoff is sharp. Defining only the edge-normal velocity $u_j$ at each face, the free-surface pressure gradient $\partial \eta / \partial n$ collapses to the simple difference $(\eta_{i_2} - \eta_{i_1})/\delta_j$. No curvature corrections needed.
+
+## Semi-implicit splitting: the θ method untangles two time scales
+
+Casulli's θ method parametrizes the time integration with an implicitness factor $\theta \in [1/2, 1]$. The momentum equation evaluates the free-surface gradient as $\theta \eta^{n+1} + (1-\theta)\eta^n$, and the free-surface equation evaluates the velocity as $\theta u^{n+1} + (1-\theta)u^n$.
+
+The discretized momentum (vertical viscosity and wind stress folded in):
+
+$$
+\mathbf{A}_j^n \mathbf{U}_j^{n+1} = \mathbf{G}_j^n - \theta g \frac{\Delta t}{\delta_j}\!\left[\eta_{i(j,2)}^{n+1} - \eta_{i(j,1)}^{n+1}\right]\Delta\mathbf{Z}_j^n
+$$
+
+Here $\mathbf{U}_j^{n+1}$ stacks normal velocities along edge $j$, $\mathbf{A}_j^n$ is a tridiagonal matrix collecting vertical viscosity, wind stress, and bottom friction, and $\mathbf{G}_j^n$ holds the explicit terms (advection, Coriolis, horizontal friction). The system decouples into $N_s$ small $N_z \times N_z$ tridiagonal solves.
+
+The free-surface equation:
+
+$$
+P_i \eta_i^{n+1} = P_i \eta_i^n
+- \theta \Delta t \sum_{l=1}^{S_i} s_{i,l}\lambda_{j(i,l)} [\Delta\mathbf{Z}^\top \mathbf{U}]_{j(i,l)}^{n+1}
+- (1-\theta)\Delta t \sum_{l=1}^{S_i} s_{i,l}\lambda_{j(i,l)} [\Delta\mathbf{Z}^\top \mathbf{U}]_{j(i,l)}^{n}
+$$
+
+$P_i$ is the area of polygon $i$, $\lambda_j$ the length of edge $j$, $s_{i,l}$ an outward sign.
+
+## Wave-equation reduction and the SPD payoff
+
+Solving both equations together gives a coupled system with $N_z N_s + N_p$ unknowns. The trick is to **solve the momentum equation for $\mathbf{U}_j^{n+1}$ as a function of $\eta^{n+1}$, then substitute into the free-surface equation**. Because $\mathbf{A}$ is SPD, so is its inverse.
+
+After substitution:
+
+$$
+P_i \eta_i^{n+1} - g \Delta t^2 \theta^2 \sum_{l=1}^{S_i} \frac{s_{i,l}\lambda_{j(i,l)}}{\delta_{j(i,l)}}\!\left[(\Delta\mathbf{Z})^\top \mathbf{A}^{-1}\Delta\mathbf{Z}\right]_{j(i,l)}^{n}\!\!\left(\eta^{n+1}_{i[j(i,l),2]} - \eta^{n+1}_{i[j(i,l),1]}\right) = R_i
+$$
+
+A discrete wave equation. Only $\eta^{n+1}$ is unknown, the system size is just $N_p$ cells, and it is **symmetric, strongly diagonally dominant, and positive definite**. PCG (preconditioned conjugate gradient) converges in tens of iterations even for huge meshes.
+
+Once $\eta^{n+1}$ is in hand, the per-edge momentum collapses to small tridiagonal solves. Vertical velocity falls out by recursion through the discrete continuity equation.
+
+## A 1D version in Python
+
+The linearized 1D shallow water $\partial_t \eta + H\partial_x u = 0$, $\partial_t u + g\partial_x \eta = 0$ tells the same story.
+
+```python
+import numpy as np
+from scipy.linalg import solve_banded
+
+class CasulliShallowWater1D:
+    """1D linear shallow water — semi-implicit θ method."""
+
+    def __init__(self, N=200, L=1.0, H=1.0, g=9.81, theta=0.6):
+        self.N, self.L, self.H, self.g, self.theta = N, L, H, g, theta
+        self.dx = L / N
+        self.eta = np.zeros(N)            # free-surface at cell centers
+        self.u = np.zeros(N + 1)          # face-normal velocity, walls = 0
+
+    def initial_bump(self, x0=0.3, sigma=0.05, amp=0.05):
+        x = (np.arange(self.N) + 0.5) * self.dx
+        self.eta = amp * np.exp(-((x - x0) ** 2) / (2 * sigma ** 2))
+        self.u[:] = 0.0
+
+    def step(self, dt):
+        N, dx, g, H, th = self.N, self.dx, self.g, self.H, self.theta
+        k = g * H * dt * dt * th * th / (dx * dx)   # wave-equation coefficient
+        alpha = H * dt / dx
+
+        # G_j: explicit part collected at edges (walls = 0)
+        G = np.zeros(N + 1)
+        G[1:N] = self.u[1:N] - g * (dt / dx) * (1 - th) * (self.eta[1:] - self.eta[:-1])
+
+        # Tridiagonal: -k η_{i-1} + (1+2k) η_i - k η_{i+1} = R_i
+        ab = np.zeros((3, N))
+        ab[0, 1:] = -k                         # super-diagonal
+        ab[2, :-1] = -k                        # sub-diagonal
+        ab[1, :] = 1.0 + 2 * k
+        ab[1, 0] = 1.0 + k                     # left wall
+        ab[1, -1] = 1.0 + k                    # right wall
+
+        rhs = self.eta.copy()
+        rhs -= alpha * th * (G[1:] - G[:-1])
+        rhs -= alpha * (1 - th) * (self.u[1:] - self.u[:-1])
+
+        new_eta = solve_banded((1, 1), ab, rhs)
+
+        new_u = self.u.copy()
+        new_u[1:N] = self.u[1:N] - g * (dt / dx) * (
+            th * (new_eta[1:] - new_eta[:-1]) + (1 - th) * (self.eta[1:] - self.eta[:-1])
+        )
+        new_u[0] = new_u[-1] = 0.0
+        self.eta, self.u = new_eta, new_u
+        return self.eta
+
+if __name__ == "__main__":
+    sim = CasulliShallowWater1D(N=200, theta=0.6)
+    sim.initial_bump()
+    c = np.sqrt(sim.g * sim.H)
+    dt_explicit_limit = sim.dx / c
+    dt = 4.0 * dt_explicit_limit                # 4x the explicit limit
+    for _ in range(int(0.6 / dt)):
+        sim.step(dt)
+    print(f"max|η| = {np.max(np.abs(sim.eta)):.4f}  (still bounded)")
+```
+
+An explicit solver blows up immediately at $\Delta t = 4 \Delta t_\text{ex}$. With the same step, Casulli runs to the end with mild phase lag and small damping (damping grows as θ approaches 1).
+
+## Crank up the time step
+
+Try the simulation below. A small free-surface bump on the left spreads outward, hits the walls, and reflects.
+
+<ShallowWaterCasulli1D />
+
+Push CFL above 1. The red explicit line blows up off-screen the moment CFL crosses one. The cyan Casulli line keeps its shape even at CFL=6 — but as you slide θ toward 1, amplitude decays faster (the price of full implicitness). θ near 0.5 preserves amplitude best, but it is the stability boundary, so production codes sit at 0.55–0.6.
+
+## What's missing
+
+The algorithm is not free of trade-offs.
+
+First, time accuracy. θ=0.5 is second-order but right on the stability edge, so gravity-wave fronts bend slightly. Above 0.6 it drops to first order. If quantitative accuracy matters, shrink the step or move to a higher-order IMEX (Implicit-Explicit Runge-Kutta).
+
+Second, Eulerian–Lagrangian advection. Advection lives in the explicit part, but plain upwinding bleeds artificial viscosity. The remedy is back-tracing Lagrangian trajectories and interpolating end-of-trajectory values. The scheme stays stable beyond a one-cell crossing per step, but accuracy hinges on the interpolation order and trajectory-integration precision.
+
+Third, the hydrostatic assumption. The model takes $\partial p/\partial z = -\rho g$. Flows with strong vertical acceleration (breaking waves, cataracts) need a non-hydrostatic correction.
+
+## Takeaways
+
+- Treating only the free-surface pressure term implicitly removes celerity $\sqrt{gh}$ from the stability constraint. The time step is set by flow speed $u$ alone.
+- The discrete wave equation in $\eta^{n+1}$ is SPD and diagonally dominant, perfect for PCG. Momentum decouples into per-edge tridiagonals.
+- Voronoi–Delaunay orthogonality keeps the pressure-gradient discretization clean on unstructured meshes — the foundation of three decades of Casulli-family models.

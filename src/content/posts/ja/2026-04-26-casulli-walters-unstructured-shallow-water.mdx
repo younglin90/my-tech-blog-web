@@ -1,0 +1,160 @@
+---
+title: "[論文レビュー] 嵐が来る前にシミュレーションを終わらせる — Casulli–Walters(2000) 非構造直交格子の浅水方程式"
+date: 2026-04-26
+description: "大きな時間刻みでも発散しない半陰解法の浅水アルゴリズム"
+tags: ["논문리뷰", "CFD", "shallow-water", "semi-implicit", "unstructured-grid"]
+draft: false
+---
+
+import { ShallowWaterCasulli1D } from '@/components/post-viz/2026-04-26-casulli-walters-unstructured-shallow-water/ShallowWaterCasulli1D'
+
+ハンブルクの BAW 研究所は 1990 年 6 月の Jade–Weser 河口の 13 日分の潮位を再現する必要がありました。格子は非構造三角形 15 万個、時間刻みは 5 分、しかも実時間より速く回らないと次のケースに時間が残りません。陽解法では自由表面波のセラリティ $c=\sqrt{gh}$ が CFL を決め、深さ 28 m の領域で $c \approx 16.6$ m/s、最小セル一辺が $\sqrt{10}$ m なら陽解法限界は 0.2 秒 — 13 日で 560 万ステップになります。この記事では Casulli と Walters(2000) がその壁を破った **半陰解法の非構造直交格子アルゴリズム** をたどり、1D 縮約版を実際に動かします。要点は「圧力項だけを陰解にし、結果として現れる行列が SPD だから PCG で解ける」です。
+
+## 論文情報
+
+- 著者: Vincenzo Casulli (Univ. of Trento), Roy A. Walters (USGS)
+- 誌名: International Journal for Numerical Methods in Fluids, **32**, 331–348 (2000)
+- 題目: "An unstructured grid, three-dimensional model based on the shallow water equations"
+- キーワード: semi-implicit, shallow water, unstructured orthogonal grid, wetting/drying
+
+## なぜ陽解法は河口で行き詰まるのか
+
+浅水方程式の自由表面波は速いです。深さ 10 m で $c \approx 10$ m/s、深さ 100 m で $c \approx 31$ m/s。流速 $u$ は普通 1 m/s 未満なので、現象の時間スケールは $L/u$ なのに、陽解法は $\Delta x/c$ で縛られます。両者の比 $c/u \approx 10\sim30$ ですから、陽解法は流れが必要とする 10 〜 30 倍細かく時間を切らねばなりません。
+
+非構造格子だと事態はさらに悪化します。河口の格子には大きさの違うセルが混じり、最小セルが大域時間刻みを決めます。Big Lost River 格子は 1.2 km × 1 km の領域に 12,622 個の三角形、最小辺は約 5 m なので陽解法限界は 0.5 秒程度です。
+
+解決策は「遅い項は陽、速い項は陰」です。自由表面の圧力勾配だけを陰解に処理すれば、自由表面波のセラリティが安定性条件から消えます。
+
+## 直交非構造格子 — Voronoi–Delaunay の対
+
+非構造格子に普通の有限差分をそのまま当てると 2 つの壁にぶつかります。セル間距離がセル形状で変わり、勾配近似が非対称になります。曲線座標変換は新しい項を生み、精度と安定性を損ないます。
+
+Casulli と Walters は迂回路を取りました。**直交非構造格子(orthogonal unstructured grid)** — 隣接 2 セルの中心を結ぶ線分が、共有する辺と直交する格子です。Voronoi 多角形とその双対 Delaunay 三角分割は、鋭角三角形のみで構成されればこの条件を厳密に満たします。
+
+直交条件の恩恵は明確です。各辺で法線方向成分 $u_j$ のみを定義すれば、自由表面圧力勾配 $\partial \eta / \partial n$ が単純な差分 $(\eta_{i_2} - \eta_{i_1})/\delta_j$ になります。曲率補正なしで一貫した離散化ができます。
+
+## 半陰解法分割: θ 法で 2 つの時間スケールを切り離す
+
+Casulli の θ 法は時間積分を陰性度因子 $\theta \in [1/2, 1]$ で媒介変数化します。運動量方程式では自由表面勾配を $\theta \eta^{n+1} + (1-\theta)\eta^n$ として、自由表面方程式では速度を $\theta u^{n+1} + (1-\theta)u^n$ とします。
+
+離散化された運動量(鉛直粘性と風応力を含む):
+
+$$
+\mathbf{A}_j^n \mathbf{U}_j^{n+1} = \mathbf{G}_j^n - \theta g \frac{\Delta t}{\delta_j}\!\left[\eta_{i(j,2)}^{n+1} - \eta_{i(j,1)}^{n+1}\right]\Delta\mathbf{Z}_j^n
+$$
+
+ここで $\mathbf{U}_j^{n+1}$ は辺 $j$ 上の鉛直方向速度ベクトル、$\mathbf{A}_j^n$ は鉛直粘性・風応力・底面摩擦をまとめた三重対角行列、$\mathbf{G}_j^n$ は陽解項(移流・コリオリ・水平摩擦)です。この式は辺ごとに独立なので、$N_s$ 個の $N_z \times N_z$ 三重対角システムに分解されます。
+
+自由表面方程式:
+
+$$
+P_i \eta_i^{n+1} = P_i \eta_i^n
+- \theta \Delta t \sum_{l=1}^{S_i} s_{i,l}\lambda_{j(i,l)} [\Delta\mathbf{Z}^\top \mathbf{U}]_{j(i,l)}^{n+1}
+- (1-\theta)\Delta t \sum_{l=1}^{S_i} s_{i,l}\lambda_{j(i,l)} [\Delta\mathbf{Z}^\top \mathbf{U}]_{j(i,l)}^{n}
+$$
+
+$P_i$ はセル $i$ の面積、$\lambda_j$ は辺 $j$ の長さ、$s_{i,l}$ は外向き符号です。
+
+## 波動方程式への帰着と SPD の恩恵
+
+両式をそのまま解くと $N_z N_s + N_p$ 個の未知量を持つ巨大な連立系になります。鍵となるトリックは、**運動量方程式から $\mathbf{U}_j^{n+1}$ を $\eta^{n+1}$ の関数として解いて自由表面方程式に代入する** ことです。$\mathbf{A}$ が SPD なので逆行列も SPD です。
+
+代入後に得られる式:
+
+$$
+P_i \eta_i^{n+1} - g \Delta t^2 \theta^2 \sum_{l=1}^{S_i} \frac{s_{i,l}\lambda_{j(i,l)}}{\delta_{j(i,l)}}\!\left[(\Delta\mathbf{Z})^\top \mathbf{A}^{-1}\Delta\mathbf{Z}\right]_{j(i,l)}^{n}\!\!\left(\eta^{n+1}_{i[j(i,l),2]} - \eta^{n+1}_{i[j(i,l),1]}\right) = R_i
+$$
+
+離散波動方程式です。未知量は $\eta^{n+1}$ のみ、システムサイズは $N_p$ セル分。さらに良いことに、この系は **対称・強い対角優位・正定値** です。PCG(前処理付き共役勾配法)が最適です。大きな格子でも数十回の反復で収束します。
+
+自由表面が解ければ運動量の $\mathbf{U}_j^{n+1}$ は辺ごとに独立な小さな三重対角系になります。最後に鉛直速度は連続式から再帰的に求めます。
+
+## Python で 1D 半陰解法
+
+線形化された 1D 浅水方程式 $\partial_t \eta + H\partial_x u = 0$, $\partial_t u + g\partial_x \eta = 0$ を同じアイデアで解いてみましょう。
+
+```python
+import numpy as np
+from scipy.linalg import solve_banded
+
+class CasulliShallowWater1D:
+    """1D 線形浅水方程式 — 半陰解法 θ 法"""
+
+    def __init__(self, N=200, L=1.0, H=1.0, g=9.81, theta=0.6):
+        self.N, self.L, self.H, self.g, self.theta = N, L, H, g, theta
+        self.dx = L / N
+        self.eta = np.zeros(N)            # セル中心の自由表面
+        self.u = np.zeros(N + 1)          # 辺(face)の法線速度、両端 = 0
+
+    def initial_bump(self, x0=0.3, sigma=0.05, amp=0.05):
+        x = (np.arange(self.N) + 0.5) * self.dx
+        self.eta = amp * np.exp(-((x - x0) ** 2) / (2 * sigma ** 2))
+        self.u[:] = 0.0
+
+    def step(self, dt):
+        N, dx, g, H, th = self.N, self.dx, self.g, self.H, self.theta
+        k = g * H * dt * dt * th * th / (dx * dx)   # 波動項係数
+        alpha = H * dt / dx
+
+        # G_j: 陽解部分を辺で集めた値(両端 = 0)
+        G = np.zeros(N + 1)
+        G[1:N] = self.u[1:N] - g * (dt / dx) * (1 - th) * (self.eta[1:] - self.eta[:-1])
+
+        # 三重対角: -k η_{i-1} + (1+2k) η_i - k η_{i+1} = R_i
+        ab = np.zeros((3, N))
+        ab[0, 1:] = -k                         # 上対角
+        ab[2, :-1] = -k                        # 下対角
+        ab[1, :] = 1.0 + 2 * k
+        ab[1, 0] = 1.0 + k                     # 左壁
+        ab[1, -1] = 1.0 + k                    # 右壁
+
+        rhs = self.eta.copy()
+        rhs -= alpha * th * (G[1:] - G[:-1])
+        rhs -= alpha * (1 - th) * (self.u[1:] - self.u[:-1])
+
+        new_eta = solve_banded((1, 1), ab, rhs)
+
+        new_u = self.u.copy()
+        new_u[1:N] = self.u[1:N] - g * (dt / dx) * (
+            th * (new_eta[1:] - new_eta[:-1]) + (1 - th) * (self.eta[1:] - self.eta[:-1])
+        )
+        new_u[0] = new_u[-1] = 0.0
+        self.eta, self.u = new_eta, new_u
+        return self.eta
+
+if __name__ == "__main__":
+    sim = CasulliShallowWater1D(N=200, theta=0.6)
+    sim.initial_bump()
+    c = np.sqrt(sim.g * sim.H)
+    dt_explicit_limit = sim.dx / c
+    dt = 4.0 * dt_explicit_limit                # 陽解法限界の 4 倍
+    for _ in range(int(0.6 / dt)):
+        sim.step(dt)
+    print(f"max|η| = {np.max(np.abs(sim.eta)):.4f}  (安定維持)")
+```
+
+陽解法では $\Delta t = 4 \Delta t_\text{ex}$ で即座に発散します。同じ $\Delta t$ で Casulli は最後まで動き、位相がわずかに遅れ、振幅が少し減衰します(θ が 1 に近づくほど減衰が大きくなります)。
+
+## 時間刻みを大きくしてみよう
+
+下のシミュレーションを直接操作してみてください。左側の小さな自由表面の隆起が両側に広がり、壁にぶつかって戻ってきます。
+
+<ShallowWaterCasulli1D />
+
+CFL スライダーを 1 より大きく上げてみてください。赤い陽解法曲線は 1 を超えるとすぐに発散して画面外に飛び出します。シアンの Casulli 曲線は CFL=6 でも形を保ちます — ただし θ を 1 に上げると振幅が急速に減衰します(完全陰解法の算術平均効果)。θ=0.5 付近が振幅保存に最適ですが、その値は安定限界なので、実務では 0.55〜0.6 に置きます。
+
+## 批判的考察
+
+このアルゴリズムは万能ではありません。
+
+第一に、時間精度。θ=0.5 は 2 次精度ですが安定限界にあるため、重力波の波面がわずかに歪みます。θ=0.6 以上では 1 次に落ちます。解の *定量的* 精度が重要なら時間刻みを小さく取るか、より高次の IMEX(Implicit-Explicit Runge-Kutta) に乗り換える必要があります。
+
+第二に、Eulerian–Lagrangian 移流。移流は陽解項として残しますが、単純な風上差分は強い数値粘性を生みます。そこで Lagrange 軌跡を逆追跡して補間する EL 法を併用します。この方法は格子 1 つを越える大きな $\Delta t$ でも安定ですが、補間次数と Lagrange 出発点の精度に結果が敏感です。
+
+第三に、静水圧仮定。本モデルは $\partial p/\partial z = -\rho g$ を仮定します。鉛直加速度が大きい流れ(砕波、急流性の滝近傍)は非静水圧補正が必要です。
+
+## 覚えておくべきこと
+
+- 自由表面圧力項のみを陰解処理することで、セラリティ $\sqrt{gh}$ が安定性条件から消えます。時間刻みは流速 $u$ のみで決まります。
+- $\eta^{n+1}$ に対する離散波動方程式が SPD・対角優位なので PCG で速く解けます。運動量は辺ごとに独立な三重対角です。
+- Voronoi–Delaunay 直交性が非構造格子上でも圧力勾配の離散化を綺麗に保ちます — Casulli ファミリーモデルの 30 年にわたる拡張の基盤です。

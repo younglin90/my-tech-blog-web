@@ -1,0 +1,160 @@
+---
+title: "[논문 리뷰] 폭풍이 오기 전에 끝내야 하는 시뮬레이션 — Casulli–Walters(2000) 비정렬 직교 격자 천수방정식"
+date: 2026-04-26
+description: "큰 시간 스텝에서도 발산하지 않는 반음해 천수 알고리즘"
+tags: ["논문리뷰", "CFD", "shallow-water", "semi-implicit", "unstructured-grid"]
+draft: false
+---
+
+import { ShallowWaterCasulli1D } from '@/components/post-viz/2026-04-26-casulli-walters-unstructured-shallow-water/ShallowWaterCasulli1D'
+
+함부르크의 BAW 연구소가 1990년 6월의 13일치 Jade–Weser 강어귀 조위를 재현해야 했다. 격자는 비정렬 삼각형 15만 개, 시간 스텝은 5분, 실시간 이상 빠르게 끝나야 다음 해석에 시간이 남는다. 명시적 솔버를 쓰면 자유표면파의 셀러리티 $c=\sqrt{gh}$ 가 CFL을 좌우하는데, 깊이 28 m 영역에서 $c \approx 16.6$ m/s, 가장 작은 셀의 한 변이 $\sqrt{10}$ m이면 허용 시간 스텝은 0.2초 — 13일을 풀려면 560만 스텝이다. 이 포스트는 이 벽을 부수기 위해 Casulli와 Walters(2000)가 제시한 **반음해 비정렬 직교 격자 알고리즘**을 따라가고, 1D 축약판을 직접 돌려본다. 결론부터 말하면, 핵심은 "압력 항만 음해로 풀고, 그 결과 떨어지는 시스템이 SPD라서 PCG로 풀린다"이다.
+
+## 논문 정보
+
+- 저자: Vincenzo Casulli (Univ. of Trento), Roy A. Walters (USGS)
+- 학술지: International Journal for Numerical Methods in Fluids, **32**, 331–348 (2000)
+- 제목: "An unstructured grid, three-dimensional model based on the shallow water equations"
+- 키워드: semi-implicit, shallow water, unstructured orthogonal grid, wetting/drying
+
+## 명시적 솔버가 강어귀를 못 푸는 이유
+
+천수방정식의 자유표면파는 빠르다. 깊이 10 m면 $c \approx 10$ m/s, 깊이 100 m면 $c \approx 31$ m/s. 흐름 속도 $u$ 자체는 보통 1 m/s 미만이라, 현상의 시간 스케일은 $L/u$ 인데 명시적 시간 스텝은 $\Delta x/c$ 로 묶인다. 둘의 비가 $c/u \approx 10\sim30$ 이니, 명시적 솔버는 흐름 한 번 흐르는 데 필요한 시간보다 10~30배 잘게 시간을 잘라야 한다.
+
+여기에 비정렬 격자가 들어오면 상황이 더 나빠진다. 강어귀 격자에는 폭이 다른 셀이 섞이고, 셀 한 칸이 전역 시간 스텝을 결정한다. Big Lost River 격자는 1.2 km × 1 km 영역에 1.26만 개 삼각형, 가장 작은 변이 약 5 m이므로 명시적 한계는 0.5초쯤이다.
+
+해법은 "느린 항은 명시, 빠른 항은 음해"다. 자유표면 압력 구배만 음해로 처리하면, 자유표면파의 셀러리티가 안정성에서 사라진다.
+
+## 직교 비정렬 격자 — Voronoi–Delaunay의 짝
+
+비정렬 격자에 유한차분을 그대로 적용하면 두 가지 문제가 터진다. 하나는 셀 사이 거리가 셀 모양에 따라 달라지므로 구배 근사에 비대칭이 생긴다. 다른 하나는 곡선 좌표 변환이 새로운 항을 만들어 정확도와 안정성을 깨뜨린다.
+
+Casulli와 Walters는 우회로를 택했다. **직교 비정렬 격자(orthogonal unstructured grid)** — 두 인접 셀의 중심점을 잇는 선분이 그들이 공유하는 변과 직교하는 격자. Voronoi 다각형과 그 쌍대인 Delaunay 삼각분할이 정확히 이 조건을 만족한다(예각 삼각형으로만 이루어진 경우).
+
+직교 조건이 주는 선물은 분명하다. 변에 수직 성분 $u_j$ 만 정의하면, 자유표면 압력 구배 $\partial \eta / \partial n$ 이 단순한 차분 $(\eta_{i_2} - \eta_{i_1})/\delta_j$ 로 떨어진다. 곡률 보정 없이도 일관된 이산화가 가능하다.
+
+## 반음해 분리: θ 방법으로 두 시간 스케일 떼기
+
+Casulli의 θ 방법은 시간 적분을 implicitness factor $\theta \in [1/2, 1]$ 로 매개화한다. 모멘텀 식에서 자유표면 구배를 $\theta \eta^{n+1} + (1-\theta)\eta^n$ 으로, 자유표면식에서 속도를 $\theta u^{n+1} + (1-\theta)u^n$ 으로 둔다.
+
+이산화된 모멘텀(수직 점성과 풍응력 포함):
+
+$$
+\mathbf{A}_j^n \mathbf{U}_j^{n+1} = \mathbf{G}_j^n - \theta g \frac{\Delta t}{\delta_j}\!\left[\eta_{i(j,2)}^{n+1} - \eta_{i(j,1)}^{n+1}\right]\Delta\mathbf{Z}_j^n
+$$
+
+여기서 $\mathbf{U}_j^{n+1}$ 는 변 $j$ 에서의 수직 방향 속도 벡터, $\mathbf{A}_j^n$ 은 수직 점성·풍응력·바닥마찰을 모은 삼중대각 행렬, $\mathbf{G}_j^n$ 은 명시 항(이송·코리올리·수평 마찰)이다. 이 식은 각 변마다 독립이라 $N_s$ 개의 $N_z \times N_z$ 삼중대각 시스템으로 분해된다.
+
+자유표면식:
+
+$$
+P_i \eta_i^{n+1} = P_i \eta_i^n
+- \theta \Delta t \sum_{l=1}^{S_i} s_{i,l}\lambda_{j(i,l)} [\Delta\mathbf{Z}^\top \mathbf{U}]_{j(i,l)}^{n+1}
+- (1-\theta)\Delta t \sum_{l=1}^{S_i} s_{i,l}\lambda_{j(i,l)} [\Delta\mathbf{Z}^\top \mathbf{U}]_{j(i,l)}^{n}
+$$
+
+$P_i$ 는 셀 $i$ 의 면적, $\lambda_j$ 는 변 $j$ 의 길이, $s_{i,l}$ 은 외향 부호다.
+
+## 파동 방정식 환원과 양정부호 시스템
+
+위 두 식을 그대로 풀면 $N_z N_s + N_p$ 미지수의 거대한 결합 시스템이다. 핵심 트릭은 **모멘텀에서 $\mathbf{U}_j^{n+1}$ 를 $\eta^{n+1}$ 의 함수로 풀어 자유표면식에 대입**하는 것이다. $\mathbf{A}$ 가 양정부호이므로 그 역행렬도 양정부호.
+
+대입 후 떨어지는 식:
+
+$$
+P_i \eta_i^{n+1} - g \Delta t^2 \theta^2 \sum_{l=1}^{S_i} \frac{s_{i,l}\lambda_{j(i,l)}}{\delta_{j(i,l)}}\!\left[(\Delta\mathbf{Z})^\top \mathbf{A}^{-1}\Delta\mathbf{Z}\right]_{j(i,l)}^{n}\!\!\left(\eta^{n+1}_{i[j(i,l),2]} - \eta^{n+1}_{i[j(i,l),1]}\right) = R_i
+$$
+
+이산 파동 방정식이다. 미지수는 $\eta^{n+1}$ 단 하나, 시스템 크기는 셀 수 $N_p$ 뿐. 더 좋은 건 이 시스템이 **대칭, 강한 대각우세, 양정부호** 라는 점이다. PCG(전처리 켤레기울기법)가 적격이다. 큰 격자에서도 반복 수십 번 안에 수렴한다.
+
+자유표면이 풀리면 모멘텀의 $\mathbf{U}_j^{n+1}$ 는 변마다 독립적인 작은 삼중대각 시스템으로 곧장 떨어진다. 마지막으로 연직 속도는 비압축성 식으로 재귀 계산한다.
+
+## Python으로 1D 반음해 풀이
+
+선형화된 1D 천수방정식 $\partial_t \eta + H\partial_x u = 0$, $\partial_t u + g\partial_x \eta = 0$ 을 같은 아이디어로 풀어보자.
+
+```python
+import numpy as np
+from scipy.linalg import solve_banded
+
+class CasulliShallowWater1D:
+    """1D 선형 천수 — 반음해 θ 방법."""
+
+    def __init__(self, N=200, L=1.0, H=1.0, g=9.81, theta=0.6):
+        self.N, self.L, self.H, self.g, self.theta = N, L, H, g, theta
+        self.dx = L / N
+        self.eta = np.zeros(N)            # 셀 중심 자유표면
+        self.u = np.zeros(N + 1)          # 변(face) 수직속도, 양 끝 = 0
+
+    def initial_bump(self, x0=0.3, sigma=0.05, amp=0.05):
+        x = (np.arange(self.N) + 0.5) * self.dx
+        self.eta = amp * np.exp(-((x - x0) ** 2) / (2 * sigma ** 2))
+        self.u[:] = 0.0
+
+    def step(self, dt):
+        N, dx, g, H, th = self.N, self.dx, self.g, self.H, self.theta
+        k = g * H * dt * dt * th * th / (dx * dx)   # 파동 항 계수
+        alpha = H * dt / dx
+
+        # G_j: 명시적 부분 모은 변값(양 끝 = 0)
+        G = np.zeros(N + 1)
+        G[1:N] = self.u[1:N] - g * (dt / dx) * (1 - th) * (self.eta[1:] - self.eta[:-1])
+
+        # 삼중대각: -k η_{i-1} + (1+2k) η_i - k η_{i+1} = R_i
+        ab = np.zeros((3, N))
+        ab[0, 1:] = -k                         # super-diagonal
+        ab[2, :-1] = -k                        # sub-diagonal
+        ab[1, :] = 1.0 + 2 * k
+        ab[1, 0] = 1.0 + k                     # 좌벽
+        ab[1, -1] = 1.0 + k                    # 우벽
+
+        rhs = self.eta.copy()
+        rhs -= alpha * th * (G[1:] - G[:-1])
+        rhs -= alpha * (1 - th) * (self.u[1:] - self.u[:-1])
+
+        new_eta = solve_banded((1, 1), ab, rhs)
+
+        new_u = self.u.copy()
+        new_u[1:N] = self.u[1:N] - g * (dt / dx) * (
+            th * (new_eta[1:] - new_eta[:-1]) + (1 - th) * (self.eta[1:] - self.eta[:-1])
+        )
+        new_u[0] = new_u[-1] = 0.0
+        self.eta, self.u = new_eta, new_u
+        return self.eta
+
+if __name__ == "__main__":
+    sim = CasulliShallowWater1D(N=200, theta=0.6)
+    sim.initial_bump()
+    c = np.sqrt(sim.g * sim.H)
+    dt_explicit_limit = sim.dx / c
+    dt = 4.0 * dt_explicit_limit                # 명시 한계의 4배
+    for _ in range(int(0.6 / dt)):
+        sim.step(dt)
+    print(f"max|η| = {np.max(np.abs(sim.eta)):.4f}  (안정 유지)")
+```
+
+명시적 솔버라면 $\Delta t = 4 \Delta t_\text{ex}$ 에서 즉시 발산한다. 같은 $\Delta t$ 로 Casulli는 끝까지 도는데, 위상은 살짝 늦어지고 진폭은 약간 감쇠한다(theta가 1에 가까울수록 감쇠가 커진다).
+
+## 시간 스텝을 키워보자
+
+아래 시뮬레이션에서 직접 조작해보자. 좌측의 작은 자유표면 융기가 양옆으로 퍼져 벽에 부딪혀 되돌아온다.
+
+<ShallowWaterCasulli1D />
+
+CFL 슬라이더를 1보다 크게 올려보자. 빨간 명시적 곡선은 1을 넘기면 곧 발산해 화면 밖으로 튄다. 청록색 Casulli 곡선은 CFL=6에서도 형태를 유지한다 — 다만 θ를 1로 올리면 진폭이 빠르게 줄어든다(완전음해의 산술 평균 효과). θ=0.5 부근에서 진폭 보존이 최선이지만 그 값은 안정 한계라, 실무는 0.55~0.6에 둔다.
+
+## 비판적 고찰
+
+이 알고리즘이 만능은 아니다.
+
+첫째, 시간 정확도. θ=0.5는 2차지만 안정 한계라서 중력파 파면이 살짝 휜다. θ=0.6 이상에서는 1차로 떨어진다. 해석 결과의 *정량* 정확도가 중요하면 시간 스텝을 작게 잡거나 더 높은 차수의 IMEX(Implicit-Explicit Runge-Kutta)로 갈아타야 한다.
+
+둘째, Eulerian–Lagrangian 이송. 이송은 명시 항으로 남겨두지만 단순 업윈드는 강한 수치 점성을 낳는다. 따라서 Lagrange 궤적을 역추적해 보간하는 EL 방법을 함께 쓴다. 이 방법은 격자 한 칸을 넘어가는 큰 $\Delta t$ 에서도 안정적이지만, 보간 차수와 Lagrange 출발점의 정확도에 결과가 민감하다.
+
+셋째, 정수압 가정. 이 모델은 $\partial p/\partial z = -\rho g$ 를 가정한다. 수직 가속이 큰 흐름(파괴파, 격류성 폭포 근처)은 비정수압 보정이 필요하다.
+
+## 기억할 점
+
+- 자유표면 압력 항만 음해로 처리해 셀러리티 $\sqrt{gh}$ 가 안정성에서 빠진다. 시간 스텝은 흐름 속도 $u$ 만 보면 된다.
+- $\eta^{n+1}$ 에 대한 이산 파동 방정식이 SPD·대각우세이므로 PCG로 빠르게 푼다. 모멘텀은 변마다 독립 삼중대각.
+- Voronoi–Delaunay 직교성이 비정렬 격자에서도 압력 구배 이산화를 깔끔하게 만든다 — Casulli 가족 모델의 30년 동안의 확장 기반이다.
