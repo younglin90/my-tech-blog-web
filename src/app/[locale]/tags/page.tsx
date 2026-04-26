@@ -3,6 +3,7 @@ import { notFound } from 'next/navigation'
 import type { Metadata } from 'next'
 import { TagsClient } from './TagsClient'
 import { LOCALES, isLocale } from '@/lib/i18n'
+import { SITE_URL } from '@/lib/site'
 
 interface TagsPageProps {
   params: Promise<{ locale: string }>
@@ -18,8 +19,8 @@ export async function generateMetadata({ params }: TagsPageProps): Promise<Metad
     title: 'Tags',
     description: 'All tags on the blog — browse posts by topic.',
     alternates: {
-      canonical: `https://tech-blog.dev/${locale}/tags`,
-      languages: Object.fromEntries(LOCALES.map((l) => [l, `https://tech-blog.dev/${l}/tags`])),
+      canonical: `${SITE_URL}/${locale}/tags`,
+      languages: Object.fromEntries(LOCALES.map((l) => [l, `${SITE_URL}/${l}/tags`])),
     },
   }
 }
@@ -53,7 +54,7 @@ export default async function TagsPage({ params }: TagsPageProps) {
         '@type': 'ListItem',
         position: i + 1,
         name: tag,
-        url: `https://tech-blog.dev/${locale}/tags/${encodeURIComponent(tag)}`,
+        url: `${SITE_URL}/${locale}/tags/${encodeURIComponent(tag)}`,
       })),
   }
   return (

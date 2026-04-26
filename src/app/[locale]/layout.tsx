@@ -1,6 +1,7 @@
 import { LOCALES, isLocale, t, HREFLANG, type Locale } from '@/lib/i18n'
 import { notFound } from 'next/navigation'
 import type { Metadata } from 'next'
+import { SITE_URL } from '@/lib/site'
 
 export async function generateStaticParams() {
   return LOCALES.map((locale) => ({ locale }))
@@ -33,14 +34,14 @@ export async function generateMetadata({ params }: LocaleLayoutProps): Promise<M
   const loc = locale as Locale
   const siteName = SITE_NAMES[loc]
   const description = t(loc, 'home.subtitle')
-  const url = `https://tech-blog.dev/${loc}`
+  const url = `${SITE_URL}/${loc}`
 
   return {
     title: { default: siteName, template: `%s | ${siteName}` },
     description,
     alternates: {
       canonical: url,
-      languages: Object.fromEntries(LOCALES.map((l) => [HREFLANG[l], `https://tech-blog.dev/${l}`])),
+      languages: Object.fromEntries(LOCALES.map((l) => [HREFLANG[l], `${SITE_URL}/${l}`])),
     },
     openGraph: {
       title: siteName,
@@ -67,9 +68,9 @@ export default async function LocaleLayout({ children, params }: LocaleLayoutPro
   const personJsonLd = {
     '@context': 'https://schema.org',
     '@type': 'Person',
-    '@id': 'https://tech-blog.dev/#person',
+    '@id': `${SITE_URL}/#person`,
     name: SITE_NAMES[loc],
-    url: `https://tech-blog.dev/${loc}/about`,
+    url: `${SITE_URL}/${loc}/about`,
     sameAs: ['https://github.com/younglin90'],
     knowsLanguage: ['ko', 'en', 'ja', 'zh', 'es'],
     knowsAbout: [
@@ -87,11 +88,11 @@ export default async function LocaleLayout({ children, params }: LocaleLayoutPro
   const organizationJsonLd = {
     '@context': 'https://schema.org',
     '@type': 'Organization',
-    '@id': 'https://tech-blog.dev/#organization',
+    '@id': `${SITE_URL}/#organization`,
     name: SITE_NAMES[loc],
-    url: `https://tech-blog.dev/${loc}`,
-    logo: 'https://tech-blog.dev/icon-512.png',
-    founder: { '@id': 'https://tech-blog.dev/#person' },
+    url: `${SITE_URL}/${loc}`,
+    logo: `${SITE_URL}/icon-512.png`,
+    founder: { '@id': `${SITE_URL}/#person` },
   }
 
   return (

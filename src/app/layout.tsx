@@ -9,6 +9,7 @@ import { TerminalFooter } from '@/components/TerminalFooter'
 import { LocaleHtmlLang } from '@/components/LocaleHtmlLang'
 import { ServiceWorkerRegister } from '@/components/ServiceWorkerRegister'
 import type { Metadata, Viewport } from 'next'
+import { SITE_URL } from '@/lib/site'
 
 // Umami 트래킹 정보는 공개 값(브라우저에 그대로 노출되는 script 태그)이라 코드에 고정해도 안전.
 // 필요 시 환경변수로 오버라이드 가능.
@@ -57,14 +58,14 @@ export const metadata: Metadata = {
     template: "%s | Younglin's CFD Blog",
   },
   description: 'Field notes from a compressible multiphase CFD researcher — Riemann solvers, interface capturing, paper reviews.',
-  metadataBase: new URL('https://tech-blog.dev'),
-  authors: [{ name: "Younglin's CFD Blog", url: 'https://tech-blog.dev/about' }],
+  metadataBase: new URL(SITE_URL),
+  authors: [{ name: "Younglin's CFD Blog", url: `${SITE_URL}/about` }],
   creator: "Younglin's CFD Blog",
   category: 'technology',
   openGraph: {
     title: "Younglin's CFD Blog",
     description: 'Field notes from a compressible multiphase CFD researcher',
-    url: 'https://tech-blog.dev',
+    url: SITE_URL,
     siteName: "Younglin's CFD Blog",
     locale: 'en_US',
     type: 'website',

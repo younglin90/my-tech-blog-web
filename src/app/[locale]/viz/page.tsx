@@ -3,6 +3,7 @@ import { notFound } from 'next/navigation'
 import type { Metadata } from 'next'
 import { LOCALES, isLocale } from '@/lib/i18n'
 import vizManifest from '@/lib/viz-manifest.json'
+import { SITE_URL } from '@/lib/site'
 
 interface Props { params: Promise<{ locale: string }> }
 
@@ -16,8 +17,8 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     title: 'Visualizations',
     description: 'Interactive CFD visualizations across all posts.',
     alternates: {
-      canonical: `https://tech-blog.dev/${locale}/viz`,
-      languages: Object.fromEntries(LOCALES.map((l) => [l, `https://tech-blog.dev/${l}/viz`])),
+      canonical: `${SITE_URL}/${locale}/viz`,
+      languages: Object.fromEntries(LOCALES.map((l) => [l, `${SITE_URL}/${l}/viz`])),
     },
   }
 }

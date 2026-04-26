@@ -17,6 +17,7 @@ import { BookmarkButton } from '@/components/BookmarkButton'
 import { dayMeta } from '@/lib/day-meta'
 import { LOCALES, isLocale, t, type Locale } from '@/lib/i18n'
 import type { Metadata } from 'next'
+import { SITE_URL } from '@/lib/site'
 
 interface PostProps {
   params: Promise<{ locale: string; slug: string }>
@@ -71,15 +72,15 @@ export async function generateMetadata({ params }: PostProps): Promise<Metadata>
     description: post.description,
     keywords: post.tags ?? [],
     alternates: {
-      canonical: `https://tech-blog.dev/${locale}/posts/${slug}`,
-      languages: Object.fromEntries(LOCALES.map((l) => [l, `https://tech-blog.dev/${l}/posts/${slug}`])),
+      canonical: `${SITE_URL}/${locale}/posts/${slug}`,
+      languages: Object.fromEntries(LOCALES.map((l) => [l, `${SITE_URL}/${l}/posts/${slug}`])),
     },
     openGraph: {
       title: post.title,
       description: post.description,
       type: 'article',
       publishedTime: post.date,
-      url: `https://tech-blog.dev/${locale}/posts/${slug}`,
+      url: `${SITE_URL}/${locale}/posts/${slug}`,
       tags: post.tags,
       locale: locale,
     },
@@ -114,17 +115,17 @@ export default async function PostPage({ params }: PostProps) {
     inLanguage: loc,
     keywords: (post.tags ?? []).join(', '),
     wordCount: post.wordCount,
-    author: { '@type': 'Person', name: "Younglin's CFD Blog", url: `https://tech-blog.dev/${loc}/about` },
-    publisher: { '@type': 'Organization', name: "Younglin's CFD Blog", url: `https://tech-blog.dev/${loc}` },
-    url: `https://tech-blog.dev/${loc}/posts/${slug}`,
+    author: { '@type': 'Person', name: "Younglin's CFD Blog", url: `${SITE_URL}/${loc}/about` },
+    publisher: { '@type': 'Organization', name: "Younglin's CFD Blog", url: `${SITE_URL}/${loc}` },
+    url: `${SITE_URL}/${loc}/posts/${slug}`,
   }
 
   const breadcrumbJsonLd = {
     '@context': 'https://schema.org',
     '@type': 'BreadcrumbList',
     itemListElement: [
-      { '@type': 'ListItem', position: 1, name: "Younglin's CFD Blog", item: `https://tech-blog.dev/${loc}` },
-      { '@type': 'ListItem', position: 2, name: post.title, item: `https://tech-blog.dev/${loc}/posts/${slug}` },
+      { '@type': 'ListItem', position: 1, name: "Younglin's CFD Blog", item: `${SITE_URL}/${loc}` },
+      { '@type': 'ListItem', position: 2, name: post.title, item: `${SITE_URL}/${loc}/posts/${slug}` },
     ],
   }
 

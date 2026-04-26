@@ -6,6 +6,7 @@ import type { Metadata } from 'next'
 import { ReadingStats } from '@/components/ReadingStats'
 import { TopPosts } from '@/components/TopPosts'
 import { LOCALES, isLocale, t, type Locale } from '@/lib/i18n'
+import { SITE_URL } from '@/lib/site'
 
 interface AboutProps {
   params: Promise<{ locale: string }>
@@ -21,8 +22,8 @@ export async function generateMetadata({ params }: AboutProps): Promise<Metadata
     title: 'About',
     description: 'Field notes from a CFD researcher — compressible multiphase flow, numerical methods, OpenFOAM.',
     alternates: {
-      canonical: `https://tech-blog.dev/${locale}/about`,
-      languages: Object.fromEntries(LOCALES.map((l) => [l, `https://tech-blog.dev/${l}/about`])),
+      canonical: `${SITE_URL}/${locale}/about`,
+      languages: Object.fromEntries(LOCALES.map((l) => [l, `${SITE_URL}/${l}/about`])),
     },
   }
 }
@@ -31,7 +32,7 @@ const personJsonLd = {
   '@context': 'https://schema.org',
   '@type': 'Person',
   name: "Younglin's CFD Blog",
-  url: 'https://tech-blog.dev',
+  url: SITE_URL,
   sameAs: ['https://github.com/younglin90'],
   knowsAbout: [
     'Computational Fluid Dynamics',

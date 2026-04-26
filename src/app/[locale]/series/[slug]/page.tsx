@@ -4,6 +4,7 @@ import { format, parseISO } from 'date-fns'
 import type { Metadata } from 'next'
 import { LOCALES, isLocale, type Locale } from '@/lib/i18n'
 import { listAllSeries, getSeries } from '@/lib/series'
+import { SITE_URL } from '@/lib/site'
 
 interface Props {
   params: Promise<{ locale: string; slug: string }>
@@ -28,8 +29,8 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     title: `${slug} series`,
     description: `Multi-part series: ${slug}`,
     alternates: {
-      canonical: `https://tech-blog.dev/${locale}/series/${slug}`,
-      languages: Object.fromEntries(LOCALES.map((l) => [l, `https://tech-blog.dev/${l}/series/${slug}`])),
+      canonical: `${SITE_URL}/${locale}/series/${slug}`,
+      languages: Object.fromEntries(LOCALES.map((l) => [l, `${SITE_URL}/${l}/series/${slug}`])),
     },
   }
 }

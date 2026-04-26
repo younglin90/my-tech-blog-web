@@ -3,6 +3,7 @@ import { notFound } from 'next/navigation'
 import type { Metadata } from 'next'
 import { LOCALES, isLocale, type Locale } from '@/lib/i18n'
 import { CALCULATORS } from '@/lib/calculators'
+import { SITE_URL } from '@/lib/site'
 
 interface Props { params: Promise<{ locale: string }> }
 
@@ -16,8 +17,8 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     title: 'CFD Tools',
     description: 'Quick CFD calculators — Reynolds, Mach, boundary layer, CFL.',
     alternates: {
-      canonical: `https://tech-blog.dev/${locale}/tools`,
-      languages: Object.fromEntries(LOCALES.map((l) => [l, `https://tech-blog.dev/${l}/tools`])),
+      canonical: `${SITE_URL}/${locale}/tools`,
+      languages: Object.fromEntries(LOCALES.map((l) => [l, `${SITE_URL}/${l}/tools`])),
     },
   }
 }

@@ -3,6 +3,7 @@ import type { Metadata } from 'next'
 import { LOCALES, isLocale, type Locale } from '@/lib/i18n'
 import glossary from '@/lib/glossary.json'
 import { GlossaryClient } from '@/components/GlossaryClient'
+import { SITE_URL } from '@/lib/site'
 
 interface Props { params: Promise<{ locale: string }> }
 
@@ -16,8 +17,8 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     title: 'Glossary',
     description: 'CFD terms with quick definitions.',
     alternates: {
-      canonical: `https://tech-blog.dev/${locale}/glossary`,
-      languages: Object.fromEntries(LOCALES.map((l) => [l, `https://tech-blog.dev/${l}/glossary`])),
+      canonical: `${SITE_URL}/${locale}/glossary`,
+      languages: Object.fromEntries(LOCALES.map((l) => [l, `${SITE_URL}/${l}/glossary`])),
     },
   }
 }

@@ -1,4 +1,5 @@
 import type { MetadataRoute } from 'next'
+import { SITE_URL } from '@/lib/site'
 
 export const dynamic = 'force-static'
 
@@ -25,7 +26,7 @@ export default function robots(): MetadataRoute.Robots {
       { userAgent: 'CCBot', allow: '/', disallow: ['/admin', '/preview', '/read'] },
       { userAgent: 'Bytespider', allow: '/', disallow: ['/admin', '/preview', '/read'] },
     ],
-    sitemap: 'https://tech-blog.dev/sitemap.xml',
-    host: 'https://tech-blog.dev',
+    sitemap: `${SITE_URL}/sitemap.xml`,
+    host: SITE_URL,
   }
 }

@@ -6,6 +6,7 @@ import { LOCALES, isLocale, t, type Locale } from '@/lib/i18n'
 import postIndex from '@/lib/post-index.json'
 import { dedupePostsForLocale } from '@/lib/post-index'
 import type { Metadata } from 'next'
+import { SITE_URL } from '@/lib/site'
 
 interface HomeProps {
   params: Promise<{ locale: string }>
@@ -19,8 +20,8 @@ export async function generateMetadata({ params }: HomeProps): Promise<Metadata>
   const { locale } = await params
   return {
     alternates: {
-      canonical: `https://tech-blog.dev/${locale}`,
-      languages: Object.fromEntries(LOCALES.map((l) => [l, `https://tech-blog.dev/${l}`])),
+      canonical: `${SITE_URL}/${locale}`,
+      languages: Object.fromEntries(LOCALES.map((l) => [l, `${SITE_URL}/${l}`])),
     },
   }
 }
@@ -51,7 +52,7 @@ export default async function Home({ params }: HomeProps) {
     '@type': 'WebSite',
     name: "Younglin's CFD Blog",
     description: t(loc, 'home.subtitle'),
-    url: `https://tech-blog.dev/${loc}`,
+    url: `${SITE_URL}/${loc}`,
     inLanguage: loc,
   }
 

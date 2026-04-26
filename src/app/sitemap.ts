@@ -1,9 +1,8 @@
 import { allPosts } from 'contentlayer/generated'
 import type { MetadataRoute } from 'next'
+import { SITE_URL } from '@/lib/site'
 
 export const dynamic = 'force-static'
-
-const SITE_URL = 'https://tech-blog.dev'
 const LOCALES = ['ko', 'en', 'ja', 'zh', 'es'] as const
 
 // Next.js generateSitemaps()로 5개 locale별 sitemap을 분리 생성한다.

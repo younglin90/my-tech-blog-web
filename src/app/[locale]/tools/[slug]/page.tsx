@@ -11,6 +11,7 @@ import { KolmogorovCalculator } from '@/components/calculators/Kolmogorov'
 import { NusseltCalculator } from '@/components/calculators/Nusselt'
 import { PrandtlCalculator } from '@/components/calculators/Prandtl'
 import { TurbulenceIntensityCalculator } from '@/components/calculators/TurbulenceIntensity'
+import { SITE_URL } from '@/lib/site'
 
 interface Props {
   params: Promise<{ locale: string; slug: string }>
@@ -28,8 +29,8 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     title: c.title[locale] ?? c.title.en,
     description: c.desc[locale] ?? c.desc.en,
     alternates: {
-      canonical: `https://tech-blog.dev/${locale}/tools/${slug}`,
-      languages: Object.fromEntries(LOCALES.map((l) => [l, `https://tech-blog.dev/${l}/tools/${slug}`])),
+      canonical: `${SITE_URL}/${locale}/tools/${slug}`,
+      languages: Object.fromEntries(LOCALES.map((l) => [l, `${SITE_URL}/${l}/tools/${slug}`])),
     },
   }
 }

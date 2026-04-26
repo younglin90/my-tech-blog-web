@@ -4,6 +4,7 @@ import { format, parseISO, compareDesc } from 'date-fns'
 import { notFound } from 'next/navigation'
 import type { Metadata } from 'next'
 import { LOCALES, isLocale, t, type Locale } from '@/lib/i18n'
+import { SITE_URL } from '@/lib/site'
 
 interface TagPageProps {
   params: Promise<{ locale: string; tag: string }>
@@ -16,8 +17,8 @@ export async function generateMetadata({ params }: TagPageProps): Promise<Metada
     title: `#${decoded}`,
     description: `Posts tagged "${decoded}"`,
     alternates: {
-      canonical: `https://tech-blog.dev/${locale}/tags/${tag}`,
-      languages: Object.fromEntries(LOCALES.map((l) => [l, `https://tech-blog.dev/${l}/tags/${tag}`])),
+      canonical: `${SITE_URL}/${locale}/tags/${tag}`,
+      languages: Object.fromEntries(LOCALES.map((l) => [l, `${SITE_URL}/${l}/tags/${tag}`])),
     },
   }
 }
@@ -59,9 +60,9 @@ export default async function TagPage({ params }: TagPageProps) {
     '@context': 'https://schema.org',
     '@type': 'BreadcrumbList',
     itemListElement: [
-      { '@type': 'ListItem', position: 1, name: "Younglin's CFD Blog", item: `https://tech-blog.dev/${loc}` },
-      { '@type': 'ListItem', position: 2, name: 'Tags', item: `https://tech-blog.dev/${loc}/tags` },
-      { '@type': 'ListItem', position: 3, name: `#${decoded}`, item: `https://tech-blog.dev/${loc}/tags/${tag}` },
+      { '@type': 'ListItem', position: 1, name: "Younglin's CFD Blog", item: `${SITE_URL}/${loc}` },
+      { '@type': 'ListItem', position: 2, name: 'Tags', item: `${SITE_URL}/${loc}/tags` },
+      { '@type': 'ListItem', position: 3, name: `#${decoded}`, item: `${SITE_URL}/${loc}/tags/${tag}` },
     ],
   }
 
