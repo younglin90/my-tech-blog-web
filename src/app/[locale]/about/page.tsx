@@ -4,6 +4,7 @@ import Link from 'next/link'
 import { notFound } from 'next/navigation'
 import type { Metadata } from 'next'
 import { ReadingStats } from '@/components/ReadingStats'
+import { TopPosts } from '@/components/TopPosts'
 import { LOCALES, isLocale, t, type Locale } from '@/lib/i18n'
 
 interface AboutProps {
@@ -134,6 +135,8 @@ export default async function AboutPage({ params }: AboutProps) {
       </div>
 
       <ReadingStats posts={published.map((p) => ({ id: p.slug, readingTime: p.readingTime }))} />
+
+      <TopPosts locale={loc} heading={t(loc, 'about.topPosts')} />
 
       <section className="mb-10">
         <h2
