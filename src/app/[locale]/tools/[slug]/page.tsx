@@ -9,6 +9,8 @@ import { BoundaryLayerCalculator } from '@/components/calculators/BoundaryLayer'
 import { CFLCalculator } from '@/components/calculators/CFL'
 import { KolmogorovCalculator } from '@/components/calculators/Kolmogorov'
 import { NusseltCalculator } from '@/components/calculators/Nusselt'
+import { PrandtlCalculator } from '@/components/calculators/Prandtl'
+import { TurbulenceIntensityCalculator } from '@/components/calculators/TurbulenceIntensity'
 
 interface Props {
   params: Promise<{ locale: string; slug: string }>
@@ -39,6 +41,8 @@ const COMPONENTS: Record<string, () => React.ReactElement> = {
   cfl: CFLCalculator,
   kolmogorov: KolmogorovCalculator,
   nusselt: NusseltCalculator,
+  prandtl: PrandtlCalculator,
+  'turbulence-intensity': TurbulenceIntensityCalculator,
 }
 
 export default async function CalculatorPage({ params }: Props) {

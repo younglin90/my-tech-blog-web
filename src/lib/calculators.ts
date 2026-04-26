@@ -88,4 +88,30 @@ export const CALCULATORS: CalculatorMeta[] = [
     formula: 'Nu = \\dfrac{h L}{k}, \\quad h = \\dfrac{Nu \\cdot k}{L}',
     tags: ['Nusselt', 'heat transfer', 'convection'],
   },
+  {
+    slug: 'prandtl',
+    title: { ko: 'Prandtl 수', en: 'Prandtl Number', ja: 'プラントル数', zh: '普朗特数', es: 'Número de Prandtl' },
+    desc: {
+      ko: '운동량 확산 vs 열 확산의 비. 열전달 경계층 두께 판정.',
+      en: 'Momentum-to-thermal diffusivity ratio. Determines relative thickness of velocity vs thermal boundary layers.',
+      ja: '運動量拡散対熱拡散の比。速度境界層と熱境界層の厚さ比。',
+      zh: '动量扩散与热扩散之比。决定速度与热边界层相对厚度。',
+      es: 'Razón difusividad momento/térmica. Determina espesores relativos de capas límite.',
+    },
+    formula: 'Pr = \\dfrac{\\mu C_p}{k} = \\dfrac{\\nu}{\\alpha}',
+    tags: ['Prandtl', 'heat transfer', 'convection'],
+  },
+  {
+    slug: 'turbulence-intensity',
+    title: { ko: '난류 강도 / k-ε 경계조건', en: 'Turbulence Intensity / k-ε BCs', ja: '乱流強度 / k-ε 境界条件', zh: '湍流强度 / k-ε 边界条件', es: 'Intensidad de turbulencia / BCs k-ε' },
+    desc: {
+      ko: '난류 강도 I에서 k, ε, ω 입구 경계조건 계산. OpenFOAM/Fluent 설정에 바로 사용.',
+      en: 'Compute k, ε, ω inlet BCs from turbulence intensity I. Ready to use in OpenFOAM / Fluent.',
+      ja: '乱流強度IからRk, ε, ω入口境界条件を計算。OpenFOAM/Fluentに直接使用可。',
+      zh: '由湍流强度I计算k, ε, ω入口边界条件，直接用于OpenFOAM/Fluent。',
+      es: 'Calcula BCs de entrada k, ε, ω desde la intensidad de turbulencia I. Listo para OpenFOAM/Fluent.',
+    },
+    formula: 'k = \\tfrac{3}{2}(IU)^2, \\quad \\varepsilon = C_\\mu^{3/4} k^{3/2} / \\ell',
+    tags: ['turbulence', 'boundary condition', 'OpenFOAM', 'k-epsilon'],
+  },
 ]
