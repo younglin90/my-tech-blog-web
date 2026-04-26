@@ -3,6 +3,7 @@ import { notFound } from 'next/navigation'
 import { Mdx } from '@/components/MDX'
 import { ReadingProgress } from '@/components/ReadingProgress'
 import { ShareButton } from '@/components/ShareButton'
+import { CiteButton } from '@/components/CiteButton'
 import { TableOfContents } from '@/components/TableOfContents'
 import { format, parseISO, compareDesc } from 'date-fns'
 import Link from 'next/link'
@@ -264,6 +265,7 @@ export default async function PostPage({ params }: PostProps) {
       <div className="mt-12 flex flex-wrap items-center justify-between gap-3 border-t pt-6" style={{ borderColor: 'var(--border)' }}>
         <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{t(loc, 'post.share')}</p>
         <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:justify-end">
+          <CiteButton title={post.title} date={post.date} slug={post.slug} />
           <BookmarkButton postId={post.slug} />
           <PrintButton />
           <ShareButton title={post.title} />
