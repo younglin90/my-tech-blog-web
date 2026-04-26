@@ -7,6 +7,8 @@ import { ReynoldsCalculator } from '@/components/calculators/Reynolds'
 import { MachCalculator } from '@/components/calculators/Mach'
 import { BoundaryLayerCalculator } from '@/components/calculators/BoundaryLayer'
 import { CFLCalculator } from '@/components/calculators/CFL'
+import { KolmogorovCalculator } from '@/components/calculators/Kolmogorov'
+import { NusseltCalculator } from '@/components/calculators/Nusselt'
 
 interface Props {
   params: Promise<{ locale: string; slug: string }>
@@ -35,6 +37,8 @@ const COMPONENTS: Record<string, () => React.ReactElement> = {
   mach: MachCalculator,
   'boundary-layer': BoundaryLayerCalculator,
   cfl: CFLCalculator,
+  kolmogorov: KolmogorovCalculator,
+  nusselt: NusseltCalculator,
 }
 
 export default async function CalculatorPage({ params }: Props) {

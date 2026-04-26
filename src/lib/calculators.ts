@@ -62,4 +62,30 @@ export const CALCULATORS: CalculatorMeta[] = [
     formula: 'C = \\dfrac{u \\Delta t}{\\Delta x} \\le C_{max}',
     tags: ['CFL', 'numerics', 'stability'],
   },
+  {
+    slug: 'kolmogorov',
+    title: { ko: 'Kolmogorov 미세척도', en: 'Kolmogorov Microscales', ja: 'コルモゴロフ微細スケール', zh: '科尔莫戈罗夫微尺度', es: 'Microescalas de Kolmogorov' },
+    desc: {
+      ko: '난류 에너지 캐스케이드의 가장 작은 길이·시간·속도 척도.',
+      en: 'Smallest length, time and velocity scales in the turbulence energy cascade.',
+      ja: '乱流エネルギーカスケードの最小スケール。',
+      zh: '湍流能量级串中的最小长度、时间和速度尺度。',
+      es: 'Escalas mínimas de longitud, tiempo y velocidad en la cascada energética turbulenta.',
+    },
+    formula: '\\eta = \\left(\\dfrac{\\nu^3}{\\varepsilon}\\right)^{1/4}, \\quad \\tau_\\eta = \\left(\\dfrac{\\nu}{\\varepsilon}\\right)^{1/2}',
+    tags: ['Kolmogorov', 'turbulence', 'DNS'],
+  },
+  {
+    slug: 'nusselt',
+    title: { ko: 'Nusselt 수 / h', en: 'Nusselt Number / h', ja: 'ヌセルト数 / h', zh: '努塞尔数 / h', es: 'Número de Nusselt / h' },
+    desc: {
+      ko: '대류 vs 전도 열전달의 비. 열전달 계수 h 계산.',
+      en: 'Convective-to-conductive heat transfer ratio. Computes h from Nu correlations.',
+      ja: '対流対伝導熱伝達の比。Nu相関からhを計算。',
+      zh: '对流与导热之比。由Nu相关式计算h。',
+      es: 'Razón transferencia convectiva/conductiva. Calcula h a partir de correlaciones Nu.',
+    },
+    formula: 'Nu = \\dfrac{h L}{k}, \\quad h = \\dfrac{Nu \\cdot k}{L}',
+    tags: ['Nusselt', 'heat transfer', 'convection'],
+  },
 ]

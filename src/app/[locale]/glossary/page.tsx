@@ -2,6 +2,7 @@ import { notFound } from 'next/navigation'
 import type { Metadata } from 'next'
 import { LOCALES, isLocale, type Locale } from '@/lib/i18n'
 import glossary from '@/lib/glossary.json'
+import { GlossaryClient } from '@/components/GlossaryClient'
 
 interface Props { params: Promise<{ locale: string }> }
 
@@ -42,38 +43,11 @@ export default async function Glossary({ params }: Props) {
       <h1 className="display mb-2" style={{ fontSize: 32, fontWeight: 700, letterSpacing: '-0.02em', color: 'var(--text)' }}>
         Glossary
       </h1>
-      <p className="mb-8 text-sm" style={{ color: 'var(--text-muted)' }}>
+      <p className="mb-6 text-sm" style={{ color: 'var(--text-muted)' }}>
         {entries.length} CFD terms · quick reference.
       </p>
 
-      <dl className="space-y-5">
-        {entries.map(([term, def]) => {
-          const definition = (loc === 'ko' ? def.ko : def.en) || def.en || def.ko
-          return (
-            <div key={term} id={term.toLowerCase()} className="rounded-lg p-4" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
-              <dt className="flex items-baseline gap-3">
-                <span className="text-lg font-semibold" style={{ fontFamily: 'var(--font-display)', color: 'var(--accent)' }}>
-                  {term}
-                </span>
-                {def.wiki && (
-                  <a
-                    href={def.wiki}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="mono text-[10px] underline underline-offset-2"
-                    style={{ color: 'var(--text-faint)' }}
-                  >
-                    wiki ↗
-                  </a>
-                )}
-              </dt>
-              <dd className="mt-1.5 text-sm leading-relaxed" style={{ color: 'var(--text-muted)' }}>
-                {definition}
-              </dd>
-            </div>
-          )
-        })}
-      </dl>
+      <GlossaryClient entries={entries} locale={loc} total={entries.length} />
     </div>
   )
 }
