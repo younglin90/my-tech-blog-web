@@ -198,7 +198,7 @@ export function PostList({
           ∅
         </p>
         <p className="mt-3 text-sm" style={{ color: 'var(--text-muted)' }}>
-          No posts published yet.
+          {t(locale, 'list.empty')}
         </p>
       </div>
     )
@@ -220,7 +220,7 @@ export function PostList({
               className="mono shrink-0"
               style={{ fontSize: 11, color: 'var(--text-faint)', letterSpacing: '0.15em', marginRight: 4 }}
             >
-              FILTER
+              {t(locale, 'list.filter')}
             </span>
             <button
               onClick={() => setActiveTag(null)}
@@ -245,7 +245,7 @@ export function PostList({
                   background: activeTag === tag ? 'var(--accent-glow)' : 'transparent',
                   color: activeTag === tag ? 'var(--accent)' : 'var(--text-muted)',
                 }}
-                title={`${count} posts`}
+                title={t(locale, 'list.tagCount', { count: String(count) })}
               >
                 #{tag}
               </button>
@@ -275,7 +275,7 @@ export function PostList({
                     color: sortMode === mode ? 'var(--text)' : 'var(--text-muted)',
                   }}
                 >
-                  {mode === 'newest' ? '↓ new' : '↑ old'}
+                  {mode === 'newest' ? `↓ ${t(locale, 'list.sortNewest')}` : `↑ ${t(locale, 'list.sortOldest')}`}
                 </button>
               ))}
             </div>
@@ -287,9 +287,9 @@ export function PostList({
                 border: `1px solid ${compact ? 'var(--accent)' : 'var(--border)'}`,
                 color: compact ? 'var(--accent)' : 'var(--text-muted)',
               }}
-              title={compact ? 'Switch to full view' : 'Switch to compact view'}
+              title={compact ? t(locale, 'list.viewFull') : t(locale, 'list.viewCompact')}
             >
-              {compact ? '≡ full' : '≡ compact'}
+              {compact ? `≡ ${t(locale, 'list.viewFull')}` : `≡ ${t(locale, 'list.viewCompact')}`}
             </button>
           </div>
         </div>
@@ -344,7 +344,7 @@ export function PostList({
                         className="ml-2 rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide"
                         style={{ background: 'var(--accent)', color: 'var(--bg)' }}
                       >
-                        new
+                        {t(locale, 'list.new')}
                       </span>
                     )}
                     {isRead && (
@@ -355,7 +355,7 @@ export function PostList({
                     )}
                   </span>
                   <span className="mono tabular" style={{ fontSize: 11, color: 'var(--text-faint)' }}>
-                    {post.isDynamic ? 'draft' : (post as StaticPostItem).readingTime}
+                    {post.isDynamic ? t(locale, 'list.draft') : (post as StaticPostItem).readingTime}
                   </span>
                 </div>
               </Link>
@@ -418,16 +418,16 @@ export function PostList({
                           className="ml-2 align-middle rounded-full px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide"
                           style={{ background: 'var(--accent)', color: 'var(--bg)' }}
                         >
-                          new
+                          {t(locale, 'list.new')}
                         </span>
                       )}
                       {isRead && (
-                        <span className="ml-2 align-middle text-[11px]" style={{ color: 'var(--text-faint)' }} title="Read">
+                        <span className="ml-2 align-middle text-[11px]" style={{ color: 'var(--text-faint)' }} title={t(locale, 'list.read')}>
                           ✓
                         </span>
                       )}
                       {isBookmarked && (
-                        <span className="ml-1 align-middle text-[11px]" style={{ color: 'var(--accent)' }} title="Saved">
+                        <span className="ml-1 align-middle text-[11px]" style={{ color: 'var(--accent)' }} title={t(locale, 'list.saved')}>
                           ⊕
                         </span>
                       )}
@@ -439,7 +439,7 @@ export function PostList({
                             color: 'var(--accent)',
                             fontFamily: 'var(--font-mono)',
                           }}
-                          title={`Part of ${series}`}
+                          title={t(locale, 'list.partOfSeries', { series })}
                         >
                           {series}{seriesOrder ? ` · ${String(seriesOrder).padStart(2, '0')}` : ''}
                         </span>
@@ -469,7 +469,7 @@ export function PostList({
                         className="rounded px-1.5 py-0.5 text-[10px]"
                         style={{ background: 'var(--surface)', color: 'var(--text-muted)', border: '1px solid var(--border)' }}
                       >
-                        draft
+                        {t(locale, 'list.draft')}
                       </span>
                     )}
                     {post.tags.length > 0 && <span aria-hidden="true">·</span>}
@@ -490,14 +490,15 @@ export function PostList({
           style={{ fontSize: 11, color: 'var(--text-faint)' }}
           aria-live="polite"
         >
-          loading more…
+          {t(locale, 'list.loadingMore')}
         </div>
       )}
 
       {/* Bottom stats line */}
       <div className="mono mt-4" style={{ fontSize: 11, color: 'var(--text-faint)' }}>
-        <span style={{ color: 'var(--accent)' }}>$</span> {visible.length} / {filtered.length} entries
-        {totalWords > 0 && <> · total {(totalWords / 1000).toFixed(1)}K words</>}
+        <span style={{ color: 'var(--accent)' }}>$</span>{' '}
+        {t(locale, 'list.visibleOf', { visible: String(visible.length), total: String(filtered.length) })}
+        {totalWords > 0 && <> · {t(locale, 'list.totalWords', { count: `${(totalWords / 1000).toFixed(1)}K` })}</>}
         {activeTag && ` · #${activeTag}`}
       </div>
     </div>

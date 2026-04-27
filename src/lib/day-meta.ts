@@ -1,3 +1,5 @@
+import { t, type Locale } from '@/lib/i18n'
+
 // Day-of-week metadata matching the design (HPC Terminal variant)
 // Colors pulled via CSS vars (--day-mon ... --day-sun) to respect theme.
 
@@ -18,6 +20,16 @@ export const DAY_META: Record<DayKey, { label: string; short: string; colorVar: 
   sun: { label: '논문리뷰', short: 'SUN', colorVar: 'var(--day-sun)' },
 }
 
+const DAY_LABEL_KEYS: Record<DayKey, string> = {
+  mon: 'home.day.cfdTechnique',
+  tue: 'home.day.fluidMechanics',
+  wed: 'home.day.cfdTechnique',
+  thu: 'home.day.fluidMechanics',
+  fri: 'home.day.cfdTechnique',
+  sat: 'home.day.paperReview',
+  sun: 'home.day.paperReview',
+}
+
 const ORDER: DayKey[] = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat']
 
 export function dayFromDate(iso: string): DayKey {
@@ -30,4 +42,8 @@ export function dayFromDate(iso: string): DayKey {
 
 export function dayMeta(iso: string) {
   return DAY_META[dayFromDate(iso)] ?? DAY_META.mon
+}
+
+export function getDayLabel(day: DayKey, locale: Locale | string | undefined) {
+  return t(locale, DAY_LABEL_KEYS[day] ?? DAY_LABEL_KEYS.mon)
 }

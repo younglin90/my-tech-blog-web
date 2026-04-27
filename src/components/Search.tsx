@@ -246,7 +246,7 @@ export function Search() {
                     className="text-xs"
                     style={{ color: 'var(--text-muted)' }}
                   >
-                    clear
+                    {t(locale, 'search.clear')}
                   </button>
                 )}
               </div>
@@ -254,40 +254,41 @@ export function Search() {
               {/* Tag search mode indicator */}
               {isTagQuery && q && (
                 <div className="px-4 py-1.5 text-[10px]" style={{ background: 'var(--accent-glow)', color: 'var(--accent)' }}>
-                  Filtering by tag: <strong>#{q}</strong>
+                  {t(locale, 'search.filterByTag')} <strong>#{q}</strong>
                 </div>
               )}
               {mathToken && (
                 <div className="px-4 py-1.5 text-[10px]" style={{ background: 'var(--accent-glow)', color: 'var(--accent)' }}>
-                  Math symbol: <strong>\{mathToken}</strong> — {mathSlugs.size} post{mathSlugs.size !== 1 ? 's' : ''}
+                  {t(locale, 'search.mathSymbol')} <strong>\{mathToken}</strong> ·{' '}
+                  {t(locale, 'search.matches', { count: String(mathSlugs.size) })}
                 </div>
               )}
 
               {/* Screen reader announcements */}
               <p className="sr-only" aria-live="polite" aria-atomic="true">
                 {q && filteredPosts.length === 0
-                  ? `No results for ${query}`
+                  ? t(locale, 'search.srNoResults', { query })
                   : q && filteredPosts.length > 0
-                  ? `${filteredPosts.length} result${filteredPosts.length !== 1 ? 's' : ''} for ${query}`
+                  ? t(locale, 'search.srResults', { count: String(filteredPosts.length), query })
                   : ''}
               </p>
 
               {/* Results */}
-              <div className="max-h-72 overflow-y-auto p-1.5" role="listbox" aria-label="Search results">
+              <div className="max-h-72 overflow-y-auto p-1.5" role="listbox" aria-label={t(locale, 'search.resultsAria')}>
                 {indexLoading && (
                   <p className="px-4 py-3 text-xs" style={{ color: 'var(--text-muted)' }}>
-                    Loading search index...
+                    {t(locale, 'search.loadingIndex')}
                   </p>
                 )}
                 {indexError && (
                   <p className="px-4 py-3 text-xs" style={{ color: 'var(--error)' }}>
-                    Search index error: {indexError}
+                    {t(locale, 'search.indexError', { error: indexError })}
                   </p>
                 )}
                 {!q && topTags.length > 0 && (
                   <div className="px-3 pb-2 pt-1.5">
                     <p className="mb-2 text-[10px] font-semibold uppercase tracking-widest" style={{ color: 'var(--text-faint)' }}>
-                      Popular Tags
+                      {t(locale, 'search.popularTags')}
                     </p>
                     <div className="flex flex-wrap gap-1.5">
                       {topTags.map((tag) => (
@@ -305,7 +306,7 @@ export function Search() {
                 )}
                 {!q && filteredPosts.length > 0 && (
                 <p className="px-4 py-2 text-[10px] font-semibold uppercase tracking-widest" style={{ color: 'var(--text-faint)' }}>
-                  {recentlyRead.length >= 3 ? 'Recently Read' : 'Recent'}
+                  {recentlyRead.length >= 3 ? t(locale, 'search.recentlyRead') : t(locale, 'search.recent')}
                 </p>
               )}
               {filteredPosts.length > 0 ? (
@@ -369,9 +370,9 @@ export function Search() {
                   style={{ borderTop: '1px solid var(--border)', color: 'var(--text-faint)' }}
                 >
                   <div className="flex items-center gap-3">
-                    <span>↑↓ navigate</span>
-                    <span>↵ open</span>
-                    <span>esc close</span>
+                    <span>↑↓ {t(locale, 'search.navigate')}</span>
+                    <span>↵ {t(locale, 'search.open')}</span>
+                    <span>esc {t(locale, 'search.close')}</span>
                   </div>
                   {query && (
                     <span className="tabular-nums">{filteredPosts.length} {t(locale, 'search.results')}</span>

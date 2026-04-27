@@ -6,7 +6,7 @@ import { Nav } from '@/components/Nav'
 import { Search } from '@/components/Search'
 import { ThemeToggle } from '@/components/ThemeToggle'
 import { LanguageSwitcher } from '@/components/LanguageSwitcher'
-import { localePathPrefix } from '@/lib/i18n'
+import { localePathPrefix, t } from '@/lib/i18n'
 
 function formatPath(pathname: string): string {
   if (pathname === '/') return 'home'
@@ -44,7 +44,7 @@ export function TerminalHeader() {
         <span className="truncate" style={{ color: 'var(--text-muted)' }}>
           cfd-lab:~/{path}
         </span>
-        <span className="ml-auto shrink-0" style={{ color: 'var(--accent)' }}>● online</span>
+        <span className="ml-auto shrink-0" style={{ color: 'var(--accent)' }}>● {t(locale, 'terminal.online')}</span>
       </div>
 
       <div
@@ -82,7 +82,7 @@ export function TerminalHeader() {
                 letterSpacing: '0.05em',
               }}
             >
-              daily journal · computational fluids
+              {t(locale, 'terminal.tagline')}
             </div>
           </div>
         </Link>

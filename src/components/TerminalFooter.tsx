@@ -29,15 +29,15 @@ export function TerminalFooter() {
       </div>
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2" style={{ color: 'var(--text-faint)' }}>
         <Link href={`/${locale}/tags`} className="link-hover-text">{t(locale, 'nav.tags').toLowerCase()}</Link>
-        <Link href={`/${locale}/series`} className="link-hover-text">series</Link>
-        <Link href={`/${locale}/tools`} className="link-hover-text">tools</Link>
-        <Link href={`/${locale}/viz`} className="link-hover-text">viz</Link>
-        <Link href={`/${locale}/glossary`} className="link-hover-text">glossary</Link>
+        <Link href={`/${locale}/series`} className="link-hover-text">{t(locale, 'nav.series').toLowerCase()}</Link>
+        <Link href={`/${locale}/tools`} className="link-hover-text">{t(locale, 'nav.tools').toLowerCase()}</Link>
+        <Link href={`/${locale}/viz`} className="link-hover-text">{t(locale, 'nav.viz').toLowerCase()}</Link>
+        <Link href={`/${locale}/glossary`} className="link-hover-text">{t(locale, 'nav.glossary').toLowerCase()}</Link>
         <Link href={`/${locale}/bookmarks`} className="link-hover-text">{t(locale, 'nav.bookmarks').toLowerCase()}</Link>
         <Link href={`/${locale}/about`} className="link-hover-text">{t(locale, 'nav.about').toLowerCase()}</Link>
-        <a href="/feed.xml" className="link-hover-text-accent">rss</a>
+        <a href="/feed.xml" className="link-hover-text-accent">{t(locale, 'footer.rss')}</a>
         <a href="https://github.com/younglin90" target="_blank" rel="noopener noreferrer" className="link-hover-text">
-          github
+          {t(locale, 'footer.github')}
         </a>
         <span className="ml-auto hidden sm:inline">
           {t(locale, 'footer.shortcutsHint')}

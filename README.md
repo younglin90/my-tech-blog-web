@@ -1,40 +1,72 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/pages/api-reference/create-next-app).
+# CFD.Lab
 
-## Getting Started
+CFD 연구자가 운영하는 다국어 기술 블로그입니다. Next.js 16 App Router 기반이며, MDX 포스트와 인터랙티브 시각화 컴포넌트를 함께 렌더링합니다.
 
-First, run the development server:
+## Stack
+
+- Next.js 16 + React 19
+- Contentlayer2
+- Tailwind CSS 4
+- KaTeX + rehype-pretty-code
+- Cloudflare Pages
+
+## Locales
+
+- `ko`
+- `en`
+- `ja`
+- `zh`
+- `es`
+
+신규 자동 포스트는 5개 locale을 동시에 생성하는 것이 기본 규칙입니다.
+
+## Directory Guide
+
+```text
+src/app/                  App Router pages
+src/content/posts/        Locale별 MDX 포스트
+src/components/post-viz/  포스트 전용 인터랙티브 시각화
+src/components/viz/       공용 시각화 컴포넌트
+src/i18n/                 UI 번역 사전
+src/lib/                  인덱스, i18n, 메타 유틸
+source-docs/              자동 포스트 생성용 소스 문서
+scripts/                  인덱싱, 검증, RSS, 번역 스크립트
+tests/                    Python 기반 생성 파이프라인 테스트
+```
+
+## Common Commands
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm run build
+python -m pytest tests/ -v
+node scripts/validate-post.mjs
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Automated Posting Workflow
 
-You can start editing the page by modifying `pages/index.tsx`. The page auto-updates as you edit the file.
+요일별로 소스 문서 폴더와 프롬프트가 달라집니다.
 
-[API routes](https://nextjs.org/docs/pages/building-your-application/routing/api-routes) can be accessed on [http://localhost:3000/api/hello](http://localhost:3000/api/hello). This endpoint can be edited in `pages/api/hello.ts`.
+- 월/수/금: `source-docs/cfd-technique/`
+- 화/목: `source-docs/fluid-mechanics/`
+- 토/일: `source-docs/paper-review/`
 
-The `pages/api` directory is mapped to `/api/*`. Files in this directory are treated as [API routes](https://nextjs.org/docs/pages/building-your-application/routing/api-routes) instead of React pages.
+포스트 생성 시 다음이 필수입니다.
 
-This project uses [`next/font`](https://nextjs.org/docs/pages/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+- 중복 날짜 체크
+- 주제 중복 회피
+- 인터랙티브 시각화 1~2개 포함
+- 5개 locale 동시 작성
+- `source-docs/index.yaml` 사용 이력 갱신
 
-## Learn More
+세부 규칙은 [AGENTS.md](./AGENTS.md)와 `scripts/prompts/`를 기준으로 합니다.
 
-To learn more about Next.js, take a look at the following resources:
+## Build Note
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn-pages-router) - an interactive Next.js tutorial.
+이 저장소는 WSL 경로에서 작업하는 경우가 많습니다. `node_modules`가 Linux 기준으로 설치된 상태에서 Windows Node로 빌드하면 `esbuild` 플랫폼 충돌이 발생할 수 있습니다. 빌드와 의존성 설치는 같은 플랫폼에서 맞춰 실행해야 합니다.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## References
 
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/pages/building-your-application/deploying) for more details.
+- 디자인 시스템: [DESIGN.md](./DESIGN.md)
+- 자동 개선 로그: [PROGRESS.md](./PROGRESS.md)
+- 번역/스크립트 사용법: [scripts/README.md](./scripts/README.md)

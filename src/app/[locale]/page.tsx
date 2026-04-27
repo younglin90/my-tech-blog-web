@@ -1,7 +1,7 @@
 import { notFound } from 'next/navigation'
 import { PostList } from '@/components/PostList'
 import { QuoteHero } from '@/components/QuoteHero'
-import { DAY_META } from '@/lib/day-meta'
+import { DAY_META, getDayLabel } from '@/lib/day-meta'
 import { LOCALES, isLocale, t, type Locale } from '@/lib/i18n'
 import postIndex from '@/lib/post-index.json'
 import { dedupePostsForLocale } from '@/lib/post-index'
@@ -70,7 +70,7 @@ export default async function Home({ params }: HomeProps) {
           className="mono"
           style={{ fontSize: 10, color: 'var(--text-faint)', letterSpacing: '0.2em', fontWeight: 600 }}
         >
-          WEEKLY
+          {t(loc, 'home.weekly')}
         </span>
         {DAY_ORDER.map((k) => {
           const m = DAY_META[k]
@@ -83,7 +83,7 @@ export default async function Home({ params }: HomeProps) {
               <span className="mono" style={{ color: 'var(--text-muted)', fontSize: 10.5 }}>
                 {m.short}
               </span>
-              <span style={{ color: 'var(--text)' }}>{m.label}</span>
+              <span style={{ color: 'var(--text)' }}>{getDayLabel(k, loc)}</span>
             </span>
           )
         })}

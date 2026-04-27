@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { usePathname, useRouter } from 'next/navigation'
 import { Globe, Check } from 'lucide-react'
-import { LOCALES, LOCALE_LABELS, withLocale, type Locale, isLocale } from '@/lib/i18n'
+import { LOCALES, LOCALE_LABELS, withLocale, type Locale, isLocale, t } from '@/lib/i18n'
 import { trackEvent } from '@/lib/analytics'
 
 export function LanguageSwitcher({ current }: { current?: string }) {
@@ -41,7 +41,7 @@ export function LanguageSwitcher({ current }: { current?: string }) {
         onClick={() => setOpen((v) => !v)}
         className="flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium transition-colors"
         style={{ color: 'var(--text-muted)' }}
-        aria-label="Change language"
+        aria-label={t(detected, 'language.change')}
         aria-haspopup="listbox"
         aria-expanded={open}
       >
