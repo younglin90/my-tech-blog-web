@@ -68,8 +68,11 @@ git push origin main
 
 ## generate-rss.mjs
 
-빌드 후(`out/`) 자동 실행되어 `out/feed.xml`, `out/feed.json` 생성.
-현재는 ko 포스트만 RSS에 노출. (locale별 RSS 분리는 후속 작업.)
+빌드 후(`out/`) 자동 실행되어 locale별 RSS/JSON Feed 생성:
+- `out/feed.xml`, `out/feed.json` (ko 기본)
+- `out/feed-en.xml`, `out/feed-ja.xml`, `out/feed-zh.xml`, `out/feed-es.xml`
+
+도메인은 `NEXT_PUBLIC_SITE_URL`(또는 `SITE_URL`) 환경변수를 사용하며, 미설정 시 `https://cfdblog.cc`를 기본값으로 사용.
 
 ## generate_post.py
 

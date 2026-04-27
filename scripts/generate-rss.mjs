@@ -1,7 +1,9 @@
 import { readFileSync, writeFileSync, mkdirSync } from 'fs'
 import { join } from 'path'
 
-const SITE_URL = 'https://tech-blog.dev'
+const SITE_URL = (process.env.NEXT_PUBLIC_SITE_URL ?? process.env.SITE_URL ?? 'https://cfdblog.cc').replace(/\/$/, '')
+const HOST = new URL(SITE_URL).hostname
+const NOREPLY_EMAIL = `noreply@${HOST}`
 const SITE_TITLE = "Younglin's CFD Blog"
 const LOCALES = ['ko', 'en', 'ja', 'zh', 'es']
 
@@ -74,7 +76,7 @@ Read more: ${url}]]></content:encoded>
       <link>${url}</link>
       <guid isPermaLink="true">${url}</guid>
       <pubDate>${new Date(post.date).toUTCString()}</pubDate>
-      <author>noreply@tech-blog.dev (${meta.editor})</author>${categories ? '\n' + categories : ''}
+      <author>${NOREPLY_EMAIL} (${meta.editor})</author>${categories ? '\n' + categories : ''}
     </item>`
   }).join('')
 
@@ -87,7 +89,7 @@ Read more: ${url}]]></content:encoded>
     <link>${SITE_URL}/${locale}</link>
     <atom:link href="${SITE_URL}${feedPath}" rel="self" type="application/rss+xml"/>
     <language>${meta.iso}</language>
-    <managingEditor>noreply@tech-blog.dev (${meta.editor})</managingEditor>
+    <managingEditor>${NOREPLY_EMAIL} (${meta.editor})</managingEditor>
     <lastBuildDate>${new Date().toUTCString()}</lastBuildDate>
     <ttl>1440</ttl>${items}
   </channel>
