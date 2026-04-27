@@ -1,9 +1,10 @@
 // CFD 계산기 메타데이터.
 // 새 계산기 추가 시 여기에 한 줄, src/components/calculators/{slug}.tsx 추가.
 
-export type CalculatorCategory = 'dimensionless' | 'turbulence' | 'heat-transfer' | 'numerics'
+export type CalculatorCategory = 'compressible' | 'dimensionless' | 'turbulence' | 'heat-transfer' | 'numerics'
 
 export const CATEGORY_LABELS: Record<CalculatorCategory, string> = {
+  'compressible': 'Compressible Flow',
   'dimensionless': 'Dimensionless Numbers',
   'turbulence': 'Turbulence',
   'heat-transfer': 'Heat Transfer',
@@ -20,6 +21,76 @@ export interface CalculatorMeta {
 }
 
 export const CALCULATORS: CalculatorMeta[] = [
+  {
+    slug: 'isentropic',
+    category: 'compressible',
+    title: { ko: '등엔트로피 유동', en: 'Isentropic Flow', ja: '等エントロピー流れ', zh: '等熵流动', es: 'Flujo Isentrópico' },
+    desc: {
+      ko: 'M, p/p0, T/T0, A/A*, Prandtl-Meyer 각도 간 변환과 출력.',
+      en: 'Convert between M, p/p0, T/T0, A/A*, and Prandtl-Meyer angle.',
+      ja: 'M, p/p0, T/T0, A/A*, Prandtl-Meyer角の相互変換。',
+      zh: '在M, p/p0, T/T0, A/A*与Prandtl-Meyer角之间转换。',
+      es: 'Conversión entre M, p/p0, T/T0, A/A* y ángulo de Prandtl-Meyer.',
+    },
+    formula: 'A/A^* = \\frac{1}{M}\\left[\\frac{2}{\\gamma+1}\\left(1+\\frac{\\gamma-1}{2}M^2\\right)\\right]^{\\frac{\\gamma+1}{2(\\gamma-1)}}',
+    tags: ['compressible', 'isentropic', 'nozzle', 'Prandtl-Meyer'],
+  },
+  {
+    slug: 'normal-shock',
+    category: 'compressible',
+    title: { ko: '정상 충격파', en: 'Normal Shock', ja: '垂直衝撃波', zh: '正激波', es: 'Choque Normal' },
+    desc: {
+      ko: '입구 M1에서 M2, p2/p1, p02/p01 등 정상충격파 관계 계산.',
+      en: 'Compute M2, p2/p1, p02/p01 and other normal-shock relations from M1.',
+      ja: '上流M1からM2, p2/p1, p02/p01などの垂直衝撃波関係を計算。',
+      zh: '由上游M1计算M2、p2/p1、p02/p01等正激波关系。',
+      es: 'Calcula M2, p2/p1, p02/p01 y demás relaciones de choque normal desde M1.',
+    },
+    formula: 'M_2^2 = \\frac{1+\\frac{\\gamma-1}{2}M_1^2}{\\gamma M_1^2-\\frac{\\gamma-1}{2}}',
+    tags: ['compressible', 'shock', 'normal shock'],
+  },
+  {
+    slug: 'oblique-shock',
+    category: 'compressible',
+    title: { ko: '사충격파', en: 'Oblique Shock', ja: '斜め衝撃波', zh: '斜激波', es: 'Choque Oblicuo' },
+    desc: {
+      ko: 'M1과 θ 또는 β 입력으로 약/강해 해를 포함한 사충격파 계산.',
+      en: 'Oblique-shock relations from M1 and θ or β, including weak/strong branches.',
+      ja: 'M1とθまたはβから、弱解/強解を含む斜め衝撃波関係を計算。',
+      zh: '由M1与θ或β计算斜激波关系，支持弱解/强解。',
+      es: 'Relaciones de choque oblicuo con M1 y θ o β, incluyendo rama débil/fuerte.',
+    },
+    formula: '\\tan\\theta = 2\\cot\\beta\\,\\frac{M_1^2\\sin^2\\beta-1}{M_1^2(\\gamma+\\cos2\\beta)+2}',
+    tags: ['compressible', 'shock', 'oblique shock', 'theta-beta-M'],
+  },
+  {
+    slug: 'fanno-flow',
+    category: 'compressible',
+    title: { ko: 'Fanno 유동', en: 'Fanno Flow', ja: 'Fanno流れ', zh: 'Fanno流动', es: 'Flujo de Fanno' },
+    desc: {
+      ko: '마찰이 있는 단열 1D 유동의 별표(*) 기준 무차원 관계 계산.',
+      en: 'Compute star-state (*) nondimensional relations for adiabatic 1D flow with friction.',
+      ja: '摩擦あり断熱1D流れの*基準無次元関係を計算。',
+      zh: '计算有摩擦绝热一维流动的*参考无量纲关系。',
+      es: 'Calcula relaciones adimensionales referidas al estado * para flujo 1D adiabático con fricción.',
+    },
+    formula: '\\frac{4fL^*}{D}=\\frac{1-M^2}{\\gamma M^2}+\\frac{\\gamma+1}{2\\gamma}\\ln\\frac{(\\gamma+1)M^2}{2+(\\gamma-1)M^2}',
+    tags: ['compressible', 'fanno', 'duct flow', 'friction'],
+  },
+  {
+    slug: 'rayleigh-flow',
+    category: 'compressible',
+    title: { ko: 'Rayleigh 유동', en: 'Rayleigh Flow', ja: 'Rayleigh流れ', zh: 'Rayleigh流动', es: 'Flujo de Rayleigh' },
+    desc: {
+      ko: '열추가가 있는 1D 유동의 별표(*) 기준 무차원 관계 계산.',
+      en: 'Compute star-state (*) nondimensional relations for 1D flow with heat addition.',
+      ja: '熱付加あり1D流れの*基準無次元関係を計算。',
+      zh: '计算有热量加入的一维流动*参考无量纲关系。',
+      es: 'Calcula relaciones adimensionales referidas al estado * para flujo 1D con adición de calor.',
+    },
+    formula: '\\frac{P}{P^*}=\\frac{\\gamma+1}{1+\\gamma M^2},\\quad \\frac{T_0}{T_0^*}=\\frac{2(\\gamma+1)M^2\\left(1+\\frac{\\gamma-1}{2}M^2\\right)}{(1+\\gamma M^2)^2}',
+    tags: ['compressible', 'rayleigh', 'heat addition'],
+  },
   {
     slug: 'reynolds',
     category: 'dimensionless',
@@ -117,6 +188,20 @@ export const CALCULATORS: CalculatorMeta[] = [
     },
     formula: 'Nu = \\dfrac{h L}{k}, \\quad h = \\dfrac{Nu \\cdot k}{L}',
     tags: ['Nusselt', 'heat transfer', 'convection'],
+  },
+  {
+    slug: 'stokes',
+    category: 'turbulence',
+    title: { ko: 'Stokes 수 (입자)', en: 'Stokes Number (Particle)', ja: 'ストークス数 (粒子)', zh: '斯托克斯数 (颗粒)', es: 'Número de Stokes (Partícula)' },
+    desc: {
+      ko: '입자 이완시간 대 유동 시간척도의 비. St≪1: tracer, St≈1: 관성집중, St≫1: 탄도.',
+      en: 'Particle relaxation time vs flow time scale. St≪1: tracer, St≈1: inertial clustering, St≫1: ballistic.',
+      ja: '粒子緩和時間対流れ時間スケール。St≪1：tracer, St≈1：慣性集中, St≫1：弾道。',
+      zh: '颗粒弛豫时间与流动时间尺度之比。St≪1：示踪, St≈1：惯性聚集, St≫1：弹道。',
+      es: 'Tiempo relajación partícula vs escala de tiempo del flujo. St≪1: trazador, St≈1: focalización, St≫1: balístico.',
+    },
+    formula: 'St = \\dfrac{\\tau_p}{\\tau_f} = \\dfrac{\\rho_p d_p^2}{18\\mu} \\cdot \\dfrac{U}{L}',
+    tags: ['Stokes', 'particle', 'multiphase', 'Lagrangian'],
   },
   {
     slug: 'cfl',

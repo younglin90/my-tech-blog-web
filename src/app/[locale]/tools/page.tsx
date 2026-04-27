@@ -23,7 +23,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   }
 }
 
-const CATEGORY_ORDER: CalculatorCategory[] = ['dimensionless', 'turbulence', 'heat-transfer', 'numerics']
+const CATEGORY_ORDER: CalculatorCategory[] = ['compressible', 'dimensionless', 'turbulence', 'heat-transfer', 'numerics']
 
 export default async function ToolsIndex({ params }: Props) {
   const { locale } = await params

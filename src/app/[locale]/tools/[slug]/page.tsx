@@ -11,6 +11,12 @@ import { KolmogorovCalculator } from '@/components/calculators/Kolmogorov'
 import { NusseltCalculator } from '@/components/calculators/Nusselt'
 import { PrandtlCalculator } from '@/components/calculators/Prandtl'
 import { TurbulenceIntensityCalculator } from '@/components/calculators/TurbulenceIntensity'
+import { IsentropicCalculator } from '@/components/calculators/Isentropic'
+import { NormalShockCalculator } from '@/components/calculators/NormalShock'
+import { ObliqueShockCalculator } from '@/components/calculators/ObliqueShock'
+import { FannoCalculator } from '@/components/calculators/Fanno'
+import { RayleighCalculator } from '@/components/calculators/Rayleigh'
+import { StokesCalculator } from '@/components/calculators/Stokes'
 import { SITE_URL } from '@/lib/site'
 
 interface Props {
@@ -36,6 +42,11 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 }
 
 const COMPONENTS: Record<string, () => React.ReactElement> = {
+  isentropic: IsentropicCalculator,
+  'normal-shock': NormalShockCalculator,
+  'oblique-shock': ObliqueShockCalculator,
+  'fanno-flow': FannoCalculator,
+  'rayleigh-flow': RayleighCalculator,
   reynolds: ReynoldsCalculator,
   mach: MachCalculator,
   'boundary-layer': BoundaryLayerCalculator,
@@ -44,6 +55,7 @@ const COMPONENTS: Record<string, () => React.ReactElement> = {
   nusselt: NusseltCalculator,
   prandtl: PrandtlCalculator,
   'turbulence-intensity': TurbulenceIntensityCalculator,
+  stokes: StokesCalculator,
 }
 
 export default async function CalculatorPage({ params }: Props) {
