@@ -1,0 +1,193 @@
+---
+title: "SPH 입자법으로 유체 풀기 — 커널부터 인공 점성까지"
+date: 2026-04-29
+description: "격자 없이 입자로 유체 방정식을 푸는 SPH의 원리, 코드, 함정"
+tags: ["SPH", "Meshfree", "Lagrangian", "Multiphase", "Astrophysics"]
+locale: ko
+slug: sph-meshfree-particle-hydrodynamics
+draft: false
+---
+
+import { SPHParticleDrop2D } from '@/components/post-viz/2026-04-29-sph-meshfree-particle-hydrodynamics/SPHParticleDrop2D'
+import { SPHKernelShapeExplorer } from '@/components/post-viz/2026-04-29-sph-meshfree-particle-hydrodynamics/SPHKernelShapeExplorer'
+
+1992년 Joe Monaghan은 천체물리 리뷰 논문에서 한 가지 도발을 던졌다. 별을 시뮬레이션할 때 격자를 깔지 말자는 제안이었다. 대신 가스 한 덩어리를 입자 수천 개로 흩뿌리고, 입자가 서로의 영역에 겹치는 만큼 압력을 주고받게 한다. 이렇게 만들어진 SPH(Smoothed Particle Hydrodynamics)는 30년이 지난 지금 천체물리, 자유 표면 유동, 충돌 시뮬레이션에서 중요한 한 자리를 차지하고 있다. 이 글은 SPH의 핵심 수식 4개와 자주 빠지는 함정을 추적하고, 브라우저에서 직접 입자가 흩어지는 모양을 만져볼 수 있도록 정리한다.
+
+## 격자가 없는 유체 — SPH의 출발점
+
+격자(Eulerian) 방법은 공간을 고정해 두고 그 위를 흐름이 지나가는 모습을 본다. SPH는 반대다. 좌표축을 흐름에 묶어 두고, 각 입자가 자기 위치에서 속도와 밀도를 들고 다닌다. 라그랑주 표현에서 연속 방정식과 운동량 방정식은 다음과 같다.
+
+$$
+\frac{D\rho}{Dt} = -\rho \nabla \cdot \mathbf{u}, \qquad \frac{D\mathbf{u}}{Dt} = -\frac{\nabla P}{\rho} + \mathbf{g}.
+$$
+
+여기서 $\rho$는 밀도, $\mathbf{u}$는 속도, $P$는 압력, $\mathbf{g}$는 중력이다. 입자를 따라가면 좌변의 시간 미분이 단순한 dt가 된다. 문제는 우변의 공간 미분이다. 격자처럼 규칙적인 이웃이 없으니 $\nabla P$를 어떻게 계산할 것인가가 SPH의 출발점이다.
+
+## 커널 W(r, h) — 입자가 만드는 가상의 부피
+
+해법은 합성곱이다. 입자 $j$ 주변에 종(bell) 모양 함수 $W(r, h)$를 두고, 어떤 장 $A(\mathbf{x})$를 이웃 입자의 합으로 근사한다.
+
+$$
+\tilde{A}(\mathbf{x}) = \sum_{j} \frac{m_j}{\rho_j}\, A_j\, W(\mathbf{x} - \mathbf{x}_j, h).
+$$
+
+$m_j$는 입자 질량, $\rho_j$는 밀도, $h$는 평활화 길이(smoothing length)다. $m_j/\rho_j$는 입자 $j$가 차지한 부피로 해석한다. 미분도 마찬가지다 — $\nabla A \approx \sum_j (m_j/\rho_j) A_j \nabla W$. 격자 미분이 커널 미분으로 옮겨갔다.
+
+커널은 두 가지 조건을 만족해야 한다. 적분이 1이고, $h \to 0$이면 디락 델타로 수렴한다. 가장 자주 쓰는 형태는 $r < h$ 안에서만 0이 아닌 컴팩트 서포트 커널이다. 가우시안 / 큐빅 스플라인 / poly6 / spiky 네 가지를 비교해 보자.
+
+<SPHKernelShapeExplorer />
+
+큐빅 스플라인은 $r < 2h$에서 부드럽게 0으로 떨어진다. poly6은 밀도 추정에 유리하지만 $r$이 작을 때 그래디언트가 사라져 압력 계산에 부적합하다. 그래서 그래픽 SPH는 압력 항에 spiky를 따로 쓴다. 가우시안은 컴팩트 서포트가 없어 모든 입자 쌍을 다 봐야 한다. 천체물리 SPH는 큐빅 스플라인이 표준이다.
+
+## 밀도와 압력 — 합으로 정의되는 장
+
+입자 $i$의 밀도는 이웃의 커널 합이다.
+
+$$
+\rho_i = \sum_{j} m_j\, W(\mathbf{x}_i - \mathbf{x}_j, h).
+$$
+
+밀도가 결정되면 상태방정식(EOS)으로 압력을 구한다. 약압축성 자유 표면 유동에서는 Tait 방정식이 자주 쓰인다.
+
+$$
+P_i = K\left[\left(\frac{\rho_i}{\rho_0}\right)^{\gamma} - 1\right].
+$$
+
+$\rho_0$는 평형 밀도, $K$는 강성, 보통 $\gamma = 7$. 이 식은 작은 밀도 변화에 큰 압력 응답을 만들어 비압축성을 흉내낸다. 음속 $c_0 = \sqrt{\gamma K / \rho_0}$가 최대 유속의 약 10배가 되도록 $K$를 잡으면 마하수가 작게 유지된다.
+
+## 운동량을 살리는 대칭 트릭
+
+압력 그래디언트의 단순한 SPH 형태는 운동량을 보존하지 않는다. 핵심은 다음 항등식이다.
+
+$$
+\nabla\!\left(\frac{P}{\rho}\right) = \frac{\nabla P}{\rho} + \frac{P}{\rho^2}\nabla\rho.
+$$
+
+이 분해를 끼워 넣으면 입자 쌍에 대해 대칭인 압력 항이 나온다.
+
+$$
+\frac{D\mathbf{u}_i}{Dt} = -\sum_{j} m_j \left(\frac{P_i}{\rho_i^2} + \frac{P_j}{\rho_j^2}\right) \nabla_i W_{ij} + \mathbf{g}.
+$$
+
+쌍 $(i, j)$가 서로에게 주는 힘이 정확히 반대 부호다. 뉴턴의 작용·반작용이 살아 있고, 따라서 전체 운동량과 각운동량이 미세 오차 안에서 보존된다. 이 대칭화는 SPH 안정성의 거의 절반이다.
+
+## 충격에는 인공 점성을 — Monaghan-Gingold 레시피
+
+위 식만으로는 충격파를 만나면 입자가 서로 뚫고 지나간다(post-shock interpenetration). Monaghan & Gingold(1983)는 가까워지는 입자 쌍에만 적용되는 인공 점성을 제안했다.
+
+$$
+\Pi_{ij} = \begin{cases}
+\dfrac{-\alpha\, \bar{c}_{ij}\, \mu_{ij} + \beta\, \mu_{ij}^2}{\bar{\rho}_{ij}} & \mathbf{u}_{ij} \cdot \mathbf{r}_{ij} < 0 \\
+0 & \text{otherwise}
+\end{cases}
+$$
+
+$$
+\mu_{ij} = \frac{h\, \mathbf{u}_{ij} \cdot \mathbf{r}_{ij}}{|\mathbf{r}_{ij}|^2 + 0.01 h^2}.
+$$
+
+$\alpha$는 약 0.5–1.0, $\beta = 2\alpha$가 보통이다. 입자가 멀어질 때는 적용하지 않으므로 인장 영역에서 자연스럽게 꺼진다. 하지만 전단 영역에서도 점성을 만든다는 부작용이 있어, 이후 Balsara 스위치 같은 개선이 등장했다.
+
+## Python으로 1D 컬럼 붕괴 흉내내기
+
+수직으로 쌓인 입자 80개가 중력에 무너지는 1차원 모형을 만들어 보자.
+
+```python
+import numpy as np
+
+def cubic_spline_1d(r, h):
+    """1D 큐빅 스플라인 커널 W(r, h)."""
+    q = abs(r) / h
+    c = 2.0 / (3.0 * h)
+    if q < 1:
+        return c * (1 - 1.5 * q * q + 0.75 * q ** 3)
+    if q < 2:
+        return c * 0.25 * (2 - q) ** 3
+    return 0.0
+
+def cubic_spline_dW(r, h):
+    """W(r, h)의 1차 미분, 부호는 r의 부호를 따른다."""
+    q = abs(r) / h
+    c = 2.0 / (3.0 * h * h)
+    s = 1.0 if r > 0 else (-1.0 if r < 0 else 0.0)
+    if q < 1:
+        return c * (-3 * q + 2.25 * q * q) * s
+    if q < 2:
+        return c * (-0.75 * (2 - q) ** 2) * s
+    return 0.0
+
+def sph_density_pressure(x, m, h, rho0, K, gamma=7.0):
+    n = len(x)
+    rho = np.zeros(n)
+    for i in range(n):
+        for j in range(n):
+            rho[i] += m * cubic_spline_1d(x[i] - x[j], h)
+    p = K * ((rho / rho0) ** gamma - 1.0)
+    return rho, p
+
+def sph_acceleration(x, v, rho, p, m, h, alpha, c0, g):
+    n = len(x)
+    a = np.full(n, g)
+    for i in range(n):
+        for j in range(n):
+            if i == j:
+                continue
+            r = x[i] - x[j]
+            if abs(r) >= 2 * h:
+                continue
+            grad = cubic_spline_dW(r, h)
+            a[i] -= m * (p[i] / rho[i] ** 2 + p[j] / rho[j] ** 2) * grad
+            v_ij = v[i] - v[j]
+            if v_ij * r < 0:                       # 가까워지는 쌍
+                mu = h * v_ij * r / (r * r + 0.01 * h * h)
+                rho_bar = 0.5 * (rho[i] + rho[j])
+                Pi = -alpha * c0 * mu / rho_bar
+                a[i] -= m * Pi * grad
+    return a
+
+# 1D 컬럼: 입자 80개를 y in [0.5, 1.0] 구간에 균일 배치
+N = 80
+x = np.linspace(0.5, 1.0, N)
+v = np.zeros(N)
+m = 0.5 * 1000.0 / N        # 컬럼 총 질량 / 입자 수
+h = 0.018
+rho0, K = 1000.0, 200.0
+alpha, c0 = 0.5, 20.0
+g, dt = -9.81, 5e-5
+
+for step in range(8000):
+    rho, p = sph_density_pressure(x, m, h, rho0, K)
+    a = sph_acceleration(x, v, rho, p, m, h, alpha, c0, g)
+    v += a * dt
+    x += v * dt
+    below = x < 0.0                                 # 바닥 반사 경계
+    x[below] = -x[below]
+    v[below] = -0.5 * v[below]
+
+print(f"final mean rho = {rho.mean():.1f}, top particle y = {x.max():.3f}")
+```
+
+스텝 8000 후 평균 밀도는 $\rho_0$ 근처에서 진동하고, 가장 높은 입자는 처음 1.0에서 약 0.55 부근으로 내려와 안정된 베드를 만든다. 이 작은 코드 하나가 SPH 솔버의 골격을 모두 보여준다 — 합으로 밀도, EOS로 압력, 대칭 항으로 가속도, 인공 점성으로 안정화.
+
+## 직접 입자가 흩어지는 걸 만져보자
+
+아래 시뮬레이션에서 직접 조작해보자. 평활화 길이 $h$를 0.07까지 키우면 한 입자가 보는 이웃 수가 늘어 색이 균일해진다(밀도 추정이 매끄러워진다). 반대로 0.03으로 줄이면 입자 간 빈 공간이 두드러지고 압력 진동이 심해진다.
+
+<SPHParticleDrop2D />
+
+강성 $K$를 높이면 더 강하게 비압축성을 흉내내지만 음속이 커져 시간 스텝이 작아져야 한다. 점성 $\mu$를 0으로 두면 입자가 서로 뚫고 지나는 인터펜트레이션 줄무늬가 생긴다 — 인공 점성이 왜 필요한지 시각으로 와닿는 순간이다.
+
+## SPH가 잘 못 푸는 영역
+
+밝은 면이 있으면 어두운 면도 있다. SPH는 강한 전단 흐름에서 수치 점성이 폭발해 물리 점성을 압도한다. 입자 분포가 클러스터링되면 등방성이 깨져 표면 텐션 같은 미세 효과를 잡기 어렵다. 균일하지 않은 평활화 길이 $h_i$를 도입하면 적응성은 좋아지나 운동량 보존에 추가 보정항이 필요하다(Springel & Hernquist 2002의 $f_i$ 항). 또 자유 표면에서 밀도가 갑자기 줄어 압력이 음수가 되면 표면이 떨리는 tensile instability가 생긴다 — XSPH나 $\delta$-SPH 같은 처방이 이 문제를 다룬다.
+
+## 마지막에 남기고 싶은 것
+
+세 줄로 압축한다. 첫째, SPH는 격자 미분을 커널 미분으로 옮긴 라그랑주 합 솔버다. 둘째, 압력 항을 대칭화하지 않으면 운동량 보존이 깨지고, 인공 점성 없이는 충격에서 입자가 뚫고 지나간다. 셋째, 컴팩트 서포트 커널과 적절한 $h$ 선택이 비용과 정확도를 좌우한다. 다음에 자유 표면이나 폭발 시뮬레이션을 만나면 격자 위에 더 큰 메모리를 까는 대신 입자 1만 개를 흩뿌리는 선택지도 떠올려 보자.
+
+## 참고 문헌
+
+- Monaghan, J. J. (1992). Smoothed Particle Hydrodynamics. *Annual Review of Astronomy and Astrophysics*, 30, 543.
+- Monaghan, J. J., & Gingold, R. A. (1983). Shock simulation by the particle method SPH. *Journal of Computational Physics*, 52(2), 374.
+- Müller, M., Charypar, D., & Gross, M. (2003). Particle-based fluid simulation for interactive applications. *SCA '03*.
+- Springel, V. (2005). The cosmological simulation code GADGET-2. *MNRAS*, 364, 1105.

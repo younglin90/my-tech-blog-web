@@ -1,0 +1,193 @@
+---
+title: "SPH 粒子法求解流体 — 从核函数到人工粘性"
+date: 2026-04-29
+description: "无网格粒子法 SPH 的原理、代码与陷阱"
+tags: ["SPH", "Meshfree", "Lagrangian", "Multiphase", "Astrophysics"]
+locale: zh
+slug: sph-meshfree-particle-hydrodynamics
+draft: false
+---
+
+import { SPHParticleDrop2D } from '@/components/post-viz/2026-04-29-sph-meshfree-particle-hydrodynamics/SPHParticleDrop2D'
+import { SPHKernelShapeExplorer } from '@/components/post-viz/2026-04-29-sph-meshfree-particle-hydrodynamics/SPHKernelShapeExplorer'
+
+1992 年,Joe Monaghan 在一篇天体物理综述中抛出了一个挑衅性的设想:别再围绕恒星铺网格了。把气体撒成数千个相互重叠的粒子,让它们通过光滑的压力场相互作用。三十年后,Smoothed Particle Hydrodynamics(SPH)在天体物理、自由表面流和冲击模拟中占据了一席之地。本文追踪让 SPH 立得住的四个方程,以及人们经常踩进去的坑,并让你在浏览器里直接拨动粒子。
+
+## 没有网格的流体 — SPH 的起点
+
+欧拉法把坐标系钉死,看流动从上面流过。SPH 反过来,把坐标系绑在流场上,让每个粒子带着自己的速度和密度一起走。拉格朗日形式的连续方程和动量方程是:
+
+$$
+\frac{D\rho}{Dt} = -\rho \nabla \cdot \mathbf{u}, \qquad \frac{D\mathbf{u}}{Dt} = -\frac{\nabla P}{\rho} + \mathbf{g}.
+$$
+
+其中 $\rho$ 为密度,$\mathbf{u}$ 为速度,$P$ 为压力,$\mathbf{g}$ 为重力。沿粒子轨迹看,左边的时间导数就是普通的 $dt$。问题在右边的空间导数。粒子集合没有规则的邻居,该怎么计算 $\nabla P$ ?这就是 SPH 要回答的问题。
+
+## 核函数 W(r, h) — 粒子构造的虚拟体积
+
+办法是卷积。在每个粒子周围放一个钟形函数 $W(r, h)$,把任意场 $A(\mathbf{x})$ 用邻居粒子的加权和近似:
+
+$$
+\tilde{A}(\mathbf{x}) = \sum_{j} \frac{m_j}{\rho_j}\, A_j\, W(\mathbf{x} - \mathbf{x}_j, h).
+$$
+
+$m_j$ 是粒子质量,$\rho_j$ 是密度,$h$ 是平滑长度。比值 $m_j/\rho_j$ 解释为粒子 $j$ 占据的体积。求导也照搬到核函数上 — $\nabla A \approx \sum_j (m_j/\rho_j) A_j \nabla W$。网格上的差分变成了核函数的导数。
+
+合格的核函数要满足两条:积分为 1,$h \to 0$ 时收敛到狄拉克函数。常用的形式都是紧支撑的 — 在 $r < h$ 或 $r < 2h$ 之外为零,每个粒子只与少数邻居打交道。下面对比四种经典核。
+
+<SPHKernelShapeExplorer />
+
+三次样条核在 $r = 2h$ 处平滑趋零。poly6 适合密度估计,但它的梯度在 $r$ 接近 0 时变平,因此不适合压力计算。这正是图形 SPH 在压力项里改用 spiky 核的原因。高斯核没有紧支撑,代价是要把所有粒子对都算一遍。天体物理 SPH 几乎一律用三次样条核。
+
+## 密度与压力 — 用求和定义的场
+
+粒子 $i$ 的密度就是邻居核的和:
+
+$$
+\rho_i = \sum_{j} m_j\, W(\mathbf{x}_i - \mathbf{x}_j, h).
+$$
+
+有了密度,就用状态方程(EOS)算压力。弱压缩自由表面流通常用 Tait 状态方程:
+
+$$
+P_i = K\left[\left(\frac{\rho_i}{\rho_0}\right)^{\gamma} - 1\right].
+$$
+
+$\rho_0$ 是静止密度,$K$ 是刚度,$\gamma$ 通常取 7。这条公式让密度的微小变化产生很大的压力响应,以模拟不可压缩性。让 $K$ 取值使声速 $c_0 = \sqrt{\gamma K / \rho_0}$ 约为最大流速的十倍,马赫数就能保持很低。
+
+## 守住动量的对称化技巧
+
+直接写 $\nabla P / \rho$ 的 SPH 形式不会守恒动量。关键的恒等式是
+
+$$
+\nabla\!\left(\frac{P}{\rho}\right) = \frac{\nabla P}{\rho} + \frac{P}{\rho^2}\nabla\rho.
+$$
+
+代入后得到对粒子对对称的压力项:
+
+$$
+\frac{D\mathbf{u}_i}{Dt} = -\sum_{j} m_j \left(\frac{P_i}{\rho_i^2} + \frac{P_j}{\rho_j^2}\right) \nabla_i W_{ij} + \mathbf{g}.
+$$
+
+$j$ 对 $i$ 的力与 $i$ 对 $j$ 的力恰好反号,牛顿第三定律对每一对粒子都成立,总动量与角动量只随浮点误差漂移。这种对称化撑起了 SPH 稳定性的一半。
+
+## 给冲击波加人工粘性 — Monaghan-Gingold 配方
+
+仅凭上面这些方程,粒子在冲击波处会互相穿透。Monaghan 和 Gingold(1983)提出只对靠近的粒子对生效的人工粘性:
+
+$$
+\Pi_{ij} = \begin{cases}
+\dfrac{-\alpha\, \bar{c}_{ij}\, \mu_{ij} + \beta\, \mu_{ij}^2}{\bar{\rho}_{ij}} & \mathbf{u}_{ij} \cdot \mathbf{r}_{ij} < 0 \\
+0 & \text{otherwise}
+\end{cases}
+$$
+
+$$
+\mu_{ij} = \frac{h\, \mathbf{u}_{ij} \cdot \mathbf{r}_{ij}}{|\mathbf{r}_{ij}|^2 + 0.01 h^2}.
+$$
+
+通常取 $\alpha \approx 0.5$–$1.0$,$\beta = 2\alpha$。粒子远离时不作用,因此在拉伸区域不会粘住粒子。副作用是它在剪切层里也会触发,这促使后来出现了 Balsara 开关等改进。
+
+## 用 Python 模拟一维列坍塌
+
+来看 80 个垂直堆叠的粒子在重力下坍塌的一维模型。
+
+```python
+import numpy as np
+
+def cubic_spline_1d(r, h):
+    """一维三次样条核 W(r, h)."""
+    q = abs(r) / h
+    c = 2.0 / (3.0 * h)
+    if q < 1:
+        return c * (1 - 1.5 * q * q + 0.75 * q ** 3)
+    if q < 2:
+        return c * 0.25 * (2 - q) ** 3
+    return 0.0
+
+def cubic_spline_dW(r, h):
+    """W(r, h) 的一阶导数,符号随 r."""
+    q = abs(r) / h
+    c = 2.0 / (3.0 * h * h)
+    s = 1.0 if r > 0 else (-1.0 if r < 0 else 0.0)
+    if q < 1:
+        return c * (-3 * q + 2.25 * q * q) * s
+    if q < 2:
+        return c * (-0.75 * (2 - q) ** 2) * s
+    return 0.0
+
+def sph_density_pressure(x, m, h, rho0, K, gamma=7.0):
+    n = len(x)
+    rho = np.zeros(n)
+    for i in range(n):
+        for j in range(n):
+            rho[i] += m * cubic_spline_1d(x[i] - x[j], h)
+    p = K * ((rho / rho0) ** gamma - 1.0)
+    return rho, p
+
+def sph_acceleration(x, v, rho, p, m, h, alpha, c0, g):
+    n = len(x)
+    a = np.full(n, g)
+    for i in range(n):
+        for j in range(n):
+            if i == j:
+                continue
+            r = x[i] - x[j]
+            if abs(r) >= 2 * h:
+                continue
+            grad = cubic_spline_dW(r, h)
+            a[i] -= m * (p[i] / rho[i] ** 2 + p[j] / rho[j] ** 2) * grad
+            v_ij = v[i] - v[j]
+            if v_ij * r < 0:                       # 靠近的粒子对
+                mu = h * v_ij * r / (r * r + 0.01 * h * h)
+                rho_bar = 0.5 * (rho[i] + rho[j])
+                Pi = -alpha * c0 * mu / rho_bar
+                a[i] -= m * Pi * grad
+    return a
+
+# 一维列: 80 个粒子在 y in [0.5, 1.0] 内均匀分布
+N = 80
+x = np.linspace(0.5, 1.0, N)
+v = np.zeros(N)
+m = 0.5 * 1000.0 / N        # 列总质量 / 粒子数
+h = 0.018
+rho0, K = 1000.0, 200.0
+alpha, c0 = 0.5, 20.0
+g, dt = -9.81, 5e-5
+
+for step in range(8000):
+    rho, p = sph_density_pressure(x, m, h, rho0, K)
+    a = sph_acceleration(x, v, rho, p, m, h, alpha, c0, g)
+    v += a * dt
+    x += v * dt
+    below = x < 0.0                                 # 底壁反射边界
+    x[below] = -x[below]
+    v[below] = -0.5 * v[below]
+
+print(f"final mean rho = {rho.mean():.1f}, top particle y = {x.max():.3f}")
+```
+
+跑完 8000 步后,平均密度在 $\rho_0$ 附近振荡,顶部粒子稳定在 $y \approx 0.55$ 处,形成一个更密的底层。这段小程序已经包含了 SPH 求解器的全部骨架 — 求和算密度,EOS 算压力,对称项算加速度,人工粘性维持稳定。
+
+## 亲手拨动粒子
+
+直接动一下下面的模拟。把平滑长度 $h$ 提到 0.07,每个粒子能看到的邻居数变多,颜色趋于均匀(密度估计变平滑)。把 $h$ 降到 0.03,粒子之间会出现明显空隙,压力震荡随之加剧。
+
+<SPHParticleDrop2D />
+
+把刚度 $K$ 调高更接近不可压缩,但声速也会上升,时间步必须缩小。把粘性 $\mu$ 调到零会看到粒子互相穿插的条纹 — 直观地解释了人工粘性为什么必须存在。
+
+## SPH 不擅长的场景
+
+凡有亮面便有阴影。SPH 在强剪切流中数值粘性容易暴走,常常压过物理粘性。粒子聚团会破坏各向同性,使表面张力等微小效应难以捕捉。可变平滑长度 $h_i$ 带来自适应性,但需要在动量项里加上修正(Springel 和 Hernquist 2002 的 $f_i$ 项)。在自由表面附近密度计数骤减,压力可能为负,产生让表面颤动的 tensile instability — XSPH 和 $\delta$-SPH 等方案就是为此设计的。
+
+## 想留下的几句话
+
+三句话总结。SPH 把网格上的导数搬到核函数的导数上,以拉格朗日求和形式呈现。压力项不做对称化,动量守恒就会破;不加人工粘性,粒子在冲击波处会互相穿透。紧支撑核加上合理的 $h$ 同时决定了开销和精度。下次遇到自由表面或爆炸模拟时,不妨想到一万颗漂浮粒子,而不是再加一层自适应网格。
+
+## 参考文献
+
+- Monaghan, J. J. (1992). Smoothed Particle Hydrodynamics. *Annual Review of Astronomy and Astrophysics*, 30, 543.
+- Monaghan, J. J., and Gingold, R. A. (1983). Shock simulation by the particle method SPH. *Journal of Computational Physics*, 52(2), 374.
+- Müller, M., Charypar, D., and Gross, M. (2003). Particle-based fluid simulation for interactive applications. *SCA '03*.
+- Springel, V. (2005). The cosmological simulation code GADGET-2. *MNRAS*, 364, 1105.

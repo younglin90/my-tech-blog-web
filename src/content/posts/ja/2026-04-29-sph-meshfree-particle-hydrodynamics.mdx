@@ -1,0 +1,193 @@
+---
+title: "SPHで流体を解く ― カーネルから人工粘性まで"
+date: 2026-04-29
+description: "格子なしで粒子に流体方程式を解かせるSPHの原理、コード、落とし穴"
+tags: ["SPH", "Meshfree", "Lagrangian", "Multiphase", "Astrophysics"]
+locale: ja
+slug: sph-meshfree-particle-hydrodynamics
+draft: false
+---
+
+import { SPHParticleDrop2D } from '@/components/post-viz/2026-04-29-sph-meshfree-particle-hydrodynamics/SPHParticleDrop2D'
+import { SPHKernelShapeExplorer } from '@/components/post-viz/2026-04-29-sph-meshfree-particle-hydrodynamics/SPHKernelShapeExplorer'
+
+1992年、Joe Monaghan は天体物理のレビュー論文で挑発的な提案を投げかけました。星の周りに格子を敷くのをやめ、ガスを数千個の重なり合う粒子としてばら撒き、互いに圧力場を介して相互作用させようというものです。それから30年が経ち、Smoothed Particle Hydrodynamics(SPH)は天体物理、自由表面流、衝突シミュレーションの分野で静かに、しかし確固たる地位を占めています。本記事では SPH を成立させる4つの方程式と、しばしば踏むことになる落とし穴を追いかけ、ブラウザ上で粒子を実際に動かしてみます。
+
+## 格子のない流体 ― SPHの出発点
+
+オイラー法は座標を空間に固定して、その上を流れが通り過ぎる様子を見ます。SPH は逆です。座標軸を流れに固定し、各粒子が自分の位置で速度と密度を持ち運びます。ラグランジュ表示での連続式と運動量方程式は次の通りです。
+
+$$
+\frac{D\rho}{Dt} = -\rho \nabla \cdot \mathbf{u}, \qquad \frac{D\mathbf{u}}{Dt} = -\frac{\nabla P}{\rho} + \mathbf{g}.
+$$
+
+ここで $\rho$ は密度、$\mathbf{u}$ は速度、$P$ は圧力、$\mathbf{g}$ は重力です。粒子に乗って見ると左辺の時間微分はただの $dt$ になります。問題は右辺の空間微分です。規則的な隣接点を持たない粒子の集合で $\nabla P$ をどう計算するか ― これが SPH の出発点です。
+
+## カーネル W(r, h) ― 粒子が作る仮想体積
+
+答えは畳み込みです。粒子 $j$ の周囲にベル形の関数 $W(r, h)$ を置き、任意の場 $A(\mathbf{x})$ を隣接粒子の重み付き和で近似します。
+
+$$
+\tilde{A}(\mathbf{x}) = \sum_{j} \frac{m_j}{\rho_j}\, A_j\, W(\mathbf{x} - \mathbf{x}_j, h).
+$$
+
+$m_j$ は粒子質量、$\rho_j$ は密度、$h$ はスムージング長です。比 $m_j/\rho_j$ は粒子 $j$ が占める体積として解釈されます。微分も同様に ― $\nabla A \approx \sum_j (m_j/\rho_j) A_j \nabla W$。格子上の微分がカーネルの微分に置き換わりました。
+
+カーネルは積分が1で、$h \to 0$ のときディラックのデルタに収束する必要があります。よく使われるのは $r < h$ または $r < 2h$ の範囲外で0となる、コンパクトサポート型カーネルです。代表的な4種類を見てみましょう。
+
+<SPHKernelShapeExplorer />
+
+3次スプラインは $r = 2h$ で滑らかに0になります。poly6 は密度推定に向いていますが $r$ が小さい領域で勾配が消えるため、圧力計算には不適切です。そのためグラフィックス系 SPH は圧力項に spiky を別に使います。ガウシアンはコンパクトサポートを持たないため計算量が膨らみます。天体物理 SPH では3次スプラインが標準です。
+
+## 密度と圧力 ― 和で定義される場
+
+粒子 $i$ の密度は隣接粒子のカーネル和です。
+
+$$
+\rho_i = \sum_{j} m_j\, W(\mathbf{x}_i - \mathbf{x}_j, h).
+$$
+
+密度が決まれば状態方程式(EOS)で圧力が出ます。弱圧縮性自由表面流では Tait の状態方程式が定番です。
+
+$$
+P_i = K\left[\left(\frac{\rho_i}{\rho_0}\right)^{\gamma} - 1\right].
+$$
+
+$\rho_0$ は静止密度、$K$ は剛性、通常 $\gamma = 7$ を使います。この式は小さな密度変化に大きな圧力応答を返し、非圧縮性を擬似的に再現します。音速 $c_0 = \sqrt{\gamma K / \rho_0}$ が最大流速のおよそ10倍になるよう $K$ を選べばマッハ数は十分に小さく保たれます。
+
+## 運動量を守る対称化のコツ
+
+圧力勾配項の単純な SPH 形は運動量を保存しません。鍵となる恒等式はこちらです。
+
+$$
+\nabla\!\left(\frac{P}{\rho}\right) = \frac{\nabla P}{\rho} + \frac{P}{\rho^2}\nabla\rho.
+$$
+
+これを適用すると、粒子ペアに対して対称な圧力項が得られます。
+
+$$
+\frac{D\mathbf{u}_i}{Dt} = -\sum_{j} m_j \left(\frac{P_i}{\rho_i^2} + \frac{P_j}{\rho_j^2}\right) \nabla_i W_{ij} + \mathbf{g}.
+$$
+
+$j$ から $i$ への力と、$i$ から $j$ への力が完全に逆符号になります。ニュートンの第3法則がペアごとに成立し、全運動量と角運動量は浮動小数点誤差の範囲でしか動かなくなります。この対称化が SPH の安定性のほぼ半分を支えています。
+
+## 衝撃波には人工粘性を ― Monaghan-Gingold レシピ
+
+これだけだと衝撃波で粒子同士が突き抜けてしまいます。Monaghan と Gingold(1983)は接近する粒子ペアにのみ作用する人工粘性を導入しました。
+
+$$
+\Pi_{ij} = \begin{cases}
+\dfrac{-\alpha\, \bar{c}_{ij}\, \mu_{ij} + \beta\, \mu_{ij}^2}{\bar{\rho}_{ij}} & \mathbf{u}_{ij} \cdot \mathbf{r}_{ij} < 0 \\
+0 & \text{otherwise}
+\end{cases}
+$$
+
+$$
+\mu_{ij} = \frac{h\, \mathbf{u}_{ij} \cdot \mathbf{r}_{ij}}{|\mathbf{r}_{ij}|^2 + 0.01 h^2}.
+$$
+
+通常 $\alpha \approx 0.5$–$1.0$、$\beta = 2\alpha$ を用います。粒子が離れる際は0なので、引張領域で粒子を貼り付けることはありません。一方せん断層でも作動するという副作用があり、後に Balsara スイッチなどの改良が登場しました。
+
+## Pythonで1Dカラム崩壊を再現する
+
+鉛直に積まれた80個の粒子が重力で崩れる1次元モデルを書いてみます。
+
+```python
+import numpy as np
+
+def cubic_spline_1d(r, h):
+    """1次元の3次スプラインカーネル W(r, h)."""
+    q = abs(r) / h
+    c = 2.0 / (3.0 * h)
+    if q < 1:
+        return c * (1 - 1.5 * q * q + 0.75 * q ** 3)
+    if q < 2:
+        return c * 0.25 * (2 - q) ** 3
+    return 0.0
+
+def cubic_spline_dW(r, h):
+    """W(r, h) の1階微分、符号は r に従う."""
+    q = abs(r) / h
+    c = 2.0 / (3.0 * h * h)
+    s = 1.0 if r > 0 else (-1.0 if r < 0 else 0.0)
+    if q < 1:
+        return c * (-3 * q + 2.25 * q * q) * s
+    if q < 2:
+        return c * (-0.75 * (2 - q) ** 2) * s
+    return 0.0
+
+def sph_density_pressure(x, m, h, rho0, K, gamma=7.0):
+    n = len(x)
+    rho = np.zeros(n)
+    for i in range(n):
+        for j in range(n):
+            rho[i] += m * cubic_spline_1d(x[i] - x[j], h)
+    p = K * ((rho / rho0) ** gamma - 1.0)
+    return rho, p
+
+def sph_acceleration(x, v, rho, p, m, h, alpha, c0, g):
+    n = len(x)
+    a = np.full(n, g)
+    for i in range(n):
+        for j in range(n):
+            if i == j:
+                continue
+            r = x[i] - x[j]
+            if abs(r) >= 2 * h:
+                continue
+            grad = cubic_spline_dW(r, h)
+            a[i] -= m * (p[i] / rho[i] ** 2 + p[j] / rho[j] ** 2) * grad
+            v_ij = v[i] - v[j]
+            if v_ij * r < 0:                       # 接近するペア
+                mu = h * v_ij * r / (r * r + 0.01 * h * h)
+                rho_bar = 0.5 * (rho[i] + rho[j])
+                Pi = -alpha * c0 * mu / rho_bar
+                a[i] -= m * Pi * grad
+    return a
+
+# 1Dカラム: 80粒子を y in [0.5, 1.0] に均等配置
+N = 80
+x = np.linspace(0.5, 1.0, N)
+v = np.zeros(N)
+m = 0.5 * 1000.0 / N        # カラム総質量 / 粒子数
+h = 0.018
+rho0, K = 1000.0, 200.0
+alpha, c0 = 0.5, 20.0
+g, dt = -9.81, 5e-5
+
+for step in range(8000):
+    rho, p = sph_density_pressure(x, m, h, rho0, K)
+    a = sph_acceleration(x, v, rho, p, m, h, alpha, c0, g)
+    v += a * dt
+    x += v * dt
+    below = x < 0.0                                 # 底面の反射境界
+    x[below] = -x[below]
+    v[below] = -0.5 * v[below]
+
+print(f"final mean rho = {rho.mean():.1f}, top particle y = {x.max():.3f}")
+```
+
+8000ステップ後、平均密度は $\rho_0$ の周りで振動し、最上部の粒子は $y \approx 0.55$ 付近に落ち着きます。この小さなコードに SPH ソルバーの骨格がすべて詰まっています ― 和で密度、EOS で圧力、対称ペア項で加速度、人工粘性で安定化です。
+
+## 自分で粒子を動かしてみよう
+
+下のシミュレーションを直接いじってみましょう。スムージング長 $h$ を 0.07 まで上げると各粒子が見る隣接数が増え、色が均一に近づきます(密度推定が滑らかになる)。逆に 0.03 まで下げると粒子間の隙間が目立ち、圧力振動が激しくなります。
+
+<SPHParticleDrop2D />
+
+剛性 $K$ を上げると非圧縮性をより強く擬似化できますが、音速が上がるため時間刻みを縮める必要があります。粘性 $\mu$ をゼロにすると粒子同士がすり抜ける筋状のパターンが現れます ― なぜ人工粘性が必要なのか、視覚で納得できる瞬間です。
+
+## SPHが苦手な領域
+
+光の当たる側があれば影もあります。SPH は強いせん断流で数値粘性が暴れ、物理粘性をしばしば飲み込みます。粒子のクラスタリングは等方性を破り、表面張力のような微小効果を捉えにくくします。可変スムージング長 $h_i$ を導入すると適応性は得られますが、運動量保存に補正項が必要になります(Springel と Hernquist 2002 の $f_i$ 項)。自由表面付近では密度カウントが急激に減って圧力が負になり、表面が震える tensile instability が生じます ― XSPH や $\delta$-SPH などの処方箋がこの問題を扱います。
+
+## 最後に残したいこと
+
+3行に圧縮します。SPH は格子微分をカーネル微分に置き換えたラグランジュ和のソルバーです。圧力項の対称化を怠れば運動量保存が壊れ、人工粘性なしでは衝撃波で粒子が突き抜けます。コンパクトサポート型カーネルと適切な $h$ がコストと精度を同時に握ります。次に自由表面や爆発のシミュレーションに直面したら、適応格子を増設する代わりに1万個の浮遊粒子という選択肢を思い出してみてください。
+
+## 参考文献
+
+- Monaghan, J. J. (1992). Smoothed Particle Hydrodynamics. *Annual Review of Astronomy and Astrophysics*, 30, 543.
+- Monaghan, J. J., and Gingold, R. A. (1983). Shock simulation by the particle method SPH. *Journal of Computational Physics*, 52(2), 374.
+- Müller, M., Charypar, D., and Gross, M. (2003). Particle-based fluid simulation for interactive applications. *SCA '03*.
+- Springel, V. (2005). The cosmological simulation code GADGET-2. *MNRAS*, 364, 1105.

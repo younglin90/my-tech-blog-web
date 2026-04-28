@@ -35,6 +35,8 @@ export const VIZ_COMPONENTS: Record<string, ComponentType> = {
   "ShallowWaterCasulli1D": dynamic(() => import("@/components/post-viz/2026-04-26-casulli-walters-unstructured-shallow-water/ShallowWaterCasulli1D").then((m) => ({ default: m.ShallowWaterCasulli1D })), { ssr: false, loading: VizLoading }),
   "SimpleResidualHistory": dynamic(() => import("@/components/post-viz/2026-03-27-simpleFoam-pressure-divergence/SimpleResidualHistory").then((m) => ({ default: m.SimpleResidualHistory })), { ssr: false, loading: VizLoading }),
   "SpeedOfSoundMix": dynamic(() => import("@/components/post-viz/compressible-multiphase-intro/SpeedOfSoundMix").then((m) => ({ default: m.SpeedOfSoundMix })), { ssr: false, loading: VizLoading }),
+  "SPHKernelShapeExplorer": dynamic(() => import("@/components/post-viz/2026-04-29-sph-meshfree-particle-hydrodynamics/SPHKernelShapeExplorer").then((m) => ({ default: m.SPHKernelShapeExplorer })), { ssr: false, loading: VizLoading }),
+  "SPHParticleDrop2D": dynamic(() => import("@/components/post-viz/2026-04-29-sph-meshfree-particle-hydrodynamics/SPHParticleDrop2D").then((m) => ({ default: m.SPHParticleDrop2D })), { ssr: false, loading: VizLoading }),
   "StencilCompare": dynamic(() => import("@/components/post-viz/fdm-fem-fvm/StencilCompare").then((m) => ({ default: m.StencilCompare })), { ssr: false, loading: VizLoading }),
   "StreamLine": dynamic(() => import("@/components/viz/StreamLine").then((m) => ({ default: m.StreamLine })), { ssr: false, loading: VizLoading }),
   "TENOvsWENOAdvection1D": dynamic(() => import("@/components/post-viz/2026-04-25-teno-low-dissipation-shock-capturing/TENOvsWENOAdvection1D").then((m) => ({ default: m.TENOvsWENOAdvection1D })), { ssr: false, loading: VizLoading }),

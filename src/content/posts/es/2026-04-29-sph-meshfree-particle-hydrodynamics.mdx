@@ -1,0 +1,193 @@
+---
+title: "SPH paso a paso — resolver fluidos con partículas, del kernel a la viscosidad artificial"
+date: 2026-04-29
+description: "Cómo SPH reemplaza la malla por partículas: ecuaciones, código y trampas"
+tags: ["SPH", "Meshfree", "Lagrangian", "Multiphase", "Astrophysics"]
+locale: es
+slug: sph-meshfree-particle-hydrodynamics
+draft: false
+---
+
+import { SPHParticleDrop2D } from '@/components/post-viz/2026-04-29-sph-meshfree-particle-hydrodynamics/SPHParticleDrop2D'
+import { SPHKernelShapeExplorer } from '@/components/post-viz/2026-04-29-sph-meshfree-particle-hydrodynamics/SPHKernelShapeExplorer'
+
+En 1992, Joe Monaghan lanzó una provocación en una revisión astrofísica: dejen de tender mallas alrededor de las estrellas. En su lugar, dispersen el gas en miles de gotas que se solapan e interactúan a través de un campo de presión suave. Treinta años después, la idea — Smoothed Particle Hydrodynamics, o SPH — ocupa un rincón discreto pero firme en astrofísica, flujos con superficie libre y simulaciones de impacto. Este artículo sigue las cuatro ecuaciones que sostienen el método, las trampas más comunes y deja al lector empujar partículas en el navegador.
+
+## Un solver sin malla
+
+Los métodos eulerianos fijan el sistema de coordenadas y observan al flujo pasar. SPH hace lo contrario. Cada partícula carga su velocidad y densidad y viaja con el flujo. En forma lagrangiana, la continuidad y el momento son
+
+$$
+\frac{D\rho}{Dt} = -\rho \nabla \cdot \mathbf{u}, \qquad \frac{D\mathbf{u}}{Dt} = -\frac{\nabla P}{\rho} + \mathbf{g}.
+$$
+
+donde $\rho$ es densidad, $\mathbf{u}$ velocidad, $P$ presión y $\mathbf{g}$ gravedad. Sobre la trayectoria de una partícula, la derivada temporal se reduce a un simple $dt$. Lo difícil está en la derivada espacial. Sin una rejilla regular de vecinos, ¿cómo evaluar $\nabla P$? Esa es la pregunta que SPH responde.
+
+## El kernel W(r, h) — un volumen virtual alrededor de cada partícula
+
+La salida es la convolución. Se coloca una función con forma de campana $W(r, h)$ alrededor de cada partícula y se aproxima cualquier campo $A(\mathbf{x})$ como una suma ponderada sobre vecinos:
+
+$$
+\tilde{A}(\mathbf{x}) = \sum_{j} \frac{m_j}{\rho_j}\, A_j\, W(\mathbf{x} - \mathbf{x}_j, h).
+$$
+
+$m_j$ es la masa, $\rho_j$ la densidad y $h$ la longitud de suavizado (smoothing length). El cociente $m_j/\rho_j$ se interpreta como el volumen ocupado por la partícula $j$. La derivada se traslada al kernel — $\nabla A \approx \sum_j (m_j/\rho_j) A_j \nabla W$. La derivada de la malla se vuelve la derivada del kernel.
+
+Un kernel válido integra a uno y converge a una delta de Dirac cuando $h \to 0$. Las opciones más populares tienen soporte compacto: se anulan fuera de $r < h$ o $r < 2h$, lo que evita comparar todas las partículas. A continuación, los cuatro clásicos.
+
+<SPHKernelShapeExplorer />
+
+El cubic spline cae suavemente a cero en $r = 2h$. El kernel poly6 sirve para densidades pero su gradiente se aplana cerca de $r = 0$, por lo que en SPH para gráficos se usa el spiky aparte para la presión. La gaussiana no tiene soporte compacto, lo que penaliza el coste. SPH astrofísico opta casi siempre por el cubic spline.
+
+## Densidad y presión definidas como sumas
+
+La densidad en la partícula $i$ es una suma de kernels sobre vecinos:
+
+$$
+\rho_i = \sum_{j} m_j\, W(\mathbf{x}_i - \mathbf{x}_j, h).
+$$
+
+La presión sale de una ecuación de estado. En flujos con superficie libre poco compresibles, la EOS de Tait es la favorita:
+
+$$
+P_i = K\left[\left(\frac{\rho_i}{\rho_0}\right)^{\gamma} - 1\right].
+$$
+
+$\rho_0$ es la densidad de reposo, $K$ la rigidez, normalmente $\gamma = 7$. La fórmula entrega una respuesta de presión grande ante variaciones de densidad pequeñas, lo que imita la incompresibilidad. Si $K$ se elige de modo que la velocidad del sonido $c_0 = \sqrt{\gamma K / \rho_0}$ ronde diez veces la velocidad máxima, el número de Mach se mantiene bajo.
+
+## Un truco de simetría que conserva el momento
+
+La forma ingenua de $\nabla P / \rho$ no conserva el momento. La identidad clave es
+
+$$
+\nabla\!\left(\frac{P}{\rho}\right) = \frac{\nabla P}{\rho} + \frac{P}{\rho^2}\nabla\rho.
+$$
+
+Al insertarla aparece un término de presión simétrico en pares:
+
+$$
+\frac{D\mathbf{u}_i}{Dt} = -\sum_{j} m_j \left(\frac{P_i}{\rho_i^2} + \frac{P_j}{\rho_j^2}\right) \nabla_i W_{ij} + \mathbf{g}.
+$$
+
+La fuerza de $j$ sobre $i$ tiene exactamente signo opuesto a la de $i$ sobre $j$. La tercera ley de Newton se cumple en cada par, y el momento total y angular sólo se mueven por errores de coma flotante. Esta simetrización cubre la mitad del secreto de la estabilidad de SPH.
+
+## Viscosidad artificial para choques — receta Monaghan-Gingold
+
+Sin más artilugios, las partículas se atraviesan al cruzar un choque. Monaghan y Gingold (1983) introdujeron una viscosidad artificial que sólo se activa entre pares que se acercan:
+
+$$
+\Pi_{ij} = \begin{cases}
+\dfrac{-\alpha\, \bar{c}_{ij}\, \mu_{ij} + \beta\, \mu_{ij}^2}{\bar{\rho}_{ij}} & \mathbf{u}_{ij} \cdot \mathbf{r}_{ij} < 0 \\
+0 & \text{otherwise}
+\end{cases}
+$$
+
+$$
+\mu_{ij} = \frac{h\, \mathbf{u}_{ij} \cdot \mathbf{r}_{ij}}{|\mathbf{r}_{ij}|^2 + 0.01 h^2}.
+$$
+
+Los valores típicos son $\alpha \approx 0.5$–$1.0$ y $\beta = 2\alpha$. Como se anula cuando las partículas se separan, no pega partículas en zonas de tracción. Su contraparte: dispara también dentro de capas de cizalla, lo que motivó interruptores como el de Balsara más adelante.
+
+## Colapso de una columna 1D en Python
+
+Veamos ochenta partículas apiladas verticalmente que colapsan bajo la gravedad.
+
+```python
+import numpy as np
+
+def cubic_spline_1d(r, h):
+    """Kernel cubic spline 1D W(r, h)."""
+    q = abs(r) / h
+    c = 2.0 / (3.0 * h)
+    if q < 1:
+        return c * (1 - 1.5 * q * q + 0.75 * q ** 3)
+    if q < 2:
+        return c * 0.25 * (2 - q) ** 3
+    return 0.0
+
+def cubic_spline_dW(r, h):
+    """Primera derivada dW/dr; el signo sigue al de r."""
+    q = abs(r) / h
+    c = 2.0 / (3.0 * h * h)
+    s = 1.0 if r > 0 else (-1.0 if r < 0 else 0.0)
+    if q < 1:
+        return c * (-3 * q + 2.25 * q * q) * s
+    if q < 2:
+        return c * (-0.75 * (2 - q) ** 2) * s
+    return 0.0
+
+def sph_density_pressure(x, m, h, rho0, K, gamma=7.0):
+    n = len(x)
+    rho = np.zeros(n)
+    for i in range(n):
+        for j in range(n):
+            rho[i] += m * cubic_spline_1d(x[i] - x[j], h)
+    p = K * ((rho / rho0) ** gamma - 1.0)
+    return rho, p
+
+def sph_acceleration(x, v, rho, p, m, h, alpha, c0, g):
+    n = len(x)
+    a = np.full(n, g)
+    for i in range(n):
+        for j in range(n):
+            if i == j:
+                continue
+            r = x[i] - x[j]
+            if abs(r) >= 2 * h:
+                continue
+            grad = cubic_spline_dW(r, h)
+            a[i] -= m * (p[i] / rho[i] ** 2 + p[j] / rho[j] ** 2) * grad
+            v_ij = v[i] - v[j]
+            if v_ij * r < 0:                       # par que se aproxima
+                mu = h * v_ij * r / (r * r + 0.01 * h * h)
+                rho_bar = 0.5 * (rho[i] + rho[j])
+                Pi = -alpha * c0 * mu / rho_bar
+                a[i] -= m * Pi * grad
+    return a
+
+# Columna 1D: 80 partículas distribuidas uniformemente en y in [0.5, 1.0]
+N = 80
+x = np.linspace(0.5, 1.0, N)
+v = np.zeros(N)
+m = 0.5 * 1000.0 / N        # masa total / cantidad de partículas
+h = 0.018
+rho0, K = 1000.0, 200.0
+alpha, c0 = 0.5, 20.0
+g, dt = -9.81, 5e-5
+
+for step in range(8000):
+    rho, p = sph_density_pressure(x, m, h, rho0, K)
+    a = sph_acceleration(x, v, rho, p, m, h, alpha, c0, g)
+    v += a * dt
+    x += v * dt
+    below = x < 0.0                                 # rebote en la pared inferior
+    x[below] = -x[below]
+    v[below] = -0.5 * v[below]
+
+print(f"final mean rho = {rho.mean():.1f}, top particle y = {x.max():.3f}")
+```
+
+Tras 8000 pasos la densidad media oscila alrededor de $\rho_0$ y la partícula más alta se asienta cerca de $y \approx 0.55$ sobre un lecho más denso. Este pequeño script ya contiene todo el esqueleto de SPH — sumas para la densidad, EOS para la presión, pares simétricos para la aceleración y viscosidad artificial para la estabilidad.
+
+## Mover las partículas en directo
+
+Pruébalo abajo. Subir la longitud de suavizado $h$ hasta 0.07 da más vecinos a cada partícula y los colores se uniformizan (las estimaciones de densidad se suavizan). Bajar $h$ a 0.03 deja huecos visibles entre partículas y dispara las oscilaciones de presión.
+
+<SPHParticleDrop2D />
+
+Aumentar la rigidez $K$ aproxima mejor la incompresibilidad, pero la velocidad del sonido sube y el paso temporal debe achicarse. Si la viscosidad $\mu$ se pone en cero, aparecen vetas de partículas que se atraviesan — una respuesta visual a la pregunta de por qué hace falta viscosidad artificial.
+
+## Dónde tropieza SPH
+
+Toda luz tiene su sombra. SPH derrama viscosidad numérica en flujos dominados por cizalla, frecuentemente engulle a la viscosidad física. La agrupación de partículas rompe la isotropía y dificulta efectos finos como la tensión superficial. Una longitud de suavizado variable $h_i$ aporta adaptatividad pero exige un término correctivo en el momento (el factor $f_i$ de Springel y Hernquist 2002). Cerca de una superficie libre, la cuenta de densidad cae bruscamente, la presión puede volverse negativa y produce inestabilidad de tracción que riza la superficie — XSPH y $\delta$-SPH se diseñaron para mitigar ese problema.
+
+## Lo que conviene retener
+
+Tres ideas. SPH traslada la derivada de la malla al kernel mediante una suma lagrangiana. Sin simetrizar el término de presión se pierde conservación del momento; sin viscosidad artificial las partículas se atraviesan en los choques. Un kernel con soporte compacto y un $h$ razonable gobiernan a la vez coste y precisión. La próxima vez que llegue una simulación de superficie libre o de explosión a la mesa, conviene recordar la opción de diez mil partículas flotantes en lugar de otra capa más de malla adaptativa.
+
+## Referencias
+
+- Monaghan, J. J. (1992). Smoothed Particle Hydrodynamics. *Annual Review of Astronomy and Astrophysics*, 30, 543.
+- Monaghan, J. J., y Gingold, R. A. (1983). Shock simulation by the particle method SPH. *Journal of Computational Physics*, 52(2), 374.
+- Müller, M., Charypar, D., y Gross, M. (2003). Particle-based fluid simulation for interactive applications. *SCA '03*.
+- Springel, V. (2005). The cosmological simulation code GADGET-2. *MNRAS*, 364, 1105.
