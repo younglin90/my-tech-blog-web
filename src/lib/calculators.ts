@@ -528,6 +528,20 @@ export const CALCULATORS: CalculatorMeta[] = [
     tags: ['y+', 'wall modeling', 'mesh', 'SST'],
   },
   {
+    slug: 'y-plus-wall-visualizer',
+    category: 'turbulence',
+    title: { ko: 'y+ 벽면 레이어 시각화', en: 'y+ Wall-Layer Visualizer', ja: 'y+ 壁面レイヤー可視化', zh: 'y+ 壁面层可视化', es: 'Visualizador de Capa de Pared y+' },
+    desc: {
+      ko: '목표 y+가 점성저층, buffer, log-law 영역 중 어디에 놓이는지 첫 셀 높이와 함께 보여줍니다.',
+      en: 'Show whether a target y+ lands in the viscous sublayer, buffer layer, or log-law region with first-cell height.',
+      ja: '目標y+が粘性底層、バッファ層、対数則領域のどこにあるかを第一セル高さとともに表示します。',
+      zh: '显示目标 y+ 位于黏性底层、缓冲层还是对数律区，并给出首层高度。',
+      es: 'Muestra si el y+ objetivo cae en subcapa viscosa, buffer o región log-law junto con la primera altura de celda.',
+    },
+    formula: 'y+ = rho u_tau y / mu,   y = y+ mu / (rho u_tau)',
+    tags: ['y+', 'wall units', 'mesh', 'visualization'],
+  },
+  {
     slug: 'boundary-layer-stack',
     category: 'turbulence',
     title: { ko: '경계층 prism layer 스택', en: 'Boundary-Layer Prism Stack', ja: '境界層プリズムレイヤー', zh: '边界层棱柱层堆叠', es: 'Capas Prismáticas de Capa Límite' },

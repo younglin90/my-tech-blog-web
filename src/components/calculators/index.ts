@@ -29,6 +29,7 @@ import { BondNumberCalculator } from '@/components/calculators/BondNumber'
 import { CavitationNumberCalculator } from '@/components/calculators/CavitationNumber'
 import { DiffusionCFLCalculator } from '@/components/calculators/DiffusionCFL'
 import { CellReynoldsCalculator } from '@/components/calculators/CellReynolds'
+import { YPlusWallVisualizerCalculator } from '@/components/calculators/YPlusWallVisualizer'
 import {
   BoundaryLayerStackCalculator,
   ColebrookCalculator,
@@ -76,6 +77,7 @@ export const CALCULATOR_COMPONENTS: Record<string, () => ReactElement> = {
   'turbulence-intensity': TurbulenceIntensityCalculator,
   stokes: StokesCalculator,
   'y-plus': YPlusCalculator,
+  'y-plus-wall-visualizer': YPlusWallVisualizerCalculator,
   nusselt: NusseltCalculator,
   lewis: LewisCalculator,
   biot: BiotCalculator,
