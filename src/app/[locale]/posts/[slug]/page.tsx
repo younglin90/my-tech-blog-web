@@ -15,6 +15,7 @@ import { ReadingPosition } from '@/components/ReadingPosition'
 import { QuoteShare } from '@/components/QuoteShare'
 import { LinkPreview } from '@/components/LinkPreview'
 import { PostFeedback } from '@/components/PostFeedback'
+import { PostSourceLinks } from '@/components/PostSourceLinks'
 import { Giscus } from '@/components/Giscus'
 import { AuthorBio } from '@/components/AuthorBio'
 import { SeriesNav } from '@/components/SeriesNav'
@@ -280,6 +281,8 @@ export default async function PostPage({ params }: PostProps) {
           <ShareButton title={post.title} />
         </div>
       </div>
+
+      <PostSourceLinks locale={loc} slug={post.slug} />
 
       {related.length > 0 && (
         <div className="mt-10">
