@@ -570,6 +570,20 @@ export const CALCULATORS: CalculatorMeta[] = [
     tags: ['turbulence', 'inlet BC', 'eddy scale', 'k-omega'],
   },
   {
+    slug: 'les-resolution-planner',
+    category: 'turbulence',
+    title: { ko: 'LES 해상도 플래너', en: 'LES Resolution Planner', ja: 'LES 解像度プランナー', zh: 'LES 分辨率规划器', es: 'Planificador de Resolución LES' },
+    desc: {
+      ko: '격자 간격, Kolmogorov 스케일, Smagorinsky SGS 점성을 비교해 LES/DNS 가능성을 시각화합니다.',
+      en: 'Compare grid spacing, Kolmogorov scale, and Smagorinsky SGS viscosity to visualize LES/DNS feasibility.',
+      ja: '格子間隔、Kolmogorovスケール、Smagorinsky SGS粘性を比較し、LES/DNSの成立性を可視化します。',
+      zh: '比较网格间距、Kolmogorov 尺度与 Smagorinsky SGS 黏性，可视化 LES/DNS 可行性。',
+      es: 'Compara espaciamiento de malla, escala de Kolmogórov y viscosidad SGS de Smagorinsky para visualizar viabilidad LES/DNS.',
+    },
+    formula: 'Delta = (dx dy dz)^(1/3),   eta = (nu^3/epsilon)^(1/4),   nu_sgs = (Cs Delta)^2 |S|',
+    tags: ['LES', 'DNS', 'Smagorinsky', 'Kolmogorov', 'mesh'],
+  },
+  {
     slug: 'stokes',
     category: 'turbulence',
     title: { ko: 'Stokes 수', en: 'Stokes Number', ja: 'ストークス数', zh: '斯托克斯数', es: 'Número de Stokes' },

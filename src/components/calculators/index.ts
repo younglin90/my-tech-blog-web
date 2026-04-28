@@ -4,6 +4,7 @@ import { CFLCalculator } from '@/components/calculators/CFL'
 import { FannoCalculator } from '@/components/calculators/Fanno'
 import { IsentropicCalculator } from '@/components/calculators/Isentropic'
 import { KolmogorovCalculator } from '@/components/calculators/Kolmogorov'
+import { LesResolutionPlannerCalculator } from '@/components/calculators/LesResolutionPlanner'
 import { MachCalculator } from '@/components/calculators/Mach'
 import { MassFluxBalanceVisualizerCalculator } from '@/components/calculators/MassFluxBalanceVisualizer'
 import { MeshQualityVisualizerCalculator } from '@/components/calculators/MeshQualityVisualizer'
@@ -91,6 +92,7 @@ export const CALCULATOR_COMPONENTS: Record<string, () => ReactElement> = {
   kolmogorov: KolmogorovCalculator,
   'turbulence-intensity': TurbulenceIntensityCalculator,
   'turbulence-inlet-visualizer': TurbulenceInletVisualizerCalculator,
+  'les-resolution-planner': LesResolutionPlannerCalculator,
   stokes: StokesCalculator,
   'y-plus': YPlusCalculator,
   'y-plus-wall-visualizer': YPlusWallVisualizerCalculator,
