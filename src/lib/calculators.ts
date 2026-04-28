@@ -206,6 +206,20 @@ export const CALCULATORS: CalculatorMeta[] = [
     tags: ['compressible', 'nozzle', 'choked flow', 'mass flow'],
   },
   {
+    slug: 'standard-atmosphere-visualizer',
+    category: 'compressible',
+    title: { ko: '표준대기 자유류 설정', en: 'Standard Atmosphere Freestream', ja: '標準大気の自由流設定', zh: '标准大气自由流设置', es: 'Condición de Flujo Libre ISA' },
+    desc: {
+      ko: '고도와 속도에서 온도, 압력, 밀도, 음속, Mach, Reynolds 수를 시각적으로 설정합니다.',
+      en: 'Set freestream temperature, pressure, density, sound speed, Mach, and Reynolds number from altitude and speed.',
+      ja: '高度と速度から温度、圧力、密度、音速、Mach、Reynolds数を視覚的に設定します。',
+      zh: '由高度和速度设置自由流温度、压力、密度、声速、Mach 与 Reynolds 数。',
+      es: 'Define temperatura, presión, densidad, velocidad del sonido, Mach y Reynolds desde altitud y velocidad.',
+    },
+    formula: 'rho = p/(R T),   a = sqrt(gamma R T),   Re = rho U L / mu',
+    tags: ['standard atmosphere', 'freestream', 'Mach', 'Reynolds'],
+  },
+  {
     slug: 'sutherland-air',
     category: 'compressible',
     title: { ko: 'Sutherland 공기 물성', en: 'Sutherland Air Properties', ja: 'Sutherland 空気物性', zh: 'Sutherland 空气物性', es: 'Propiedades del Aire por Sutherland' },

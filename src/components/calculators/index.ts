@@ -13,6 +13,7 @@ import { PrandtlCalculator } from '@/components/calculators/Prandtl'
 import { RayleighCalculator } from '@/components/calculators/Rayleigh'
 import { ResidualConvergenceAnalyzerCalculator } from '@/components/calculators/ResidualConvergenceAnalyzer'
 import { ReynoldsCalculator } from '@/components/calculators/Reynolds'
+import { StandardAtmosphereVisualizerCalculator } from '@/components/calculators/StandardAtmosphereVisualizer'
 import { StokesCalculator } from '@/components/calculators/Stokes'
 import { TurbulenceIntensityCalculator } from '@/components/calculators/TurbulenceIntensity'
 import { ChokedMassFlowCalculator } from '@/components/calculators/ChokedMassFlow'
@@ -68,6 +69,7 @@ export const CALCULATOR_COMPONENTS: Record<string, () => ReactElement> = {
   'rayleigh-flow': RayleighCalculator,
   'choked-mass-flow': ChokedMassFlowCalculator,
   'nozzle-area-mach-visualizer': NozzleAreaMachVisualizerCalculator,
+  'standard-atmosphere-visualizer': StandardAtmosphereVisualizerCalculator,
   reynolds: ReynoldsCalculator,
   mach: MachCalculator,
   prandtl: PrandtlCalculator,
