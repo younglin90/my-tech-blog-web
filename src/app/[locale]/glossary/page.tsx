@@ -1,6 +1,6 @@
 import { notFound } from 'next/navigation'
 import type { Metadata } from 'next'
-import { LOCALES, isLocale, type Locale } from '@/lib/i18n'
+import { LOCALES, isLocale, t, type Locale } from '@/lib/i18n'
 import glossary from '@/lib/glossary.json'
 import { GlossaryClient } from '@/components/GlossaryClient'
 import { SITE_URL } from '@/lib/site'
@@ -13,9 +13,10 @@ export async function generateStaticParams() {
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const { locale } = await params
+  const loc = isLocale(locale) ? locale : 'en'
   return {
-    title: 'Glossary',
-    description: 'CFD terms with quick definitions.',
+    title: t(loc, 'glossary.title'),
+    description: t(loc, 'glossary.description'),
     alternates: {
       canonical: `${SITE_URL}/${locale}/glossary`,
       languages: Object.fromEntries(LOCALES.map((l) => [l, `${SITE_URL}/${l}/glossary`])),
@@ -27,6 +28,7 @@ interface Entry {
   ko: string
   en: string
   wiki?: string
+  posts?: Array<{ slug: string; title: string; date: string; count: number }>
 }
 
 export default async function Glossary({ params }: Props) {
@@ -35,6 +37,7 @@ export default async function Glossary({ params }: Props) {
   const loc = locale as Locale
   const entries = Object.entries(glossary as Record<string, Entry>)
     .sort(([a], [b]) => a.localeCompare(b))
+  const linked = entries.filter(([, entry]) => entry.posts && entry.posts.length > 0).length
 
   return (
     <div>
@@ -42,10 +45,10 @@ export default async function Glossary({ params }: Props) {
         <span style={{ color: 'var(--accent)' }}>$</span> man cfd-glossary
       </div>
       <h1 className="display mb-2" style={{ fontSize: 32, fontWeight: 700, letterSpacing: '-0.02em', color: 'var(--text)' }}>
-        Glossary
+        {t(loc, 'glossary.title')}
       </h1>
       <p className="mb-6 text-sm" style={{ color: 'var(--text-muted)' }}>
-        {entries.length} CFD terms · quick reference.
+        {t(loc, 'glossary.subtitle', { terms: String(entries.length), linked: String(linked) })}
       </p>
 
       <GlossaryClient entries={entries} locale={loc} total={entries.length} />

@@ -1,16 +1,26 @@
 'use client'
 
+import Link from 'next/link'
 import { useMemo, useState, useCallback } from 'react'
+import { t, type Locale } from '@/lib/i18n'
 
 interface Entry {
   ko: string
   en: string
   wiki?: string
+  count?: number
+  source?: string
+  posts?: Array<{
+    slug: string
+    title: string
+    date: string
+    count: number
+  }>
 }
 
 interface Props {
   entries: [string, Entry][]
-  locale: string
+  locale: Locale
   total: number
 }
 
@@ -42,7 +52,7 @@ function shuffle<T>(arr: T[]): T[] {
   return a
 }
 
-function FlashcardMode({ entries, locale }: { entries: [string, Entry][]; locale: string }) {
+function FlashcardMode({ entries, locale }: { entries: [string, Entry][]; locale: Locale }) {
   const [deck, setDeck] = useState(() => shuffle(entries))
   const [idx, setIdx] = useState(0)
   const [revealed, setRevealed] = useState(false)
@@ -83,7 +93,7 @@ function FlashcardMode({ entries, locale }: { entries: [string, Entry][]; locale
           className="rounded-lg px-6 py-2.5 text-sm font-medium transition-opacity hover:opacity-80"
           style={{ background: 'var(--accent)', color: '#08111f' }}
         >
-          Restart
+          {t(locale, 'glossary.restart')}
         </button>
       </div>
     )
@@ -112,7 +122,7 @@ function FlashcardMode({ entries, locale }: { entries: [string, Entry][]; locale
             {definition}
           </p>
         ) : (
-          <p className="mt-6 text-xs" style={{ color: 'var(--text-faint)' }}>tap to reveal</p>
+          <p className="mt-6 text-xs" style={{ color: 'var(--text-faint)' }}>{t(locale, 'glossary.tapReveal')}</p>
         )}
         {def.wiki && revealed && (
           <a
@@ -135,7 +145,7 @@ function FlashcardMode({ entries, locale }: { entries: [string, Entry][]; locale
           className="rounded-lg px-6 py-2.5 text-sm font-medium transition-all disabled:opacity-30"
           style={{ background: 'var(--surface)', border: '1px solid #f87171', color: '#f87171' }}
         >
-          ✗ missed
+          {t(locale, 'glossary.missed')}
         </button>
         <button
           onClick={() => next(true)}
@@ -143,10 +153,10 @@ function FlashcardMode({ entries, locale }: { entries: [string, Entry][]; locale
           className="rounded-lg px-6 py-2.5 text-sm font-medium transition-all disabled:opacity-30"
           style={{ background: 'var(--surface)', border: '1px solid #34d399', color: '#34d399' }}
         >
-          ✓ knew it
+          {t(locale, 'glossary.knew')}
         </button>
       </div>
-      <p className="text-xs" style={{ color: 'var(--text-faint)' }}>click the card to reveal · then mark yourself</p>
+      <p className="text-xs" style={{ color: 'var(--text-faint)' }}>{t(locale, 'glossary.flashcardHint')}</p>
     </div>
   )
 }
@@ -159,7 +169,8 @@ export function GlossaryClient({ entries, locale, total }: Props) {
     if (!lower) return entries
     return entries.filter(([term, def]) => {
       const def_text = (locale === 'ko' ? def.ko : def.en) || def.en || def.ko
-      return term.toLowerCase().includes(lower) || def_text.toLowerCase().includes(lower)
+      const postText = (def.posts ?? []).map((post) => post.title).join(' ')
+      return [term, def_text, postText].join(' ').toLowerCase().includes(lower)
     })
   }, [q, entries, locale])
 
@@ -175,14 +186,14 @@ export function GlossaryClient({ entries, locale, total }: Props) {
       <>
         <div className="mb-6 flex items-center justify-between">
           <h2 className="text-sm font-semibold" style={{ color: 'var(--text-muted)' }}>
-            Flashcard mode — {entries.length} terms
+            {t(locale, 'glossary.flashcards')} — {entries.length}
           </h2>
           <button
             onClick={() => setMode('browse')}
             className="rounded-md px-3 py-1.5 text-xs transition-colors"
             style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text-muted)' }}
           >
-            ← back to browse
+            {t(locale, 'glossary.backToBrowse')}
           </button>
         </div>
         <FlashcardMode entries={entries} locale={locale} />
@@ -196,7 +207,7 @@ export function GlossaryClient({ entries, locale, total }: Props) {
         <div className="relative flex-1 max-w-sm">
           <input
             type="text"
-            placeholder="Filter terms…"
+            placeholder={t(locale, 'glossary.filterPlaceholder')}
             value={q}
             onChange={(e) => setQ(e.target.value)}
             className="w-full rounded-lg px-4 py-2 text-sm focus:outline-none"
@@ -221,9 +232,9 @@ export function GlossaryClient({ entries, locale, total }: Props) {
             onClick={() => setMode('flashcard')}
             className="rounded-md px-3 py-1.5 text-xs font-medium transition-colors"
             style={{ background: 'var(--accent-glow)', border: '1px solid var(--accent)', color: 'var(--accent)' }}
-            title="Quiz yourself on CFD terms"
+            title={t(locale, 'glossary.flashcardTitle')}
           >
-            ⚡ Flashcards
+            {t(locale, 'glossary.flashcards')}
           </button>
         </div>
       </div>
@@ -244,7 +255,7 @@ export function GlossaryClient({ entries, locale, total }: Props) {
       )}
 
       {filtered.length === 0 && (
-        <p className="text-sm" style={{ color: 'var(--text-muted)' }}>No terms match "{q}".</p>
+        <p className="text-sm" style={{ color: 'var(--text-muted)' }}>{t(locale, 'glossary.noMatch', { query: q })}</p>
       )}
 
       <dl className="space-y-5">
@@ -274,6 +285,11 @@ export function GlossaryClient({ entries, locale, total }: Props) {
                   <span className="text-lg font-semibold" style={{ fontFamily: 'var(--font-display)', color: 'var(--accent)' }}>
                     <Highlight text={term} query={q} />
                   </span>
+                  {typeof def.count === 'number' && def.count > 0 && (
+                    <span className="mono rounded px-1.5 py-0.5 text-[10px]" style={{ background: 'var(--bg)', color: 'var(--text-faint)' }}>
+                      {def.count} hits
+                    </span>
+                  )}
                   {def.wiki && (
                     <a
                       href={def.wiki}
@@ -289,6 +305,28 @@ export function GlossaryClient({ entries, locale, total }: Props) {
                 <dd className="mt-1.5 text-sm leading-relaxed" style={{ color: 'var(--text-muted)' }}>
                   <Highlight text={definition} query={q} />
                 </dd>
+                {def.posts && def.posts.length > 0 && (
+                  <div className="mt-4">
+                    <div className="mb-2 text-[10px] font-semibold uppercase tracking-widest" style={{ color: 'var(--text-faint)' }}>
+                      {t(locale, 'glossary.sourcePosts')}
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {def.posts.slice(0, 5).map((post) => (
+                        <Link
+                          key={`${term}-${post.slug}`}
+                          href={`/${locale}/posts/${post.slug}`}
+                          className="rounded-lg px-2.5 py-1.5 text-xs transition-colors"
+                          style={{ background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text-muted)' }}
+                        >
+                          <span className="link-hover-accent">{post.title}</span>
+                          <span className="mono ml-1" style={{ color: 'var(--text-faint)' }}>
+                            ×{post.count}
+                          </span>
+                        </Link>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           )
