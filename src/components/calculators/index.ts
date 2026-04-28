@@ -36,6 +36,14 @@ import {
   LiftDragCalculator,
   StrouhalCalculator,
 } from '@/components/calculators/EngineeringSuite'
+import {
+  DynamicPressureCalculator,
+  GciCalculator,
+  HydraulicDiameterCalculator,
+  OrificeFlowCalculator,
+  SutherlandAirCalculator,
+  ValveCvKvCalculator,
+} from '@/components/calculators/FlowUtilitySuite'
 
 export const CALCULATOR_COMPONENTS: Record<string, () => ReactElement> = {
   isentropic: IsentropicCalculator,
@@ -73,4 +81,10 @@ export const CALCULATOR_COMPONENTS: Record<string, () => ReactElement> = {
   'strouhal-vortex-shedding': StrouhalCalculator,
   'courant-3d': Courant3DCalculator,
   'boundary-layer-stack': BoundaryLayerStackCalculator,
+  'sutherland-air': SutherlandAirCalculator,
+  'orifice-flow': OrificeFlowCalculator,
+  'valve-cv-kv': ValveCvKvCalculator,
+  'hydraulic-diameter': HydraulicDiameterCalculator,
+  'dynamic-pressure': DynamicPressureCalculator,
+  'grid-convergence-index': GciCalculator,
 }
