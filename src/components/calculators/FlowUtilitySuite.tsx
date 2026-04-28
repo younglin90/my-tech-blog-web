@@ -1,7 +1,7 @@
 'use client'
 
 import { useMemo, useState } from 'react'
-import { CalculatorPanel, MetricCard, Note, NumberField, formatNumber } from '@/components/calculators/ui'
+import { CalculatorPanel, MetricCard, Note, NumberField, SelectField, formatNumber } from '@/components/calculators/ui'
 
 const PSI_TO_PA = 6894.757293168
 const GPM_TO_M3S = 0.0000630901964
@@ -208,6 +208,106 @@ export function GciCalculator() {
         <MetricCard label="asymptotic ratio" value={formatNumber(result.asymptotic)} color="#f87171" />
       </div>
       <Note>Assumes monotonic three-grid convergence. Treat non-monotonic values as a warning, not a certification.</Note>
+    </CalculatorPanel>
+  )
+}
+
+const CONVERSIONS = {
+  pressure: {
+    label: 'Pressure',
+    base: 'Pa',
+    units: {
+      Pa: 1,
+      kPa: 1000,
+      bar: 100000,
+      atm: 101325,
+      psi: PSI_TO_PA,
+    },
+  },
+  velocity: {
+    label: 'Velocity',
+    base: 'm/s',
+    units: {
+      'm/s': 1,
+      'ft/s': 0.3048,
+      kmh: 1 / 3.6,
+      mph: 0.44704,
+      knot: 0.514444,
+    },
+  },
+  flow: {
+    label: 'Volume flow',
+    base: 'm^3/s',
+    units: {
+      'm^3/s': 1,
+      'L/s': 0.001,
+      gpm: GPM_TO_M3S,
+      cfm: 0.00047194745,
+    },
+  },
+  viscosity: {
+    label: 'Dynamic viscosity',
+    base: 'Pa s',
+    units: {
+      'Pa s': 1,
+      cP: 0.001,
+      poise: 0.1,
+      'lb/ft/s': 1.4881639,
+    },
+  },
+} as const
+
+type ConversionKind = keyof typeof CONVERSIONS
+
+export function CfdUnitConverterCalculator() {
+  const [kind, setKind] = useState<ConversionKind>('pressure')
+  const [value, setValue] = useState(101325)
+  const [fromUnit, setFromUnit] = useState('Pa')
+
+  const spec = CONVERSIONS[kind]
+  const units = Object.keys(spec.units)
+  const result = useMemo(() => {
+    const base = value * (spec.units as Record<string, number>)[fromUnit]
+    return units.map((unit) => ({
+      unit,
+      value: base / (spec.units as Record<string, number>)[unit],
+    }))
+  }, [fromUnit, spec.units, units, value])
+
+  function handleKind(next: string) {
+    const nextKind = next as ConversionKind
+    setKind(nextKind)
+    setFromUnit(Object.keys(CONVERSIONS[nextKind].units)[0])
+  }
+
+  return (
+    <CalculatorPanel>
+      <div className="grid gap-3 sm:grid-cols-3">
+        <SelectField
+          label="quantity"
+          value={kind}
+          onChange={handleKind}
+          options={Object.entries(CONVERSIONS).map(([key, item]) => ({ value: key, label: item.label }))}
+        />
+        <NumberField label="value" value={value} onChange={setValue} step={1} />
+        <SelectField
+          label="from unit"
+          value={fromUnit}
+          onChange={setFromUnit}
+          options={units.map((unit) => ({ value: unit, label: unit }))}
+        />
+      </div>
+      <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        {result.map((item, index) => (
+          <MetricCard
+            key={item.unit}
+            label={item.unit}
+            value={formatNumber(item.value)}
+            color={index % 2 === 0 ? '#22d3ee' : '#fbbf24'}
+          />
+        ))}
+      </div>
+      <Note>Fast CFD unit conversions for pressure, velocity, flow rate, and dynamic viscosity.</Note>
     </CalculatorPanel>
   )
 }

@@ -724,6 +724,20 @@ export const CALCULATORS: CalculatorMeta[] = [
     tags: ['verification', 'GCI', 'Richardson extrapolation', 'mesh convergence'],
   },
   {
+    slug: 'cfd-unit-converter',
+    category: 'numerics',
+    title: { ko: 'CFD 단위 변환', en: 'CFD Unit Converter', ja: 'CFD 単位変換', zh: 'CFD 单位换算', es: 'Conversor de Unidades CFD' },
+    desc: {
+      ko: '압력, 속도, 체적유량, 점도의 자주 쓰는 CFD 단위를 빠르게 변환합니다.',
+      en: 'Convert common CFD units for pressure, velocity, volume flow rate, and dynamic viscosity.',
+      ja: '圧力、速度、体積流量、粘度の CFD でよく使う単位を変換します。',
+      zh: '快速换算压力、速度、体积流量与动力黏度的常用 CFD 单位。',
+      es: 'Convierte unidades CFD comunes de presión, velocidad, caudal volumétrico y viscosidad.',
+    },
+    formula: 'value_base = value_from * factor_from,   value_to = value_base / factor_to',
+    tags: ['unit conversion', 'pressure', 'flow rate', 'viscosity'],
+  },
+  {
     slug: 'diffusion-cfl',
     category: 'numerics',
     title: { ko: '확산 시간스텝 제한', en: 'Diffusion Time-Step Limit', ja: '拡散時間刻み制限', zh: '扩散时间步限制', es: 'Límite de Paso Temporal Difusivo' },

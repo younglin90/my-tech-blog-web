@@ -38,6 +38,7 @@ import {
 } from '@/components/calculators/EngineeringSuite'
 import {
   DynamicPressureCalculator,
+  CfdUnitConverterCalculator,
   GciCalculator,
   HydraulicDiameterCalculator,
   OrificeFlowCalculator,
@@ -94,6 +95,7 @@ export const CALCULATOR_COMPONENTS: Record<string, () => ReactElement> = {
   'hydraulic-diameter': HydraulicDiameterCalculator,
   'dynamic-pressure': DynamicPressureCalculator,
   'grid-convergence-index': GciCalculator,
+  'cfd-unit-converter': CfdUnitConverterCalculator,
   ohnesorge: OhnesorgeCalculator,
   'capillary-length': CapillaryLengthCalculator,
   'particle-settling': ParticleSettlingCalculator,

@@ -79,10 +79,32 @@ export function MetricCard({
   value: string
   color?: string
 }) {
+  const numeric = Number.parseFloat(value.replace(/,/g, ''))
+  const hasScale = Number.isFinite(numeric)
+  const scale = hasScale
+    ? Math.min(100, Math.max(8, ((Math.log10(Math.abs(numeric) + 1e-12) + 6) / 12) * 100))
+    : 0
+
   return (
     <div className="rounded-lg p-3" style={{ background: 'var(--bg)', border: '1px solid var(--border)' }}>
       <div className="text-xs uppercase tracking-widest" style={{ color: 'var(--text-faint)' }}>{label}</div>
       <div className="mono mt-1 tabular-nums font-bold" style={{ fontSize: 18, color }}>{value}</div>
+      {hasScale && (
+        <div
+          className="mt-2 h-1.5 overflow-hidden rounded-full"
+          style={{ background: 'rgba(148,163,184,0.16)' }}
+          aria-hidden="true"
+        >
+          <div
+            className="h-full rounded-full transition-[width] duration-300"
+            style={{
+              width: `${scale}%`,
+              background: `linear-gradient(90deg, ${color}, var(--accent))`,
+              boxShadow: `0 0 14px ${color}`,
+            }}
+          />
+        </div>
+      )}
     </div>
   )
 }
