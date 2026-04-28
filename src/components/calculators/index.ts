@@ -6,6 +6,7 @@ import { IsentropicCalculator } from '@/components/calculators/Isentropic'
 import { KolmogorovCalculator } from '@/components/calculators/Kolmogorov'
 import { MachCalculator } from '@/components/calculators/Mach'
 import { MeshQualityVisualizerCalculator } from '@/components/calculators/MeshQualityVisualizer'
+import { NaturalConvectionRegimeVisualizerCalculator } from '@/components/calculators/NaturalConvectionRegimeVisualizer'
 import { NormalShockCalculator } from '@/components/calculators/NormalShock'
 import { NusseltCalculator } from '@/components/calculators/Nusselt'
 import { NozzleAreaMachVisualizerCalculator } from '@/components/calculators/NozzleAreaMachVisualizer'
@@ -89,6 +90,7 @@ export const CALCULATOR_COMPONENTS: Record<string, () => ReactElement> = {
   'y-plus': YPlusCalculator,
   'y-plus-wall-visualizer': YPlusWallVisualizerCalculator,
   nusselt: NusseltCalculator,
+  'natural-convection-regime': NaturalConvectionRegimeVisualizerCalculator,
   lewis: LewisCalculator,
   biot: BiotCalculator,
   fourier: FourierCalculator,

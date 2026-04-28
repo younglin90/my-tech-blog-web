@@ -640,6 +640,20 @@ export const CALCULATORS: CalculatorMeta[] = [
     tags: ['Nusselt', 'convection', 'heat transfer'],
   },
   {
+    slug: 'natural-convection-regime',
+    category: 'heat-transfer',
+    title: { ko: '자연대류 Rayleigh 레짐', en: 'Natural Convection Regime', ja: '自然対流 Rayleigh レジーム', zh: '自然对流 Rayleigh 状态', es: 'Régimen de Convección Natural' },
+    desc: {
+      ko: '온도차, 길이, 물성에서 Grashof/Rayleigh 수와 자연대류 레짐, Nusselt 추정을 시각화합니다.',
+      en: 'Visualize Grashof/Rayleigh numbers, natural-convection regime, and Nusselt estimate from temperature difference, length, and properties.',
+      ja: '温度差、長さ、物性から Grashof/Rayleigh 数、自然対流レジーム、Nusselt 推定を可視化します。',
+      zh: '由温差、长度和物性可视化 Grashof/Rayleigh 数、自然对流状态和 Nusselt 估计。',
+      es: 'Visualiza Grashof/Rayleigh, régimen de convección natural y Nusselt estimado desde diferencia térmica, longitud y propiedades.',
+    },
+    formula: 'Gr = g beta DeltaT L^3 / nu^2,   Ra = Gr Pr',
+    tags: ['Rayleigh', 'Grashof', 'natural convection', 'heat transfer'],
+  },
+  {
     slug: 'lewis',
     category: 'heat-transfer',
     title: { ko: 'Lewis 수', en: 'Lewis Number', ja: 'ルイス数', zh: '路易斯数', es: 'Número de Lewis' },
