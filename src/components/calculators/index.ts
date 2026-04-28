@@ -11,6 +11,7 @@ import { NozzleAreaMachVisualizerCalculator } from '@/components/calculators/Noz
 import { ObliqueShockCalculator } from '@/components/calculators/ObliqueShock'
 import { PrandtlCalculator } from '@/components/calculators/Prandtl'
 import { RayleighCalculator } from '@/components/calculators/Rayleigh'
+import { ResidualConvergenceAnalyzerCalculator } from '@/components/calculators/ResidualConvergenceAnalyzer'
 import { ReynoldsCalculator } from '@/components/calculators/Reynolds'
 import { StokesCalculator } from '@/components/calculators/Stokes'
 import { TurbulenceIntensityCalculator } from '@/components/calculators/TurbulenceIntensity'
@@ -103,6 +104,7 @@ export const CALCULATOR_COMPONENTS: Record<string, () => ReactElement> = {
   'dynamic-pressure': DynamicPressureCalculator,
   'grid-convergence-index': GciCalculator,
   'cfd-unit-converter': CfdUnitConverterCalculator,
+  'residual-convergence-analyzer': ResidualConvergenceAnalyzerCalculator,
   ohnesorge: OhnesorgeCalculator,
   'capillary-length': CapillaryLengthCalculator,
   'particle-settling': ParticleSettlingCalculator,

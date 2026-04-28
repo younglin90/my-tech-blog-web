@@ -794,6 +794,20 @@ export const CALCULATORS: CalculatorMeta[] = [
     tags: ['unit conversion', 'pressure', 'flow rate', 'viscosity'],
   },
   {
+    slug: 'residual-convergence-analyzer',
+    category: 'numerics',
+    title: { ko: 'Residual 수렴 분석기', en: 'Residual Convergence Analyzer', ja: 'Residual 収束解析', zh: '残差收敛分析器', es: 'Analizador de Convergencia de Residuales' },
+    desc: {
+      ko: '초기·현재 residual과 목표값에서 감소 차수, 평균 수렴률, 남은 반복수를 시각적으로 추정합니다.',
+      en: 'Estimate orders dropped, average convergence rate, and remaining iterations from initial, current, and target residuals.',
+      ja: '初期・現在・目標 residual から低下桁数、平均収束率、残り反復数を視覚的に推定します。',
+      zh: '由初始、当前和目标残差估计下降阶数、平均收敛率与剩余迭代数。',
+      es: 'Estima órdenes reducidos, tasa media de convergencia e iteraciones restantes desde residual inicial, actual y objetivo.',
+    },
+    formula: 'orders = log10(R0/R),   eta = log10(R/R_target) / (orders / N)',
+    tags: ['residual', 'convergence', 'solver', 'monitoring'],
+  },
+  {
     slug: 'diffusion-cfl',
     category: 'numerics',
     title: { ko: '확산 시간스텝 제한', en: 'Diffusion Time-Step Limit', ja: '拡散時間刻み制限', zh: '扩散时间步限制', es: 'Límite de Paso Temporal Difusivo' },
