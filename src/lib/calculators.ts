@@ -416,6 +416,20 @@ export const CALCULATORS: CalculatorMeta[] = [
     tags: ['Knudsen', 'rarefaction', 'microfluidics'],
   },
   {
+    slug: 'flow-regime-map',
+    category: 'dimensionless',
+    title: { ko: 'Re-Mach 유동 레짐 맵', en: 'Re-Mach Flow Regime Map', ja: 'Re-Mach 流れレジームマップ', zh: 'Re-Mach 流动状态图', es: 'Mapa de Régimen Re-Mach' },
+    desc: {
+      ko: 'Reynolds 수와 Mach 수를 2D 맵에 놓고 점성·압축성 레짐을 시각적으로 분류합니다.',
+      en: 'Place Reynolds and Mach numbers on a 2D map to classify viscous and compressibility regimes.',
+      ja: 'Reynolds数とMach数を2Dマップに置き、粘性・圧縮性レジームを分類します。',
+      zh: '将 Reynolds 数和 Mach 数放到二维图上，分类黏性与可压缩性状态。',
+      es: 'Ubica Reynolds y Mach en un mapa 2D para clasificar régimen viscoso y compresibilidad.',
+    },
+    formula: 'x = log10(Re),   y = M',
+    tags: ['Reynolds', 'Mach', 'regime map', 'visualization'],
+  },
+  {
     slug: 'boundary-layer',
     category: 'turbulence',
     title: { ko: '경계층 두께', en: 'Boundary Layer Thickness', ja: '境界層厚さ', zh: '边界层厚度', es: 'Espesor de Capa Límite' },

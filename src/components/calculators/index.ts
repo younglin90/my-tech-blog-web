@@ -52,6 +52,7 @@ import {
   OhnesorgeCalculator,
   ParticleSettlingCalculator,
 } from '@/components/calculators/MultiphaseUtilitySuite'
+import { FlowRegimeMapCalculator } from '@/components/calculators/RegimeMap'
 
 export const CALCULATOR_COMPONENTS: Record<string, () => ReactElement> = {
   isentropic: IsentropicCalculator,
@@ -101,4 +102,5 @@ export const CALCULATOR_COMPONENTS: Record<string, () => ReactElement> = {
   'particle-settling': ParticleSettlingCalculator,
   'manning-open-channel': ManningOpenChannelCalculator,
   'droplet-breakup': DropletBreakupCalculator,
+  'flow-regime-map': FlowRegimeMapCalculator,
 }
