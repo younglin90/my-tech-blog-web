@@ -9,14 +9,24 @@
  * 빌드 prebuild에서 실행. 갤러리 페이지에서 manifest를 import해 노출.
  */
 
-import { readFileSync, readdirSync, writeFileSync, statSync } from 'node:fs'
-import { join } from 'node:path'
+import { readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { basename, join } from 'node:path'
 
 const POSTS_DIR = 'src/content/posts/ko'
 const POST_VIZ_DIR = 'src/components/post-viz'
 const OUT = 'src/lib/viz-manifest.json'
+const REGISTRY_OUT = 'src/lib/viz-registry.tsx'
 
 const PRE_BUILT = ['VelocityField', 'StreamLine', 'NumericalScheme', 'PressureContour', 'BoundaryCondition', 'NumericalDungeon', 'MachArchitect']
+const PRE_BUILT_IMPORTS = {
+  VelocityField: '@/components/viz/VelocityField',
+  StreamLine: '@/components/viz/StreamLine',
+  NumericalScheme: '@/components/viz/NumericalScheme',
+  PressureContour: '@/components/viz/PressureContour',
+  BoundaryCondition: '@/components/viz/BoundaryCondition',
+  NumericalDungeon: '@/components/NumericalDungeon',
+  MachArchitect: '@/components/MachArchitect',
+}
 
 function listMdx(dir) {
   return readdirSync(dir).filter((n) => n.endsWith('.mdx')).map((n) => join(dir, n))
@@ -34,7 +44,7 @@ const items = []  // { component, type: 'pre-built'|'custom', postSlug, postTitl
 
 for (const file of listMdx(POSTS_DIR)) {
   const content = readFileSync(file, 'utf-8')
-  const slug = file.split('/').pop().replace(/\.mdx$/, '')
+  const slug = basename(file, '.mdx')
   const titleMatch = content.match(/^title:\s*"([^"]+)"/m)
   const title = titleMatch ? titleMatch[1] : slug
   const draftMatch = content.match(/^draft:\s*(true|false)/m)
@@ -66,6 +76,7 @@ for (const file of listMdx(POSTS_DIR)) {
         postSlug: slug,
         postTitle: title,
         postUrl: `/posts/${slug}`,
+        folder,
         file: `src/components/post-viz/${folder}/${fileName}.tsx`,
       })
     }
@@ -94,3 +105,66 @@ for (const folder of listPostVizFolders()) {
 
 writeFileSync(OUT, JSON.stringify(items, null, 2))
 console.log(`✅ viz manifest 생성: ${items.length}개 항목 → ${OUT}`)
+
+function listCustomComponents() {
+  const components = []
+  for (const folder of listPostVizFolders()) {
+    let files = []
+    try {
+      files = readdirSync(join(POST_VIZ_DIR, folder)).filter((n) => n.endsWith('.tsx'))
+    } catch {
+      continue
+    }
+
+    for (const fileName of files) {
+      const filePath = join(POST_VIZ_DIR, folder, fileName)
+      const raw = readFileSync(filePath, 'utf-8')
+      const exportMatch = raw.match(/export\s+function\s+([A-Za-z][A-Za-z0-9_]*)\s*\(/)
+        ?? raw.match(/export\s+const\s+([A-Za-z][A-Za-z0-9_]*)\s*=/)
+      const component = exportMatch?.[1] ?? fileName.replace(/\.tsx$/, '')
+      components.push({
+        component,
+        importPath: `@/components/post-viz/${folder}/${fileName.replace(/\.tsx$/, '')}`,
+      })
+    }
+  }
+  return components
+}
+
+const registryEntries = [
+  ...PRE_BUILT.map((component) => ({
+    component,
+    importPath: PRE_BUILT_IMPORTS[component],
+  })),
+  ...listCustomComponents(),
+]
+
+const seen = new Set()
+const registry = registryEntries
+  .filter((entry) => {
+    if (seen.has(entry.component)) return false
+    seen.add(entry.component)
+    return true
+  })
+  .sort((a, b) => a.component.localeCompare(b.component))
+
+const registrySource = `'use client'
+
+import dynamic from 'next/dynamic'
+import type { ComponentType } from 'react'
+
+function VizLoading() {
+  return (
+    <div className="rounded-lg p-4 text-xs" style={{ background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text-muted)' }}>
+      Loading visualization...
+    </div>
+  )
+}
+
+export const VIZ_COMPONENTS: Record<string, ComponentType> = {
+${registry.map(({ component, importPath }) => `  ${JSON.stringify(component)}: dynamic(() => import(${JSON.stringify(importPath)}).then((m) => ({ default: m.${component} })), { ssr: false, loading: VizLoading }),`).join('\n')}
+}
+`
+
+writeFileSync(REGISTRY_OUT, registrySource)
+console.log(`✅ viz registry 생성: ${registry.length}개 컴포넌트 → ${REGISTRY_OUT}`)
