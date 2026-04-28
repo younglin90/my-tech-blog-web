@@ -29,6 +29,7 @@ import { CapillaryNumberCalculator } from '@/components/calculators/CapillaryNum
 import { BondNumberCalculator } from '@/components/calculators/BondNumber'
 import { CavitationNumberCalculator } from '@/components/calculators/CavitationNumber'
 import { DiffusionCFLCalculator } from '@/components/calculators/DiffusionCFL'
+import { DragPolarExplorerCalculator } from '@/components/calculators/DragPolarExplorer'
 import { CellReynoldsCalculator } from '@/components/calculators/CellReynolds'
 import { YPlusWallVisualizerCalculator } from '@/components/calculators/YPlusWallVisualizer'
 import {
@@ -93,6 +94,7 @@ export const CALCULATOR_COMPONENTS: Record<string, () => ReactElement> = {
   'colebrook-white': ColebrookCalculator,
   'darcy-weisbach': DarcyWeisbachCalculator,
   'lift-drag-coefficients': LiftDragCalculator,
+  'drag-polar-explorer': DragPolarExplorerCalculator,
   'strouhal-vortex-shedding': StrouhalCalculator,
   'courant-3d': Courant3DCalculator,
   'boundary-layer-stack': BoundaryLayerStackCalculator,

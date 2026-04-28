@@ -318,6 +318,20 @@ export const CALCULATORS: CalculatorMeta[] = [
     tags: ['aerodynamics', 'lift', 'drag', 'coefficient'],
   },
   {
+    slug: 'drag-polar-explorer',
+    category: 'aerodynamics',
+    title: { ko: 'Drag Polar 탐색기', en: 'Drag Polar Explorer', ja: 'Drag Polar 探索', zh: '阻力极线探索器', es: 'Explorador de Polar de Arrastre' },
+    desc: {
+      ko: '기생항력, 종횡비, Oswald 효율에서 포물선 drag polar와 현재 L/D 운용점을 시각화합니다.',
+      en: 'Visualize a parabolic drag polar and current L/D operating point from parasite drag, aspect ratio, and Oswald efficiency.',
+      ja: '有害抗力、アスペクト比、Oswald効率から放物線drag polarと現在のL/D点を可視化します。',
+      zh: '由零升阻力、展弦比和 Oswald 效率可视化抛物线阻力极线与当前 L/D 工作点。',
+      es: 'Visualiza una polar parabólica y el punto L/D actual desde arrastre parásito, alargamiento y eficiencia de Oswald.',
+    },
+    formula: 'C_D = C_D0 + C_L^2 / (pi AR e),   L/D = C_L / C_D',
+    tags: ['drag polar', 'lift', 'induced drag', 'L/D'],
+  },
+  {
     slug: 'strouhal-vortex-shedding',
     category: 'aerodynamics',
     title: { ko: 'Strouhal 와류 방출 주파수', en: 'Strouhal Vortex Shedding', ja: 'Strouhal 渦放出周波数', zh: 'Strouhal 涡脱落频率', es: 'Desprendimiento de Vórtices Strouhal' },
