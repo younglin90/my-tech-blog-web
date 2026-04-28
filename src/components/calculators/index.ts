@@ -30,6 +30,7 @@ import { SchmidtCalculator } from '@/components/calculators/Schmidt'
 import { KnudsenCalculator } from '@/components/calculators/Knudsen'
 import { PressureCoefficientMapperCalculator } from '@/components/calculators/PressureCoefficientMapper'
 import { YPlusCalculator } from '@/components/calculators/YPlus'
+import { LbmBgkStabilityVisualizerCalculator } from '@/components/calculators/LbmBgkStabilityVisualizer'
 import { LewisCalculator } from '@/components/calculators/Lewis'
 import { BiotCalculator } from '@/components/calculators/Biot'
 import { FourierCalculator } from '@/components/calculators/Fourier'
@@ -107,6 +108,7 @@ export const CALCULATOR_COMPONENTS: Record<string, () => ReactElement> = {
   'time-step-budget': TimeStepBudgetVisualizerCalculator,
   'diffusion-cfl': DiffusionCFLCalculator,
   'cell-reynolds': CellReynoldsCalculator,
+  'lbm-bgk-stability': LbmBgkStabilityVisualizerCalculator,
   'colebrook-white': ColebrookCalculator,
   'darcy-weisbach': DarcyWeisbachCalculator,
   'lift-drag-coefficients': LiftDragCalculator,

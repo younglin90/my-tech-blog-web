@@ -1003,4 +1003,18 @@ export const CALCULATORS: CalculatorMeta[] = [
     formula: 'Re_cell = rho U dx / mu',
     tags: ['cell Reynolds', 'discretization', 'boundedness'],
   },
+  {
+    slug: 'lbm-bgk-stability',
+    category: 'numerics',
+    title: { ko: 'LBM BGK 안정성 맵', en: 'LBM BGK Stability Map', ja: 'LBM BGK 安定性マップ', zh: 'LBM BGK 稳定性图', es: 'Mapa de Estabilidad LBM BGK' },
+    desc: {
+      ko: '물리 격자와 lattice 속도에서 BGK tau, omega, lattice Mach를 계산하고 안정 범위를 시각화합니다.',
+      en: 'Compute BGK tau, omega, and lattice Mach from physical scaling and visualize the safe operating window.',
+      ja: '物理スケーリングと lattice 速度から BGK tau、omega、lattice Mach を計算し、安全範囲を可視化します。',
+      zh: '由物理尺度和 lattice 速度计算 BGK tau、omega 与 lattice Mach，并可视化安全工作区间。',
+      es: 'Calcula tau, omega y Mach de red desde escalamiento fisico y visualiza la ventana segura de BGK.',
+    },
+    formula: 'nu_lu = nu_phys dt/dx^2,   tau = 0.5 + nu_lu / c_s^2,   Ma_lu = U_lu / c_s',
+    tags: ['LBM', 'BGK', 'lattice Mach', 'stability'],
+  },
 ]
