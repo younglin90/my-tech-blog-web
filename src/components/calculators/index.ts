@@ -44,6 +44,13 @@ import {
   SutherlandAirCalculator,
   ValveCvKvCalculator,
 } from '@/components/calculators/FlowUtilitySuite'
+import {
+  CapillaryLengthCalculator,
+  DropletBreakupCalculator,
+  ManningOpenChannelCalculator,
+  OhnesorgeCalculator,
+  ParticleSettlingCalculator,
+} from '@/components/calculators/MultiphaseUtilitySuite'
 
 export const CALCULATOR_COMPONENTS: Record<string, () => ReactElement> = {
   isentropic: IsentropicCalculator,
@@ -87,4 +94,9 @@ export const CALCULATOR_COMPONENTS: Record<string, () => ReactElement> = {
   'hydraulic-diameter': HydraulicDiameterCalculator,
   'dynamic-pressure': DynamicPressureCalculator,
   'grid-convergence-index': GciCalculator,
+  ohnesorge: OhnesorgeCalculator,
+  'capillary-length': CapillaryLengthCalculator,
+  'particle-settling': ParticleSettlingCalculator,
+  'manning-open-channel': ManningOpenChannelCalculator,
+  'droplet-breakup': DropletBreakupCalculator,
 }
