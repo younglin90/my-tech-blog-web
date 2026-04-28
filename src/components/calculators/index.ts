@@ -18,6 +18,7 @@ import { StandardAtmosphereVisualizerCalculator } from '@/components/calculators
 import { StokesCalculator } from '@/components/calculators/Stokes'
 import { TurbulenceInletVisualizerCalculator } from '@/components/calculators/TurbulenceInletVisualizer'
 import { TurbulenceIntensityCalculator } from '@/components/calculators/TurbulenceIntensity'
+import { VortexSheddingStreetVisualizerCalculator } from '@/components/calculators/VortexSheddingStreetVisualizer'
 import { ChokedMassFlowCalculator } from '@/components/calculators/ChokedMassFlow'
 import { FroudeCalculator } from '@/components/calculators/Froude'
 import { PecletCalculator } from '@/components/calculators/Peclet'
@@ -105,6 +106,7 @@ export const CALCULATOR_COMPONENTS: Record<string, () => ReactElement> = {
   'drag-polar-explorer': DragPolarExplorerCalculator,
   'pressure-coefficient-mapper': PressureCoefficientMapperCalculator,
   'strouhal-vortex-shedding': StrouhalCalculator,
+  'vortex-shedding-street': VortexSheddingStreetVisualizerCalculator,
   'courant-3d': Courant3DCalculator,
   'boundary-layer-stack': BoundaryLayerStackCalculator,
   'moody-chart-explorer': MoodyChartExplorerCalculator,

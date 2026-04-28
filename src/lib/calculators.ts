@@ -374,6 +374,20 @@ export const CALCULATORS: CalculatorMeta[] = [
     tags: ['Strouhal', 'vortex shedding', 'cylinder wake'],
   },
   {
+    slug: 'vortex-shedding-street',
+    category: 'aerodynamics',
+    title: { ko: '와류 방출 거리 시각화', en: 'Vortex Shedding Street', ja: '渦放出ストリート可視化', zh: '涡脱落街可视化', es: 'Calle de Vórtices' },
+    desc: {
+      ko: 'Strouhal 수에서 원통 뒤 와류 방출 주파수, 주기, 와류 간격을 움직이는 wake 그림으로 보여줍니다.',
+      en: 'Show shedding frequency, period, and vortex spacing from Strouhal number with an animated cylinder wake.',
+      ja: 'Strouhal数から円柱後流の放出周波数、周期、渦間隔を動く図で示します。',
+      zh: '由 Strouhal 数用动态圆柱尾流显示涡脱落频率、周期和涡间距。',
+      es: 'Muestra frecuencia, periodo y separación de vórtices desde Strouhal con una estela animada.',
+    },
+    formula: 'f = St U / D,   lambda = U / f = D / St',
+    tags: ['Strouhal', 'vortex shedding', 'wake', 'visualization'],
+  },
+  {
     slug: 'dynamic-pressure',
     category: 'aerodynamics',
     title: { ko: '동압과 기준 힘', en: 'Dynamic Pressure & Reference Force', ja: '動圧と基準力', zh: '动压与参考力', es: 'Presión Dinámica y Fuerza' },
