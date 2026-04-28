@@ -14,6 +14,7 @@ import { MathCopyLatex } from '@/components/MathCopyLatex'
 import { ReadingPosition } from '@/components/ReadingPosition'
 import { QuoteShare } from '@/components/QuoteShare'
 import { LinkPreview } from '@/components/LinkPreview'
+import { PostFeedback } from '@/components/PostFeedback'
 import { Giscus } from '@/components/Giscus'
 import { AuthorBio } from '@/components/AuthorBio'
 import { SeriesNav } from '@/components/SeriesNav'
@@ -357,6 +358,8 @@ export default async function PostPage({ params }: PostProps) {
           </Link>
         ) : <div />}
       </nav>
+
+      <PostFeedback postId={post.slug} />
 
       <AuthorBio />
 
