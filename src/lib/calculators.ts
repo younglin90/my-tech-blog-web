@@ -850,6 +850,20 @@ export const CALCULATORS: CalculatorMeta[] = [
     tags: ['residual', 'convergence', 'solver', 'monitoring'],
   },
   {
+    slug: 'mesh-quality-visualizer',
+    category: 'numerics',
+    title: { ko: 'Mesh Quality 시각 진단', en: 'Mesh Quality Visualizer', ja: 'Mesh Quality 可視診断', zh: '网格质量可视诊断', es: 'Visualizador de Calidad de Malla' },
+    desc: {
+      ko: 'non-orthogonality, skewness, aspect ratio, volume ratio를 셀 그림과 위험도 점수로 빠르게 판정합니다.',
+      en: 'Judge non-orthogonality, skewness, aspect ratio, and volume ratio with a cell sketch and solver-risk score.',
+      ja: 'non-orthogonality、skewness、aspect ratio、volume ratio をセル図とリスクスコアで素早く判定します。',
+      zh: '用单元示意图和求解风险分数快速判断非正交性、偏斜度、长宽比和体积比。',
+      es: 'Evalúa no ortogonalidad, skewness, relación de aspecto y razón de volumen con un esquema de celda y riesgo numérico.',
+    },
+    formula: 'quality = weighted score(nonOrtho, skewness, aspectRatio, volumeRatio)',
+    tags: ['mesh quality', 'non-orthogonality', 'skewness', 'pre-processing'],
+  },
+  {
     slug: 'diffusion-cfl',
     category: 'numerics',
     title: { ko: '확산 시간스텝 제한', en: 'Diffusion Time-Step Limit', ja: '拡散時間刻み制限', zh: '扩散时间步限制', es: 'Límite de Paso Temporal Difusivo' },

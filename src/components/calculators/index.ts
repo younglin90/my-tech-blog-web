@@ -5,6 +5,7 @@ import { FannoCalculator } from '@/components/calculators/Fanno'
 import { IsentropicCalculator } from '@/components/calculators/Isentropic'
 import { KolmogorovCalculator } from '@/components/calculators/Kolmogorov'
 import { MachCalculator } from '@/components/calculators/Mach'
+import { MeshQualityVisualizerCalculator } from '@/components/calculators/MeshQualityVisualizer'
 import { NormalShockCalculator } from '@/components/calculators/NormalShock'
 import { NusseltCalculator } from '@/components/calculators/Nusselt'
 import { NozzleAreaMachVisualizerCalculator } from '@/components/calculators/NozzleAreaMachVisualizer'
@@ -111,6 +112,7 @@ export const CALCULATOR_COMPONENTS: Record<string, () => ReactElement> = {
   'grid-convergence-index': GciCalculator,
   'cfd-unit-converter': CfdUnitConverterCalculator,
   'residual-convergence-analyzer': ResidualConvergenceAnalyzerCalculator,
+  'mesh-quality-visualizer': MeshQualityVisualizerCalculator,
   ohnesorge: OhnesorgeCalculator,
   'capillary-length': CapillaryLengthCalculator,
   'particle-settling': ParticleSettlingCalculator,
