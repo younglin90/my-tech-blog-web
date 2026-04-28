@@ -920,6 +920,20 @@ export const CALCULATORS: CalculatorMeta[] = [
     tags: ['residual', 'convergence', 'solver', 'monitoring'],
   },
   {
+    slug: 'mass-flux-balance',
+    category: 'numerics',
+    title: { ko: '질량유량 Balance 시각화', en: 'Mass Flux Balance Visualizer', ja: '質量流束バランス可視化', zh: '质量通量平衡可视化', es: 'Balance Visual de Flujo Masico' },
+    desc: {
+      ko: '입구/출구 밀도, 속도, 면적, source에서 continuity imbalance를 제어체적 그림으로 점검합니다.',
+      en: 'Check continuity imbalance from inlet/outlet density, velocity, area, and sources with a control-volume sketch.',
+      ja: '入口/出口の密度、速度、面積、source から continuity imbalance を制御体積図で点検します。',
+      zh: '由入口/出口密度、速度、面积和源项用控制体示意图检查连续性不平衡。',
+      es: 'Revisa el desbalance de continuidad desde densidad, velocidad, area y fuentes con un esquema de volumen de control.',
+    },
+    formula: 'imbalance = sum(rho U A)_in + source - sum(rho U A)_out',
+    tags: ['mass flux', 'continuity', 'boundary condition', 'case setup'],
+  },
+  {
     slug: 'under-relaxation-planner',
     category: 'numerics',
     title: { ko: 'Under-Relaxation 플래너', en: 'Under-Relaxation Planner', ja: 'Under-Relaxation プランナー', zh: '欠松弛规划器', es: 'Planificador de Subrelajacion' },

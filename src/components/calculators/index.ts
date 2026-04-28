@@ -5,6 +5,7 @@ import { FannoCalculator } from '@/components/calculators/Fanno'
 import { IsentropicCalculator } from '@/components/calculators/Isentropic'
 import { KolmogorovCalculator } from '@/components/calculators/Kolmogorov'
 import { MachCalculator } from '@/components/calculators/Mach'
+import { MassFluxBalanceVisualizerCalculator } from '@/components/calculators/MassFluxBalanceVisualizer'
 import { MeshQualityVisualizerCalculator } from '@/components/calculators/MeshQualityVisualizer'
 import { NaturalConvectionRegimeVisualizerCalculator } from '@/components/calculators/NaturalConvectionRegimeVisualizer'
 import { NormalShockCalculator } from '@/components/calculators/NormalShock'
@@ -123,6 +124,7 @@ export const CALCULATOR_COMPONENTS: Record<string, () => ReactElement> = {
   'cfd-unit-converter': CfdUnitConverterCalculator,
   'case-memory-estimator': CaseMemoryEstimatorCalculator,
   'residual-convergence-analyzer': ResidualConvergenceAnalyzerCalculator,
+  'mass-flux-balance': MassFluxBalanceVisualizerCalculator,
   'under-relaxation-planner': UnderRelaxationPlannerCalculator,
   'mesh-quality-visualizer': MeshQualityVisualizerCalculator,
   ohnesorge: OhnesorgeCalculator,
