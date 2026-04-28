@@ -850,6 +850,20 @@ export const CALCULATORS: CalculatorMeta[] = [
     tags: ['CFL', 'numerics', 'stability'],
   },
   {
+    slug: 'time-step-budget',
+    category: 'numerics',
+    title: { ko: 'Time-Step Budget 시각화', en: 'Time-Step Budget Visualizer', ja: 'Time-Step Budget 可視化', zh: '时间步预算可视化', es: 'Visualizador de Presupuesto de Paso Temporal' },
+    desc: {
+      ko: '대류 CFL, 음향 CFL, 확산 Fourier 제한을 비교해 실제 시간스텝 병목을 시각적으로 찾습니다.',
+      en: 'Compare advective CFL, acoustic CFL, and diffusion Fourier limits to identify the active time-step bottleneck.',
+      ja: '移流CFL、音響CFL、拡散Fourier制限を比較し、実際の時間刻みボトルネックを可視化します。',
+      zh: '比较对流 CFL、声学 CFL 与扩散 Fourier 限制，找出当前时间步瓶颈。',
+      es: 'Compara CFL advectivo, CFL acustico y limite difusivo de Fourier para encontrar el cuello de botella temporal.',
+    },
+    formula: 'dt_max = min(C dx/U, C_a dx/(a+U), Fo dx^2/nu)',
+    tags: ['time step', 'CFL', 'Fourier', 'explicit solver'],
+  },
+  {
     slug: 'courant-3d',
     category: 'numerics',
     title: { ko: '3D Courant 수', en: '3D Courant Number', ja: '3D Courant 数', zh: '三维 Courant 数', es: 'Número de Courant 3D' },

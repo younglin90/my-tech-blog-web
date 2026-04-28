@@ -18,6 +18,7 @@ import { ResidualConvergenceAnalyzerCalculator } from '@/components/calculators/
 import { ReynoldsCalculator } from '@/components/calculators/Reynolds'
 import { StandardAtmosphereVisualizerCalculator } from '@/components/calculators/StandardAtmosphereVisualizer'
 import { StokesCalculator } from '@/components/calculators/Stokes'
+import { TimeStepBudgetVisualizerCalculator } from '@/components/calculators/TimeStepBudgetVisualizer'
 import { TurbulenceInletVisualizerCalculator } from '@/components/calculators/TurbulenceInletVisualizer'
 import { TurbulenceIntensityCalculator } from '@/components/calculators/TurbulenceIntensity'
 import { UnderRelaxationPlannerCalculator } from '@/components/calculators/UnderRelaxationPlanner'
@@ -103,6 +104,7 @@ export const CALCULATOR_COMPONENTS: Record<string, () => ReactElement> = {
   'cavitation-number': CavitationNumberCalculator,
   'cavitation-risk-visualizer': CavitationRiskVisualizerCalculator,
   cfl: CFLCalculator,
+  'time-step-budget': TimeStepBudgetVisualizerCalculator,
   'diffusion-cfl': DiffusionCFLCalculator,
   'cell-reynolds': CellReynoldsCalculator,
   'colebrook-white': ColebrookCalculator,
