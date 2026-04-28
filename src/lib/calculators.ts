@@ -164,6 +164,20 @@ export const CALCULATORS: CalculatorMeta[] = [
     tags: ['compressible', 'shock', 'theta-beta-M'],
   },
   {
+    slug: 'shock-polar-visualizer',
+    category: 'compressible',
+    title: { ko: 'Shock Polar 시각화', en: 'Shock Polar Visualizer', ja: 'Shock Polar 可視化', zh: 'Shock Polar 可视化', es: 'Visualizador Shock Polar' },
+    desc: {
+      ko: 'Mach 수와 회전각에서 theta-beta-M 곡선, weak/strong 사충격파 해, 박리 한계를 시각화합니다.',
+      en: 'Visualize the theta-beta-M curve, weak/strong oblique-shock solutions, and detachment limit from Mach and turn angle.',
+      ja: 'Mach数と転向角から theta-beta-M 曲線、弱/強斜め衝撃波解、離脱限界を可視化します。',
+      zh: '由 Mach 数与偏转角可视化 theta-beta-M 曲线、弱/强斜激波解和脱体极限。',
+      es: 'Visualiza la curva theta-beta-M, las soluciones débil/fuerte y el límite de desprendimiento desde Mach y ángulo de giro.',
+    },
+    formula: 'tan(theta) = 2 cot(beta) (M1^2 sin^2(beta) - 1) / [M1^2 (gamma + cos(2 beta)) + 2]',
+    tags: ['compressible', 'shock polar', 'oblique shock', 'theta-beta-M', 'visualization'],
+  },
+  {
     slug: 'fanno-flow',
     category: 'compressible',
     title: { ko: 'Fanno 유동', en: 'Fanno Flow', ja: 'Fanno 流れ', zh: 'Fanno 流动', es: 'Flujo de Fanno' },

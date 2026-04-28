@@ -28,6 +28,7 @@ import { ChokedMassFlowCalculator } from '@/components/calculators/ChokedMassFlo
 import { FroudeCalculator } from '@/components/calculators/Froude'
 import { PecletCalculator } from '@/components/calculators/Peclet'
 import { SchmidtCalculator } from '@/components/calculators/Schmidt'
+import { ShockPolarVisualizerCalculator } from '@/components/calculators/ShockPolarVisualizer'
 import { KnudsenCalculator } from '@/components/calculators/Knudsen'
 import { PressureCoefficientMapperCalculator } from '@/components/calculators/PressureCoefficientMapper'
 import { YPlusCalculator } from '@/components/calculators/YPlus'
@@ -76,6 +77,7 @@ export const CALCULATOR_COMPONENTS: Record<string, () => ReactElement> = {
   isentropic: IsentropicCalculator,
   'normal-shock': NormalShockCalculator,
   'oblique-shock': ObliqueShockCalculator,
+  'shock-polar-visualizer': ShockPolarVisualizerCalculator,
   'fanno-flow': FannoCalculator,
   'rayleigh-flow': RayleighCalculator,
   'choked-mass-flow': ChokedMassFlowCalculator,
