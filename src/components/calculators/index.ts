@@ -32,6 +32,7 @@ import { WeberCalculator } from '@/components/calculators/Weber'
 import { CapillaryNumberCalculator } from '@/components/calculators/CapillaryNumber'
 import { BondNumberCalculator } from '@/components/calculators/BondNumber'
 import { CavitationNumberCalculator } from '@/components/calculators/CavitationNumber'
+import { CavitationRiskVisualizerCalculator } from '@/components/calculators/CavitationRiskVisualizer'
 import { DiffusionCFLCalculator } from '@/components/calculators/DiffusionCFL'
 import { DragPolarExplorerCalculator } from '@/components/calculators/DragPolarExplorer'
 import { CellReynoldsCalculator } from '@/components/calculators/CellReynolds'
@@ -94,6 +95,7 @@ export const CALCULATOR_COMPONENTS: Record<string, () => ReactElement> = {
   'capillary-number': CapillaryNumberCalculator,
   'bond-number': BondNumberCalculator,
   'cavitation-number': CavitationNumberCalculator,
+  'cavitation-risk-visualizer': CavitationRiskVisualizerCalculator,
   cfl: CFLCalculator,
   'diffusion-cfl': DiffusionCFLCalculator,
   'cell-reynolds': CellReynoldsCalculator,

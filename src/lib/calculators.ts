@@ -724,6 +724,20 @@ export const CALCULATORS: CalculatorMeta[] = [
     tags: ['cavitation', 'vapor pressure', 'hydrodynamics'],
   },
   {
+    slug: 'cavitation-risk-visualizer',
+    category: 'multiphase',
+    title: { ko: '캐비테이션 위험 시각화', en: 'Cavitation Risk Visualizer', ja: 'キャビテーションリスク可視化', zh: '空化风险可视化', es: 'Visualizador de Riesgo de Cavitación' },
+    desc: {
+      ko: '국부 압력강하와 증기압 마진을 버블 시각화와 공동수로 함께 판정합니다.',
+      en: 'Judge local pressure-drop and vapor-pressure margin using bubble visualization and cavitation number.',
+      ja: '局所圧力低下と蒸気圧マージンを気泡可視化とキャビテーション数で判定します。',
+      zh: '用气泡可视化和空化数判断局部压降与蒸汽压裕度。',
+      es: 'Evalúa caída de presión local y margen frente a presión de vapor con burbujas y número de cavitación.',
+    },
+    formula: 'sigma_local = (p_local - p_v) / (0.5 rho U^2)',
+    tags: ['cavitation', 'vapor pressure', 'multiphase', 'visualization'],
+  },
+  {
     slug: 'ohnesorge',
     category: 'multiphase',
     title: { ko: 'Ohnesorge 수', en: 'Ohnesorge Number', ja: 'Ohnesorge 数', zh: 'Ohnesorge 数', es: 'Número de Ohnesorge' },
