@@ -36,6 +36,7 @@ import {
   LiftDragCalculator,
   StrouhalCalculator,
 } from '@/components/calculators/EngineeringSuite'
+import { MoodyChartExplorerCalculator } from '@/components/calculators/MoodyChartExplorer'
 import {
   DynamicPressureCalculator,
   CfdUnitConverterCalculator,
@@ -90,6 +91,7 @@ export const CALCULATOR_COMPONENTS: Record<string, () => ReactElement> = {
   'strouhal-vortex-shedding': StrouhalCalculator,
   'courant-3d': Courant3DCalculator,
   'boundary-layer-stack': BoundaryLayerStackCalculator,
+  'moody-chart-explorer': MoodyChartExplorerCalculator,
   'sutherland-air': SutherlandAirCalculator,
   'orifice-flow': OrificeFlowCalculator,
   'valve-cv-kv': ValveCvKvCalculator,

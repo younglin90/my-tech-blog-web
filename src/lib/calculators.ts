@@ -220,6 +220,20 @@ export const CALCULATORS: CalculatorMeta[] = [
     tags: ['pipe flow', 'friction factor', 'Colebrook', 'roughness'],
   },
   {
+    slug: 'moody-chart-explorer',
+    category: 'internal-flow',
+    title: { ko: 'Moody 차트 탐색기', en: 'Moody Chart Explorer', ja: 'Moody チャート探索', zh: 'Moody 图探索器', es: 'Explorador del Diagrama de Moody' },
+    desc: {
+      ko: 'Reynolds 수와 상대조도를 Moody 차트 위에 표시해 마찰계수 레짐을 직관적으로 확인합니다.',
+      en: 'Plot Reynolds number and relative roughness on a Moody chart to read the friction-factor regime visually.',
+      ja: 'Reynolds数と相対粗さをMoodyチャート上に表示し、摩擦係数のレジームを視覚的に確認します。',
+      zh: '把 Reynolds 数和相对粗糙度标在 Moody 图上，直观看到摩擦因子状态。',
+      es: 'Ubica Reynolds y rugosidad relativa en un diagrama de Moody para leer visualmente el régimen de fricción.',
+    },
+    formula: 'f = 64/Re or Colebrook-White, plotted against Re and epsilon/D',
+    tags: ['Moody chart', 'pipe flow', 'friction factor', 'roughness'],
+  },
+  {
     slug: 'darcy-weisbach',
     category: 'internal-flow',
     title: { ko: 'Darcy-Weisbach 압력손실', en: 'Darcy-Weisbach Pressure Drop', ja: 'Darcy-Weisbach 圧力損失', zh: 'Darcy-Weisbach 压降', es: 'Caída de Presión Darcy-Weisbach' },
