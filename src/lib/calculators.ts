@@ -2,6 +2,8 @@ import type { Locale } from '@/lib/i18n'
 
 export type CalculatorCategory =
   | 'compressible'
+  | 'internal-flow'
+  | 'aerodynamics'
   | 'dimensionless'
   | 'turbulence'
   | 'heat-transfer'
@@ -21,6 +23,8 @@ export interface CalculatorMeta {
 
 export const CATEGORY_ORDER: CalculatorCategory[] = [
   'compressible',
+  'internal-flow',
+  'aerodynamics',
   'dimensionless',
   'turbulence',
   'heat-transfer',
@@ -35,6 +39,20 @@ export const CATEGORY_LABELS: Record<CalculatorCategory, LocalizedString> = {
     ja: '圧縮性流れ',
     zh: '可压缩流动',
     es: 'Flujo Compresible',
+  },
+  'internal-flow': {
+    ko: '내부유동과 손실',
+    en: 'Internal Flow & Losses',
+    ja: '内部流れと損失',
+    zh: '内流与损失',
+    es: 'Flujo Interno y Pérdidas',
+  },
+  aerodynamics: {
+    ko: '공력과 외부유동',
+    en: 'Aerodynamics & External Flow',
+    ja: '空力と外部流れ',
+    zh: '气动与外流',
+    es: 'Aerodinámica y Flujo Externo',
   },
   dimensionless: {
     ko: '무차원수',
@@ -81,7 +99,9 @@ export const FEATURED_CALCULATOR_SLUGS = [
   'reynolds',
   'mach',
   'y-plus',
+  'darcy-weisbach',
   'cfl',
+  'lift-drag-coefficients',
   'turbulence-intensity',
   'normal-shock',
 ]
@@ -170,6 +190,62 @@ export const CALCULATORS: CalculatorMeta[] = [
     },
     formula: 'mdot = Cd A p0 sqrt(gamma / (R T0)) [2 / (gamma + 1)]^((gamma + 1) / (2 (gamma - 1)))',
     tags: ['compressible', 'nozzle', 'choked flow', 'mass flow'],
+  },
+  {
+    slug: 'colebrook-white',
+    category: 'internal-flow',
+    title: { ko: 'Colebrook-White 마찰계수', en: 'Colebrook-White Friction Factor', ja: 'Colebrook-White 摩擦係数', zh: 'Colebrook-White 摩擦因子', es: 'Factor de Fricción Colebrook-White' },
+    desc: {
+      ko: 'Reynolds 수와 상대 조도에서 Darcy 마찰계수를 반복 계산합니다.',
+      en: 'Iterate the Darcy friction factor from Reynolds number and relative roughness.',
+      ja: 'Reynolds数と相対粗さから Darcy 摩擦係数を反復計算します。',
+      zh: '根据 Reynolds 数与相对粗糙度迭代计算 Darcy 摩擦因子。',
+      es: 'Itera el factor de fricción de Darcy a partir de Reynolds y rugosidad relativa.',
+    },
+    formula: '1/sqrt(f) = -2 log10(epsilon/(3.7D) + 2.51/(Re sqrt(f)))',
+    tags: ['pipe flow', 'friction factor', 'Colebrook', 'roughness'],
+  },
+  {
+    slug: 'darcy-weisbach',
+    category: 'internal-flow',
+    title: { ko: 'Darcy-Weisbach 압력손실', en: 'Darcy-Weisbach Pressure Drop', ja: 'Darcy-Weisbach 圧力損失', zh: 'Darcy-Weisbach 压降', es: 'Caída de Presión Darcy-Weisbach' },
+    desc: {
+      ko: '배관 유량, 조도, minor loss에서 압력강하와 수두손실을 계산합니다.',
+      en: 'Compute pipe pressure drop, head loss, and hydraulic power from flow rate and roughness.',
+      ja: '配管流量、粗さ、局所損失から圧力損失と水頭損失を計算します。',
+      zh: '由管道流量、粗糙度与局部损失计算压降和水头损失。',
+      es: 'Calcula caída de presión, pérdida de carga y potencia hidráulica en tuberías.',
+    },
+    formula: 'Delta p = (f L/D + K) rho U^2 / 2',
+    tags: ['pipe flow', 'pressure drop', 'head loss', 'Darcy-Weisbach'],
+  },
+  {
+    slug: 'lift-drag-coefficients',
+    category: 'aerodynamics',
+    title: { ko: '양력·항력 계수', en: 'Lift & Drag Coefficients', ja: '揚力・抗力係数', zh: '升力与阻力系数', es: 'Coeficientes de Sustentación y Arrastre' },
+    desc: {
+      ko: '힘, 기준면적, 동압에서 CL, CD, L/D를 계산합니다.',
+      en: 'Compute CL, CD, and L/D from force, reference area, and dynamic pressure.',
+      ja: '力、基準面積、動圧から CL、CD、L/D を計算します。',
+      zh: '由力、参考面积与动压计算 CL、CD 与 L/D。',
+      es: 'Calcula CL, CD y L/D a partir de fuerza, área de referencia y presión dinámica.',
+    },
+    formula: 'C_L = L / (0.5 rho U^2 A),   C_D = D / (0.5 rho U^2 A)',
+    tags: ['aerodynamics', 'lift', 'drag', 'coefficient'],
+  },
+  {
+    slug: 'strouhal-vortex-shedding',
+    category: 'aerodynamics',
+    title: { ko: 'Strouhal 와류 방출 주파수', en: 'Strouhal Vortex Shedding', ja: 'Strouhal 渦放出周波数', zh: 'Strouhal 涡脱落频率', es: 'Desprendimiento de Vórtices Strouhal' },
+    desc: {
+      ko: 'Strouhal 수, 속도, 대표길이에서 와류 방출 주파수를 계산합니다.',
+      en: 'Compute vortex-shedding frequency from Strouhal number, velocity, and length scale.',
+      ja: 'Strouhal数、速度、代表長さから渦放出周波数を計算します。',
+      zh: '由 Strouhal 数、速度与特征长度计算涡脱落频率。',
+      es: 'Calcula la frecuencia de desprendimiento de vórtices con St, velocidad y escala.',
+    },
+    formula: 'St = f L / U,   f = St U / L',
+    tags: ['Strouhal', 'vortex shedding', 'cylinder wake'],
   },
   {
     slug: 'reynolds',
@@ -340,6 +416,20 @@ export const CALCULATORS: CalculatorMeta[] = [
     tags: ['y+', 'wall modeling', 'mesh', 'SST'],
   },
   {
+    slug: 'boundary-layer-stack',
+    category: 'turbulence',
+    title: { ko: '경계층 prism layer 스택', en: 'Boundary-Layer Prism Stack', ja: '境界層プリズムレイヤー', zh: '边界层棱柱层堆叠', es: 'Capas Prismáticas de Capa Límite' },
+    desc: {
+      ko: '첫 셀 높이, 층수, 성장률에서 마지막 셀 높이와 전체 prism 두께를 계산합니다.',
+      en: 'Compute last-layer height and total prism thickness from first height, layers, and growth ratio.',
+      ja: '第一層高さ、層数、成長率から最終層高さと全体厚さを計算します。',
+      zh: '由首层高度、层数与增长率计算末层高度和总棱柱层厚度。',
+      es: 'Calcula altura de última capa y espesor total desde primera altura, capas y crecimiento.',
+    },
+    formula: 'H = y1 (r^N - 1) / (r - 1),   y_N = y1 r^(N-1)',
+    tags: ['mesh', 'boundary layer', 'prism layer', 'y+'],
+  },
+  {
     slug: 'nusselt',
     category: 'heat-transfer',
     title: { ko: 'Nusselt 수와 h', en: 'Nusselt Number & h', ja: 'ヌセルト数と h', zh: '努塞尔数与 h', es: 'Número de Nusselt y h' },
@@ -464,6 +554,20 @@ export const CALCULATORS: CalculatorMeta[] = [
     },
     formula: 'C = u dt / dx',
     tags: ['CFL', 'numerics', 'stability'],
+  },
+  {
+    slug: 'courant-3d',
+    category: 'numerics',
+    title: { ko: '3D Courant 수', en: '3D Courant Number', ja: '3D Courant 数', zh: '三维 Courant 数', es: 'Número de Courant 3D' },
+    desc: {
+      ko: '비등방 격자에서 x/y/z 방향 Courant 합과 허용 시간스텝을 계산합니다.',
+      en: 'Compute directional Courant sum and allowable time step on anisotropic grids.',
+      ja: '非等方格子で x/y/z 方向 Courant 和と許容時間刻みを計算します。',
+      zh: '在各向异性网格上计算方向 Courant 和与允许时间步。',
+      es: 'Calcula suma Courant direccional y paso permitido en mallas anisótropas.',
+    },
+    formula: 'C = dt (|u_x|/dx + |u_y|/dy + |u_z|/dz)',
+    tags: ['Courant', 'CFL', 'time step', '3D'],
   },
   {
     slug: 'diffusion-cfl',

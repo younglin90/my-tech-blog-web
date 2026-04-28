@@ -28,6 +28,14 @@ import { BondNumberCalculator } from '@/components/calculators/BondNumber'
 import { CavitationNumberCalculator } from '@/components/calculators/CavitationNumber'
 import { DiffusionCFLCalculator } from '@/components/calculators/DiffusionCFL'
 import { CellReynoldsCalculator } from '@/components/calculators/CellReynolds'
+import {
+  BoundaryLayerStackCalculator,
+  ColebrookCalculator,
+  Courant3DCalculator,
+  DarcyWeisbachCalculator,
+  LiftDragCalculator,
+  StrouhalCalculator,
+} from '@/components/calculators/EngineeringSuite'
 
 export const CALCULATOR_COMPONENTS: Record<string, () => ReactElement> = {
   isentropic: IsentropicCalculator,
@@ -59,4 +67,10 @@ export const CALCULATOR_COMPONENTS: Record<string, () => ReactElement> = {
   cfl: CFLCalculator,
   'diffusion-cfl': DiffusionCFLCalculator,
   'cell-reynolds': CellReynoldsCalculator,
+  'colebrook-white': ColebrookCalculator,
+  'darcy-weisbach': DarcyWeisbachCalculator,
+  'lift-drag-coefficients': LiftDragCalculator,
+  'strouhal-vortex-shedding': StrouhalCalculator,
+  'courant-3d': Courant3DCalculator,
+  'boundary-layer-stack': BoundaryLayerStackCalculator,
 }
