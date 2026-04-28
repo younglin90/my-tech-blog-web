@@ -20,6 +20,7 @@ import { FroudeCalculator } from '@/components/calculators/Froude'
 import { PecletCalculator } from '@/components/calculators/Peclet'
 import { SchmidtCalculator } from '@/components/calculators/Schmidt'
 import { KnudsenCalculator } from '@/components/calculators/Knudsen'
+import { PressureCoefficientMapperCalculator } from '@/components/calculators/PressureCoefficientMapper'
 import { YPlusCalculator } from '@/components/calculators/YPlus'
 import { LewisCalculator } from '@/components/calculators/Lewis'
 import { BiotCalculator } from '@/components/calculators/Biot'
@@ -95,6 +96,7 @@ export const CALCULATOR_COMPONENTS: Record<string, () => ReactElement> = {
   'darcy-weisbach': DarcyWeisbachCalculator,
   'lift-drag-coefficients': LiftDragCalculator,
   'drag-polar-explorer': DragPolarExplorerCalculator,
+  'pressure-coefficient-mapper': PressureCoefficientMapperCalculator,
   'strouhal-vortex-shedding': StrouhalCalculator,
   'courant-3d': Courant3DCalculator,
   'boundary-layer-stack': BoundaryLayerStackCalculator,

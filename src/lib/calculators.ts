@@ -332,6 +332,20 @@ export const CALCULATORS: CalculatorMeta[] = [
     tags: ['drag polar', 'lift', 'induced drag', 'L/D'],
   },
   {
+    slug: 'pressure-coefficient-mapper',
+    category: 'aerodynamics',
+    title: { ko: '압력계수 Cp 매퍼', en: 'Pressure Coefficient Mapper', ja: '圧力係数 Cp マッパー', zh: '压力系数 Cp 映射器', es: 'Mapeador de Coeficiente de Presión Cp' },
+    desc: {
+      ko: '표면 압력, 자유류 압력, 동압에서 Cp를 계산하고 airfoil 위치와 흡입/압력 부호를 시각화합니다.',
+      en: 'Compute Cp from local pressure, freestream pressure, and dynamic pressure while visualizing airfoil tap location and loading sign.',
+      ja: '表面圧、自由流圧、動圧からCpを計算し、翼型上の位置と吸引/圧力の符号を可視化します。',
+      zh: '由局部压力、自由流压力和动压计算 Cp，并可视化翼型测点位置与载荷符号。',
+      es: 'Calcula Cp desde presión local, presión libre y presión dinámica, visualizando la posición en el perfil y el signo de carga.',
+    },
+    formula: 'C_p = (p - p_inf) / (0.5 rho U_inf^2)',
+    tags: ['pressure coefficient', 'Cp', 'airfoil', 'post-processing'],
+  },
+  {
     slug: 'strouhal-vortex-shedding',
     category: 'aerodynamics',
     title: { ko: 'Strouhal 와류 방출 주파수', en: 'Strouhal Vortex Shedding', ja: 'Strouhal 渦放出周波数', zh: 'Strouhal 涡脱落频率', es: 'Desprendimiento de Vórtices Strouhal' },
