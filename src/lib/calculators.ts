@@ -542,6 +542,20 @@ export const CALCULATORS: CalculatorMeta[] = [
     tags: ['turbulence', 'boundary condition', 'OpenFOAM', 'k-epsilon'],
   },
   {
+    slug: 'turbulence-inlet-visualizer',
+    category: 'turbulence',
+    title: { ko: '난류 입구 스케일 시각화', en: 'Turbulence Inlet Visualizer', ja: '乱流入口スケール可視化', zh: '湍流入口尺度可视化', es: 'Visualizador de Entrada Turbulenta' },
+    desc: {
+      ko: '난류 강도와 길이척도에서 k, epsilon, omega를 계산하고 입구 eddy 크기를 시각화합니다.',
+      en: 'Compute k, epsilon, and omega from turbulence intensity and length scale while visualizing inlet eddy size.',
+      ja: '乱流強度と長さスケールから k、epsilon、omega を計算し、入口渦スケールを可視化します。',
+      zh: '由湍流强度和长度尺度计算 k、epsilon、omega，并可视化入口涡尺度。',
+      es: 'Calcula k, epsilon y omega desde intensidad y escala de longitud, visualizando el tamaño de remolinos de entrada.',
+    },
+    formula: 'k = 1.5 (I U)^2,   epsilon = Cmu^(3/4) k^(3/2) / l,   omega = sqrt(k)/(Cmu^(1/4) l)',
+    tags: ['turbulence', 'inlet BC', 'eddy scale', 'k-omega'],
+  },
+  {
     slug: 'stokes',
     category: 'turbulence',
     title: { ko: 'Stokes 수', en: 'Stokes Number', ja: 'ストークス数', zh: '斯托克斯数', es: 'Número de Stokes' },

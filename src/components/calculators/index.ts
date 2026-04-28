@@ -16,6 +16,7 @@ import { ResidualConvergenceAnalyzerCalculator } from '@/components/calculators/
 import { ReynoldsCalculator } from '@/components/calculators/Reynolds'
 import { StandardAtmosphereVisualizerCalculator } from '@/components/calculators/StandardAtmosphereVisualizer'
 import { StokesCalculator } from '@/components/calculators/Stokes'
+import { TurbulenceInletVisualizerCalculator } from '@/components/calculators/TurbulenceInletVisualizer'
 import { TurbulenceIntensityCalculator } from '@/components/calculators/TurbulenceIntensity'
 import { ChokedMassFlowCalculator } from '@/components/calculators/ChokedMassFlow'
 import { FroudeCalculator } from '@/components/calculators/Froude'
@@ -81,6 +82,7 @@ export const CALCULATOR_COMPONENTS: Record<string, () => ReactElement> = {
   'boundary-layer': BoundaryLayerCalculator,
   kolmogorov: KolmogorovCalculator,
   'turbulence-intensity': TurbulenceIntensityCalculator,
+  'turbulence-inlet-visualizer': TurbulenceInletVisualizerCalculator,
   stokes: StokesCalculator,
   'y-plus': YPlusCalculator,
   'y-plus-wall-visualizer': YPlusWallVisualizerCalculator,
