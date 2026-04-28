@@ -12,6 +12,7 @@ import { MarkAsRead } from '@/components/MarkAsRead'
 import { ScrollDepth } from '@/components/ScrollDepth'
 import { MathCopyLatex } from '@/components/MathCopyLatex'
 import { ReadingPosition } from '@/components/ReadingPosition'
+import { QuoteShare } from '@/components/QuoteShare'
 import { Giscus } from '@/components/Giscus'
 import { AuthorBio } from '@/components/AuthorBio'
 import { SeriesNav } from '@/components/SeriesNav'
@@ -265,6 +266,7 @@ export default async function PostPage({ params }: PostProps) {
       <Mdx code={post.body.code} />
       <MathCopyLatex />
       <ReadingPosition postId={post.slug} />
+      <QuoteShare />
 
       <div className="mt-12 flex flex-wrap items-center justify-between gap-3 border-t pt-6" style={{ borderColor: 'var(--border)' }}>
         <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{t(loc, 'post.share')}</p>
