@@ -892,6 +892,20 @@ export const CALCULATORS: CalculatorMeta[] = [
     tags: ['unit conversion', 'pressure', 'flow rate', 'viscosity'],
   },
   {
+    slug: 'case-memory-estimator',
+    category: 'numerics',
+    title: { ko: 'CFD 케이스 메모리 추정', en: 'CFD Case Memory Estimator', ja: 'CFD ケースメモリ見積もり', zh: 'CFD 算例内存估算器', es: 'Estimador de Memoria CFD' },
+    desc: {
+      ko: '셀 수, 필드 수, 행렬/오버헤드 계수에서 전체 및 파티션별 메모리 예산을 시각화합니다.',
+      en: 'Visualize total and per-partition memory budget from cell count, fields, matrix factor, and solver overhead.',
+      ja: 'セル数、フィールド数、行列係数、ソルバーオーバーヘッドから総メモリと分割ごとの予算を可視化します。',
+      zh: '由单元数、场数量、矩阵系数和求解器开销可视化总内存与分区内存预算。',
+      es: 'Visualiza memoria total y por particion desde celdas, campos, factor de matriz y sobrecoste del solver.',
+    },
+    formula: 'memory ~= cells * field_components * time_levels * 8 + matrix + overhead',
+    tags: ['memory', 'HPC', 'mesh size', 'parallel CFD'],
+  },
+  {
     slug: 'residual-convergence-analyzer',
     category: 'numerics',
     title: { ko: 'Residual 수렴 분석기', en: 'Residual Convergence Analyzer', ja: 'Residual 収束解析', zh: '残差收敛分析器', es: 'Analizador de Convergencia de Residuales' },

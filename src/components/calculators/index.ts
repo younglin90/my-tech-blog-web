@@ -33,6 +33,7 @@ import { FourierCalculator } from '@/components/calculators/Fourier'
 import { WeberCalculator } from '@/components/calculators/Weber'
 import { CapillaryNumberCalculator } from '@/components/calculators/CapillaryNumber'
 import { BondNumberCalculator } from '@/components/calculators/BondNumber'
+import { CaseMemoryEstimatorCalculator } from '@/components/calculators/CaseMemoryEstimator'
 import { CavitationNumberCalculator } from '@/components/calculators/CavitationNumber'
 import { CavitationRiskVisualizerCalculator } from '@/components/calculators/CavitationRiskVisualizer'
 import { DiffusionCFLCalculator } from '@/components/calculators/DiffusionCFL'
@@ -119,6 +120,7 @@ export const CALCULATOR_COMPONENTS: Record<string, () => ReactElement> = {
   'dynamic-pressure': DynamicPressureCalculator,
   'grid-convergence-index': GciCalculator,
   'cfd-unit-converter': CfdUnitConverterCalculator,
+  'case-memory-estimator': CaseMemoryEstimatorCalculator,
   'residual-convergence-analyzer': ResidualConvergenceAnalyzerCalculator,
   'mesh-quality-visualizer': MeshQualityVisualizerCalculator,
   ohnesorge: OhnesorgeCalculator,
