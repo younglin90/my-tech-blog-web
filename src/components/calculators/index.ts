@@ -7,6 +7,7 @@ import { KolmogorovCalculator } from '@/components/calculators/Kolmogorov'
 import { MachCalculator } from '@/components/calculators/Mach'
 import { NormalShockCalculator } from '@/components/calculators/NormalShock'
 import { NusseltCalculator } from '@/components/calculators/Nusselt'
+import { NozzleAreaMachVisualizerCalculator } from '@/components/calculators/NozzleAreaMachVisualizer'
 import { ObliqueShockCalculator } from '@/components/calculators/ObliqueShock'
 import { PrandtlCalculator } from '@/components/calculators/Prandtl'
 import { RayleighCalculator } from '@/components/calculators/Rayleigh'
@@ -62,6 +63,7 @@ export const CALCULATOR_COMPONENTS: Record<string, () => ReactElement> = {
   'fanno-flow': FannoCalculator,
   'rayleigh-flow': RayleighCalculator,
   'choked-mass-flow': ChokedMassFlowCalculator,
+  'nozzle-area-mach-visualizer': NozzleAreaMachVisualizerCalculator,
   reynolds: ReynoldsCalculator,
   mach: MachCalculator,
   prandtl: PrandtlCalculator,

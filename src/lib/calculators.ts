@@ -122,6 +122,20 @@ export const CALCULATORS: CalculatorMeta[] = [
     tags: ['compressible', 'isentropic', 'nozzle', 'Prandtl-Meyer'],
   },
   {
+    slug: 'nozzle-area-mach-visualizer',
+    category: 'compressible',
+    title: { ko: '노즐 Area-Mach 시각화', en: 'Nozzle Area-Mach Visualizer', ja: 'ノズル Area-Mach 可視化', zh: '喷管 Area-Mach 可视化', es: 'Visualizador Area-Mach de Tobera' },
+    desc: {
+      ko: '수축-확대 노즐의 면적비에서 Mach 분포와 출구 등엔트로피 상태를 동적으로 보여줍니다.',
+      en: 'Visualize Mach distribution and exit isentropic state for a converging-diverging nozzle area ratio.',
+      ja: '収縮拡大ノズルの面積比からMach分布と出口の等エントロピー状態を動的に表示します。',
+      zh: '根据收缩-扩张喷管面积比动态显示 Mach 分布和出口等熵状态。',
+      es: 'Visualiza la distribución de Mach y el estado isentrópico de salida para una tobera convergente-divergente.',
+    },
+    formula: 'A/A* = (1/M) [2/(gamma+1) (1 + (gamma-1) M^2 / 2)]^((gamma+1)/(2(gamma-1)))',
+    tags: ['compressible', 'nozzle', 'area-Mach', 'visualization'],
+  },
+  {
     slug: 'normal-shock',
     category: 'compressible',
     title: { ko: '정상 충격파', en: 'Normal Shock', ja: '垂直衝撃波', zh: '正激波', es: 'Choque Normal' },
