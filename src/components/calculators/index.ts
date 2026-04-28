@@ -19,6 +19,7 @@ import { StandardAtmosphereVisualizerCalculator } from '@/components/calculators
 import { StokesCalculator } from '@/components/calculators/Stokes'
 import { TurbulenceInletVisualizerCalculator } from '@/components/calculators/TurbulenceInletVisualizer'
 import { TurbulenceIntensityCalculator } from '@/components/calculators/TurbulenceIntensity'
+import { UnderRelaxationPlannerCalculator } from '@/components/calculators/UnderRelaxationPlanner'
 import { VortexSheddingStreetVisualizerCalculator } from '@/components/calculators/VortexSheddingStreetVisualizer'
 import { ChokedMassFlowCalculator } from '@/components/calculators/ChokedMassFlow'
 import { FroudeCalculator } from '@/components/calculators/Froude'
@@ -122,6 +123,7 @@ export const CALCULATOR_COMPONENTS: Record<string, () => ReactElement> = {
   'cfd-unit-converter': CfdUnitConverterCalculator,
   'case-memory-estimator': CaseMemoryEstimatorCalculator,
   'residual-convergence-analyzer': ResidualConvergenceAnalyzerCalculator,
+  'under-relaxation-planner': UnderRelaxationPlannerCalculator,
   'mesh-quality-visualizer': MeshQualityVisualizerCalculator,
   ohnesorge: OhnesorgeCalculator,
   'capillary-length': CapillaryLengthCalculator,

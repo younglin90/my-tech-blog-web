@@ -920,6 +920,20 @@ export const CALCULATORS: CalculatorMeta[] = [
     tags: ['residual', 'convergence', 'solver', 'monitoring'],
   },
   {
+    slug: 'under-relaxation-planner',
+    category: 'numerics',
+    title: { ko: 'Under-Relaxation 플래너', en: 'Under-Relaxation Planner', ja: 'Under-Relaxation プランナー', zh: '欠松弛规划器', es: 'Planificador de Subrelajacion' },
+    desc: {
+      ko: 'SIMPLE류 반복에서 relaxation factor가 보정량, 감쇠 속도, overshoot 위험을 어떻게 바꾸는지 시각화합니다.',
+      en: 'Visualize how relaxation factor changes correction size, damping speed, and overshoot risk in SIMPLE-like iterations.',
+      ja: 'SIMPLE系反復で relaxation factor が補正量、減衰速度、overshoot リスクをどう変えるか可視化します。',
+      zh: '可视化 SIMPLE 类迭代中欠松弛因子如何改变修正量、衰减速度和过冲风险。',
+      es: 'Visualiza como el factor de subrelajacion cambia correccion, amortiguamiento y riesgo de overshoot en iteraciones tipo SIMPLE.',
+    },
+    formula: 'phi_new = phi_old + alpha Delta phi,   residual_N ~= residual_0 (1-alpha)^N',
+    tags: ['under-relaxation', 'SIMPLE', 'solver stability', 'residual'],
+  },
+  {
     slug: 'mesh-quality-visualizer',
     category: 'numerics',
     title: { ko: 'Mesh Quality 시각 진단', en: 'Mesh Quality Visualizer', ja: 'Mesh Quality 可視診断', zh: '网格质量可视诊断', es: 'Visualizador de Calidad de Malla' },
