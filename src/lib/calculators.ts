@@ -5,6 +5,7 @@ export type CalculatorCategory =
   | 'internal-flow'
   | 'aerodynamics'
   | 'turbomachinery'
+  | 'porous-rheology'
   | 'dimensionless'
   | 'turbulence'
   | 'heat-transfer'
@@ -28,6 +29,7 @@ export const CATEGORY_ORDER: CalculatorCategory[] = [
   'internal-flow',
   'aerodynamics',
   'turbomachinery',
+  'porous-rheology',
   'dimensionless',
   'turbulence',
   'heat-transfer',
@@ -64,6 +66,13 @@ export const CATEGORY_LABELS: Record<CalculatorCategory, LocalizedString> = {
     ja: 'ターボ機械と回転流',
     zh: '涡轮机械与旋转流',
     es: 'Turbomaquinaria y Flujo Rotativo',
+  },
+  'porous-rheology': {
+    ko: '다공성 매질과 레올로지',
+    en: 'Porous Media & Rheology',
+    ja: '多孔質媒体とレオロジー',
+    zh: '多孔介质与流变',
+    es: 'Medios Porosos y Reologia',
   },
   dimensionless: {
     ko: '무차원수',
@@ -544,6 +553,62 @@ export const CALCULATORS: CalculatorMeta[] = [
     },
     formula: 'U_tip = omega R,   W = sqrt(U_tip^2 + U_axial^2),   M_rel = W/a,   Re_c = rho W c/mu',
     tags: ['tip Mach', 'blade Reynolds', 'rotating frame', 'compressibility'],
+  },
+  {
+    slug: 'ergun-packed-bed',
+    category: 'porous-rheology',
+    title: { ko: 'Ergun Packed-Bed 압력강하', en: 'Ergun Packed-Bed Pressure Drop', ja: 'Ergun Packed-Bed 圧力損失', zh: 'Ergun 填充床压降', es: 'Caida de Presion Ergun en Lecho Empacado' },
+    desc: {
+      ko: '입자 지름, 공극률, 물성에서 Ergun viscous/inertial 압력강하 항을 시각적으로 분리합니다.',
+      en: 'Split Ergun viscous and inertial pressure-drop terms visually from particle size, porosity, and properties.',
+      ja: '粒子径、空隙率、物性からErgunの粘性/慣性圧力損失項を視覚的に分離します。',
+      zh: '由粒径、孔隙率和物性可视化分解 Ergun 黏性/惯性压降项。',
+      es: 'Separa visualmente terminos viscoso e inercial de Ergun desde tamano de particula, porosidad y propiedades.',
+    },
+    formula: 'dp/dz = 150 mu (1-eps)^2 U/(eps^3 d_p^2) + 1.75 rho (1-eps) U^2/(eps^3 d_p)',
+    tags: ['Ergun', 'packed bed', 'porous media', 'pressure drop'],
+  },
+  {
+    slug: 'darcy-forchheimer-porous',
+    category: 'porous-rheology',
+    title: { ko: 'Darcy-Forchheimer 다공성 소스', en: 'Darcy-Forchheimer Porous Source', ja: 'Darcy-Forchheimer 多孔質ソース', zh: 'Darcy-Forchheimer 多孔源项', es: 'Fuente Porosa Darcy-Forchheimer' },
+    desc: {
+      ko: 'CFD porous zone의 Darcy 점성항과 Forchheimer 관성항을 비교해 momentum sink 크기를 계산합니다.',
+      en: 'Compare Darcy viscous and Forchheimer inertial terms for CFD porous-zone momentum sinks.',
+      ja: 'CFD porous zoneのDarcy粘性項とForchheimer慣性項を比較し、momentum sinkを計算します。',
+      zh: '比较 CFD 多孔区域的 Darcy 黏性项与 Forchheimer 惯性项，计算动量源项大小。',
+      es: 'Compara terminos Darcy y Forchheimer para fuentes de momento en zonas porosas CFD.',
+    },
+    formula: 'S = -(mu/K) U - C2 rho |U| U',
+    tags: ['Darcy', 'Forchheimer', 'porous zone', 'momentum source'],
+  },
+  {
+    slug: 'power-law-fluid-rheology',
+    category: 'porous-rheology',
+    title: { ko: 'Power-Law 유체 레올로지', en: 'Power-Law Fluid Rheology', ja: 'Power-Law 流体レオロジー', zh: '幂律流体流变', es: 'Reologia de Fluido Power-Law' },
+    desc: {
+      ko: '비뉴턴 power-law 유체의 전단응력, 겉보기 점도, 일반화 Reynolds 수를 곡선으로 보여줍니다.',
+      en: 'Plot shear stress, apparent viscosity, and generalized Reynolds number for a non-Newtonian power-law fluid.',
+      ja: '非ニュートンpower-law流体のせん断応力、見かけ粘度、一般化Reynolds数を曲線で示します。',
+      zh: '绘制非牛顿幂律流体的剪切应力、表观黏度和广义 Reynolds 数。',
+      es: 'Grafica esfuerzo cortante, viscosidad aparente y Reynolds generalizado para un fluido power-law.',
+    },
+    formula: 'tau = K gamma_dot^n,   mu_app = K gamma_dot^(n-1)',
+    tags: ['non-Newtonian', 'power-law fluid', 'rheology', 'viscosity'],
+  },
+  {
+    slug: 'kozeny-carman-permeability',
+    category: 'porous-rheology',
+    title: { ko: 'Kozeny-Carman 투과도', en: 'Kozeny-Carman Permeability', ja: 'Kozeny-Carman 透過率', zh: 'Kozeny-Carman 渗透率', es: 'Permeabilidad Kozeny-Carman' },
+    desc: {
+      ko: '입자 지름, 공극률, 구형도에서 투과도와 Darcy 압력강하를 pore tile 그림으로 추정합니다.',
+      en: 'Estimate permeability and Darcy pressure drop from particle diameter, porosity, and sphericity with a pore tile sketch.',
+      ja: '粒子径、空隙率、球形度から透過率とDarcy圧力損失をpore tile図で見積もります。',
+      zh: '由粒径、孔隙率和球形度估算渗透率与 Darcy 压降，并显示孔隙网格图。',
+      es: 'Estima permeabilidad y caida Darcy desde diametro, porosidad y esfericidad con un mosaico de poros.',
+    },
+    formula: 'K = d_p^2 eps^3 phi_s^2 / [180 (1-eps)^2]',
+    tags: ['Kozeny-Carman', 'permeability', 'porosity', 'porous media'],
   },
   {
     slug: 'reynolds',

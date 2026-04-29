@@ -96,6 +96,12 @@ import {
   PumpAffinityLawsCalculator,
 } from '@/components/calculators/TurbomachinerySuite'
 import {
+  DarcyForchheimerPorousCalculator,
+  ErgunPackedBedCalculator,
+  KozenyCarmanPermeabilityCalculator,
+  PowerLawFluidRheologyCalculator,
+} from '@/components/calculators/PorousRheologySuite'
+import {
   CapillaryLengthCalculator,
   DropletBreakupCalculator,
   ManningOpenChannelCalculator,
@@ -174,6 +180,10 @@ export const CALCULATOR_COMPONENTS: Record<string, () => ReactElement> = {
   'fan-system-curve-matcher': FanSystemCurveMatcherCalculator,
   'compressor-corrected-flow': CompressorCorrectedFlowCalculator,
   'blade-tip-mach-reynolds': BladeTipMachReynoldsCalculator,
+  'ergun-packed-bed': ErgunPackedBedCalculator,
+  'darcy-forchheimer-porous': DarcyForchheimerPorousCalculator,
+  'power-law-fluid-rheology': PowerLawFluidRheologyCalculator,
+  'kozeny-carman-permeability': KozenyCarmanPermeabilityCalculator,
   'courant-3d': Courant3DCalculator,
   'boundary-layer-stack': BoundaryLayerStackCalculator,
   'moody-chart-explorer': MoodyChartExplorerCalculator,
