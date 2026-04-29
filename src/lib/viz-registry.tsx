@@ -41,6 +41,7 @@ export const VIZ_COMPONENTS: Record<string, ComponentType> = {
   "StreamLine": dynamic(() => import("@/components/viz/StreamLine").then((m) => ({ default: m.StreamLine })), { ssr: false, loading: VizLoading }),
   "TENOvsWENOAdvection1D": dynamic(() => import("@/components/post-viz/2026-04-25-teno-low-dissipation-shock-capturing/TENOvsWENOAdvection1D").then((m) => ({ default: m.TENOvsWENOAdvection1D })), { ssr: false, loading: VizLoading }),
   "VelocityField": dynamic(() => import("@/components/viz/VelocityField").then((m) => ({ default: m.VelocityField })), { ssr: false, loading: VizLoading }),
+  "VenturiCavitationFlow": dynamic(() => import("@/components/post-viz/2026-04-30-cavitation-number-vapor-pressure/VenturiCavitationFlow").then((m) => ({ default: m.VenturiCavitationFlow })), { ssr: false, loading: VizLoading }),
   "VOFvsLevelSet": dynamic(() => import("@/components/post-viz/interface-capturing/VOFvsLevelSet").then((m) => ({ default: m.VOFvsLevelSet })), { ssr: false, loading: VizLoading }),
   "VolumeFractionAdvect": dynamic(() => import("@/components/post-viz/five-equation-model/VolumeFractionAdvect").then((m) => ({ default: m.VolumeFractionAdvect })), { ssr: false, loading: VizLoading }),
 }
