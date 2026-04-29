@@ -56,7 +56,7 @@ export function TerminalHeader() {
           borderBottom: '1px solid var(--border)',
         }}
       >
-        <Link href={`/${locale}`} className="flex items-baseline gap-3.5 text-left">
+        <Link href={`/${locale}`} className="flex min-h-11 items-center gap-3.5 text-left">
           <span className="mono" style={{ fontSize: 18, color: 'var(--accent)', fontWeight: 600 }}>$_</span>
           <div>
             <div

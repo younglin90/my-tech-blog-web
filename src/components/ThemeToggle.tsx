@@ -16,7 +16,7 @@ export function ThemeToggle() {
   useEffect(() => setMounted(true), [])
 
   if (!mounted) {
-    return <div className="h-8 w-8" />
+    return <div className="h-11 w-11" />
   }
 
   const isDark = resolvedTheme === 'dark'
@@ -28,7 +28,7 @@ export function ThemeToggle() {
         setTheme(next)
         trackEvent('theme-toggle', { to: next })
       }}
-      className="theme-toggle flex items-center justify-center rounded-md p-1.5 transition-colors duration-100"
+      className="theme-toggle flex min-h-11 min-w-11 items-center justify-center rounded-md p-1.5 transition-colors duration-100"
       style={{ color: 'var(--text-muted)' }}
       aria-label={t(locale, 'theme.toggle')}
       title={`${t(locale, 'theme.toggle')} (T)`}

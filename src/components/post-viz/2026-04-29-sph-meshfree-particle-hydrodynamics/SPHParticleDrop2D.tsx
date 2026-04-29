@@ -227,7 +227,7 @@ export function SPHParticleDrop2D() {
               onChange={(e) => setViscosity(parseFloat(e.target.value))}
             />
           </label>
-          <label className="flex items-center gap-2">
+          <label className="flex min-h-11 items-center gap-2">
             <input
               type="checkbox"
               checked={showField}
@@ -239,14 +239,14 @@ export function SPHParticleDrop2D() {
             <button
               type="button"
               onClick={() => setRunning((r) => !r)}
-              className="rounded border border-[var(--border)] px-3 py-1 hover:bg-[var(--accent)]/10"
+              className="min-h-11 rounded border border-[var(--border)] px-3 py-1 hover:bg-[var(--accent)]/10"
             >
               {running ? 'pause' : 'play'}
             </button>
             <button
               type="button"
               onClick={reset}
-              className="rounded border border-[var(--border)] px-3 py-1 hover:bg-[var(--accent)]/10"
+              className="min-h-11 rounded border border-[var(--border)] px-3 py-1 hover:bg-[var(--accent)]/10"
             >
               reset
             </button>

@@ -90,7 +90,7 @@ export function PostFeedback({ postId }: { postId: string }) {
           <button
             type="button"
             onClick={() => setVote('up')}
-            className="rounded-lg px-4 py-2 text-sm font-medium transition-all hover:opacity-90"
+            className="min-h-11 rounded-lg px-4 py-2 text-sm font-medium transition-all hover:opacity-90"
             style={{
               background: 'var(--bg)',
               border: '1px solid var(--border)',
@@ -102,7 +102,7 @@ export function PostFeedback({ postId }: { postId: string }) {
           <button
             type="button"
             onClick={() => setVote('down')}
-            className="rounded-lg px-4 py-2 text-sm font-medium transition-all hover:opacity-90"
+            className="min-h-11 rounded-lg px-4 py-2 text-sm font-medium transition-all hover:opacity-90"
             style={{
               background: 'var(--bg)',
               border: '1px solid var(--border)',
@@ -123,7 +123,7 @@ export function PostFeedback({ postId }: { postId: string }) {
                 key={rk}
                 type="button"
                 onClick={() => submit(vote, rk)}
-                className="mono rounded-full px-2.5 py-1 text-[11px] transition-colors hover:[border-color:var(--accent)] hover:[color:var(--accent)]"
+                className="mono inline-flex min-h-11 items-center rounded-full px-2.5 py-1 text-[11px] transition-colors hover:[border-color:var(--accent)] hover:[color:var(--accent)]"
                 style={{
                   background: 'var(--bg)',
                   border: '1px solid var(--border)',
@@ -136,7 +136,7 @@ export function PostFeedback({ postId }: { postId: string }) {
             <button
               type="button"
               onClick={() => submit(vote)}
-              className="mono rounded-full px-2.5 py-1 text-[11px]"
+              className="mono inline-flex min-h-11 items-center rounded-full px-2.5 py-1 text-[11px]"
               style={{ color: 'var(--text-faint)', textDecoration: 'underline' }}
             >
               {t(locale, 'feedback.skip')}

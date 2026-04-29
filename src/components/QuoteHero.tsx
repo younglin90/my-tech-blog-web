@@ -48,7 +48,7 @@ export function QuoteHero() {
         <button
           onClick={() => setSeed(Math.floor(Math.random() * quoteList.length))}
           disabled={!mounted}
-          className="mono transition-colors duration-100"
+          className="mono min-h-11 transition-colors duration-100"
           title={shuffleTitle}
           style={{
             fontSize: 11,

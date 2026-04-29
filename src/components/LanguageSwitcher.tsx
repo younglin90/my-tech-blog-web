@@ -64,7 +64,7 @@ export function LanguageSwitcher({ current }: { current?: string }) {
     <div ref={ref} className="relative">
       <button
         onClick={() => setOpen((v) => !v)}
-        className="flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium transition-colors"
+        className="flex min-h-11 min-w-11 items-center justify-center gap-1.5 whitespace-nowrap rounded-md px-2 py-1.5 text-xs font-medium transition-colors"
         style={{ color: 'var(--text-muted)' }}
         aria-label={t(detected, 'language.change')}
         aria-haspopup="listbox"
@@ -91,7 +91,7 @@ export function LanguageSwitcher({ current }: { current?: string }) {
               <li key={loc} role="option" aria-selected={active}>
                 <button
                   onClick={() => switchTo(loc)}
-                  className="flex w-full items-center justify-between gap-3 px-3 py-1.5 text-left transition-colors"
+                  className="flex min-h-11 w-full items-center justify-between gap-3 px-3 py-1.5 text-left transition-colors"
                   style={{
                     color: active ? 'var(--accent)' : isFallback ? 'var(--text-faint)' : 'var(--text)',
                     background: active ? 'var(--bg)' : 'transparent',

@@ -136,7 +136,7 @@ export function BookmarksClient({ posts }: BookmarksClientProps) {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder={t(locale, 'bookmarks.searchPlaceholder')}
-            className="w-full rounded-md py-2 pl-8 pr-3 text-sm focus:outline-none"
+            className="min-h-11 w-full rounded-md py-2 pl-8 pr-3 text-sm focus:outline-none"
             style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text)' }}
           />
         </div>
@@ -147,7 +147,7 @@ export function BookmarksClient({ posts }: BookmarksClientProps) {
           <button
             type="button"
             onClick={handleExport}
-            className="inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors"
+            className="inline-flex min-h-11 items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors"
             style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text-muted)' }}
             title={t(locale, 'bookmarks.export')}
           >
@@ -165,7 +165,7 @@ export function BookmarksClient({ posts }: BookmarksClientProps) {
                 key={tag}
                 type="button"
                 onClick={() => setActiveTag(isActive ? null : tag)}
-                className="mono rounded-full px-2.5 py-1 text-[11px] transition-colors"
+                className="mono inline-flex min-h-11 items-center rounded-full px-2.5 py-1 text-[11px] transition-colors"
                 style={{
                   background: isActive ? 'var(--accent-glow)' : 'var(--surface)',
                   border: `1px solid ${isActive ? 'var(--accent)' : 'var(--border)'}`,

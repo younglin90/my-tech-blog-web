@@ -111,7 +111,7 @@ export function CodeBlock({ children, ...props }: React.HTMLAttributes<HTMLPreEl
       {overflows && (
         <button
           onClick={() => setExpanded((e) => !e)}
-          className="flex w-full items-center justify-center gap-1.5 py-1.5 text-[10px] font-medium transition-colors duration-100"
+          className="flex min-h-11 w-full items-center justify-center gap-1.5 py-1.5 text-[10px] font-medium transition-colors duration-100"
           style={{
             background: 'var(--surface)',
             borderTop: expanded ? '1px solid var(--border)' : 'none',
@@ -160,7 +160,7 @@ export function CodeBlock({ children, ...props }: React.HTMLAttributes<HTMLPreEl
       {/* Copy button — always visible on touch, hover-only on pointer devices */}
       <button
         onClick={handleCopy}
-        className="absolute right-3 top-3 flex items-center gap-1 rounded px-2 py-1 text-[10px] font-medium opacity-100 transition-all duration-150 sm:opacity-0 sm:group-hover:opacity-100"
+        className="absolute right-3 top-3 flex min-h-11 min-w-11 items-center justify-center gap-1 rounded px-2 py-1 text-[10px] font-medium opacity-100 transition-all duration-150 sm:min-h-0 sm:min-w-0 sm:opacity-0 sm:group-hover:opacity-100"
         style={{
           background: 'var(--surface-hover)',
           border: '1px solid var(--border)',

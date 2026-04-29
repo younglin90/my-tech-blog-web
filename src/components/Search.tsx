@@ -208,7 +208,7 @@ export function Search() {
     <>
       <button
         onClick={() => setOpen(true)}
-        className="search-trigger flex items-center gap-2 rounded-md px-3 py-1.5 text-sm transition-colors duration-100"
+        className="search-trigger flex min-h-11 items-center gap-2 whitespace-nowrap rounded-md px-3 py-1.5 text-sm transition-colors duration-100"
         style={{
           border: '1px solid var(--border)',
           color: 'var(--text-muted)',
@@ -329,7 +329,7 @@ export function Search() {
                         <button
                           key={rq}
                           onClick={() => setQuery(rq)}
-                          className="mono rounded-full px-2.5 py-1 text-[10px] transition-colors duration-75"
+                          className="mono inline-flex min-h-11 items-center rounded-full px-2.5 py-1 text-[10px] transition-colors duration-75"
                           style={{ background: 'var(--surface-hover)', color: 'var(--text)', border: '1px solid var(--border)' }}
                         >
                           {rq}
@@ -348,7 +348,7 @@ export function Search() {
                         <button
                           key={tag}
                           onClick={() => setQuery(`#${tag}`)}
-                          className="rounded-full px-2.5 py-1 text-[10px] font-medium transition-colors duration-75"
+                          className="inline-flex min-h-11 items-center rounded-full px-2.5 py-1 text-[10px] font-medium transition-colors duration-75"
                           style={{ background: 'var(--surface-hover)', color: 'var(--text-muted)', border: '1px solid var(--border)' }}
                         >
                           {tag}

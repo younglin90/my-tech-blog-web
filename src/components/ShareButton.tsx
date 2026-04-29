@@ -46,7 +46,7 @@ export function ShareButton({ title, url }: ShareButtonProps) {
       {canNativeShare && (
         <button
           onClick={handleNativeShare}
-          className="share-btn flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium"
+          className="share-btn flex min-h-11 items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium"
           style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text-muted)' }}
           aria-label={t(locale, 'post.copyLink')}
         >
@@ -56,7 +56,7 @@ export function ShareButton({ title, url }: ShareButtonProps) {
       )}
       <button
         onClick={handleCopy}
-        className="share-btn flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium"
+        className="share-btn flex min-h-11 items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium"
         style={{
           background: 'var(--surface)',
           border: '1px solid var(--border)',
@@ -71,7 +71,7 @@ export function ShareButton({ title, url }: ShareButtonProps) {
         target="_blank"
         rel="noopener noreferrer"
         onClick={() => trackEvent('share', { medium: 'social', title })}
-        className="share-btn flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium"
+        className="share-btn flex min-h-11 min-w-11 items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium"
         style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text-muted)', textDecoration: 'none' }}
         aria-label="Share on Twitter"
       >
@@ -82,7 +82,7 @@ export function ShareButton({ title, url }: ShareButtonProps) {
         target="_blank"
         rel="noopener noreferrer"
         onClick={() => trackEvent('share', { medium: 'social', title })}
-        className="share-btn flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium"
+        className="share-btn flex min-h-11 min-w-11 items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium"
         style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text-muted)', textDecoration: 'none' }}
         aria-label="Share on LinkedIn"
       >
@@ -93,7 +93,7 @@ export function ShareButton({ title, url }: ShareButtonProps) {
         target="_blank"
         rel="noopener noreferrer"
         onClick={() => trackEvent('share', { medium: 'social', title })}
-        className="share-btn flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium"
+        className="share-btn flex min-h-11 min-w-11 items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium"
         style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text-muted)', textDecoration: 'none' }}
         aria-label="Share on HackerNews"
       >

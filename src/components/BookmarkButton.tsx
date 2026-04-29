@@ -52,7 +52,7 @@ export function BookmarkButton({ postId }: BookmarkButtonProps) {
   return (
     <button
       onClick={handleClick}
-      className="share-btn flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium"
+      className="share-btn flex min-h-11 items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium"
       style={{
         background: 'var(--surface)',
         border: `1px solid ${bookmarked ? 'var(--accent)' : 'var(--border)'}`,

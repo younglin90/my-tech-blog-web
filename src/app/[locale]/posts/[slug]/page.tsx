@@ -152,7 +152,7 @@ export default async function PostPage({ params }: PostProps) {
       <nav aria-label="Breadcrumb" className="mb-6">
         <Link
           href={`/${loc}`}
-          className="mono transition-colors duration-100"
+          className="mono inline-flex min-h-11 items-center transition-colors duration-100"
           style={{ fontSize: 12, color: 'var(--text-muted)' }}
         >
           <span style={{ color: 'var(--accent)' }}>$</span> cd ..
@@ -211,12 +211,12 @@ export default async function PostPage({ params }: PostProps) {
             {post.tags && post.tags.length > 0 && (
               <>
                 <span aria-hidden="true">·</span>
-                <span>
+                <span className="inline-flex min-w-0 max-w-full flex-wrap gap-x-2 gap-y-1">
                   {post.tags.map((tg) => (
                     <Link
                       key={tg}
                       href={`/${loc}/tags/${encodeURIComponent(tg)}`}
-                      className="mr-2 link-hover-text-accent"
+                      className="max-w-full break-all link-hover-text-accent"
                       style={{ color: 'var(--accent)' }}
                     >
                       #{tg}

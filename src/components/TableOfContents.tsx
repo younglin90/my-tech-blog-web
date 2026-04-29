@@ -85,7 +85,7 @@ export function TableOfContents() {
         >
           <a
             href={`#${h.id}`}
-            className={`toc-link block pl-2.5 leading-snug transition-colors duration-100${activeId === h.id ? ' toc-link--active' : ''}`}
+            className={`toc-link flex min-h-9 items-center pl-2.5 leading-snug transition-colors duration-100${activeId === h.id ? ' toc-link--active' : ''}`}
             style={{
               color: activeId === h.id ? 'var(--accent)' : 'var(--text-faint)',
               fontWeight: activeId === h.id ? 500 : 400,
@@ -108,7 +108,7 @@ export function TableOfContents() {
       >
         <button
           onClick={() => setMobileOpen((o) => !o)}
-          className="flex w-full items-center justify-between px-4 py-3 text-xs font-semibold uppercase tracking-widest"
+          className="flex min-h-11 w-full items-center justify-between px-4 py-3 text-xs font-semibold uppercase tracking-widest"
           style={{ color: 'var(--text-muted)' }}
           aria-expanded={mobileOpen}
         >

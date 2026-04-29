@@ -46,7 +46,7 @@ export function CiteButton({ title, date, slug, author }: Props) {
     <div className="relative">
       <button
         onClick={() => setOpen((o) => !o)}
-        className="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors duration-100"
+        className="flex min-h-11 items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors duration-100"
         style={{
           background: 'var(--surface)',
           border: '1px solid var(--border)',
@@ -69,7 +69,7 @@ export function CiteButton({ title, date, slug, author }: Props) {
             </span>
             <button
               onClick={() => setOpen(false)}
-              className="text-sm leading-none"
+              className="flex min-h-11 min-w-11 items-center justify-center text-sm leading-none"
               style={{ color: 'var(--text-faint)' }}
               aria-label="Close"
             >
@@ -84,7 +84,7 @@ export function CiteButton({ title, date, slug, author }: Props) {
           </pre>
           <button
             onClick={handleCopy}
-            className="mt-3 w-full rounded-md py-1.5 text-xs font-medium transition-colors"
+            className="mt-3 min-h-11 w-full rounded-md py-1.5 text-xs font-medium transition-colors"
             style={{
               background: copied ? 'var(--accent-glow)' : 'var(--bg)',
               color: copied ? 'var(--accent)' : 'var(--text-muted)',

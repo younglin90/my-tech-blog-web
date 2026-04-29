@@ -122,7 +122,7 @@ export function SPHKernelShapeExplorer() {
                 key={k}
                 type="button"
                 onClick={() => setKind(k)}
-                className={`rounded border px-2 py-1 text-xs ${
+                className={`min-h-11 rounded border px-2 py-1 text-xs ${
                   kind === k
                     ? 'border-[var(--accent)] bg-[var(--accent)]/15'
                     : 'border-[var(--border)] hover:bg-[var(--accent)]/10'

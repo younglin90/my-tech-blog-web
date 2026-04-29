@@ -242,7 +242,7 @@ export function GlossaryClient({ entries, locale, total }: Props) {
           </h2>
           <button
             onClick={() => setMode('browse')}
-            className="rounded-md px-3 py-1.5 text-xs transition-colors"
+            className="inline-flex min-h-11 items-center rounded-md px-3 py-1.5 text-xs transition-colors"
             style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text-muted)' }}
           >
             {t(locale, 'glossary.backToBrowse')}
@@ -262,13 +262,13 @@ export function GlossaryClient({ entries, locale, total }: Props) {
             placeholder={t(locale, 'glossary.filterPlaceholder')}
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            className="w-full rounded-lg px-4 py-2 text-sm focus:outline-none"
+            className="min-h-11 w-full rounded-lg px-4 py-2 text-sm focus:outline-none"
             style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text)' }}
           />
           {q && (
             <button
               onClick={() => setQ('')}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-sm"
+              className="absolute right-0 top-1/2 flex min-h-11 min-w-11 -translate-y-1/2 items-center justify-center text-sm"
               style={{ color: 'var(--text-faint)' }}
               aria-label="Clear search"
             >
@@ -282,7 +282,7 @@ export function GlossaryClient({ entries, locale, total }: Props) {
           </span>
           <button
             onClick={() => setMode('flashcard')}
-            className="rounded-md px-3 py-1.5 text-xs font-medium transition-colors"
+            className="inline-flex min-h-11 items-center rounded-md px-3 py-1.5 text-xs font-medium transition-colors"
             style={{ background: 'var(--accent-glow)', border: '1px solid var(--accent)', color: 'var(--accent)' }}
             title={t(locale, 'glossary.flashcardTitle')}
           >
@@ -297,7 +297,7 @@ export function GlossaryClient({ entries, locale, total }: Props) {
             <a
               key={l}
               href={`#letter-${l}`}
-              className="mono rounded px-2 py-0.5 text-xs transition-colors hover:bg-[var(--surface)]"
+              className="mono inline-flex min-h-11 min-w-11 items-center justify-center rounded px-2 py-0.5 text-xs transition-colors hover:bg-[var(--surface)]"
               style={{ color: 'var(--accent)' }}
             >
               {l}
@@ -371,7 +371,7 @@ export function GlossaryClient({ entries, locale, total }: Props) {
                         <Link
                           key={`${term}-${post.slug}`}
                           href={`/${locale}/posts/${post.slug}`}
-                          className="rounded-lg px-2.5 py-1.5 text-xs transition-colors"
+                          className="inline-flex min-h-11 items-center rounded-lg px-2.5 py-1.5 text-xs transition-colors"
                           style={{ background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text-muted)' }}
                         >
                           <span className="link-hover-accent">{post.title}</span>

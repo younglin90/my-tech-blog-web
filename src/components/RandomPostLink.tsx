@@ -70,7 +70,7 @@ export function RandomPostLink({ locale, label }: Props) {
       type="button"
       onClick={go}
       disabled={loading}
-      className="link-hover-text inline-flex items-center gap-1 disabled:opacity-50"
+      className="link-hover-text inline-flex min-h-11 items-center gap-1 disabled:opacity-50"
       title={`${label} (R)`}
     >
       <Shuffle className="h-2.5 w-2.5" strokeWidth={2} />

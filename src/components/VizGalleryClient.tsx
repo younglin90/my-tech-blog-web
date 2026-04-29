@@ -73,7 +73,7 @@ export function VizGalleryClient({ locale, items }: { locale: Locale; items: Viz
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             placeholder={t(locale, 'viz.searchPlaceholder')}
-            className="rounded-xl px-3 py-2.5 text-sm focus:outline-none"
+            className="min-h-11 rounded-xl px-3 py-2.5 text-sm focus:outline-none"
             style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text)' }}
           />
         </label>
@@ -143,7 +143,7 @@ export function VizGalleryClient({ locale, items }: { locale: Locale; items: Viz
                     {Component ? (
                       <button
                         onClick={() => setOpen((current) => ({ ...current, [key]: !isOpen }))}
-                        className="rounded-lg px-3 py-1.5 text-xs font-medium transition-opacity hover:opacity-80"
+                        className="inline-flex min-h-11 items-center rounded-lg px-3 py-1.5 text-xs font-medium transition-opacity hover:opacity-80"
                         style={{ background: 'var(--accent)', color: '#08111f' }}
                       >
                         {isOpen ? t(locale, 'viz.hide') : t(locale, 'viz.render')}
@@ -156,7 +156,7 @@ export function VizGalleryClient({ locale, items }: { locale: Locale; items: Viz
                     {postHref && (
                       <Link
                         href={postHref}
-                        className="rounded-lg px-3 py-1.5 text-xs font-medium"
+                        className="inline-flex min-h-11 items-center rounded-lg px-3 py-1.5 text-xs font-medium"
                         style={{ background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text-muted)' }}
                       >
                         {t(locale, 'viz.openPost')}
@@ -192,7 +192,7 @@ function FilterChip({ active, children, onClick }: { active: boolean; children: 
   return (
     <button
       onClick={onClick}
-      className="rounded-full px-3 py-1.5 text-xs font-medium transition-colors"
+      className="inline-flex min-h-11 items-center rounded-full px-3 py-1.5 text-xs font-medium transition-colors"
       style={{
         background: active ? 'var(--accent-glow)' : 'var(--surface)',
         border: `1px solid ${active ? 'var(--accent)' : 'var(--border)'}`,

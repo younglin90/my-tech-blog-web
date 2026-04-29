@@ -134,7 +134,7 @@ export function ToolsCatalog({ locale }: { locale: Locale }) {
               value={query}
               onChange={(e) => startTransition(() => setQuery(e.target.value))}
               placeholder={t(locale, 'tools.searchPlaceholder')}
-              className="rounded-xl px-3 py-2.5 text-sm focus:outline-none"
+              className="min-h-11 rounded-xl px-3 py-2.5 text-sm focus:outline-none"
               style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text)' }}
             />
           </label>
@@ -145,7 +145,7 @@ export function ToolsCatalog({ locale }: { locale: Locale }) {
                 setActiveCategoryRaw('all')
                 setQuery('')
               }}
-              className="rounded-lg px-3 py-2 text-xs font-medium transition-colors"
+              className="inline-flex min-h-11 items-center rounded-lg px-3 py-2 text-xs font-medium transition-colors"
               style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text-muted)' }}
             >
               {t(locale, 'tools.reset')}
@@ -196,7 +196,7 @@ export function ToolsCatalog({ locale }: { locale: Locale }) {
               <a
                 key={group.category}
                 href={`#tools-category-${group.category}`}
-                className="rounded-full px-3 py-1.5 text-xs font-medium transition-colors"
+                className="inline-flex min-h-11 items-center rounded-full px-3 py-1.5 text-xs font-medium transition-colors"
                 style={{ background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text-muted)' }}
               >
                 {group.label} / {group.items.length}
@@ -241,7 +241,7 @@ export function ToolsCatalog({ locale }: { locale: Locale }) {
                 } catch {}
                 setRecentSlugs([])
               }}
-              className="rounded-md px-2.5 py-1 text-[10px] font-medium transition-colors"
+              className="inline-flex min-h-11 items-center rounded-md px-2.5 py-1 text-[10px] font-medium transition-colors"
               style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text-muted)' }}
             >
               {t(locale, 'tools.clearRecent')}
@@ -296,7 +296,7 @@ export function ToolsCatalog({ locale }: { locale: Locale }) {
                 </h2>
                 <a
                   href="#tools-top"
-                  className="text-[10px] uppercase tracking-widest transition-colors"
+                  className="inline-flex min-h-11 min-w-11 items-center justify-center text-[10px] uppercase tracking-widest transition-colors"
                   style={{ color: 'var(--text-faint)' }}
                 >
                   {t(locale, 'tools.backToTop')}
@@ -354,7 +354,7 @@ function FilterChip({
   return (
     <button
       onClick={onClick}
-      className="rounded-full px-3 py-1.5 text-xs font-medium transition-colors"
+      className="inline-flex min-h-11 items-center rounded-full px-3 py-1.5 text-xs font-medium transition-colors"
       style={{
         background: active ? 'var(--accent-glow)' : 'var(--surface)',
         border: `1px solid ${active ? 'var(--accent)' : 'var(--border)'}`,
@@ -392,7 +392,7 @@ function ToolCard({
         className="block rounded-xl p-4 transition-colors duration-100"
         style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
       >
-        <h3 className="pr-8 text-base font-semibold link-hover-accent" style={{ fontFamily: 'var(--font-display)', color: 'var(--text)' }}>
+        <h3 className="pr-12 text-base font-semibold link-hover-accent" style={{ fontFamily: 'var(--font-display)', color: 'var(--text)' }}>
           {title}
         </h3>
         <p className="mt-1 text-sm" style={{ color: 'var(--text-muted)', lineHeight: 1.6 }}>
@@ -416,9 +416,8 @@ function ToolCard({
             e.stopPropagation()
             onToggleFavorite(slug)
           }}
-          className="absolute right-2 top-2 rounded-md text-base leading-none transition-colors"
+          className="absolute right-2 top-2 flex h-11 w-11 items-center justify-center rounded-md text-base leading-none transition-colors"
           style={{
-            padding: '4px 7px',
             color: isFavorite ? 'var(--accent)' : 'var(--text-faint)',
             background: 'transparent',
             border: '1px solid transparent',

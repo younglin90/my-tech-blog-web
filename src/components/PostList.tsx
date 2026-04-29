@@ -224,7 +224,7 @@ export function PostList({
             </span>
             <button
               onClick={() => setActiveTag(null)}
-              className="mono rounded-md px-2.5 py-1 text-[12px] transition-colors duration-100"
+              className="mono inline-flex min-h-11 items-center rounded-md px-2.5 py-1 text-[12px] transition-colors duration-100"
               style={{
                 border: '1px solid',
                 borderColor: !activeTag ? 'var(--accent)' : 'var(--border)',
@@ -238,7 +238,7 @@ export function PostList({
               <button
                 key={tag}
                 onClick={() => setActiveTag(activeTag === tag ? null : tag)}
-                className="mono rounded-md px-2.5 py-1 text-[12px] transition-colors duration-100"
+                className="mono inline-flex min-h-11 items-center rounded-md px-2.5 py-1 text-[12px] transition-colors duration-100"
                 style={{
                   border: '1px solid',
                   borderColor: activeTag === tag ? 'var(--accent)' : 'var(--border)',
@@ -253,7 +253,7 @@ export function PostList({
             {allTags.length > TAG_VISIBLE_LIMIT && (
               <button
                 onClick={() => setShowAllTags((s) => !s)}
-                className="mono rounded-md px-2.5 py-1 text-[11px]"
+                className="mono inline-flex min-h-11 min-w-11 items-center justify-center rounded-md px-2.5 py-1 text-[11px]"
                 style={{ color: 'var(--text-faint)', border: '1px solid var(--border)' }}
               >
                 {showAllTags ? t(locale, 'list.less') : `+${allTags.length - TAG_VISIBLE_LIMIT}`}
@@ -269,7 +269,7 @@ export function PostList({
                 <button
                   key={mode}
                   onClick={() => updateSort(mode)}
-                  className="rounded px-2 py-1 text-[10px] transition-colors duration-100"
+                  className="inline-flex min-h-11 items-center rounded px-2 py-1 text-[10px] transition-colors duration-100"
                   style={{
                     background: sortMode === mode ? 'var(--surface-hover)' : 'transparent',
                     color: sortMode === mode ? 'var(--text)' : 'var(--text-muted)',
@@ -281,7 +281,7 @@ export function PostList({
             </div>
             <button
               onClick={() => updateCompact(!compact)}
-              className="mono rounded-md px-2 py-1 text-[10px] transition-colors duration-100"
+              className="mono inline-flex min-h-11 items-center rounded-md px-2 py-1 text-[10px] transition-colors duration-100"
               style={{
                 background: 'var(--surface)',
                 border: `1px solid ${compact ? 'var(--accent)' : 'var(--border)'}`,

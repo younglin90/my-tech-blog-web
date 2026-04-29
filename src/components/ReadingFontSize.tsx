@@ -50,7 +50,7 @@ export function ReadingFontSize() {
     <div
       role="group"
       aria-label={t(locale, 'reading.fontSize')}
-      className="inline-flex items-center rounded-md"
+      className="inline-flex min-h-11 items-center rounded-md"
       style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
     >
       {SCALES.map((s) => {
@@ -64,8 +64,8 @@ export function ReadingFontSize() {
             title={`${t(locale, 'reading.fontSize')} ${s.id.toUpperCase()}`}
             className="flex items-center justify-center transition-colors"
             style={{
-              width: 28,
-              height: 26,
+              width: 44,
+              minHeight: 44,
               fontSize: s.size,
               fontFamily: 'var(--font-display)',
               fontWeight: isActive ? 700 : 500,
