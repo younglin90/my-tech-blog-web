@@ -71,6 +71,13 @@ import {
   ValveCvKvCalculator,
 } from '@/components/calculators/FlowUtilitySuite'
 import {
+  FinEfficiencyCalculator,
+  FlatPlateConvectionMapCalculator,
+  LumpedCoolingTransientCalculator,
+  PipeHeatTransferDesignerCalculator,
+  RadiationHeatBalanceCalculator,
+} from '@/components/calculators/HeatTransferUtilitySuite'
+import {
   CapillaryLengthCalculator,
   DropletBreakupCalculator,
   ManningOpenChannelCalculator,
@@ -109,6 +116,11 @@ export const CALCULATOR_COMPONENTS: Record<string, () => ReactElement> = {
   lewis: LewisCalculator,
   biot: BiotCalculator,
   fourier: FourierCalculator,
+  'pipe-heat-transfer-designer': PipeHeatTransferDesignerCalculator,
+  'flat-plate-convection-map': FlatPlateConvectionMapCalculator,
+  'fin-efficiency': FinEfficiencyCalculator,
+  'radiation-heat-balance': RadiationHeatBalanceCalculator,
+  'lumped-cooling-transient': LumpedCoolingTransientCalculator,
   weber: WeberCalculator,
   'capillary-number': CapillaryNumberCalculator,
   'bond-number': BondNumberCalculator,
