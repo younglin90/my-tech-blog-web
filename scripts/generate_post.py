@@ -13,7 +13,14 @@ from datetime import date, datetime
 from pathlib import Path
 import yaml
 import anthropic
-from slugify import slugify
+
+try:
+    from slugify import slugify
+except ModuleNotFoundError:
+    def slugify(value: str, max_length: int = 60) -> str:
+        """Small dependency-free fallback for smoke tests and minimal CI images."""
+        value = re.sub(r"[^a-zA-Z0-9]+", "-", value.lower()).strip("-")
+        return (value[:max_length].strip("-") or "post")
 
 REPO_ROOT = Path(__file__).parent.parent
 SOURCE_DOCS = REPO_ROOT / "source-docs"
@@ -24,11 +31,13 @@ INDEX_YAML = SOURCE_DOCS / "index.yaml"
 
 # Maps weekday (Monday=0) to prompt file stem and source type
 DAY_CONFIG = {
-    0: {"prompt": "monday_cfd_technique", "day_hint": "monday"},
-    1: {"prompt": "tuesday_paper_review", "day_hint": "tuesday"},
-    2: {"prompt": "wednesday_visualization", "day_hint": "wednesday"},
-    3: {"prompt": "thursday_openfoam", "day_hint": "thursday"},
-    4: {"prompt": "friday_qa", "day_hint": "friday"},
+    0: {"prompt": "cfd_technique", "day_hint": "cfd-technique"},
+    1: {"prompt": "fluid_mechanics", "day_hint": "fluid-mechanics"},
+    2: {"prompt": "cfd_technique", "day_hint": "cfd-technique"},
+    3: {"prompt": "fluid_mechanics", "day_hint": "fluid-mechanics"},
+    4: {"prompt": "cfd_technique", "day_hint": "cfd-technique"},
+    5: {"prompt": "paper_review", "day_hint": "paper-review"},
+    6: {"prompt": "paper_review", "day_hint": "paper-review"},
 }
 
 REQUIRED_FRONTMATTER = {"title", "date", "description", "draft"}
@@ -37,7 +46,7 @@ REQUIRED_FRONTMATTER = {"title", "date", "description", "draft"}
 def get_weekday(override: str | None = None) -> int:
     """Return weekday index (0=Monday). Supports day name override."""
     if override:
-        names = ["monday", "tuesday", "wednesday", "thursday", "friday"]
+        names = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
         normalized = override.lower().strip()
         if normalized not in names:
             raise ValueError(f"Invalid day override: {override}. Must be one of {names}")

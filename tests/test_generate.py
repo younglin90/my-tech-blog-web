@@ -100,7 +100,11 @@ def test_get_weekday_override_friday():
 
 def test_get_weekday_invalid_override():
     with pytest.raises(ValueError):
-        gp.get_weekday("sunday")
+        gp.get_weekday("funday")
+
+
+def test_get_weekday_override_sunday():
+    assert gp.get_weekday("sunday") == 6
 
 
 # ── Prompt loading ────────────────────────────────────────────────────────────
@@ -108,11 +112,11 @@ def test_get_weekday_invalid_override():
 def test_all_prompts_exist():
     prompts_dir = Path(__file__).parent.parent / "scripts" / "prompts"
     expected = [
-        "monday_cfd_technique.txt",
-        "tuesday_paper_review.txt",
-        "wednesday_visualization.txt",
-        "thursday_openfoam.txt",
-        "friday_qa.txt",
+        "cfd_technique.txt",
+        "fluid_mechanics.txt",
+        "paper_review.txt",
+        "_multilingual.txt",
+        "_viz_components.txt",
     ]
     for fname in expected:
         assert (prompts_dir / fname).exists(), f"Missing prompt: {fname}"
@@ -120,8 +124,8 @@ def test_all_prompts_exist():
 
 def test_prompts_contain_placeholders():
     prompts_dir = Path(__file__).parent.parent / "scripts" / "prompts"
-    for fname in prompts_dir.glob("*.txt"):
-        content = fname.read_text(encoding="utf-8")
+    for fname in ["cfd_technique.txt", "fluid_mechanics.txt", "paper_review.txt"]:
+        content = (prompts_dir / fname).read_text(encoding="utf-8")
         assert "{SOURCE_CONTENT}" in content, f"{fname} missing {{SOURCE_CONTENT}}"
         assert "{DATE}" in content, f"{fname} missing {{DATE}}"
 
