@@ -3,6 +3,7 @@
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { VisitorCount } from '@/components/VisitorCount'
+import { RandomPostLink } from '@/components/RandomPostLink'
 import { localePathPrefix, t } from '@/lib/i18n'
 
 export function TerminalFooter() {
@@ -35,6 +36,7 @@ export function TerminalFooter() {
         <Link href={`/${locale}/glossary`} className="link-hover-text">{t(locale, 'nav.glossary').toLowerCase()}</Link>
         <Link href={`/${locale}/bookmarks`} className="link-hover-text">{t(locale, 'nav.bookmarks').toLowerCase()}</Link>
         <Link href={`/${locale}/about`} className="link-hover-text">{t(locale, 'nav.about').toLowerCase()}</Link>
+        <RandomPostLink locale={locale} label={t(locale, 'footer.random')} />
         <a href="/feed.xml" className="link-hover-text-accent">{t(locale, 'footer.rss')}</a>
         <a href="https://github.com/younglin90" target="_blank" rel="noopener noreferrer" className="link-hover-text">
           {t(locale, 'footer.github')}

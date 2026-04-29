@@ -11,6 +11,7 @@ const shortcuts = [
   { keys: ['/'], mac: ['/'], description: 'Quick search' },
   { keys: ['?'], mac: ['?'], description: 'Show shortcuts' },
   { keys: ['T'], mac: ['T'], description: 'Toggle theme' },
+  { keys: ['R'], mac: ['R'], description: 'Random post' },
   { keys: ['G', 'G'], mac: ['G', 'G'], description: 'Scroll to top' },
   { keys: ['G', 'H'], mac: ['G', 'H'], description: 'Go home' },
   { keys: ['G', 'T'], mac: ['G', 'T'], description: 'Go to tags' },
