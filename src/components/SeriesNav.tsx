@@ -1,19 +1,28 @@
+'use client'
+
+import { useState } from 'react'
 import Link from 'next/link'
-import { ListOrdered } from 'lucide-react'
-import type { Locale } from '@/lib/i18n'
-import { getSeriesContext } from '@/lib/series'
+import { ListOrdered, ChevronDown } from 'lucide-react'
+import { t, type Locale } from '@/lib/i18n'
+import type { SeriesSummary } from '@/lib/series'
 
 interface Props {
   locale: Locale
-  postSlug: string
+  ctx: {
+    series: SeriesSummary
+    index: number
+    prev: SeriesSummary['posts'][number] | null
+    next: SeriesSummary['posts'][number] | null
+  } | null
 }
 
-// 포스트 본문 위에 시리즈 컨텍스트(현재 N/M, 시리즈 링크, prev/next) 노출.
-// 시리즈에 속하지 않으면 null.
-export function SeriesNav({ locale, postSlug }: Props) {
-  const ctx = getSeriesContext(locale, postSlug)
+// 시리즈 컨텍스트 + 전체 파트 목록(접힘 가능)을 함께 노출.
+// 학습자가 현재 위치와 전체 구조를 동시에 파악 가능.
+export function SeriesNav({ locale, ctx }: Props) {
+  const [expanded, setExpanded] = useState(false)
   if (!ctx) return null
   const { series, index, prev, next } = ctx
+
   return (
     <aside
       className="mb-8 rounded-lg p-4"
@@ -29,9 +38,29 @@ export function SeriesNav({ locale, postSlug }: Props) {
           <span>Series: {series.slug}</span>
         </Link>
         <span className="mono text-xs tabular-nums" style={{ color: 'var(--text-faint)' }}>
-          part {index + 1} / {series.count}
+          {t(locale, 'series.partLabel')} {index + 1} / {series.count}
         </span>
       </div>
+
+      {/* 진행도 점 — 한눈에 위치 파악 */}
+      <div className="mb-3 flex items-center gap-1">
+        {series.posts.map((p, i) => (
+          <Link
+            key={p.slug}
+            href={`/${locale}/posts/${p.slug}`}
+            aria-label={p.title}
+            title={`${i + 1}. ${p.title}`}
+            className="rounded-full transition-all"
+            style={{
+              width: i === index ? 18 : 8,
+              height: 8,
+              background: i === index ? 'var(--accent)' : i < index ? 'var(--accent-glow)' : 'var(--border)',
+              border: i < index ? '1px solid var(--accent)' : 'none',
+            }}
+          />
+        ))}
+      </div>
+
       <div className="grid grid-cols-2 gap-2 text-xs">
         {prev ? (
           <Link
@@ -39,7 +68,7 @@ export function SeriesNav({ locale, postSlug }: Props) {
             className="rounded-md p-2 transition-colors duration-100"
             style={{ background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text-muted)' }}
           >
-            <div className="mono text-[10px]" style={{ color: 'var(--text-faint)' }}>← prev part</div>
+            <div className="mono text-[10px]" style={{ color: 'var(--text-faint)' }}>← {t(locale, 'series.prevPart')}</div>
             <div className="mt-0.5 line-clamp-1" style={{ color: 'var(--text)' }}>{prev.title}</div>
           </Link>
         ) : <div />}
@@ -49,11 +78,60 @@ export function SeriesNav({ locale, postSlug }: Props) {
             className="rounded-md p-2 text-right transition-colors duration-100"
             style={{ background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text-muted)' }}
           >
-            <div className="mono text-[10px]" style={{ color: 'var(--text-faint)' }}>next part →</div>
+            <div className="mono text-[10px]" style={{ color: 'var(--text-faint)' }}>{t(locale, 'series.nextPart')} →</div>
             <div className="mt-0.5 line-clamp-1" style={{ color: 'var(--text)' }}>{next.title}</div>
           </Link>
         ) : <div />}
       </div>
+
+      {series.count > 2 && (
+        <>
+          <button
+            type="button"
+            onClick={() => setExpanded((e) => !e)}
+            className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-md py-1.5 text-[11px] font-medium transition-colors"
+            style={{
+              background: 'transparent',
+              border: '1px dashed var(--border)',
+              color: 'var(--text-muted)',
+            }}
+            aria-expanded={expanded}
+          >
+            <ChevronDown
+              className="h-3 w-3 transition-transform duration-150"
+              style={{ transform: expanded ? 'rotate(180deg)' : 'none' }}
+            />
+            {expanded ? t(locale, 'series.hide') : t(locale, 'series.show')}
+          </button>
+          {expanded && (
+            <ol className="mt-2 space-y-1">
+              {series.posts.map((p, i) => {
+                const isCurrent = i === index
+                return (
+                  <li key={p.slug}>
+                    <Link
+                      href={`/${locale}/posts/${p.slug}`}
+                      className="flex items-baseline gap-2 rounded px-2 py-1 text-xs transition-colors"
+                      style={{
+                        background: isCurrent ? 'var(--accent-glow)' : 'transparent',
+                        color: isCurrent ? 'var(--accent)' : 'var(--text-muted)',
+                        border: `1px solid ${isCurrent ? 'var(--accent)' : 'transparent'}`,
+                        cursor: isCurrent ? 'default' : 'pointer',
+                      }}
+                      aria-current={isCurrent ? 'page' : undefined}
+                    >
+                      <span className="mono shrink-0 tabular-nums" style={{ width: 18, color: 'var(--text-faint)' }}>
+                        {String(i + 1).padStart(2, '0')}.
+                      </span>
+                      <span className="line-clamp-1">{p.title}</span>
+                    </Link>
+                  </li>
+                )
+              })}
+            </ol>
+          )}
+        </>
+      )}
     </aside>
   )
 }
