@@ -34,6 +34,7 @@ export function Search() {
   const [activeIdx, setActiveIdx] = React.useState(0)
   const [isMac, setIsMac] = React.useState(false)
   const [recentlyRead, setRecentlyRead] = React.useState<string[]>([])
+  const [recentQueries, setRecentQueries] = React.useState<string[]>([])
   const [indexItems, setIndexItems] = React.useState<PostIndexItem[]>([])
   const [indexLoading, setIndexLoading] = React.useState(false)
   const [indexError, setIndexError] = React.useState<string | null>(null)
@@ -55,7 +56,28 @@ export function Search() {
       const raw = localStorage.getItem('cfd-lab-read-posts')
       setRecentlyRead(raw ? JSON.parse(raw) : [])
     } catch {}
+    // Load recent search queries
+    try {
+      const raw = localStorage.getItem('cfd-lab-recent-searches')
+      const arr = raw ? JSON.parse(raw) : []
+      setRecentQueries(Array.isArray(arr) ? arr.filter((s) => typeof s === 'string').slice(0, 5) : [])
+    } catch {}
   }, [])
+
+  const persistRecentQuery = React.useCallback((q: string) => {
+    const trimmed = q.trim()
+    if (!trimmed || trimmed.length < 2) return
+    setRecentQueries((prev) => {
+      const next = [trimmed, ...prev.filter((r) => r.toLowerCase() !== trimmed.toLowerCase())].slice(0, 5)
+      try { localStorage.setItem('cfd-lab-recent-searches', JSON.stringify(next)) } catch {}
+      return next
+    })
+  }, [])
+
+  const clearRecentQueries = () => {
+    setRecentQueries([])
+    try { localStorage.removeItem('cfd-lab-recent-searches') } catch {}
+  }
 
   React.useEffect(() => {
     if (!open || indexItems.length > 0 || indexLoading) return
@@ -159,7 +181,10 @@ export function Search() {
       })()
 
   const onSelect = (url: string) => {
-    if (query) trackEvent('search-select', { query, url })
+    if (query) {
+      trackEvent('search-select', { query, url })
+      persistRecentQuery(query)
+    }
     setOpen(false)
     setQuery('')
     router.push(url)
@@ -284,6 +309,34 @@ export function Search() {
                   <p className="px-4 py-3 text-xs" style={{ color: 'var(--error)' }}>
                     {t(locale, 'search.indexError', { error: indexError })}
                   </p>
+                )}
+                {!q && recentQueries.length > 0 && (
+                  <div className="px-3 pb-1 pt-1.5">
+                    <div className="mb-2 flex items-center justify-between">
+                      <p className="text-[10px] font-semibold uppercase tracking-widest" style={{ color: 'var(--text-faint)' }}>
+                        {t(locale, 'search.recentQueries')}
+                      </p>
+                      <button
+                        onClick={clearRecentQueries}
+                        className="text-[10px]"
+                        style={{ color: 'var(--text-faint)', textDecoration: 'underline' }}
+                      >
+                        {t(locale, 'search.clearRecent')}
+                      </button>
+                    </div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {recentQueries.map((rq) => (
+                        <button
+                          key={rq}
+                          onClick={() => setQuery(rq)}
+                          className="mono rounded-full px-2.5 py-1 text-[10px] transition-colors duration-75"
+                          style={{ background: 'var(--surface-hover)', color: 'var(--text)', border: '1px solid var(--border)' }}
+                        >
+                          {rq}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
                 )}
                 {!q && topTags.length > 0 && (
                   <div className="px-3 pb-2 pt-1.5">
