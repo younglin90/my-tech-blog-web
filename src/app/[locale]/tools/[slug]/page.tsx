@@ -4,6 +4,8 @@ import type { Metadata } from 'next'
 import { LOCALES, isLocale, t, type Locale } from '@/lib/i18n'
 import { CALCULATORS, getCategoryLabel } from '@/lib/calculators'
 import { CALCULATOR_COMPONENTS } from '@/components/calculators'
+import { ToolFormula } from '@/components/ToolFormula'
+import { ToolInsightPanel } from '@/components/ToolInsightPanel'
 import { ToolViewTracker } from '@/components/ToolViewTracker'
 import { SITE_URL } from '@/lib/site'
 
@@ -39,6 +41,7 @@ export default async function CalculatorPage({ params }: Props) {
   if (!Component) notFound()
   const loc = locale as Locale
   const categoryTools = CALCULATORS.filter((tool) => tool.category === meta.category)
+  const categoryLabel = getCategoryLabel(meta.category, loc)
   const categoryIndex = categoryTools.findIndex((tool) => tool.slug === meta.slug)
   const previousInCategory = categoryIndex > 0 ? categoryTools[categoryIndex - 1] : null
   const nextInCategory = categoryIndex >= 0 && categoryIndex < categoryTools.length - 1 ? categoryTools[categoryIndex + 1] : null
@@ -101,17 +104,8 @@ export default async function CalculatorPage({ params }: Props) {
           <p className="mb-5 text-sm" style={{ color: 'var(--text-muted)', lineHeight: 1.7 }}>
             {meta.desc[loc] ?? meta.desc.en}
           </p>
-          <div
-            className="mb-6 rounded-xl p-4"
-            style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
-          >
-            <div className="mb-1 text-[10px] uppercase tracking-widest" style={{ color: 'var(--text-faint)' }}>
-              {t(loc, 'tools.formula')}
-            </div>
-            <div className="mono text-sm" style={{ color: 'var(--accent)', lineHeight: 1.7, wordBreak: 'break-word' }}>
-              {meta.formula}
-            </div>
-          </div>
+          <ToolInsightPanel meta={meta} locale={loc} categoryLabel={categoryLabel} />
+          <ToolFormula formula={meta.formula} label={t(loc, 'tools.formula')} />
 
           <Component />
 
@@ -166,7 +160,7 @@ export default async function CalculatorPage({ params }: Props) {
           <div className="rounded-xl p-4" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
             <div className="text-[10px] uppercase tracking-widest" style={{ color: 'var(--text-faint)' }}>{t(loc, 'tools.category')}</div>
             <div className="mt-1 text-sm font-medium" style={{ color: 'var(--text)' }}>
-              {getCategoryLabel(meta.category, loc)}
+              {categoryLabel}
             </div>
             <div className="mt-1 text-xs" style={{ color: 'var(--text-muted)' }}>
               {t(loc, 'tools.categoryCount', { count: String(categoryTools.length) })}
