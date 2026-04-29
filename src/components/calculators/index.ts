@@ -84,6 +84,12 @@ import {
   HeatReleaseTemperatureRiseCalculator,
 } from '@/components/calculators/ReactingFlowSuite'
 import {
+  ModifiedWavenumberAnalyzerCalculator,
+  RiemannWaveSpeedEstimatorCalculator,
+  SorRelaxationPlannerCalculator,
+  TvdLimiterVisualizerCalculator,
+} from '@/components/calculators/NumericsAdvancedSuite'
+import {
   CapillaryLengthCalculator,
   DropletBreakupCalculator,
   ManningOpenChannelCalculator,
@@ -182,5 +188,9 @@ export const CALCULATOR_COMPONENTS: Record<string, () => ReactElement> = {
   'void-fraction-slip': VoidFractionSlipCalculator,
   'bubble-rise-regime': BubbleRiseRegimeCalculator,
   'hydraulic-jump-visualizer': HydraulicJumpVisualizerCalculator,
+  'tvd-limiter-visualizer': TvdLimiterVisualizerCalculator,
+  'riemann-wave-speed-estimator': RiemannWaveSpeedEstimatorCalculator,
+  'sor-relaxation-planner': SorRelaxationPlannerCalculator,
+  'modified-wavenumber-analyzer': ModifiedWavenumberAnalyzerCalculator,
   'flow-regime-map': FlowRegimeMapCalculator,
 }
