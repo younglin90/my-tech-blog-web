@@ -14,10 +14,26 @@ import {
 import { t, type Locale } from '@/lib/i18n'
 import { useUrlParam } from '@/lib/use-url-param'
 
+const FAVORITES_KEY = 'cfd-lab-tool-favorites'
+
+function loadFavorites(): string[] {
+  if (typeof localStorage === 'undefined') return []
+  try {
+    const raw = localStorage.getItem(FAVORITES_KEY)
+    const parsed = raw ? JSON.parse(raw) : []
+    return Array.isArray(parsed) ? parsed.filter((s) => typeof s === 'string') : []
+  } catch { return [] }
+}
+
+function saveFavorites(slugs: string[]) {
+  try { localStorage.setItem(FAVORITES_KEY, JSON.stringify(slugs)) } catch {}
+}
+
 export function ToolsCatalog({ locale }: { locale: Locale }) {
   const [query, setQuery] = useUrlParam<string>('q', '', 'string')
   const [activeCategoryRaw, setActiveCategoryRaw] = useUrlParam<string>('cat', 'all', 'string')
   const [recentSlugs, setRecentSlugs] = useState<string[]>([])
+  const [favoriteSlugs, setFavoriteSlugs] = useState<string[]>([])
   const activeCategory: CalculatorCategory | 'all' = useMemo(() => {
     return activeCategoryRaw === 'all' || CATEGORY_ORDER.includes(activeCategoryRaw as CalculatorCategory)
       ? (activeCategoryRaw as CalculatorCategory | 'all')
@@ -33,7 +49,20 @@ export function ToolsCatalog({ locale }: { locale: Locale }) {
     } catch {
       setRecentSlugs([])
     }
+    setFavoriteSlugs(loadFavorites())
   }, [])
+
+  const toggleFavorite = (slug: string) => {
+    setFavoriteSlugs((prev) => {
+      const next = prev.includes(slug) ? prev.filter((s) => s !== slug) : [...prev, slug]
+      saveFavorites(next)
+      return next
+    })
+  }
+  const isFav = (slug: string) => favoriteSlugs.includes(slug)
+  const favoriteTools = favoriteSlugs
+    .map((slug) => CALCULATORS.find((tool) => tool.slug === slug))
+    .filter((tool): tool is (typeof CALCULATORS)[number] => Boolean(tool))
 
   const filtered = CALCULATORS.filter((tool) => {
     if (activeCategory !== 'all' && tool.category !== activeCategory) return false
@@ -177,6 +206,28 @@ export function ToolsCatalog({ locale }: { locale: Locale }) {
         </section>
       )}
 
+      {favoriteTools.length > 0 && !deferredQuery && activeCategory === 'all' && (
+        <section>
+          <h2 className="mb-3 text-xs font-semibold uppercase tracking-widest" style={{ color: 'var(--accent)' }}>
+            ★ {t(locale, 'tools.favorites')} / {favoriteTools.length}
+          </h2>
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+            {favoriteTools.map((tool) => (
+              <ToolCard
+                key={tool.slug}
+                locale={locale}
+                slug={tool.slug}
+                title={tool.title[locale]}
+                desc={tool.desc[locale]}
+                tags={tool.tags}
+                isFavorite={true}
+                onToggleFavorite={toggleFavorite}
+              />
+            ))}
+          </div>
+        </section>
+      )}
+
       {recentTools.length > 0 && !deferredQuery && activeCategory === 'all' && (
         <section>
           <div className="mb-3 flex items-center justify-between gap-3">
@@ -205,6 +256,8 @@ export function ToolsCatalog({ locale }: { locale: Locale }) {
                 title={tool.title[locale]}
                 desc={tool.desc[locale]}
                 tags={tool.tags}
+                isFavorite={isFav(tool.slug)}
+                onToggleFavorite={toggleFavorite}
               />
             ))}
           </div>
@@ -218,7 +271,7 @@ export function ToolsCatalog({ locale }: { locale: Locale }) {
           </h2>
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
             {featured.map((tool) => (
-              <ToolCard key={tool.slug} locale={locale} slug={tool.slug} title={tool.title[locale]} desc={tool.desc[locale]} tags={tool.tags} />
+              <ToolCard key={tool.slug} locale={locale} slug={tool.slug} title={tool.title[locale]} desc={tool.desc[locale]} tags={tool.tags} isFavorite={isFav(tool.slug)} onToggleFavorite={toggleFavorite} />
             ))}
           </div>
         </section>
@@ -258,6 +311,8 @@ export function ToolsCatalog({ locale }: { locale: Locale }) {
                     title={tool.title[locale]}
                     desc={tool.desc[locale]}
                     tags={tool.tags}
+                    isFavorite={isFav(tool.slug)}
+                    onToggleFavorite={toggleFavorite}
                   />
                 ))}
               </div>
@@ -317,32 +372,61 @@ function ToolCard({
   title,
   desc,
   tags,
+  isFavorite,
+  onToggleFavorite,
 }: {
   locale: Locale
   slug: string
   title: string
   desc: string
   tags: string[]
+  isFavorite?: boolean
+  onToggleFavorite?: (slug: string) => void
 }) {
+  const labelAdd = t(locale, 'tools.favoriteAdd')
+  const labelRemove = t(locale, 'tools.favoriteRemove')
   return (
-    <Link
-      href={`/${locale}/tools/${slug}`}
-      className="group block rounded-xl p-4 transition-colors duration-100"
-      style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
-    >
-      <h3 className="text-base font-semibold link-hover-accent" style={{ fontFamily: 'var(--font-display)', color: 'var(--text)' }}>
-        {title}
-      </h3>
-      <p className="mt-1 text-sm" style={{ color: 'var(--text-muted)', lineHeight: 1.6 }}>
-        {desc}
-      </p>
-      <div className="mt-3 flex flex-wrap gap-1.5">
-        {tags.slice(0, 4).map((tag) => (
-          <span key={tag} className="rounded px-1.5 py-0.5 text-[10px]" style={{ background: 'var(--bg)', color: 'var(--text-faint)' }}>
-            {tag}
-          </span>
-        ))}
-      </div>
-    </Link>
+    <div className="group relative">
+      <Link
+        href={`/${locale}/tools/${slug}`}
+        className="block rounded-xl p-4 transition-colors duration-100"
+        style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
+      >
+        <h3 className="pr-8 text-base font-semibold link-hover-accent" style={{ fontFamily: 'var(--font-display)', color: 'var(--text)' }}>
+          {title}
+        </h3>
+        <p className="mt-1 text-sm" style={{ color: 'var(--text-muted)', lineHeight: 1.6 }}>
+          {desc}
+        </p>
+        <div className="mt-3 flex flex-wrap gap-1.5">
+          {tags.slice(0, 4).map((tag) => (
+            <span key={tag} className="rounded px-1.5 py-0.5 text-[10px]" style={{ background: 'var(--bg)', color: 'var(--text-faint)' }}>
+              {tag}
+            </span>
+          ))}
+        </div>
+      </Link>
+      {onToggleFavorite && (
+        <button
+          type="button"
+          aria-label={isFavorite ? labelRemove : labelAdd}
+          title={isFavorite ? labelRemove : labelAdd}
+          onClick={(e) => {
+            e.preventDefault()
+            e.stopPropagation()
+            onToggleFavorite(slug)
+          }}
+          className="absolute right-2 top-2 rounded-md text-base leading-none transition-colors"
+          style={{
+            padding: '4px 7px',
+            color: isFavorite ? 'var(--accent)' : 'var(--text-faint)',
+            background: 'transparent',
+            border: '1px solid transparent',
+          }}
+        >
+          {isFavorite ? '★' : '☆'}
+        </button>
+      )}
+    </div>
   )
 }
