@@ -5,11 +5,13 @@ import { usePathname, useRouter } from 'next/navigation'
 import { Globe, Check } from 'lucide-react'
 import { LOCALES, LOCALE_LABELS, withLocale, type Locale, isLocale, t } from '@/lib/i18n'
 import { trackEvent } from '@/lib/analytics'
+import { loadPostIndexClient } from '@/lib/post-index'
 
 export function LanguageSwitcher({ current }: { current?: string }) {
   const pathname = usePathname() ?? '/'
   const router = useRouter()
   const [open, setOpen] = useState(false)
+  const [availableLocales, setAvailableLocales] = useState<Set<Locale> | null>(null)
   const ref = useRef<HTMLDivElement>(null)
 
   // Detect current locale from pathname if not provided
@@ -18,6 +20,29 @@ export function LanguageSwitcher({ current }: { current?: string }) {
     const m = pathname.match(/^\/(ko|en|ja|zh|es)(?=\/|$)/)
     return (m?.[1] ?? 'ko') as Locale
   })()
+
+  // 포스트 페이지면 post-index에서 번역 가용 locale 추출.
+  // 그 외 페이지는 모든 locale 가용 (page level은 모든 locale 정적 생성).
+  const postSlug = pathname.match(/^\/(?:ko|en|ja|zh|es)\/posts\/([^/]+)\/?$/)?.[1]
+
+  useEffect(() => {
+    if (!postSlug) {
+      setAvailableLocales(null)
+      return
+    }
+    let cancelled = false
+    loadPostIndexClient()
+      .then((payload) => {
+        if (cancelled) return
+        const set = new Set<Locale>()
+        for (const item of payload.items) {
+          if (item.slug === postSlug) set.add(item.locale)
+        }
+        setAvailableLocales(set)
+      })
+      .catch(() => { if (!cancelled) setAvailableLocales(null) })
+    return () => { cancelled = true }
+  }, [postSlug])
 
   useEffect(() => {
     const onClick = (e: MouseEvent) => {
@@ -61,19 +86,28 @@ export function LanguageSwitcher({ current }: { current?: string }) {
         >
           {LOCALES.map((loc) => {
             const active = loc === detected
+            const isFallback = availableLocales !== null && !availableLocales.has(loc) && loc !== 'ko'
             return (
               <li key={loc} role="option" aria-selected={active}>
                 <button
                   onClick={() => switchTo(loc)}
                   className="flex w-full items-center justify-between gap-3 px-3 py-1.5 text-left transition-colors"
                   style={{
-                    color: active ? 'var(--accent)' : 'var(--text)',
+                    color: active ? 'var(--accent)' : isFallback ? 'var(--text-faint)' : 'var(--text)',
                     background: active ? 'var(--bg)' : 'transparent',
                   }}
                   onMouseEnter={(e) => { if (!active) (e.currentTarget.style.background = 'var(--bg)') }}
                   onMouseLeave={(e) => { if (!active) (e.currentTarget.style.background = 'transparent') }}
+                  title={isFallback ? `→ ko fallback` : undefined}
                 >
-                  <span>{LOCALE_LABELS[loc]}</span>
+                  <span>
+                    {LOCALE_LABELS[loc]}
+                    {isFallback && (
+                      <span className="mono ml-1.5 text-[9px]" style={{ color: 'var(--text-faint)' }}>
+                        →ko
+                      </span>
+                    )}
+                  </span>
                   {active && <Check className="h-3 w-3" />}
                 </button>
               </li>
