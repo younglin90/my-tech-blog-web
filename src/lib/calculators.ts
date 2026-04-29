@@ -4,6 +4,7 @@ export type CalculatorCategory =
   | 'compressible'
   | 'internal-flow'
   | 'aerodynamics'
+  | 'turbomachinery'
   | 'dimensionless'
   | 'turbulence'
   | 'heat-transfer'
@@ -26,6 +27,7 @@ export const CATEGORY_ORDER: CalculatorCategory[] = [
   'compressible',
   'internal-flow',
   'aerodynamics',
+  'turbomachinery',
   'dimensionless',
   'turbulence',
   'heat-transfer',
@@ -55,6 +57,13 @@ export const CATEGORY_LABELS: Record<CalculatorCategory, LocalizedString> = {
     ja: '空力と外部流れ',
     zh: '气动与外流',
     es: 'Aerodinámica y Flujo Externo',
+  },
+  turbomachinery: {
+    ko: '터보기계와 회전체',
+    en: 'Turbomachinery & Rotating Flow',
+    ja: 'ターボ機械と回転流',
+    zh: '涡轮机械与旋转流',
+    es: 'Turbomaquinaria y Flujo Rotativo',
   },
   dimensionless: {
     ko: '무차원수',
@@ -479,6 +488,62 @@ export const CALCULATORS: CalculatorMeta[] = [
     },
     formula: 'Re = rho U L / mu,   M = U/a,   U_model,Re-match = U_proto L_proto/L_model',
     tags: ['wind tunnel', 'similarity', 'Reynolds', 'Mach'],
+  },
+  {
+    slug: 'pump-affinity-laws',
+    category: 'turbomachinery',
+    title: { ko: '펌프 Affinity Laws', en: 'Pump Affinity Laws', ja: 'ポンプ Affinity Laws', zh: '泵相似定律', es: 'Leyes de Afinidad de Bomba' },
+    desc: {
+      ko: '회전수와 임펠러 지름 변화에서 유량, 수두, 동력 스케일링을 막대 그래프로 비교합니다.',
+      en: 'Compare flow, head, and power scaling from speed and impeller-diameter changes with visual bars.',
+      ja: '回転数とインペラ径の変化から流量、揚程、動力スケーリングを棒グラフで比較します。',
+      zh: '由转速和叶轮直径变化比较流量、扬程和功率缩放，并用条形图显示。',
+      es: 'Compara escalamiento de caudal, altura y potencia por cambios de velocidad y diametro del impulsor.',
+    },
+    formula: 'Q2/Q1 = (N2/N1)(D2/D1)^3,   H2/H1 = (N2/N1)^2(D2/D1)^2,   P2/P1 = (N2/N1)^3(D2/D1)^5',
+    tags: ['pump', 'affinity laws', 'rotating machinery', 'scaling'],
+  },
+  {
+    slug: 'fan-system-curve-matcher',
+    category: 'turbomachinery',
+    title: { ko: '팬-시스템 곡선 매처', en: 'Fan-System Curve Matcher', ja: 'ファン・システム曲線マッチャー', zh: '风机-系统曲线匹配器', es: 'Cruce Curva Ventilador-Sistema' },
+    desc: {
+      ko: '팬 곡선과 덕트 시스템 곡선의 교점을 시각화해 운전 유량과 압력상승을 추정합니다.',
+      en: 'Visualize the fan-curve and duct-system curve intersection to estimate operating flow and pressure rise.',
+      ja: 'ファン曲線とダクトシステム曲線の交点を可視化し、運転流量と圧力上昇を見積もります。',
+      zh: '可视化风机曲线与管路系统曲线交点，估算工作流量和压升。',
+      es: 'Visualiza la interseccion entre curva de ventilador y sistema para estimar caudal y presion.',
+    },
+    formula: 'Delta p_fan ~= Delta p0 [1 - (Q/Qmax)^2],   Delta p_system = K Q^2',
+    tags: ['fan curve', 'system curve', 'duct flow', 'operating point'],
+  },
+  {
+    slug: 'compressor-corrected-flow',
+    category: 'turbomachinery',
+    title: { ko: '압축기 Corrected Flow', en: 'Compressor Corrected Flow', ja: '圧縮機 Corrected Flow', zh: '压缩机修正流量', es: 'Flujo Corregido de Compresor' },
+    desc: {
+      ko: '입구 총온·총압에서 corrected mass flow, corrected speed, 압축기 맵 좌표를 계산합니다.',
+      en: 'Compute corrected mass flow, corrected speed, and compressor-map coordinates from inlet total conditions.',
+      ja: '入口全温・全圧からcorrected mass flow、corrected speed、圧縮機マップ座標を計算します。',
+      zh: '由入口总温总压计算修正质量流量、修正转速和压缩机图坐标。',
+      es: 'Calcula flujo masico corregido, velocidad corregida y coordenadas de mapa desde condiciones totales de entrada.',
+    },
+    formula: 'mdot_c = mdot sqrt(Tt/Tref)/(Pt/Pref),   N_c = N/sqrt(Tt/Tref)',
+    tags: ['compressor map', 'corrected flow', 'pressure ratio', 'turbomachinery'],
+  },
+  {
+    slug: 'blade-tip-mach-reynolds',
+    category: 'turbomachinery',
+    title: { ko: '블레이드 Tip Mach/Re', en: 'Blade Tip Mach & Reynolds', ja: 'ブレード Tip Mach/Re', zh: '叶尖 Mach/Re', es: 'Mach y Reynolds de Punta de Alabe' },
+    desc: {
+      ko: 'rpm, 반경, 축방향 속도, 물성에서 블레이드 tip 상대 Mach와 chord Reynolds 수를 계산합니다.',
+      en: 'Compute blade-tip relative Mach number and chord Reynolds number from rpm, radius, axial speed, and properties.',
+      ja: 'rpm、半径、軸方向速度、物性からブレードtip相対Mach数とchord Reynolds数を計算します。',
+      zh: '由 rpm、半径、轴向速度和物性计算叶尖相对 Mach 数与弦长 Reynolds 数。',
+      es: 'Calcula Mach relativo de punta y Reynolds basado en cuerda desde rpm, radio, velocidad axial y propiedades.',
+    },
+    formula: 'U_tip = omega R,   W = sqrt(U_tip^2 + U_axial^2),   M_rel = W/a,   Re_c = rho W c/mu',
+    tags: ['tip Mach', 'blade Reynolds', 'rotating frame', 'compressibility'],
   },
   {
     slug: 'reynolds',

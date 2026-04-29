@@ -90,6 +90,12 @@ import {
   TvdLimiterVisualizerCalculator,
 } from '@/components/calculators/NumericsAdvancedSuite'
 import {
+  BladeTipMachReynoldsCalculator,
+  CompressorCorrectedFlowCalculator,
+  FanSystemCurveMatcherCalculator,
+  PumpAffinityLawsCalculator,
+} from '@/components/calculators/TurbomachinerySuite'
+import {
   CapillaryLengthCalculator,
   DropletBreakupCalculator,
   ManningOpenChannelCalculator,
@@ -164,6 +170,10 @@ export const CALCULATOR_COMPONENTS: Record<string, () => ReactElement> = {
   'stall-speed-estimator': StallSpeedEstimatorCalculator,
   'flat-plate-skin-friction': FlatPlateSkinFrictionCalculator,
   'wind-tunnel-similarity': WindTunnelSimilarityCalculator,
+  'pump-affinity-laws': PumpAffinityLawsCalculator,
+  'fan-system-curve-matcher': FanSystemCurveMatcherCalculator,
+  'compressor-corrected-flow': CompressorCorrectedFlowCalculator,
+  'blade-tip-mach-reynolds': BladeTipMachReynoldsCalculator,
   'courant-3d': Courant3DCalculator,
   'boundary-layer-stack': BoundaryLayerStackCalculator,
   'moody-chart-explorer': MoodyChartExplorerCalculator,
