@@ -2,27 +2,24 @@
 
 import { useState } from 'react'
 import { usePathname } from 'next/navigation'
-import { Mail, Check } from 'lucide-react'
+import { Mail, Check, AlertCircle, Loader2 } from 'lucide-react'
 import { localePathPrefix, t } from '@/lib/i18n'
 import { trackEvent } from '@/lib/analytics'
 
 // Buttondown 임베드. NEXT_PUBLIC_BUTTONDOWN_USERNAME 미설정 시 안내 페이지로 폴백.
 // Buttondown 무료 플랜: 100명까지 무료. https://buttondown.email
 //
-// 사전 준비:
-//   1. https://buttondown.email 가입
-//   2. Settings → Username 확인
-//   3. .env.local 또는 CF Pages env에 NEXT_PUBLIC_BUTTONDOWN_USERNAME=<your-name>
-
+// 인라인 fetch로 직접 POST → 새 창 띄우지 않고 그 자리에서 success/error 표시.
+// Buttondown의 embed-subscribe 엔드포인트는 CORS 허용. 실패해도 form fallback이
+// 가능하지만 일관성 위해 단일 인라인 흐름 유지.
 export function Subscribe() {
   const pathname = usePathname() ?? '/'
   const { locale } = localePathPrefix(pathname)
   const username = process.env.NEXT_PUBLIC_BUTTONDOWN_USERNAME
   const [email, setEmail] = useState('')
-  const [submitted, setSubmitted] = useState(false)
+  const [status, setStatus] = useState<'idle' | 'submitting' | 'success' | 'error'>('idle')
 
   if (!username) {
-    // 미설정 시: 정적 안내만 노출 (폼은 숨김)
     return (
       <div
         className="rounded-lg p-4"
@@ -43,24 +40,48 @@ export function Subscribe() {
     )
   }
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!email || submitted) return
-    // Buttondown은 form action으로 직접 submit하므로 여기서 trackEvent만 발사
+    if (!email || status === 'submitting' || status === 'success') return
+    setStatus('submitting')
     trackEvent('subscribe-submit', { locale })
-    setSubmitted(true)
-    // 실제 제출은 form의 native submit으로 위임 → 새 창에서 확인 페이지
+    try {
+      const body = new FormData()
+      body.append('email', email)
+      // Buttondown은 'tag' 파라미터를 받아 자동으로 태그 부여 가능 (선택)
+      const res = await fetch(
+        `https://buttondown.email/api/emails/embed-subscribe/${username}`,
+        { method: 'POST', body, mode: 'no-cors' },   // no-cors → opaque 응답, status 알 수 없음
+      )
+      // no-cors의 opaque response는 status 0이라 성공 여부 못 읽지만,
+      // Buttondown은 항상 confirmation 메일을 보내므로 fetch 자체가 throw하지 않으면 성공으로 간주.
+      void res
+      setStatus('success')
+      setEmail('')
+    } catch {
+      setStatus('error')
+    }
+  }
+
+  if (status === 'success') {
+    return (
+      <div
+        className="rounded-lg p-4"
+        style={{ background: 'var(--accent-glow)', border: '1px solid var(--accent)' }}
+      >
+        <div className="flex items-start gap-2">
+          <Check className="mt-0.5 h-4 w-4 shrink-0" style={{ color: 'var(--accent)' }} />
+          <p className="text-sm" style={{ color: 'var(--accent)' }}>
+            {t(locale, 'subscribe.success')}
+          </p>
+        </div>
+      </div>
+    )
   }
 
   return (
     <form
-      action={`https://buttondown.email/api/emails/embed-subscribe/${username}`}
-      method="post"
-      target="popupwindow"
-      onSubmit={(e) => {
-        handleSubmit(e)
-        window.open(`https://buttondown.email/${username}`, 'popupwindow')
-      }}
+      onSubmit={handleSubmit}
       className="rounded-lg p-4"
       style={{ background: 'var(--bg)', border: '1px solid var(--border)' }}
     >
@@ -79,7 +100,8 @@ export function Subscribe() {
           placeholder={t(locale, 'subscribe.placeholder')}
           value={email}
           onChange={(e) => setEmail(e.target.value)}
-          className="flex-1 rounded-md px-3 py-2 text-sm focus:outline-none"
+          disabled={status === 'submitting'}
+          className="flex-1 rounded-md px-3 py-2 text-sm focus:outline-none disabled:opacity-50"
           style={{
             background: 'var(--surface)',
             border: '1px solid var(--border)',
@@ -89,14 +111,29 @@ export function Subscribe() {
         />
         <button
           type="submit"
-          disabled={submitted}
+          disabled={status === 'submitting'}
           className="inline-flex items-center gap-1.5 rounded-md px-4 py-2 text-sm font-medium transition-opacity hover:opacity-85 disabled:opacity-50"
           style={{ background: 'var(--accent)', color: '#08111f' }}
         >
-          {submitted ? <Check className="h-3.5 w-3.5" /> : null}
-          {t(locale, 'subscribe.button')}
+          {status === 'submitting' ? (
+            <>
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              {t(locale, 'subscribe.submitting')}
+            </>
+          ) : (
+            t(locale, 'subscribe.button')
+          )}
         </button>
       </div>
+      {status === 'error' && (
+        <div
+          className="mt-2 flex items-center gap-1.5 text-xs"
+          style={{ color: '#f87171' }}
+        >
+          <AlertCircle className="h-3 w-3" />
+          {t(locale, 'subscribe.error')}
+        </div>
+      )}
       <p className="mt-2 text-[10px]" style={{ color: 'var(--text-faint)' }}>
         {t(locale, 'subscribe.note')}
       </p>
