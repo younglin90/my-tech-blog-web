@@ -47,6 +47,12 @@ import { DragPolarExplorerCalculator } from '@/components/calculators/DragPolarE
 import { CellReynoldsCalculator } from '@/components/calculators/CellReynolds'
 import { YPlusWallVisualizerCalculator } from '@/components/calculators/YPlusWallVisualizer'
 import {
+  FlatPlateSkinFrictionCalculator,
+  StallSpeedEstimatorCalculator,
+  ThinAirfoilLiftCurveCalculator,
+  WindTunnelSimilarityCalculator,
+} from '@/components/calculators/AeroUtilitySuite'
+import {
   BoundaryLayerStackCalculator,
   ColebrookCalculator,
   Courant3DCalculator,
@@ -120,6 +126,10 @@ export const CALCULATOR_COMPONENTS: Record<string, () => ReactElement> = {
   'pressure-coefficient-mapper': PressureCoefficientMapperCalculator,
   'strouhal-vortex-shedding': StrouhalCalculator,
   'vortex-shedding-street': VortexSheddingStreetVisualizerCalculator,
+  'thin-airfoil-lift-curve': ThinAirfoilLiftCurveCalculator,
+  'stall-speed-estimator': StallSpeedEstimatorCalculator,
+  'flat-plate-skin-friction': FlatPlateSkinFrictionCalculator,
+  'wind-tunnel-similarity': WindTunnelSimilarityCalculator,
   'courant-3d': Courant3DCalculator,
   'boundary-layer-stack': BoundaryLayerStackCalculator,
   'moody-chart-explorer': MoodyChartExplorerCalculator,
