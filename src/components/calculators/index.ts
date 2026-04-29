@@ -84,6 +84,12 @@ import {
   OhnesorgeCalculator,
   ParticleSettlingCalculator,
 } from '@/components/calculators/MultiphaseUtilitySuite'
+import {
+  BubbleRiseRegimeCalculator,
+  HydraulicJumpVisualizerCalculator,
+  TwoPhasePressureDropCalculator,
+  VoidFractionSlipCalculator,
+} from '@/components/calculators/MultiphaseAdvancedSuite'
 import { FlowRegimeMapCalculator } from '@/components/calculators/RegimeMap'
 
 export const CALCULATOR_COMPONENTS: Record<string, () => ReactElement> = {
@@ -162,5 +168,9 @@ export const CALCULATOR_COMPONENTS: Record<string, () => ReactElement> = {
   'particle-settling': ParticleSettlingCalculator,
   'manning-open-channel': ManningOpenChannelCalculator,
   'droplet-breakup': DropletBreakupCalculator,
+  'two-phase-pressure-drop': TwoPhasePressureDropCalculator,
+  'void-fraction-slip': VoidFractionSlipCalculator,
+  'bubble-rise-regime': BubbleRiseRegimeCalculator,
+  'hydraulic-jump-visualizer': HydraulicJumpVisualizerCalculator,
   'flow-regime-map': FlowRegimeMapCalculator,
 }
