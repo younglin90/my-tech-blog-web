@@ -7,6 +7,7 @@ export type CalculatorCategory =
   | 'dimensionless'
   | 'turbulence'
   | 'heat-transfer'
+  | 'reacting-flow'
   | 'multiphase'
   | 'numerics'
 
@@ -28,6 +29,7 @@ export const CATEGORY_ORDER: CalculatorCategory[] = [
   'dimensionless',
   'turbulence',
   'heat-transfer',
+  'reacting-flow',
   'multiphase',
   'numerics',
 ]
@@ -74,6 +76,13 @@ export const CATEGORY_LABELS: Record<CalculatorCategory, LocalizedString> = {
     ja: '熱伝達',
     zh: '传热',
     es: 'Transferencia de Calor',
+  },
+  'reacting-flow': {
+    ko: '연소와 반응유동',
+    en: 'Combustion & Reacting Flow',
+    ja: '燃焼と反応流',
+    zh: '燃烧与反应流',
+    es: 'Combustion y Flujo Reactivo',
   },
   multiphase: {
     ko: '다상유동',
@@ -806,6 +815,62 @@ export const CALCULATORS: CalculatorMeta[] = [
     },
     formula: 'T(t) = T_inf + (T_i - T_inf) exp(-t/tau),   tau = rho c_p V/(h A)',
     tags: ['transient heat transfer', 'lumped capacitance', 'cooling', 'Biot'],
+  },
+  {
+    slug: 'damkohler-karlovitz-map',
+    category: 'reacting-flow',
+    title: { ko: 'Damkohler-Karlovitz 연소 맵', en: 'Damkohler-Karlovitz Combustion Map', ja: 'Damkohler-Karlovitz 燃焼マップ', zh: 'Damkohler-Karlovitz 燃烧图', es: 'Mapa Damkohler-Karlovitz' },
+    desc: {
+      ko: '난류 시간척도, 화학 시간척도, Kolmogorov 시간척도로 premixed flame regime을 시각화합니다.',
+      en: 'Visualize premixed flame regime from turbulent, chemical, and Kolmogorov time scales.',
+      ja: '乱流、化学、Kolmogorov時間スケールからpremixed flame regimeを可視化します。',
+      zh: '由湍流、化学和 Kolmogorov 时间尺度可视化预混火焰状态。',
+      es: 'Visualiza el regimen de llama premezclada desde escalas turbulenta, quimica y Kolmogorov.',
+    },
+    formula: 'Da = tau_t/tau_c,   Ka = tau_c/tau_eta',
+    tags: ['Damkohler', 'Karlovitz', 'combustion', 'premixed flame'],
+  },
+  {
+    slug: 'equivalence-ratio-mixer',
+    category: 'reacting-flow',
+    title: { ko: 'Equivalence Ratio 혼합기', en: 'Equivalence Ratio Mixer', ja: 'Equivalence Ratio 混合器', zh: '当量比混合器', es: 'Mezclador de Relacion de Equivalencia' },
+    desc: {
+      ko: '연료/공기 질량유량에서 실제 AFR, phi, lambda, 열방출률을 계산합니다.',
+      en: 'Compute actual AFR, phi, lambda, and heat-release rate from fuel and air mass flow.',
+      ja: '燃料/空気質量流量から実AFR、phi、lambda、熱放出率を計算します。',
+      zh: '由燃料和空气质量流率计算实际 AFR、phi、lambda 与放热率。',
+      es: 'Calcula AFR real, phi, lambda y potencia termica desde caudales masicos de combustible y aire.',
+    },
+    formula: 'phi = AFR_st / AFR_actual,   lambda = 1/phi',
+    tags: ['equivalence ratio', 'AFR', 'combustion', 'mixing'],
+  },
+  {
+    slug: 'arrhenius-sensitivity',
+    category: 'reacting-flow',
+    title: { ko: 'Arrhenius 반응 민감도', en: 'Arrhenius Rate Sensitivity', ja: 'Arrhenius 反応感度', zh: 'Arrhenius 反应敏感度', es: 'Sensibilidad Arrhenius' },
+    desc: {
+      ko: '온도와 활성화에너지에서 반응률 변화와 stiffness 위험을 곡선으로 보여줍니다.',
+      en: 'Plot reaction-rate change and stiffness risk from temperature and activation energy.',
+      ja: '温度と活性化エネルギーから反応率変化とstiffnessリスクを曲線で示します。',
+      zh: '由温度和活化能绘制反应速率变化与刚性风险。',
+      es: 'Grafica cambio de tasa de reaccion y riesgo de rigidez desde temperatura y energia de activacion.',
+    },
+    formula: 'k = A exp(-E_a/(R T)),   d ln k / dT = E_a/(R T^2)',
+    tags: ['Arrhenius', 'reaction rate', 'stiffness', 'chemistry'],
+  },
+  {
+    slug: 'heat-release-temperature-rise',
+    category: 'reacting-flow',
+    title: { ko: '열방출 온도상승 추정', en: 'Heat-Release Temperature Rise', ja: '熱放出温度上昇推定', zh: '放热温升估算', es: 'Aumento de Temperatura por Calor Liberado' },
+    desc: {
+      ko: '연료 LHV, 질량유량, cp에서 단순 단열 온도상승과 열방출률을 시각화합니다.',
+      en: 'Visualize simple adiabatic temperature rise and heat-release rate from fuel LHV, mass flow, and cp.',
+      ja: '燃料LHV、質量流量、cpから単純な断熱温度上昇と熱放出率を可視化します。',
+      zh: '由燃料 LHV、质量流率和 cp 可视化简化绝热温升与放热率。',
+      es: 'Visualiza aumento adiabatico simple y potencia termica desde LHV, caudal masico y cp.',
+    },
+    formula: 'Delta T_ad ~= eta mdot_f LHV / [(mdot_f + mdot_air) c_p]',
+    tags: ['heat release', 'adiabatic temperature', 'combustion', 'LHV'],
   },
   {
     slug: 'lewis',

@@ -78,6 +78,12 @@ import {
   RadiationHeatBalanceCalculator,
 } from '@/components/calculators/HeatTransferUtilitySuite'
 import {
+  ArrheniusSensitivityCalculator,
+  DamkohlerKarlovitzMapCalculator,
+  EquivalenceRatioMixerCalculator,
+  HeatReleaseTemperatureRiseCalculator,
+} from '@/components/calculators/ReactingFlowSuite'
+import {
   CapillaryLengthCalculator,
   DropletBreakupCalculator,
   ManningOpenChannelCalculator,
@@ -127,6 +133,10 @@ export const CALCULATOR_COMPONENTS: Record<string, () => ReactElement> = {
   'fin-efficiency': FinEfficiencyCalculator,
   'radiation-heat-balance': RadiationHeatBalanceCalculator,
   'lumped-cooling-transient': LumpedCoolingTransientCalculator,
+  'damkohler-karlovitz-map': DamkohlerKarlovitzMapCalculator,
+  'equivalence-ratio-mixer': EquivalenceRatioMixerCalculator,
+  'arrhenius-sensitivity': ArrheniusSensitivityCalculator,
+  'heat-release-temperature-rise': HeatReleaseTemperatureRiseCalculator,
   weber: WeberCalculator,
   'capillary-number': CapillaryNumberCalculator,
   'bond-number': BondNumberCalculator,
