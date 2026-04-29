@@ -2,6 +2,7 @@ import { notFound } from 'next/navigation'
 import { PostList } from '@/components/PostList'
 import { QuoteHero } from '@/components/QuoteHero'
 import { ContinueReading } from '@/components/ContinueReading'
+import { TopPosts } from '@/components/TopPosts'
 import { DAY_META, getDayLabel } from '@/lib/day-meta'
 import { LOCALES, isLocale, t, type Locale } from '@/lib/i18n'
 import postIndex from '@/lib/post-index.json'
@@ -93,6 +94,8 @@ export default async function Home({ params }: HomeProps) {
       <ContinueReading
         posts={posts.map((p) => ({ slug: p.id, title: p.title, url: p.url }))}
       />
+
+      <TopPosts locale={loc} heading={t(loc, 'about.topPosts')} limit={5} days={7} />
 
       <PostList
         staticPosts={initialPosts}
