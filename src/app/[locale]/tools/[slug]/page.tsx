@@ -117,7 +117,7 @@ export default async function CalculatorPage({ params }: Props) {
 
           <div className="mt-8 flex flex-wrap gap-2">
             {meta.tags.map((tag) => (
-              <Link key={tag} href={`/${loc}/tags/${encodeURIComponent(tag)}`} className="tag-pill-sm">
+              <Link key={tag} href={`/${loc}/tools?q=${encodeURIComponent(tag)}`} className="tag-pill-sm">
                 {tag}
               </Link>
             ))}
