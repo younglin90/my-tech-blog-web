@@ -43,6 +43,55 @@ function Highlight({ text, query }: { text: string; query: string }) {
   )
 }
 
+// 정의 텍스트에서 다른 glossary term을 찾아 자동 cross-link.
+// query 검색 모드일 땐 highlight가 우선이라 cross-link 비활성.
+function CrossLink({
+  text,
+  terms,
+  exclude,
+}: {
+  text: string
+  terms: string[]
+  exclude: string
+}) {
+  // 길이 내림차순으로 정렬해 긴 term 우선 매칭 (예: "Reynolds Number"가 "Reynolds"보다 먼저).
+  // exclude(현재 entry 자기 자신)는 제외.
+  const candidates = terms
+    .filter((t) => t !== exclude && t.length >= 2)
+    .sort((a, b) => b.length - a.length)
+  if (candidates.length === 0) return <>{text}</>
+  const escaped = candidates.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')
+  // 한글/영문 모두 보호하기 위해 Unicode-aware lookbehind/ahead 대신 단순 word boundary는 안 됨 (한글에서 동작 X).
+  // 그래서 split으로 잘라서 매칭 토큰 자체가 capture되도록 함.
+  // 단, 매칭 직전·직후가 영문자면 false-positive 가능 (예: "Re" → "Reactor"의 "Re" 매칭).
+  // → 영문 term은 정확히 토큰 양쪽이 word boundary일 때만 매칭하도록 split 후 검증.
+  const re = new RegExp(`(${escaped})`, 'g')
+  const parts = text.split(re)
+  return (
+    <>
+      {parts.map((p, i) => {
+        if (i % 2 === 0) return p
+        // 매칭된 term 양쪽이 영숫자에 둘러싸였으면 false-positive로 간주
+        const before = i > 0 ? parts[i - 1].slice(-1) : ''
+        const after = i + 1 < parts.length ? parts[i + 1].charAt(0) : ''
+        const isAlphaNum = (c: string) => /[A-Za-z0-9]/.test(c)
+        const isEnglishTerm = /^[A-Za-z]/.test(p)
+        if (isEnglishTerm && (isAlphaNum(before) || isAlphaNum(after))) return p
+        return (
+          <a
+            key={i}
+            href={`#${p.toLowerCase()}`}
+            className="border-b border-dotted"
+            style={{ color: 'var(--accent)', borderColor: 'var(--accent)', borderBottomStyle: 'dotted' }}
+          >
+            {p}
+          </a>
+        )
+      })}
+    </>
+  )
+}
+
 function shuffle<T>(arr: T[]): T[] {
   const a = [...arr]
   for (let i = a.length - 1; i > 0; i--) {
@@ -181,6 +230,9 @@ export function GlossaryClient({ entries, locale, total }: Props) {
     return [...set].sort()
   }, [entries])
 
+  // 모든 term 이름 (cross-link용)
+  const allTermNames = useMemo(() => entries.map(([term]) => term), [entries])
+
   if (mode === 'flashcard') {
     return (
       <>
@@ -303,7 +355,11 @@ export function GlossaryClient({ entries, locale, total }: Props) {
                   )}
                 </dt>
                 <dd className="mt-1.5 text-sm leading-relaxed" style={{ color: 'var(--text-muted)' }}>
-                  <Highlight text={definition} query={q} />
+                  {q ? (
+                    <Highlight text={definition} query={q} />
+                  ) : (
+                    <CrossLink text={definition} terms={allTermNames} exclude={term} />
+                  )}
                 </dd>
                 {def.posts && def.posts.length > 0 && (
                   <div className="mt-4">
