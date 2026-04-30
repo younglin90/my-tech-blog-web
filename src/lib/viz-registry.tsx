@@ -15,6 +15,7 @@ export const VIZ_COMPONENTS: Record<string, ComponentType> = {
   "AMRQuadtreeRefinement": dynamic(() => import("@/components/post-viz/2026-04-27-amr-quadtree-cell-refinement/AMRQuadtreeRefinement").then((m) => ({ default: m.AMRQuadtreeRefinement })), { ssr: false, loading: VizLoading }),
   "BFSRecirculation": dynamic(() => import("@/components/post-viz/2026-03-26-openfoam-backward-facing-step/BFSRecirculation").then((m) => ({ default: m.BFSRecirculation })), { ssr: false, loading: VizLoading }),
   "BoundaryCondition": dynamic(() => import("@/components/viz/BoundaryCondition").then((m) => ({ default: m.BoundaryCondition })), { ssr: false, loading: VizLoading }),
+  "BurgersShockBirth": dynamic(() => import("@/components/post-viz/2026-05-01-burgers-characteristics-shock-formation/BurgersShockBirth").then((m) => ({ default: m.BurgersShockBirth })), { ssr: false, loading: VizLoading }),
   "CheckerboardPressure": dynamic(() => import("@/components/post-viz/rhie-chow-multiphase/CheckerboardPressure").then((m) => ({ default: m.CheckerboardPressure })), { ssr: false, loading: VizLoading }),
   "DeanSecondaryFlow": dynamic(() => import("@/components/post-viz/2026-03-28-dean-flow-analytical-solution/DeanSecondaryFlow").then((m) => ({ default: m.DeanSecondaryFlow })), { ssr: false, loading: VizLoading }),
   "DGElementBasis": dynamic(() => import("@/components/post-viz/2026-04-20-discontinuous-galerkin-method-cfd/DGElementBasis").then((m) => ({ default: m.DGElementBasis })), { ssr: false, loading: VizLoading }),
