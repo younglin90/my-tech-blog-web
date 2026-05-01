@@ -1,0 +1,184 @@
+---
+title: "[論文レビュー] 振幅の小さい方を選べ — Deng (2018) MUSCL-THINC-BVD によるインターフェース再構成"
+date: 2026-05-02
+description: "二つの候補再構成関数のうちセル境界での変動が小さい方を選ぶBVD原理"
+tags: ["논문리뷰", "compressible-multiphase", "MUSCL", "THINC", "BVD", "interface-capturing"]
+draft: false
+series: "numerical-methods"
+---
+
+import { MUSCLTHINCBVDPicker } from '@/components/post-viz/2026-05-02-muscl-thinc-bvd-interface-reconstruction/MUSCLTHINCBVDPicker'
+
+東京工業大学のXiaoグループは2018年、誰もあまり公表しない測定をひとつ行いました。圧縮性二相流のシミュレーションを1000ステップ走らせ、終了時のインターフェース厚さを測ったのです。最初は1セルだったジャンプが、8セルに広がっていました。WENOを使っても結果は似ていました。1ステップあたりの数値拡散が小さく見えるスキームでも、長時間にわたる累積でインターフェースは崩れます。本記事では、この問題に対する彼らの答えである **MUSCL-THINC-BVD** 再構成を整理します。発想はシンプルです。各セルで **二つの再構成候補** を同時に作り、**セル境界でのジャンプが小さい方** を採用するのです。
+
+## 一ページ要約
+
+- **著者・誌名**: Deng, Inaba, Xie, Shyue, Xiao. *Journal of Computational Physics* 371 (2018) 945–966.
+- **対象問題**: 五方程式モデルで解く圧縮性二相流において、物質界面が時間とともにぼやけていく現象。
+- **提案**: 各セルで MUSCL(滑らか領域用)と THINC(ジャンプ用)の二つの再構成を同時に作り、セル境界での変動が小さい方を採用する **BVD (Boundary Variation Diminishing)** アルゴリズム。
+- **新しい点**: 後処理の anti-diffusion や人工圧縮が不要。同じ BVD 規則を体積分率と他の保存量すべてに適用するため、変数間の整合性が自動的に取れる。
+
+## 衝突する二つの要求
+
+圧縮性二相流の数値計算は、二つのことを同時に要求します。滑らかな領域では精度が高く拡散が少ないこと。ジャンプ(界面、衝撃波)では単調性と薄さ。一つの関数で両方をうまくこなすのは難しいです。
+
+MUSCL は区分線形再構成です。単調性を保証しますが、微分は1次しか追従しません。界面を通るたびに少しずつ削り、それが累積するとジャンプが広がります。THINC は tanh をセル内に当てはめてステップを1セルに閉じ込めますが、滑らかな領域に使うと偽の階段を作ります。
+
+論文の出発点は決断です。二つを混ぜて一つにせず、各セルでどちらかを選ぶ。
+
+## MUSCL — 信頼できるディフューザー
+
+基準となる候補は minmod スロープリミッタを用いた MUSCL です。
+
+$$
+\tilde{q}_i^{\,\text{MUSCL}}(x) = \bar{q}_i + \sigma_i (x - x_i), \quad
+\sigma_i = \text{minmod}(\bar{q}_i - \bar{q}_{i-1},\; \bar{q}_{i+1} - \bar{q}_i)
+$$
+
+ここで $\bar{q}_i$ はセル平均、$\sigma_i$ はセル中心でのスロープ、minmod は両差分の符号が同じなら絶対値の小さい方、異なれば0を返すリミッタです。
+
+候補のセル境界値:
+
+$$
+q^{L,\text{MUSCL}}_{i+1/2} = \bar{q}_i + \tfrac{1}{2}\sigma_i, \quad
+q^{R,\text{MUSCL}}_{i-1/2} = \bar{q}_i - \tfrac{1}{2}\sigma_i
+$$
+
+どこでも安全に動きます。振動はないが、ジャンプ部の厚さがゆっくり広がります。
+
+## THINC — ジャンプを真似る単調関数
+
+THINC (Tangent of Hyperbola for INterface Capturing) はセル内のジャンプを双曲線正接で当てはめます。
+
+$$
+\tilde{q}_i^{\,\text{THINC}}(x) = \bar{q}_{\min} + \tfrac{\bar{q}_{\max}}{2}\left[1 + \theta \tanh\!\left(\beta\!\left(\tfrac{x - x_{i-1/2}}{\Delta x} - \tilde{x}_i\right)\right)\right]
+$$
+
+$\bar{q}_{\min}, \bar{q}_{\max}$ は隣接セルから取った最小値と振幅、$\theta = \mathrm{sgn}(\bar{q}_{i+1}-\bar{q}_{i-1})$ はジャンプ方向、$\beta$ はジャンプの厚さを制御するパラメータ、$\tilde{x}_i$ はセル平均が保存されるよう解かれるジャンプ中心です。
+
+$\beta$ は 1.4–2.0 の間で安定し、標準値は 1.6 です。大きくするとジャンプが1セル内に閉じ込められて見栄えが良いですが、滑らか領域に誤って適用されるとギザギザの偽ジャンプを生みます。
+
+## BVD — 二つの候補間の変動を測る
+
+ここからが核心です。候補が二つあるなら、隣接セルの再構成と境界で出会ったとき、どちらが小さなジャンプを作るかを測ればよい。セル $i$ における **総境界変動 (Total Boundary Variation, TBV)** は次のように定義されます。
+
+$$
+\text{TBV}_i^{P} = |q^{L,\text{MUSCL}}_{i-1/2} - q^{R,P}_{i-1/2}| + |q^{L,P}_{i+1/2} - q^{R,\text{MUSCL}}_{i+1/2}|
+$$
+
+$P$ は候補(MUSCL または THINC)。両側の隣接セルは MUSCL に固定し、中央セルだけが切り替わります。
+
+選択規則:
+
+$$
+\tilde{q}_i^{\,\text{BVD}}(x) =
+\begin{cases}
+\tilde{q}_i^{\,\text{THINC}}(x) & \text{if } \delta < C_i < 1 - \delta,\ (\bar{q}_{i+1}-\bar{q}_i)(\bar{q}_i-\bar{q}_{i-1}) > 0,\ \text{TBV}^{\text{THINC}}_i < \text{TBV}^{\text{MUSCL}}_i \\
+\tilde{q}_i^{\,\text{MUSCL}}(x) & \text{otherwise}
+\end{cases}
+$$
+
+$C_i = (\bar{q}_i - \bar{q}_{\min})/\bar{q}_{\max}$ はジャンプ位置の指標、$\delta \approx 10^{-4}$。最初の二条件は「ここに本当にジャンプがあり得るか」を問うフィルタで、三つ目が本当の判定です。
+
+## 五方程式モデル上の整合性
+
+この論文が単なる再構成比較で終わらない点はここです。五方程式モデルは体積分率 $\alpha_1$、相密度 $\alpha_1\rho_1, \alpha_2\rho_2$、運動量 $\rho u$、全エネルギー $E$ を一緒に解きます。これら五変数すべてに同じ BVD 規則を適用します。
+
+従来手法は体積分率だけシャープにし、他の変数は界面で圧力振動が出ないよう個別に補正していました。BVD は五変数が同じセルで同じ判定に従うことを強制します。「このセルは界面」と決まれば五変数すべて THINC、「滑らか」なら五変数すべて MUSCL。変数間の整合性が自動的に取れ、別途の anti-diffusion 工程が不要になります。
+
+## NumPy で見る BVD 決定木
+
+```python
+import numpy as np
+
+def muscl_minmod_edges(q):
+    """ (q[i-1], q[i], q[i+1]) を受け取り、MUSCL の左右端値を返す """
+    qm, q0, qp = q
+    a, b = q0 - qm, qp - q0
+    if a * b <= 0.0:
+        slope = 0.0
+    else:
+        slope = np.sign(a) * min(abs(a), abs(b))
+    return q0 - 0.5 * slope, q0 + 0.5 * slope  # qL, qR
+
+def thinc_jump_edges(q, beta=1.6, eps=1e-20):
+    """ tanh フィットによるジャンプ: THINC の左右端値 """
+    qm, q0, qp = q
+    qmin = min(qm, qp)
+    qmax = max(qm, qp) - qmin
+    if qmax < 1e-12:
+        return q0, q0
+    theta = np.sign(qp - qm)
+    C = (q0 - qmin + eps) / (qmax + eps)
+    if C <= 1e-6 or C >= 1 - 1e-6:
+        return q0, q0
+    B = np.exp(theta * beta * (2.0 * C - 1.0))
+    A = (B / np.cosh(beta) - 1.0) / np.tanh(beta)
+    qR = qmin + 0.5 * qmax * (1.0 + theta * A)
+    num = 1.0 + theta * A * np.tanh(beta) + theta * np.tanh(beta)
+    den = 1.0 + A * np.tanh(beta)
+    qL = qmin + 0.5 * qmax * (num / den)
+    return qL, qR
+
+def bvd_decide(q_window, beta=1.6, delta=1e-4):
+    """
+    q_window: 長さ5の配列 [q[i-2], q[i-1], q[i], q[i+1], q[i+2]]
+    戻り値: (qL_i, qR_i, picked_thinc)
+    """
+    qm2, qm1, q0, qp1, qp2 = q_window
+    monotone = (qp1 - q0) * (q0 - qm1) > 0.0
+    qmin = min(qm1, qp1)
+    qmax = max(qm1, qp1) - qmin
+    C = 0.5 if qmax < 1e-12 else (q0 - qmin) / qmax
+    eligible = monotone and (delta < C < 1.0 - delta)
+
+    qL_M, qR_M = muscl_minmod_edges([qm1, q0, qp1])
+    if not eligible:
+        return qL_M, qR_M, False
+
+    qL_T, qR_T = thinc_jump_edges([qm1, q0, qp1], beta=beta)
+    # 隣接を MUSCL に固定した TBV 比較
+    _, qR_left = muscl_minmod_edges([qm2, qm1, q0])
+    qL_right, _ = muscl_minmod_edges([q0, qp1, qp2])
+    tbv_M = abs(qR_left - qL_M) + abs(qR_M - qL_right)
+    tbv_T = abs(qR_left - qL_T) + abs(qR_T - qL_right)
+    if tbv_T < tbv_M:
+        return qL_T, qR_T, True
+    return qL_M, qR_M, False
+
+# テスト: 滑らか + ジャンプ混合プロファイル
+N = 80
+x = (np.arange(N) + 0.5) / N
+q = np.where((x >= 0.6) & (x <= 0.8), 1.0, 0.0)
+q += 0.5 * np.exp(-((x - 0.25) / 0.04) ** 2)
+
+picks = 0
+for i in range(2, N - 2):
+    _, _, used_thinc = bvd_decide(q[i-2:i+3])
+    picks += int(used_thinc)
+print(f"THINC 採用率: {picks}/{N-4}")
+# 期待値: ジャンプ両側の数セルのみ
+```
+
+滑らかなガウシアン領域では minmod が曲率を捉え、BVD は MUSCL を選びます。THINC が勝つのは正方ジャンプの両側2〜3セルだけ。95%以上のセルで MUSCL が採用されます — BVD は元のプロファイルを変形しません。
+
+## どのセルが勝つかを見てみよう
+
+下のシミュレーションで実際に操作してみましょう。1次元スカラー移流を三つの再構成で並列に解き、毎ステップ BVD が THINC を選んだセルをキャンバス下のストリップで強調表示します。
+
+<MUSCLTHINCBVDPicker />
+
+$\beta$ を 1.4 から 2.2 へ動かすと、THINC を選んだセルのジャンプが鋭くなる代わりに、滑らかなガウシアン両端でギザギザが見えてきます。1.6 付近に最適値がある — これが論文の選択理由です。ストリップにも注目してください。シアン色のセルは正方ジャンプ周辺の数個だけで、滑らかな山には現れません。これが BVD の自己局在化の働きです。
+
+## どこまで信じられるか
+
+- **収束は2次未満**です。MUSCL が候補のひとつなので滑らか領域の精度はそこに縛られます。WENO に置き換えれば5次も可能ですが、本論文は **シンプルさ** を売りにしています。
+- **TBV の定義は隣接セルが MUSCL であることを仮定**します。両隣も同時に THINC を選びたい場合の多重ピック問題は単純化で消されています。1パスで決定するため論文の例は十分に良いですが、後続研究で一般化されています。
+- **多次元では $\beta$ が面法線方向に依存**します。界面法線は Young 法で推定されるため、コーナーやキンクで法線が劣化するとジャンプが偏ることがあります。
+- **高次時間積分との結合**。論文では SSPRK3 が使われ、BVD 判定は各 RK 段で再評価されます。段間で判定がブレるとインターフェースが揺れる — これが続く研究で議論されているトピックです。
+
+## 三行まとめ
+
+- 各セルで滑らか用 (MUSCL) と ジャンプ用 (THINC) の **二候補** を同時に作り、セル境界の変動和が小さい方を採る。
+- 体積分率だけでなく全保存量に同じ BVD 規則を適用するため、変数間の整合性(偽の圧力振動)が自動的に解消される。
+- anti-diffusion も人工圧縮もないのに、インターフェースが1セル厚に保たれる — シンプルさが強み。

@@ -24,6 +24,7 @@ export const VIZ_COMPONENTS: Record<string, ComponentType> = {
   "KrylovConvergenceRace": dynamic(() => import("@/components/post-viz/2026-04-22-cfd-linear-solvers-krylov/KrylovConvergenceRace").then((m) => ({ default: m.KrylovConvergenceRace })), { ssr: false, loading: VizLoading }),
   "LimiterAdvection1D": dynamic(() => import("@/components/post-viz/2026-04-24-flux-limiter-tvd-advection/LimiterAdvection1D").then((m) => ({ default: m.LimiterAdvection1D })), { ssr: false, loading: VizLoading }),
   "MachArchitect": dynamic(() => import("@/components/MachArchitect").then((m) => ({ default: m.MachArchitect })), { ssr: false, loading: VizLoading }),
+  "MUSCLTHINCBVDPicker": dynamic(() => import("@/components/post-viz/2026-05-02-muscl-thinc-bvd-interface-reconstruction/MUSCLTHINCBVDPicker").then((m) => ({ default: m.MUSCLTHINCBVDPicker })), { ssr: false, loading: VizLoading }),
   "NumericalDungeon": dynamic(() => import("@/components/NumericalDungeon").then((m) => ({ default: m.NumericalDungeon })), { ssr: false, loading: VizLoading }),
   "NumericalScheme": dynamic(() => import("@/components/viz/NumericalScheme").then((m) => ({ default: m.NumericalScheme })), { ssr: false, loading: VizLoading }),
   "PINNLossLandscape": dynamic(() => import("@/components/post-viz/2026-03-24-paper-review-pinn-turbulence-modeling/PINNLossLandscape").then((m) => ({ default: m.PINNLossLandscape })), { ssr: false, loading: VizLoading }),
