@@ -394,9 +394,18 @@ export function Search() {
                       <span className="mt-0.5 text-xs line-clamp-1" style={{ color: 'var(--text-muted)' }}>
                         <Highlight text={post.description} query={q} />
                       </span>
-                      {post.tags && post.tags.length > 0 && (
-                        <div className="mt-1.5 flex flex-wrap gap-1">
-                          {post.tags.slice(0, 3).map((tag) => (
+                      {(post.series || (post.tags && post.tags.length > 0)) && (
+                        <div className="mt-1.5 flex flex-wrap items-center gap-1">
+                          {post.series && (
+                            <span
+                              className="mono rounded px-1.5 py-0.5 text-[9px] font-semibold"
+                              style={{ background: 'var(--accent-glow)', color: 'var(--accent)', border: '1px solid var(--accent)' }}
+                            >
+                              {post.series}
+                              {post.seriesOrder ? ` · ${String(post.seriesOrder).padStart(2, '0')}` : ''}
+                            </span>
+                          )}
+                          {post.tags?.slice(0, 3).map((tag) => (
                             <span
                               key={tag}
                               className="rounded px-1.5 py-0.5 text-[9px] font-medium"
