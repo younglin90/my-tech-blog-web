@@ -104,25 +104,19 @@ export function ToolsCatalog({ locale }: { locale: Locale }) {
           boxShadow: '0 30px 90px rgba(8,17,31,0.32)',
         }}
       >
-        <div className="grid gap-0 lg:grid-cols-[1.08fr,0.92fr]">
-          <div className="relative z-10 p-5 sm:p-7 lg:p-8">
-            <div className="mb-4 inline-flex items-center gap-2 rounded-full px-3 py-1" style={{ background: 'rgba(34,211,238,0.10)', border: '1px solid rgba(34,211,238,0.28)' }}>
-              <span className="h-2 w-2 rounded-full" style={{ background: '#22d3ee', boxShadow: '0 0 18px #22d3ee' }} />
-              <span className="mono text-[10px] font-semibold uppercase tracking-[0.28em]" style={{ color: '#22d3ee' }}>
-                CFD workbench
-              </span>
-            </div>
-            <h1 className="display max-w-2xl text-4xl font-bold tracking-[-0.045em] sm:text-5xl" style={{ color: '#e2e8f0' }}>
-              {t(locale, 'tools.title')}
-            </h1>
-            <p className="mt-4 max-w-2xl text-sm sm:text-base" style={{ color: '#a8b3c4', lineHeight: 1.75 }}>
-              {t(locale, 'tools.subtitle')}
-            </p>
+        <div className="relative z-10 p-5 sm:p-7 lg:p-8">
+          <div className="mb-4 inline-flex items-center gap-2 rounded-full px-3 py-1" style={{ background: 'rgba(34,211,238,0.10)', border: '1px solid rgba(34,211,238,0.28)' }}>
+            <span className="h-2 w-2 rounded-full" style={{ background: '#22d3ee', boxShadow: '0 0 18px #22d3ee' }} />
+            <span className="mono text-[10px] font-semibold uppercase tracking-[0.28em]" style={{ color: '#22d3ee' }}>
+              CFD workbench
+            </span>
           </div>
-
-          <div className="relative min-h-[280px] border-t lg:border-l lg:border-t-0" style={{ borderColor: 'var(--border)' }}>
-            <ToolsHeroGraphic locale={locale} />
-          </div>
+          <h1 className="display max-w-2xl text-4xl font-bold tracking-[-0.045em] sm:text-5xl" style={{ color: '#e2e8f0' }}>
+            {t(locale, 'tools.title')}
+          </h1>
+          <p className="mt-4 max-w-2xl text-sm sm:text-base" style={{ color: '#a8b3c4', lineHeight: 1.75 }}>
+            {t(locale, 'tools.subtitle')}
+          </p>
         </div>
       </section>
 
@@ -329,77 +323,6 @@ export function ToolsCatalog({ locale }: { locale: Locale }) {
           <span style={{ color: 'var(--accent)' }}>diffusion</span>.
         </section>
       )}
-    </div>
-  )
-}
-
-function ToolsHeroGraphic({ locale }: { locale: Locale }) {
-  const rings = CATEGORY_ORDER.slice(0, 8).map((category, index) => ({
-    category,
-    label: getCategoryLabel(category, locale),
-    count: CALCULATORS.filter((tool) => tool.category === category).length,
-    angle: (index / 8) * Math.PI * 2 - Math.PI / 2,
-  }))
-
-  return (
-    <div className="absolute inset-0 overflow-hidden">
-      <svg viewBox="0 0 560 360" className="h-full w-full" role="img" aria-label="CFD tool category map">
-        <defs>
-          <radialGradient id="tools-hero-radial" cx="50%" cy="50%" r="60%">
-            <stop offset="0%" stopColor="#22d3ee" stopOpacity="0.32" />
-            <stop offset="100%" stopColor="#22d3ee" stopOpacity="0" />
-          </radialGradient>
-          <linearGradient id="tools-hero-line" x1="0" x2="1" y1="0" y2="1">
-            <stop offset="0%" stopColor="#22d3ee" />
-            <stop offset="100%" stopColor="#fb923c" />
-          </linearGradient>
-          <pattern id="tools-hero-grid" width="28" height="28" patternUnits="userSpaceOnUse">
-            <path d="M 28 0 L 0 0 0 28" fill="none" stroke="rgba(148,163,184,0.12)" strokeWidth="1" />
-          </pattern>
-        </defs>
-        <rect width="560" height="360" fill="rgba(8,17,31,0.18)" />
-        <rect width="560" height="360" fill="url(#tools-hero-grid)" />
-        <circle cx="280" cy="180" r="155" fill="url(#tools-hero-radial)" />
-        {[92, 132, 172].map((r) => (
-          <circle key={r} cx="280" cy="180" r={r} fill="none" stroke="rgba(226,232,240,0.12)" strokeWidth="1.5" />
-        ))}
-        {rings.map(({ category, count, angle }) => {
-          const x = 280 + Math.cos(angle) * 138
-          const y = 180 + Math.sin(angle) * 102
-          const radius = 10 + Math.min(count, 12)
-          return (
-            <g key={category}>
-              <path d={`M280 180 L${x} ${y}`} stroke="rgba(148,163,184,0.22)" strokeWidth="1" />
-              <circle cx={x} cy={y} r={radius} fill="rgba(8,17,31,0.86)" stroke="url(#tools-hero-line)" strokeWidth="2.5">
-                <animate attributeName="r" values={`${radius - 2};${radius + 3};${radius - 2}`} dur={`${3 + count * 0.08}s`} repeatCount="indefinite" />
-              </circle>
-              <text x={x} y={y + 4} textAnchor="middle" className="mono" fill="#e2e8f0" fontSize="11" fontWeight="700">
-                {count}
-              </text>
-            </g>
-          )
-        })}
-        <g transform="translate(280 180)">
-          <circle r="54" fill="rgba(8,17,31,0.88)" stroke="#22d3ee" strokeWidth="2.5" />
-          <path d="M-32 0 C-12 -34 16 -34 34 0 C12 34 -16 34 -32 0 Z" fill="none" stroke="#22d3ee" strokeWidth="3" />
-          <path d="M-46 -22 C-8 -52 22 -48 54 -20 M-54 24 C-16 52 20 50 54 20" fill="none" stroke="#fb923c" strokeWidth="2.5" strokeLinecap="round" strokeDasharray="9 10">
-            <animate attributeName="stroke-dashoffset" from="0" to="-38" dur="4s" repeatCount="indefinite" />
-          </path>
-        </g>
-      </svg>
-      <div className="absolute bottom-4 left-4 right-4 grid gap-2 sm:grid-cols-2">
-        {rings.slice(0, 4).map(({ category, label, count }) => (
-          <a
-            key={category}
-            href={`#tools-category-${category}`}
-            className="rounded-xl px-3 py-2 text-xs backdrop-blur transition-colors"
-            style={{ background: 'rgba(8,17,31,0.58)', border: '1px solid rgba(148,163,184,0.20)', color: '#a8b3c4' }}
-          >
-            <span className="mono mr-2" style={{ color: '#22d3ee' }}>{count}</span>
-            {label}
-          </a>
-        ))}
-      </div>
     </div>
   )
 }
