@@ -116,12 +116,14 @@ export default async function PostPage({ params }: PostProps) {
   const nextPost = currentIndex > 0 ? posts[currentIndex - 1] : null
   const related = getRelatedPosts(loc, slug, post.tags ?? [])
 
+  const updatedRaw = (post as unknown as { updated?: string }).updated
   const articleJsonLd = {
     '@context': 'https://schema.org',
     '@type': 'TechArticle',
     headline: post.title,
     description: post.description,
     datePublished: post.date,
+    ...(updatedRaw ? { dateModified: updatedRaw } : {}),
     inLanguage: loc,
     keywords: (post.tags ?? []).join(', '),
     wordCount: post.wordCount,
@@ -199,6 +201,11 @@ export default async function PostPage({ params }: PostProps) {
             <span>
               DATE <span className="tabular" style={{ color: 'var(--text)' }}>{format(parseISO(post.date), 'yyyy.MM.dd')}</span>
             </span>
+            {updatedRaw && updatedRaw !== post.date && (
+              <span title={t(loc, 'post.updated')}>
+                UPDATED <span className="tabular" style={{ color: 'var(--accent)' }}>{format(parseISO(updatedRaw), 'yyyy.MM.dd')}</span>
+              </span>
+            )}
             {post.readingTime && (
               <span>
                 READ <span style={{ color: 'var(--text)' }}>{post.readingTime}</span>

@@ -54,9 +54,12 @@ export default async function sitemap({ id }: { id: string }): Promise<MetadataR
 
   for (const slug of slugs) {
     const post = posts.find((p) => p.slug === slug)
+    // updated 필드가 있으면 그것을 우선 사용 (검색엔진에 글 수정을 알림)
+    const updatedRaw = (post as unknown as { updated?: string })?.updated
+    const lastMod = updatedRaw ? new Date(updatedRaw) : post ? new Date(post.date) : new Date()
     entries.push({
       url: `${SITE_URL}/${locale}/posts/${slug}`,
-      lastModified: post ? new Date(post.date) : new Date(),
+      lastModified: lastMod,
       changeFrequency: 'monthly',
       priority: 0.8,
       alternates: { languages: alternateLanguages(`/posts/${slug}`) },
