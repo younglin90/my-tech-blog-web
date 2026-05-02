@@ -35,8 +35,26 @@ export function TableOfContents() {
   const [mobileOpen, setMobileOpen] = useState(false)
   const observerRef = useRef<IntersectionObserver | null>(null)
   const progress = useScrollProgress()
+  const listRef = useRef<HTMLDivElement | null>(null)
+  const itemRefs = useRef<Record<string, HTMLLIElement | null>>({})
 
   const handleMobileNavClick = useCallback(() => setMobileOpen(false), [])
+
+  // 활성 항목이 ToC 컨테이너 밖으로 가려지면 자동 스크롤로 보이게.
+  useEffect(() => {
+    if (!activeId) return
+    const item = itemRefs.current[activeId]
+    const list = listRef.current
+    if (!item || !list) return
+    const itemRect = item.getBoundingClientRect()
+    const listRect = list.getBoundingClientRect()
+    const margin = 32
+    if (itemRect.top < listRect.top + margin || itemRect.bottom > listRect.bottom - margin) {
+      // 부드럽게 가운데로 이동
+      const offset = item.offsetTop - list.clientHeight / 2 + item.clientHeight / 2
+      list.scrollTo({ top: Math.max(0, offset), behavior: 'smooth' })
+    }
+  }, [activeId])
 
   useEffect(() => {
     // Collect headings rendered by MDX (h2, h3 only)
@@ -76,6 +94,7 @@ export function TableOfContents() {
       {headings.map((h) => (
         <li
           key={h.id}
+          ref={(el) => { itemRefs.current[h.id] = el }}
           style={{
             paddingLeft: h.level === 3 ? '0.75rem' : '0',
             borderLeft: `2px solid ${activeId === h.id ? 'var(--accent)' : 'transparent'}`,
@@ -142,19 +161,45 @@ export function TableOfContents() {
           <p className="text-[10px] font-semibold uppercase tracking-widest" style={{ color: 'var(--text-faint)' }}>
             {tocLabel}
           </p>
-          <span className="text-[9px] tabular-nums" style={{ color: 'var(--text-faint)' }}>
+          <span className="mono text-[10px] tabular-nums" style={{ color: 'var(--accent)', fontWeight: 600 }}>
             {Math.round(progress)}%
           </span>
         </div>
-        {/* Progress bar */}
-        <div className="mb-3 h-px w-full overflow-hidden" style={{ background: 'var(--border)' }}>
+        {/* 좌측 세로 progress 트랙 + ToC 리스트를 함께 묶음 */}
+        <div className="relative pl-3">
+          {/* 트랙 (전체 길이, 옅은 색) */}
           <div
-            className="h-full transition-[width] duration-150"
-            style={{ width: `${progress}%`, background: 'var(--accent)', opacity: 0.6 }}
+            className="absolute left-0 top-0 bottom-0 w-px"
+            style={{ background: 'var(--border)' }}
           />
-        </div>
-        <div className="max-h-[calc(100vh-10rem)] overflow-y-auto pr-1">
-          {tocList}
+          {/* 채워진 부분 (현재 진행률만큼 위에서 아래로) */}
+          <div
+            className="absolute left-0 top-0 w-px transition-[height] duration-150"
+            style={{
+              height: `${progress}%`,
+              background: 'var(--accent)',
+              boxShadow: '0 0 4px var(--accent)',
+            }}
+          />
+          {/* 트랙 위 현재 위치 점 */}
+          <div
+            className="absolute -left-[3px] transition-[top] duration-150"
+            style={{
+              top: `calc(${progress}% - 3px)`,
+              width: 7,
+              height: 7,
+              borderRadius: '50%',
+              background: 'var(--accent)',
+              boxShadow: '0 0 6px var(--accent)',
+            }}
+          />
+          <div
+            ref={listRef}
+            className="max-h-[calc(100vh-10rem)] overflow-y-auto pr-1"
+            style={{ scrollBehavior: 'smooth' }}
+          >
+            {tocList}
+          </div>
         </div>
       </nav>
     </>
