@@ -114,7 +114,7 @@ export function BookmarksClient({ posts }: BookmarksClientProps) {
         <Link
           href={`/${locale}`}
           className="mt-5 inline-block rounded-md px-4 py-2 text-sm font-medium transition-opacity hover:opacity-80"
-          style={{ background: 'var(--accent)', color: '#08111f' }}
+          style={{ background: 'var(--accent)', color: 'var(--on-accent)' }}
         >
           {t(locale, 'nav.posts')}
         </Link>

@@ -34,7 +34,7 @@ export default function NotFound() {
           <Link
             href="/en"
             className="rounded-md px-5 py-2.5 text-sm font-medium transition-opacity hover:opacity-80"
-            style={{ background: 'var(--accent)', color: '#08111f' }}
+            style={{ background: 'var(--accent)', color: 'var(--on-accent)' }}
           >
             Back to Home
           </Link>

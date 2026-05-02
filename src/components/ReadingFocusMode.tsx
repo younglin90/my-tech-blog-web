@@ -46,7 +46,7 @@ export function ReadingFocusMode() {
         className="fixed bottom-6 right-6 z-[60] inline-flex items-center gap-1.5 rounded-full px-3 py-2 text-xs font-medium shadow-lg"
         style={{
           background: 'var(--accent)',
-          color: '#08111f',
+          color: 'var(--on-accent)',
           minHeight: 44,
         }}
       >

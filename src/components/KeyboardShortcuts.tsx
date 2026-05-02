@@ -86,7 +86,7 @@ export function KeyboardShortcuts() {
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div
         className="fixed inset-0"
-        style={{ background: '#08111f', opacity: 0.6 }}
+        style={{ background: 'var(--on-accent)', opacity: 0.6 }}
         onClick={() => setOpen(false)}
       />
       <div

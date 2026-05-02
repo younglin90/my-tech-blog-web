@@ -48,7 +48,7 @@ export function ErgunPackedBedCalculator() {
       </div>
 
       <div className="mt-5 rounded-xl p-4" style={{ background: 'var(--bg)', border: '1px solid var(--border)' }}>
-        <div className="relative h-28 overflow-hidden rounded-xl" style={{ background: '#08111f' }}>
+        <div className="relative h-28 overflow-hidden rounded-xl" style={{ background: 'var(--on-accent)' }}>
           {Array.from({ length: 36 }, (_, i) => (
             <span
               key={i}

@@ -113,7 +113,7 @@ export function Subscribe() {
           type="submit"
           disabled={status === 'submitting'}
           className="inline-flex items-center gap-1.5 rounded-md px-4 py-2 text-sm font-medium transition-opacity hover:opacity-85 disabled:opacity-50"
-          style={{ background: 'var(--accent)', color: '#08111f' }}
+          style={{ background: 'var(--accent)', color: 'var(--on-accent)' }}
         >
           {status === 'submitting' ? (
             <>

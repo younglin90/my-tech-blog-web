@@ -129,7 +129,7 @@ export function QuoteShare() {
         style={{
           padding: '6px 10px',
           background: copied ? 'var(--accent)' : 'var(--surface)',
-          color: copied ? '#08111f' : 'var(--accent)',
+          color: copied ? 'var(--on-accent)' : 'var(--accent)',
           border: '1px solid var(--accent)',
           transition: 'background 120ms ease, color 120ms ease',
         }}

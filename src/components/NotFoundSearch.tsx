@@ -41,7 +41,7 @@ export function NotFoundSearch() {
       <button
         type="submit"
         className="rounded-md px-4 py-2 text-sm font-medium transition-opacity hover:opacity-75"
-        style={{ background: 'var(--accent)', color: '#08111f' }}
+        style={{ background: 'var(--accent)', color: 'var(--on-accent)' }}
       >
         Search
       </button>

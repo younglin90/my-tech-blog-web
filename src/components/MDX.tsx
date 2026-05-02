@@ -183,7 +183,7 @@ function AnchorLink({ id }: { id: string }) {
       {copied && (
         <span
           className="absolute -top-7 left-2 rounded px-1.5 py-0.5 text-[10px] font-medium whitespace-nowrap"
-          style={{ background: 'var(--accent)', color: '#08111f', pointerEvents: 'none' }}
+          style={{ background: 'var(--accent)', color: 'var(--on-accent)', pointerEvents: 'none' }}
         >
           {COPIED_LABEL[localeMatch] ?? COPIED_LABEL.en}
         </span>

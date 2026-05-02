@@ -60,7 +60,7 @@ export function PreviewContent({ post }: PreviewProps) {
           <button
             type="submit"
             className="w-full rounded-md py-2.5 text-sm font-medium transition-opacity hover:opacity-75"
-            style={{ background: 'var(--accent)', color: '#08111f' }}
+            style={{ background: 'var(--accent)', color: 'var(--on-accent)' }}
           >
             Unlock Preview
           </button>
@@ -75,7 +75,7 @@ export function PreviewContent({ post }: PreviewProps) {
         {post.draft && (
           <span
             className="mb-3 rounded px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-widest"
-            style={{ background: 'var(--warning)', color: '#08111f', opacity: 0.9 }}
+            style={{ background: 'var(--warning)', color: 'var(--on-accent)', opacity: 0.9 }}
           >
             Draft
           </span>

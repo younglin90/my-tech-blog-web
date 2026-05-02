@@ -235,7 +235,7 @@ export function Search() {
               transition={{ duration: 0.15 }}
               onClick={() => setOpen(false)}
               className="fixed inset-0"
-              style={{ background: '#08111f' }}
+              style={{ background: 'var(--on-accent)' }}
             />
             <motion.div
               initial={{ opacity: 0, y: -8 }}

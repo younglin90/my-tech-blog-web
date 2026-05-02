@@ -152,7 +152,7 @@ export function VizGalleryClient({ locale, items }: { locale: Locale; items: Viz
                       <button
                         onClick={() => setOpen((current) => ({ ...current, [key]: !isOpen }))}
                         className="inline-flex min-h-11 items-center rounded-lg px-3 py-1.5 text-xs font-medium transition-opacity hover:opacity-80"
-                        style={{ background: 'var(--accent)', color: '#08111f' }}
+                        style={{ background: 'var(--accent)', color: 'var(--on-accent)' }}
                       >
                         {isOpen ? t(locale, 'viz.hide') : t(locale, 'viz.render')}
                       </button>
