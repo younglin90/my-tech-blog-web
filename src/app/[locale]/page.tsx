@@ -29,7 +29,9 @@ export async function generateMetadata({ params }: HomeProps): Promise<Metadata>
 }
 
 const DAY_ORDER: Array<keyof typeof DAY_META> = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']
-const HOME_INITIAL_POSTS = 20
+// SSR로 보내는 첫 페이로드. 무한 스크롤 sentinel이 IntersectionObserver로
+// PAGE_SIZE(10)씩 추가 로드하므로 첫 화면에 보이는 양만큼만 보내 LCP 개선.
+const HOME_INITIAL_POSTS = 12
 
 export default async function Home({ params }: HomeProps) {
   const { locale } = await params

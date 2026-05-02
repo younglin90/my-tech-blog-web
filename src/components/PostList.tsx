@@ -482,15 +482,24 @@ export function PostList({
         })}
       </div>
 
-      {/* Infinite scroll sentinel */}
+      {/* Infinite scroll sentinel + 스켈레톤 카드 (시각적 로딩 피드백) */}
       {hasMore && (
-        <div
-          ref={sentinelRef}
-          className="mono mt-6 py-4 text-center"
-          style={{ fontSize: 11, color: 'var(--text-faint)' }}
-          aria-live="polite"
-        >
-          {t(locale, 'list.loadingMore')}
+        <div ref={sentinelRef} aria-live="polite" aria-busy="true">
+          <div className="mt-2 space-y-3">
+            {[0, 1, 2].map((i) => (
+              <div
+                key={i}
+                className="skeleton h-20 rounded-md"
+                style={{ opacity: 1 - i * 0.25 }}
+              />
+            ))}
+          </div>
+          <p
+            className="mono mt-3 text-center"
+            style={{ fontSize: 11, color: 'var(--text-faint)' }}
+          >
+            {t(locale, 'list.loadingMore')}
+          </p>
         </div>
       )}
 
