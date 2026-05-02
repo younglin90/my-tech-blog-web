@@ -1,6 +1,9 @@
 import { allPosts } from 'contentlayer/generated'
 import type { MetadataRoute } from 'next'
 import { SITE_URL } from '@/lib/site'
+import { CALCULATORS } from '@/lib/calculators'
+import { listAllSeries } from '@/lib/series'
+import type { Locale } from '@/lib/i18n'
 
 export const dynamic = 'force-static'
 const LOCALES = ['ko', 'en', 'ja', 'zh', 'es'] as const
@@ -11,8 +14,14 @@ export async function generateSitemaps() {
   return LOCALES.map((id) => ({ id }))
 }
 
-export default async function sitemap({ id }: { id: string }): Promise<MetadataRoute.Sitemap> {
-  const locale = id as (typeof LOCALES)[number]
+interface SitemapProps {
+  id: string | Promise<string>
+}
+
+export default async function sitemap({ id }: SitemapProps): Promise<MetadataRoute.Sitemap> {
+  // Next.js 16: id가 string 또는 Promise<string>으로 들어올 수 있음 — 둘 다 안전 처리
+  const resolvedId = typeof id === 'string' ? id : await id
+  const locale = resolvedId as (typeof LOCALES)[number]
 
   // ko 베이스 + 해당 locale 덮어쓰기 → 같은 slug 중복 제거
   const bySlug = new Map<string, typeof allPosts[number]>()
@@ -52,6 +61,38 @@ export default async function sitemap({ id }: { id: string }): Promise<MetadataR
     alternates: { languages: alternateLanguages('/tags') },
   })
 
+  // 정적 허브 페이지 — 검색엔진이 발견하도록 명시
+  for (const path of ['/tools', '/viz', '/glossary', '/series'] as const) {
+    entries.push({
+      url: `${SITE_URL}/${locale}${path}`,
+      changeFrequency: 'weekly',
+      priority: 0.6,
+      alternates: { languages: alternateLanguages(path) },
+    })
+  }
+
+  // 각 계산기 도구 (9개) — 빌드 시 정적 생성됨
+  for (const tool of CALCULATORS) {
+    const toolPath = `/tools/${tool.slug}`
+    entries.push({
+      url: `${SITE_URL}/${locale}${toolPath}`,
+      changeFrequency: 'monthly',
+      priority: 0.5,
+      alternates: { languages: alternateLanguages(toolPath) },
+    })
+  }
+
+  // 시리즈 인덱스 페이지 (locale별 계산)
+  for (const series of listAllSeries(locale as Locale)) {
+    const seriesPath = `/series/${series.slug}`
+    entries.push({
+      url: `${SITE_URL}/${locale}${seriesPath}`,
+      changeFrequency: 'monthly',
+      priority: 0.5,
+      alternates: { languages: alternateLanguages(seriesPath) },
+    })
+  }
+
   for (const slug of slugs) {
     const post = posts.find((p) => p.slug === slug)
     // updated 필드가 있으면 그것을 우선 사용 (검색엔진에 글 수정을 알림)
@@ -62,6 +103,8 @@ export default async function sitemap({ id }: { id: string }): Promise<MetadataR
       lastModified: lastMod,
       changeFrequency: 'monthly',
       priority: 0.8,
+      // Google 이미지 검색 인덱싱 — 각 포스트의 OG 이미지를 sitemap에 명시
+      images: [`${SITE_URL}/${locale}/posts/${slug}/opengraph-image`],
       alternates: { languages: alternateLanguages(`/posts/${slug}`) },
     })
   }
