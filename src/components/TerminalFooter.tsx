@@ -37,7 +37,13 @@ export function TerminalFooter() {
         <Link href={`/${locale}/bookmarks`} className="link-hover-text inline-flex min-h-11 items-center">{t(locale, 'nav.bookmarks').toLowerCase()}</Link>
         <Link href={`/${locale}/about`} className="link-hover-text inline-flex min-h-11 items-center">{t(locale, 'nav.about').toLowerCase()}</Link>
         <RandomPostLink locale={locale} label={t(locale, 'footer.random')} />
-        <a href="/feed.xml" className="link-hover-text-accent inline-flex min-h-11 items-center">{t(locale, 'footer.rss')}</a>
+        <a
+          href={locale === 'ko' ? '/feed.xml' : `/feed-${locale}.xml`}
+          className="link-hover-text-accent inline-flex min-h-11 items-center"
+          title={`RSS · ${locale.toUpperCase()}`}
+        >
+          {t(locale, 'footer.rss')}
+        </a>
         <a href="https://github.com/younglin90" target="_blank" rel="noopener noreferrer" className="link-hover-text inline-flex min-h-11 items-center">
           {t(locale, 'footer.github')}
         </a>
