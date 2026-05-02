@@ -120,10 +120,14 @@ export function TableOfContents() {
 
   return (
     <>
-      {/* Mobile/narrow inline ToC (shown below 2xl where sidebar doesn't fit) */}
+      {/* Mobile/narrow inline ToC (shown below xl where sidebar doesn't fit). sticky로 스크롤 따라옴. */}
       <div
-        className="mb-8 overflow-hidden rounded-lg 2xl:hidden"
-        style={{ border: '1px solid var(--border)', background: 'var(--surface)' }}
+        className="sticky top-2 z-30 mb-8 overflow-hidden rounded-lg xl:hidden"
+        style={{
+          border: '1px solid var(--border)',
+          background: 'var(--surface)',
+          boxShadow: '0 4px 12px rgba(0,0,0,0.08)',
+        }}
       >
         <button
           onClick={() => setMobileOpen((o) => !o)}
@@ -150,12 +154,12 @@ export function TableOfContents() {
         </div>
       </div>
 
-      {/* Desktop fixed sidebar (2xl+ where 768px content + gap + sidebar fits without overlap) */}
+      {/* Desktop fixed sidebar (xl+ where 768px content + gap + sidebar fits without overlap) */}
       <nav
         data-toc-sidebar
-        className="fixed top-24 hidden w-52 2xl:block"
+        className="fixed top-24 hidden w-52 xl:block"
         aria-label="Table of contents"
-        style={{ left: 'calc(50% + 24rem + 2rem)' }}
+        style={{ left: 'calc(50% + 24rem + 1.25rem)' }}
       >
         <div className="mb-3 flex items-center justify-between">
           <p className="text-[10px] font-semibold uppercase tracking-widest" style={{ color: 'var(--text-faint)' }}>
