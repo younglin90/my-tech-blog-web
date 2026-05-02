@@ -10,6 +10,9 @@ export interface PostIndexItem {
   draft: boolean
   url: string
   readingTime: string
+  series?: string
+  seriesOrder?: number
+  updated?: string
 }
 
 interface PostIndexPayload {

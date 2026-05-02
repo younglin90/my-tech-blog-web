@@ -19,8 +19,13 @@ function parseFrontmatter(content) {
     .split(',')
     .map((s) => s.trim().replace(/^['"]|['"]$/g, ''))
     .filter(Boolean)
+  // 옵션 필드 — series, seriesOrder, updated. 검색·LinkPreview·sitemap에 활용
+  const series = fm.match(/^series:\s*["']?([^"'\n]+)["']?\s*$/m)?.[1]?.trim()
+  const seriesOrderRaw = fm.match(/^seriesOrder:\s*(\d+)\s*$/m)?.[1]
+  const seriesOrder = seriesOrderRaw ? Number(seriesOrderRaw) : undefined
+  const updated = fm.match(/^updated:\s*([0-9]{4}-[0-9]{2}-[0-9]{2})\s*$/m)?.[1]
   const body = content.slice(m[0].length)
-  return { title, description, date, draft, tags, body }
+  return { title, description, date, draft, tags, series, seriesOrder, updated, body }
 }
 
 function readingTimeFromBody(body) {
@@ -54,6 +59,10 @@ for (const locale of LOCALES) {
       draft: parsed.draft,
       url: `/${locale}/posts/${slug}`,
       readingTime: readingTimeFromBody(parsed.body),
+      // 옵션 필드 — undefined는 JSON에서 자동 생략
+      series: parsed.series,
+      seriesOrder: parsed.seriesOrder,
+      updated: parsed.updated,
     })
   }
 }

@@ -172,8 +172,17 @@ export function LinkPreview() {
         leaveTimerRef.current = setTimeout(() => setHover(null), 120)
       }}
     >
-      <div className="mono mb-1 text-[10px] uppercase tracking-widest" style={{ color: 'var(--text-faint)' }}>
-        {entry.date} · {entry.readingTime}
+      <div className="mono mb-1 flex items-center gap-2 text-[10px] uppercase tracking-widest" style={{ color: 'var(--text-faint)' }}>
+        <span>{entry.date} · {entry.readingTime}</span>
+        {entry.series && (
+          <span
+            className="rounded px-1 py-0.5"
+            style={{ background: 'var(--accent-glow)', color: 'var(--accent)' }}
+          >
+            {entry.series}
+            {entry.seriesOrder ? ` · ${String(entry.seriesOrder).padStart(2, '0')}` : ''}
+          </span>
+        )}
       </div>
       <div className="mb-1.5 text-sm font-semibold" style={{ color: 'var(--accent)', lineHeight: 1.35 }}>
         {entry.title}
