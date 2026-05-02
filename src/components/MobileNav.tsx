@@ -88,7 +88,7 @@ export function MobileNav() {
       )}
 
       <nav
-        className="fixed bottom-0 left-0 right-0 z-50 flex w-full max-w-full overflow-hidden sm:hidden"
+        className="mobile-bottom-nav fixed bottom-0 left-0 right-0 z-50 flex w-full max-w-full overflow-hidden sm:hidden"
         style={{
           background: 'var(--bg)',
           borderTop: '1px solid var(--border)',

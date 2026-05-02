@@ -133,6 +133,7 @@ export function TableOfContents() {
 
       {/* Desktop fixed sidebar (2xl+ where 768px content + gap + sidebar fits without overlap) */}
       <nav
+        data-toc-sidebar
         className="fixed top-24 hidden w-52 2xl:block"
         aria-label="Table of contents"
         style={{ left: 'calc(50% + 24rem + 2rem)' }}

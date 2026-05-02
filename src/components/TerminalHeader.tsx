@@ -26,7 +26,7 @@ export function TerminalHeader() {
   const { locale } = localePathPrefix(pathname)
 
   return (
-    <header className="mb-12 sm:mb-16">
+    <header className="terminal-header mb-12 sm:mb-16">
       <div
         className="flex items-center gap-3 rounded-t-[10px] px-4 py-[9px]"
         style={{

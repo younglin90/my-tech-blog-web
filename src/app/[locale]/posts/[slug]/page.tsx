@@ -17,6 +17,7 @@ import { LinkPreview } from '@/components/LinkPreview'
 import { PostFeedback } from '@/components/PostFeedback'
 import { PostSourceLinks } from '@/components/PostSourceLinks'
 import { ReadingFontSize } from '@/components/ReadingFontSize'
+import { ReadingFocusMode } from '@/components/ReadingFocusMode'
 import { Giscus } from '@/components/Giscus'
 import { AuthorBio } from '@/components/AuthorBio'
 import { SeriesNav } from '@/components/SeriesNav'
@@ -278,6 +279,7 @@ export default async function PostPage({ params }: PostProps) {
         <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{t(loc, 'post.share')}</p>
         <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:justify-end">
           <ReadingFontSize />
+          <ReadingFocusMode />
           <CiteButton title={post.title} date={post.date} slug={post.slug} />
           <BookmarkButton postId={post.slug} />
           <PrintButton />
