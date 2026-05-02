@@ -137,8 +137,13 @@ export function Search() {
   }, [publishedPosts])
 
   const isTagQuery = query.startsWith('#')
+  const isSeriesQuery = /^series:/i.test(query)
   const isMathQuery = query.includes('\\') || /^(nabla|partial|rho|mu|nu|tau|sigma|gamma|delta|alpha|beta|theta|omega|phi|psi|epsilon)$/i.test(query.trim())
-  const q = isTagQuery ? query.slice(1).toLowerCase() : query.toLowerCase()
+  const q = isTagQuery
+    ? query.slice(1).toLowerCase()
+    : isSeriesQuery
+      ? query.replace(/^series:/i, '').trim().toLowerCase()
+      : query.toLowerCase()
   const mathToken = isMathQuery ? query.trim().replace(/^\\/, '').toLowerCase() : null
 
   // Math 검색: math-manifest의 token에 매칭되는 포스트 slug 집합
@@ -157,6 +162,14 @@ export function Search() {
           if (isTagQuery) {
             const tagMatches = (post.tags ?? []).filter((t) => t.toLowerCase().includes(q)).length
             return { post, score: tagMatches * 3 }
+          }
+          if (isSeriesQuery) {
+            const series = post.series?.toLowerCase() ?? ''
+            // 빈 q이면 series 있는 모든 포스트, 그 외엔 substring 매칭
+            const match = q ? series.includes(q) : Boolean(series)
+            // 같은 시리즈 안에선 seriesOrder 오름차순(낮은 번호 먼저) 위해 score를 살짝 조정
+            const orderBoost = post.seriesOrder ? -post.seriesOrder * 0.001 : 0
+            return { post, score: match ? 4 + orderBoost : 0 }
           }
           if (mathToken) {
             return { post, score: mathSlugs.has(post.slug) ? 5 : 0 }
@@ -280,6 +293,11 @@ export function Search() {
               {isTagQuery && q && (
                 <div className="px-4 py-1.5 text-[10px]" style={{ background: 'var(--accent-glow)', color: 'var(--accent)' }}>
                   {t(locale, 'search.filterByTag')} <strong>#{q}</strong>
+                </div>
+              )}
+              {isSeriesQuery && (
+                <div className="px-4 py-1.5 text-[10px]" style={{ background: 'var(--accent-glow)', color: 'var(--accent)' }}>
+                  {t(locale, 'search.filterBySeries')} <strong>{q || '*'}</strong>
                 </div>
               )}
               {mathToken && (
