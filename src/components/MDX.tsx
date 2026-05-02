@@ -7,7 +7,7 @@ import Link from 'next/link'
 import Image from 'next/image'
 import { CodeBlock } from '@/components/CodeBlock'
 import { Term } from '@/components/Term'
-import { MDXErrorBoundary } from '@/components/MDXErrorBoundary'
+import { MDXErrorBoundary, withVizBoundary } from '@/components/MDXErrorBoundary'
 
 // Lazy-load heavy interactive components (only used in Wednesday posts)
 const NumericalDungeon = dynamic(() => import('@/components/NumericalDungeon').then((m) => ({ default: m.NumericalDungeon })))
@@ -303,14 +303,14 @@ const components = {
       {...props}
     />
   ),
-  NumericalDungeon,
-  MachArchitect,
-  VelocityField,
-  StreamLine,
-  NumericalScheme,
-  PressureContour,
-  BoundaryCondition,
-  KrylovConvergenceRace,
+  NumericalDungeon: withVizBoundary(NumericalDungeon, 'NumericalDungeon'),
+  MachArchitect: withVizBoundary(MachArchitect, 'MachArchitect'),
+  VelocityField: withVizBoundary(VelocityField, 'VelocityField'),
+  StreamLine: withVizBoundary(StreamLine, 'StreamLine'),
+  NumericalScheme: withVizBoundary(NumericalScheme, 'NumericalScheme'),
+  PressureContour: withVizBoundary(PressureContour, 'PressureContour'),
+  BoundaryCondition: withVizBoundary(BoundaryCondition, 'BoundaryCondition'),
+  KrylovConvergenceRace: withVizBoundary(KrylovConvergenceRace, 'KrylovConvergenceRace'),
   Term,
   Callout,
   Note: (props: any) => <Callout type="note" {...props} />,
