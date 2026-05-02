@@ -18,6 +18,8 @@ interface PostMeta {
   slug: string
   title: string
   url: string
+  series?: string
+  seriesOrder?: number
 }
 
 interface InProgress extends PostMeta {
@@ -95,6 +97,15 @@ export function ContinueReading({ posts, limit = 4 }: Props) {
                   {pct}%
                 </span>
               </div>
+              {it.series && (
+                <span
+                  className="mono inline-block self-start rounded px-1.5 py-0.5 text-[9px] font-semibold"
+                  style={{ background: 'var(--accent-glow)', color: 'var(--accent)' }}
+                >
+                  {it.series}
+                  {it.seriesOrder ? ` · ${String(it.seriesOrder).padStart(2, '0')}` : ''}
+                </span>
+              )}
               <div className="h-1 w-full overflow-hidden rounded-full" style={{ background: 'var(--bg)' }}>
                 <div
                   className="h-1 rounded-full"

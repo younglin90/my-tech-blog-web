@@ -45,6 +45,8 @@ export default async function Home({ params }: HomeProps) {
       tags: post.tags ?? [],
       readingTime: post.readingTime,
       url: loc === post.locale ? post.url : `/${loc}/posts/${post.slug}`,
+      series: (post as any).series as string | undefined,
+      seriesOrder: (post as any).seriesOrder as number | undefined,
       isDynamic: false as const,
     }))
   const initialPosts = posts.slice(0, HOME_INITIAL_POSTS)
@@ -92,7 +94,10 @@ export default async function Home({ params }: HomeProps) {
       </div>
 
       <ContinueReading
-        posts={posts.map((p) => ({ slug: p.id, title: p.title, url: p.url }))}
+        posts={posts.map((p) => ({
+          slug: p.id, title: p.title, url: p.url,
+          series: p.series, seriesOrder: p.seriesOrder,
+        }))}
       />
 
       <TopPosts locale={loc} heading={t(loc, 'about.topPosts')} limit={5} days={7} />
