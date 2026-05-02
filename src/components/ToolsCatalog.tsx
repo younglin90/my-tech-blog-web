@@ -118,12 +118,6 @@ export function ToolsCatalog({ locale }: { locale: Locale }) {
             <p className="mt-4 max-w-2xl text-sm sm:text-base" style={{ color: '#a8b3c4', lineHeight: 1.75 }}>
               {t(locale, 'tools.subtitle')}
             </p>
-
-            <div className="mt-6 grid gap-3 sm:grid-cols-3">
-              <StatCard label={t(locale, 'tools.statsTools')} value={String(CALCULATORS.length)} />
-              <StatCard label={t(locale, 'tools.statsCategories')} value={String(CATEGORY_ORDER.length)} />
-              <StatCard label={t(locale, 'tools.statsRuntime')} value={t(locale, 'tools.browserOnly')} />
-            </div>
           </div>
 
           <div className="relative min-h-[280px] border-t lg:border-l lg:border-t-0" style={{ borderColor: 'var(--border)' }}>
@@ -166,18 +160,15 @@ export function ToolsCatalog({ locale }: { locale: Locale }) {
           <FilterChip active={activeCategory === 'all'} onClick={() => setActiveCategoryRaw('all')}>
             {t(locale, 'tools.all')}
           </FilterChip>
-          {CATEGORY_ORDER.map((category) => {
-            const count = CALCULATORS.filter((tool) => tool.category === category).length
-            return (
-              <FilterChip
-                key={category}
-                active={activeCategory === category}
-                onClick={() => setActiveCategoryRaw(category)}
-              >
-                {getCategoryLabel(category, locale)} / {count}
-              </FilterChip>
-            )
-          })}
+          {CATEGORY_ORDER.map((category) => (
+            <FilterChip
+              key={category}
+              active={activeCategory === category}
+              onClick={() => setActiveCategoryRaw(category)}
+            >
+              {getCategoryLabel(category, locale)}
+            </FilterChip>
+          ))}
         </div>
 
         <div className="mono text-xs" style={{ color: 'var(--text-faint)' }}>
@@ -208,7 +199,7 @@ export function ToolsCatalog({ locale }: { locale: Locale }) {
                 className="inline-flex min-h-11 items-center rounded-full px-3 py-1.5 text-xs font-medium transition-colors"
                 style={{ background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text-muted)' }}
               >
-                {group.label} / {group.items.length}
+                {group.label}
               </a>
             ))}
           </div>
@@ -338,15 +329,6 @@ export function ToolsCatalog({ locale }: { locale: Locale }) {
           <span style={{ color: 'var(--accent)' }}>diffusion</span>.
         </section>
       )}
-    </div>
-  )
-}
-
-function StatCard({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-2xl p-3" style={{ background: 'rgba(255,255,255,0.045)', border: '1px solid rgba(148,163,184,0.22)' }}>
-      <div className="text-[10px] uppercase tracking-widest" style={{ color: '#7a8599' }}>{label}</div>
-      <div className="mono mt-1 text-xl font-bold" style={{ color: '#e2e8f0' }}>{value}</div>
     </div>
   )
 }

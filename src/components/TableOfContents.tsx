@@ -37,8 +37,22 @@ export function TableOfContents() {
   const progress = useScrollProgress()
   const listRef = useRef<HTMLDivElement | null>(null)
   const itemRefs = useRef<Record<string, HTMLLIElement | null>>({})
+  const [pastArticle, setPastArticle] = useState(false)
 
   const handleMobileNavClick = useCallback(() => setMobileOpen(false), [])
+
+  // article 끝(<article>의 하단)이 viewport 위로 올라가면 ToC 자동 숨김 → fixed지만 sticky-like UX
+  useEffect(() => {
+    const article = document.querySelector('article')
+    if (!article) return
+    const onScroll = () => {
+      const rect = article.getBoundingClientRect()
+      setPastArticle(rect.bottom < 200)
+    }
+    window.addEventListener('scroll', onScroll, { passive: true })
+    onScroll()
+    return () => window.removeEventListener('scroll', onScroll)
+  }, [])
 
   // 활성 항목이 ToC 컨테이너 밖으로 가려지면 자동 스크롤로 보이게.
   useEffect(() => {
@@ -154,12 +168,19 @@ export function TableOfContents() {
         </div>
       </div>
 
-      {/* Desktop fixed sidebar (xl+ where 768px content + gap + sidebar fits without overlap) */}
+      {/* Desktop fixed side rail (xl+). max-w-3xl 부모 외부에 viewport 좌표로 배치돼 스크롤
+          내내 우측에 따라옴. article 끝에 도달하면 자동 페이드아웃 → sticky-like UX.
+          좁은 화면(<xl)에서는 inline ToC만 노출(이미 sticky 처리). */}
       <nav
         data-toc-sidebar
         className="fixed top-24 hidden w-52 xl:block"
         aria-label="Table of contents"
-        style={{ left: 'calc(50% + 24rem + 1.25rem)' }}
+        style={{
+          left: 'calc(50% + 24rem + 1.25rem)',
+          opacity: pastArticle ? 0 : 1,
+          pointerEvents: pastArticle ? 'none' : 'auto',
+          transition: 'opacity 0.25s ease',
+        }}
       >
         <div className="mb-3 flex items-center justify-between">
           <p className="text-[10px] font-semibold uppercase tracking-widest" style={{ color: 'var(--text-faint)' }}>

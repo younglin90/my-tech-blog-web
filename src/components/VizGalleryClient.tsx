@@ -60,11 +60,6 @@ export function VizGalleryClient({ locale, items }: { locale: Locale; items: Viz
             <p className="mt-4 max-w-2xl text-sm sm:text-base" style={{ color: '#a8b3c4', lineHeight: 1.75 }}>
               {t(locale, 'viz.subtitle')}
             </p>
-            <div className="mt-6 grid gap-3 sm:grid-cols-3">
-              <Stat label={t(locale, 'viz.statsTotal')} value={String(items.length)} />
-              <Stat label={t(locale, 'viz.statsCustom')} value={String(customCount)} />
-              <Stat label={t(locale, 'viz.statsPrebuilt')} value={String(prebuiltCount)} />
-            </div>
           </div>
           <div className="relative min-h-[280px] border-t lg:border-l lg:border-t-0" style={{ borderColor: 'var(--border)' }}>
             <VizHeroGraphic customCount={customCount} prebuiltCount={prebuiltCount} />
@@ -87,13 +82,13 @@ export function VizGalleryClient({ locale, items }: { locale: Locale; items: Viz
         </label>
         <div className="flex flex-wrap gap-2">
           <FilterChip active={filter === 'all'} onClick={() => setFilter('all')}>
-            {t(locale, 'viz.all')} / {items.length}
+            {t(locale, 'viz.all')}
           </FilterChip>
           <FilterChip active={filter === 'custom'} onClick={() => setFilter('custom')}>
-            {t(locale, 'viz.custom')} / {customCount}
+            {t(locale, 'viz.custom')}
           </FilterChip>
           <FilterChip active={filter === 'pre-built'} onClick={() => setFilter('pre-built')}>
-            {t(locale, 'viz.prebuilt')} / {prebuiltCount}
+            {t(locale, 'viz.prebuilt')}
           </FilterChip>
         </div>
       </section>
@@ -183,15 +178,6 @@ export function VizGalleryClient({ locale, items }: { locale: Locale; items: Viz
           })}
         </section>
       )}
-    </div>
-  )
-}
-
-function Stat({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-2xl p-3" style={{ background: 'rgba(255,255,255,0.045)', border: '1px solid rgba(148,163,184,0.22)' }}>
-      <div className="text-[10px] uppercase tracking-widest" style={{ color: '#7a8599' }}>{label}</div>
-      <div className="mono mt-1 text-xl font-bold" style={{ color: '#e2e8f0' }}>{value}</div>
     </div>
   )
 }
