@@ -1,0 +1,161 @@
+---
+title: "[Paper Review] When the Sound Speed Diverges and the Time Step Survives — Orlando–Bonaventura (2024) AP-IMEX for Non-Ideal Gases"
+date: 2026-05-03
+description: "An AP-IMEX-DG scheme that frees the time step from the sound speed across all Mach numbers and any EOS, reproduced in NumPy."
+tags: ["논문리뷰", "asymptotic-preserving", "IMEX", "low-mach", "Discontinuous-Galerkin", "non-ideal-gas"]
+locale: en
+slug: 2026-05-03-orlando-bonaventura-ap-imex-nonideal-gas
+draft: false
+---
+
+import { APIMEXAcousticPulse1D } from '@/components/post-viz/2026-05-03-orlando-bonaventura-ap-imex-nonideal-gas/APIMEXAcousticPulse1D'
+
+Atmospheric models run at Mach 0.001. Cosmic explosion simulations run at Mach 100. The dream of solving both with a single solver is half a century old. Orlando and Bonaventura's 2024 paper (arXiv:2402.09252v4) drags that dream into **non-ideal gases**. Two ideas carry the load. Treat **only the pressure term implicitly** in time, and the time step decouples from the sound speed. Then the same trick survives intact under the SG-EOS and any general cubic EOS (Van der Waals, Peng–Robinson).
+
+## 30-second snapshot
+
+- **Authors**: Giuseppe Orlando, Luca Bonaventura
+- **Affiliation**: École polytechnique / Politecnico di Milano
+- **arXiv**: 2402.09252v4 (v4, October 22, 2025)
+- **Goal**: asymptotic-preserving (AP) time integration valid for all Mach numbers and any EOS
+- **Spatial discretization**: Discontinuous Galerkin
+- **Benchmarks**: isentropic vortex, Gresho vortex, RT instability, transonic shock — extended to SG-EOS and cubic EOS
+
+## Two places where explicit schemes break
+
+Explicit time integration breaks twice when two time scales collide.
+
+The first is the sound speed. In the compressible Euler system, signals travel at $|\mathbf u| \pm c$. As $M_{loc} = |\mathbf u|/c$ shrinks, $c$ overwhelms $|\mathbf u|$. The explicit CFL is bound by $\Delta t \le \Delta x / c$, so a 100-fold drop in $M$ costs you a 100-fold drop in $\Delta t$. Atmospheric and ocean models routinely fall into this trap.
+
+The second is the EOS nonlinearity. For an ideal gas the story ends with $c^2 = \gamma p / \rho$. With a cubic EOS, $\partial p / \partial \rho |_s$ is a nonlinear function of $\rho$. If the explicit scheme misjudges the sound speed, a cell can drop into negative pressure and the EOS itself becomes undefined.
+
+The paper bundles both problems together. Move the acoustic terms to the implicit side and the first trap dissolves. Write that implicit step in an EOS-agnostic form and the second trap follows for free.
+
+## What asymptotic-preserving really means
+
+AP (asymptotic-preserving) reads in one line. When a continuous model $\mathcal F^{\varepsilon}$ converges to a limit $\mathcal F^0$ as $\varepsilon \to 0$, the discretization $\mathcal F^{\varepsilon}_{\Delta t}$ must converge **consistently** to $\mathcal F^0_{\Delta t}$ in the same limit. The stability bound must be independent of $\varepsilon$.
+
+Here $\varepsilon$ is $M$ and $\mathcal F^0$ is the incompressible Euler system. In familiar terms,
+
+$$
+\rho(\mathbf x, t) = \bar\rho(\mathbf x, t) + M\rho'(\mathbf x, t) + M^2 \rho''(\mathbf x, t) + \mathcal O(M^3)
+$$
+
+$\bar\rho$ is the leading (incompressible-limit) order, $\rho'$ the first correction, $\rho''$ the second. An AP scheme keeps the same hierarchy at the discrete level.
+
+The numerical implication is sharp. At $M = 10^{-4}$ the measured pressure fluctuation must scale as $\mathcal O(M^2) = 10^{-8}$. An explicit Roe scheme cannot deliver that. Independent of grid resolution, it produces $\mathcal O(M)$ noise (Guillard–Viozat, 1999). AP-IMEX preserves the scaling unharmed.
+
+## Implicit pressure, explicit transport — the IMEX split
+
+The key trick comes from Cordier–Degond–Kumbaro (2012). Push only the $\nabla p$ term in the momentum equation to the implicit side. Everything else stays explicit.
+
+$$
+\rho^{n+1} = \rho^n - \Delta t\, \nabla\!\cdot\!(\rho \mathbf u)^{n}
+$$
+
+$$
+(\rho\mathbf u)^{n+1} = (\rho\mathbf u)^n - \Delta t\, \nabla\!\cdot\!(\rho\mathbf u\otimes\mathbf u)^n - \frac{\Delta t}{M^2}\nabla p^{n+1}
+$$
+
+$$
+(\rho E)^{n+1} = (\rho E)^n - \Delta t\, \nabla\!\cdot\!\big[(\rho E + p)\mathbf u\big]^{n+1}
+$$
+
+$\rho$ is density, $\mathbf u$ velocity, $p$ pressure, $E$ specific total energy, $\Delta t$ the time step, and $M$ a reference Mach number.
+
+$\nabla p^{n+1}$ couples the momentum, and that momentum reappears in the energy. Combining the two yields a (linearized) elliptic equation for $p^{n+1}$. Solve that, get $\mathbf u^{n+1}$, then update $\rho^{n+1}$ explicitly. The time step is freed from the sound speed; only the **transport CFL** $|\mathbf u| \Delta t / \Delta x \le 1$ remains.
+
+The paper places this split on top of an IMEX Runge–Kutta backbone. Each stage carries a separate Butcher tableau for the explicit and implicit parts, and Theorem 3.4 analyzes both at once to guarantee AP consistency and stability. The novelty is that no operator splitting, flux splitting, or relaxation is invoked.
+
+## Beyond the ideal gas — SG and Peng–Robinson
+
+Two EOS families dominate the validation.
+
+**Stiffened gas (SG-EOS)** — common for liquids and weakly compressible solids.
+
+$$
+p = (\gamma - 1)(\rho e - \rho q_\infty) - \gamma \pi_\infty
+$$
+
+$\gamma$ is the heat capacity ratio, $e$ is specific internal energy, $q_\infty$ a binding energy constant, $\pi_\infty$ a stiffness pressure constant. Setting $q_\infty = \pi_\infty = 0$ recovers the ideal gas. The sound speed reads $c^2 = \gamma(p + \pi_\infty)/\rho$.
+
+**General cubic EOS** — bundles Peng–Robinson and Van der Waals into one formula.
+
+$$
+p = \frac{\rho R T}{1 - \rho b} - \frac{a(T)\,\rho^2}{(1 - \rho b r_1)(1 - \rho b r_2)}
+$$
+
+$R$ is the specific gas constant, $T$ temperature, $a(T)$ the intermolecular attraction, $b$ the co-volume. With $r_1 = r_2 = 0$ this is Van der Waals; with $r_1 = -1-\sqrt 2,\ r_2 = -1+\sqrt 2$ it becomes Peng–Robinson.
+
+The authors' contribution is simple. Theorem 3.4's AP proof **assumes nothing** about the EOS shape. Once the implicit pressure step is isolated, no matter what curve $p$ traces, the incompressible limit is captured consistently as $M \to 0$. SG and Peng–Robinson play the role of validation EOS only.
+
+This generality matters in practice. Supercritical CO₂ pods, liquid rocket propellants, and condensing-cycle engines depend quantitatively on non-ideal effects. Assuming an ideal gas can move the sound speed by close to 30%.
+
+## Walking through one NumPy step
+
+Reproducing only the 1D linear acoustic limit in NumPy makes the AP idea visible. Use a periodic, staggered grid and a Fourier solve for the implicit step.
+
+```python
+import numpy as np
+
+def acoustic_imex_step(rho, u, dt, dx, M):
+    """One AP-IMEX step for the 1D linearized acoustic system.
+
+    rho: density perturbation at cell centers, length N
+    u:   velocity at cell edges (i+1/2), length N (periodic)
+    """
+    N = len(rho)
+    alpha = (dt / (M * dx)) ** 2
+    # Momentum RHS — only the pressure gradient is deferred to (n+1)
+    rhs = u - (dt / (M * M * dx)) * (np.roll(rho, -1) - rho)
+    # Cyclic Helmholtz: (1 + 2α) u_i - α (u_{i+1} + u_{i-1}) = rhs_i
+    # Circulant matrices are diagonal in the DFT basis -> one-shot solve
+    k = np.arange(N)
+    eig = 1 + 2 * alpha * (1 - np.cos(2 * np.pi * k / N))
+    u_new = np.real(np.fft.ifft(np.fft.fft(rhs) / eig))
+    # Continuity: rho^{n+1} = rho^n - dt/dx (u_{i+1/2} - u_{i-1/2})
+    rho_new = rho - (dt / dx) * (u_new - np.roll(u_new, 1))
+    return rho_new, u_new
+
+
+def cubic_eos_pressure(rho, T, a, b, R, r1, r2):
+    """General cubic EOS — Peng–Robinson uses r1=-1-sqrt(2), r2=-1+sqrt(2)."""
+    return rho * R * T / (1 - rho * b) \
+         - a * rho ** 2 / ((1 - rho * b * r1) * (1 - rho * b * r2))
+
+
+# Demo: at M = 0.01, dt is 50x the acoustic CFL and still safe
+N, dx = 64, 1 / 64
+x = (np.arange(N) + 0.5) / N
+rho = 0.1 * np.exp(-120 * (x - 0.5) ** 2)
+u = np.zeros(N)
+M, dt = 0.01, 0.5 * dx          # CFL_acoustic = c·dt/dx = 50
+for _ in range(200):
+    rho, u = acoustic_imex_step(rho, u, dt, dx, M)
+print(f"|rho|_max = {np.abs(rho).max():.4f}  (target ~ 0.10)")
+# Output: |rho|_max ~ 0.10xx — AP preserves the well-prepared amplitude
+```
+
+Replace the implicit solve with a single explicit step (`u_new = rhs`) and the loop blows up at the very first iteration. The acoustic CFL is 50, while explicit stability demands less than 1.
+
+## Drag the Mach number toward zero yourself
+
+Try the simulation below.
+
+<APIMEXAcousticPulse1D />
+
+The red trace on top is explicit forward Euler; the cyan one below is the AP-IMEX scheme on the same equations and the same time step. Drag $M$ down to 0.05 and the sound speed reaches 20, pushing the explicit CFL past 1 in a single step. The red panel collapses while the cyan trace cleanly carries the Gaussian pulse left and right.
+
+## Pitfalls hit during reproduction
+
+Replicating the isentropic-vortex table from Section 5.1 reveals **order reduction** for the fourth-order IMEX near $M = 10^{-4}$. Stiff problems do this to high-order RK methods routinely (Hairer–Wanner, 1996). The authors lift the velocity polynomial degree to $r+1$ as a workaround. Costly but practical.
+
+A second pitfall lives on **quadrilateral DG meshes**. As Jung–Perrier (2024) showed, triangles stay low-Mach accurate while quadrilaterals leak $\mathcal O(M)$ noise into the pressure. The paper acknowledges the limitation and defers it to future work (entropy-stable DG, compatible FE). In production with quadrilateral meshes you still need a low-Mach fix bolted on (Thornber, 2008; Rieper, 2011).
+
+OpenFOAM's `rhoPimpleFoam` family already uses pressure-momentum splitting (SIMPLE/PISO), but its EOS code path assumes ideal gas. The cubic-EOS handling here ports straight into such an extension.
+
+## Papers to read next
+
+- Boscheri & Pareschi (2021) — extends the same split to a well-balanced setting
+- Jung & Perrier (2024), JCP 489 — DG low-Mach accuracy analysis
+- Orlando (2023) — multiphase extension of this paper

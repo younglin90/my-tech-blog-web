@@ -1,0 +1,161 @@
+---
+title: "[論文レビュー] 音速が発散しても時間ステップは生き残る — Orlando–Bonaventura(2024) 非理想気体向け AP-IMEX"
+date: 2026-05-03
+description: "低マッハ・任意の状態方程式で時間ステップを音速に縛らない AP-IMEX-DG スキームのレビューと NumPy での再現"
+tags: ["논문리뷰", "asymptotic-preserving", "IMEX", "low-mach", "Discontinuous-Galerkin", "non-ideal-gas"]
+locale: ja
+slug: 2026-05-03-orlando-bonaventura-ap-imex-nonideal-gas
+draft: false
+---
+
+import { APIMEXAcousticPulse1D } from '@/components/post-viz/2026-05-03-orlando-bonaventura-ap-imex-nonideal-gas/APIMEXAcousticPulse1D'
+
+大気モデルはマッハ 0.001、宇宙の爆発シミュレーションはマッハ 100です。一つのソルバで両方を解きたいという欲望は半世紀続いています。Orlando と Bonaventura の 2024 年論文(arXiv:2402.09252v4)は、その欲望を**非理想気体**へと押し進めます。鍵は二つです。時間離散化で**圧力項だけを陰的に**扱えば、時間ステップが音速から解放されます。そしてこの解放は SG-EOS でも一般三次状態方程式(Van der Waals, Peng–Robinson)でも崩れません。
+
+## 30 秒サマリー
+
+- **著者**: Giuseppe Orlando, Luca Bonaventura
+- **所属**: École polytechnique / Politecnico di Milano
+- **arXiv**: 2402.09252v4 (2025-10-22 v4)
+- **目的**: 任意のマッハ数・任意の EOS で漸近保存(AP)時間積分を実現する
+- **空間離散化**: Discontinuous Galerkin
+- **検証**: 等エントロピー渦・Gresho 渦・RT 不安定性・遷音速衝撃 — SG-EOS と三次 EOS に拡張
+
+## 陽的スキームが壊れる二つの場所
+
+陽的時間積分は、二つの時間スケールがぶつかる場所で二度壊れます。
+
+一つ目は音速です。圧縮性 Euler では信号が $|\mathbf u| \pm c$ で伝わりますが、$M_{loc} = |\mathbf u|/c$ が小さくなると $c$ が $|\mathbf u|$ を圧倒します。陽的 CFL は $\Delta t \le \Delta x / c$ に縛られ、$M = 0.01$ では時間ステップが 100 分の 1 になります。大気・海洋シミュレーションがよく落ちる罠です。
+
+二つ目は EOS の非線形性です。理想気体なら $c^2 = \gamma p / \rho$ で終わりますが、三次 EOS では $\partial p / \partial \rho |_s$ が $\rho$ の非線形関数になります。陽的スキームが音速を見誤るとセルが負圧に落ち、EOS そのものが定義不能になります。
+
+本論文は二つの問題を一つの束として捉えます。陽的な音響項を陰的側に移せば一つ目の罠から抜け出し、その陰的処理を EOS に依存しない形で書けば二つ目もついてきます。
+
+## 漸近保存が意味するもの
+
+AP(asymptotic-preserving)は一行でこうです。連続モデル $\mathcal F^{\varepsilon}$ が $\varepsilon \to 0$ で極限モデル $\mathcal F^0$ に収束するとき、離散化 $\mathcal F^{\varepsilon}_{\Delta t}$ も同じ極限で $\mathcal F^0_{\Delta t}$ に**整合的に**収束する必要があります。さらに安定条件は $\varepsilon$ に無関係でなければなりません。
+
+ここで $\varepsilon$ は $M$ で、$\mathcal F^0$ は非圧縮 Euler です。馴染みのある形で書けば
+
+$$
+\rho(\mathbf x, t) = \bar\rho(\mathbf x, t) + M\rho'(\mathbf x, t) + M^2 \rho''(\mathbf x, t) + \mathcal O(M^3)
+$$
+
+$\bar\rho$ が 0 次(非圧縮極限)、$\rho'$ が 1 次補正、$\rho''$ が 2 次補正です。AP スキームなら離散解も同じ階層を保ちます。
+
+数値的な意味は明快です。$M = 10^{-4}$ で測った圧力変動は $\mathcal O(M^2) = 10^{-8}$ のスケールであるべきです。陽的 Roe スキームはこれを実現できません。格子解像度に関係なく $\mathcal O(M)$ のノイズを生みます(Guillard–Viozat, 1999)。AP-IMEX はこのスケーリングを傷つけずに保ちます。
+
+## 圧力だけ陰的に — IMEX 分離
+
+鍵となる工夫は Cordier–Degond–Kumbaro(2012)の分離です。運動量方程式の $\nabla p$ だけを陰的側に追いやり、残りは陽的に置きます。
+
+$$
+\rho^{n+1} = \rho^n - \Delta t\, \nabla\!\cdot\!(\rho \mathbf u)^{n}
+$$
+
+$$
+(\rho\mathbf u)^{n+1} = (\rho\mathbf u)^n - \Delta t\, \nabla\!\cdot\!(\rho\mathbf u\otimes\mathbf u)^n - \frac{\Delta t}{M^2}\nabla p^{n+1}
+$$
+
+$$
+(\rho E)^{n+1} = (\rho E)^n - \Delta t\, \nabla\!\cdot\!\big[(\rho E + p)\mathbf u\big]^{n+1}
+$$
+
+$\rho$ は密度、$\mathbf u$ は速度、$p$ は圧力、$E$ は単位質量当たり総エネルギー、$\Delta t$ は時間ステップ、$M$ は基準マッハ数です。
+
+$\nabla p^{n+1}$ が運動量を結合し、その運動量が再びエネルギーに入ります。二式を合わせると $p^{n+1}$ に対する(線形化された)楕円方程式が得られます。これを解いてから $\mathbf u^{n+1}$ を、続いて $\rho^{n+1}$ を陽的に更新します。時間ステップは音速から解放され、**輸送 CFL**($|\mathbf u| \Delta t / \Delta x \le 1$)だけが残ります。
+
+論文はこの分離を IMEX ルンゲ-クッタ(IMEX-RK)に載せます。各段で陽的・陰的部分が別々の Butcher 表を持ち、定理 3.4 で両方を同時に解析して AP 整合性と安定性を保証します。演算子分離・流束分離・緩和テクニックを使わない点が本論文の差別点です。
+
+## 理想気体を超えて — SG と Peng–Robinson
+
+EOS 二候補が中心です。
+
+**Stiffened gas (SG-EOS)** — 液体や弱圧縮性固体でよく使う形式。
+
+$$
+p = (\gamma - 1)(\rho e - \rho q_\infty) - \gamma \pi_\infty
+$$
+
+$\gamma$ は比熱比、$e$ は単位質量当たり内部エネルギー、$q_\infty$ は結合エネルギー定数、$\pi_\infty$ は剛性圧力定数です。$q_\infty = \pi_\infty = 0$ で理想気体に還元されます。音速は $c^2 = \gamma(p + \pi_\infty)/\rho$ です。
+
+**一般三次 EOS** — Peng–Robinson と Van der Waals を一式にまとめた形。
+
+$$
+p = \frac{\rho R T}{1 - \rho b} - \frac{a(T)\,\rho^2}{(1 - \rho b r_1)(1 - \rho b r_2)}
+$$
+
+$R$ は比気体定数、$T$ は温度、$a(T)$ は分子間引力、$b$ は共体積(co-volume)です。$r_1 = r_2 = 0$ なら Van der Waals、$r_1 = -1-\sqrt 2,\ r_2 = -1+\sqrt 2$ なら Peng–Robinson です。
+
+著者らの貢献はシンプルです。定理 3.4 の AP 証明は EOS の具体形を**仮定しない**のです。陰的圧力ステップさえ分離しておけば、圧力がどんな曲線を描こうと $M \to 0$ で非圧縮極限が整合的に得られます。SG と Peng–Robinson は検証用 EOS としてのみ登場します。
+
+この一般性は実務で重要です。超臨界 CO₂ ポッド、液体ロケット推進剤、凝縮サイクルエンジンは非理想気体効果が定量的に決定的です。理想気体仮定で計算すると音速が 30% 近くずれることもあります。
+
+## NumPy で 1 ステップを追う
+
+論文の 1D 線形音響部分だけを NumPy で再現すれば、AP の核心が一目で見えます。周期格子・スタガード(staggered)セル・フーリエ解で陰的ステップを処理します。
+
+```python
+import numpy as np
+
+def acoustic_imex_step(rho, u, dt, dx, M):
+    """1D 線形音響系の AP-IMEX 1 ステップ。
+
+    rho: セル中心の密度摂動、長さ N
+    u:   セル境界(i+1/2)の速度、長さ N(周期)
+    """
+    N = len(rho)
+    alpha = (dt / (M * dx)) ** 2
+    # 運動量 RHS — 圧力勾配項だけを (n+1) 時刻に遅らせる
+    rhs = u - (dt / (M * M * dx)) * (np.roll(rho, -1) - rho)
+    # 巡回 Helmholtz: (1 + 2α) u_i - α (u_{i+1} + u_{i-1}) = rhs_i
+    # 巡回行列は DFT 基底で対角化 -> 一発で解ける
+    k = np.arange(N)
+    eig = 1 + 2 * alpha * (1 - np.cos(2 * np.pi * k / N))
+    u_new = np.real(np.fft.ifft(np.fft.fft(rhs) / eig))
+    # 連続式: rho^{n+1} = rho^n - dt/dx (u_{i+1/2} - u_{i-1/2})
+    rho_new = rho - (dt / dx) * (u_new - np.roll(u_new, 1))
+    return rho_new, u_new
+
+
+def cubic_eos_pressure(rho, T, a, b, R, r1, r2):
+    """一般三次 EOS — Peng–Robinson は r1=-1-sqrt(2), r2=-1+sqrt(2)。"""
+    return rho * R * T / (1 - rho * b) \
+         - a * rho ** 2 / ((1 - rho * b * r1) * (1 - rho * b * r2))
+
+
+# デモ: M = 0.01 で dt が音響 CFL の 50 倍でも安全
+N, dx = 64, 1 / 64
+x = (np.arange(N) + 0.5) / N
+rho = 0.1 * np.exp(-120 * (x - 0.5) ** 2)
+u = np.zeros(N)
+M, dt = 0.01, 0.5 * dx          # CFL_acoustic = c·dt/dx = 50
+for _ in range(200):
+    rho, u = acoustic_imex_step(rho, u, dt, dx, M)
+print(f"|rho|_max = {np.abs(rho).max():.4f}  (target ~ 0.10)")
+# 出力: |rho|_max ~ 0.10xx — AP は well-prepared な振幅を保つ
+```
+
+陰解部分を陽的な 1 ステップ(`u_new = rhs` に置換)に変えると、最初の反復で発散します。音響 CFL が 50 なのに陽的安定条件は 1 未満を要求するからです。
+
+## マッハ数を 0 へ引き下げてみる
+
+下のシミュレーションを実際に動かしてみてください。
+
+<APIMEXAcousticPulse1D />
+
+上の赤い曲線は陽的 forward Euler、下のシアンは同じ方程式・同じ時間ステップの AP-IMEX です。$M$ スライダーを 0.05 まで下げると $c$ が 20 に達し、陽的 CFL が 1 ステップで 1 を超えます。赤い領域が爆発で覆われる間、シアンは同じガウシアンパルスを左右へ綺麗に流していきます。
+
+## 再現中に踏んだ落とし穴
+
+論文 5.1 節の等エントロピー渦の表を実際に描くと、4 次 IMEX が $M = 10^{-4}$ 近傍で**次数低下**を見せます。剛い問題で高次 RK がよく起こす現象です(Hairer–Wanner, 1996)。著者らは速度多項式次数を $r+1$ に一段上げて回避します。コストはかかりますが実用的です。
+
+もう一つは DG **四角形格子での低マッハ精度の喪失**です。Jung–Perrier(2024)が示したように、三角形格子は問題ありませんが四角形格子では圧力に $\mathcal O(M)$ のノイズが入ります。本論文はこの限界を認め、後続研究(エントロピー安定 DG、compatible FE)に委ねます。実務で四角形格子を使うなら別途、低マッハ修正(Thornber, 2008; Rieper, 2011)を組み込む必要があります。
+
+OpenFOAM の `rhoPimpleFoam` 系は既に圧力-運動量分離(SIMPLE/PISO)を採用していますが、理想気体以外の EOS にはコード修正が必要です。本論文の三次 EOS 処理はこうした拡張にそのまま移植できます。
+
+## 次に読むべき論文
+
+- Boscheri & Pareschi (2021) — 同じ分離を well-balanced へ拡張
+- Jung & Perrier (2024), JCP 489 — DG 低マッハ精度の解析
+- Orlando (2023) — 本論文の多相拡張

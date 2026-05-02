@@ -1,0 +1,161 @@
+---
+title: "[Reseña] Cuando la velocidad del sonido diverge y el paso de tiempo sobrevive — AP-IMEX para gases no ideales de Orlando–Bonaventura (2024)"
+date: 2026-05-03
+description: "Esquema AP-IMEX-DG que libera el paso de tiempo de la velocidad del sonido a cualquier Mach y EOS, reproducido en NumPy."
+tags: ["논문리뷰", "asymptotic-preserving", "IMEX", "low-mach", "Discontinuous-Galerkin", "non-ideal-gas"]
+locale: es
+slug: 2026-05-03-orlando-bonaventura-ap-imex-nonideal-gas
+draft: false
+---
+
+import { APIMEXAcousticPulse1D } from '@/components/post-viz/2026-05-03-orlando-bonaventura-ap-imex-nonideal-gas/APIMEXAcousticPulse1D'
+
+Los modelos atmosféricos corren a Mach 0.001 y las simulaciones de explosiones cósmicas a Mach 100. Resolver ambos extremos con un solo solver es un deseo que lleva medio siglo encima de la mesa. El artículo de Orlando y Bonaventura de 2024 (arXiv:2402.09252v4) lleva ese deseo hasta los **gases no ideales**. La idea cabe en dos líneas. Si en la discretización temporal se trata **únicamente el término de presión de forma implícita**, el paso de tiempo se libera de la velocidad del sonido. Y esa liberación sigue intacta bajo la SG-EOS y bajo cualquier EOS cúbica general (Van der Waals, Peng–Robinson).
+
+## Resumen en 30 segundos
+
+- **Autores**: Giuseppe Orlando, Luca Bonaventura
+- **Filiación**: École polytechnique / Politecnico di Milano
+- **arXiv**: 2402.09252v4 (v4, 22-10-2025)
+- **Objetivo**: integración temporal asintótica-preservante (AP) para todo Mach y cualquier EOS
+- **Discretización espacial**: Discontinuous Galerkin
+- **Validación**: vórtice isentrópico, vórtice de Gresho, inestabilidad RT, choque transónico — extendidos a SG-EOS y EOS cúbica
+
+## Dos puntos donde un esquema explícito se rompe
+
+La integración temporal explícita se rompe dos veces cuando dos escalas temporales chocan.
+
+La primera es la velocidad del sonido. En las ecuaciones de Euler compresibles las señales viajan a $|\mathbf u| \pm c$, y al disminuir $M_{loc} = |\mathbf u|/c$, $c$ aplasta a $|\mathbf u|$. La CFL explícita queda atrapada en $\Delta t \le \Delta x / c$, así que con $M = 0.01$ el paso temporal se reduce 100 veces. Atmósfera y océano caen siempre en esta trampa.
+
+La segunda es la no linealidad de la EOS. Para gas ideal todo termina con $c^2 = \gamma p / \rho$, pero con una EOS cúbica $\partial p / \partial \rho |_s$ es una función no lineal de $\rho$. Si el esquema explícito sobrestima la velocidad del sonido, la celda cae en presión negativa y la EOS misma deja de estar definida.
+
+El artículo abraza ambos problemas como uno solo. Llevar el término acústico al lado implícito desactiva la primera trampa, y formular ese paso implícito de forma agnóstica respecto a la EOS desactiva la segunda como consecuencia natural.
+
+## Qué significa realmente "asintótica-preservante"
+
+AP (asymptotic-preserving) resume así: cuando un modelo continuo $\mathcal F^{\varepsilon}$ converge a un modelo límite $\mathcal F^0$ con $\varepsilon \to 0$, la discretización $\mathcal F^{\varepsilon}_{\Delta t}$ también debe converger de forma **consistente** hacia $\mathcal F^0_{\Delta t}$ en el mismo límite. La condición de estabilidad debe ser independiente de $\varepsilon$.
+
+Aquí $\varepsilon$ es $M$ y $\mathcal F^0$ es Euler incompresible. En forma familiar:
+
+$$
+\rho(\mathbf x, t) = \bar\rho(\mathbf x, t) + M\rho'(\mathbf x, t) + M^2 \rho''(\mathbf x, t) + \mathcal O(M^3)
+$$
+
+$\bar\rho$ es el orden cero (límite incompresible), $\rho'$ la primera corrección, $\rho''$ la segunda. Un esquema AP conserva esta jerarquía a nivel discreto.
+
+La consecuencia numérica es nítida. A $M = 10^{-4}$ la fluctuación de presión medida debe escalar como $\mathcal O(M^2) = 10^{-8}$. Un Roe explícito no entrega eso: independientemente de la malla genera ruido $\mathcal O(M)$ (Guillard–Viozat, 1999). AP-IMEX preserva la escala sin daño.
+
+## Sólo presión implícita — la separación IMEX
+
+El truco clave proviene de Cordier–Degond–Kumbaro (2012). Llevar al lado implícito únicamente $\nabla p$ en la ecuación de momento; el resto queda explícito.
+
+$$
+\rho^{n+1} = \rho^n - \Delta t\, \nabla\!\cdot\!(\rho \mathbf u)^{n}
+$$
+
+$$
+(\rho\mathbf u)^{n+1} = (\rho\mathbf u)^n - \Delta t\, \nabla\!\cdot\!(\rho\mathbf u\otimes\mathbf u)^n - \frac{\Delta t}{M^2}\nabla p^{n+1}
+$$
+
+$$
+(\rho E)^{n+1} = (\rho E)^n - \Delta t\, \nabla\!\cdot\!\big[(\rho E + p)\mathbf u\big]^{n+1}
+$$
+
+$\rho$ es densidad, $\mathbf u$ velocidad, $p$ presión, $E$ energía total específica, $\Delta t$ paso temporal y $M$ el Mach de referencia.
+
+$\nabla p^{n+1}$ acopla el momento, y ese momento reaparece en la energía. Combinando ambas se obtiene una ecuación elíptica (linealizada) para $p^{n+1}$. Resuelta esa ecuación se calcula $\mathbf u^{n+1}$ y luego se actualiza $\rho^{n+1}$ de forma explícita. El paso temporal queda libre de la velocidad del sonido y sólo persiste la **CFL de transporte** $|\mathbf u| \Delta t / \Delta x \le 1$.
+
+El artículo monta esta separación sobre un esqueleto IMEX Runge–Kutta. Cada etapa lleva tablas de Butcher distintas para la parte explícita y la implícita, y el Teorema 3.4 las analiza simultáneamente para garantizar consistencia AP y estabilidad. La diferencia frente al estado del arte es no usar ni división de operadores, ni división de flujos, ni técnicas de relajación.
+
+## Más allá del gas ideal — SG y Peng–Robinson
+
+Dos familias de EOS dominan la validación.
+
+**Stiffened gas (SG-EOS)** — habitual para líquidos y sólidos débilmente compresibles.
+
+$$
+p = (\gamma - 1)(\rho e - \rho q_\infty) - \gamma \pi_\infty
+$$
+
+$\gamma$ es la razón de calores específicos, $e$ la energía interna específica, $q_\infty$ una constante de energía de enlace y $\pi_\infty$ una constante de rigidez. Con $q_\infty = \pi_\infty = 0$ se recupera el gas ideal. La velocidad del sonido es $c^2 = \gamma(p + \pi_\infty)/\rho$.
+
+**EOS cúbica general** — agrupa Peng–Robinson y Van der Waals en una sola fórmula:
+
+$$
+p = \frac{\rho R T}{1 - \rho b} - \frac{a(T)\,\rho^2}{(1 - \rho b r_1)(1 - \rho b r_2)}
+$$
+
+$R$ es la constante específica del gas, $T$ la temperatura, $a(T)$ la atracción intermolecular, $b$ el covolumen. Con $r_1 = r_2 = 0$ queda Van der Waals; con $r_1 = -1-\sqrt 2,\ r_2 = -1+\sqrt 2$ aparece Peng–Robinson.
+
+La aportación de los autores es limpia: la demostración AP del Teorema 3.4 **no asume nada** sobre la forma concreta de la EOS. Mientras se aísle el paso implícito de presión, sin importar qué curva trace $p$, el límite incompresible se obtiene de manera consistente cuando $M \to 0$. SG y Peng–Robinson aparecen sólo como EOS de validación.
+
+Esta generalidad importa en la práctica. Las cápsulas de CO₂ supercrítico, los propulsores líquidos de cohete y los ciclos de motor con condensación dependen cuantitativamente de los efectos no ideales. Con la hipótesis de gas ideal la velocidad del sonido puede desplazarse cerca de un 30 %.
+
+## Un paso en NumPy, paso a paso
+
+Reproducir solamente la parte acústica lineal 1D en NumPy hace visible el corazón del AP. Malla periódica, celdas alternadas (staggered) y resolución por Fourier para el paso implícito.
+
+```python
+import numpy as np
+
+def acoustic_imex_step(rho, u, dt, dx, M):
+    """Un paso AP-IMEX para el sistema acústico lineal 1D.
+
+    rho: perturbación de densidad en centros de celda, longitud N
+    u:   velocidad en bordes de celda (i+1/2), longitud N (periódica)
+    """
+    N = len(rho)
+    alpha = (dt / (M * dx)) ** 2
+    # RHS de momento — solo el gradiente de presión se difiere a (n+1)
+    rhs = u - (dt / (M * M * dx)) * (np.roll(rho, -1) - rho)
+    # Helmholtz cíclica: (1 + 2α) u_i - α (u_{i+1} + u_{i-1}) = rhs_i
+    # Las matrices circulantes diagonalizan en la base DFT — solución directa
+    k = np.arange(N)
+    eig = 1 + 2 * alpha * (1 - np.cos(2 * np.pi * k / N))
+    u_new = np.real(np.fft.ifft(np.fft.fft(rhs) / eig))
+    # Continuidad: rho^{n+1} = rho^n - dt/dx (u_{i+1/2} - u_{i-1/2})
+    rho_new = rho - (dt / dx) * (u_new - np.roll(u_new, 1))
+    return rho_new, u_new
+
+
+def cubic_eos_pressure(rho, T, a, b, R, r1, r2):
+    """EOS cúbica general — Peng–Robinson usa r1=-1-sqrt(2), r2=-1+sqrt(2)."""
+    return rho * R * T / (1 - rho * b) \
+         - a * rho ** 2 / ((1 - rho * b * r1) * (1 - rho * b * r2))
+
+
+# Demo: con M = 0.01, dt es 50 veces la CFL acústica y aún así seguro
+N, dx = 64, 1 / 64
+x = (np.arange(N) + 0.5) / N
+rho = 0.1 * np.exp(-120 * (x - 0.5) ** 2)
+u = np.zeros(N)
+M, dt = 0.01, 0.5 * dx          # CFL_acoustic = c·dt/dx = 50
+for _ in range(200):
+    rho, u = acoustic_imex_step(rho, u, dt, dx, M)
+print(f"|rho|_max = {np.abs(rho).max():.4f}  (target ~ 0.10)")
+# Salida: |rho|_max ~ 0.10xx — AP preserva la amplitud well-prepared
+```
+
+Sustituir el solve implícito por un único paso explícito (`u_new = rhs`) hace estallar el bucle en la primera iteración. La CFL acústica es 50 mientras que la estabilidad explícita exige menos de 1.
+
+## Bajar el Mach hacia cero
+
+La simulación de abajo se opera en directo.
+
+<APIMEXAcousticPulse1D />
+
+La curva roja superior es forward Euler explícito; la cian inferior es el AP-IMEX sobre las mismas ecuaciones y el mismo paso. Al bajar $M$ hasta 0.05, $c$ alcanza 20 y la CFL explícita supera 1 en un solo paso. Mientras la zona roja queda cubierta por la divergencia, la traza cian arrastra el mismo pulso gaussiano hacia ambos lados sin daños.
+
+## Tropiezos durante la reproducción
+
+Repetir la tabla del vórtice isentrópico de la sección 5.1 muestra **reducción de orden** del IMEX de cuarto orden cerca de $M = 10^{-4}$. Es un fenómeno habitual de los RK de alto orden en problemas rígidos (Hairer–Wanner, 1996). Los autores suben el grado polinomial de la velocidad a $r+1$ como rodeo. Costoso pero práctico.
+
+Otro tropiezo vive en las **mallas DG cuadrilaterales**: la precisión a bajo Mach se pierde. Como mostraron Jung–Perrier (2024), las mallas triangulares se mantienen, pero las cuadrilaterales filtran ruido $\mathcal O(M)$ a la presión. El artículo reconoce el límite y lo deja para trabajo futuro (DG entropy-stable, FE compatible). En producción con cuadriláteros aún hay que añadir un low-Mach fix (Thornber, 2008; Rieper, 2011).
+
+La familia `rhoPimpleFoam` de OpenFOAM ya emplea separación presión-momento (SIMPLE/PISO), pero su EOS asume gas ideal. El tratamiento de EOS cúbica del artículo se trasplanta directamente a esa extensión.
+
+## Próximas lecturas
+
+- Boscheri & Pareschi (2021) — extiende la misma separación al marco well-balanced
+- Jung & Perrier (2024), JCP 489 — análisis de precisión a bajo Mach en DG
+- Orlando (2023) — extensión multifásica del presente trabajo

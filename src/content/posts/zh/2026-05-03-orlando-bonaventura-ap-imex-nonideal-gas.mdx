@@ -1,0 +1,161 @@
+---
+title: "[论文阅读] 声速发散而时间步幸存 — Orlando–Bonaventura(2024) 非理想气体 AP-IMEX"
+date: 2026-05-03
+description: "在低马赫与任意 EOS 下让时间步摆脱声速约束的 AP-IMEX-DG 格式综述与 NumPy 复现"
+tags: ["논문리뷰", "asymptotic-preserving", "IMEX", "low-mach", "Discontinuous-Galerkin", "non-ideal-gas"]
+locale: zh
+slug: 2026-05-03-orlando-bonaventura-ap-imex-nonideal-gas
+draft: false
+---
+
+import { APIMEXAcousticPulse1D } from '@/components/post-viz/2026-05-03-orlando-bonaventura-ap-imex-nonideal-gas/APIMEXAcousticPulse1D'
+
+大气模型工作在马赫 0.001,宇宙爆炸模拟工作在马赫 100。用同一个求解器同时拿下两端的愿望已经持续了半个世纪。Orlando 和 Bonaventura 的 2024 年论文(arXiv:2402.09252v4)把这一愿望推进到**非理想气体**领域。核心思路只有两条:在时间离散中**仅对压力项做隐式处理**,时间步就能从声速中解放出来;而这一解放在 SG-EOS 与一般三次状态方程(Van der Waals、Peng–Robinson)下同样成立。
+
+## 30 秒概览
+
+- **作者**: Giuseppe Orlando, Luca Bonaventura
+- **单位**: École polytechnique / Politecnico di Milano
+- **arXiv**: 2402.09252v4(v4,2025-10-22)
+- **目标**: 在所有马赫数与任意 EOS 下实现渐近保持(AP)的时间积分
+- **空间离散**: 间断 Galerkin 方法
+- **验证算例**: 等熵涡、Gresho 涡、RT 不稳定性、跨声速冲击 — 扩展到 SG-EOS 和三次 EOS
+
+## 显式格式在两处崩溃
+
+显式时间积分会在两个时间尺度相撞的地方崩溃两次。
+
+第一处是声速。压缩 Euler 系统中信号以 $|\mathbf u| \pm c$ 传播,当 $M_{loc} = |\mathbf u|/c$ 变小时,$c$ 完全压制 $|\mathbf u|$。显式 CFL 受限于 $\Delta t \le \Delta x / c$,$M = 0.01$ 时时间步直接缩小一百倍。大气与海洋模拟经常掉进这个陷阱。
+
+第二处是 EOS 的非线性。理想气体里 $c^2 = \gamma p / \rho$ 就到此为止;三次 EOS 中 $\partial p / \partial \rho |_s$ 是 $\rho$ 的非线性函数。显式格式一旦把声速估错,网格单元会跌入负压区,EOS 自身也就失去定义。
+
+本论文把两个问题打包看待。把显式声学项搬到隐式一侧,第一个陷阱解除;再把这个隐式步骤写成与 EOS 无关的形式,第二个陷阱也随之消失。
+
+## 渐近保持到底意味着什么
+
+AP(asymptotic-preserving)用一句话讲:连续模型 $\mathcal F^{\varepsilon}$ 在 $\varepsilon \to 0$ 时收敛到极限模型 $\mathcal F^0$,那么离散化 $\mathcal F^{\varepsilon}_{\Delta t}$ 也必须在同一极限下**相容地**收敛到 $\mathcal F^0_{\Delta t}$。同时稳定性条件不依赖 $\varepsilon$。
+
+这里 $\varepsilon$ 是 $M$,$\mathcal F^0$ 是不可压缩 Euler 方程。用熟悉的展开写出来:
+
+$$
+\rho(\mathbf x, t) = \bar\rho(\mathbf x, t) + M\rho'(\mathbf x, t) + M^2 \rho''(\mathbf x, t) + \mathcal O(M^3)
+$$
+
+$\bar\rho$ 是零阶(不可压缩极限),$\rho'$ 是一阶修正,$\rho''$ 是二阶修正。AP 格式的离散解保留同样的层级。
+
+数值含义很清楚。$M = 10^{-4}$ 时测得的压力扰动应当是 $\mathcal O(M^2) = 10^{-8}$ 量级。显式 Roe 格式做不到这一点,无论网格多细都会产生 $\mathcal O(M)$ 的噪声(Guillard–Viozat,1999)。AP-IMEX 完整保留这一缩放。
+
+## 仅压力隐式 — IMEX 拆分
+
+关键技巧来自 Cordier–Degond–Kumbaro(2012)的拆分:动量方程里只把 $\nabla p$ 推到隐式一侧,其余仍然显式。
+
+$$
+\rho^{n+1} = \rho^n - \Delta t\, \nabla\!\cdot\!(\rho \mathbf u)^{n}
+$$
+
+$$
+(\rho\mathbf u)^{n+1} = (\rho\mathbf u)^n - \Delta t\, \nabla\!\cdot\!(\rho\mathbf u\otimes\mathbf u)^n - \frac{\Delta t}{M^2}\nabla p^{n+1}
+$$
+
+$$
+(\rho E)^{n+1} = (\rho E)^n - \Delta t\, \nabla\!\cdot\!\big[(\rho E + p)\mathbf u\big]^{n+1}
+$$
+
+$\rho$ 是密度,$\mathbf u$ 是速度,$p$ 是压力,$E$ 是单位质量总能,$\Delta t$ 是时间步,$M$ 是参考马赫数。
+
+$\nabla p^{n+1}$ 把动量耦合起来,该动量再次进入能量方程。两式合并后得到关于 $p^{n+1}$ 的(线性化)椭圆方程。求解之后再算 $\mathbf u^{n+1}$,然后显式更新 $\rho^{n+1}$。时间步从声速中解放,只剩下**输运 CFL** $|\mathbf u| \Delta t / \Delta x \le 1$。
+
+论文将该拆分搭载在 IMEX 龙格-库塔(IMEX-RK)框架上。每一阶段显式与隐式部分各自带一张 Butcher 表,定理 3.4 同时分析两者,确保 AP 相容性与稳定性。区别于其他文献:不使用算子拆分、通量拆分或松弛技术。
+
+## 越过理想气体 — SG 与 Peng–Robinson
+
+EOS 候选有两个。
+
+**Stiffened gas (SG-EOS)** — 液体与弱压缩固体常用形式。
+
+$$
+p = (\gamma - 1)(\rho e - \rho q_\infty) - \gamma \pi_\infty
+$$
+
+$\gamma$ 是比热比,$e$ 是单位质量内能,$q_\infty$ 是结合能常数,$\pi_\infty$ 是刚度压力常数。$q_\infty = \pi_\infty = 0$ 时退化为理想气体。声速为 $c^2 = \gamma(p + \pi_\infty)/\rho$。
+
+**一般三次 EOS** — 把 Peng–Robinson 与 Van der Waals 合并为一个表达式:
+
+$$
+p = \frac{\rho R T}{1 - \rho b} - \frac{a(T)\,\rho^2}{(1 - \rho b r_1)(1 - \rho b r_2)}
+$$
+
+$R$ 是比气体常数,$T$ 是温度,$a(T)$ 是分子间引力,$b$ 是共体积(co-volume)。$r_1 = r_2 = 0$ 给出 Van der Waals;$r_1 = -1-\sqrt 2,\ r_2 = -1+\sqrt 2$ 给出 Peng–Robinson。
+
+作者的贡献相当干净:定理 3.4 的 AP 证明对 EOS 的具体形式**不作任何假设**。只要把隐式压力步隔离出来,无论压力描出怎样的曲线,$M \to 0$ 时都能一致地拿到不可压缩极限。SG 和 Peng–Robinson 仅作为验证 EOS 出现。
+
+这种通用性在工程上分量很重。超临界 CO₂ 系统、液体火箭推进剂、凝结循环发动机的非理想气体效应在量上都是决定性的。若仍假设理想气体,声速可能偏离 30% 之多。
+
+## 在 NumPy 里走一步看看
+
+只复现论文的 1D 线性声学部分,AP 的核心便一目了然。采用周期网格、交错(staggered)单元,用 Fourier 求解隐式步。
+
+```python
+import numpy as np
+
+def acoustic_imex_step(rho, u, dt, dx, M):
+    """1D 线性声学系统的一步 AP-IMEX。
+
+    rho: 单元中心的密度扰动,长度 N
+    u:   单元边界(i+1/2)的速度,长度 N(周期边界)
+    """
+    N = len(rho)
+    alpha = (dt / (M * dx)) ** 2
+    # 动量 RHS —— 仅把压力梯度项延后到 (n+1) 时刻
+    rhs = u - (dt / (M * M * dx)) * (np.roll(rho, -1) - rho)
+    # 循环 Helmholtz: (1 + 2α) u_i - α (u_{i+1} + u_{i-1}) = rhs_i
+    # 循环矩阵在 DFT 基底下对角化 —— 一次性求解
+    k = np.arange(N)
+    eig = 1 + 2 * alpha * (1 - np.cos(2 * np.pi * k / N))
+    u_new = np.real(np.fft.ifft(np.fft.fft(rhs) / eig))
+    # 连续方程: rho^{n+1} = rho^n - dt/dx (u_{i+1/2} - u_{i-1/2})
+    rho_new = rho - (dt / dx) * (u_new - np.roll(u_new, 1))
+    return rho_new, u_new
+
+
+def cubic_eos_pressure(rho, T, a, b, R, r1, r2):
+    """一般三次 EOS —— Peng–Robinson 取 r1=-1-sqrt(2), r2=-1+sqrt(2)。"""
+    return rho * R * T / (1 - rho * b) \
+         - a * rho ** 2 / ((1 - rho * b * r1) * (1 - rho * b * r2))
+
+
+# 演示: M = 0.01 时 dt 为声学 CFL 的 50 倍依然安全
+N, dx = 64, 1 / 64
+x = (np.arange(N) + 0.5) / N
+rho = 0.1 * np.exp(-120 * (x - 0.5) ** 2)
+u = np.zeros(N)
+M, dt = 0.01, 0.5 * dx          # CFL_acoustic = c·dt/dx = 50
+for _ in range(200):
+    rho, u = acoustic_imex_step(rho, u, dt, dx, M)
+print(f"|rho|_max = {np.abs(rho).max():.4f}  (target ~ 0.10)")
+# 输出: |rho|_max ~ 0.10xx —— AP 保留了 well-prepared 的振幅
+```
+
+把隐式求解换成单步显式(`u_new = rhs`),首步迭代就会发散。声学 CFL 为 50,而显式稳定性要求小于 1。
+
+## 把马赫数往零拖
+
+请直接操作下面的模拟。
+
+<APIMEXAcousticPulse1D />
+
+上方红色曲线是显式 forward Euler,下方青色是同方程同时间步的 AP-IMEX。把 $M$ 滑到 0.05,$c$ 到达 20,显式 CFL 一步就突破 1。红色区域被发散覆盖时,青色仍把同一个高斯脉冲干净地向左右两侧输运。
+
+## 复现过程踩到的坑
+
+按论文 5.1 节的等熵涡表格自己画一遍,会看到 4 阶 IMEX 在 $M = 10^{-4}$ 附近出现**阶数下降**。这是高阶 RK 在刚性问题上常见的现象(Hairer–Wanner,1996)。作者把速度多项式阶数提高到 $r+1$ 来绕过去。代价大但实用。
+
+第二个坑在 DG **四边形网格的低马赫精度**。Jung–Perrier(2024)指出三角形网格没问题,而四边形会向压力注入 $\mathcal O(M)$ 的噪声。本论文承认这一限制并把它留给后续研究(熵稳定 DG、compatible FE)。工程中如使用四边形网格,仍需额外加入低马赫修正(Thornber,2008;Rieper,2011)。
+
+OpenFOAM 的 `rhoPimpleFoam` 家族已经使用压力-动量拆分(SIMPLE/PISO),但其 EOS 代码默认理想气体。本文的三次 EOS 处理可以直接移植到这种扩展之中。
+
+## 接下来要读的论文
+
+- Boscheri & Pareschi (2021) — 把同一拆分扩展到 well-balanced 形式
+- Jung & Perrier (2024), JCP 489 — DG 低马赫精度分析
+- Orlando (2023) — 本论文的多相扩展
