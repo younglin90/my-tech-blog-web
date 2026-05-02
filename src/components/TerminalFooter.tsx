@@ -4,6 +4,7 @@ import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { VisitorCount } from '@/components/VisitorCount'
 import { RandomPostLink } from '@/components/RandomPostLink'
+import { LastBuildIndicator } from '@/components/LastBuildIndicator'
 import { localePathPrefix, t } from '@/lib/i18n'
 
 export function TerminalFooter() {
@@ -26,6 +27,7 @@ export function TerminalFooter() {
           <span style={{ color: 'var(--accent)' }}>$</span> {t(locale, 'footer.uptime')}
         </span>
         <VisitorCount />
+        <LastBuildIndicator label={t(locale, 'footer.lastBuild')} />
         <span>{t(locale, 'footer.copyright')}</span>
       </div>
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2" style={{ color: 'var(--text-faint)' }}>
