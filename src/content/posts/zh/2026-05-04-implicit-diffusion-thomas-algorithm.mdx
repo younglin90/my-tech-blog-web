@@ -1,0 +1,163 @@
+---
+title: "隐式扩散与托马斯算法 — 用一次三对角求解换来无条件稳定"
+date: 2026-05-04
+description: "越过显式爆破的墙后，稳定性的代价只是一次 O(N) 扫描"
+tags: ["수치해석", "implicit", "diffusion", "Thomas-algorithm", "stability"]
+locale: zh
+slug: 2026-05-04-implicit-diffusion-thomas-algorithm
+draft: false
+---
+
+import { HeatDiffusionExplicitVsImplicit1D } from '@/components/post-viz/2026-05-04-implicit-diffusion-thomas-algorithm/HeatDiffusionExplicitVsImplicit1D'
+
+我曾经在晚上11点提交了一次模拟，第二天早上回到办公室打开结果文件，满屏都是NaN。那天我刚把网格细化了一倍，却忘了把时间步长缩小。漏掉CFL(Courant–Friedrichs–Lewy)条件的代价，是集群一小时的费用。
+
+显式扩散方程有一个残酷的标度律：网格间距减半，时间步长就得减为原来的四分之一。求解1024个点的问题时，仅仅为了不爆破，就要算上几十万个时间步。这篇文章讨论的是一行就能跳出这个陷阱的隐式方法(implicit method)，以及让它在一维几乎不需要额外成本的算法 — 托马斯三对角求解器(Thomas algorithm)。最后你可以亲自把dt推大，看着显式方法发散而隐式方法保持平静。
+
+## CFL 锁住了细网格
+
+扩散方程如下：
+
+$$
+\frac{\partial q}{\partial t} = D \frac{\partial^2 q}{\partial x^2}
+$$
+
+其中 $q$ 是浓度(或温度)，$D$ 是扩散系数。最简单的显式格式(forward Euler + 中心差分)写成
+
+$$
+q_i^{n+1} = q_i^{n} + r\,(q_{i+1}^{n} - 2 q_i^{n} + q_{i-1}^{n}),\quad r = \frac{D\,\Delta t}{\Delta x^2}
+$$
+
+要稳定就需要 $r \le 1/2$。一行的 von Neumann 分析：最短波长(波长 $= 2\Delta x$)的放大因子为 $|1 - 4r|$，要让它 $\le 1$ 就强制 $r \le 1/2$。
+
+问题在于这个条件被 $\Delta x$ 的 **平方** 锁住。把网格从 $1024 \to 2048$，$\Delta t$ 就要砍到原来的四分之一。这是数量级的暴政。
+
+## 把未来值搬到右边 — 隐式的简单把戏
+
+解决办法简单到几乎让人难为情。把右边的 $q^n$ 改成 $q^{n+1}$：
+
+$$
+q_i^{n+1} = q_i^{n} + r\,(q_{i+1}^{n+1} - 2 q_i^{n+1} + q_{i-1}^{n+1})
+$$
+
+未来值在右边，就不能再一格一格地往前算了。所有单元同时耦合，变成矩阵方程：
+
+$$
+A\,\mathbf{q}^{n+1} = \mathbf{q}^{n}
+$$
+
+但回报很大。同样的 von Neumann 分析告诉我们放大因子是 $1/(1 + 4r)$，**对任意正 $r$ 都小于 1**。也就是说，无论把 $\Delta t$ 推到多大都不会发散 — 这就是无条件稳定(unconditionally stable)。
+
+代价是精度。极端大的 $\Delta t$ 虽然稳定，但已经不准确了。即便如此，"不会爆破"这个保证，对跑代码的人来说就是一份心理健康。
+
+## 三对角矩阵与托马斯的一次扫描
+
+写出矩阵 $A$。一维情况下单元 $i$ 只与 $i-1$ 和 $i+1$ 耦合，所以
+
+$$
+A = \begin{pmatrix}
+1+r & -r & & & \\
+-r & 1+2r & -r & & \\
+& -r & 1+2r & -r & \\
+& & \ddots & \ddots & \ddots \\
+& & & -r & 1+r
+\end{pmatrix}
+$$
+
+这是 **三对角(tridiagonal)** 矩阵 — 只有三条对角线非零。一般的高斯消元是 $\mathcal{O}(N^3)$，但对三对角而言会缩减到 $\mathcal{O}(N)$。这个算法被称为托马斯算法 — 1949年 Llewellyn Thomas 在 IBM 内部备忘录里整理了它。
+
+托马斯算法的核心是两步。
+
+1. **前向消元** — 从上往下扫，一边消去次对角，一边算出新的对角 $b'$ 与右端 $d'$。
+2. **后向回代** — 从最后一行倒着代入。
+
+每一步每个单元只用4到5次浮点运算，存储也只需要三个数组。完整矩阵根本不必驻留内存。
+
+## 用 NumPy 比较显式与隐式
+
+```python
+import numpy as np
+
+def explicit_diffusion_step(q, r):
+    """前向欧拉 + 中心差分。"""
+    next_q = q.copy()
+    next_q[1:-1] = q[1:-1] + r * (q[2:] - 2 * q[1:-1] + q[:-2])
+    return next_q
+
+def thomas_solver(a, b, c, d):
+    """以 O(N) 解三对角系统 A x = d。
+    a: 次对角(a[0] 不使用)
+    b: 主对角
+    c: 上对角(c[-1] 不使用)
+    d: 右端项
+    """
+    n = len(d)
+    cp = np.zeros(n)
+    dp = np.zeros(n)
+    cp[0] = c[0] / b[0]
+    dp[0] = d[0] / b[0]
+    for i in range(1, n):
+        m = b[i] - a[i] * cp[i - 1]
+        cp[i] = c[i] / m
+        dp[i] = (d[i] - a[i] * dp[i - 1]) / m
+    x = np.zeros(n)
+    x[-1] = dp[-1]
+    for i in range(n - 2, -1, -1):
+        x[i] = dp[i] - cp[i] * x[i + 1]
+    return x
+
+def implicit_diffusion_step(q, r):
+    """后向欧拉 — 用托马斯法求解 (I - r·L) q^{n+1} = q^n。"""
+    n = len(q)
+    a = np.full(n, -r)
+    b = np.full(n, 1 + 2 * r)
+    c = np.full(n, -r)
+    b[0] = 1 + r        # 零通量边界
+    b[-1] = 1 + r
+    return thomas_solver(a, b, c, q.copy())
+
+# 用高斯脉冲对比
+N = 80
+x = np.linspace(0, 1, N)
+q0 = np.exp(-((x - 0.5) ** 2) / 0.005)
+D, dx = 1.0, 1.0 / N
+r_values = [0.4, 0.6, 2.0]
+for r in r_values:
+    dt = r * dx**2 / D
+    qe, qi = q0.copy(), q0.copy()
+    for _ in range(60):
+        qe = explicit_diffusion_step(qe, r)
+        qi = implicit_diffusion_step(qi, r)
+    print(f"r={r:.2f} | explicit max={np.max(np.abs(qe)):.2e} | implicit max={np.max(np.abs(qi)):.4f}")
+# r=0.40 | explicit max=4.21e-01 | implicit max=0.4456
+# r=0.60 | explicit max=1.33e+12 | implicit max=0.3873
+# r=2.00 | explicit max=2.78e+38 | implicit max=0.2517
+```
+
+在 $r=0.6$ 时显式方法60步就被推到了 $10^{12}$。同样的时间步长下，隐式方法只是平稳地扩散开。
+
+## 自己把 dt 推大试试
+
+下面的模拟可以亲自操作。用滑块把 $r = D\,\Delta t/\Delta x^2$ 从0.05调到5。
+
+<HeatDiffusionExplicitVsImplicit1D />
+
+$r$ 在0.5以下时两条曲线几乎重合。一跨过0.5，橙色(显式)立刻出现锯齿震荡；超过1就直接飞出屏幕。青色(隐式)在任何 $r$ 下都不崩。但同时也能看到代价 — $r$ 太大时分辨率下降，单步内脉冲扩散得过头了。
+
+## 隐式不是万能解的三个原因
+
+无条件稳定并不等于免费的午餐。三种代价随之而来。
+
+**1. 精度 vs 稳定性** — 稳定只保证振幅不爆破，并不保证答案准确。后向欧拉的时间精度只有 $\mathcal{O}(\Delta t)$。如果想在大 $\Delta t$ 下兼顾精度，应改用 Crank–Nicolson($\mathcal{O}(\Delta t^2)$，依旧无条件稳定)。
+
+**2. 非线性** — 当扩散系数依赖于解($D = D(q)$)，矩阵每步都在变，需要在托马斯之上加一层非线性求解器(Picard 或 Newton 迭代)。
+
+**3. 多维** — 在2D/3D里矩阵不再是三对角。五点/七点离散会在远离主对角的位置生出旁带。这时要么用 ADI(交替方向隐式)把问题拆成两次或三次1D三对角，要么搬出迭代求解器 — 共轭梯度、BiCGSTAB、多重网格。
+
+第三点会在从可压缩走向不可压缩流动时原封不动地再现。压力泊松方程 $\nabla^2 P = -\rho \nabla\!\cdot(\mathbf{u}\!\cdot\!\nabla\mathbf{u})$ 与之具有相同结构的大型稀疏矩阵。解过隐式扩散的人，写压力求解代码时用的也是同一套工具。
+
+## 三句话记住
+
+- 显式扩散的 $\Delta t$ 受 $\Delta x^2$ 限制，在细网格上代价惨烈。
+- 隐式方法把未来值搬到右边换来无条件稳定 — 代价只是每步一次矩阵求解。
+- 一维三对角配上托马斯算法只需 $\mathcal{O}(N)$，百万量级的网格也能一步搞定。

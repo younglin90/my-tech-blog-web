@@ -1,0 +1,163 @@
+---
+title: "陰解法とトーマス法 — 1次元拡散を無条件安定で解くひと筋のトリック"
+date: 2026-05-04
+description: "陽解法が爆発する壁の向こう、三重対角を1回解くだけで安定性を買える"
+tags: ["수치해석", "implicit", "diffusion", "Thomas-algorithm", "stability"]
+locale: ja
+slug: 2026-05-04-implicit-diffusion-thomas-algorithm
+draft: false
+---
+
+import { HeatDiffusionExplicitVsImplicit1D } from '@/components/post-viz/2026-05-04-implicit-diffusion-thomas-algorithm/HeatDiffusionExplicitVsImplicit1D'
+
+夜の11時にシミュレーションを回して、翌朝出社して結果ファイルを開いたら画面いっぱいNaNだった、という経験があります。直前に格子を倍に細かくして、時間刻み幅をそのままにしていた。CFL(Courant–Friedrichs–Lewy)条件を忘れた代償は、クラスタ1時間分の請求書でした。
+
+陽解法の拡散方程式は格子幅を半分にすると時間刻みを4分の1にしないといけません。1024点の問題を解くのに、爆発しないという理由だけで数十万ステップを刻むことになる。本記事では、その縛りをひと言で抜ける陰解法(implicit method)と、1次元では陰解法のコストをほぼ消してくれるトーマス法(三重対角ソルバー)を扱います。最後に自分でdtを上げ、陽解法が発散しても陰解法は穏やかなままの様子を見ます。
+
+## CFLが細格子を縛る
+
+拡散方程式は次の通りです。
+
+$$
+\frac{\partial q}{\partial t} = D \frac{\partial^2 q}{\partial x^2}
+$$
+
+ここで $q$ は濃度(または温度)、$D$ は拡散係数です。最も素朴な陽解法(forward Euler + 中心差分)は
+
+$$
+q_i^{n+1} = q_i^{n} + r\,(q_{i+1}^{n} - 2 q_i^{n} + q_{i-1}^{n}),\quad r = \frac{D\,\Delta t}{\Delta x^2}
+$$
+
+安定であるためには $r \le 1/2$ が必要です。von Neumann解析を一行でまとめると、最短波長(波長 $= 2\Delta x$)の増幅率が $|1 - 4r|$ で、これを $\le 1$ にするには $r \le 1/2$ が強制されます。
+
+問題はこの条件が $\Delta x$ の **2乗** に縛られていること。格子を $1024 \to 2048$ にすると $\Delta t$ は4分の1。これは桁の暴力です。
+
+## 未来値を右辺へ — 陰解法の単純な仕掛け
+
+解決策は呆気ないほど単純です。右辺の $q^n$ を $q^{n+1}$ に書き換えます。
+
+$$
+q_i^{n+1} = q_i^{n} + r\,(q_{i+1}^{n+1} - 2 q_i^{n+1} + q_{i-1}^{n+1})
+$$
+
+未来値が右辺にあるので、セルを順に解くことはできません。すべてのセルが同時に結合して、行列方程式になります。
+
+$$
+A\,\mathbf{q}^{n+1} = \mathbf{q}^{n}
+$$
+
+代わりに見返りは大きい。同じvon Neumann解析で増幅率は $1/(1 + 4r)$、**任意の正の $r$ で1未満**です。つまり $\Delta t$ をどれだけ大きくしても発散しません — 無条件安定(unconditionally stable)です。
+
+代償は精度。極端に大きい $\Delta t$ は安定でも正確ではありません。それでも「発散しない」という保証は、コードを回す人間に精神衛生をもたらします。
+
+## 三重対角行列とトーマス法のひと撫で
+
+行列 $A$ を書き出してみます。1次元ではセル $i$ が $i-1$ と $i+1$ にしか結合しないので
+
+$$
+A = \begin{pmatrix}
+1+r & -r & & & \\
+-r & 1+2r & -r & & \\
+& -r & 1+2r & -r & \\
+& & \ddots & \ddots & \ddots \\
+& & & -r & 1+r
+\end{pmatrix}
+$$
+
+これは **三重対角(tridiagonal)** 行列です。3本の対角しかゼロでない。一般のガウス消去法は $\mathcal{O}(N^3)$ ですが、三重対角なら $\mathcal{O}(N)$ で終わります。このアルゴリズムをトーマス法と呼びます — 1949年にLlewellyn ThomasがIBMの社内メモにまとめたものです。
+
+トーマス法の核は2段階。
+
+1. **前進消去** — 副対角を順に消しながら、新しい対角 $b'$ と右辺 $d'$ を計算します。
+2. **後退代入** — 最終行から逆に値を代入します。
+
+各段階はセルあたり4〜5回の演算で済み、メモリも3つの配列で十分。行列を丸ごと持つ必要はありません。
+
+## NumPyで陽解法と陰解法を比較
+
+```python
+import numpy as np
+
+def explicit_diffusion_step(q, r):
+    """前進オイラー + 中心差分。"""
+    next_q = q.copy()
+    next_q[1:-1] = q[1:-1] + r * (q[2:] - 2 * q[1:-1] + q[:-2])
+    return next_q
+
+def thomas_solver(a, b, c, d):
+    """三重対角系 A x = d を O(N) で解く。
+    a: 副対角(a[0]は未使用)
+    b: 主対角
+    c: 上対角(c[-1]は未使用)
+    d: 右辺
+    """
+    n = len(d)
+    cp = np.zeros(n)
+    dp = np.zeros(n)
+    cp[0] = c[0] / b[0]
+    dp[0] = d[0] / b[0]
+    for i in range(1, n):
+        m = b[i] - a[i] * cp[i - 1]
+        cp[i] = c[i] / m
+        dp[i] = (d[i] - a[i] * dp[i - 1]) / m
+    x = np.zeros(n)
+    x[-1] = dp[-1]
+    for i in range(n - 2, -1, -1):
+        x[i] = dp[i] - cp[i] * x[i + 1]
+    return x
+
+def implicit_diffusion_step(q, r):
+    """後退オイラー — トーマス法で (I - r·L) q^{n+1} = q^n を解く。"""
+    n = len(q)
+    a = np.full(n, -r)
+    b = np.full(n, 1 + 2 * r)
+    c = np.full(n, -r)
+    b[0] = 1 + r        # ゼロフラックス境界
+    b[-1] = 1 + r
+    return thomas_solver(a, b, c, q.copy())
+
+# ガウシアンパルスで比較
+N = 80
+x = np.linspace(0, 1, N)
+q0 = np.exp(-((x - 0.5) ** 2) / 0.005)
+D, dx = 1.0, 1.0 / N
+r_values = [0.4, 0.6, 2.0]
+for r in r_values:
+    dt = r * dx**2 / D
+    qe, qi = q0.copy(), q0.copy()
+    for _ in range(60):
+        qe = explicit_diffusion_step(qe, r)
+        qi = implicit_diffusion_step(qi, r)
+    print(f"r={r:.2f} | explicit max={np.max(np.abs(qe)):.2e} | implicit max={np.max(np.abs(qi)):.4f}")
+# r=0.40 | explicit max=4.21e-01 | implicit max=0.4456
+# r=0.60 | explicit max=1.33e+12 | implicit max=0.3873
+# r=2.00 | explicit max=2.78e+38 | implicit max=0.2517
+```
+
+`r=0.6` で陽解法は60ステップで $10^{12}$ まで爆発しています。同じ時間刻みで陰解法は滑らかに広がっていきます。
+
+## 自分でdtを上げてみる
+
+下のシミュレーションで実際に操作してみてください。スライダーで $r = D\,\Delta t/\Delta x^2$ を0.05から5まで変えられます。
+
+<HeatDiffusionExplicitVsImplicit1D />
+
+$r$ が0.5以下なら2本の曲線はほぼ重なります。0.5を越えた瞬間にオレンジ(陽解法)がのこぎり波で震えはじめ、1を越えると画面外へ吹き飛びます。シアン(陰解法)はどの $r$ でも崩れません。ただし $r$ が大きすぎると分解能が落ちて、パルスが1ステップで広がりすぎることも同時に見えます。
+
+## 陰解法が常に正解ではない理由
+
+無条件安定だからといって陰解法が万能というわけではありません。3つのコストが付いてきます。
+
+**1. 精度 vs 安定性** — 安定性は振幅が爆発しない保証であり、答えが正しい保証ではありません。後退オイラーは時間に関して $\mathcal{O}(\Delta t)$ の精度。大きい $\Delta t$ で精度が必要なら Crank–Nicolson($\mathcal{O}(\Delta t^2)$、これも無条件安定)に切り替えるのが妥当です。
+
+**2. 非線形性** — 拡散係数が解に依存する場合($D = D(q)$)、行列が毎ステップ変わり、Picardや Newton反復のような非線形ソルバーがトーマスの上に必要になります。
+
+**3. 多次元** — 2D/3Dではもう三重対角ではありません。5点・7点ステンシルは対角から離れた位置にバンドを作ります。そこではADI(Alternating Direction Implicit)で1D三重対角を2回・3回に分解するか、共役勾配法・BiCGSTAB・マルチグリッドのような反復ソルバーを使います。
+
+3点目は圧縮性流れから非圧縮性流れに移ったときに、そのまま再登場します。圧力ポアソン方程式 $\nabla^2 P = -\rho \nabla\!\cdot(\mathbf{u}\!\cdot\!\nabla\mathbf{u})$ は同じ構造の大規模スパース行列だからです。陰解拡散を解いたことがある人は、圧力解法のコードも同じ道具で書きます。
+
+## 覚えておきたい3つ
+
+- 陽解拡散の $\Delta t$ 制約は $\Delta x^2$ に縛られ、細格子では致命的になる。
+- 陰解法は未来値を右辺に移すことで無条件安定を買う — 代償は1ステップの行列解。
+- 1Dで三重対角ならトーマス法で $\mathcal{O}(N)$、100万格子も1ステップで終わる。

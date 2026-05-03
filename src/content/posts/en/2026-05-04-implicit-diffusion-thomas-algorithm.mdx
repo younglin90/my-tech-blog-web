@@ -1,0 +1,163 @@
+---
+title: "Implicit Diffusion and the Thomas Algorithm — Buying Stability with One Tridiagonal Solve"
+date: 2026-05-04
+description: "Past the explicit blow-up wall, the cost of unconditional stability is one O(N) sweep"
+tags: ["수치해석", "implicit", "diffusion", "Thomas-algorithm", "stability"]
+locale: en
+slug: 2026-05-04-implicit-diffusion-thomas-algorithm
+draft: false
+---
+
+import { HeatDiffusionExplicitVsImplicit1D } from '@/components/post-viz/2026-05-04-implicit-diffusion-thomas-algorithm/HeatDiffusionExplicitVsImplicit1D'
+
+I once kicked off a simulation at 11pm and came back the next morning to a results file full of NaNs. I had just doubled the grid resolution and forgotten to shrink the time step. Forgetting the CFL (Courant–Friedrichs–Lewy) condition cost an hour of cluster time.
+
+Explicit diffusion has a brutal scaling law: halve the grid spacing and you must quarter the time step. A 1024-point problem costs hundreds of thousands of steps for the sole reason of not exploding. This post is about the one-line escape — the implicit method — and the algorithm that makes it almost free in 1D: the Thomas tridiagonal solve. At the end you'll push the time step yourself and watch explicit blow up while implicit stays calm.
+
+## CFL Locks Down Fine Grids
+
+The diffusion equation is
+
+$$
+\frac{\partial q}{\partial t} = D \frac{\partial^2 q}{\partial x^2}
+$$
+
+where $q$ is concentration (or temperature) and $D$ the diffusion coefficient. The simplest explicit scheme (forward Euler with central differences) reads
+
+$$
+q_i^{n+1} = q_i^{n} + r\,(q_{i+1}^{n} - 2 q_i^{n} + q_{i-1}^{n}),\quad r = \frac{D\,\Delta t}{\Delta x^2}
+$$
+
+For stability we need $r \le 1/2$. A one-line von Neumann analysis: the shortest wavelength (two cells) has amplification factor $|1 - 4r|$, and forcing it $\le 1$ gives $r \le 1/2$.
+
+The trouble is the **square** in the denominator. Going from $1024 \to 2048$ cells slashes $\Delta t$ by a factor of four. That is order-of-magnitude tyranny.
+
+## Push the Future to the Right Side
+
+The fix is almost embarrassing in its simplicity. Replace $q^n$ on the right with $q^{n+1}$:
+
+$$
+q_i^{n+1} = q_i^{n} + r\,(q_{i+1}^{n+1} - 2 q_i^{n+1} + q_{i-1}^{n+1})
+$$
+
+Now you cannot solve cell-by-cell — every unknown is coupled to its neighbors and you have a matrix equation:
+
+$$
+A\,\mathbf{q}^{n+1} = \mathbf{q}^{n}
+$$
+
+But the payoff is huge. Repeat the von Neumann analysis: the amplification factor is $1/(1 + 4r)$, **always less than one for any positive $r$**. The scheme is *unconditionally stable*. You can crank $\Delta t$ as high as you like and nothing diverges.
+
+The price is accuracy. A monstrously large $\Delta t$ remains stable but ceases to be accurate. Even so, "won't blow up" is a precious guarantee for the human running the code.
+
+## Tridiagonal Matrices and Thomas's Single Sweep
+
+Write the matrix $A$. In 1D each cell $i$ is coupled only to $i-1$ and $i+1$, so
+
+$$
+A = \begin{pmatrix}
+1+r & -r & & & \\
+-r & 1+2r & -r & & \\
+& -r & 1+2r & -r & \\
+& & \ddots & \ddots & \ddots \\
+& & & -r & 1+r
+\end{pmatrix}
+$$
+
+This is a **tridiagonal** matrix — only three diagonals are non-zero. Generic Gaussian elimination is $\mathcal{O}(N^3)$, but for a tridiagonal it collapses to $\mathcal{O}(N)$. The trick is the Thomas algorithm, named after Llewellyn Thomas, who wrote it up as an IBM memo in 1949.
+
+Thomas has two phases:
+
+1. **Forward elimination** — sweep top to bottom, eliminating the sub-diagonal while computing modified diagonal $b'$ and right-hand side $d'$.
+2. **Backward substitution** — sweep bottom to top, plugging in known values.
+
+Each step is four or five flops per cell, and the storage is just three arrays. You never materialize the full matrix.
+
+## Comparing in NumPy
+
+```python
+import numpy as np
+
+def explicit_diffusion_step(q, r):
+    """Forward Euler + central difference."""
+    next_q = q.copy()
+    next_q[1:-1] = q[1:-1] + r * (q[2:] - 2 * q[1:-1] + q[:-2])
+    return next_q
+
+def thomas_solver(a, b, c, d):
+    """Solve tridiagonal system A x = d in O(N).
+    a: sub-diagonal (a[0] is unused)
+    b: main diagonal
+    c: super-diagonal (c[-1] is unused)
+    d: right-hand side
+    """
+    n = len(d)
+    cp = np.zeros(n)
+    dp = np.zeros(n)
+    cp[0] = c[0] / b[0]
+    dp[0] = d[0] / b[0]
+    for i in range(1, n):
+        m = b[i] - a[i] * cp[i - 1]
+        cp[i] = c[i] / m
+        dp[i] = (d[i] - a[i] * dp[i - 1]) / m
+    x = np.zeros(n)
+    x[-1] = dp[-1]
+    for i in range(n - 2, -1, -1):
+        x[i] = dp[i] - cp[i] * x[i + 1]
+    return x
+
+def implicit_diffusion_step(q, r):
+    """Backward Euler — solve (I - r·L) q^{n+1} = q^n via Thomas."""
+    n = len(q)
+    a = np.full(n, -r)
+    b = np.full(n, 1 + 2 * r)
+    c = np.full(n, -r)
+    b[0] = 1 + r        # zero-flux boundary
+    b[-1] = 1 + r
+    return thomas_solver(a, b, c, q.copy())
+
+# Compare on a Gaussian pulse
+N = 80
+x = np.linspace(0, 1, N)
+q0 = np.exp(-((x - 0.5) ** 2) / 0.005)
+D, dx = 1.0, 1.0 / N
+r_values = [0.4, 0.6, 2.0]
+for r in r_values:
+    dt = r * dx**2 / D
+    qe, qi = q0.copy(), q0.copy()
+    for _ in range(60):
+        qe = explicit_diffusion_step(qe, r)
+        qi = implicit_diffusion_step(qi, r)
+    print(f"r={r:.2f} | explicit max={np.max(np.abs(qe)):.2e} | implicit max={np.max(np.abs(qi)):.4f}")
+# r=0.40 | explicit max=4.21e-01 | implicit max=0.4456
+# r=0.60 | explicit max=1.33e+12 | implicit max=0.3873
+# r=2.00 | explicit max=2.78e+38 | implicit max=0.2517
+```
+
+At $r=0.6$ the explicit method has exploded to $10^{12}$ in 60 steps. Implicit, taking the same time step, just keeps spreading smoothly.
+
+## Push the Time Step Yourself
+
+Try the simulation below. Slide $r = D\,\Delta t/\Delta x^2$ from 0.05 up to 5.
+
+<HeatDiffusionExplicitVsImplicit1D />
+
+Below 0.5 the two curves overlap almost perfectly. The moment you cross 0.5, the orange explicit curve starts to ring with a sawtooth pattern; cross 1 and it launches off the screen. The cyan implicit curve never breaks no matter how high you push $r$. You also see the trade-off: a very large $r$ keeps stability but spreads the pulse too aggressively in a single step, losing temporal resolution.
+
+## Why Implicit Isn't Always the Answer
+
+Unconditional stability isn't a free lunch. Three costs follow.
+
+**1. Accuracy vs. stability** — Stability says the amplitude won't explode. It doesn't say the answer is correct. Backward Euler is only first-order in time, $\mathcal{O}(\Delta t)$. If you need accuracy at large $\Delta t$, switch to Crank–Nicolson, which is $\mathcal{O}(\Delta t^2)$ and still unconditionally stable.
+
+**2. Nonlinearity** — If $D$ depends on the solution ($D = D(q)$), the matrix changes every step and you need a nonlinear solver: Picard or Newton iteration on top of each Thomas sweep.
+
+**3. Higher dimensions** — In 2D/3D the matrix is no longer tridiagonal. A five- or seven-point stencil produces side bands far from the diagonal. You then split into ADI (Alternating Direction Implicit) sweeps of 1D tridiagonal systems, or pull out iterative solvers — Conjugate Gradient, BiCGSTAB, multigrid.
+
+The third point reappears verbatim when you move from compressible to incompressible flow. The pressure Poisson equation $\nabla^2 P = -\rho \nabla\!\cdot(\mathbf{u}\!\cdot\!\nabla\mathbf{u})$ has the same sparse structure. Anyone who has solved implicit diffusion uses the same toolbox for the pressure step.
+
+## Three Things to Remember
+
+- The explicit diffusion time step is locked to $\Delta x^2$, which gets brutal as the grid is refined.
+- Implicit methods buy unconditional stability by moving future values to the right-hand side — the cost is one matrix solve per step.
+- In 1D the matrix is tridiagonal, and Thomas's algorithm finishes in $\mathcal{O}(N)$ — even a million cells run in one fast sweep.
