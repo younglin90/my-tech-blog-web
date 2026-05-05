@@ -1,0 +1,185 @@
+---
+title: "Jacobi 1万回でも消えない誤差を、V-サイクル10回で消す ― マルチグリッドの本当の秘密"
+date: 2026-05-06
+description: "格子を変えれば周波数が変わる ― 階層が遅い誤差を速い誤差に変換する原理"
+tags: ["Multigrid", "Krylov", "수치해석", "Poisson", "iterative-solver"]
+locale: ja
+slug: 2026-05-06-multigrid-v-cycle-poisson-acceleration
+draft: false
+---
+
+import { MultigridVCycleConvergence } from '@/components/post-viz/2026-05-06-multigrid-v-cycle-poisson-acceleration/MultigridVCycleConvergence'
+
+## Jacobi 1万回が終わらない理由
+
+エンジニア B さんは 1024×1024 格子で圧力 Poisson を点 Jacobi で解いていました。200 秒たっても残差は同じ桁で揺れたまま。CFL は十分小さく、格子も直交。コードに誤りはありません。問題はもっと単純でやっかいでした ― Jacobi では決して消せない誤差があるのです。
+
+この記事ではその「不滅の誤差」の正体を解きほぐします。話の核心は一行で済みます ― 同じ誤差でも格子が変われば周波数が変わる。V-サイクルはこの一行を真面目に受け取ったときに生まれます。最後まで読めば、50 行ほどの NumPy マルチグリッドと、Jacobi が 1000 回かけても消せないものを V-サイクルが 10 回で消す様子を、目で確認できます。
+
+## 誤差の周波数 ― 早く死ぬものと永遠に生きるもの
+
+線形系 $A u = f$ を解いているとします。現在の近似解 $u^{(k)}$ の誤差は
+
+$$
+e^{(k)} = u_{\text{exact}} - u^{(k)}
+$$
+
+一本のベクトルです。残差は $r^{(k)} = f - A u^{(k)} = A e^{(k)}$ で与えられます。
+
+重み付き Jacobi のスペクトル解析を行うと、誤差中の Fourier モード $\sin(j \pi x)$ は一回の反復で
+
+$$
+e^{(k+1)}_j = \left(1 - \omega + \omega \cos(j \pi h)\right) e^{(k)}_j
+$$
+
+だけ減衰します。ここで $\omega$ は緩和係数、$j$ はモード番号、$h$ は格子間隔です。減衰係数の絶対値を表で見てみましょう。
+
+| モード | $j h$ | 減衰係数 ($\omega = 2/3$) |
+|---|---|---|
+| 最も振動的 | 1.0 | $\approx 1/3$ |
+| 中間 | 0.5 | $\approx 0.67$ |
+| 最も緩やか | $1/N$ | $\approx 1.0 - O(h^2)$ |
+
+短波長は一回の掃引で 1/3 に縮みます。長波長はほとんど動きません。Jacobi が殺せないのは、結局のところ格子全体に広がる滑らかな低周波誤差です。
+
+## 粗い格子で見るとその低周波は高周波になる
+
+ここでマルチグリッドの決定的な洞察が登場します。$N$ セル上で表現できる最長波長は $\lambda \sim N h$ です。同じ波長を $N/2$ セルの粗い格子に移すと、新しい格子間隔から見ればセル数が半分になり、相対的に短い波長になります。より正確に言えば、ファイン格子の最低モードは粗い格子では中間モードに見えます。中間モードはまさに Jacobi が得意とする相手です。
+
+もう一段粗くすればさらに短い波長になります。$\log_2 N$ 段まで降りれば、すべてのモードはどこかの階層で「高周波」になります。各階層で Jacobi を数回ずつ回せば、すべての誤差が消える ― 理屈としてはそうなります。
+
+## V-サイクル ― 降りて再び上る道
+
+この洞察をアルゴリズムに落とし込んだのが V-サイクルです。1 サイクルは次の通り。
+
+1. **前緩和 (pre-smoothing)** ― ファイン格子で Jacobi を $\nu_1$ 回。
+2. **残差計算** ― $r_h = f_h - A_h u_h$。
+3. **制限 (restriction)** ― $r_{2h} = R\, r_h$。残差を粗い格子へ移す。
+4. **再帰呼び出し** ― 補正方程式 $A_{2h} e_{2h} = r_{2h}$ を粗い格子上で再び V-サイクルで解く（十分小さければ直接解）。
+5. **延長 (prolongation)** ― $e_h = P\, e_{2h}$。補正をファイン格子へ持ち上げる。
+6. **補正** ― $u_h \leftarrow u_h + e_h$。
+7. **後緩和 (post-smoothing)** ― ファイン格子で Jacobi を $\nu_2$ 回。
+
+降りるときは残差だけを、上るときは補正だけを運びます。経路はちょうど V の字 ― 一回の下降と一回の上昇です。1 サイクルの総コストは $O(N)$ ― ファイン格子 1 回掃引ぶんのコストに、幾何級数で小さくなる項を加えたものだからです。そして 1 サイクルで残差は約 1 桁落ちます。
+
+## 制限と延長 ― 二つの格子の為替レート
+
+格子間を行き来する二つの作用素は、対になる必要があります。1D vertex-centered 格子で最も単純な対は次のものです。
+
+**Full-weighting 制限：** 粗い格子点 $i$ の残差は、ファイン格子点 $2i-1, 2i, 2i+1$ の重み付き平均。
+
+$$
+r_{2h, i} = \frac{1}{4} r_{h, 2i-1} + \frac{1}{2} r_{h, 2i} + \frac{1}{4} r_{h, 2i+1}
+$$
+
+**線形延長：** 粗い格子と一致する点ではそのまま、間の点では両隣の平均。
+
+$$
+e_{h, 2i} = e_{2h, i}, \qquad e_{h, 2i+1} = \frac{1}{2}\left(e_{2h, i} + e_{2h, i+1}\right)
+$$
+
+この二つは転置の関係（$P = c R^T$、$c$ は格子比定数）を満たし、これが V-サイクルの収束保証に決定的な役割を果たします。非対称な対を使うと発散することもあります。
+
+## Python で追う 2 格子 V-サイクル
+
+1D Poisson $-u''(x) = f(x)$ ($u(0)=u(1)=0$) を V-サイクルで解きます。64 セルから出発。
+
+```python
+import numpy as np
+
+class GridLevel:
+    """1 つの格子レベルの状態：解、右辺、格子間隔。"""
+    def __init__(self, n):
+        self.n = n              # セル数
+        self.h = 1.0 / n
+        self.u = np.zeros(n + 1)
+        self.f = np.zeros(n + 1)
+
+def jacobi_relax(u, f, h, iters):
+    """1D Poisson 用の重み付き Jacobi。両端は Dirichlet ゼロ。"""
+    n = len(u) - 1
+    nxt = np.zeros_like(u)
+    for _ in range(iters):
+        nxt[1:n] = 0.5 * (u[0:n-1] + u[2:n+1] + h * h * f[1:n])
+        u[1:n] = nxt[1:n]
+    return u
+
+def residual_norm(u, f, h):
+    n = len(u) - 1
+    r = np.zeros_like(u)
+    inv = 1.0 / (h * h)
+    r[1:n] = f[1:n] - (-u[0:n-1] + 2 * u[1:n] - u[2:n+1]) * inv
+    return float(np.sqrt(np.mean(r[1:n] ** 2)))
+
+def restrict_full_weighting(rh):
+    n = len(rh) - 1
+    n2 = n // 2
+    r2 = np.zeros(n2 + 1)
+    r2[1:n2] = 0.25 * rh[1:n-1:2] + 0.5 * rh[2:n:2] + 0.25 * rh[3:n+1:2]
+    return r2
+
+def prolong_linear(e2h):
+    n2 = len(e2h) - 1
+    n = 2 * n2
+    eh = np.zeros(n + 1)
+    eh[2:n:2] = e2h[1:n2]
+    eh[1:n+1:2] = 0.5 * (e2h[0:n2] + e2h[1:n2+1])
+    return eh
+
+def v_cycle(u, f, h, n_pre=2, n_post=2):
+    n = len(u) - 1
+    if n <= 4:
+        return jacobi_relax(u, f, h, 50)
+    jacobi_relax(u, f, h, n_pre)
+    inv = 1.0 / (h * h)
+    r = np.zeros_like(u)
+    r[1:n] = f[1:n] - (-u[0:n-1] + 2 * u[1:n] - u[2:n+1]) * inv
+    r2 = restrict_full_weighting(r)
+    e2 = np.zeros_like(r2)
+    v_cycle(e2, r2, 2 * h, n_pre, n_post)
+    e = prolong_linear(e2)
+    u += e
+    jacobi_relax(u, f, h, n_post)
+    return u
+
+# --- 実行 ---
+n = 64
+h = 1.0 / n
+x = np.linspace(0, 1, n + 1)
+f = (np.pi ** 2) * np.sin(np.pi * x)   # 厳密解 u = sin(πx)
+
+u_jac = np.zeros(n + 1)
+u_mg = np.zeros(n + 1)
+
+for k in range(20):
+    jacobi_relax(u_jac, f, h, 4)
+    v_cycle(u_mg, f, h, n_pre=2, n_post=2)
+    print(f"step {k:3d} | jacobi r={residual_norm(u_jac, f, h):.3e} "
+          f"v-cycle r={residual_norm(u_mg, f, h):.3e}")
+```
+
+`step` 一回あたり Jacobi はファイン掃引 4 回、V-サイクルもファイン換算で 4 回（前 2 回 + 後 2 回）です。仕事量はおおむね同じ。それでも残差の落ちる速さは比べものになりません。20 ステップ後、V-サイクルの残差は通常 $10^{-10}$ 以下に達し、Jacobi は $10^{-2}$ 付近で停滞しています。
+
+## Jacobi 1000 回 vs V-サイクル 10 回 ― 直接比べてみる
+
+下のシミュレーションを直接操作してみてください。同じランダム初期推定、同じゼロ右辺（厳密解 = 0）、同じ 64 セル格子で、二つのソルバが残差をどう減らすかを上下二段で並べて表示します。
+
+<MultigridVCycleConvergence />
+
+Run を押して 30 秒待つだけです。上段のオレンジ曲線（Jacobi）は細かい振動だけ消え、大きなうねりはそのまま残ります。シアン色（V-サイクル）はほとんど即座にゼロ近くまで平らになります。下段の対数残差グラフでは、シアン色がほぼ直線で落ちる一方、オレンジは平坦線に張り付きます ― この平坦線こそ Jacobi が殺せない低周波誤差です。Pre/Post スライダを 1 と 5 の間で動かすと、前緩和・後緩和を増やすほど V-サイクルが速く落ちますが、3 を超えると効果は急速に頭打ちになります。
+
+## それでも常に速いとは限らない ― 二つの罠
+
+V-サイクルは魔法ではありません。実務でよく崩れる二箇所。
+
+**罠 1 ― 粗い係数。** 異方性係数や跳びのある係数の Poisson では、Jacobi が良い smoother になりません。$-\nabla \cdot (k(x) \nabla u) = f$ で $k$ が桁単位で跳ぶと、標準 V-サイクルは残差がある桁で停止します。対処法は line-Jacobi、整列格子、または代数的マルチグリッド（AMG）― 格子ではなく行列から階層を直接構築します。
+
+**罠 2 ― 非整合格子。** 非構造格子や AMR（適応格子細分化）格子では、ファイン↔粗の対応が自明ではありません。agglomeration multigrid はファインセルをまとめて粗セルを定義し、制限は体積加重平均、延長はセル中心補間を使います。実装は重くなりますが、OpenFOAM の GAMG はまさにこの方式です。
+
+第三の注意：V-サイクルの収束率が格子非依存（$O(N)$）になるのは、smoother・作用素・格子比の三つがすべてうまく組み合わされたときだけです。どれかひとつでもずれると反復回数が格子サイズに従って徐々に増えます ― そのときこそ W-サイクルや F-サイクルの出番です。
+
+## 明日も覚えておきたい三つ
+
+- Jacobi・Gauss–Seidel は **高周波誤差だけ** を殺します。低周波には格子を変える必要があります。
+- V-サイクル 1 回 = $O(N)$ の仕事で残差 1 桁減。1 桁あたりのコストはどんな単純反復にも勝ります。
+- 粗い係数、異方性、非構造メッシュでは教科書的 V-サイクルは止まります ― そのときが AMG や smoother の置換を考えるべき瞬間です。

@@ -27,6 +27,7 @@ export const VIZ_COMPONENTS: Record<string, ComponentType> = {
   "LawOfTheWallProfile": dynamic(() => import("@/components/post-viz/2026-05-05-reynolds-pipe-transition-turbulence/LawOfTheWallProfile").then((m) => ({ default: m.LawOfTheWallProfile })), { ssr: false, loading: VizLoading }),
   "LimiterAdvection1D": dynamic(() => import("@/components/post-viz/2026-04-24-flux-limiter-tvd-advection/LimiterAdvection1D").then((m) => ({ default: m.LimiterAdvection1D })), { ssr: false, loading: VizLoading }),
   "MachArchitect": dynamic(() => import("@/components/MachArchitect").then((m) => ({ default: m.MachArchitect })), { ssr: false, loading: VizLoading }),
+  "MultigridVCycleConvergence": dynamic(() => import("@/components/post-viz/2026-05-06-multigrid-v-cycle-poisson-acceleration/MultigridVCycleConvergence").then((m) => ({ default: m.MultigridVCycleConvergence })), { ssr: false, loading: VizLoading }),
   "MUSCLTHINCBVDPicker": dynamic(() => import("@/components/post-viz/2026-05-02-muscl-thinc-bvd-interface-reconstruction/MUSCLTHINCBVDPicker").then((m) => ({ default: m.MUSCLTHINCBVDPicker })), { ssr: false, loading: VizLoading }),
   "NumericalDungeon": dynamic(() => import("@/components/NumericalDungeon").then((m) => ({ default: m.NumericalDungeon })), { ssr: false, loading: VizLoading }),
   "NumericalScheme": dynamic(() => import("@/components/viz/NumericalScheme").then((m) => ({ default: m.NumericalScheme })), { ssr: false, loading: VizLoading }),

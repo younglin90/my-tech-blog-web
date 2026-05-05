@@ -1,0 +1,185 @@
+---
+title: "Jacobi 1만 번이 못 푸는 것을 V-사이클 10번이 푼다 — 멀티그리드의 진짜 비밀"
+date: 2026-05-06
+description: "오차의 주파수를 갈아끼우면 잡는다, 격자 계층이 만드는 가속의 원리"
+tags: ["Multigrid", "Krylov", "수치해석", "Poisson", "iterative-solver"]
+locale: ko
+slug: 2026-05-06-multigrid-v-cycle-poisson-acceleration
+draft: false
+---
+
+import { MultigridVCycleConvergence } from '@/components/post-viz/2026-05-06-multigrid-v-cycle-poisson-acceleration/MultigridVCycleConvergence'
+
+## Jacobi 1만 번이 안 끝나는 이유
+
+엔지니어 B는 1024×1024 격자에서 압력 Poisson을 Jacobi로 풀고 있었다. 200초가 지나도 잔차는 같은 자릿수에서 깜빡거렸다. CFL은 작았고, 격자도 직교였다. 코드는 옳았다. 다만 어떤 오차는 Jacobi가 영영 죽이지 못한다.
+
+이 포스트는 그 "영영 안 죽는 오차"의 정체를 푸는 이야기다. 핵심은 한 줄이다 — 같은 오차도 격자가 바뀌면 주파수가 바뀐다. 그리고 그 한 줄에서 V-사이클이 태어난다. 끝까지 읽으면 50줄짜리 NumPy 멀티그리드와, 완화법이 1만 번 못 죽이는 것을 V-사이클이 10번에 죽이는 모습을 직접 본다.
+
+## 오차의 주파수 — 누가 일찍 죽고, 누가 늙도록 살아남는가
+
+선형계 $A u = f$ 를 풀고 있다고 하자. 현재 추정 $u^{(k)}$ 의 오차는
+
+$$
+e^{(k)} = u_{\text{exact}} - u^{(k)}
+$$
+
+가운데 점선 한 줄. 잔차는 $r^{(k)} = f - A u^{(k)} = A e^{(k)}$ 이다.
+
+가중 Jacobi(weighted Jacobi)의 오차 전파를 분석하면, 오차의 푸리에 모드 $\sin(k \pi x)$ 는 한 단계 후
+
+$$
+e^{(k+1)}_j = \left(1 - \omega + \omega \cos(j \pi h)\right) e^{(k)}_j
+$$
+
+만큼 감쇠한다. 여기서 $\omega$ 는 완화 계수, $j$ 는 모드 번호, $h$ 는 격자 간격이다. 감쇠 계수의 절댓값을 보자.
+
+| 모드 | $j h$ | 감쇠 계수 ($\omega = 2/3$) |
+|---|---|---|
+| 가장 빠른 진동 | 1.0 | $\approx 1/3$ |
+| 중간 | 0.5 | $\approx 0.67$ |
+| 가장 느린 | $1/N$ | $\approx 1.0 - O(h^2)$ |
+
+고주파(짧은 파장)는 한 사이클에 1/3로 줄어든다. 저주파(긴 파장)는 거의 안 줄어든다. Jacobi가 못 죽이는 건 결국 저주파다 — 격자 전체에 깔린 완만한 언덕.
+
+## 성긴 격자에서는 그 저주파가 고주파다
+
+여기서 멀티그리드의 결정적 통찰이 나온다. $N$ 개 셀에서 가장 긴 파장은 $\lambda \sim N h$ 다. 이걸 $N/2$ 셀의 성긴 격자로 옮기면 같은 파장이 격자 입장에서는 절반의 셀 수만 차지한다 — 즉, 더 짧은 파장이 된다. 더 정확히 말하면, fine 격자의 가장 낮은 모드는 coarse 격자에서 중간 모드로 보인다. 그리고 중간 모드는 그곳의 Jacobi가 잘 죽인다.
+
+격자를 한 단계 더 성기게 만들면 한 단계 더 짧은 파장이 된다. $\log_2 N$ 단계까지 내려가면 모든 모드는 어딘가에서 "고주파"가 된다. 모든 곳에서 Jacobi 몇 번씩만 돌리면 모든 오차가 죽는다 — 이론상.
+
+## V-사이클 — 내려갔다 올라오는 길
+
+이 통찰을 알고리듬으로 만든 것이 V-사이클이다. 한 V-사이클은 다음과 같다.
+
+1. **사전 완화 (pre-smoothing)** — fine 격자에서 Jacobi $\nu_1$ 회.
+2. **잔차 계산** — $r_h = f_h - A_h u_h$ .
+3. **제한 (restriction)** — $r_{2h} = R\, r_h$ . 잔차를 성긴 격자로 옮긴다.
+4. **재귀 호출** — coarse 격자에서 보정 $A_{2h} e_{2h} = r_{2h}$ 를 V-사이클로 푼다 (성긴 격자가 충분히 작으면 직접 풀이).
+5. **연장 (prolongation)** — $e_h = P\, e_{2h}$ . 보정을 fine 격자로 올린다.
+6. **보정** — $u_h \leftarrow u_h + e_h$ .
+7. **사후 완화 (post-smoothing)** — fine 격자에서 Jacobi $\nu_2$ 회.
+
+내려가는 도중엔 잔차만 들고 가고, 올라오는 도중엔 보정만 들고 온다. V자처럼 한 번 깊이 들어갔다가 다시 올라온다. 한 사이클의 전체 비용은 $O(N)$ 이다 — fine 격자 한 번 돌리는 비용에 기하급수로 작아지는 항을 더한 것이기 때문이다. 그리고 한 사이클이 잔차를 한 자릿수씩 떨어뜨린다.
+
+## Restriction과 Prolongation — 두 격자 사이의 환율
+
+두 격자 사이를 옮기는 두 연산자는 서로 짝을 이뤄야 한다. 1D vertex-centered 격자에서 가장 단순한 짝은 다음이다.
+
+**Full weighting 제한:** coarse 점 $i$ 의 잔차는 fine 점 $2i-1, 2i, 2i+1$ 의 가중 평균.
+
+$$
+r_{2h, i} = \frac{1}{4} r_{h, 2i-1} + \frac{1}{2} r_{h, 2i} + \frac{1}{4} r_{h, 2i+1}
+$$
+
+**선형 연장:** coarse 격자 점 위에서는 그대로, 사이 점에서는 두 이웃의 평균.
+
+$$
+e_{h, 2i} = e_{2h, i}, \qquad e_{h, 2i+1} = \frac{1}{2}\left(e_{2h, i} + e_{2h, i+1}\right)
+$$
+
+이 둘은 transpose 관계 ($P = c R^T$, $c$ 는 격자비 상수)를 만족하는데, 이게 V-사이클의 수렴 보장에 결정적이다. 비대칭 짝을 쓰면 발산할 수 있다.
+
+## Python으로 따라가는 2격자 V-사이클
+
+1D Poisson $-u''(x) = f(x)$ , $u(0)=u(1)=0$ 을 V-사이클로 푼다. 격자 64셀에서 시작.
+
+```python
+import numpy as np
+
+class GridLevel:
+    """한 격자 수준의 상태: 해, 우변, 격자간격."""
+    def __init__(self, n):
+        self.n = n              # 셀 개수
+        self.h = 1.0 / n
+        self.u = np.zeros(n + 1)
+        self.f = np.zeros(n + 1)
+
+def jacobi_relax(u, f, h, iters):
+    """1D Poisson용 가중 잡코비. 양 끝은 디리클레 0."""
+    n = len(u) - 1
+    nxt = np.zeros_like(u)
+    for _ in range(iters):
+        nxt[1:n] = 0.5 * (u[0:n-1] + u[2:n+1] + h * h * f[1:n])
+        u[1:n] = nxt[1:n]
+    return u
+
+def residual_norm(u, f, h):
+    n = len(u) - 1
+    r = np.zeros_like(u)
+    inv = 1.0 / (h * h)
+    r[1:n] = f[1:n] - (-u[0:n-1] + 2 * u[1:n] - u[2:n+1]) * inv
+    return float(np.sqrt(np.mean(r[1:n] ** 2)))
+
+def restrict_full_weighting(rh):
+    n = len(rh) - 1
+    n2 = n // 2
+    r2 = np.zeros(n2 + 1)
+    r2[1:n2] = 0.25 * rh[1:n-1:2] + 0.5 * rh[2:n:2] + 0.25 * rh[3:n+1:2]
+    return r2
+
+def prolong_linear(e2h):
+    n2 = len(e2h) - 1
+    n = 2 * n2
+    eh = np.zeros(n + 1)
+    eh[2:n:2] = e2h[1:n2]
+    eh[1:n+1:2] = 0.5 * (e2h[0:n2] + e2h[1:n2+1])
+    return eh
+
+def v_cycle(u, f, h, n_pre=2, n_post=2):
+    n = len(u) - 1
+    if n <= 4:
+        return jacobi_relax(u, f, h, 50)
+    jacobi_relax(u, f, h, n_pre)
+    inv = 1.0 / (h * h)
+    r = np.zeros_like(u)
+    r[1:n] = f[1:n] - (-u[0:n-1] + 2 * u[1:n] - u[2:n+1]) * inv
+    r2 = restrict_full_weighting(r)
+    e2 = np.zeros_like(r2)
+    v_cycle(e2, r2, 2 * h, n_pre, n_post)
+    e = prolong_linear(e2)
+    u += e
+    jacobi_relax(u, f, h, n_post)
+    return u
+
+# --- 실행 ---
+n = 64
+h = 1.0 / n
+x = np.linspace(0, 1, n + 1)
+f = (np.pi ** 2) * np.sin(np.pi * x)   # 정해 u = sin(πx)
+
+u_jac = np.zeros(n + 1)
+u_mg = np.zeros(n + 1)
+
+for k in range(20):
+    jacobi_relax(u_jac, f, h, 4)
+    v_cycle(u_mg, f, h, n_pre=2, n_post=2)
+    print(f"step {k:3d} | jacobi r={residual_norm(u_jac, f, h):.3e} "
+          f"v-cycle r={residual_norm(u_mg, f, h):.3e}")
+```
+
+`step` 한 번에 Jacobi는 4번, V-사이클은 fine 격자 기준 4번(2 pre + 2 post) 사용한다. 비용은 비슷한데 잔차 떨어지는 속도는 비교가 안 된다. 20 스텝 후 V-사이클 잔차는 보통 $10^{-10}$ 이하, Jacobi는 $10^{-2}$ 근처에 멈춰 있다.
+
+## Jacobi 1000번 vs V-사이클 10번 — 직접 비교
+
+아래 시뮬레이션에서 직접 조작해보자. 같은 무작위 초기 추정, 같은 빈 우변(정해 = 0), 같은 64셀 격자에서 두 솔버가 잔차를 어떻게 줄이는지 위·아래 두 패널로 보여준다.
+
+<MultigridVCycleConvergence />
+
+Run을 누르고 30초만 기다리면, 위 패널의 주황색 곡선(Jacobi)은 진동만 잦아들고 큰 봉우리는 그대로 남는다. 시안색(V-사이클)은 곧장 0에 가깝게 평평해진다. 아래 패널의 로그-잔차 그래프에서는 시안색이 거의 직선으로 떨어지는 반면 주황색은 평탄선에 갇힌다 — 이게 Jacobi가 죽이지 못하는 저주파다. Pre/Post 슬라이더를 1과 5 사이에서 바꿔보면, 사전·사후 완화를 늘릴수록 V-사이클이 더 빨리 떨어지지만 한계 효용은 빠르게 줄어든다.
+
+## 왜 그래도 항상 빠르지는 않은가 — 두 가지 함정
+
+V-사이클이 마법은 아니다. 실무에서 자주 깨지는 두 지점.
+
+**함정 1 — 거친 계수.** 이방성 또는 점프성 계수의 Poisson에서는 Jacobi가 적당한 smoother가 되지 못한다. $-\nabla \cdot (k(x) \nabla u) = f$ 에서 $k$ 가 자릿수로 점프하면, 표준 V-사이클은 잔차가 어느 자릿수에서 멈춘다. 해결책은 line-Jacobi, 알라인드 격자, 또는 Algebraic Multigrid (AMG) — 격자가 아니라 행렬에서 직접 계층을 만든다.
+
+**함정 2 — 비등각 격자.** 비정렬 격자나 AMR(Adaptive Mesh Refinement) 격자에서는 fine→coarse 매핑이 자명하지 않다. agglomeration multigrid는 fine 셀들을 묶어 coarse 셀을 정의하고, restriction은 부피 가중 평균, prolongation은 cell-centered 보간을 쓴다. 구현은 복잡하지만 OpenFOAM의 GAMG가 이 방식이다.
+
+여기에 셋째를 더하면, V-사이클의 수렴률은 smoother·연산자·격자비 셋이 모두 잘 짝지어졌을 때만 격자 독립 ($O(N)$) 이 된다. 하나라도 어긋나면 수렴 횟수가 격자 크기에 따라 슬쩍 늘어난다 — 이때가 W-사이클이나 F-사이클을 시도할 때다.
+
+## 오늘 챙겨가야 할 세 가지
+
+- 잡코비·가우스-자이델은 **고주파 오차만** 죽인다. 저주파는 격자를 바꿔야 한다.
+- V-사이클 한 번 = $O(N)$ 비용에 잔차 한 자릿수 감소. 비용/효과는 어떤 단순 반복법보다 좋다.
+- 거친 계수·이방성·비정렬 격자에선 표준 V-사이클이 무너진다 — 이 때부터 AMG·smoother 교체를 본다.

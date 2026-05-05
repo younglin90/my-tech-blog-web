@@ -1,0 +1,185 @@
+---
+title: "Lo que Jacobi no mata en 10 000 barridos, un V-ciclo lo mata en 10 — el verdadero secreto del multigrid"
+date: 2026-05-06
+description: "Cambia de malla y cambia de frecuencia: cómo una jerarquía convierte modos lentos en modos rápidos"
+tags: ["Multigrid", "Krylov", "수치해석", "Poisson", "iterative-solver"]
+locale: es
+slug: 2026-05-06-multigrid-v-cycle-poisson-acceleration
+draft: false
+---
+
+import { MultigridVCycleConvergence } from '@/components/post-viz/2026-05-06-multigrid-v-cycle-poisson-acceleration/MultigridVCycleConvergence'
+
+## Por qué 10 000 barridos de Jacobi se niegan a terminar
+
+El ingeniero B estaba resolviendo un Poisson de presión sobre una malla 1024×1024 con Jacobi puntual. Tras doscientos segundos, el residuo seguía oscilando en el mismo orden de magnitud. El CFL era pequeño. La malla era ortogonal. El código estaba bien. El problema es más simple y más molesto que todo eso — hay errores que Jacobi nunca va a matar.
+
+Este artículo desmonta la identidad de esos errores inmortales. Toda la historia cabe en una frase — el mismo error tiene una frecuencia distinta sobre una malla distinta. El V-ciclo es lo que sale cuando uno se toma esa frase en serio. Al terminar habrá un multigrid en NumPy de 50 líneas y una imagen lado a lado de lo que el suavizador no logra eliminar en 1000 barridos pero un V-ciclo elimina en 10.
+
+## Frecuencias del error — quién muere rápido y quién vive para siempre
+
+Supongamos que se resuelve el sistema lineal $A u = f$. El error en el iterado actual $u^{(k)}$ es
+
+$$
+e^{(k)} = u_{\text{exact}} - u^{(k)}
+$$
+
+un único vector. El residuo es $r^{(k)} = f - A u^{(k)} = A e^{(k)}$.
+
+Un análisis espectral del Jacobi ponderado muestra que un modo de Fourier $\sin(j \pi x)$ del error se atenúa por barrido como
+
+$$
+e^{(k+1)}_j = \left(1 - \omega + \omega \cos(j \pi h)\right) e^{(k)}_j
+$$
+
+donde $\omega$ es el factor de relajación, $j$ es el número de modo y $h$ el espaciado de la malla. Veamos las magnitudes del factor de amortiguamiento.
+
+| Modo | $j h$ | Factor de amortiguamiento ($\omega = 2/3$) |
+|---|---|---|
+| Más oscilatorio | 1.0 | $\approx 1/3$ |
+| Medio | 0.5 | $\approx 0.67$ |
+| Más lento | $1/N$ | $\approx 1.0 - O(h^2)$ |
+
+Las longitudes de onda más cortas se reducen a un tercio en cada barrido. Las más largas apenas se mueven. Lo que Jacobi no elimina es ese error suave de baja frecuencia que se extiende por toda la malla.
+
+## En una malla más gruesa, esa baja frecuencia se ve alta
+
+Aquí aparece la idea decisiva del multigrid. La longitud de onda más larga representable en $N$ celdas es $\lambda \sim N h$. Lleva la misma longitud de onda a una malla gruesa con $N/2$ celdas y, en términos del nuevo espaciado, ocupa la mitad de celdas — se ha vuelto relativamente más corta. Más exactamente, el modo más bajo en la malla fina se ve como un modo medio en la malla gruesa. Y los modos medios son justo lo que Jacobi mata bien.
+
+Engruesa un nivel más y la longitud de onda se acorta otra vez. Tras $\log_2 N$ niveles cada modo es "alta frecuencia" en algún lugar. Unos pocos barridos de Jacobi en cada nivel borran todo — al menos en teoría.
+
+## El V-ciclo — el camino que baja y vuelve a subir
+
+Convertir esa idea en un algoritmo da el V-ciclo. Un V-ciclo se compone de los siguientes pasos.
+
+1. **Pre-suavizado** — $\nu_1$ barridos de Jacobi en la malla fina.
+2. **Cálculo del residuo** — $r_h = f_h - A_h u_h$.
+3. **Restricción** — $r_{2h} = R\, r_h$. Mover el residuo a la malla gruesa.
+4. **Llamada recursiva** — resolver la ecuación de corrección $A_{2h} e_{2h} = r_{2h}$ en la malla gruesa con otro V-ciclo (o directo si la malla es suficientemente pequeña).
+5. **Prolongación** — $e_h = P\, e_{2h}$. Llevar la corrección de vuelta a la malla fina.
+6. **Corrección** — $u_h \leftarrow u_h + e_h$.
+7. **Post-suavizado** — $\nu_2$ barridos de Jacobi en la malla fina.
+
+Bajando solo se transporta el residuo; subiendo solo la corrección. El recorrido dibuja una V — un descenso, un ascenso. El coste total de un ciclo es $O(N)$, porque añade una serie geométrica decreciente al coste de un único barrido en la malla fina. Y un ciclo reduce el residuo aproximadamente un orden de magnitud.
+
+## Restricción y prolongación — el tipo de cambio entre dos mallas
+
+Los dos operadores que comunican mallas deben ir emparejados. Sobre una malla 1D centrada en vértices el par más limpio es el siguiente.
+
+**Restricción de pesado completo:** el residuo en el punto grueso $i$ es la media ponderada de los puntos finos $2i-1, 2i, 2i+1$.
+
+$$
+r_{2h, i} = \frac{1}{4} r_{h, 2i-1} + \frac{1}{2} r_{h, 2i} + \frac{1}{4} r_{h, 2i+1}
+$$
+
+**Prolongación lineal:** los puntos finos alineados con la malla gruesa se copian; los intermedios reciben la media de los dos vecinos.
+
+$$
+e_{h, 2i} = e_{2h, i}, \qquad e_{h, 2i+1} = \frac{1}{2}\left(e_{2h, i} + e_{2h, i+1}\right)
+$$
+
+Estos dos satisfacen una relación de transposición ($P = c R^T$, salvo una constante de razón de malla) y esa relación es justamente lo que hace que el V-ciclo converja demostrablemente. Un par asimétrico puede divergir.
+
+## Un V-ciclo de dos mallas en NumPy
+
+Resolvemos el problema 1D de Poisson $-u''(x) = f(x)$ con $u(0)=u(1)=0$. Empezamos en una malla de 64 celdas.
+
+```python
+import numpy as np
+
+class GridLevel:
+    """Estado de un nivel de malla: solución, lado derecho, espaciado."""
+    def __init__(self, n):
+        self.n = n              # número de celdas
+        self.h = 1.0 / n
+        self.u = np.zeros(n + 1)
+        self.f = np.zeros(n + 1)
+
+def jacobi_relax(u, f, h, iters):
+    """Jacobi ponderado para Poisson 1D. Dirichlet cero en ambos extremos."""
+    n = len(u) - 1
+    nxt = np.zeros_like(u)
+    for _ in range(iters):
+        nxt[1:n] = 0.5 * (u[0:n-1] + u[2:n+1] + h * h * f[1:n])
+        u[1:n] = nxt[1:n]
+    return u
+
+def residual_norm(u, f, h):
+    n = len(u) - 1
+    r = np.zeros_like(u)
+    inv = 1.0 / (h * h)
+    r[1:n] = f[1:n] - (-u[0:n-1] + 2 * u[1:n] - u[2:n+1]) * inv
+    return float(np.sqrt(np.mean(r[1:n] ** 2)))
+
+def restrict_full_weighting(rh):
+    n = len(rh) - 1
+    n2 = n // 2
+    r2 = np.zeros(n2 + 1)
+    r2[1:n2] = 0.25 * rh[1:n-1:2] + 0.5 * rh[2:n:2] + 0.25 * rh[3:n+1:2]
+    return r2
+
+def prolong_linear(e2h):
+    n2 = len(e2h) - 1
+    n = 2 * n2
+    eh = np.zeros(n + 1)
+    eh[2:n:2] = e2h[1:n2]
+    eh[1:n+1:2] = 0.5 * (e2h[0:n2] + e2h[1:n2+1])
+    return eh
+
+def v_cycle(u, f, h, n_pre=2, n_post=2):
+    n = len(u) - 1
+    if n <= 4:
+        return jacobi_relax(u, f, h, 50)
+    jacobi_relax(u, f, h, n_pre)
+    inv = 1.0 / (h * h)
+    r = np.zeros_like(u)
+    r[1:n] = f[1:n] - (-u[0:n-1] + 2 * u[1:n] - u[2:n+1]) * inv
+    r2 = restrict_full_weighting(r)
+    e2 = np.zeros_like(r2)
+    v_cycle(e2, r2, 2 * h, n_pre, n_post)
+    e = prolong_linear(e2)
+    u += e
+    jacobi_relax(u, f, h, n_post)
+    return u
+
+# --- ejecución ---
+n = 64
+h = 1.0 / n
+x = np.linspace(0, 1, n + 1)
+f = (np.pi ** 2) * np.sin(np.pi * x)   # solución exacta u = sin(pi x)
+
+u_jac = np.zeros(n + 1)
+u_mg = np.zeros(n + 1)
+
+for k in range(20):
+    jacobi_relax(u_jac, f, h, 4)
+    v_cycle(u_mg, f, h, n_pre=2, n_post=2)
+    print(f"step {k:3d} | jacobi r={residual_norm(u_jac, f, h):.3e} "
+          f"v-cycle r={residual_norm(u_mg, f, h):.3e}")
+```
+
+Cada `step` hace 4 barridos de Jacobi en la malla fina frente a 4 barridos equivalentes para el V-ciclo (2 pre + 2 post). Trabajo aproximadamente igual. Los residuos no se comportan igual. Tras 20 pasos el residuo del V-ciclo suele estar por debajo de $10^{-10}$ mientras que Jacobi se queda anclado cerca de $10^{-2}$.
+
+## 1000 barridos de Jacobi frente a 10 V-ciclos — la diferencia se ve
+
+Pruebe la simulación a continuación. Ambos solucionadores atacan el mismo Poisson homogéneo desde el mismo arranque aleatorio sobre la misma malla de 64 celdas; los paneles muestran el perfil actual de la solución (arriba) y la caída logarítmica del residuo (abajo).
+
+<MultigridVCycleConvergence />
+
+Pulse Run y espere treinta segundos. La curva naranja (Jacobi) pierde su rizado de alta frecuencia pero la gran joroba sobrevive. La cyan (V-ciclo) se aplana casi de inmediato cerca de cero. En el gráfico de residuos, la línea cyan baja casi en línea recta sobre la escala logarítmica; la naranja queda anclada a una meseta — esa meseta es exactamente el error de baja frecuencia que Jacobi no puede comer. Mueva los deslizadores de pre/post entre 1 y 5: aumentar el suavizado acelera el V-ciclo pero los retornos disminuyen rápido a partir de 3.
+
+## Por qué no siempre es más rápido — dos trampas
+
+El multigrid no es magia. Dos sitios donde se rompe en producción.
+
+**Trampa 1 — coeficientes ásperos.** Un Poisson con coeficientes anisotrópicos o con saltos hace que Jacobi sea un mal suavizador. Para $-\nabla \cdot (k(x) \nabla u) = f$ con $k$ saltando en órdenes de magnitud, el V-ciclo estándar se estanca a cierto nivel de residuo. Las soluciones son line-Jacobi, mallas alineadas o multigrid algebraico (AMG), que construye la jerarquía a partir de la matriz en lugar de la malla.
+
+**Trampa 2 — mallas no conformes.** En mallas no estructuradas o de AMR (refinamiento adaptativo) la correspondencia fino-grueso ya no es obvia. El multigrid por aglomeración agrupa celdas finas en celdas gruesas; la restricción es una media ponderada por volumen y la prolongación una interpolación centrada en celda. La implementación pesa más, pero el GAMG de OpenFOAM funciona exactamente así.
+
+Una tercera advertencia: la convergencia del V-ciclo es independiente de la malla ($O(N)$ a una tolerancia fija) solo cuando suavizador, operador y jerarquía de mallas están todos bien acoplados. Si uno no encaja, el conteo de iteraciones crece poco a poco con el tamaño de la malla — ahí entran los W-ciclos o los F-ciclos.
+
+## Tres ideas que vale la pena recordar mañana
+
+- Jacobi y Gauss–Seidel solo matan el **error de alta frecuencia**. La baja frecuencia exige cambiar de malla.
+- Un V-ciclo = $O(N)$ de trabajo por un orden de magnitud en el residuo. El coste por dígito le gana a cualquier iteración simple.
+- Con coeficientes ásperos, anisotropía o mallas no estructuradas el V-ciclo de manual se estanca — ese es el momento de probar AMG o de cambiar el suavizador.

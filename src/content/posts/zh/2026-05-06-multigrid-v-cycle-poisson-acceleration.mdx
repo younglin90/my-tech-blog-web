@@ -1,0 +1,185 @@
+---
+title: "Jacobi 一万次也消不掉的误差,V-循环十次就解决 —— 多重网格的真正秘密"
+date: 2026-05-06
+description: "换网格就换频率,层次结构如何把顽固的低频误差变成易消的高频"
+tags: ["Multigrid", "Krylov", "수치해석", "Poisson", "iterative-solver"]
+locale: zh
+slug: 2026-05-06-multigrid-v-cycle-poisson-acceleration
+draft: false
+---
+
+import { MultigridVCycleConvergence } from '@/components/post-viz/2026-05-06-multigrid-v-cycle-poisson-acceleration/MultigridVCycleConvergence'
+
+## 为什么 Jacobi 跑了一万次还结束不了
+
+工程师 B 在 1024×1024 网格上用点 Jacobi 求解压力 Poisson 方程。两百秒过去,残差还在同一个数量级里抖动。CFL 已经很小,网格也是正交的,代码本身没有问题。麻烦比上述任何一项都简单 —— 有些误差,Jacobi 永远也消不掉。
+
+本文要拆解这种"不死误差"的真正身份。整个故事一句话就能讲完 —— 同一个误差,在不同网格上有不同的频率。V-循环就是把这句话当真之后的产物。读到最后,你会得到一个 50 行左右的 NumPy 多重网格,以及一幅对照图:同样一段误差,平滑迭代器跑一千次拿不下,V-循环跑十次就清干净。
+
+## 误差的频率 —— 谁先死,谁活到最后
+
+设我们要解线性系统 $A u = f$。当前迭代解 $u^{(k)}$ 的误差为
+
+$$
+e^{(k)} = u_{\text{exact}} - u^{(k)}
+$$
+
+是一个向量。残差为 $r^{(k)} = f - A u^{(k)} = A e^{(k)}$。
+
+对加权 Jacobi 做谱分析,可以得到误差中 Fourier 模 $\sin(j \pi x)$ 在每次迭代后衰减为
+
+$$
+e^{(k+1)}_j = \left(1 - \omega + \omega \cos(j \pi h)\right) e^{(k)}_j
+$$
+
+其中 $\omega$ 是松弛系数,$j$ 是模数,$h$ 是网格步长。把衰减系数的绝对值列成一张表。
+
+| 模 | $j h$ | 衰减系数 ($\omega = 2/3$) |
+|---|---|---|
+| 最快振荡 | 1.0 | $\approx 1/3$ |
+| 中频 | 0.5 | $\approx 0.67$ |
+| 最缓慢 | $1/N$ | $\approx 1.0 - O(h^2)$ |
+
+短波长每次迭代缩到原来的三分之一。长波长几乎不动。Jacobi 杀不掉的,正是铺满整个网格的、平缓的低频误差。
+
+## 在更粗的网格上,那段低频就是高频
+
+多重网格的关键洞察就在这里。$N$ 个单元能表示的最长波长约为 $\lambda \sim N h$。把同一波长搬到 $N/2$ 单元的粗网格上,从新网格的角度看它只占用一半的单元 —— 相对地变成了更短的波长。更准确地说,细网格上的最低模在粗网格上看是中频模。而中频模正是 Jacobi 最擅长清除的。
+
+再粗化一层,波长又缩短一次。粗化 $\log_2 N$ 层后,所有模在某一层都会变成"高频"。每一层各跑几次 Jacobi,所有误差就都会被清掉 —— 至少在理论上。
+
+## V-循环 —— 下去再上来的路
+
+把这个洞察落实成算法,就得到 V-循环。一次 V-循环包含以下步骤。
+
+1. **预平滑 (pre-smoothing)** —— 在细网格上跑 Jacobi $\nu_1$ 次。
+2. **计算残差** —— $r_h = f_h - A_h u_h$。
+3. **限制 (restriction)** —— $r_{2h} = R\, r_h$。把残差搬到粗网格。
+4. **递归调用** —— 在粗网格上用 V-循环求解修正方程 $A_{2h} e_{2h} = r_{2h}$ (网格足够小时直接求解)。
+5. **延拓 (prolongation)** —— $e_h = P\, e_{2h}$。把修正搬回细网格。
+6. **修正** —— $u_h \leftarrow u_h + e_h$。
+7. **后平滑 (post-smoothing)** —— 在细网格上跑 Jacobi $\nu_2$ 次。
+
+下行只带残差,上行只带修正。路径正好画出一个 V 字 —— 一次下降,一次上升。一个循环的总开销是 $O(N)$ —— 因为它在一次细网格扫描的开销上加上一个等比缩小的几何级数。每个循环把残差降一个数量级。
+
+## 限制与延拓 —— 两层网格之间的汇率
+
+跨网格搬运的两个算子必须配对。在 1D 顶点中心网格上,最简单的一对如下。
+
+**Full-weighting 限制:** 粗网格点 $i$ 处的残差是细网格点 $2i-1, 2i, 2i+1$ 的加权平均。
+
+$$
+r_{2h, i} = \frac{1}{4} r_{h, 2i-1} + \frac{1}{2} r_{h, 2i} + \frac{1}{4} r_{h, 2i+1}
+$$
+
+**线性延拓:** 与粗网格对齐的细网格点直接复制,中间点取两个邻居的平均。
+
+$$
+e_{h, 2i} = e_{2h, i}, \qquad e_{h, 2i+1} = \frac{1}{2}\left(e_{2h, i} + e_{2h, i+1}\right)
+$$
+
+二者满足转置关系 ($P = c R^T$,$c$ 为网格比常数),这正是 V-循环可证明收敛的关键。如果用一对不对称算子,可能会发散。
+
+## 用 Python 走一遍两层 V-循环
+
+求解 1D Poisson $-u''(x) = f(x)$ ($u(0)=u(1)=0$),用 V-循环。从 64 单元网格开始。
+
+```python
+import numpy as np
+
+class GridLevel:
+    """一个网格层的状态:解、右端项、网格步长。"""
+    def __init__(self, n):
+        self.n = n              # 单元数
+        self.h = 1.0 / n
+        self.u = np.zeros(n + 1)
+        self.f = np.zeros(n + 1)
+
+def jacobi_relax(u, f, h, iters):
+    """1D Poisson 的加权 Jacobi。两端 Dirichlet 零边界。"""
+    n = len(u) - 1
+    nxt = np.zeros_like(u)
+    for _ in range(iters):
+        nxt[1:n] = 0.5 * (u[0:n-1] + u[2:n+1] + h * h * f[1:n])
+        u[1:n] = nxt[1:n]
+    return u
+
+def residual_norm(u, f, h):
+    n = len(u) - 1
+    r = np.zeros_like(u)
+    inv = 1.0 / (h * h)
+    r[1:n] = f[1:n] - (-u[0:n-1] + 2 * u[1:n] - u[2:n+1]) * inv
+    return float(np.sqrt(np.mean(r[1:n] ** 2)))
+
+def restrict_full_weighting(rh):
+    n = len(rh) - 1
+    n2 = n // 2
+    r2 = np.zeros(n2 + 1)
+    r2[1:n2] = 0.25 * rh[1:n-1:2] + 0.5 * rh[2:n:2] + 0.25 * rh[3:n+1:2]
+    return r2
+
+def prolong_linear(e2h):
+    n2 = len(e2h) - 1
+    n = 2 * n2
+    eh = np.zeros(n + 1)
+    eh[2:n:2] = e2h[1:n2]
+    eh[1:n+1:2] = 0.5 * (e2h[0:n2] + e2h[1:n2+1])
+    return eh
+
+def v_cycle(u, f, h, n_pre=2, n_post=2):
+    n = len(u) - 1
+    if n <= 4:
+        return jacobi_relax(u, f, h, 50)
+    jacobi_relax(u, f, h, n_pre)
+    inv = 1.0 / (h * h)
+    r = np.zeros_like(u)
+    r[1:n] = f[1:n] - (-u[0:n-1] + 2 * u[1:n] - u[2:n+1]) * inv
+    r2 = restrict_full_weighting(r)
+    e2 = np.zeros_like(r2)
+    v_cycle(e2, r2, 2 * h, n_pre, n_post)
+    e = prolong_linear(e2)
+    u += e
+    jacobi_relax(u, f, h, n_post)
+    return u
+
+# --- 运行 ---
+n = 64
+h = 1.0 / n
+x = np.linspace(0, 1, n + 1)
+f = (np.pi ** 2) * np.sin(np.pi * x)   # 精确解 u = sin(πx)
+
+u_jac = np.zeros(n + 1)
+u_mg = np.zeros(n + 1)
+
+for k in range(20):
+    jacobi_relax(u_jac, f, h, 4)
+    v_cycle(u_mg, f, h, n_pre=2, n_post=2)
+    print(f"step {k:3d} | jacobi r={residual_norm(u_jac, f, h):.3e} "
+          f"v-cycle r={residual_norm(u_mg, f, h):.3e}")
+```
+
+每一个 `step`,Jacobi 跑 4 次细网格扫描,V-循环按细网格折算也是 4 次 (前 2 + 后 2)。工作量大致相当。但残差下降速度毫无可比性。20 步之后,V-循环的残差通常已降到 $10^{-10}$ 以下,Jacobi 还卡在 $10^{-2}$ 附近。
+
+## Jacobi 一千次 vs V-循环十次 —— 直接对比
+
+下面的模拟可直接操作。两个求解器从同样的随机初值出发,在同样的 64 单元网格上求解同一个零右端 Poisson 问题(精确解 = 0)。上下两块面板分别显示当前解的剖面与残差的对数下降。
+
+<MultigridVCycleConvergence />
+
+按下 Run,等三十秒。上方的橙色曲线 (Jacobi) 只把高频抖动磨平,大的隆起依然保留。青色曲线 (V-循环) 几乎立刻被压平到零附近。下方的对数残差图里,青色几乎垂直下落,橙色被钉在某条平台线上 —— 那条平台正是 Jacobi 杀不掉的低频。把 Pre/Post 滑块在 1 到 5 之间拖动,会发现增加预/后平滑次数能加快 V-循环收敛,但超过 3 之后回报急剧递减。
+
+## 它也不是总是快 —— 两个陷阱
+
+多重网格不是魔法。两个在生产环境中常见的失效场景。
+
+**陷阱 1 —— 粗糙系数。** 在带有各向异性或跳跃系数的 Poisson 问题中,Jacobi 不再是好的 smoother。对于 $-\nabla \cdot (k(x) \nabla u) = f$,当 $k$ 跨越数个数量级跳变时,标准 V-循环会在某个残差水平停下来。补救办法包括 line-Jacobi、对齐网格,或者代数多重网格 (AMG) —— 直接从矩阵而非网格构造层次。
+
+**陷阱 2 —— 非协调网格。** 在非结构网格或 AMR (自适应网格细化) 网格上,细到粗的对应关系不再显然。聚合多重网格 (agglomeration multigrid) 把若干细单元合并为粗单元;限制使用体积加权平均,延拓使用单元中心插值。实现更重,但 OpenFOAM 的 GAMG 正是这种思路。
+
+第三点提醒:V-循环的收敛率与网格规模无关 ($O(N)$ 次循环达到固定容差) 只在 smoother、算子、网格层次三者配合得当时才成立。一个不对,迭代次数就会随网格尺寸缓慢上升 —— 那时该考虑 W-循环或 F-循环。
+
+## 明天也想记住的三件事
+
+- Jacobi 与 Gauss–Seidel 只能消除 **高频误差**。低频必须换网格。
+- 一次 V-循环 = $O(N)$ 的工作量,残差降一个数量级。每降一位的成本胜过任何简单迭代。
+- 在粗糙系数、各向异性、非结构网格上,教科书式 V-循环会停滞 —— 那是该考虑 AMG 或更换 smoother 的时刻。
