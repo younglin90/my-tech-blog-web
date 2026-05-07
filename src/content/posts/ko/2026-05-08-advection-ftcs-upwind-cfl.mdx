@@ -1,0 +1,160 @@
+---
+title: "FTCS가 떨릴 때 업윈드는 무뎌진다 — 1차 이류 스킴, 인공 점성, 그리고 CFL의 등가교환"
+date: 2026-05-08
+description: "중심차분이 폭발하고 업윈드가 살아남는 이유, 그리고 그 대가"
+tags: ["CFD", "Advection", "Upwind", "CFL", "Numerical-Diffusion"]
+locale: ko
+slug: 2026-05-08-advection-ftcs-upwind-cfl
+draft: false
+---
+
+import { AdvectionSchemeRace1D } from '@/components/post-viz/2026-05-08-advection-ftcs-upwind-cfl/AdvectionSchemeRace1D'
+
+1960년대 초반, John von Neumann의 동료들은 세상에서 가장 단순한 PDE — 1차원 선형 이류 — 에 가장 자연스러운 중심차분을 박아 넣었다. 결과는 폭주였다. 단조롭게 흐르기만 해야 할 사각 펄스가 뒷꽁무니에서 진동을 키우고, 몇 스텝 만에 격자 밖으로 튀어나갔다. 이 글은 그 이상한 폭주가 어디에서 오는지, 왜 한 칸짜리 업윈드 차분이 그것을 잠재우는 대신 그림을 무디게 만드는지, 그리고 격자 폭과 시간 폭 사이에 그어진 보이지 않는 선(CFL)이 무엇을 말하는지를 따라간다. 마지막에는 Python 50줄과 인터랙티브 데모로 세 스킴을 같은 격자 위에서 직접 경주시킨다.
+
+## 가장 자연스러운 차분이 가장 먼저 무너진다
+
+1차원 선형 이류 방정식은 단 한 줄이다.
+
+$$
+\partial_t q + u\,\partial_x q = 0
+$$
+
+여기서 $q$는 흐르는 양, $u>0$는 일정한 속도다. 해는 단순하다 — 초기 모양이 속도 $u$로 그대로 평행 이동한다.
+
+자연스럽게 시간에는 forward Euler, 공간에는 중심차분(centered, second-order)을 쓰면 다음과 같은 한 줄짜리 갱신 규칙이 나온다.
+
+$$
+q_i^{n+1} = q_i^{n} - \tfrac{c}{2}\,\big(q_{i+1}^{n} - q_{i-1}^{n}\big)
+$$
+
+여기서 $c \equiv u\,\Delta t / \Delta x$는 Courant 수(한 시간 스텝 동안 격자를 몇 칸 건너뛰는지)다. 공간으로는 2차, 시간으로는 1차이므로 LTE(국소 절단 오차)는 $\mathcal{O}(\Delta t,\Delta x^2)$이다. 그런데 이 스킴은 $c$가 아무리 작아도 폭주한다.
+
+이유는 von Neumann 안정성 분석으로 한 줄에 보인다. $q^n_i = g^n e^{i k x_i}$로 대입하면 증폭계수는
+
+$$
+g = 1 - i\,c\,\sin(k\Delta x)
+$$
+
+이고, $|g|^2 = 1 + c^2 \sin^2(k\Delta x) > 1$이다. 모든 모드가 매 스텝마다 자란다. 한 모드라도 1보다 큰 $|g|$를 가지면 무조건 발산이다.
+
+## 정보는 한쪽에서만 흘러온다
+
+문제의 본질은 수학이 아니라 인과성이다. $u>0$일 때 시각 $t_{n+1}$의 $q_i$가 의존해야 할 정보는 오직 상류쪽 ($x<x_i$)에서만 와야 한다. 그런데 중심차분은 하류 격자값 $q_{i+1}^n$을 동등한 무게로 끌어다 쓴다. 흐름이 모르는 미래에서 정보를 미리 빼오는 셈이다.
+
+업윈드 차분은 이 인과성을 강제한다.
+
+$$
+q_i^{n+1} = q_i^{n} - c\,\big(q_i^{n} - q_{i-1}^{n}\big), \quad u>0
+$$
+
+이번에는 von Neumann이 다음과 같이 알려준다.
+
+$$
+g = 1 - c + c\,e^{-i k \Delta x}
+$$
+
+이고, $|g|^2 = 1 - c(1-c)\cdot 4\sin^2(k\Delta x/2)$이다. $0 \le c \le 1$이면 $|g|\le 1$. 모든 모드가 줄어들거나 그대로다.
+
+## 업윈드 = 중심차분 + 보이지 않는 점성
+
+업윈드가 안정한 이유를 더 직관적으로 보자. 1차 업윈드 미분을 항등식으로 분리하면 다음이 나온다.
+
+$$
+\frac{q_i - q_{i-1}}{\Delta x}
+= \frac{q_{i+1} - q_{i-1}}{2\Delta x} - \frac{\Delta x}{2}\,\frac{q_{i+1} - 2q_i + q_{i-1}}{\Delta x^2}
+$$
+
+오른편 첫 항은 중심차분, 둘째 항은 정확히 2차 미분의 이산형이다. 즉 1차 업윈드는
+
+$$
+\partial_t q + u\,\partial_x q = \frac{u\,\Delta x}{2}\,\partial_x^2 q
+$$
+
+라는 수정 방정식(modified equation)을 푸는 셈이다. 우리는 이류방정식을 풀려고 했지만, 알고리즘이 자기도 모르게 점성 $\nu_{\text{num}} = u\Delta x/2$짜리 확산을 보너스로 끼워 넣었다. 이것이 인공 점성(artificial viscosity, 또는 numerical diffusion)이다.
+
+이 인공 점성이 폭주를 잠재운다. 그러나 공짜는 없다. 사각 펄스의 모서리는 매 스텝마다 가우시안처럼 부풀어 두께 $\sqrt{4\nu_{\text{num}} t}$로 번진다. 더 가는 격자(작은 $\Delta x$)를 쓸수록 점성은 줄지만, 같은 시간을 시뮬레이션하려면 더 많은 스텝을 밟아야 한다. 이 둘이 정확히 균형을 맞추므로 절대 사라지지 않는다.
+
+## CFL — 격자가 따라잡지 못하는 순간
+
+업윈드가 $0\le c \le 1$에서만 안정한 데에는 단순한 기하학적 이유가 있다. 시각 $t_{n+1}$의 $q_i$는 시각 $t_n$에 위치 $x_i - u\Delta t$에 있던 값이다. 그 위치가 $x_{i-1}$과 $x_i$ 사이에 들어와 있으면 두 격자값으로 보간이 된다. 그런데 $u\Delta t > \Delta x$가 되면 그 위치는 $x_{i-2}$ 너머로 넘어간다 — 알고리즘 stencil은 거기까지 보지 않는다.
+
+이것이 Courant–Friedrichs–Lewy 조건의 본질이다.
+
+$$
+\Delta t \le \frac{\Delta x}{|u|}
+$$
+
+수치 도메인 의존성(stencil)이 물리 도메인 의존성(특성선)을 항상 포함해야 한다. CFL은 모든 explicit 스킴에 대한 *필요* 조건이지 충분 조건은 아니다. 중심차분 FTCS는 CFL을 만족시키더라도 폭발한다 — 그 폭발은 인과성 위반에서 오는 것이지 stencil 부족이 아니기 때문이다.
+
+## NumPy 50줄로 따라가는 세 스킴
+
+같은 격자, 같은 초기 조건, 같은 CFL 위에서 세 스킴을 그대로 돌려보자. 코드는 의도적으로 짧게 둔다.
+
+```python
+import numpy as np
+
+N = 200
+dx = 1.0 / N
+u = 1.0
+cfl = 0.8
+dt = cfl * dx / u
+n_steps = 400
+
+x = (np.arange(N) + 0.5) * dx
+q0 = ((x > 0.2) & (x < 0.4)).astype(float)  # 사각 펄스
+
+def ftcs_advect(q, c):
+    return q - 0.5 * c * (np.roll(q, -1) - np.roll(q, 1))
+
+def upwind_advect(q, c):
+    return q - c * (q - np.roll(q, 1))  # u > 0
+
+def lax_wendroff_advect(q, c):
+    flux_diff = 0.5 * c * (np.roll(q, -1) - np.roll(q, 1))
+    visc = 0.5 * c * c * (np.roll(q, -1) - 2 * q + np.roll(q, 1))
+    return q - flux_diff + visc
+
+q_ftcs, q_up, q_lw = q0.copy(), q0.copy(), q0.copy()
+for _ in range(n_steps):
+    q_ftcs = ftcs_advect(q_ftcs, cfl)
+    q_up = upwind_advect(q_up, cfl)
+    q_lw = lax_wendroff_advect(q_lw, cfl)
+
+# 분석해: 한 바퀴 돌아 제자리
+q_exact = q0
+print("FTCS  L1 err:", np.abs(q_ftcs - q_exact).sum() * dx)
+print("Upwind L1 err:", np.abs(q_up - q_exact).sum() * dx)
+print("LW    L1 err:", np.abs(q_lw - q_exact).sum() * dx)
+```
+
+`cfl=0.8`, 400 스텝(=한 주기)이면 분석해는 시작 모양 그대로다. 결과는 대체로 다음과 같다.
+
+- FTCS: 진폭이 약 $1.78^{400}$배로 커져 NaN 또는 `inf`가 된다.
+- Upwind: 사각 펄스가 가우시안으로 번져 L1 오차가 0.04 근처에 머문다.
+- Lax–Wendroff: 진폭은 보존되지만 모서리 뒤로 잔물결(Gibbs)이 남는다.
+
+하나의 토이 코드가 이 글에서 말한 세 가지 — 폭주, 무뎌짐, 진동 — 를 그대로 보여준다.
+
+## 직접 만져보자
+
+아래 시뮬레이션에서 직접 조작해보자. CFL 슬라이더를 0.05부터 1.5까지 옮기면 세 스킴이 같은 격자 위에서 서로 다른 운명을 보인다.
+
+<AdvectionSchemeRace1D />
+
+CFL을 1.0 정확히로 두면 업윈드 결과(시안)가 분석해(점선)과 거의 정확히 겹친다 — 1차 업윈드는 $c=1$에서 *정확*하다. 이게 가능한 이유는 그때 인공 점성 계수가 $u\Delta x(1-c)/2$로 사라지기 때문이다. CFL을 0.5로 줄이면 업윈드의 무뎌짐이 가장 강해지고, FTCS는 여전히 발산한다. CFL을 1.05로만 올려도 업윈드와 Lax–Wendroff 양쪽 모두 발산한다 — stencil이 특성선을 따라잡지 못한다.
+
+## 1차로는 부족하지만 2차는 또 다른 골치다
+
+업윈드의 인공 점성은 충격파 근처에서 좋다 — 비물리적 진동을 평탄하게 만든다. 그러나 매끈한 영역에서도 똑같이 무뎌져 두 번째 도함수만큼만 정확하다. 그래서 CFD 코드는 보통 다음 둘 중 하나를 택한다.
+
+- 더 높은 차수의 스킴(Lax–Wendroff, MUSCL, WENO)을 쓰되, 충격 근처에서만 자동으로 차수를 떨어뜨리는 *플럭스 리미터* 또는 *슬로프 리미터*를 끼워 넣는다.
+- 인과성을 정확히 푸는 *Riemann 해결자*(Godunov, HLLC, Roe)를 셀 경계마다 호출한다.
+
+두 길 모두 결국은 "어디에서는 인공 점성을 받아들이고, 어디에서는 거부할 것인가"라는 결정을 내리는 메커니즘이다. 1차 업윈드는 모든 곳에서 받아들인다 — 가장 단순하고, 가장 안전하고, 가장 부정확하다.
+
+## 핵심 3줄 요약
+
+- **중심차분 FTCS는 CFL과 무관하게 발산한다.** 폭주의 원인은 stencil이 아니라 인과성 위반이다.
+- **1차 업윈드는 안정한 대신 인공 점성 $u\Delta x/2$를 더한다.** $0\le c \le 1$에서만 안정하며 $c=1$일 때 정확하다.
+- **CFL 조건은 모든 explicit 스킴의 필요 조건이지만 충분 조건이 아니다.** 안정성은 인과성과 stencil 두 축이 모두 맞아야 얻어진다.

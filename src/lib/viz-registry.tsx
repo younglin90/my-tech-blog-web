@@ -12,6 +12,7 @@ function VizLoading() {
 }
 
 export const VIZ_COMPONENTS: Record<string, ComponentType> = {
+  "AdvectionSchemeRace1D": dynamic(() => import("@/components/post-viz/2026-05-08-advection-ftcs-upwind-cfl/AdvectionSchemeRace1D").then((m) => ({ default: m.AdvectionSchemeRace1D })), { ssr: false, loading: VizLoading }),
   "AMRQuadtreeRefinement": dynamic(() => import("@/components/post-viz/2026-04-27-amr-quadtree-cell-refinement/AMRQuadtreeRefinement").then((m) => ({ default: m.AMRQuadtreeRefinement })), { ssr: false, loading: VizLoading }),
   "APIMEXAcousticPulse1D": dynamic(() => import("@/components/post-viz/2026-05-03-orlando-bonaventura-ap-imex-nonideal-gas/APIMEXAcousticPulse1D").then((m) => ({ default: m.APIMEXAcousticPulse1D })), { ssr: false, loading: VizLoading }),
   "BFSRecirculation": dynamic(() => import("@/components/post-viz/2026-03-26-openfoam-backward-facing-step/BFSRecirculation").then((m) => ({ default: m.BFSRecirculation })), { ssr: false, loading: VizLoading }),

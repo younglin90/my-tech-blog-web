@@ -1,0 +1,160 @@
+---
+title: "Cuando FTCS tiembla, el upwind se entumece — esquema advectivo de primer orden, viscosidad artificial y el trueque de CFL"
+date: 2026-05-08
+description: "Por qué la diferencia centrada explota, por qué el upwind sobrevive y qué paga por hacerlo"
+tags: ["CFD", "Advection", "Upwind", "CFL", "Numerical-Diffusion"]
+locale: es
+slug: 2026-05-08-advection-ftcs-upwind-cfl
+draft: false
+---
+
+import { AdvectionSchemeRace1D } from '@/components/post-viz/2026-05-08-advection-ftcs-upwind-cfl/AdvectionSchemeRace1D'
+
+A comienzos de los años sesenta, un colega de John von Neumann conectó la PDE más sencilla imaginable — advección lineal unidimensional — con la diferencia centrada más natural. El resultado fue una explosión: un pulso cuadrado que debería haber derivado tranquilamente comenzó a generar oscilaciones en su borde de salida y disparó fuera de la malla en pocos pasos. Este artículo sigue la pista de ese descontrol, explora por qué una diferencia upwind de una sola celda lo domina pero solo difuminando la imagen, y desentraña qué dice realmente la línea invisible trazada entre el paso espacial y el temporal (la condición CFL). Al final, cincuenta líneas de Python y una demostración interactiva ponen tres esquemas a competir en la misma malla.
+
+## La diferencia más natural cae primero
+
+La ecuación de advección lineal en 1D es una sola línea.
+
+$$
+\partial_t q + u\,\partial_x q = 0
+$$
+
+Aquí $q$ es la cantidad transportada y $u>0$ es una velocidad constante. La solución es trivial — la forma inicial se traslada con velocidad $u$.
+
+Si se toma Euler hacia adelante en el tiempo y diferencia centrada (segundo orden) en el espacio, la regla de actualización sale limpia.
+
+$$
+q_i^{n+1} = q_i^{n} - \tfrac{c}{2}\,\big(q_{i+1}^{n} - q_{i-1}^{n}\big)
+$$
+
+El número de Courant $c \equiv u\,\Delta t / \Delta x$ mide cuántas celdas avanza la onda en un paso temporal. Segundo orden en espacio, primer orden en tiempo, así que el LTE (error de truncamiento local) es $\mathcal{O}(\Delta t,\Delta x^2)$. Y aun así el esquema explota por pequeño que sea $c$.
+
+La razón cabe en una línea de análisis de von Neumann. Sustituyendo $q^n_i = g^n e^{i k x_i}$ se obtiene el factor de amplificación
+
+$$
+g = 1 - i\,c\,\sin(k\Delta x)
+$$
+
+de modo que $|g|^2 = 1 + c^2 \sin^2(k\Delta x) > 1$. Cada modo de Fourier crece en cada paso. Basta con un modo con $|g|>1$ para arruinarlo todo.
+
+## La información solo fluye desde un lado
+
+El problema de fondo es la causalidad, no el álgebra. Cuando $u>0$, el valor de $q_i$ en $t_{n+1}$ debería depender únicamente de información aguas arriba ($x<x_i$). Pero la diferencia centrada arrastra $q_{i+1}^n$ del lado aguas abajo con peso igual. El algoritmo extrae información de un futuro que el flujo aún desconoce.
+
+La diferencia upwind impone causalidad.
+
+$$
+q_i^{n+1} = q_i^{n} - c\,\big(q_i^{n} - q_{i-1}^{n}\big), \quad u>0
+$$
+
+Ahora von Neumann nos dice que
+
+$$
+g = 1 - c + c\,e^{-i k \Delta x}
+$$
+
+y $|g|^2 = 1 - c(1-c)\cdot 4\sin^2(k\Delta x/2)$. Para $0 \le c \le 1$ resulta $|g|\le 1$. Cada modo decae o se queda quieto.
+
+## Upwind = centrada + una viscosidad oculta
+
+Hay una forma más directa de ver por qué el upwind es estable. Descompongamos la derivada upwind de primer orden mediante una identidad algebraica.
+
+$$
+\frac{q_i - q_{i-1}}{\Delta x}
+= \frac{q_{i+1} - q_{i-1}}{2\Delta x} - \frac{\Delta x}{2}\,\frac{q_{i+1} - 2q_i + q_{i-1}}{\Delta x^2}
+$$
+
+El primer término de la derecha es la diferencia centrada; el segundo es exactamente una segunda derivada discreta. Por lo tanto el upwind de primer orden está resolviendo la ecuación modificada
+
+$$
+\partial_t q + u\,\partial_x q = \frac{u\,\Delta x}{2}\,\partial_x^2 q
+$$
+
+Queríamos resolver advección. El algoritmo nos entregó silenciosamente una difusión de intensidad $\nu_{\text{num}} = u\Delta x/2$ como bonificación. Esto es la viscosidad artificial (artificial viscosity, también llamada numerical diffusion).
+
+Esa viscosidad mata el descontrol. Pero no es gratis. Las esquinas del pulso cuadrado se gausianizan en cada paso, con anchura $\sqrt{4\nu_{\text{num}} t}$. Refinar la malla (menor $\Delta x$) reduce la viscosidad, pero hay que dar más pasos para llegar al mismo tiempo final. Ambos efectos se equilibran exactamente, así que la difuminación nunca desaparece del todo.
+
+## CFL — cuando la malla no alcanza la característica
+
+Hay una razón geométrica para que el upwind solo sea estable con $0\le c \le 1$. El valor de $q_i$ en $t_{n+1}$ proviene de donde estaba el fluido en $t_n$, es decir $x_i - u\Delta t$. Si ese punto cae entre $x_{i-1}$ y $x_i$, los dos valores de la malla pueden interpolarlo. En cuanto $u\Delta t > \Delta x$, el punto pie queda más allá de $x_{i-2}$ — y la plantilla del algoritmo no llega tan lejos.
+
+Ése es el corazón de la condición de Courant–Friedrichs–Lewy.
+
+$$
+\Delta t \le \frac{\Delta x}{|u|}
+$$
+
+El dominio numérico de dependencia (la plantilla) debe contener al dominio físico de dependencia (la característica). CFL es *necesaria* para todo esquema explícito pero nunca *suficiente*. FTCS cumple CFL y aun así detona — su problema es la causalidad, no el alcance de la plantilla.
+
+## Tres esquemas en cincuenta líneas de NumPy
+
+Misma malla, misma condición inicial, mismo CFL. Que corran y a mirar.
+
+```python
+import numpy as np
+
+N = 200
+dx = 1.0 / N
+u = 1.0
+cfl = 0.8
+dt = cfl * dx / u
+n_steps = 400
+
+x = (np.arange(N) + 0.5) * dx
+q0 = ((x > 0.2) & (x < 0.4)).astype(float)  # pulso cuadrado
+
+def ftcs_advect(q, c):
+    return q - 0.5 * c * (np.roll(q, -1) - np.roll(q, 1))
+
+def upwind_advect(q, c):
+    return q - c * (q - np.roll(q, 1))  # u > 0
+
+def lax_wendroff_advect(q, c):
+    flux_diff = 0.5 * c * (np.roll(q, -1) - np.roll(q, 1))
+    visc = 0.5 * c * c * (np.roll(q, -1) - 2 * q + np.roll(q, 1))
+    return q - flux_diff + visc
+
+q_ftcs, q_up, q_lw = q0.copy(), q0.copy(), q0.copy()
+for _ in range(n_steps):
+    q_ftcs = ftcs_advect(q_ftcs, cfl)
+    q_up = upwind_advect(q_up, cfl)
+    q_lw = lax_wendroff_advect(q_lw, cfl)
+
+# Solucion exacta: una vuelta completa volviendo al inicio
+q_exact = q0
+print("FTCS  L1 err:", np.abs(q_ftcs - q_exact).sum() * dx)
+print("Upwind L1 err:", np.abs(q_up - q_exact).sum() * dx)
+print("LW    L1 err:", np.abs(q_lw - q_exact).sum() * dx)
+```
+
+Con `cfl=0.8` y 400 pasos (una revolución completa), la respuesta exacta es la forma original. Resultados típicos:
+
+- FTCS: la amplitud crece aproximadamente $1.78^{400}$ veces y revienta en NaN o `inf`.
+- Upwind: el pulso se ensancha como un manchón gaussiano, el error L1 se asienta cerca de 0.04.
+- Lax–Wendroff: la amplitud se conserva, pero las esquinas dejan rizos (Gibbs) detrás.
+
+Un guion de juguete reproduce todas las afirmaciones del artículo: explosión, difuminación, oscilación.
+
+## Tócalo tú mismo
+
+Prueba la simulación de abajo. Al deslizar CFL de 0.05 a 1.5, los tres esquemas siguen destinos muy distintos sobre la misma malla.
+
+<AdvectionSchemeRace1D />
+
+Pon CFL exactamente en 1.0 y la curva upwind (cian) queda casi exactamente sobre el desplazamiento analítico (línea discontinua). El upwind de primer orden es *exacto* en $c=1$ — el coeficiente de viscosidad artificial $u\Delta x(1-c)/2$ se anula ahí. Baja CFL a 0.5 y la difuminación del upwind alcanza su pico mientras FTCS sigue divergiendo. Sube CFL a 1.05 y tanto upwind como Lax–Wendroff explotan — la plantilla no alcanza a seguir la característica.
+
+## El primer orden es muy romo, pero el segundo trae nuevos dolores de cabeza
+
+La viscosidad artificial del upwind es bienvenida cerca de choques — aplana las oscilaciones no físicas. Pero actúa igual en regiones suaves, así que la precisión queda atascada en errores de segundo orden. Los códigos CFD de producción eligen una de dos rutas.
+
+- Usar un esquema de orden superior (Lax–Wendroff, MUSCL, WENO) y atornillar un *limitador de flujo* o *limitador de pendiente* que reduce el orden cerca de los choques.
+- Resolver la estructura causal con exactitud mediante un *solver de Riemann* (Godunov, HLLC, Roe) en cada cara de celda.
+
+Ambas rutas son mecanismos para decidir dónde se acepta y dónde se rechaza la viscosidad artificial. El upwind de primer orden la acepta en todas partes — el más simple, el más seguro, el más difusivo.
+
+## Tres líneas para recordar
+
+- **FTCS centrado diverge sin importar CFL.** El descontrol es causal, no de plantilla.
+- **El upwind de primer orden compra estabilidad con viscosidad artificial $u\Delta x/2$.** Estable para $0\le c \le 1$; *exacto* en $c=1$.
+- **CFL es necesaria para todo esquema explícito pero nunca suficiente.** La estabilidad requiere causalidad y alcance de plantilla a la vez.

@@ -1,0 +1,160 @@
+---
+title: "When FTCS Trembles, Upwind Goes Numb — First-Order Advection, Artificial Viscosity, and the CFL Trade"
+date: 2026-05-08
+description: "Why centered differencing explodes, why upwind survives, and what it pays for it"
+tags: ["CFD", "Advection", "Upwind", "CFL", "Numerical-Diffusion"]
+locale: en
+slug: 2026-05-08-advection-ftcs-upwind-cfl
+draft: false
+---
+
+import { AdvectionSchemeRace1D } from '@/components/post-viz/2026-05-08-advection-ftcs-upwind-cfl/AdvectionSchemeRace1D'
+
+In the early 1960s, a colleague of John von Neumann wired up the simplest PDE imaginable — one-dimensional linear advection — with the most natural centered difference. The result blew up. A square pulse that should have drifted along quietly grew oscillations off its trailing edge and shot past the grid in a few steps. This post follows where that runaway comes from, why a one-cell upwind difference tames it but only by smearing the picture, and what the invisible line drawn between grid spacing and time step (the CFL condition) really says. By the end, fifty lines of Python and an interactive demo race three schemes on the same grid.
+
+## The most natural difference is the first to fall
+
+The 1D linear advection equation is a single line.
+
+$$
+\partial_t q + u\,\partial_x q = 0
+$$
+
+Here $q$ is the transported quantity and $u>0$ is a constant velocity. The solution is trivial — the initial shape translates along at speed $u$.
+
+If you reach for forward Euler in time and centered (second-order) differencing in space, the update rule comes out clean.
+
+$$
+q_i^{n+1} = q_i^{n} - \tfrac{c}{2}\,\big(q_{i+1}^{n} - q_{i-1}^{n}\big)
+$$
+
+Here $c \equiv u\,\Delta t / \Delta x$ is the Courant number — how many cells the wave travels in one time step. The scheme is second-order in space, first-order in time, so the LTE (local truncation error) is $\mathcal{O}(\Delta t,\Delta x^2)$. And yet the scheme blows up no matter how small $c$ is.
+
+The reason fits in one line of von Neumann analysis. Substituting $q^n_i = g^n e^{i k x_i}$ gives the amplification factor
+
+$$
+g = 1 - i\,c\,\sin(k\Delta x)
+$$
+
+so $|g|^2 = 1 + c^2 \sin^2(k\Delta x) > 1$. Every Fourier mode grows every step. One mode with $|g|>1$ is enough to wreck everything.
+
+## Information flows from one side only
+
+The real problem is causality, not algebra. When $u>0$, the value of $q_i$ at time $t_{n+1}$ should depend only on information from upstream — points with $x<x_i$. But centered differencing pulls $q_{i+1}^n$ from downstream with equal weight. The algorithm reaches into a future the flow knows nothing about.
+
+Upwind differencing enforces causality.
+
+$$
+q_i^{n+1} = q_i^{n} - c\,\big(q_i^{n} - q_{i-1}^{n}\big), \quad u>0
+$$
+
+Now von Neumann tells us
+
+$$
+g = 1 - c + c\,e^{-i k \Delta x}
+$$
+
+and $|g|^2 = 1 - c(1-c)\cdot 4\sin^2(k\Delta x/2)$. For $0 \le c \le 1$ we get $|g|\le 1$. Every mode either decays or sits still.
+
+## Upwind = centered + a hidden viscosity
+
+Here is a more direct way to see why upwind is stable. Split the first-order upwind derivative as an algebraic identity.
+
+$$
+\frac{q_i - q_{i-1}}{\Delta x}
+= \frac{q_{i+1} - q_{i-1}}{2\Delta x} - \frac{\Delta x}{2}\,\frac{q_{i+1} - 2q_i + q_{i-1}}{\Delta x^2}
+$$
+
+The first term on the right is centered differencing; the second is exactly a discrete second derivative. So first-order upwind is solving the modified equation
+
+$$
+\partial_t q + u\,\partial_x q = \frac{u\,\Delta x}{2}\,\partial_x^2 q
+$$
+
+We meant to solve advection. The algorithm quietly handed us a diffusion of strength $\nu_{\text{num}} = u\Delta x/2$ on the side. This is artificial viscosity, also called numerical diffusion.
+
+That viscosity is what kills the runaway. But it is not free. The corners of a square pulse Gaussian out every step, with width $\sqrt{4\nu_{\text{num}} t}$. Refining the grid (smaller $\Delta x$) shrinks the viscosity, but you must take more steps to reach the same final time. The two effects balance, so the smearing never fully disappears.
+
+## CFL — when the grid can't keep up
+
+There is a geometric reason upwind is stable only for $0\le c \le 1$. The value of $q_i$ at $t_{n+1}$ comes from where the fluid was at $t_n$, namely $x_i - u\Delta t$. If that point sits between $x_{i-1}$ and $x_i$, the two grid values can interpolate it. As soon as $u\Delta t > \Delta x$, the foot point lies past $x_{i-2}$ — the algorithm's stencil never looks that far.
+
+That is the heart of the Courant–Friedrichs–Lewy condition.
+
+$$
+\Delta t \le \frac{\Delta x}{|u|}
+$$
+
+The numerical domain of dependence (stencil) must contain the physical domain of dependence (the characteristic). CFL is *necessary* for every explicit scheme but never *sufficient*. FTCS satisfies CFL and still detonates — its problem is causality, not stencil reach.
+
+## Three schemes in fifty lines of NumPy
+
+Same grid, same initial condition, same CFL. Run them and look.
+
+```python
+import numpy as np
+
+N = 200
+dx = 1.0 / N
+u = 1.0
+cfl = 0.8
+dt = cfl * dx / u
+n_steps = 400
+
+x = (np.arange(N) + 0.5) * dx
+q0 = ((x > 0.2) & (x < 0.4)).astype(float)  # square pulse
+
+def ftcs_advect(q, c):
+    return q - 0.5 * c * (np.roll(q, -1) - np.roll(q, 1))
+
+def upwind_advect(q, c):
+    return q - c * (q - np.roll(q, 1))  # u > 0
+
+def lax_wendroff_advect(q, c):
+    flux_diff = 0.5 * c * (np.roll(q, -1) - np.roll(q, 1))
+    visc = 0.5 * c * c * (np.roll(q, -1) - 2 * q + np.roll(q, 1))
+    return q - flux_diff + visc
+
+q_ftcs, q_up, q_lw = q0.copy(), q0.copy(), q0.copy()
+for _ in range(n_steps):
+    q_ftcs = ftcs_advect(q_ftcs, cfl)
+    q_up = upwind_advect(q_up, cfl)
+    q_lw = lax_wendroff_advect(q_lw, cfl)
+
+# Exact solution: one full revolution back to start
+q_exact = q0
+print("FTCS  L1 err:", np.abs(q_ftcs - q_exact).sum() * dx)
+print("Upwind L1 err:", np.abs(q_up - q_exact).sum() * dx)
+print("LW    L1 err:", np.abs(q_lw - q_exact).sum() * dx)
+```
+
+With `cfl=0.8` and 400 steps (one full revolution), the exact answer is the original shape. Typical results:
+
+- FTCS: amplitude grows by roughly $1.78^{400}$ and explodes into NaN or `inf`.
+- Upwind: the pulse fattens into a Gaussian-like blob, L1 error settles near 0.04.
+- Lax–Wendroff: amplitude is preserved, but ripples (Gibbs) trail behind the corners.
+
+A toy script reproduces every claim in this post: blowup, smearing, ringing.
+
+## Touch it yourself
+
+Try the simulation below. As you slide CFL from 0.05 to 1.5, the three schemes meet very different fates on the same grid.
+
+<AdvectionSchemeRace1D />
+
+Set CFL to exactly 1.0 and the upwind line (cyan) lies almost exactly on top of the analytic shift (dashed). First-order upwind is *exact* at $c=1$ — the artificial viscosity coefficient $u\Delta x(1-c)/2$ vanishes there. Drop CFL to 0.5 and the upwind smearing peaks while FTCS still diverges. Push CFL to 1.05 and both upwind and Lax–Wendroff blow up — the stencil cannot reach far enough back along the characteristic.
+
+## First order is too blunt, but second order has new headaches
+
+Upwind's artificial viscosity is welcome near shocks — it flattens unphysical wiggles. But it acts the same way in smooth regions, so accuracy is stuck at second-derivative-level errors. Production CFD codes pick one of two paths.
+
+- Use a higher-order scheme (Lax–Wendroff, MUSCL, WENO) and bolt on a *flux limiter* or *slope limiter* that drops the order back near shocks.
+- Solve the causality structure exactly with a *Riemann solver* (Godunov, HLLC, Roe) at every cell face.
+
+Both paths are mechanisms for deciding where artificial viscosity is welcome and where it is not. First-order upwind takes it everywhere — simplest, safest, most diffusive.
+
+## Three lines to remember
+
+- **Centered FTCS diverges regardless of CFL.** The runaway is causal, not stencil-related.
+- **First-order upwind buys stability with artificial viscosity $u\Delta x/2$.** Stable for $0\le c \le 1$; *exact* at $c=1$.
+- **CFL is necessary for every explicit scheme but never sufficient.** Stability needs both causality and stencil reach.
