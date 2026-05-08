@@ -1,0 +1,169 @@
+---
+title: "[Paper Review] Solve with Two Pressures, Merge to One — Saurel (2009) on Multiphase Pressure Relaxation"
+date: 2026-05-09
+description: "How a six-equation non-equilibrium model with stiff pressure relaxation routes around the failures of the five-equation diffuse-interface model."
+tags: ["논문리뷰", "compressible-multiphase", "Diffuse-Interface", "Saurel", "Pressure-Relaxation", "Kapila-model"]
+locale: en
+slug: saurel-2009-pressure-relaxation-multiphase
+draft: false
+---
+
+import { WoodVsFrozenSoundSpeed } from '@/components/post-viz/2026-05-09-saurel-2009-pressure-relaxation-multiphase/WoodVsFrozenSoundSpeed'
+import { TwoPressureRelaxation1D } from '@/components/post-viz/2026-05-09-saurel-2009-pressure-relaxation-multiphase/TwoPressureRelaxation1D'
+
+A nuclear safety simulation at Idaho National Laboratory once stopped dead. Inside a cell trapped between liquid sodium and a tiny gas pocket, the mixture sound speed had collapsed to about 25 m/s. That was the limit of the five-equation multiphase model with its pressure-equilibrium assumption. In 2009 Richard Saurel and his coauthors offered a step backward as the answer — let the two phases carry different pressures, then drag them together at the end of every time step. This post follows why their six-equation non-equilibrium plus relaxation algorithm works, where the impedance-weighted interface pressure $\hat{p}_I$ comes from, and what the Wood and frozen sound-speed curves reveal that single curves hide.
+
+## The one-line takeaway
+
+The five-equation model breaks at the sound speed. Step back to a six-equation model, solve it, and use stiff relaxation to merge the two pressures again. The interface pressure $\hat{p}_I = (Z_2 p_1 + Z_1 p_2)/(Z_1+Z_2)$ is the single line that ties everything together.
+
+## The Wood sound speed is a sandbag
+
+Kapila's (2001) five-equation model assumes pressure equilibrium — both phases share one pressure inside each cell. It looks clean, but the resulting mixture sound speed misbehaves. The equilibrium speed $c_{eq}$ obeys the Wood (1930) formula
+
+$$
+\frac{1}{\rho c_{eq}^2} = \frac{\alpha_1}{\rho_1 c_1^2} + \frac{\alpha_2}{\rho_2 c_2^2}
+$$
+
+where $\alpha_k$ is the volume fraction of phase $k$, $\rho_k$ the density, and $c_k$ the pure-phase sound speed. The trouble is that this curve is **not monotonic**. A water (1500 m/s) and air (340 m/s) mixture inside a single cell can drop to roughly 24 m/s — far below either pure-phase value.
+
+Try the simulation below — drag the sliders for $\rho_k$ and $c_k$ and watch the two curves diverge.
+
+<WoodVsFrozenSoundSpeed />
+
+In the numerical diffusion zone an artificial mixture appears between the two pure states, and acoustic waves slow down dramatically inside it. Wave arrival times shift, shock tracking breaks. On top of that, keeping $\alpha$ strictly positive near 0 or 1 is also delicate.
+
+## The detour — let the pressures disagree
+
+Saurel takes a step back. Drop the pressure-equilibrium assumption and let each phase carry its own pressure $p_1$, $p_2$. Starting from the seven-equation Baer–Nunziato model and taking the velocity-relaxation limit alone gives the six-equation model.
+
+$$
+\partial_t \alpha_1 + u\,\partial_x \alpha_1 = \mu(p_1 - p_2)
+$$
+
+$$
+\partial_t (\alpha_k \rho_k) + \partial_x(\alpha_k \rho_k u) = 0
+$$
+
+$$
+\partial_t (\rho u) + \partial_x(\rho u^2 + \alpha_1 p_1 + \alpha_2 p_2) = 0
+$$
+
+$$
+\partial_t (\alpha_k \rho_k e_k) + \partial_x(\alpha_k \rho_k e_k u) + \alpha_k p_k\,\partial_x u = \pm p_I \mu (p_1 - p_2)
+$$
+
+Here $\mu$ is the pressure-relaxation rate (stiff), $p_I$ the interface pressure, and $e_k$ the phasic internal energy. The mixture sound speed of this model becomes
+
+$$
+c_f^2 = Y_1 c_1^2 + Y_2 c_2^2
+$$
+
+with $Y_k = \alpha_k \rho_k / \rho$ the mass fraction. The curve is monotonic; the Wood sandbag is gone.
+
+## The interface pressure $\hat{p}_I$ — an impedance-weighted average
+
+The $p_I$ that appears on the right-hand side of the internal energy equations is the velocity-equilibrium limit of the asymmetric interfacial term in the seven-equation model, and it falls out as
+
+$$
+p_I = \frac{Z_2 p_1 + Z_1 p_2}{Z_1 + Z_2}, \quad Z_k = \rho_k c_k
+$$
+
+where $Z_k$ is the acoustic impedance. The stiffer phase carries the larger weight. Intuitively, when work crosses an interface, the harder side moves less and the softer side moves more in exactly that ratio. This single line is what enforces both energy conservation and the entropy inequality.
+
+## The relaxation step — a single equation in one unknown
+
+Numerically you do not march the $\mu \to \infty$ ODE directly. Instead you split the time step: solve the hyperbolic part first, then integrate only the relaxation source. During relaxation $u$, $\rho E$, and $\alpha_k \rho_k$ stay frozen, and only the specific volumes $v_k = 1/\rho_k$ evolve. Using the stiffened-gas EOS
+
+$$
+p_k = (\gamma_k - 1)\rho_k e_k - \gamma_k p_{\infty,k}
+$$
+
+the integration closes in closed form,
+
+$$
+v_k(p) = v_k^0\,\frac{p^0 + \gamma_k p_{\infty,k} + (\gamma_k - 1)\hat{p}_I}{p + \gamma_k p_{\infty,k} + (\gamma_k - 1)\hat{p}_I}
+$$
+
+and the saturation constraint $\sum_k (\alpha\rho)_k v_k(p) = 1$ pins down a single relaxed pressure $p$. One bisection sweep is enough. That is the heart of the algorithm.
+
+## Reinitialization — re-anchor on conserved energy
+
+The relaxed $p$ and $\alpha_k$ are consistent with each phasic EOS, but they may drift from the **conserved mixture energy** because the non-conservative internal-energy equations accumulate small shock errors. Saurel applies one more touch-up. From the conserved mixture total energy, recompute the pressure through the mixture EOS
+
+$$
+p(\rho, e, \alpha_1, \alpha_2) = \frac{\rho e - \big(\frac{\alpha_1 \gamma_1 p_{\infty,1}}{\gamma_1 - 1} + \frac{\alpha_2 \gamma_2 p_{\infty,2}}{\gamma_2 - 1}\big)}{\frac{\alpha_1}{\gamma_1 - 1} + \frac{\alpha_2}{\gamma_2 - 1}}
+$$
+
+and re-derive each phasic $e_k$ at that pressure. The model started non-conservative, but at shocks it now behaves like a conservative one. Cost: one extra EOS evaluation per cell.
+
+## Code — the moment two pressures meet inside one cell
+
+The relaxation step in roughly thirty lines of NumPy. Stiffened gas plus bisection on the saturation constraint.
+
+```python
+import numpy as np
+
+def stiffened_gas_volume(p, p0, v0, gamma, p_inf, p_hat_I):
+    num = p0 + gamma * p_inf + (gamma - 1.0) * p_hat_I
+    den = p   + gamma * p_inf + (gamma - 1.0) * p_hat_I
+    return v0 * num / den
+
+def saturation_residual(p, alpha_rho, p0, v0, gamma, p_inf, p_hat_I):
+    total = 0.0
+    for k in range(2):
+        v_k = stiffened_gas_volume(p, p0[k], v0[k], gamma[k], p_inf[k], p_hat_I)
+        total += alpha_rho[k] * v_k
+    return total - 1.0
+
+def stiff_pressure_relax(p0, v0, alpha_rho, gamma, p_inf, Z, tol=1e-9):
+    p_hat_I = (Z[1] * p0[0] + Z[0] * p0[1]) / (Z[0] + Z[1])
+    lo, hi = 1.0, 1.0e10
+    for _ in range(80):
+        mid = 0.5 * (lo + hi)
+        r = saturation_residual(mid, alpha_rho, p0, v0, gamma, p_inf, p_hat_I)
+        if r > 0:
+            lo = mid       # pressure too low -> volumes sum above 1
+        else:
+            hi = mid
+        if hi - lo < tol * mid:
+            break
+    return 0.5 * (lo + hi), p_hat_I
+
+# Water (alpha=0.7) and air (alpha=0.3), two different starting pressures
+gamma  = np.array([4.4, 1.4])
+p_inf  = np.array([6.0e8, 0.0])
+rho0   = np.array([1000.0, 1.0])
+alpha0 = np.array([0.7, 0.3])
+p0     = np.array([5.0e5, 1.0e5])
+Z      = np.array([1500.0 * 1000.0, 340.0 * 1.0])
+
+alpha_rho = alpha0 * rho0
+v0        = 1.0 / rho0
+
+p_eq, p_hat_I = stiff_pressure_relax(p0, v0, alpha_rho, gamma, p_inf, Z)
+print(f"impedance mean ^pI = {p_hat_I:.3e} Pa")
+print(f"relaxed pressure p = {p_eq:.3e} Pa")
+```
+
+Water's impedance ($Z_1 = 1.5\times 10^6$) is about 4400× that of air ($Z_2 = 340$), so $\hat{p}_I$ practically equals the water pressure. The relaxed pressure that comes out is the result of a small mutual compression and expansion between the two phases.
+
+## Watch — the moment two pressures meet
+
+A single cell hides the dynamics. On a 1D grid with a simplified ODE, each cell has $p_1$ and $p_2$ converge exponentially toward the impedance mean $\hat{p}_I$ — faster as $\mu \cdot \Delta t$ grows.
+
+<TwoPressureRelaxation1D />
+
+Increasing $Z_1$ pulls $\hat{p}_I$ closer to the phase 1 pressure; the impedance ratio is the weighting law, no more. With $\mu \cdot \Delta t$ near 1, equilibrium is reached in essentially one step — that is what stiff relaxation means. Saurel applies this procedure unconditionally at the end of every time step and recovers the stiff limit of the five-equation model.
+
+## Limits — the seven-equation shadow
+
+Six equations are not the universal answer. Velocity equilibrium is still an assumption. Porous media or granular explosives, where the two phases can move at very different speeds, demand the full seven-equation Baer–Nunziato system. Under very strong shocks the non-conservative internal-energy errors are non-negligible, and Petitpas's artificial heat exchange correction enters (paper Section 5). And $\mu \to \infty$ implies an infinitely fast interface response; once surface tension or mass transfer joins the picture, you need separate models for each.
+
+Even so, six equations plus stiff relaxation is the most widely used foundation for compressible multiphase simulation today. AP-IMEX time integration (2026-05-03 post) and MUSCL-THINC-BVD reconstruction (2026-05-02 post) both sit on top of this six-equation skeleton.
+
+## Three things to take away
+
+- **The five-equation trap lives in the sound speed.** The non-monotonic Wood mixture speed misroutes acoustic waves at interfaces.
+- **Six equations plus relaxation recovers the five-equation limit.** Do not fear the non-conservative system — solve it once, merge it once.
+- **The impedance mean $\hat{p}_I = (Z_2 p_1 + Z_1 p_2)/(Z_1+Z_2)$ is the linchpin.** Energy conservation, entropy inequality, monotonic sound speed — one line carries them all.
