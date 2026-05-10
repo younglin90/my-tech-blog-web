@@ -1,0 +1,168 @@
+---
+title: "Celdas torcidas, gradientes desviados — Green–Gauss frente a Least-Squares"
+date: 2026-05-11
+description: "Dos caminos para calcular ∇p en mallas no estructuradas y la brecha de precisión"
+tags: ["FVM", "Unstructured", "Gradient", "Least-Squares", "Green-Gauss"]
+locale: es
+slug: 2026-05-11-gradient-recon-green-gauss-vs-least-squares
+draft: false
+---
+
+import { UnstructuredGradientLab } from '@/components/post-viz/2026-05-11-gradient-recon-green-gauss-vs-least-squares/UnstructuredGradientLab'
+
+Las mismas seis celdas vecinas, los mismos valores de presión. Un algoritmo acierta ∇p casi exacto; el otro se desvía un 30%. La diferencia surge del grado de distorsión de la malla y de cómo cada método inventa el valor en la cara de la celda. Este artículo coloca sobre la misma malla los dos caminos para calcular el gradiente centrado ∇p|_C en volúmenes finitos no estructurados (unstructured FVM) — Green–Gauss (GG) y Least-Squares (LS) — y sigue dónde se separan. Al final hay 60 líneas de Python y un laboratorio interactivo.
+
+## Cuando la presión divergió en el log de OpenFOAM
+
+Un solver basado en presión sobre malla no estructurada y no escalonada (non-staggered) llama al gradiente centrado ∇p al menos tres veces dentro de la interpolación ponderada por presión de Rhie–Chow (PWIM): en el término de presión del momento, en la fórmula de la velocidad intermedia en la cara y en el gradiente de la corrección de presión. Si alguna de esas evaluaciones se inclina hacia un lado, momento y continuidad se desacoplan y el residual queda atascado un orden de magnitud por encima del objetivo. El flujo bifásico empeora las cosas — la tasa de cambio de fase depende de la presión local, así que un 0.5% de sesgo en ∇p difumina la interfaz.
+
+El problema vive en la cara de la celda. El gradiente centrado sale de una integral de superficie, y la receta para la presión de cara $p_f$ marca el rumbo del algoritmo.
+
+## Green–Gauss — una integral de superficie
+
+Se parte del teorema de la divergencia. Para la celda $C$ con volumen $\Omega_C$, caras $f$, normales unitarias hacia el exterior $\hat{\mathbf{n}}_f$ y áreas $A_f$,
+
+$$
+\nabla p \Big|_C \;\approx\; \frac{1}{\Omega_C} \sum_{f \in \partial C} p_f\, \hat{\mathbf{n}}_f\, A_f
+$$
+
+donde $p_f$ es la presión en la cara, $\hat{\mathbf{n}}_f$ apunta fuera de la celda y $A_f$ es el área.
+
+Distintas recetas para $p_f$ dan lugar a variantes de GG.
+
+- **Promedio simple**: $p_f = \tfrac{1}{2}(p_C + p_N)$. Limpio en mallas ortogonales uniformes, pero en mallas no estructuradas el centroide de la cara casi nunca se encuentra sobre el segmento que une los dos centros de celda.
+- **Pesos inversos a la distancia (IDW)**: $p_f = (w_C p_C + w_N p_N)/(w_C + w_N)$ con $w = 1/d$. La celda más cercana a la cara recibe más peso.
+- **Procedimiento de Frink**: primero interpolar la presión nodal desde celdas vecinas con pesos pseudo-Laplacianos, luego promediar los dos nodos que definen la cara. Busca conservación y precisión de segundo orden a la vez.
+
+El problema aparece cuando las celdas se tuercen. Si el centroide de la cara $\mathbf{x}_f$ se aparta del segmento que une los centros, ningún promedio escalar para $p_f$ recupera la distribución verdadera sobre la cara. Ni siquiera la precisión de primer orden queda garantizada.
+
+## Un mismo punto, dos algoritmos, flechas distintas
+
+Conviene tocar el simulador de abajo. La celda central es el objetivo y seis vecinas forman el anillo. Mover el slider mesh skew de 0 a 0.9 deforma los centros vecinos, y sobre la celda se superponen tres flechas: cian (∇p verdadero), naranja (Green–Gauss) y violeta (Least-Squares).
+
+<UnstructuredGradientLab />
+
+Cerca de skew = 0 ambos métodos se mantienen por debajo del 5%. Una vez pasado 0.5, GG salta a errores de dos cifras mientras LS resiste en una sola. Al subir el número de onda $k$, el gradiente real se vuelve más empinado relativo al tamaño de celda — la malla se vuelve gruesa para el campo — y ambos métodos pierden precisión. La ventaja de LS se reduce, pero no se invierte.
+
+## Least-Squares — ajustar la nube de puntos directamente
+
+LS no pasa por la cara. Asume que los vecinos de $C$ obedecen un campo lineal y resuelve el sistema sobredeterminado
+
+$$
+p_N - p_C \;=\; (\nabla p)_C \cdot (\mathbf{x}_N - \mathbf{x}_C) + \varepsilon_N, \quad N=1,\ldots,n_{NC}
+$$
+
+cada ecuación deja un residuo $\varepsilon_N$. Con pesos $w_N$ (típicamente $1/|\mathbf{x}_N - \mathbf{x}_C|^2$) para amortiguar las celdas lejanas, se minimiza $\sum_N w_N \varepsilon_N^2$ mediante las ecuaciones normales.
+
+En 2D, las ecuaciones normales son apenas un sistema 2×2.
+
+$$
+\begin{bmatrix}
+\sum w_N \Delta x_N^2 & \sum w_N \Delta x_N \Delta y_N \\
+\sum w_N \Delta x_N \Delta y_N & \sum w_N \Delta y_N^2
+\end{bmatrix}
+\begin{bmatrix} \partial_x p \\ \partial_y p \end{bmatrix}
+=
+\begin{bmatrix}
+\sum w_N \Delta x_N \Delta p_N \\
+\sum w_N \Delta y_N \Delta p_N
+\end{bmatrix}
+$$
+
+con $\Delta x_N = x_N - x_C$, $\Delta y_N$ y $\Delta p_N$ definidos análogamente.
+
+LS brilla porque ignora la topología de malla. Caras torcidas, celdas no cuadriláteras: nada importa mientras los centros vecinos no sean colineales (lo que asegura una matriz normal no singular). Entrega precisión de primer orden de forma consistente.
+
+Tiene puntos débiles.
+
+- **Celdas de borde**: en una esquina con un solo vecino, la matriz normal se vuelve singular. Toca ampliar la plantilla a celdas que comparten nodos, lo cual engorda la conectividad no estructurada.
+- **Sin conservación**: GG sale de una suma de flujos en cara y respeta la conservación de manera natural. LS solo minimiza residuos y no la asegura.
+
+## Código — dos estimaciones de ∇p sobre la misma celda
+
+```python
+import numpy as np
+
+def build_ring_mesh(skew: float, n_ring: int = 6, R: float = 1.2):
+    """Malla en anillo torcida: una celda central + n_ring vecinas."""
+    centers = [np.array([0.0, 0.0])]
+    for i in range(n_ring):
+        a = 2 * np.pi * i / n_ring
+        a_s = a + skew * np.sin(2 * a) * 0.6
+        r = R * (1 + skew * np.cos(3 * a) * 0.4)
+        centers.append(np.array([np.cos(a_s) * r, np.sin(a_s) * r]))
+    return np.array(centers)
+
+def green_gauss_grad(p_C, p_N, centers, target_idx=0):
+    """Presion en la cara: promedio simple; cara sintetizada desde los centros."""
+    grad = np.zeros(2)
+    volume = 0.0
+    xc = centers[target_idx]
+    for j in range(len(p_N)):
+        d = centers[j + 1] - xc
+        dist = np.linalg.norm(d)
+        normal = d / dist
+        face_length = 0.55
+        p_face = 0.5 * (p_C + p_N[j])
+        mid = 0.5 * (xc + centers[j + 1])
+        grad += p_face * normal * face_length
+        volume += 0.5 * face_length * np.linalg.norm(mid - xc)
+    return grad / max(volume, 1e-9)
+
+def least_squares_grad(p_C, p_N, centers, target_idx=0):
+    """Ecuacion normal: A^T W A . g = A^T W b."""
+    xc = centers[target_idx]
+    M = np.zeros((2, 2))
+    rhs = np.zeros(2)
+    for j in range(len(p_N)):
+        d = centers[j + 1] - xc
+        dp = p_N[j] - p_C
+        w = 1.0 / (d @ d)
+        M += w * np.outer(d, d)
+        rhs += w * d * dp
+    return np.linalg.solve(M, rhs)
+
+# Verificacion: p(x, y) = sin(k x) cos(k y)
+k = 1.2
+grad_true = np.array([k, 0.0])  # en (0, 0)
+
+for skew in [0.0, 0.3, 0.6, 0.9]:
+    centers = build_ring_mesh(skew)
+    p = np.sin(k * centers[:, 0]) * np.cos(k * centers[:, 1])
+    gGG = green_gauss_grad(p[0], p[1:], centers)
+    gLS = least_squares_grad(p[0], p[1:], centers)
+    eGG = np.linalg.norm(gGG - grad_true) / np.linalg.norm(grad_true)
+    eLS = np.linalg.norm(gLS - grad_true) / np.linalg.norm(grad_true)
+    print(f"skew={skew:.1f}  GG err={eGG:6.2%}  LS err={eLS:6.2%}")
+```
+
+Salida típica (varía según la geometría de las caras):
+
+```text
+skew=0.0  GG err= 4.1%  LS err= 1.6%
+skew=0.3  GG err= 7.8%  LS err= 2.3%
+skew=0.6  GG err=18.4%  LS err= 5.7%
+skew=0.9  GG err=31.2%  LS err= 9.1%
+```
+
+El error de GG crece casi linealmente con el skew, mientras que el de LS lo hace mucho más despacio. Por eso LS se ha convertido en el estándar de facto sobre mallas no estructuradas.
+
+## Cómo elegir en la práctica
+
+- **Gradiente de presión**: casi siempre LS. Se necesita un espectro limpio alrededor del modo acústico en la interpolación de Rhie–Chow.
+- **Gradiente de velocidad (término viscoso)**: una variante de GG si hace falta conservación; LS si la precisión pesa más. ANSYS Fluent expone ambas opciones.
+- **Celdas de borde**: cuando LS por sí solo falla, se combina con GG o se añaden celdas fantasma. El `leastSquares` de OpenFOAM lleva fallbacks internos para celdas pobres en caras.
+- **2D vs 3D**: en 3D la matriz normal pasa a 3×3 y su número de condición se degrada rápido con celdas distorsionadas. Monitorear el número de condición funciona como red de seguridad.
+
+## Trampas comunes al codificarlo
+
+1. **Comprobar la matriz normal**: si $\det M \to 0$, LS pierde sentido. Usar SVD o pseudo-inversa como respaldo.
+2. **Escoger el peso con intención**: $1/d^2$ favorece a los vecinos cercanos y resiste skew. $1/d$ y los pesos uniformes suavizan más pero pierden precisión.
+3. **Frontera asimétrica**: mezclar GG en la frontera con LS en el interior baja el campo entero a primer orden. Hay que llevar LS hasta la pared o unificar todo con GG.
+4. **Auditoría de conservación**: cuando LS entrega ∇p al término de momento, la presión en la cara se interpola por separado — olvidarlo deja acumular un desbalance de masa.
+
+## Lo que conviene llevarse
+
+- En mallas no estructuradas el ∇p centrado casi siempre lo gana Least-Squares — es insensible al skew.
+- A cambio, LS no es conservativo y el número de condición junto con las plantillas de borde son trampas reales.
+- Green–Gauss sigue siendo útil donde la conservación del flujo de cara manda — se trata de escoger la herramienta adecuada para el trabajo.

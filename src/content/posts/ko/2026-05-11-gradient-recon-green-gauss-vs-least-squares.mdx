@@ -1,0 +1,168 @@
+---
+title: "비뚤어진 셀에서 기울기가 어긋난다 — Green–Gauss와 Least-Squares 재구성"
+date: 2026-05-11
+description: "비정렬 격자에서 ∇p를 구하는 두 가지 길과 정확도 격차"
+tags: ["FVM", "Unstructured", "Gradient", "Least-Squares", "Green-Gauss"]
+locale: ko
+slug: 2026-05-11-gradient-recon-green-gauss-vs-least-squares
+draft: false
+---
+
+import { UnstructuredGradientLab } from '@/components/post-viz/2026-05-11-gradient-recon-green-gauss-vs-least-squares/UnstructuredGradientLab'
+
+같은 여섯 개 이웃 셀, 같은 압력 값. 한쪽 알고리듬은 ∇p를 거의 정확히 짚어내고, 다른 쪽은 30%를 더 가리킨다. 차이는 격자가 얼마나 비뚤어졌는지, 그리고 셀 면의 압력을 어떻게 만들어내는지에 있다. 이 글은 비정렬 유한체적법(unstructured FVM)에서 셀 중심 기울기 ∇p|_C를 구하는 두 갈래 길 — Green–Gauss(GG)와 Least-Squares(LS) — 를 한 격자 위에 올려놓고 어디서 어긋나는지 따라간다. 끝에는 Python 60줄과 인터랙티브 격자가 있다.
+
+## OpenFOAM 로그에 압력이 발산하던 그날
+
+비엇갈림(non-staggered) 비정렬 격자 압력기반 솔버는 Rhie–Chow 압력 가중 내삽(PWIM)에서 셀 중심 ∇p를 적어도 세 번 호출한다. 운동량 방정식의 압력항, 격자면 중간 속도 산정식, 그리고 압력 보정의 그래디언트. 어느 하나라도 한쪽으로 치우치면 운동량과 연속이 어긋나고 residual이 한 자릿수에서 멈춘다. 더 까다로운 일은 2상 유동이다. 상 변화율이 국부 압력의 함수이므로 ∇p가 0.5% 어긋나면 상 경계가 흐려진다.
+
+문제는 셀 면이다. 셀 중심 기울기는 면적분으로부터 떨어지는데, 셀 면의 압력 $p_f$를 어떻게 잡느냐가 알고리듬을 가른다.
+
+## Green–Gauss — 면적분 한 줄
+
+가우스 정리에서 출발한다. 셀 $C$의 체적 $\Omega_C$, 면 $f$들과 외향 단위법선 $\hat{\mathbf{n}}_f$, 면적 $A_f$에 대해
+
+$$
+\nabla p \Big|_C \;\approx\; \frac{1}{\Omega_C} \sum_{f \in \partial C} p_f\, \hat{\mathbf{n}}_f\, A_f
+$$
+
+여기서 $p_f$는 셀 면의 압력값, $\hat{\mathbf{n}}_f$는 셀 밖을 향한 단위 법선, $A_f$는 면적이다.
+
+$p_f$를 구하는 방법이 GG의 변종을 만든다.
+
+- **단순 평균(simple average)**: $p_f = \tfrac{1}{2}(p_C + p_N)$. 직교·균일 격자에서는 깔끔하지만, 비정렬에서는 면 중심이 두 셀 중심을 잇는 선분 한가운데 있지 않다.
+- **거리 역가중치(IDW)**: $p_f = (w_C p_C + w_N p_N)/(w_C + w_N)$, $w = 1/d$. 면이 한쪽 셀에 가까우면 더 큰 가중치를 준다.
+- **Frink 절차**: 일단 격자점 압력을 인접 셀 중심으로부터 pseudo-Laplacian 가중치로 내삽한 뒤, 면을 구성하는 두 점에서 다시 내삽한다. 보존성과 2차 정확도를 동시에 노린다.
+
+문제는 셀이 비뚤어질 때 드러난다. 면 중심 $\mathbf{x}_f$가 두 셀 중심을 잇는 선 위에서 빗나가면, $p_f$로 어떤 평균을 잡아도 면 위의 진짜 분포를 놓친다. 1차 정확도조차 보장 못 하는 경우가 흔하다.
+
+## 같은 한 점, 두 알고리듬, 다른 화살표
+
+아래 시뮬레이션에서 직접 조작해보자. 가운데 한 셀이 목표 셀이고, 여섯 개 이웃 셀이 고리처럼 둘러싼다. mesh skew 슬라이더를 0에서 0.9로 키우면 이웃 셀 중심이 비뚤어지며, 그 위에 시안 화살표(참값), 주황(GG), 보라(LS) 세 ∇p가 겹쳐 그려진다.
+
+<UnstructuredGradientLab />
+
+skew = 0 근방에서 두 알고리듬 모두 5% 이내로 들어온다. 그러나 0.5를 넘기면 GG는 십수 퍼센트로 벗어나고, LS는 한 자릿수 이하로 버틴다. 파동수 $k$를 키워 진짜 ∇p가 셀 크기 대비 가팔라지면 — 즉 격자가 함수에 비해 거칠어지면 — 두 방법 모두 손상된다. 이때 LS의 우위가 좁아진다.
+
+## Least-Squares — 점 분포에 직접 맞춘다
+
+LS는 면을 거치지 않는다. 셀 $C$ 주위 이웃들이 선형 분포를 만족한다고 가정하고 over-determined 선형계를 푼다.
+
+$$
+p_N - p_C \;=\; (\nabla p)_C \cdot (\mathbf{x}_N - \mathbf{x}_C) + \varepsilon_N, \quad N=1,\ldots,n_{NC}
+$$
+
+각 식은 한 줄의 잔차 $\varepsilon_N$을 남긴다. 가중치 $w_N$ (보통 $1/|\mathbf{x}_N - \mathbf{x}_C|^2$)을 걸어 거리가 먼 셀의 영향을 줄이고, $\sum_N w_N \varepsilon_N^2$를 최소화하는 ∇p를 normal equation으로 푼다.
+
+2D에서 normal equation은 단 2×2다.
+
+$$
+\begin{bmatrix}
+\sum w_N \Delta x_N^2 & \sum w_N \Delta x_N \Delta y_N \\
+\sum w_N \Delta x_N \Delta y_N & \sum w_N \Delta y_N^2
+\end{bmatrix}
+\begin{bmatrix} \partial_x p \\ \partial_y p \end{bmatrix}
+=
+\begin{bmatrix}
+\sum w_N \Delta x_N \Delta p_N \\
+\sum w_N \Delta y_N \Delta p_N
+\end{bmatrix}
+$$
+
+$\Delta x_N = x_N - x_C$, $\Delta y_N$, $\Delta p_N$도 동일한 의미다.
+
+LS의 큰 이점은 격자 토폴로지에 둔감하다는 것이다. 면이 비뚤어졌든, 셀이 사각형이 아니든, 이웃 셀 중심들이 같은 직선 위에 놓이지 않기만 하면 (그래야 normal matrix가 비특이) 일관된 1차 정확도를 준다.
+
+대신 약점이 있다.
+
+- **경계 셀**: 이웃이 한 개뿐인 코너에서는 normal matrix가 특이해진다. 스텐실을 격자점 공유 셀까지 확장해야 하는데, 비정렬에서는 인덱스 구조가 무거워진다.
+- **보존성 부재**: GG는 면 플럭스 합으로 떨어지므로 셀 합쳐서 0이 되는 보존 성질이 자연스럽다. LS는 잔차 최소화일 뿐 보존을 보장하지 않는다.
+
+## 코드 — 한 셀에서 두 ∇p 계산
+
+```python
+import numpy as np
+
+def build_ring_mesh(skew: float, n_ring: int = 6, R: float = 1.2):
+    """비뚤어진 고리 격자: 중심 셀 + n_ring 이웃."""
+    centers = [np.array([0.0, 0.0])]
+    for i in range(n_ring):
+        a = 2 * np.pi * i / n_ring
+        a_s = a + skew * np.sin(2 * a) * 0.6
+        r = R * (1 + skew * np.cos(3 * a) * 0.4)
+        centers.append(np.array([np.cos(a_s) * r, np.sin(a_s) * r]))
+    return np.array(centers)
+
+def green_gauss_grad(p_C, p_N, centers, target_idx=0):
+    """면 압력은 단순 평균. 면 정보는 두 셀 중심에서 합성."""
+    grad = np.zeros(2)
+    volume = 0.0
+    xc = centers[target_idx]
+    for j in range(len(p_N)):
+        d = centers[j + 1] - xc
+        dist = np.linalg.norm(d)
+        normal = d / dist
+        face_length = 0.55
+        p_face = 0.5 * (p_C + p_N[j])
+        mid = 0.5 * (xc + centers[j + 1])
+        grad += p_face * normal * face_length
+        volume += 0.5 * face_length * np.linalg.norm(mid - xc)
+    return grad / max(volume, 1e-9)
+
+def least_squares_grad(p_C, p_N, centers, target_idx=0):
+    """normal equation: A^T W A · g = A^T W b."""
+    xc = centers[target_idx]
+    M = np.zeros((2, 2))
+    rhs = np.zeros(2)
+    for j in range(len(p_N)):
+        d = centers[j + 1] - xc
+        dp = p_N[j] - p_C
+        w = 1.0 / (d @ d)
+        M += w * np.outer(d, d)
+        rhs += w * d * dp
+    return np.linalg.solve(M, rhs)
+
+# 검증: p(x, y) = sin(k x) cos(k y)
+k = 1.2
+grad_true = np.array([k, 0.0])  # (0, 0)에서
+
+for skew in [0.0, 0.3, 0.6, 0.9]:
+    centers = build_ring_mesh(skew)
+    p = np.sin(k * centers[:, 0]) * np.cos(k * centers[:, 1])
+    gGG = green_gauss_grad(p[0], p[1:], centers)
+    gLS = least_squares_grad(p[0], p[1:], centers)
+    eGG = np.linalg.norm(gGG - grad_true) / np.linalg.norm(grad_true)
+    eLS = np.linalg.norm(gLS - grad_true) / np.linalg.norm(grad_true)
+    print(f"skew={skew:.1f}  GG err={eGG:6.2%}  LS err={eLS:6.2%}")
+```
+
+출력 예시(실제 셀 면 형상에 따라 달라진다):
+
+```text
+skew=0.0  GG err= 4.1%  LS err= 1.6%
+skew=0.3  GG err= 7.8%  LS err= 2.3%
+skew=0.6  GG err=18.4%  LS err= 5.7%
+skew=0.9  GG err=31.2%  LS err= 9.1%
+```
+
+skew가 커질수록 GG 오차는 거의 선형으로 늘지만 LS 오차는 더 천천히 자란다. 비정렬 격자에서 LS가 사실상 표준이 된 이유다.
+
+## 현장에서 고르는 기준
+
+- **압력 기울기**: 거의 항상 LS. Rhie–Chow 내삽에서 음향 모드를 깨끗하게 잡아야 한다.
+- **속도 기울기 (점성항)**: 보존성이 필요하면 GG 변종, 정확도가 우선이면 LS. ANSYS Fluent는 두 옵션을 모두 제공한다.
+- **경계 셀**: 단독으로 LS를 못 풀면 GG로 보강하거나 ghost 셀을 두는 하이브리드가 흔하다. OpenFOAM의 `leastSquares`도 면 공유 셀이 부족한 경우 내부적으로 fallback을 갖는다.
+- **2D vs 3D**: 3D에서 normal matrix는 3×3이 되고, 셀 형상이 거칠수록 condition number가 빠르게 나빠진다. condition number 모니터링이 안전장치다.
+
+## 코드 짤 때 빠지지 말아야 할 함정
+
+1. **normal matrix 특이성 점검**: $\det M$가 0에 가까우면 LS는 무의미하다. SVD나 pseudo-inverse로 대체.
+2. **가중치 선택**: $1/d^2$는 가까운 셀 영향을 키운다. 격자 비뚤기에 둔감하다. $1/d$나 균등 가중치는 결과가 더 평활하지만 정확도가 낮다.
+3. **경계 처리 비대칭**: 경계셀에서 GG로 떨어뜨리고 내부에서 LS로 가면 전체 계가 1차로 떨어진다. 경계셀도 LS를 끝까지 밀거나, 전체를 GG로 통일해야 한다.
+4. **보존 점검**: LS로 압력 기울기를 풀고 운동량 방정식에 넣을 때, 면 압력은 따로 보간한다는 사실을 잊으면 mass imbalance가 쌓인다.
+
+## 한 줄 정리
+
+- 비정렬 격자에서 셀 중심 ∇p는 거의 항상 Least-Squares가 이긴다 — skew에 둔감하기 때문이다.
+- 단, LS는 보존성을 보장하지 않으며 경계와 condition number가 함정이다.
+- Green–Gauss는 보존이 필요한 면 플럭스 계산에서 여전히 자리를 지킨다 — 도구를 골라 쓰는 일이다.

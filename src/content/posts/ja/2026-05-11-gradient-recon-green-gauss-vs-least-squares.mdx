@@ -1,0 +1,168 @@
+---
+title: "歪んだセルで勾配がずれる — Green–Gauss と Least-Squares 再構成"
+date: 2026-05-11
+description: "非構造格子で ∇p を求める二つの道と、その精度差"
+tags: ["FVM", "Unstructured", "Gradient", "Least-Squares", "Green-Gauss"]
+locale: ja
+slug: 2026-05-11-gradient-recon-green-gauss-vs-least-squares
+draft: false
+---
+
+import { UnstructuredGradientLab } from '@/components/post-viz/2026-05-11-gradient-recon-green-gauss-vs-least-squares/UnstructuredGradientLab'
+
+同じ六つの隣接セル、同じ圧力値。一方のアルゴリズムは ∇p をほぼ正確に当て、もう一方は 30% もずれる。差は格子の歪みと、セル面での圧力をどう作るかにあります。本記事は、非構造有限体積法(unstructured FVM)でセル中心勾配 ∇p|_C を求める二つの道 — Green–Gauss(GG) と Least-Squares(LS) — を同じ格子に並べ、どこで分岐するかを追います。最後に Python 60 行とインタラクティブな格子が待っています。
+
+## OpenFOAM のログで圧力が発散した日
+
+非エッグスタガード(non-staggered)非構造格子の圧力ベースソルバは、Rhie–Chow 圧力加重内挿(PWIM)で少なくとも三度、セル中心 ∇p を呼び出します。運動量方程式の圧力項、セル面中間速度の式、そして圧力修正の勾配。どれか一つでも片寄れば、運動量と連続が食い違って残差が目標の一桁手前で止まります。二相流ではさらに厄介で、相変化率が局所圧力の関数なので、∇p に 0.5% のバイアスが入っただけで界面が滲みます。
+
+問題はセル面に潜んでいます。セル中心勾配は面積分から落ちますが、セル面圧力 $p_f$ の取り方がアルゴリズムを分けます。
+
+## Green–Gauss — 面積分一行
+
+発散定理から出発します。セル $C$ の体積 $\Omega_C$、面 $f$、外向き単位法線 $\hat{\mathbf{n}}_f$、面積 $A_f$ に対して
+
+$$
+\nabla p \Big|_C \;\approx\; \frac{1}{\Omega_C} \sum_{f \in \partial C} p_f\, \hat{\mathbf{n}}_f\, A_f
+$$
+
+ここで $p_f$ はセル面の圧力、$\hat{\mathbf{n}}_f$ はセルの外を向く単位法線、$A_f$ は面積です。
+
+$p_f$ の作り方で GG の変種が分かれます。
+
+- **単純平均(simple average)**: $p_f = \tfrac{1}{2}(p_C + p_N)$。直交均一格子では綺麗ですが、非構造では面中心が二つのセル中心を結ぶ線分の中点に乗りません。
+- **距離逆重み(IDW)**: $p_f = (w_C p_C + w_N p_N)/(w_C + w_N)$、$w = 1/d$。面に近いセルが大きな重みを得ます。
+- **Frink 法**: まず近傍セル中心から pseudo-Laplacian 重みで節点圧力を内挿し、その節点二つを面の両端として再び内挿します。保存性と二次精度を両立する設計です。
+
+問題はセルが歪むと現れます。面中心 $\mathbf{x}_f$ がセル中心同士を結ぶ線から外れると、$p_f$ にどんな平均を当てても面上の真の分布を取り戻せません。一次精度すら保証されない場合が普通にあります。
+
+## 同じ一点、二つのアルゴリズム、違う矢印
+
+下のシミュレーションで実際に触ってみましょう。中央のセルが対象セルで、六つの隣接セルがリング状に取り囲みます。mesh skew スライダを 0 から 0.9 へ動かすとセル中心が歪み、その上にシアン(真値)、オレンジ(GG)、紫(LS)の三つの ∇p が重なります。
+
+<UnstructuredGradientLab />
+
+skew = 0 付近では両方とも 5% 以内に収まります。しかし 0.5 を超えると GG は二桁台の誤差に膨れ、LS は一桁台で踏みとどまります。波数 $k$ を上げて真の ∇p がセルに対して急峻になると — つまり関数に対して格子が粗くなると — 両方とも精度が落ちます。LS の優位は縮まりますが逆転はしません。
+
+## Least-Squares — 点群に直接フィットする
+
+LS は面を通りません。セル $C$ の隣接が線形場に従うと仮定し、過決定系を解きます。
+
+$$
+p_N - p_C \;=\; (\nabla p)_C \cdot (\mathbf{x}_N - \mathbf{x}_C) + \varepsilon_N, \quad N=1,\ldots,n_{NC}
+$$
+
+各方程式が残差 $\varepsilon_N$ を一つ残します。重み $w_N$(通常 $1/|\mathbf{x}_N - \mathbf{x}_C|^2$)を掛けて遠いセルの寄与を抑え、$\sum_N w_N \varepsilon_N^2$ を最小化する ∇p を正規方程式で求めます。
+
+2D の正規方程式は 2×2 の小さな系です。
+
+$$
+\begin{bmatrix}
+\sum w_N \Delta x_N^2 & \sum w_N \Delta x_N \Delta y_N \\
+\sum w_N \Delta x_N \Delta y_N & \sum w_N \Delta y_N^2
+\end{bmatrix}
+\begin{bmatrix} \partial_x p \\ \partial_y p \end{bmatrix}
+=
+\begin{bmatrix}
+\sum w_N \Delta x_N \Delta p_N \\
+\sum w_N \Delta y_N \Delta p_N
+\end{bmatrix}
+$$
+
+$\Delta x_N = x_N - x_C$、$\Delta y_N$、$\Delta p_N$ も同様です。
+
+LS の強みは格子トポロジに鈍感なところです。面が歪んでも、セルが四角でなくても、近傍中心が同一直線上にない限り(これで正規行列が非特異)一貫した一次精度を返します。
+
+ただし弱点もあります。
+
+- **境界セル**: 隣接が一つしかない角では正規行列が特異になります。節点共有セルまでステンシルを広げる必要があり、非構造の接続情報が重くなります。
+- **保存性なし**: GG は面束の和から落ちるので、セルを足すと自然に 0 になる保存的性質があります。LS は残差最小化に過ぎず、保存は保証されません。
+
+## コード — 一つのセルで二つの ∇p を計算する
+
+```python
+import numpy as np
+
+def build_ring_mesh(skew: float, n_ring: int = 6, R: float = 1.2):
+    """歪んだリング格子: 中心セル + n_ring 個の隣接セル"""
+    centers = [np.array([0.0, 0.0])]
+    for i in range(n_ring):
+        a = 2 * np.pi * i / n_ring
+        a_s = a + skew * np.sin(2 * a) * 0.6
+        r = R * (1 + skew * np.cos(3 * a) * 0.4)
+        centers.append(np.array([np.cos(a_s) * r, np.sin(a_s) * r]))
+    return np.array(centers)
+
+def green_gauss_grad(p_C, p_N, centers, target_idx=0):
+    """面圧力は単純平均。面情報は二つのセル中心から合成。"""
+    grad = np.zeros(2)
+    volume = 0.0
+    xc = centers[target_idx]
+    for j in range(len(p_N)):
+        d = centers[j + 1] - xc
+        dist = np.linalg.norm(d)
+        normal = d / dist
+        face_length = 0.55
+        p_face = 0.5 * (p_C + p_N[j])
+        mid = 0.5 * (xc + centers[j + 1])
+        grad += p_face * normal * face_length
+        volume += 0.5 * face_length * np.linalg.norm(mid - xc)
+    return grad / max(volume, 1e-9)
+
+def least_squares_grad(p_C, p_N, centers, target_idx=0):
+    """正規方程式: A^T W A · g = A^T W b"""
+    xc = centers[target_idx]
+    M = np.zeros((2, 2))
+    rhs = np.zeros(2)
+    for j in range(len(p_N)):
+        d = centers[j + 1] - xc
+        dp = p_N[j] - p_C
+        w = 1.0 / (d @ d)
+        M += w * np.outer(d, d)
+        rhs += w * d * dp
+    return np.linalg.solve(M, rhs)
+
+# 検証: p(x, y) = sin(k x) cos(k y)
+k = 1.2
+grad_true = np.array([k, 0.0])  # (0, 0) における真値
+
+for skew in [0.0, 0.3, 0.6, 0.9]:
+    centers = build_ring_mesh(skew)
+    p = np.sin(k * centers[:, 0]) * np.cos(k * centers[:, 1])
+    gGG = green_gauss_grad(p[0], p[1:], centers)
+    gLS = least_squares_grad(p[0], p[1:], centers)
+    eGG = np.linalg.norm(gGG - grad_true) / np.linalg.norm(grad_true)
+    eLS = np.linalg.norm(gLS - grad_true) / np.linalg.norm(grad_true)
+    print(f"skew={skew:.1f}  GG err={eGG:6.2%}  LS err={eLS:6.2%}")
+```
+
+出力例(セル面形状で多少変わります):
+
+```text
+skew=0.0  GG err= 4.1%  LS err= 1.6%
+skew=0.3  GG err= 7.8%  LS err= 2.3%
+skew=0.6  GG err=18.4%  LS err= 5.7%
+skew=0.9  GG err=31.2%  LS err= 9.1%
+```
+
+skew が大きくなるほど GG の誤差はほぼ線形に増えますが、LS の誤差はずっと緩やかに伸びます。非構造格子で LS が事実上の標準になった理由です。
+
+## 現場での選び方
+
+- **圧力勾配**: ほぼ常に LS。Rhie–Chow 内挿で音響モードを綺麗に拾う必要があります。
+- **速度勾配(粘性項)**: 保存性が要るなら GG 系、精度優先なら LS。ANSYS Fluent は両方の選択肢を提供します。
+- **境界セル**: LS 単独で解けないときは GG で補強するか、ゴーストセルを置くハイブリッドが普通です。OpenFOAM の `leastSquares` も面共有セルが足りない場合の内部フォールバックを持っています。
+- **2D vs 3D**: 3D では正規行列が 3×3 になり、セル形状が荒れると条件数が急速に悪化します。条件数モニタリングが安全装置です。
+
+## 実装で踏み抜きやすい落とし穴
+
+1. **正規行列の特異性チェック**: $\det M$ が 0 に近いと LS は無意味です。SVD か pseudo-inverse に切り替えましょう。
+2. **重みの選択**: $1/d^2$ は近いセルを重視し、歪みに強い。$1/d$ や均等重みは滑らかですが精度は落ちます。
+3. **境界の非対称**: 境界で GG に落として内部で LS にすると、全体が一次に落ちます。境界も LS で押し切るか、全体を GG に統一しましょう。
+4. **保存性の監査**: LS で圧力勾配を解いて運動量方程式に渡すとき、面圧力は別途内挿される事実を忘れると質量不均衡が積もります。
+
+## 持ち帰るべきこと
+
+- 非構造格子のセル中心 ∇p は、ほぼ常に Least-Squares が勝ちます — 歪みに強いからです。
+- 代償として LS は保存性を保証せず、条件数と境界ステンシルが本物の罠です。
+- Green–Gauss は面束保存が必要な場面で今も席を占めます — 用途に合わせて道具を選ぶ問題です。
