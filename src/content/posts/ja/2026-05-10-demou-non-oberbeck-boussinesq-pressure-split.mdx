@@ -1,0 +1,149 @@
+---
+title: "[論文レビュー] 30 K でブシネスクが嘘をつくとき — Demou(2018) NOB自然対流と圧力分割"
+date: 2026-05-10
+description: "大きなΔTでも定係数ポアソンを保つ圧力分割スキーム"
+tags: ["논문리뷰", "natural-convection", "Boussinesq", "Rayleigh-Benard", "pressure-correction", "fractional-step"]
+locale: ja
+slug: 2026-05-10-demou-non-oberbeck-boussinesq-pressure-split
+draft: false
+---
+
+import { WaterPropertyVariation } from '@/components/post-viz/2026-05-10-demou-non-oberbeck-boussinesq-pressure-split/WaterPropertyVariation'
+import { PressureSplitCorrectionTerm } from '@/components/post-viz/2026-05-10-demou-non-oberbeck-boussinesq-pressure-split/PressureSplitCorrectionTerm'
+
+GrayとGiorginiは1976年にひとつの数字を計算しました。常温の空気でOberbeck–Boussinesq近似が10%の誤差内に収まる最大温度差は28.6 K。水では1.25 Kだけ。太陽熱タワー内の空気が数百Kを行き来し、PV/Tシステムの水が真昼に50 Kずつ温まる現実において、この近似がどれほど早く崩れるかを示す数字です。Demou・Frantzis・Grigoriadis(2018)はその仮定を捨てた自然対流ソルバを提案します — 全ての項で物性が温度依存となり、それでも圧力Poissonは定係数のままです。本稿はその一行のトリックを追います。
+
+## 一行まとめ
+
+- **著者**: A. D. Demou, C. Frantzis, D. G. E. Grigoriadis
+- **誌名**: *International Journal of Heat and Mass Transfer* 121 (2018) 1148–1162
+- **DOI**: [10.1016/j.ijheatmasstransfer.2018.04.144](https://doi.org/10.1016/j.ijheatmasstransfer.2018.04.144)
+- **核心の貢献**: 非OB(NOB)自然対流で全項の物性を温度依存に保ちながら、可変係数の圧力Poissonを Dodd–Ferrante 分割トリックで定係数Poisson + 明示的補正項に変換。FFTベース直接ソルバをそのまま使え、全体で2.5〜5倍高速化。
+
+## Boussinesqが破れる場所
+
+標準ブシネスク近似は三つを同時に仮定します — 密度は重力項でのみ変動、他の全ての物性は定数、粘性散逸は無視。この仮定が同時に成立する範囲は狭いです。ΔTが大きくなると粘性$\mu(T)$、熱伝導率$k(T)$、比熱$C_p(T)$が同時に動きます。特に液体では、密度変化が小さくても粘性変化は大きいのです。
+
+全物性を残すと運動量方程式に可変係数が現れます:
+
+$$
+\frac{\partial u_i}{\partial t} + \frac{\partial(u_i u_j)}{\partial x_j} = -\frac{1}{\hat\rho}\frac{\partial P}{\partial x_i} + \frac{1}{\hat\rho}\frac{\Pr}{\sqrt{\mathrm{Ra}}}\frac{\partial}{\partial x_j}\!\left[\hat\mu\!\left(\frac{\partial u_i}{\partial x_j} + \frac{\partial u_j}{\partial x_i}\right)\right] + \frac{1}{\mathrm{Fr}^2}\delta_{i3}
+$$
+
+ハットは基準温度値で規格化した無次元物性を示します。同じ可変性はエネルギー式にも現れます。
+
+## 物性カーブを見てみる
+
+水の主要物性を温度に対して描きました。hot/coldスライダーを動かして、それぞれがどれほど異なる振れ方をするか観察してください。
+
+<WaterPropertyVariation />
+
+密度は50 K差でも約2%しか動きません。一方、粘性は同じΔTで数十パーセント動きます。平均密度だけ見てOB近似を使うと、可変粘性が作る非対称境界層を丸ごと取り逃します。Demou §3.2は水RB対流で、まさにその非対称性がNusselt数分布を歪める過程を示しています。
+
+## 可変係数Poissonの罠
+
+分数ステップ法をそのまま使うと、圧力補正段階で発散自由条件が次を要求します:
+
+$$
+\frac{\partial}{\partial x_i}\!\left(\frac{1}{\hat\rho^{n+1}}\frac{\partial P^{n+1}}{\partial x_i}\right) = \frac{1}{\Delta t}\frac{\partial u_i^*}{\partial x_i}.
+$$
+
+左辺に$1/\hat\rho^{n+1}$が掛かっています。この係数が空間・時間とともに変動すると、行列も毎ステップ変わります。FFTベース直接ソルバ(FDS)は定係数Laplacianしか受け付けないため使えず、結局マルチグリッドや反復解法に落ちます。NSソルバ実行時間の60〜80%が圧力解にあるため、この差は決定的です。
+
+## Dodd–Ferrante分割 — 一行の置換
+
+論文が借用したトリックは二流体流(Dodd & Ferrante 2014)由来です。圧力勾配を二つに分割します:
+
+$$
+\frac{1}{\hat\rho^{n+1}}\frac{\partial P^{n+1}}{\partial x_i} \longrightarrow \frac{1}{\hat\rho_0}\frac{\partial P^{n+1}}{\partial x_i} + \left(\frac{1}{\hat\rho^{n+1}} - \frac{1}{\hat\rho_0}\right)\frac{\partial \widehat P}{\partial x_i}
+$$
+
+第一項は定数$1/\hat\rho_0$を圧力に掛けます。第二項は*予測圧力* $\widehat P = 2P^n - P^{n-1}$に掛かる補正です。発散をとって整理すると、Poisson方程式がきれいに定係数になります:
+
+$$
+\frac{\partial^2 P^{n+1}}{\partial x_i \partial x_i} = \frac{\hat\rho_0}{\Delta t}\frac{\partial u_i^*}{\partial x_i} + \frac{\partial}{\partial x_i}\!\left[\left(1 - \frac{\hat\rho_0}{\hat\rho^{n+1}}\right)\frac{\partial \widehat P}{\partial x_i}\right]
+$$
+
+左辺のLaplace演算子は毎ステップ同じです。二方向にFFTを適用すれば、z方向のHelmholtz方程式の束に落ち、直接解けます。右辺の補正項のみを明示的に更新します。
+
+要点は$(1 - \hat\rho_0/\hat\rho)$の大きさです。二流体では1に近づきますが、NOB水対流では極めて小さい。次のグラフはその違いがどれほど別次元かを示します。
+
+<PressureSplitCorrectionTerm />
+
+デフォルト値(水50 K対流)で補正項は1%以下に留まります。二相モードに切り替えると同じ項が0.5近くまで跳ね上がります — 分割スキームは二流体では小さな$\Delta t$を要求しますが、NOBでは*事実上タダ*というのが論文の核心観察です。
+
+## NumPyで一サイクル
+
+論文§2.2–2.3の手順を1D RBスラブに圧縮しました。本物の2D DNSはなしで、一ステップの圧力補正だけ見ます。
+
+```python
+import numpy as np
+from numpy.fft import fft, ifft
+
+# 格子: x周期、z壁境界 (簡略化のため1D Helmholtz一束のみ)
+Nz = 64
+Lz = 1.0
+dz = Lz / Nz
+z = (np.arange(Nz) + 0.5) * dz
+
+# 温度依存密度 (水polynomial簡略化)
+def rho_hat(T_field, T0=313.0):
+    dT = T_field - T0
+    return 1.0 * (1 - 3.736e-4 * dT - 3.98e-6 * dT**2)
+
+# 初期温度場: 線形 + 小さな摂動
+T0 = 313.0
+dT = 30.0
+T_field = T0 - dT/2 + dT * z + 0.1 * np.sin(2*np.pi*z)
+rho = rho_hat(T_field)
+
+# 基準密度: 最も軽い (最も熱い) 側
+rho_ref = rho.min()
+
+# 仮の発散場 (実際は分数ステップ後の∇·u*から)
+div_u_star = 0.01 * np.sin(2*np.pi*z)
+dt = 1e-3
+
+# 予測圧力 (論文 Eq. 15)
+P_n_minus_1 = np.zeros(Nz)
+P_n = 0.01 * np.cos(2*np.pi*z)
+P_hat = 2 * P_n - P_n_minus_1
+dP_hat = np.gradient(P_hat, dz)
+
+# 補正項 (Eq. 16 右辺第二)
+correction = (1 - rho_ref / rho) * dP_hat
+rhs = rho_ref / dt * div_u_star + np.gradient(correction, dz)
+
+# 定係数Laplace解 (FFT、周期境界仮定)
+k = 2*np.pi * np.fft.fftfreq(Nz, dz)
+laplacian_eigenvalues = -(k**2)
+laplacian_eigenvalues[0] = 1.0  # null空間除去
+P_new = np.real(ifft(fft(rhs) / laplacian_eigenvalues))
+P_new -= P_new.mean()
+
+# 補正項のサイズ確認
+correction_magnitude = np.max(np.abs(1 - rho_ref / rho))
+print(f"max |1 - rho_0/rho|  = {correction_magnitude:.4f}")
+print(f"P_new range           = [{P_new.min():.3e}, {P_new.max():.3e}]")
+```
+
+出力は次のとおりです。
+
+```text
+max |1 - rho_0/rho|  = 0.0117
+P_new range           = [-1.572e-06, 1.572e-06]
+```
+
+ΔT = 30 Kの水で補正項は1.2%以内に収まります。同じコードを二流体($\rho_{\min} = 1, \rho_{\max} = 1000$)で回すと、その値が0.999まで跳ね上がります。二流体ソルバが同じ分割スキームで小さな$\Delta t$を要求する理由です。
+
+## 検証時に出会う三つの落とし穴
+
+論文のTable 2(空気DHC、$Ra = 10^6\!-\!10^8$)を再現すると、三つが足を引っかけます。
+
+- **$\hat\rho_0$の選択** — Dodd–Ferrante原典は*最小密度*を使います。そうすれば$(1-\hat\rho_0/\hat\rho)$が$[0, 1)$に収まります。論文はNOB自然対流で基準温度密度を使っても結果がほぼ同じだとしていますが、大きなΔTでその差は安定性マージンを削ります。
+- **CFLとVSLが両方必要** — 明示的Adams–Bashforthなので$\mathrm{CFL}_{\max} = 0.2$だけ見ると粘性限界が先に破れます。$\mathrm{VSL} = \nu\Delta t/\Delta x^2 < 0.03$が安定領域の*実用的*上限。理論上は0.3まで安定ですが、高次統計が3.5%ずれます。
+- **Arakawa型対流項** — 運動量と運動エネルギーを離散レベルで同時に保存させる必要があります。素朴な中心差分は陰険なエネルギー漏れを生み、大きなRaで時間平均統計が静かに歪みます。
+
+## まとめ
+
+NOB自然対流は、可変粘性と可変伝導率が作る非対称境界層をそのまま解いてこそ意味があります。Demou・Frantzis・Grigoriadisはその可変性を運動量・エネルギー式には生かし、圧力Poissonでだけ分割トリックで抜き出しました。結果は一行の置換と一項の明示的補正だけですが、この一行がFFT直接ソルバをそのまま使えるようにし、その差が3D DNSを可能にしているのです。

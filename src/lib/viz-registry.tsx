@@ -37,6 +37,7 @@ export const VIZ_COMPONENTS: Record<string, ComponentType> = {
   "PlateauRayleighJet": dynamic(() => import("@/components/post-viz/2026-04-23-plateau-rayleigh-jet-breakup/PlateauRayleighJet").then((m) => ({ default: m.PlateauRayleighJet })), { ssr: false, loading: VizLoading }),
   "PoiseuilleProfile": dynamic(() => import("@/components/post-viz/2026-03-28-poiseuille-flow-analytical-solution/PoiseuilleProfile").then((m) => ({ default: m.PoiseuilleProfile })), { ssr: false, loading: VizLoading }),
   "PressureContour": dynamic(() => import("@/components/viz/PressureContour").then((m) => ({ default: m.PressureContour })), { ssr: false, loading: VizLoading }),
+  "PressureSplitCorrectionTerm": dynamic(() => import("@/components/post-viz/2026-05-10-demou-non-oberbeck-boussinesq-pressure-split/PressureSplitCorrectionTerm").then((m) => ({ default: m.PressureSplitCorrectionTerm })), { ssr: false, loading: VizLoading }),
   "QuaternionRotationDemo": dynamic(() => import("@/components/post-viz/2026-04-20-fem-rigid-body-dynamics-quaternion/QuaternionRotationDemo").then((m) => ({ default: m.QuaternionRotationDemo })), { ssr: false, loading: VizLoading }),
   "RankineVortexExplorer": dynamic(() => import("@/components/post-viz/2026-04-28-rankine-vortex-helmholtz/RankineVortexExplorer").then((m) => ({ default: m.RankineVortexExplorer })), { ssr: false, loading: VizLoading }),
   "ReynoldsDyeExperiment": dynamic(() => import("@/components/post-viz/2026-05-05-reynolds-pipe-transition-turbulence/ReynoldsDyeExperiment").then((m) => ({ default: m.ReynoldsDyeExperiment })), { ssr: false, loading: VizLoading }),
@@ -56,5 +57,6 @@ export const VIZ_COMPONENTS: Record<string, ComponentType> = {
   "VenturiCavitationFlow": dynamic(() => import("@/components/post-viz/2026-04-30-cavitation-number-vapor-pressure/VenturiCavitationFlow").then((m) => ({ default: m.VenturiCavitationFlow })), { ssr: false, loading: VizLoading }),
   "VOFvsLevelSet": dynamic(() => import("@/components/post-viz/interface-capturing/VOFvsLevelSet").then((m) => ({ default: m.VOFvsLevelSet })), { ssr: false, loading: VizLoading }),
   "VolumeFractionAdvect": dynamic(() => import("@/components/post-viz/five-equation-model/VolumeFractionAdvect").then((m) => ({ default: m.VolumeFractionAdvect })), { ssr: false, loading: VizLoading }),
+  "WaterPropertyVariation": dynamic(() => import("@/components/post-viz/2026-05-10-demou-non-oberbeck-boussinesq-pressure-split/WaterPropertyVariation").then((m) => ({ default: m.WaterPropertyVariation })), { ssr: false, loading: VizLoading }),
   "WoodVsFrozenSoundSpeed": dynamic(() => import("@/components/post-viz/2026-05-09-saurel-2009-pressure-relaxation-multiphase/WoodVsFrozenSoundSpeed").then((m) => ({ default: m.WoodVsFrozenSoundSpeed })), { ssr: false, loading: VizLoading }),
 }
