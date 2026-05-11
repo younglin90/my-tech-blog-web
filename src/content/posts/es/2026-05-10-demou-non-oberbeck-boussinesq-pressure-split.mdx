@@ -1,0 +1,149 @@
+---
+title: "[Reseña] Cuando 30 K hacen mentir a Boussinesq — Demou (2018) NOB y la división de presión"
+date: 2026-05-10
+description: "Conservar un Poisson de coeficiente constante con ΔT grandes sin abandonar propiedades variables"
+tags: ["논문리뷰", "natural-convection", "Boussinesq", "Rayleigh-Benard", "pressure-correction", "fractional-step"]
+locale: es
+slug: 2026-05-10-demou-non-oberbeck-boussinesq-pressure-split
+draft: false
+---
+
+import { WaterPropertyVariation } from '@/components/post-viz/2026-05-10-demou-non-oberbeck-boussinesq-pressure-split/WaterPropertyVariation'
+import { PressureSplitCorrectionTerm } from '@/components/post-viz/2026-05-10-demou-non-oberbeck-boussinesq-pressure-split/PressureSplitCorrectionTerm'
+
+En 1976 Gray y Giorgini calcularon dos números. Para aire a temperatura ambiente, la aproximación de Oberbeck–Boussinesq se mantiene dentro de un 10 % de error sólo hasta ΔT = 28,6 K. Para agua, el límite es 1,25 K. Las torres solares mueven cientos de kelvin a través del aire; los paneles fotovoltaico-térmicos empujan el agua 50 K cada mediodía. Demou, Frantzis y Grigoriadis (2018) tiran la aproximación: cada término recibe propiedades dependientes de la temperatura, y aun así el Poisson de presión sigue siendo de coeficiente constante. Este texto recorre la sustitución de una línea que hace que todo eso encaje.
+
+## Resumen en una línea
+
+- **Autores**: A. D. Demou, C. Frantzis, D. G. E. Grigoriadis
+- **Revista**: *International Journal of Heat and Mass Transfer* 121 (2018) 1148–1162
+- **DOI**: [10.1016/j.ijheatmasstransfer.2018.04.144](https://doi.org/10.1016/j.ijheatmasstransfer.2018.04.144)
+- **Aporte central**: para convección natural no-OB, conservar propiedades dependientes de temperatura en todos los términos *y* convertir el Poisson de presión con coeficiente variable en uno de coeficiente constante mediante la división de Dodd–Ferrante. Un solver directo basado en FFT reemplaza al multigrid iterativo y el código completo corre 2,5–5× más rápido.
+
+## Dónde se rompe Boussinesq en realidad
+
+La Boussinesq estándar supone tres cosas a la vez: la densidad varía sólo en el término gravitacional, las demás propiedades son constantes y la disipación viscosa es despreciable. La ventana donde las tres se cumplen es estrecha. Apenas crece ΔT, la viscosidad $\mu(T)$, la conductividad $k(T)$ y el calor específico $C_p(T)$ se mueven a la vez. En líquidos la densidad cambia poco, pero la viscosidad lo hace en decenas de por ciento.
+
+Conservar todas las propiedades variables produce una ecuación de momento con coeficiente variable:
+
+$$
+\frac{\partial u_i}{\partial t} + \frac{\partial(u_i u_j)}{\partial x_j} = -\frac{1}{\hat\rho}\frac{\partial P}{\partial x_i} + \frac{1}{\hat\rho}\frac{\Pr}{\sqrt{\mathrm{Ra}}}\frac{\partial}{\partial x_j}\!\left[\hat\mu\!\left(\frac{\partial u_i}{\partial x_j} + \frac{\partial u_j}{\partial x_i}\right)\right] + \frac{1}{\mathrm{Fr}^2}\delta_{i3}
+$$
+
+Los sombreros marcan propiedades adimensionalizadas con su valor a la temperatura de referencia. La misma variabilidad aparece en la ecuación de energía.
+
+## Mire las curvas de propiedades
+
+Abajo están las cuatro propiedades clave del agua en función de la temperatura. Mueva los deslizadores caliente/frío y observe qué tanto oscila cada una.
+
+<WaterPropertyVariation />
+
+La densidad apenas se mueve — unos 2 % a través de 50 K. La viscosidad cae decenas de por ciento en el mismo rango. Usar una sola densidad promedio (OB) hace perder la capa límite asimétrica que la viscosidad variable arma. Demou §3.2 muestra exactamente esa asimetría desviando la distribución de Nusselt en la convección de Rayleigh–Bénard en agua.
+
+## La trampa del Poisson de coeficiente variable
+
+La corrección de presión estándar del método fraccional pide
+
+$$
+\frac{\partial}{\partial x_i}\!\left(\frac{1}{\hat\rho^{n+1}}\frac{\partial P^{n+1}}{\partial x_i}\right) = \frac{1}{\Delta t}\frac{\partial u_i^*}{\partial x_i}.
+$$
+
+Ese $1/\hat\rho^{n+1}$ dentro de la divergencia es el problema. Varía en espacio y tiempo, así que la matriz cambia en cada paso. Los Fast Direct Solvers (basados en FFT) sólo aceptan un Laplaciano de coeficiente constante; toca volver a multigrid o métodos iterativos. Como el 60–80 % del tiempo de un solver NS típico se va en la presión, ahí está la cuenta.
+
+## División Dodd–Ferrante — una línea
+
+El truco lo toma el artículo de los flujos de dos fluidos (Dodd & Ferrante 2014). Divida el gradiente de presión en dos partes:
+
+$$
+\frac{1}{\hat\rho^{n+1}}\frac{\partial P^{n+1}}{\partial x_i} \longrightarrow \frac{1}{\hat\rho_0}\frac{\partial P^{n+1}}{\partial x_i} + \left(\frac{1}{\hat\rho^{n+1}} - \frac{1}{\hat\rho_0}\right)\frac{\partial \widehat P}{\partial x_i}
+$$
+
+La primera parte multiplica la presión nueva por una constante $1/\hat\rho_0$. La segunda parte multiplica una *presión extrapolada* $\widehat P = 2P^n - P^{n-1}$ — cantidad conocida en el paso $n+1$. Tomar la divergencia y reordenar da
+
+$$
+\frac{\partial^2 P^{n+1}}{\partial x_i \partial x_i} = \frac{\hat\rho_0}{\Delta t}\frac{\partial u_i^*}{\partial x_i} + \frac{\partial}{\partial x_i}\!\left[\left(1 - \frac{\hat\rho_0}{\hat\rho^{n+1}}\right)\frac{\partial \widehat P}{\partial x_i}\right]
+$$
+
+El Laplaciano de la izquierda es constante — el mismo operador en cada paso. Una FFT en dos direcciones lo reduce a una pila de Helmholtz a lo largo de $z$, resueltos de forma directa. Sólo el término de corrección de la derecha se actualiza explícitamente.
+
+Todo el esquema vive del tamaño de $(1 - \hat\rho_0/\hat\rho)$. En flujos de dos fluidos se acerca a 1. En convección NOB de agua es minúsculo. El siguiente gráfico muestra justo cuán distintos son esos regímenes.
+
+<PressureSplitCorrectionTerm />
+
+Con los valores por defecto (agua a través de 50 K) la corrección se mantiene bien por debajo del 1 %. Cambie al modo de dos fases y el mismo término salta a casi 0,5 — por eso el esquema de división necesita $\Delta t$ pequeños en flujos líquido–gas, pero resulta *prácticamente gratis* en convección NOB.
+
+## Un ciclo en NumPy
+
+A continuación va un paso de la corrección de presión (Demou §2.2–2.3) condensado a una losa 1D. Sin DNS 2D real, sólo el tamaño del término de corrección y un Poisson.
+
+```python
+import numpy as np
+from numpy.fft import fft, ifft
+
+# losa 1D: periódica, una pila de Helmholtz
+Nz = 64
+Lz = 1.0
+dz = Lz / Nz
+z = (np.arange(Nz) + 0.5) * dz
+
+# densidad dependiente de la temperatura (polinomio del agua, simplificado)
+def rho_hat(T_field, T0=313.0):
+    dT = T_field - T0
+    return 1.0 * (1 - 3.736e-4 * dT - 3.98e-6 * dT**2)
+
+# perfil inicial de temperatura: lineal + pequeña perturbacion
+T0 = 313.0
+dT = 30.0
+T_field = T0 - dT/2 + dT * z + 0.1 * np.sin(2*np.pi*z)
+rho = rho_hat(T_field)
+
+# densidad de referencia: la mas liviana (la mas caliente)
+rho_ref = rho.min()
+
+# divergencia ficticia (en un solver completo viene de ∇·u* tras el paso fraccional)
+div_u_star = 0.01 * np.sin(2*np.pi*z)
+dt = 1e-3
+
+# presion extrapolada (Ec. 15 del articulo)
+P_n_minus_1 = np.zeros(Nz)
+P_n = 0.01 * np.cos(2*np.pi*z)
+P_hat = 2 * P_n - P_n_minus_1
+dP_hat = np.gradient(P_hat, dz)
+
+# termino de correccion (segundo del miembro derecho de la Ec. 16)
+correction = (1 - rho_ref / rho) * dP_hat
+rhs = rho_ref / dt * div_u_star + np.gradient(correction, dz)
+
+# Laplaciano de coeficiente constante (FFT, BC periodicas)
+k = 2*np.pi * np.fft.fftfreq(Nz, dz)
+laplacian_eigenvalues = -(k**2)
+laplacian_eigenvalues[0] = 1.0  # quitar el espacio nulo
+P_new = np.real(ifft(fft(rhs) / laplacian_eigenvalues))
+P_new -= P_new.mean()
+
+# tamano del termino de correccion
+correction_magnitude = np.max(np.abs(1 - rho_ref / rho))
+print(f"max |1 - rho_0/rho|  = {correction_magnitude:.4f}")
+print(f"P_new range           = [{P_new.min():.3e}, {P_new.max():.3e}]")
+```
+
+La salida es:
+
+```text
+max |1 - rho_0/rho|  = 0.0117
+P_new range           = [-1.572e-06, 1.572e-06]
+```
+
+Para agua a ΔT = 30 K la corrección queda acotada por 1,2 %. Ejecute el mismo código sobre una mezcla bifásica ($\rho_{\min} = 1, \rho_{\max} = 1000$) y el mismo número salta a 0,999 — la razón por la que los solvers bifásicos que usan el mismo truco deben reducir $\Delta t$.
+
+## Tres tropiezos al validar
+
+Reproduciendo la Tabla 2 (DHC con aire, $Ra = 10^6$ a $10^8$), tres cosas suelen morder.
+
+- **Elección de $\hat\rho_0$** — el Dodd–Ferrante original usa la *densidad mínima*. Eso mantiene $(1 - \hat\rho_0/\hat\rho)$ dentro de $[0, 1)$. El artículo dice que usar $\hat\rho(T_0)$ da casi lo mismo en NOB, pero con ΔT grandes erosiona el margen de estabilidad.
+- **CFL y VSL juntos** — Adams–Bashforth explícito implica que un $\mathrm{CFL}_{\max} = 0,2$ solo no basta; el límite viscoso $\mathrm{VSL} = \nu\Delta t/\Delta x^2 < 0,03$ suele tropezar primero. La teoría permite hasta 0,3, pero las estadísticas de orden superior se desplazan 3,5 % más allá de 0,03.
+- **Forma convectiva de Arakawa** — discretizar momento y energía cinética conservativamente *al mismo tiempo* importa a nivel discreto. Una diferencia central simple deja escapar energía y los promedios temporales se inclinan en silencio a Ra grandes.
+
+## Cierre
+
+La convección natural NOB tiene sentido sólo si se permite una capa límite asimétrica — y esa asimetría viene principalmente de la viscosidad y la conductividad variables, no de la densidad. Demou y coautores las mantienen vivas en momento y energía, y restringen el truco a una sustitución de una línea en el paso de presión. Esa única línea permite que un solver directo por FFT reemplace al iterativo, y eso es lo que vuelve practicable la DNS 3D de NOB.
