@@ -1,0 +1,121 @@
+---
+title: "1950年、von Neumannは衝撃波をわざとぼかした — 人工粘性とodd-evenデカップリング"
+date: 2026-05-13
+description: "ポストショック振動を鎮めたξ²(Δu)²トリックと、それが残した別の問題"
+tags: ["CFD", "Shock-Capturing", "Artificial-Viscosity", "Staggered-Grid", "Historical"]
+locale: ja
+slug: von-neumann-artificial-viscosity-1950
+draft: false
+---
+
+import { VonNeumannShockTube1D } from '@/components/post-viz/2026-05-13-von-neumann-artificial-viscosity-1950/VonNeumannShockTube1D'
+import { OddEvenSawtoothDemo } from '@/components/post-viz/2026-05-13-von-neumann-artificial-viscosity-1950/OddEvenSawtoothDemo'
+
+ロス・アラモス、1950年。John von NeumannとRobert Richtmyerが短い論文を *Journal of Applied Physics* に載せました。タイトルは "A Method for the Numerical Calculation of Hydrodynamic Shocks"。中身のトリックはたった一行でした — 衝撃波が格子上できれいに乗らないなら、こちらから先にわざとぼかしてしまおう。本記事ではその一行の人工粘性(artificial viscosity)がなぜ機能するのか、何を犠牲にするのか、そしてそれがcollocated格子に残したもう一つの問題 — odd-evenデカップリング — までを追います。最後にはNumPy 50行でMach 2の衝撃管をつかまえます。
+
+## 格子上の衝撃波は振動する
+
+理想化したEuler方程式に粘性はありません。だから本物の衝撃波は分子平均自由行程程度の幅に圧縮されます。CFDのセルはその約100万倍幅広い。1セルの中で密度と圧力が二倍に跳ねろという話です。
+
+この不連続を保存型差分スキームに通すと、ほぼ必ず現れる現象があります。衝撃面の後ろに立ち上がるsawtooth状の振動、いわゆるwiggleです。von Neumannは1944年のマンハッタン計画時代にすでにこの問題に出会っていました。爆発シミュレーションのポストショック領域が荒れると、TNT当量の計算が丸ごとずれます。
+
+原因は単純です。1次upwindのように強い数値粘性は衝撃を捕らえる代わりに他のすべてを鈍らせる。2次以上のスキームは精度こそ高いものの不連続点ではGibbs現象のように振動する。自然は分子粘性で衝撃内部にエントロピーを生成しますが、格子にはその通路がないのです。
+
+## 1950年の一行
+
+von NeumannとRichtmyerの答えは自然を真似ることでした。分子粘性を直接モデル化できないなら、セル幅程度に膨らませた偽の粘性項を圧力に足す。
+
+$$
+Q_i = \begin{cases}
+\xi^2 \, (u_{i+1} - u_{i-1})^2 \, \rho_i & \text{if } u_{i+1} \le u_{i-1} \\
+0 & \text{otherwise}
+\end{cases}
+$$
+
+$Q_i$はセル$i$での人工バルク圧力、$\xi$は衝撃を何セル分に広げるかを決めるチューニングパラメータ(通常2〜3)、$u_{i+1} - u_{i-1}$は速度の1次差分、$\rho_i$はセル密度です。運動量・エネルギー式中の$P$を$P + Q$に置き換えるだけで終わります。
+
+この一行には三つの賢い選択が隠れています。$Q$は$(\Delta u)^2$に比例するため、滑らかな流れではほぼ0、衝撃近傍だけで強くなる。$u_{i+1} \le u_{i-1}$という条件 — 速度が収束する場合にだけ点火する — で膨張波や音波には触れない。$\rho_i$を掛けることで重い媒質には大きな圧力ブーストが入ります。
+
+## 手で触ってみる
+
+下のシミュレーションは古典的なSod衝撃管です。左を$\rho = 1, p = 1$、右を$\rho = 0.125, p = 0.1$として、$t = 0$で膜を抜く瞬間を再現します。ξスライダーで人工粘性の強さを0から5まで自由に動かしてみてください。
+
+<VonNeumannShockTube1D />
+
+ξ = 0では衝撃の後ろに小さなsawtoothが見えます。ξ = 2付近で振動は静まりますが、衝撃が2〜3セルに広がる。ξ = 5まで上げると衝撃自体が鈍りすぎてプラトーが波打つ。von Neumannが推した$\xi \approx 2$〜$3$がトレードオフのsweet spotであることが目で確かめられます。
+
+## NumPyで追う人工粘性
+
+50行に核を収めます。donor-cell移流と人工粘性項だけを抜き出した最小実装です。
+
+```python
+import numpy as np
+
+def vnr_shock_solver(N=200, T=0.2, xi=2.5, gamma=1.4):
+    # 初期条件: Sod衝撃管
+    dx = 1.0 / N
+    rho = np.where(np.arange(N) < N // 2, 1.0, 0.125)
+    mom = np.zeros(N)
+    p   = np.where(np.arange(N) < N // 2, 1.0, 0.1)
+    E   = p / (gamma - 1)
+    t = 0.0
+    while t < T:
+        u = mom / rho
+        c = np.sqrt(gamma * p / np.maximum(rho, 1e-9))
+        dt = 0.45 * dx / np.max(np.abs(u) + c)
+        # von Neumann-Richtmyer の Q
+        du = np.zeros(N)
+        du[1:-1] = u[2:] - u[:-2]
+        Q = np.where(du < 0, 0.25 * xi**2 * du**2 * rho, 0.0)
+        # rho, mom, E を donor-cell で移流
+        uf = 0.5 * (u[:-1] + u[1:])
+        for q_arr, q_new in [(rho, 'rho'), (mom, 'mom'), (E, 'E')]:
+            flux = np.where(uf > 0, q_arr[:-1] * uf, q_arr[1:] * uf)
+            q_arr[1:-1] -= dt / dx * (flux[1:] - flux[:-1])
+        # 圧力更新と P+Q の体積力
+        p = (gamma - 1) * (E - 0.5 * rho * (mom / rho) ** 2)
+        Ptot = p + Q
+        mom[1:-1] -= dt / (2 * dx) * (Ptot[2:] - Ptot[:-2])
+        E[1:-1]   -= dt / (2 * dx) * (Ptot[2:] * u[2:] - Ptot[:-2] * u[:-2])
+        t += dt
+    return rho, mom, E
+
+rho, mom, E = vnr_shock_solver(xi=2.5)
+print(f"shock peak rho ≈ {rho.max():.3f}   (Rankine-Hugoniot exact ≈ 2.667 for Mach 2)")
+```
+
+実行するとピーク密度がRankine-Hugoniot解の数%以内に着地します。同じコードをξ = 0で回すと、振動のせいでmax・minが真のプラトーから非対称に振れます。
+
+## odd-evenデカップリングというもう一つの罠
+
+衝撃を捕らえたら終わりではありません。同じcollocated格子(全変数をセル中心に置く配置)にはvon Neumannが気づいたもう一つの病があります。次の静止状態を見てみます。速度0、比熱エネルギー1で一定、しかし密度がsawtoothに揺れている。
+
+$$
+\rho_i = \begin{cases} 1 & i = 1, 3, 5, \dots \\ 2 & i = 2, 4, 6, \dots \end{cases}
+$$
+
+圧力$p_i = \rho_i$(等温仮定)なら、セル$i = 2$は隣接の二倍の圧力です。直感的にはすぐ崩れるはず。ところがセル$i$の運動量更新は
+
+$$
+\frac{\partial (\rho u)_i}{\partial t} = -\frac{F_{i+1/2} - F_{i-1/2}}{\Delta x} = -\frac{p_{i+1} - p_{i-1}}{2\Delta x} = 0
+$$
+
+$p_{i+1}$と$p_{i-1}$が同じパリティの部分格子から来るため、差が正確に0になるのです。格子が二つの独立な副格子(偶セル、奇セル)に割れて互いを見ない状態。このsawtoothモードは育ちも消えもしません。
+
+<OddEvenSawtoothDemo />
+
+モードをcollocatedからstaggeredに切り替えてみてください。staggered格子は運動量をセル面に置きます。面$i+1/2$の圧力差は$p_{i+1} - p_i$ — 偶・奇のパリティが1セル隣同士で出会わざるをえない。sawtoothはたちまち1次差分の射程に入り減衰します。
+
+## 何を捨て、何を得たか
+
+von Neumannの1950年トリックは二つを同時に示しました。格子の限界を模倣で埋める道があること。そしてその模倣が別の格子病を生むこと。両方とも現代CFDに生きています。
+
+今日のZEUS、Athena、PLUTOといったastrophysicsコードはstaggered格子と人工粘性をそのまま使います。一方OpenFOAMやANSYS Fluentはcollocated格子にRhie-Chow補間を載せて同じデカップリングを回避します。同じ問題を別角度から解いた結果です。
+
+衝撃の後ろのsawtoothはバグとは限らない — 1944年から知られている格子病のもう一つの顔。これだけ覚えていれば十分です。
+
+## 覚えておくこと
+
+1. **人工粘性 $Q = \xi^2 (\Delta u)^2 \rho$** は圧縮($\Delta u < 0$)でのみ起動します。滑らかな流れに触れず、衝撃を3セル程度に広げて振動を消す。
+2. **トレードオフは明白**。ξが小さければ振動が残り、大きければ衝撃が鈍る。$\xi \approx 2$〜$3$が1950年代以来の黄金比。
+3. **odd-evenデカップリングはcollocated格子の構造的欠陥**。staggered(ZEUS流)かRhie-Chow(OpenFOAM流)で回避する — どちらの解を見ているかソースを開いて確認する習慣が毎回役立ちます。

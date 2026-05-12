@@ -35,6 +35,7 @@ export const VIZ_COMPONENTS: Record<string, ComponentType> = {
   "MUSCLTHINCBVDPicker": dynamic(() => import("@/components/post-viz/2026-05-02-muscl-thinc-bvd-interface-reconstruction/MUSCLTHINCBVDPicker").then((m) => ({ default: m.MUSCLTHINCBVDPicker })), { ssr: false, loading: VizLoading }),
   "NumericalDungeon": dynamic(() => import("@/components/NumericalDungeon").then((m) => ({ default: m.NumericalDungeon })), { ssr: false, loading: VizLoading }),
   "NumericalScheme": dynamic(() => import("@/components/viz/NumericalScheme").then((m) => ({ default: m.NumericalScheme })), { ssr: false, loading: VizLoading }),
+  "OddEvenSawtoothDemo": dynamic(() => import("@/components/post-viz/2026-05-13-von-neumann-artificial-viscosity-1950/OddEvenSawtoothDemo").then((m) => ({ default: m.OddEvenSawtoothDemo })), { ssr: false, loading: VizLoading }),
   "PINNLossLandscape": dynamic(() => import("@/components/post-viz/2026-03-24-paper-review-pinn-turbulence-modeling/PINNLossLandscape").then((m) => ({ default: m.PINNLossLandscape })), { ssr: false, loading: VizLoading }),
   "PlateauRayleighJet": dynamic(() => import("@/components/post-viz/2026-04-23-plateau-rayleigh-jet-breakup/PlateauRayleighJet").then((m) => ({ default: m.PlateauRayleighJet })), { ssr: false, loading: VizLoading }),
   "PoiseuilleProfile": dynamic(() => import("@/components/post-viz/2026-03-28-poiseuille-flow-analytical-solution/PoiseuilleProfile").then((m) => ({ default: m.PoiseuilleProfile })), { ssr: false, loading: VizLoading }),
@@ -59,6 +60,7 @@ export const VIZ_COMPONENTS: Record<string, ComponentType> = {
   "VenturiCavitationFlow": dynamic(() => import("@/components/post-viz/2026-04-30-cavitation-number-vapor-pressure/VenturiCavitationFlow").then((m) => ({ default: m.VenturiCavitationFlow })), { ssr: false, loading: VizLoading }),
   "VOFvsLevelSet": dynamic(() => import("@/components/post-viz/interface-capturing/VOFvsLevelSet").then((m) => ({ default: m.VOFvsLevelSet })), { ssr: false, loading: VizLoading }),
   "VolumeFractionAdvect": dynamic(() => import("@/components/post-viz/five-equation-model/VolumeFractionAdvect").then((m) => ({ default: m.VolumeFractionAdvect })), { ssr: false, loading: VizLoading }),
+  "VonNeumannShockTube1D": dynamic(() => import("@/components/post-viz/2026-05-13-von-neumann-artificial-viscosity-1950/VonNeumannShockTube1D").then((m) => ({ default: m.VonNeumannShockTube1D })), { ssr: false, loading: VizLoading }),
   "WaterPropertyVariation": dynamic(() => import("@/components/post-viz/2026-05-10-demou-non-oberbeck-boussinesq-pressure-split/WaterPropertyVariation").then((m) => ({ default: m.WaterPropertyVariation })), { ssr: false, loading: VizLoading }),
   "WoodVsFrozenSoundSpeed": dynamic(() => import("@/components/post-viz/2026-05-09-saurel-2009-pressure-relaxation-multiphase/WoodVsFrozenSoundSpeed").then((m) => ({ default: m.WoodVsFrozenSoundSpeed })), { ssr: false, loading: VizLoading }),
 }
