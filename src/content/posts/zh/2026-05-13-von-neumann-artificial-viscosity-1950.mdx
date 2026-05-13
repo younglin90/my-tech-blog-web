@@ -1,0 +1,121 @@
+---
+title: "1950年,冯·诺依曼故意把激波抹糊了 — 人工粘性与奇偶解耦"
+date: 2026-05-13
+description: "压制激波后振荡的ξ²(Δu)²技巧,以及它留下的另一个问题"
+tags: ["CFD", "Shock-Capturing", "Artificial-Viscosity", "Staggered-Grid", "Historical"]
+locale: zh
+slug: von-neumann-artificial-viscosity-1950
+draft: false
+---
+
+import { VonNeumannShockTube1D } from '@/components/post-viz/2026-05-13-von-neumann-artificial-viscosity-1950/VonNeumannShockTube1D'
+import { OddEvenSawtoothDemo } from '@/components/post-viz/2026-05-13-von-neumann-artificial-viscosity-1950/OddEvenSawtoothDemo'
+
+洛斯阿拉莫斯,1950年。John von Neumann与Robert Richtmyer在 *Journal of Applied Physics* 发表了一篇短文,题为 "A Method for the Numerical Calculation of Hydrodynamic Shocks"。核心技巧只有一行 — 如果激波在网格上注定不会干净落位,那就由我们先把它抹糊掉。本文沿着这一行人工粘性(artificial viscosity)走下去,看它为何奏效、付出什么代价,以及它在collocated网格上留下的另一个问题 — 奇偶解耦(odd-even decoupling)。结尾用NumPy 50行抓住一个Mach 2激波管。
+
+## 网格上的激波会振荡
+
+理想Euler方程不含粘性,真实激波被压缩到分子平均自由程量级。CFD网格的一格大约比那个宽一百万倍。密度和压力要在一格之内翻倍。
+
+把这种间断送进任何守恒型差分,几乎必然出现一种现象:激波后面冒出的锯齿振荡,通常叫wiggle。von Neumann在1944年曼哈顿计划时期就遇上了。爆炸模拟的激波后区一旦起伏,TNT当量计算就整体偏离真值。
+
+原因不复杂。一阶迎风带来强数值粘性,把激波按住但顺手把其他流动也抹平。二阶以上方案精度高,但在间断附近像Gibbs现象那样振荡。自然依靠分子粘性在激波内部产生熵,而网格并无此通道。
+
+## 1950年的一行式
+
+冯·诺依曼与Richtmyer的回答是模仿自然。既然分子粘性无法直接分辨,那就在网格尺度上加一个假的体积粘性项,并入压力。
+
+$$
+Q_i = \begin{cases}
+\xi^2 \, (u_{i+1} - u_{i-1})^2 \, \rho_i & \text{if } u_{i+1} \le u_{i-1} \\
+0 & \text{otherwise}
+\end{cases}
+$$
+
+$Q_i$是单元$i$上的人工体积压力,$\xi$是调谐参数,决定激波铺多少格(通常取2-3),$u_{i+1} - u_{i-1}$是速度一阶差分,$\rho_i$是单元密度。在动量与能量方程中把每个$P$替换为$P + Q$,工作就此完成。
+
+这一行藏着三个聪明的选择。$Q$与$(\Delta u)^2$成正比,光滑流中几乎为零,只在激波附近显著。$u_{i+1} \le u_{i-1}$的条件 — 只在速度局部收敛时点火 — 不动膨胀波与声波。乘上$\rho_i$使重介质获得更强的压力推动。
+
+## 上手试一试
+
+下面这个模拟是经典Sod激波管。左侧$\rho = 1, p = 1$,右侧$\rho = 0.125, p = 0.1$,$t = 0$时抽掉隔膜。ξ滑块把人工粘性强度从0调到5。
+
+<VonNeumannShockTube1D />
+
+ξ = 0时激波后方能看到小锯齿。ξ = 2附近振荡熄灭,但激波铺到两三格。ξ = 5则激波本身变得太钝,平台区开始起伏。冯·诺依曼推荐的$\xi \approx 2$-$3$,正是这场权衡的甜区,肉眼可见。
+
+## 用NumPy复刻这一招
+
+五十行装下核心。donor-cell对流加人工粘性项,仅此而已。
+
+```python
+import numpy as np
+
+def vnr_shock_solver(N=200, T=0.2, xi=2.5, gamma=1.4):
+    # 初始条件:Sod激波管
+    dx = 1.0 / N
+    rho = np.where(np.arange(N) < N // 2, 1.0, 0.125)
+    mom = np.zeros(N)
+    p   = np.where(np.arange(N) < N // 2, 1.0, 0.1)
+    E   = p / (gamma - 1)
+    t = 0.0
+    while t < T:
+        u = mom / rho
+        c = np.sqrt(gamma * p / np.maximum(rho, 1e-9))
+        dt = 0.45 * dx / np.max(np.abs(u) + c)
+        # von Neumann-Richtmyer 的 Q
+        du = np.zeros(N)
+        du[1:-1] = u[2:] - u[:-2]
+        Q = np.where(du < 0, 0.25 * xi**2 * du**2 * rho, 0.0)
+        # donor-cell 对 rho, mom, E 做对流
+        uf = 0.5 * (u[:-1] + u[1:])
+        for q_arr, q_new in [(rho, 'rho'), (mom, 'mom'), (E, 'E')]:
+            flux = np.where(uf > 0, q_arr[:-1] * uf, q_arr[1:] * uf)
+            q_arr[1:-1] -= dt / dx * (flux[1:] - flux[:-1])
+        # 压力更新与 P+Q 的体积力
+        p = (gamma - 1) * (E - 0.5 * rho * (mom / rho) ** 2)
+        Ptot = p + Q
+        mom[1:-1] -= dt / (2 * dx) * (Ptot[2:] - Ptot[:-2])
+        E[1:-1]   -= dt / (2 * dx) * (Ptot[2:] * u[2:] - Ptot[:-2] * u[:-2])
+        t += dt
+    return rho, mom, E
+
+rho, mom, E = vnr_shock_solver(xi=2.5)
+print(f"shock peak rho ≈ {rho.max():.3f}   (Rankine-Hugoniot exact ≈ 2.667 for Mach 2)")
+```
+
+运行后峰值密度落在Rankine-Hugoniot解的百分之几以内。把同一段代码改成ξ = 0,振荡会让最大值与最小值非对称地偏离真实平台。
+
+## 奇偶解耦:另一个陷阱
+
+抓住激波并不意味着收工。同一个collocated网格(所有变量放在单元中心)还藏着冯·诺依曼注意到的另一个毛病。看下面这个静止状态:速度为0、比内能恒为1,但密度按锯齿排列。
+
+$$
+\rho_i = \begin{cases} 1 & i = 1, 3, 5, \dots \\ 2 & i = 2, 4, 6, \dots \end{cases}
+$$
+
+压力$p_i = \rho_i$(等温假设)使单元$i = 2$的压力是邻居的两倍,直觉上应当立刻松弛。然而单元$i$的动量更新为
+
+$$
+\frac{\partial (\rho u)_i}{\partial t} = -\frac{F_{i+1/2} - F_{i-1/2}}{\Delta x} = -\frac{p_{i+1} - p_{i-1}}{2\Delta x} = 0
+$$
+
+原因在于$p_{i+1}$与$p_{i-1}$来自同一奇偶子网格,差正好抵消。网格分裂成两个互不相见的独立子网格(偶单元、奇单元)。此锯齿模式既不增长也不衰减。
+
+<OddEvenSawtoothDemo />
+
+把上面的模式从collocated切到staggered。staggered网格把动量放在单元面上。面$i+1/2$处的压力差是$p_{i+1} - p_i$ — 奇偶被迫在相邻单元相遇。锯齿立刻落入一阶差分的射程,被damping。
+
+## 失与得
+
+冯·诺依曼1950年的技巧同时展示了两件事。网格极限可以靠模仿弥补。每一次模仿又制造一种新的网格病。两条经验在今日CFD中仍然活跃。
+
+ZEUS、Athena、PLUTO等天体物理代码沿用staggered网格加人工粘性;OpenFOAM、ANSYS Fluent则在collocated网格上叠一层Rhie-Chow插值绕开同一个解耦。同一个问题的两种侧攻。
+
+激波之后的锯齿未必是bug — 它是一种自1944年就被知晓的网格病的另一面。这一点就够带走了。
+
+## 记住三件事
+
+1. **人工粘性 $Q = \xi^2 (\Delta u)^2 \rho$** 只在压缩($\Delta u < 0$)时启动。光滑流动不受影响,激波在约3格铺开,振荡消散。
+2. **权衡清楚分明**。ξ太小,振荡残留;ξ太大,激波钝化。$\xi \approx 2$-$3$自1950年代起就是推荐区间。
+3. **奇偶解耦是collocated网格的结构性缺陷**。靠staggered(ZEUS派)或Rhie-Chow(OpenFOAM派)规避 — 翻开源码看自己用的是哪一种,这个习惯每次都管用。

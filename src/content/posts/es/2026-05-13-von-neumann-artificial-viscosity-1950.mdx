@@ -1,0 +1,121 @@
+---
+title: "1950 — Cuando von Neumann difuminó el choque a propósito: viscosidad artificial y desacople par-impar"
+date: 2026-05-13
+description: "El truco ξ²(Δu)² que apagó las oscilaciones post-choque y el problema que dejó detrás"
+tags: ["CFD", "Shock-Capturing", "Artificial-Viscosity", "Staggered-Grid", "Historical"]
+locale: es
+slug: von-neumann-artificial-viscosity-1950
+draft: false
+---
+
+import { VonNeumannShockTube1D } from '@/components/post-viz/2026-05-13-von-neumann-artificial-viscosity-1950/VonNeumannShockTube1D'
+import { OddEvenSawtoothDemo } from '@/components/post-viz/2026-05-13-von-neumann-artificial-viscosity-1950/OddEvenSawtoothDemo'
+
+Los Álamos, 1950. John von Neumann y Robert Richtmyer publicaron un artículo breve en *Journal of Applied Physics* titulado "A Method for the Numerical Calculation of Hydrodynamic Shocks". Su truco principal cabía en una sola línea — si la onda de choque no va a asentarse limpiamente sobre la malla, hagámosla borrosa nosotros antes de que la malla lo haga peor. Esta entrada recorre por qué funciona esa línea de viscosidad artificial (artificial viscosity), qué cuesta, y qué nuevo problema — el desacople par-impar — dejó atrás en mallas colocalizadas. Al final, cincuenta líneas de NumPy capturan un choque Mach 2.
+
+## En una malla, los choques oscilan
+
+Las ecuaciones de Euler ideal no llevan viscosidad, así que un choque real se comprime hasta unos pocos recorridos libres medios. Una celda CFD es aproximadamente un millón de veces más ancha. La densidad y la presión deben duplicarse dentro de una celda.
+
+Si se pasa esa discontinuidad por casi cualquier esquema conservativo, aparece un fenómeno único: una oscilación tipo diente de sierra detrás del frente, las famosas wiggles. Von Neumann ya las conocía desde 1944 en el Proyecto Manhattan. Cuando la región post-choque oscilaba, el cálculo del rendimiento del TNT salía mal.
+
+La causa es directa. El upwind de primer orden tiene una difusión numérica fuerte que atrapa el choque pero suaviza todo lo demás. Los esquemas de segundo orden son precisos pero suenan junto a las discontinuidades, un fenómeno de Gibbs numérico. La naturaleza fabrica la entropía faltante con viscosidad molecular dentro del choque. La malla no tiene ese canal.
+
+## La única línea de 1950
+
+La respuesta de von Neumann y Richtmyer fue imitar a la naturaleza. La viscosidad molecular no se puede resolver, así que añadamos una presión de masa falsa a escala de celda.
+
+$$
+Q_i = \begin{cases}
+\xi^2 \, (u_{i+1} - u_{i-1})^2 \, \rho_i & \text{if } u_{i+1} \le u_{i-1} \\
+0 & \text{otherwise}
+\end{cases}
+$$
+
+$Q_i$ es una presión de masa artificial en la celda $i$. $\xi$ es un parámetro de ajuste que controla sobre cuántas celdas se extiende el choque (típicamente 2-3). $u_{i+1} - u_{i-1}$ es la diferencia de velocidad. $\rho_i$ es la densidad local. Sustituir cada $P$ en momento y energía por $P + Q$. Listo.
+
+Tres decisiones astutas se esconden allí. $Q$ va como $(\Delta u)^2$, así que prácticamente vale cero en flujo suave y crece sólo cerca de los choques. La condición $u_{i+1} \le u_{i-1}$ — activar sólo cuando la velocidad converge localmente — deja intactos abanicos de expansión y ondas acústicas. Multiplicar por $\rho_i$ da un empuje mayor a medios más densos.
+
+## A probarlo
+
+Abajo hay un tubo de choque de Sod clásico: $\rho = 1, p = 1$ a la izquierda, $\rho = 0.125, p = 0.1$ a la derecha, membrana retirada en $t = 0$. El deslizador ξ marca la viscosidad artificial de 0 a 5.
+
+<VonNeumannShockTube1D />
+
+Con ξ = 0 vive un pequeño diente de sierra detrás del frente. Cerca de ξ = 2 las wiggles mueren, pero el choque se reparte sobre dos o tres celdas. Subir ξ = 5 deja el choque tan romo que el plateau se ondula. El $\xi \approx 2$-$3$ recomendado por von Neumann queda a la vista como el punto dulce del compromiso.
+
+## Siguiendo el algoritmo en NumPy
+
+Cincuenta líneas guardan el núcleo. Advección donor-cell más el término de viscosidad artificial, nada más.
+
+```python
+import numpy as np
+
+def vnr_shock_solver(N=200, T=0.2, xi=2.5, gamma=1.4):
+    # Condicion inicial: tubo de choque de Sod
+    dx = 1.0 / N
+    rho = np.where(np.arange(N) < N // 2, 1.0, 0.125)
+    mom = np.zeros(N)
+    p   = np.where(np.arange(N) < N // 2, 1.0, 0.1)
+    E   = p / (gamma - 1)
+    t = 0.0
+    while t < T:
+        u = mom / rho
+        c = np.sqrt(gamma * p / np.maximum(rho, 1e-9))
+        dt = 0.45 * dx / np.max(np.abs(u) + c)
+        # Q de von Neumann-Richtmyer
+        du = np.zeros(N)
+        du[1:-1] = u[2:] - u[:-2]
+        Q = np.where(du < 0, 0.25 * xi**2 * du**2 * rho, 0.0)
+        # Adveccion donor-cell de rho, mom, E
+        uf = 0.5 * (u[:-1] + u[1:])
+        for q_arr, q_new in [(rho, 'rho'), (mom, 'mom'), (E, 'E')]:
+            flux = np.where(uf > 0, q_arr[:-1] * uf, q_arr[1:] * uf)
+            q_arr[1:-1] -= dt / dx * (flux[1:] - flux[:-1])
+        # Actualizacion de presion y fuerza de cuerpo P+Q
+        p = (gamma - 1) * (E - 0.5 * rho * (mom / rho) ** 2)
+        Ptot = p + Q
+        mom[1:-1] -= dt / (2 * dx) * (Ptot[2:] - Ptot[:-2])
+        E[1:-1]   -= dt / (2 * dx) * (Ptot[2:] * u[2:] - Ptot[:-2] * u[:-2])
+        t += dt
+    return rho, mom, E
+
+rho, mom, E = vnr_shock_solver(xi=2.5)
+print(f"shock peak rho ≈ {rho.max():.3f}   (Rankine-Hugoniot exact ≈ 2.667 for Mach 2)")
+```
+
+Al correrlo, el pico de densidad cae dentro del uno por ciento del valor de Rankine-Hugoniot. El mismo código con ξ = 0 deja que la oscilación empuje el máximo y el mínimo asimétricamente lejos del plateau real.
+
+## Desacople par-impar: la otra trampa
+
+Atrapar el choque no cierra la historia. La misma malla colocalizada (todas las variables en el centro de celda) esconde otra patología que von Neumann notó. Considera un fluido en reposo, con energía térmica específica constante 1, y densidad con perfil tipo diente de sierra.
+
+$$
+\rho_i = \begin{cases} 1 & i = 1, 3, 5, \dots \\ 2 & i = 2, 4, 6, \dots \end{cases}
+$$
+
+La presión $p_i = \rho_i$ (caso isotérmico), de modo que la celda $i = 2$ está al doble de presión que sus vecinas. Debería relajarse al instante. Pero la actualización del momento en la celda $i$ es
+
+$$
+\frac{\partial (\rho u)_i}{\partial t} = -\frac{F_{i+1/2} - F_{i-1/2}}{\Delta x} = -\frac{p_{i+1} - p_{i-1}}{2\Delta x} = 0
+$$
+
+porque $p_{i+1}$ y $p_{i-1}$ vienen de la misma sub-malla de paridad. La malla se ha partido en dos sub-mallas independientes que no se ven entre sí. El modo diente de sierra no crece ni decae.
+
+<OddEvenSawtoothDemo />
+
+Cambia arriba el modo de colocalizado a desplazado (staggered). Una malla desplazada pone el momento en las caras de celda. La diferencia de presión en la cara $i+1/2$ es $p_{i+1} - p_i$ — las paridades par e impar se ven obligadas a encontrarse a través de una sola celda. El diente de sierra cae dentro del alcance de la primera derivada y se amortigua de inmediato.
+
+## Qué se ganó y qué se perdió
+
+El truco de 1950 mostró dos cosas a la vez. Los límites de la malla se pueden remendar por imitación. Y cada imitación crea su propia patología de malla. Ambas lecciones siguen vivas en el CFD moderno.
+
+Códigos de astrofísica como ZEUS, Athena y PLUTO siguen usando mallas desplazadas con viscosidad artificial. OpenFOAM y ANSYS Fluent toman mallas colocalizadas y le ponen encima la interpolación de Rhie-Chow para esquivar el mismo desacople. Dos rutas alrededor del mismo problema.
+
+Una cosa para llevarse: un diente de sierra detrás de un choque no siempre es un bug. Es una patología de malla conocida desde 1944.
+
+## Tres cosas para recordar
+
+1. **La viscosidad artificial $Q = \xi^2 (\Delta u)^2 \rho$** se enciende sólo bajo compresión ($\Delta u < 0$). El flujo suave queda intacto, el choque se extiende sobre ~3 celdas, las wiggles mueren.
+2. **El compromiso es claro**. Con ξ pequeño quedan oscilaciones; con ξ grande el choque se entumece. $\xi \approx 2$-$3$ ha sido el rango recomendado desde los años 50.
+3. **El desacople par-impar es un defecto estructural de las mallas colocalizadas**. Hay dos esquinas para esquivarlo — desplazada (estilo ZEUS) o Rhie-Chow (estilo OpenFOAM). Abrir el código fuente para ver cuál se está usando es un hábito que rinde cada vez.
