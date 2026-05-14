@@ -1,0 +1,174 @@
+---
+title: "A Heart Valve Without a Body-Fitted Mesh — Peskin's Immersed Boundary Method and the Discrete Delta"
+date: 2026-05-15
+description: "How to put a moving body into a fluid without ever remeshing — one regularized delta function does the work"
+tags: ["CFD", "IBM", "Immersed-Boundary", "Peskin", "Discrete-Delta", "FSI"]
+locale: en
+slug: peskin-ibm-direct-forcing-discrete-delta
+draft: false
+---
+
+import { IBMDeltaKernel1D } from '@/components/post-viz/2026-05-15-peskin-ibm-direct-forcing-discrete-delta/IBMDeltaKernel1D'
+import { IBMCylinderMarkers2D } from '@/components/post-viz/2026-05-15-peskin-ibm-direct-forcing-discrete-delta/IBMCylinderMarkers2D'
+
+In 1972, Charles Peskin walked into Columbia's medical school with a hard problem. Inside a beating heart, the valves flex and bulge and snap shut every fraction of a second. How do you build a body-fitted mesh around a surface that keeps changing shape? Remeshing every timestep was nearly impossible. Peskin's answer was simple — don't touch the grid at all. Instead, represent the body as a set of points that leak forces into the fluid. Today we walk through how that idea became a one-line formula.
+
+## 1972, Peskin in front of a heart valve
+
+The worst part of heart simulation was the mesh. When a valve moves, an ALE (Arbitrary Lagrangian–Eulerian) approach forces the grid to follow, but the motion is too large and too fast. Peskin's idea was to decouple the two frames completely. Solve the fluid on a fixed Cartesian grid (Eulerian) and represent the body as a moving cloud of points (Lagrangian). The bridge between the frames is the Dirac delta function $\delta$.
+
+One line says it:
+
+$$
+\mathbf{f}(\mathbf{x}, t) = \int_\Gamma \mathbf{F}(s, t)\, \delta(\mathbf{x} - \mathbf{X}(s, t))\, ds
+$$
+
+Here $\mathbf{x}$ is a fluid grid point, $\mathbf{X}(s,t)$ is a Lagrangian marker, and $\mathbf{F}$ is the force the marker hands to the fluid. The valve's whole shape and motion live inside a single function $\mathbf{X}(s,t)$.
+
+## Don't remesh
+
+The trouble is the computer. A computer cannot handle a Dirac delta directly. A function that spikes to infinity inside a region narrower than $h$ refuses to be discretized. Peskin introduced the discrete delta $\delta_h$ — the Dirac delta replaced by a smooth bump of width $h$.
+
+It has to satisfy two conditions.
+
+- The weights sum to 1 over all grid nodes (zeroth moment)
+- The weighted sum of coordinates equals the marker coordinate (first moment)
+
+Sum equals 1 means the applied force is conserved. The first moment guarantees torque doesn't drift. Just those two pin down the 4-point kernel uniquely.
+
+## The discrete delta — spreading one point onto the grid
+
+Move the marker in the figure below. Wherever you drop it between grid nodes, the weights still sum to roughly one.
+
+<IBMDeltaKernel1D />
+
+From a 2-point hat to a 6-point Peskin kernel, the wider the support, the more smoothly the weights are smeared. A smoother kernel means the force does not jump when the marker slides across a grid line. That is why IBM produces fewer temporal oscillations than a sharp interpolation would. The 4-point Peskin kernel is the workhorse — it satisfies a third condition on top of the two above: the sum of squared weights is independent of marker position.
+
+In closed form:
+
+$$
+\delta_h(r) =
+\begin{cases}
+\dfrac{1}{8}\left(3 - 2|r| + \sqrt{1 + 4|r| - 4r^2}\right), & 0 \le |r| < 1 \\
+\dfrac{1}{8}\left(5 - 2|r| - \sqrt{-7 + 12|r| - 4r^2}\right), & 1 \le |r| < 2 \\
+0, & |r| \ge 2
+\end{cases}
+$$
+
+with $r = (x_i - x_L)/h$, where $x_i$ is a grid node and $x_L$ is the marker.
+
+## Direct forcing — a round trip between two arrows
+
+Now move to 2D. Place markers along a circular cylinder and demand that each marker enforce no-slip. Every timestep cycles through four steps.
+
+1. Interpolate (E → L): pull grid velocity $\mathbf{u}$ to the marker location.
+$$
+\mathbf{U}_l = \sum_{i,j} \mathbf{u}_{ij}\, \delta_h(\mathbf{x}_{ij} - \mathbf{X}_l)\, h^2
+$$
+2. Compute force: divide the velocity mismatch by a timescale.
+$$
+\mathbf{F}_l = \frac{\mathbf{U}_l^{des} - \mathbf{U}_l}{\Delta t}
+$$
+3. Spread (L → E): push that force back onto the grid.
+$$
+\mathbf{f}_{ij} = \sum_l \mathbf{F}_l\, \delta_h(\mathbf{x}_{ij} - \mathbf{X}_l)\, \Delta s_l
+$$
+4. Update fluid: $\mathbf{u}^{n+1} = \mathbf{u}^n + \Delta t\,(\dots + \mathbf{f}/\rho)$.
+
+The point is that interpolation and spreading use the same kernel $\delta_h$. That symmetry automatically conserves momentum.
+
+<IBMCylinderMarkers2D />
+
+If you place too few markers, gaps open along the rim. The rule of thumb is $\Delta s_l < h$ — the marker spacing must be tighter than the grid. Crank it up to 64 and the band becomes uniform.
+
+## A hundred lines of IBM — one step around a cylinder
+
+```python
+import numpy as np
+
+def peskin4(r):
+    # 4-point regularized delta (Peskin 2002)
+    a = np.abs(r)
+    w = np.zeros_like(r)
+    m1 = a < 1
+    m2 = (a >= 1) & (a < 2)
+    w[m1] = (3 - 2*a[m1] + np.sqrt(1 + 4*a[m1] - 4*a[m1]**2)) / 8
+    w[m2] = (5 - 2*a[m2] - np.sqrt(-7 + 12*a[m2] - 4*a[m2]**2)) / 8
+    return w
+
+def spread_force(F_l, X_l, ds, shape, h):
+    # Lagrangian force F_l -> Eulerian grid force f_ij
+    nx, ny = shape
+    f = np.zeros((nx, ny, 2))
+    for l in range(len(X_l)):
+        i0, j0 = int(X_l[l, 0] / h), int(X_l[l, 1] / h)
+        for di in range(-2, 3):
+            for dj in range(-2, 3):
+                ii, jj = i0 + di, j0 + dj
+                if not (0 <= ii < nx and 0 <= jj < ny):
+                    continue
+                wx = peskin4(np.array([ii - X_l[l, 0] / h]))[0]
+                wy = peskin4(np.array([jj - X_l[l, 1] / h]))[0]
+                f[ii, jj] += F_l[l] * wx * wy * ds[l]
+    return f
+
+def interp_velocity(u, X_l, h):
+    # grid velocity u_ij -> marker velocity U_l
+    nx, ny, _ = u.shape
+    U = np.zeros((len(X_l), 2))
+    for l in range(len(X_l)):
+        i0, j0 = int(X_l[l, 0] / h), int(X_l[l, 1] / h)
+        for di in range(-2, 3):
+            for dj in range(-2, 3):
+                ii, jj = i0 + di, j0 + dj
+                if not (0 <= ii < nx and 0 <= jj < ny):
+                    continue
+                wx = peskin4(np.array([ii - X_l[l, 0] / h]))[0]
+                wy = peskin4(np.array([jj - X_l[l, 1] / h]))[0]
+                U[l] += u[ii, jj] * wx * wy * h**2
+    return U
+
+# one step of direct-forcing IBM
+N, h, dt = 32, 1.0, 0.05
+nL = 24
+theta = np.linspace(0, 2*np.pi, nL, endpoint=False)
+R = 8.0
+X_l = np.stack([N/2 + R*np.cos(theta), N/2 + R*np.sin(theta)], axis=1)
+ds = np.full(nL, 2*np.pi*R / nL)
+
+u = np.zeros((N, N, 2))
+u[:, :, 0] = 1.0                      # uniform inflow
+U_des = np.zeros((nL, 2))             # stationary cylinder = no-slip
+U_l = interp_velocity(u, X_l, h)
+F_l = (U_des - U_l) / dt
+f = spread_force(F_l, X_l, ds, (N, N), h)
+u_new = u + dt * f / 1.0
+print(f"max |u| inside cylinder: {np.abs(u_new[12:20, 12:20]).max():.4f}")
+```
+
+After a single step, the interior velocity already collapses toward zero. A real simulation needs a pressure Poisson solve and viscous terms, but the core of IBM — interpolate, compute, spread — sits in those thirty lines.
+
+## The price of a blurred wall
+
+Peskin's original IBM has a cost. Smear $\delta_h$ once and the boundary becomes a diffuse interface of width $h$. The marker position is exact, but the wall the fluid sees is slightly fuzzy. At low Re, no harm done — the boundary layer is thick enough to swallow the smear. At high Re the boundary layer shrinks below one grid cell, and a fuzzy wall ruins boundary-layer resolution.
+
+Pressure oscillates too. As markers cross grid lines the forcing changes smoothly, yet the pressure Poisson amplifies even tiny ripples. Implicit IBM tames the oscillations for rigid bodies, at the cost of one extra linear solve per timestep.
+
+## Why sharp-interface variants appeared
+
+These limitations pushed the field, from the late 1990s onward, toward discrete-forcing IBM variants. Mittal and Iaccarino's ghost-cell IBM, Tseng and Ferziger's cut-cell, Tucker's sharp-interface schemes. They share one idea — drop $\delta_h$ and instead solve a local interpolation problem in the boundary cells so that the wall condition is imposed exactly.
+
+| Method | Strength | Weakness |
+|--------|----------|----------|
+| Peskin continuous forcing | Simple, conservative, handles deformable bodies | Diffuse wall, pressure oscillation |
+| Ghost-cell IBM | Sharp boundary, high-order possible | Complex code, deformable bodies hard |
+| Cut-cell | Exact geometry | Small-cell stability issues |
+| MLS IBM | Plays well with non-uniform grids | Costly weight computation |
+
+Flexible membranes like heart valves stay in the Peskin family; rigid bodies in high-Re external flow lean ghost-cell. They are not rivals, they share the workload.
+
+## Three things to keep
+
+1. Don't touch the grid. Fluid on a Cartesian mesh, body as a cloud of points. The two frames are stitched by $\delta_h$.
+2. One kernel both ways. Interpolation (E → L) and spreading (L → E) share the same $\delta_h$; that symmetry conserves momentum for free.
+3. The cost of a soft wall. The boundary smears to width $h$. Natural for deformable bodies; ghost-cell wins for high-Re rigid bodies.

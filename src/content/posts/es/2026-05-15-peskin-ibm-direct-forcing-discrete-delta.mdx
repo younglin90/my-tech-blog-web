@@ -1,0 +1,174 @@
+---
+title: "Una válvula cardíaca sin malla ajustada — el método de frontera inmersa de Peskin y la delta discreta"
+date: 2026-05-15
+description: "Meter un cuerpo móvil en el fluido sin volver a mallar, con una sola función delta regularizada"
+tags: ["CFD", "IBM", "Immersed-Boundary", "Peskin", "Discrete-Delta", "FSI"]
+locale: es
+slug: peskin-ibm-direct-forcing-discrete-delta
+draft: false
+---
+
+import { IBMDeltaKernel1D } from '@/components/post-viz/2026-05-15-peskin-ibm-direct-forcing-discrete-delta/IBMDeltaKernel1D'
+import { IBMCylinderMarkers2D } from '@/components/post-viz/2026-05-15-peskin-ibm-direct-forcing-discrete-delta/IBMCylinderMarkers2D'
+
+En 1972, Charles Peskin se enfrentó a un problema complicado en la facultad de medicina de Columbia. Dentro de un corazón en latido, las válvulas se doblan, se hinchan y se cierran a cada instante. ¿Cómo se construye una malla ajustada al cuerpo alrededor de una superficie que cambia de forma todo el tiempo? Volver a mallar a cada paso temporal resultaba casi imposible. La respuesta de Peskin fue sencilla: no tocar la malla. En su lugar, representar el cuerpo como una nube de puntos que filtran fuerzas al fluido. Hoy seguimos cómo aquella idea se condensó en una sola línea de fórmula.
+
+## 1972, Peskin frente a una válvula cardíaca
+
+Lo más espinoso en la simulación cardíaca era la malla. Cuando una válvula se mueve, un esquema ALE (Arbitrary Lagrangian–Eulerian) obliga a la malla a seguirla, pero el movimiento es enorme y veloz. La idea de Peskin fue desacoplar por completo los dos sistemas de coordenadas. El fluido se resuelve sobre una malla cartesiana fija (Euleriana) y el cuerpo se representa como una nube móvil de puntos (Lagrangiana). El puente entre ambos marcos es la delta de Dirac $\delta$.
+
+En una línea:
+
+$$
+\mathbf{f}(\mathbf{x}, t) = \int_\Gamma \mathbf{F}(s, t)\, \delta(\mathbf{x} - \mathbf{X}(s, t))\, ds
+$$
+
+Aquí $\mathbf{x}$ es un nodo de fluido, $\mathbf{X}(s,t)$ es un marcador Lagrangiano y $\mathbf{F}$ es la fuerza que el marcador entrega al fluido. La forma y el movimiento de la válvula caben dentro de una única función $\mathbf{X}(s,t)$.
+
+## No volver a mallar
+
+El problema es la computadora. Una computadora no puede manejar una delta de Dirac directamente. Una función que sube a infinito en una región más estrecha que el paso $h$ no se discretiza. Peskin introdujo la delta discreta $\delta_h$ — la delta de Dirac reemplazada por una colina suave de ancho $h$.
+
+Debe cumplir dos condiciones.
+
+- La suma de los pesos sobre todos los nodos vale exactamente 1 (momento de orden cero)
+- La suma ponderada de coordenadas iguala la coordenada del marcador (momento de orden uno)
+
+Suma igual a 1 significa que la fuerza aplicada se conserva. El primer momento garantiza que el par no se desvía. Solo esas dos condiciones determinan de forma única el núcleo de cuatro puntos.
+
+## La delta discreta — un punto que se reparte en la malla
+
+En la siguiente simulación se puede mover el marcador con libertad. Donde sea que caiga entre nodos, los pesos suman alrededor de uno.
+
+<IBMDeltaKernel1D />
+
+Desde un sombrero de dos puntos hasta el núcleo de seis puntos de Peskin, cuanto más ancho el soporte, más suavemente se reparten los pesos. Cuanto más suave el núcleo, menos brincos da la fuerza cuando el marcador cruza una línea de malla. Por eso IBM produce menos oscilaciones temporales que una interpolación abrupta. El núcleo de cuatro puntos de Peskin es el caballo de batalla porque cumple, además de las dos condiciones anteriores, una tercera: la suma de pesos al cuadrado no depende de la posición del marcador.
+
+En forma cerrada:
+
+$$
+\delta_h(r) =
+\begin{cases}
+\dfrac{1}{8}\left(3 - 2|r| + \sqrt{1 + 4|r| - 4r^2}\right), & 0 \le |r| < 1 \\
+\dfrac{1}{8}\left(5 - 2|r| - \sqrt{-7 + 12|r| - 4r^2}\right), & 1 \le |r| < 2 \\
+0, & |r| \ge 2
+\end{cases}
+$$
+
+con $r = (x_i - x_L)/h$, donde $x_i$ es un nodo y $x_L$ es el marcador.
+
+## Forzado directo — un viaje de ida y vuelta entre dos flechas
+
+Pasamos a 2D. Se colocan marcadores a lo largo de un cilindro circular y se exige que cada uno imponga la condición de no deslizamiento. En cada paso temporal se ejecutan cuatro acciones.
+
+1. Interpolación (E → L): llevar la velocidad de la malla al marcador.
+$$
+\mathbf{U}_l = \sum_{i,j} \mathbf{u}_{ij}\, \delta_h(\mathbf{x}_{ij} - \mathbf{X}_l)\, h^2
+$$
+2. Cálculo de la fuerza: dividir la diferencia entre la velocidad deseada $\mathbf{U}_l^{des}$ y la interpolada por una escala temporal.
+$$
+\mathbf{F}_l = \frac{\mathbf{U}_l^{des} - \mathbf{U}_l}{\Delta t}
+$$
+3. Reparto (L → E): empujar esa fuerza de vuelta a la malla.
+$$
+\mathbf{f}_{ij} = \sum_l \mathbf{F}_l\, \delta_h(\mathbf{x}_{ij} - \mathbf{X}_l)\, \Delta s_l
+$$
+4. Actualización del fluido: $\mathbf{u}^{n+1} = \mathbf{u}^n + \Delta t\,(\dots + \mathbf{f}/\rho)$.
+
+El punto clave es que la interpolación y el reparto usan el mismo núcleo $\delta_h$. Esa simetría conserva el momento de manera automática.
+
+<IBMCylinderMarkers2D />
+
+Con muy pocos marcadores quedan huecos en el borde. La regla práctica es $\Delta s_l < h$ — el espaciamiento entre marcadores debe ser menor que la malla. Subir a 64 marcadores deja la banda uniforme.
+
+## Cien líneas de IBM — un paso alrededor del cilindro
+
+```python
+import numpy as np
+
+def peskin4(r):
+    # delta regularizada de 4 puntos (Peskin 2002)
+    a = np.abs(r)
+    w = np.zeros_like(r)
+    m1 = a < 1
+    m2 = (a >= 1) & (a < 2)
+    w[m1] = (3 - 2*a[m1] + np.sqrt(1 + 4*a[m1] - 4*a[m1]**2)) / 8
+    w[m2] = (5 - 2*a[m2] - np.sqrt(-7 + 12*a[m2] - 4*a[m2]**2)) / 8
+    return w
+
+def spread_force(F_l, X_l, ds, shape, h):
+    # fuerza Lagrangiana F_l -> fuerza de malla f_ij
+    nx, ny = shape
+    f = np.zeros((nx, ny, 2))
+    for l in range(len(X_l)):
+        i0, j0 = int(X_l[l, 0] / h), int(X_l[l, 1] / h)
+        for di in range(-2, 3):
+            for dj in range(-2, 3):
+                ii, jj = i0 + di, j0 + dj
+                if not (0 <= ii < nx and 0 <= jj < ny):
+                    continue
+                wx = peskin4(np.array([ii - X_l[l, 0] / h]))[0]
+                wy = peskin4(np.array([jj - X_l[l, 1] / h]))[0]
+                f[ii, jj] += F_l[l] * wx * wy * ds[l]
+    return f
+
+def interp_velocity(u, X_l, h):
+    # velocidad de malla u_ij -> velocidad de marcador U_l
+    nx, ny, _ = u.shape
+    U = np.zeros((len(X_l), 2))
+    for l in range(len(X_l)):
+        i0, j0 = int(X_l[l, 0] / h), int(X_l[l, 1] / h)
+        for di in range(-2, 3):
+            for dj in range(-2, 3):
+                ii, jj = i0 + di, j0 + dj
+                if not (0 <= ii < nx and 0 <= jj < ny):
+                    continue
+                wx = peskin4(np.array([ii - X_l[l, 0] / h]))[0]
+                wy = peskin4(np.array([jj - X_l[l, 1] / h]))[0]
+                U[l] += u[ii, jj] * wx * wy * h**2
+    return U
+
+# un paso de IBM con forzado directo
+N, h, dt = 32, 1.0, 0.05
+nL = 24
+theta = np.linspace(0, 2*np.pi, nL, endpoint=False)
+R = 8.0
+X_l = np.stack([N/2 + R*np.cos(theta), N/2 + R*np.sin(theta)], axis=1)
+ds = np.full(nL, 2*np.pi*R / nL)
+
+u = np.zeros((N, N, 2))
+u[:, :, 0] = 1.0                      # flujo de entrada uniforme
+U_des = np.zeros((nL, 2))             # cilindro fijo = no deslizamiento
+U_l = interp_velocity(u, X_l, h)
+F_l = (U_des - U_l) / dt
+f = spread_force(F_l, X_l, ds, (N, N), h)
+u_new = u + dt * f / 1.0
+print(f"max |u| inside cylinder: {np.abs(u_new[12:20, 12:20]).max():.4f}")
+```
+
+Después de un solo paso, la velocidad interior del cilindro ya colapsa hacia cero. Una simulación real necesita la Poisson de presión y los términos viscosos, pero el corazón de IBM — interpolar, calcular, repartir — cabe en estas treinta líneas.
+
+## El precio de una pared difusa
+
+El IBM original de Peskin paga un precio. Al extender $\delta_h$ una vez, la frontera se vuelve una interfaz difusa de ancho $h$. La posición del marcador es exacta, pero la pared que ve el fluido queda algo borrosa. A bajo Re no hay problema, la capa límite es lo bastante gruesa como para absorber la difuminación. A alto Re la capa límite cae por debajo de una celda y sobre esa pared difusa la BL ya no se resuelve.
+
+La presión también oscila. Cuando los marcadores cruzan líneas de malla, el forzado cambia con suavidad, pero la Poisson de presión amplifica esas pequeñas ondulaciones. Para cuerpos rígidos, un IBM implícito controla las oscilaciones, a cambio de un sistema lineal extra por paso.
+
+## Por qué aparecieron las variantes sharp-interface
+
+Estos límites empujaron al campo, desde finales de los 90, hacia las variantes de IBM con forzado discreto. El ghost-cell IBM de Mittal e Iaccarino, el cut-cell de Tseng y Ferziger, los esquemas sharp-interface de Tucker. Todos comparten una idea — dejar $\delta_h$ y resolver un problema local de interpolación en las celdas cercanas a la frontera para imponer la condición exacta.
+
+| Método | Fortaleza | Debilidad |
+|--------|-----------|-----------|
+| Forzado continuo de Peskin | Simple, conservativo, maneja cuerpos deformables | Pared difusa, oscilación de presión |
+| Ghost-cell IBM | Frontera nítida, alto orden posible | Código complejo, deformables difíciles |
+| Cut-cell | Geometría exacta | Problemas de estabilidad por celdas pequeñas |
+| MLS IBM | Encaja con mallas no uniformes | Cálculo de pesos costoso |
+
+Las membranas flexibles, como las válvulas cardíacas, siguen siendo terreno natural de la familia Peskin; los cuerpos rígidos en flujo externo a alto Re tienden hacia ghost-cell. No compiten, se reparten el trabajo.
+
+## Tres ideas para llevar
+
+1. No se toca la malla. El fluido vive en una malla cartesiana, el cuerpo es una nube de puntos. Los dos marcos se cosen con $\delta_h$.
+2. El mismo núcleo en ambas direcciones. La interpolación (E → L) y el reparto (L → E) comparten el mismo $\delta_h$, y esa simetría conserva el momento sin esfuerzo.
+3. El costo de una pared blanda. La frontera se difumina un ancho $h$. Cómoda para cuerpos deformables, ghost-cell gana para cuerpos rígidos a alto Re.

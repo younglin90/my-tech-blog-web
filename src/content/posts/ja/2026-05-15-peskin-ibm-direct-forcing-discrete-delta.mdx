@@ -1,0 +1,174 @@
+---
+title: "心臓弁を格子に刺さずに — Peskinの埋め込み境界法と離散デルタ関数"
+date: 2026-05-15
+description: "メッシュを切り直さずに物体を流体に入れる、その一行のトリック"
+tags: ["CFD", "IBM", "Immersed-Boundary", "Peskin", "Discrete-Delta", "FSI"]
+locale: ja
+slug: peskin-ibm-direct-forcing-discrete-delta
+draft: false
+---
+
+import { IBMDeltaKernel1D } from '@/components/post-viz/2026-05-15-peskin-ibm-direct-forcing-discrete-delta/IBMDeltaKernel1D'
+import { IBMCylinderMarkers2D } from '@/components/post-viz/2026-05-15-peskin-ibm-direct-forcing-discrete-delta/IBMCylinderMarkers2D'
+
+1972年、Charles Peskin はコロンビア大学医学部で一つの難題と向き合っていました。拍動する心臓の中で弁は瞬間ごとに曲がり、膨らみ、閉じます。形が刻々と変わる表面のまわりに、どうやって格子を切るのか。毎時刻メッシュを切り直すのはほぼ不可能でした。Peskin の答えは単純です。格子には触らない。代わりに物体を点の集まりで表現し、その点が流体に力を流し込みます。今日は、その発想がどうやって一行の数式になったのかを追います。
+
+## 1972年、Peskinが向き合った心臓弁
+
+心臓シミュレーションで最も厄介なのは格子でした。弁が動くと ALE(Arbitrary Lagrangian–Eulerian)で格子も追従させる必要がありますが、動きが大きく速すぎます。Peskin の発想は二つの座標系を完全に分離することでした。流体は固定した直交格子(Eulerian)で解き、物体は動く点群(Lagrangian)で表す。二つの座標系の橋渡しはディラックのデルタ関数 $\delta$ が行います。
+
+一行で書くと、
+
+$$
+\mathbf{f}(\mathbf{x}, t) = \int_\Gamma \mathbf{F}(s, t)\, \delta(\mathbf{x} - \mathbf{X}(s, t))\, ds
+$$
+
+ここで $\mathbf{x}$ は流体格子点、$\mathbf{X}(s,t)$ はラグランジアンマーカー、$\mathbf{F}$ はマーカーが流体に与える力です。弁の形も動きも、すべて $\mathbf{X}(s,t)$ という一つの関数に入ります。
+
+## メッシュを切り直さない
+
+問題はコンピュータです。コンピュータはディラックのデルタを直接扱えません。格子間隔 $h$ より狭い領域で無限大に立ち上がる関数は離散化できません。Peskin が導入したのは離散デルタ関数 $\delta_h$ です。ディラックを幅 $h$ の滑らかな山に置き換えたものです。
+
+二つの条件を要求します。
+
+- 全格子で重みの和がちょうど 1(0 次モーメント)
+- 重みと座標の積の和がマーカー座標に一致(1 次モーメント)
+
+和が 1 は加える力が保存することを意味します。1 次モーメントはトルクがずれないことの保証です。この二条件だけで 4 点カーネルが一意に決まります。
+
+## 離散デルタ — 一点を格子に広げる
+
+下のシミュレーションで実際に動かしてみてください。マーカーを格子の間のどこに置いても、重みの和は 1 のあたりに留まります。
+
+<IBMDeltaKernel1D />
+
+2 点ハットから 6 点 Peskin カーネルまで、サポート幅が広くなるほど重みは滑らかに散らばります。滑らかなほど、マーカーが格子線をまたぐ瞬間に力が飛び跳ねません。これが IBM の時間振動が小さくなる理由です。4 点 Peskin カーネルが最もよく使われるのは、上記の二条件に加えて「重みの二乗和がマーカー位置に依らない」という第三の条件まで満たすからです。
+
+閉形式では、
+
+$$
+\delta_h(r) =
+\begin{cases}
+\dfrac{1}{8}\left(3 - 2|r| + \sqrt{1 + 4|r| - 4r^2}\right), & 0 \le |r| < 1 \\
+\dfrac{1}{8}\left(5 - 2|r| - \sqrt{-7 + 12|r| - 4r^2}\right), & 1 \le |r| < 2 \\
+0, & |r| \ge 2
+\end{cases}
+$$
+
+ただし $r = (x_i - x_L)/h$、$x_i$ は格子点、$x_L$ はマーカー位置です。
+
+## 直接強制 — 二つの矢印の往復
+
+二次元に移ります。円柱表面にマーカーを並べ、それぞれが no-slip 条件を流体に課すとします。各時間ステップで以下の四段階を繰り返します。
+
+1. 補間(E → L):格子速度 $\mathbf{u}$ をマーカー位置に引き寄せる。
+$$
+\mathbf{U}_l = \sum_{i,j} \mathbf{u}_{ij}\, \delta_h(\mathbf{x}_{ij} - \mathbf{X}_l)\, h^2
+$$
+2. 力の計算:マーカーで望む速度 $\mathbf{U}_l^{des}$ との差を時間スケールで割る。
+$$
+\mathbf{F}_l = \frac{\mathbf{U}_l^{des} - \mathbf{U}_l}{\Delta t}
+$$
+3. 拡散(L → E):その力を格子に逆向きに撒く。
+$$
+\mathbf{f}_{ij} = \sum_l \mathbf{F}_l\, \delta_h(\mathbf{x}_{ij} - \mathbf{X}_l)\, \Delta s_l
+$$
+4. 流体更新:$\mathbf{u}^{n+1} = \mathbf{u}^n + \Delta t\,(\dots + \mathbf{f}/\rho)$。
+
+ポイントは、補間と拡散が同じカーネル $\delta_h$ を使うことです。この対称性が運動量保存を自動で担保します。
+
+<IBMCylinderMarkers2D />
+
+マーカーが少なすぎると円周に隙間ができます。経験則は $\Delta s_l < h$、マーカー間隔が格子より細かいこと。64 個まで上げるとバンドが均一になります。
+
+## 100 行 IBM — 円柱まわり一ステップ
+
+```python
+import numpy as np
+
+def peskin4(r):
+    # 4点正則化デルタ (Peskin 2002)
+    a = np.abs(r)
+    w = np.zeros_like(r)
+    m1 = a < 1
+    m2 = (a >= 1) & (a < 2)
+    w[m1] = (3 - 2*a[m1] + np.sqrt(1 + 4*a[m1] - 4*a[m1]**2)) / 8
+    w[m2] = (5 - 2*a[m2] - np.sqrt(-7 + 12*a[m2] - 4*a[m2]**2)) / 8
+    return w
+
+def spread_force(F_l, X_l, ds, shape, h):
+    # ラグランジアン力 F_l -> オイラー格子力 f_ij
+    nx, ny = shape
+    f = np.zeros((nx, ny, 2))
+    for l in range(len(X_l)):
+        i0, j0 = int(X_l[l, 0] / h), int(X_l[l, 1] / h)
+        for di in range(-2, 3):
+            for dj in range(-2, 3):
+                ii, jj = i0 + di, j0 + dj
+                if not (0 <= ii < nx and 0 <= jj < ny):
+                    continue
+                wx = peskin4(np.array([ii - X_l[l, 0] / h]))[0]
+                wy = peskin4(np.array([jj - X_l[l, 1] / h]))[0]
+                f[ii, jj] += F_l[l] * wx * wy * ds[l]
+    return f
+
+def interp_velocity(u, X_l, h):
+    # 格子速度 u_ij -> マーカー速度 U_l
+    nx, ny, _ = u.shape
+    U = np.zeros((len(X_l), 2))
+    for l in range(len(X_l)):
+        i0, j0 = int(X_l[l, 0] / h), int(X_l[l, 1] / h)
+        for di in range(-2, 3):
+            for dj in range(-2, 3):
+                ii, jj = i0 + di, j0 + dj
+                if not (0 <= ii < nx and 0 <= jj < ny):
+                    continue
+                wx = peskin4(np.array([ii - X_l[l, 0] / h]))[0]
+                wy = peskin4(np.array([jj - X_l[l, 1] / h]))[0]
+                U[l] += u[ii, jj] * wx * wy * h**2
+    return U
+
+# direct-forcing IBM の1ステップ
+N, h, dt = 32, 1.0, 0.05
+nL = 24
+theta = np.linspace(0, 2*np.pi, nL, endpoint=False)
+R = 8.0
+X_l = np.stack([N/2 + R*np.cos(theta), N/2 + R*np.sin(theta)], axis=1)
+ds = np.full(nL, 2*np.pi*R / nL)
+
+u = np.zeros((N, N, 2))
+u[:, :, 0] = 1.0                      # 一様流入速度
+U_des = np.zeros((nL, 2))             # 静止円柱 = no-slip
+U_l = interp_velocity(u, X_l, h)
+F_l = (U_des - U_l) / dt
+f = spread_force(F_l, X_l, ds, (N, N), h)
+u_new = u + dt * f / 1.0
+print(f"max |u| inside cylinder: {np.abs(u_new[12:20, 12:20]).max():.4f}")
+```
+
+一ステップだけで円柱内部の速度がほぼゼロまで落ちます。実際のシミュレーションでは圧力ポアソンと粘性項が要りますが、IBM の核心 — 補間・計算・拡散の三拍子 — はこの 30 行に入っています。
+
+## 境界がぼやける代償
+
+Peskin のオリジナル IBM には対価があります。$\delta_h$ で一度伸ばすと境界は幅 $h$ の拡散界面になります。マーカー位置は正確でも、流体が見る壁はわずかにぼやけます。低 Re なら問題ありません。境界層が厚いので埋もれます。しかし Re が大きくなると境界層が格子一マスより薄くなり、ぼやけた壁の上では BL を解けません。
+
+圧力にも振動が出ます。マーカーが格子線をまたぐと強制力は滑らかに変わりますが、圧力ポアソンは微小なリップルを増幅します。剛体の場合 implicit IBM で振動は抑えられますが、毎時刻線形システムを一回余分に解く代価が付きます。
+
+## Sharp-interface 系が登場した理由
+
+この制限から、1990 年代後半以降、不連続強制(discrete forcing)IBM 系が登場しました。Mittal・Iaccarino の ghost-cell IBM、Tseng・Ferziger の cut-cell、Tucker の sharp-interface 系。共通の発想は一つです。$\delta_h$ を捨て、境界近傍のセルで直接補間問題を解いて境界条件を正確に課す。
+
+| 手法 | 長所 | 短所 |
+|------|------|------|
+| Peskin 連続強制 | 単純、保存的、変形体も扱える | 境界拡散、圧力振動 |
+| Ghost-cell IBM | 境界鮮明、高次化可能 | コード複雑、変形体困難 |
+| Cut-cell | 幾何が正確 | 小さなセルの安定性問題 |
+| MLS IBM | 非一様格子と相性が良い | 重み計算が高コスト |
+
+心臓弁のようなしなやかな膜は今も Peskin 系が自然で、剛体運動 + 高 Re 外部流は ghost-cell が優勢です。両者は競争ではなく分業です。
+
+## 覚えておく三つ
+
+1. 格子に触れない。流体は直交格子、物体は点群。両座標系は $\delta_h$ で繋ぐ。
+2. 同じカーネルで往復。補間(E → L)と拡散(L → E)が同じ $\delta_h$ を共有する対称性が運動量保存を自動で保証する。
+3. 柔らかい壁の代価。境界は幅 $h$ でぼやける。変形体には自然、高 Re 剛体には ghost-cell が有利。

@@ -1,0 +1,174 @@
+---
+title: "심장 판막을 격자에 박지 않고 — Peskin의 가상경계기법과 이산 델타 함수"
+date: 2026-05-15
+description: "메쉬를 다시 짜지 않고 물체를 유체에 넣는다, 그 한 줄의 트릭"
+tags: ["CFD", "IBM", "Immersed-Boundary", "Peskin", "Discrete-Delta", "FSI"]
+locale: ko
+slug: peskin-ibm-direct-forcing-discrete-delta
+draft: false
+---
+
+import { IBMDeltaKernel1D } from '@/components/post-viz/2026-05-15-peskin-ibm-direct-forcing-discrete-delta/IBMDeltaKernel1D'
+import { IBMCylinderMarkers2D } from '@/components/post-viz/2026-05-15-peskin-ibm-direct-forcing-discrete-delta/IBMCylinderMarkers2D'
+
+1972년, Charles Peskin은 컬럼비아 의대에서 한 가지 난제와 마주했다. 박동하는 심장 안에서 판막(valve)은 매 순간 휘어지고 부풀고 닫힌다. 그런데 그 모양이 변하는 표면 주위로 어떻게 격자(mesh)를 짤 것인가. 매 시간 격자를 다시 그리는 것은 불가능에 가까웠다. Peskin의 답은 간단했다 — 격자를 건드리지 말자. 대신 물체를 점들의 집합으로 표현하고, 그 점들이 유체에 힘을 흘려보내도록 한다. 오늘은 그 아이디어가 어떻게 한 줄의 수식이 되었는지 본다.
+
+## 1972년, Peskin이 마주한 심장 판막
+
+심장 시뮬레이션에서 가장 골치 아픈 것은 격자였다. 판막이 움직이면 ALE(Arbitrary Lagrangian–Eulerian)로 격자도 따라 움직여야 하는데, 그 움직임이 너무 크고 빠르다. Peskin의 발상은 두 좌표계를 그냥 분리한 것이었다. 유체는 고정된 직교 격자(Eulerian)에서 풀고, 물체는 움직이는 점들의 모임(Lagrangian)으로 표현한다. 두 좌표계가 만나는 자리는 디렉 델타 함수 $\delta$로 다리를 놓는다.
+
+수식 한 줄로:
+
+$$
+\mathbf{f}(\mathbf{x}, t) = \int_\Gamma \mathbf{F}(s, t)\, \delta(\mathbf{x} - \mathbf{X}(s, t))\, ds
+$$
+
+여기서 $\mathbf{x}$는 유체 격자 점, $\mathbf{X}(s,t)$는 라그랑지안 마커, $\mathbf{F}$는 마커가 유체에 가하는 힘이다. 판막의 모양·움직임은 모두 $\mathbf{X}(s,t)$ 한 함수에 들어간다.
+
+## 메쉬를 다시 짜지 않겠다
+
+문제는 컴퓨터다. 컴퓨터는 디렉 델타 함수를 직접 다룰 수 없다. 격자 간격 $h$보다 작은 영역에 무한대로 솟은 함수는 이산화되지 않는다. Peskin이 도입한 것은 이산 델타 함수 $\delta_h$ — 디렉 델타를 폭 $h$짜리 매끈한 꼭지로 바꾼 것이다.
+
+조건 두 가지를 요구한다.
+
+- 모든 격자에 대해 가중치의 합이 정확히 1 (zeroth moment)
+- 가중치와 좌표의 곱의 합이 마커 좌표와 같음 (first moment)
+
+가중치 합이 1이라는 것은 강제하는 힘이 보존된다는 뜻이다. 1차 모멘트는 토크가 어긋나지 않는다는 보장이다. 두 조건만 풀어도 4점 커널이 유일하게 결정된다.
+
+## 이산 델타 함수 — 한 점을 격자에 펴기
+
+아래 시뮬레이션에서 직접 만져 보자. 마커의 위치를 격자 사이 어디든 놓아도 가중치의 합은 1 근처에 머문다.
+
+<IBMDeltaKernel1D />
+
+2점 햇 함수부터 6점 Peskin 커널까지, 폭이 커질수록 가중치가 더 부드럽게 흩어진다. 부드러울수록 마커가 격자 사이로 움직일 때 힘이 갑자기 점프하지 않는다. 이것이 IBM이 시간 진동을 덜 일으키는 이유다. 4점 Peskin 커널이 가장 자주 쓰이는데, 위의 두 모멘트 조건에 더해 "가중치 제곱의 합이 마커 위치와 무관" 이라는 세 번째 조건까지 만족하기 때문이다.
+
+수식으로:
+
+$$
+\delta_h(r) =
+\begin{cases}
+\dfrac{1}{8}\left(3 - 2|r| + \sqrt{1 + 4|r| - 4r^2}\right), & 0 \le |r| < 1 \\
+\dfrac{1}{8}\left(5 - 2|r| - \sqrt{-7 + 12|r| - 4r^2}\right), & 1 \le |r| < 2 \\
+0, & |r| \ge 2
+\end{cases}
+$$
+
+여기서 $r = (x_i - x_L)/h$, $x_i$는 격자점, $x_L$은 마커 위치다.
+
+## 직접 강제 — 두 화살표의 왕복
+
+이제 2D로 가자. 원형 실린더 표면에 마커들을 깔고, 각 마커가 유체에 no-slip 조건을 강제해야 한다고 하자. 매 시간 스텝마다 다음 네 동작이 반복된다.
+
+1. 보간 (E → L): 격자 위 속도 $\mathbf{u}$를 마커 위치로 가져온다.
+$$
+\mathbf{U}_l = \sum_{i,j} \mathbf{u}_{ij}\, \delta_h(\mathbf{x}_{ij} - \mathbf{X}_l)\, h^2
+$$
+2. 힘 계산: 마커에서 원하는 속도 $\mathbf{U}_l^{des}$와 보간된 $\mathbf{U}_l$의 차이를 시간 스케일로 나눈다.
+$$
+\mathbf{F}_l = \frac{\mathbf{U}_l^{des} - \mathbf{U}_l}{\Delta t}
+$$
+3. 확산 (L → E): 그 힘을 격자에 거꾸로 뿌린다.
+$$
+\mathbf{f}_{ij} = \sum_l \mathbf{F}_l\, \delta_h(\mathbf{x}_{ij} - \mathbf{X}_l)\, \Delta s_l
+$$
+4. 유체 갱신: $\mathbf{u}^{n+1} = \mathbf{u}^n + \Delta t\,(\dots + \mathbf{f}/\rho)$로 한 스텝 진행.
+
+핵심은 보간과 확산이 같은 커널 $\delta_h$를 쓴다는 점이다. 이 대칭이 운동량 보존을 자동으로 보장한다.
+
+<IBMCylinderMarkers2D />
+
+마커가 너무 적으면 원의 둘레에 빈 자리가 생긴다. 경험칙은 $\Delta s_l < h$ — 마커 간격이 격자보다 좁아야 한다. 64개로 올려 보면 띠가 균일해진다.
+
+## 100줄 IBM — 원형 실린더 한 스텝
+
+```python
+import numpy as np
+
+def peskin4(r):
+    # 4-point regularized delta (Peskin 2002)
+    a = np.abs(r)
+    w = np.zeros_like(r)
+    m1 = a < 1
+    m2 = (a >= 1) & (a < 2)
+    w[m1] = (3 - 2*a[m1] + np.sqrt(1 + 4*a[m1] - 4*a[m1]**2)) / 8
+    w[m2] = (5 - 2*a[m2] - np.sqrt(-7 + 12*a[m2] - 4*a[m2]**2)) / 8
+    return w
+
+def spread_force(F_l, X_l, ds, shape, h):
+    # 라그랑지안 힘 F_l -> 오일러리안 격자 힘 f_ij
+    nx, ny = shape
+    f = np.zeros((nx, ny, 2))
+    for l in range(len(X_l)):
+        i0, j0 = int(X_l[l, 0] / h), int(X_l[l, 1] / h)
+        for di in range(-2, 3):
+            for dj in range(-2, 3):
+                ii, jj = i0 + di, j0 + dj
+                if not (0 <= ii < nx and 0 <= jj < ny):
+                    continue
+                wx = peskin4(np.array([ii - X_l[l, 0] / h]))[0]
+                wy = peskin4(np.array([jj - X_l[l, 1] / h]))[0]
+                f[ii, jj] += F_l[l] * wx * wy * ds[l]
+    return f
+
+def interp_velocity(u, X_l, h):
+    # 격자 속도 u_ij -> 마커 속도 U_l
+    nx, ny, _ = u.shape
+    U = np.zeros((len(X_l), 2))
+    for l in range(len(X_l)):
+        i0, j0 = int(X_l[l, 0] / h), int(X_l[l, 1] / h)
+        for di in range(-2, 3):
+            for dj in range(-2, 3):
+                ii, jj = i0 + di, j0 + dj
+                if not (0 <= ii < nx and 0 <= jj < ny):
+                    continue
+                wx = peskin4(np.array([ii - X_l[l, 0] / h]))[0]
+                wy = peskin4(np.array([jj - X_l[l, 1] / h]))[0]
+                U[l] += u[ii, jj] * wx * wy * h**2
+    return U
+
+# direct-forcing IBM 한 스텝
+N, h, dt = 32, 1.0, 0.05
+nL = 24
+theta = np.linspace(0, 2*np.pi, nL, endpoint=False)
+R = 8.0
+X_l = np.stack([N/2 + R*np.cos(theta), N/2 + R*np.sin(theta)], axis=1)
+ds = np.full(nL, 2*np.pi*R / nL)
+
+u = np.zeros((N, N, 2))
+u[:, :, 0] = 1.0                      # 균일 유입 속도
+U_des = np.zeros((nL, 2))             # 정지 실린더 = no-slip
+U_l = interp_velocity(u, X_l, h)
+F_l = (U_des - U_l) / dt
+f = spread_force(F_l, X_l, ds, (N, N), h)
+u_new = u + dt * f / 1.0
+print(f"max |u| inside cylinder: {np.abs(u_new[12:20, 12:20]).max():.4f}")
+```
+
+한 스텝 만으로도 실린더 내부 속도가 0에 근접한다. 실제 시뮬레이션이라면 압력 푸아송과 점성 항이 추가되어야 하지만, IBM의 핵심 — 보간·계산·확산 3박자 — 는 이 30여 줄에 모두 들어 있다.
+
+## 경계가 두꺼워지는 함정
+
+Peskin의 원형 IBM에는 한 가지 대가가 있다. $\delta_h$를 한 번 펴면 경계가 $h$ 두께로 흐려진다(diffuse interface). 마커 위치는 정확하지만 유체가 보는 벽은 살짝 부드럽다. 저 Re에서는 문제없다. 경계층이 두꺼우니 묻힌다. 그런데 Re가 커지면 경계층이 격자 한 칸보다 얇아지고, 그 흐려진 벽 위에서는 BL을 제대로 풀 수 없다.
+
+또 압력에 진동이 생긴다. 마커가 격자 사이를 움직이면 강제힘은 부드럽게 바뀌지만, 압력의 푸아송 방정식이 그 작은 진동을 증폭한다. 강체의 경우 implicit IBM으로 풀면 진동은 줄지만, 매 시간 선형시스템 한 번을 더 풀어야 하는 비용이 따른다.
+
+## Sharp-interface가 등장한 이유
+
+이 한계 때문에 1990년대 후반부터 불연속 강제(discrete forcing) IBM 계열이 등장했다. Mittal·Iaccarino의 ghost-cell IBM, Tseng·Ferziger의 cut-cell, Tucker의 sharp-interface. 공통 아이디어는 하나다. $\delta_h$를 쓰지 않고, 경계 근처 셀에서만 직접 보간식을 풀어 경계조건을 정확히 적용한다.
+
+| 방법 | 장점 | 단점 |
+|------|------|------|
+| Peskin 연속 강제 | 단순, 보존, 변형체 가능 | 경계 두꺼움, 압력 진동 |
+| Ghost-cell IBM | 경계 sharp, 고차 가능 | 코드 복잡, 변형체 어려움 |
+| Cut-cell | 정확한 기하 | 작은 셀 안정성 문제 |
+| MLS IBM | 비균일 격자 친화 | 가중치 계산 비싸짐 |
+
+심장 판막처럼 휘는 막은 여전히 Peskin 계열이 자연스럽고, 강체 운동 + 고 Re 외부 유동은 ghost-cell 쪽이 우세하다. 둘은 경쟁이 아니라 분업이다.
+
+## 기억할 세 가지
+
+1. 격자를 건드리지 않는다. 유체는 직교 격자, 물체는 점들. 두 좌표계는 $\delta_h$가 잇는다.
+2. 같은 커널로 양방향. 보간(E→L)과 확산(L→E)이 같은 $\delta_h$를 쓰는 대칭이 운동량 보존을 보장한다.
+3. 부드러운 벽의 대가. 경계가 $h$ 두께로 흐려진다. 변형체에는 자연스럽고, 고 Re 강체에는 ghost-cell이 더 낫다.

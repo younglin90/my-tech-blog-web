@@ -1,0 +1,174 @@
+---
+title: "不给心脏瓣膜画贴体网格 — Peskin 浸入边界法与离散 delta 函数"
+date: 2026-05-15
+description: "不重新划网格也能把动体放进流体里,一行公式就够了"
+tags: ["CFD", "IBM", "Immersed-Boundary", "Peskin", "Discrete-Delta", "FSI"]
+locale: zh
+slug: peskin-ibm-direct-forcing-discrete-delta
+draft: false
+---
+
+import { IBMDeltaKernel1D } from '@/components/post-viz/2026-05-15-peskin-ibm-direct-forcing-discrete-delta/IBMDeltaKernel1D'
+import { IBMCylinderMarkers2D } from '@/components/post-viz/2026-05-15-peskin-ibm-direct-forcing-discrete-delta/IBMCylinderMarkers2D'
+
+1972 年,Charles Peskin 在哥伦比亚大学医学院遇到了一个棘手的问题。跳动的心脏里,瓣膜每一刻都在弯曲、膨胀、闭合。围着这样不断变形的表面,该怎么画贴体网格?每个时间步都重新划网格,几乎不可能。Peskin 的答案很简单 —— 干脆不动网格。把物体表示成一组点,让这些点把力"漏"到流体里。今天我们看这一思路如何变成一行公式。
+
+## 1972 年,Peskin 面对心脏瓣膜
+
+心脏模拟里最棘手的就是网格。瓣膜一动,ALE(Arbitrary Lagrangian–Eulerian)就要求网格跟着动,可这个运动幅度太大、太快了。Peskin 的想法是把两个坐标系彻底解耦。流体在固定的直角网格(Eulerian)上求解,物体用一组移动的点(Lagrangian)表示。两个坐标系之间的桥梁,就是 Dirac delta 函数 $\delta$。
+
+一行写下来:
+
+$$
+\mathbf{f}(\mathbf{x}, t) = \int_\Gamma \mathbf{F}(s, t)\, \delta(\mathbf{x} - \mathbf{X}(s, t))\, ds
+$$
+
+这里 $\mathbf{x}$ 是流体格点,$\mathbf{X}(s,t)$ 是 Lagrangian 标记点,$\mathbf{F}$ 是标记点施加给流体的力。瓣膜的形状和运动全装在 $\mathbf{X}(s,t)$ 这一个函数里。
+
+## 不重新划网格
+
+问题在计算机。计算机没法直接处理 Dirac delta。在小于网格间距 $h$ 的区域里冲到无穷的函数没法离散化。Peskin 引入的是离散 delta 函数 $\delta_h$ —— 把 Dirac 换成宽度为 $h$ 的光滑小山。
+
+它要满足两个条件。
+
+- 所有格点上权重之和精确等于 1(零阶矩)
+- 权重与坐标乘积之和等于标记点坐标(一阶矩)
+
+权重和为 1 表示施加的力守恒。一阶矩保证力矩不漂移。这两个条件就唯一确定了 4 点核。
+
+## 离散 delta —— 把一点铺到网格上
+
+下面的演示里可以直接拖动。把标记点放在网格之间任何位置,权重和都接近 1。
+
+<IBMDeltaKernel1D />
+
+从 2 点 hat 到 6 点 Peskin 核,支撑越宽,权重铺得越平滑。光滑度越高,标记点跨过格线时受力越平稳,这就是 IBM 时间振荡更小的原因。4 点 Peskin 核用得最广,因为它除了上面两条还满足第三条:权重平方和与标记点位置无关。
+
+闭式表达:
+
+$$
+\delta_h(r) =
+\begin{cases}
+\dfrac{1}{8}\left(3 - 2|r| + \sqrt{1 + 4|r| - 4r^2}\right), & 0 \le |r| < 1 \\
+\dfrac{1}{8}\left(5 - 2|r| - \sqrt{-7 + 12|r| - 4r^2}\right), & 1 \le |r| < 2 \\
+0, & |r| \ge 2
+\end{cases}
+$$
+
+其中 $r = (x_i - x_L)/h$,$x_i$ 是格点,$x_L$ 是标记点位置。
+
+## 直接强迫 —— 两个箭头的往返
+
+现在到二维。沿圆柱表面铺标记点,每个标记点都要在流体上强制无滑移。每个时间步循环四步。
+
+1. 插值(E → L):把格点速度 $\mathbf{u}$ 取到标记点位置。
+$$
+\mathbf{U}_l = \sum_{i,j} \mathbf{u}_{ij}\, \delta_h(\mathbf{x}_{ij} - \mathbf{X}_l)\, h^2
+$$
+2. 计算力:在标记点把期望速度 $\mathbf{U}_l^{des}$ 和插值速度的差除以时间尺度。
+$$
+\mathbf{F}_l = \frac{\mathbf{U}_l^{des} - \mathbf{U}_l}{\Delta t}
+$$
+3. 扩散(L → E):再把这个力撒回网格。
+$$
+\mathbf{f}_{ij} = \sum_l \mathbf{F}_l\, \delta_h(\mathbf{x}_{ij} - \mathbf{X}_l)\, \Delta s_l
+$$
+4. 更新流体:$\mathbf{u}^{n+1} = \mathbf{u}^n + \Delta t\,(\dots + \mathbf{f}/\rho)$。
+
+关键点是:插值和扩散用同一个核 $\delta_h$。这个对称性自动保证动量守恒。
+
+<IBMCylinderMarkers2D />
+
+标记点太少时圆周会出现空缺。经验法则是 $\Delta s_l < h$,标记点间距要小于网格间距。把数量提到 64,带就变得均匀了。
+
+## 一百行 IBM —— 圆柱一步
+
+```python
+import numpy as np
+
+def peskin4(r):
+    # 4 点正则化 delta (Peskin 2002)
+    a = np.abs(r)
+    w = np.zeros_like(r)
+    m1 = a < 1
+    m2 = (a >= 1) & (a < 2)
+    w[m1] = (3 - 2*a[m1] + np.sqrt(1 + 4*a[m1] - 4*a[m1]**2)) / 8
+    w[m2] = (5 - 2*a[m2] - np.sqrt(-7 + 12*a[m2] - 4*a[m2]**2)) / 8
+    return w
+
+def spread_force(F_l, X_l, ds, shape, h):
+    # Lagrangian 力 F_l -> Eulerian 格点力 f_ij
+    nx, ny = shape
+    f = np.zeros((nx, ny, 2))
+    for l in range(len(X_l)):
+        i0, j0 = int(X_l[l, 0] / h), int(X_l[l, 1] / h)
+        for di in range(-2, 3):
+            for dj in range(-2, 3):
+                ii, jj = i0 + di, j0 + dj
+                if not (0 <= ii < nx and 0 <= jj < ny):
+                    continue
+                wx = peskin4(np.array([ii - X_l[l, 0] / h]))[0]
+                wy = peskin4(np.array([jj - X_l[l, 1] / h]))[0]
+                f[ii, jj] += F_l[l] * wx * wy * ds[l]
+    return f
+
+def interp_velocity(u, X_l, h):
+    # 格点速度 u_ij -> 标记点速度 U_l
+    nx, ny, _ = u.shape
+    U = np.zeros((len(X_l), 2))
+    for l in range(len(X_l)):
+        i0, j0 = int(X_l[l, 0] / h), int(X_l[l, 1] / h)
+        for di in range(-2, 3):
+            for dj in range(-2, 3):
+                ii, jj = i0 + di, j0 + dj
+                if not (0 <= ii < nx and 0 <= jj < ny):
+                    continue
+                wx = peskin4(np.array([ii - X_l[l, 0] / h]))[0]
+                wy = peskin4(np.array([jj - X_l[l, 1] / h]))[0]
+                U[l] += u[ii, jj] * wx * wy * h**2
+    return U
+
+# direct-forcing IBM 一步
+N, h, dt = 32, 1.0, 0.05
+nL = 24
+theta = np.linspace(0, 2*np.pi, nL, endpoint=False)
+R = 8.0
+X_l = np.stack([N/2 + R*np.cos(theta), N/2 + R*np.sin(theta)], axis=1)
+ds = np.full(nL, 2*np.pi*R / nL)
+
+u = np.zeros((N, N, 2))
+u[:, :, 0] = 1.0                      # 均匀来流
+U_des = np.zeros((nL, 2))             # 静止圆柱 = no-slip
+U_l = interp_velocity(u, X_l, h)
+F_l = (U_des - U_l) / dt
+f = spread_force(F_l, X_l, ds, (N, N), h)
+u_new = u + dt * f / 1.0
+print(f"max |u| inside cylinder: {np.abs(u_new[12:20, 12:20]).max():.4f}")
+```
+
+一步之后圆柱内部速度就接近零了。真实模拟还要加上压力 Poisson 和黏性项,但 IBM 的核心 —— 插值、计算、扩散三拍 —— 就在这三十几行里。
+
+## 边界变厚的代价
+
+Peskin 的原始 IBM 有个代价。$\delta_h$ 一摊开,边界就变成宽度为 $h$ 的弥散界面。标记点位置准,但流体看到的壁稍微模糊。低 Re 下没问题,边界层厚到能把这模糊埋掉。Re 一高,边界层薄到不足一格,模糊壁上就解不准 BL。
+
+压力也会振荡。标记点跨过格线时,强迫力变化是光滑的,但压力 Poisson 会把微小波纹放大。刚体情况用 implicit IBM 可以压住振荡,代价是每步多解一次线性系统。
+
+## Sharp-interface 系列为何出现
+
+由于这些限制,1990 年代后期开始出现离散强迫(discrete forcing)IBM 系列。Mittal 和 Iaccarino 的 ghost-cell IBM、Tseng 和 Ferziger 的 cut-cell、Tucker 的 sharp-interface 方案。共同思路只有一条 —— 不用 $\delta_h$,而在边界附近的格点里直接解一个局部插值问题,精确施加边界条件。
+
+| 方法 | 优点 | 缺点 |
+|------|------|------|
+| Peskin 连续强迫 | 简单、守恒、可处理变形体 | 边界发散、压力振荡 |
+| Ghost-cell IBM | 边界尖锐、可高阶 | 代码复杂、变形体困难 |
+| Cut-cell | 几何精确 | 小格点稳定性问题 |
+| MLS IBM | 适配非均匀网格 | 权重计算成本高 |
+
+像心脏瓣膜这样的柔性膜,仍以 Peskin 系最自然;刚体 + 高 Re 外流,ghost-cell 占优。两者不是竞争,而是分工。
+
+## 记住三件事
+
+1. 不动网格。流体用直角格,物体用点群。两个坐标系靠 $\delta_h$ 连接。
+2. 同一核往返。插值(E → L)和扩散(L → E)共用同一个 $\delta_h$,这个对称性自动保证动量守恒。
+3. 软壁的代价。边界会扩展成宽 $h$ 的弥散界面。柔性体合适,高 Re 刚体不如 ghost-cell。
