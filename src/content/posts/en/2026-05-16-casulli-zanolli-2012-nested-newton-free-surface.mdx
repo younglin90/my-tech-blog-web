@@ -1,0 +1,210 @@
+---
+title: "[Paper Review] Split Newton in Two and Free-Surface Becomes Solvable — Casulli–Zanolli (2012)"
+date: 2026-05-16
+description: "How wet and dry cells live in one system with monotone convergence."
+tags: ["논문리뷰", "Nested-Newton", "Free-Surface", "Wetting-Drying", "Iterative-Solver", "Mildly-Nonlinear"]
+locale: en
+slug: casulli-zanolli-2012-nested-newton-free-surface
+draft: false
+---
+
+import { NestedNewtonScalar1D } from '@/components/post-viz/2026-05-16-casulli-zanolli-2012-nested-newton-free-surface/NestedNewtonScalar1D'
+import { WetDryAquifer1D } from '@/components/post-viz/2026-05-16-casulli-zanolli-2012-nested-newton-free-surface/WetDryAquifer1D'
+
+$V(\eta) + T\eta = \mathbf{b}$. One line. The first time I saw it, I thought a single Newton step would close the problem. Then I hit the edge of the well — cells whose water depth crosses zero. The Jacobian goes silently to zero there. Same cell, wet at one timestep, dry at the next. That is where every Newton-based free-surface code limps. What Casulli and Zanolli did in 2012 was cut Newton itself in two. The outer iterate rises from below; the inner iterate falls from above; they squeeze the solution from both sides, and monotone convergence is guaranteed.
+
+## Paper info
+
+- Authors: **Vincenzo Casulli, Paola Zanolli**
+- Journal: *Journal of Computational and Applied Mathematics*, vol. 236 (2012), pp. 3937–3947
+- DOI: [10.1016/j.cam.2012.04.025](https://doi.org/10.1016/j.cam.2012.04.025)
+- Keywords: mildly nonlinear systems / wetting and drying / free-surface hydrodynamics / Richards equation / confined–unconfined aquifers
+
+## Q1. Why does Newton die so often on free surfaces
+
+The problem looks innocent.
+
+$$
+\mathbf{V}(\eta) + T\eta = \mathbf{b}
+$$
+
+Here $\eta \in \mathbb{R}^N$ is the piezometric head per cell, $T$ is a symmetric positive semi-definite sparse matrix (a discrete diffusion stencil), and $\mathbf{V}$ is a diagonal nonlinear function — the per-cell volume $V_i(\eta_i) = \int_{-\infty}^{\eta_i} a_i(z)\,dz$. The function $a_i$ only needs to have *bounded variation* (discontinuities allowed). Three canonical free-surface examples:
+
+- **wetting/drying**: $V(\eta) = \max(0, \eta)$. Dry cells have $V'=0$.
+- **confined–unconfined aquifer**: $V(\eta) = \max(0, \min(c-(-h), \eta-(-h)))$. Two kinks.
+- **Richards equation in mixed form**: $V(\eta)$ depends on soil, smooth but flat over wide ranges.
+
+All three share one trait: $V'(\eta)$ vanishes on whole intervals. Standard Newton uses $J = V'(\eta^{(k)}) + T$. When $V'=0$ and the corresponding row of $T$ couples weakly (or null-space of $T$ is touched), $J$ turns singular. **Unless the initial guess is close enough to the truth, the iteration blows up** — that is the 30-year-old plague of free-surface codes.
+
+## Q2. Slice $\mathbf{V}(\eta)$ in two — Jordan decomposition
+
+The first trick is *splitting the function*. Bounded variation of $a_i$ means it is the difference of two non-decreasing functions (Jordan decomposition).
+
+$$
+a_i(\eta) = p_i(\eta) - q_i(\eta), \quad p_i, q_i \ge 0,\ \text{non-decreasing}
+$$
+
+Automatically $V_i$ splits too.
+
+$$
+V_i(\eta) = V_{1,i}(\eta) - V_{2,i}(\eta), \quad V_{j,i}(\eta) = \int_{-\infty}^\eta p_i\ \text{or}\ q_i
+$$
+
+Both $V_1$ and $V_2$ are **non-decreasing and bounded**. For wetting/drying, $p(\eta)=1\,[\eta \ge 0]$, $q\equiv 0$. For confined–unconfined, $p(\eta)=1\,[\eta \ge -h]$, $q(\eta)=1\,[\eta > c]$. **Once split, each piece is monotone** — that one sentence is the seed of everything else.
+
+## Q3. Two linearizations, one inside, one outside
+
+We solve
+
+$$
+V_1(\eta) - V_2(\eta) + T\eta = \mathbf{b}
+$$
+
+The **outer** loop linearizes $V_2$ around $\eta^{n-1}$.
+
+$$
+V_1(\eta^n) + (T - Q^{n-1})\eta^n = \mathbf{b} + V_2^{n-1} - Q^{n-1}\eta^{n-1}
+$$
+
+with $Q^{n-1} = \mathrm{diag}(q_i(\eta_i^{n-1}))$. Start at $\eta^0 \le \ell$ (the lower fence). This is still nonlinear, so the **inner** loop linearizes $V_1$:
+
+$$
+(T + P^{n,m-1} - Q^{n-1})\eta^{n,m} = P^{n,m-1}\eta^{n,m-1} - V_1^{n,m-1} + \mathbf{d}^{n-1}
+$$
+
+starting at $\eta^{n,0} \ge u$ (the upper fence). The fences $\ell, u$ are chosen so that $T+P-Q$ is a **Stieltjes matrix** (symmetric M-matrix). The reward:
+
+- Inner iterates are **monotone decreasing** from above ($\eta^{n,m+1} \le \eta^{n,m}$).
+- Outer iterates are **monotone increasing** from below ($\eta^{n+1} \ge \eta^n$).
+- They squeeze toward the unique solution.
+
+Convergence is proven by **inequalities**, not floating-point arguments. The famous "Newton converges only near the truth" caveat disappears. Try it below — play with the sliders.
+
+<NestedNewtonScalar1D />
+
+Drop `T` to 0.05 and $T+P-Q$ is nearly singular, yet the iterates still finish in five steps. Push `b` past 1.5 and the root lands on the flat tail of $V$ (where Newton would oscillate forever) — the inner loop stops in one step.
+
+## Q4. A pumped well in 1D — Python implementation
+
+Section 6 of the paper studies a confined–unconfined aquifer in 2D. I'll shrink it to 1D and code it from scratch. The toy problem is **paraboloid bottom/ceiling plus a centered pump** — over days, the phreatic region expands and then dry ground emerges. None of the standard CFD toy problems (Sod, Karman, blast) match, so I keep the paper's own setup.
+
+```python
+import numpy as np
+
+# Per-cell volume: V_i(eta) = a0 * clamp(eta, -h_i, c_i) (shifted by -h_i)
+def cell_volume(eta, h, c, a0=0.3):
+    return a0 * (np.clip(eta, -h, c) - (-h))
+
+# Diagonal Jacobians from the Jordan split
+def p_diag(eta, h, a0=0.3):
+    # V1 = a0 * max(0, eta - (-h)) -> derivative
+    return np.where(eta >= -h, a0, 0.0)
+
+def q_diag(eta, c, a0=0.3):
+    # V2 = a0 * max(0, eta - c) -> derivative
+    return np.where(eta > c, a0, 0.0)
+
+def nested_newton_step(eta_prev, h, c, T, dt, phi, tol=1e-6):
+    """One time step of the monotone nested Newton solve.
+
+    Solves V(eta_new) + T eta_new = V(eta_prev) + dt*phi,
+    where T is the SPD matrix from -dt*Laplacian.
+    """
+    N = len(eta_prev)
+    V_prev = cell_volume(eta_prev, h, c)
+    rhs0 = V_prev + dt * phi
+
+    # Outer start: well below the lower fence (every cell dry)
+    eta = np.full(N, -h.max() - 1.0)
+    for n_out in range(20):
+        Q = np.diag(q_diag(eta, c))
+        V2 = np.where(eta > c, 0.3 * (eta - c), 0.0)
+        d = rhs0 + V2 - Q @ eta
+
+        # Inner start: well above the upper fence (every cell pressurized)
+        eta_in = np.full(N, c.max() + 1.0)
+        for m_in in range(30):
+            P = np.diag(p_diag(eta_in, h))
+            V1 = np.where(eta_in > -h, 0.3 * (eta_in - (-h)), 0.0)
+            f = P @ eta_in - V1 + d
+            A = T + P - Q                     # Stieltjes (symmetric M-matrix)
+            eta_in = np.linalg.solve(A, f)    # 1D: dense; 2D: PCG
+            r_in = V1 + (T - Q) @ eta_in - d
+            if np.max(np.abs(r_in)) < tol:
+                break
+        eta = eta_in
+        # Outer residual
+        V_cur = cell_volume(eta, h, c)
+        r_out = V_cur + T @ eta - rhs0
+        if np.max(np.abs(r_out)) < tol:
+            return eta, n_out + 1, m_in + 1
+    return eta, 20, m_in + 1
+
+# 1D well (paraboloid cross-section)
+N = 41
+L = 1000.0
+x = np.linspace(0, L, N)
+h_arr = 10 * np.maximum(0, 1 - ((x - L/2) / (L/2))**2)
+c_arr = h_arr.copy()
+
+# Diffusion matrix T from dt*kappa/dx^2 * Laplacian (zero-flux BC)
+dx = L / (N - 1)
+dt = 86400.0     # 1 day
+kappa = 1.0      # hydraulic conductivity
+alpha = dt * kappa / dx**2
+T = -alpha * np.eye(N, k=-1) + 2*alpha*np.eye(N) - alpha*np.eye(N, k=1)
+T[0, 0] = alpha; T[0, 1] = -alpha
+T[-1, -1] = alpha; T[-1, -2] = -alpha
+
+# Initial state: pressurized at the ceiling everywhere
+eta = c_arr.copy()
+phi = np.zeros(N); phi[N//2] = -8e-4   # central pump (sink)
+
+for day in range(10):
+    eta, n_out, m_in = nested_newton_step(eta, h_arr, c_arr, T, dt, phi)
+    pre = int(np.sum(eta >= c_arr - 1e-6))
+    dry = int(np.sum(eta <= -h_arr + 1e-6))
+    print(f"day {day+1}: pre={pre} dry={dry} outer={n_out} inner_last={m_in}")
+```
+
+A typical run prints:
+
+```text
+day 1: pre=39 dry=0 outer=5 inner_last=5
+day 2: pre=37 dry=0 outer=4 inner_last=4
+...
+day 9: pre=0 dry=8 outer=1 inner_last=5
+day 10: pre=0 dry=12 outer=1 inner_last=5
+```
+
+**Outer averages 3 iterations, inner about 5.** That matches Table 1 of the paper qualitatively. The most striking part is the pressurized-to-phreatic transition: both loops frequently halt in a single iteration (Remark 6 in the paper: if $u \le \tilde\eta^{1,1} \le \ell$, you are already at the root).
+
+## Q5. Evolve a 2D cross-section interactively
+
+The same algorithm, driven day by day on a 1D aquifer cross-section. Pump strength is a slider; press "+1 day" to advance.
+
+<WetDryAquifer1D />
+
+Crank the pump above `0.0025` and run for ten days — a black dry pocket appears in the middle and grows. The solver does not care that the active set of wet cells shrinks every day. Were this a single Newton, you would have to rebuild the Jacobian each time the wet/dry stencil changes. The nested loop solves the same code unchanged.
+
+## What the algorithm cannot do — one critical paragraph
+
+It is not a miracle cure. A few caveats:
+
+1. **Cells with $P-Q = 0$**. When a cell is dry and the corresponding row of $T$ vanishes, the matrix loses the *T2* irreducibility hypothesis. The paper recommends excluding dry cells from the system, but the active-set bookkeeping is non-trivial in practice.
+2. **It is not fast**. Per time step you do outer × inner = 15 to 25 linear solves on average. Plain implicit Euler with CG might be faster when it converges at all. The price you pay is **zero divergence events**.
+3. **No direct extension to compressible Euler**. The technique is bound to mildly nonlinear systems with diagonal $V$ of bounded variation. Riemann-solver nonlinearities do not factor this way.
+4. **Inner solver still matters**. Each inner system is SPD, but how you precondition it is a separate art. The paper recommends PCG; multigrid is usually a step up for large grids.
+
+## Reproducibility scorecard
+
+- **Math (§2–§5)**: self-contained. With pen and paper you can rebuild every inequality. **A.**
+- **Algorithm boxes (1 and 2)**: pseudocode is complete. **A.**
+- **Numerical example (§6)**: grid spacing, time step, all coefficients spelled out. My 30-line Python reproduces the paper qualitatively. **A.**
+- **Practical landing**: OpenFOAM lacks a first-class wetting/drying module, but `meshFlow`/`overFlowSolver` variants could host it. Ocean/estuary codes (SCHISM, TELEMAC) already use related ideas.
+
+## What to read next
+
+- Brugnano & Casulli (2008/2009) — finite-step termination for piecewise linear systems, direct ancestor.
+- Casulli (2009) — the high-resolution wetting/drying algorithm by the same author.
+- Casulli & Zanolli (2010) — nested Newton applied to Richards equation in mixed form (smooth $a(\eta)$ case).

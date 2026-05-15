@@ -36,6 +36,7 @@ export const VIZ_COMPONENTS: Record<string, ComponentType> = {
   "MagnusCylinderStreamlines": dynamic(() => import("@/components/post-viz/2026-05-07-circulation-lift-kutta-joukowski/MagnusCylinderStreamlines").then((m) => ({ default: m.MagnusCylinderStreamlines })), { ssr: false, loading: VizLoading }),
   "MultigridVCycleConvergence": dynamic(() => import("@/components/post-viz/2026-05-06-multigrid-v-cycle-poisson-acceleration/MultigridVCycleConvergence").then((m) => ({ default: m.MultigridVCycleConvergence })), { ssr: false, loading: VizLoading }),
   "MUSCLTHINCBVDPicker": dynamic(() => import("@/components/post-viz/2026-05-02-muscl-thinc-bvd-interface-reconstruction/MUSCLTHINCBVDPicker").then((m) => ({ default: m.MUSCLTHINCBVDPicker })), { ssr: false, loading: VizLoading }),
+  "NestedNewtonScalar1D": dynamic(() => import("@/components/post-viz/2026-05-16-casulli-zanolli-2012-nested-newton-free-surface/NestedNewtonScalar1D").then((m) => ({ default: m.NestedNewtonScalar1D })), { ssr: false, loading: VizLoading }),
   "NumericalDungeon": dynamic(() => import("@/components/NumericalDungeon").then((m) => ({ default: m.NumericalDungeon })), { ssr: false, loading: VizLoading }),
   "NumericalScheme": dynamic(() => import("@/components/viz/NumericalScheme").then((m) => ({ default: m.NumericalScheme })), { ssr: false, loading: VizLoading }),
   "OddEvenSawtoothDemo": dynamic(() => import("@/components/post-viz/2026-05-13-von-neumann-artificial-viscosity-1950/OddEvenSawtoothDemo").then((m) => ({ default: m.OddEvenSawtoothDemo })), { ssr: false, loading: VizLoading }),
@@ -66,5 +67,6 @@ export const VIZ_COMPONENTS: Record<string, ComponentType> = {
   "VolumeFractionAdvect": dynamic(() => import("@/components/post-viz/five-equation-model/VolumeFractionAdvect").then((m) => ({ default: m.VolumeFractionAdvect })), { ssr: false, loading: VizLoading }),
   "VonNeumannShockTube1D": dynamic(() => import("@/components/post-viz/2026-05-13-von-neumann-artificial-viscosity-1950/VonNeumannShockTube1D").then((m) => ({ default: m.VonNeumannShockTube1D })), { ssr: false, loading: VizLoading }),
   "WaterPropertyVariation": dynamic(() => import("@/components/post-viz/2026-05-10-demou-non-oberbeck-boussinesq-pressure-split/WaterPropertyVariation").then((m) => ({ default: m.WaterPropertyVariation })), { ssr: false, loading: VizLoading }),
+  "WetDryAquifer1D": dynamic(() => import("@/components/post-viz/2026-05-16-casulli-zanolli-2012-nested-newton-free-surface/WetDryAquifer1D").then((m) => ({ default: m.WetDryAquifer1D })), { ssr: false, loading: VizLoading }),
   "WoodVsFrozenSoundSpeed": dynamic(() => import("@/components/post-viz/2026-05-09-saurel-2009-pressure-relaxation-multiphase/WoodVsFrozenSoundSpeed").then((m) => ({ default: m.WoodVsFrozenSoundSpeed })), { ssr: false, loading: VizLoading }),
 }
