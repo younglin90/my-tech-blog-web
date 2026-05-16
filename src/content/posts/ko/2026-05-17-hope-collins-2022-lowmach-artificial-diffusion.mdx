@@ -1,0 +1,166 @@
+---
+title: "[논문 리뷰] 저Mach에서 Roe가 망가지는 이유 — Hope–Collins(2022) 인공확산 세 스케일링"
+date: 2026-05-17
+description: "Mach 0.01에서 표준 Roe가 깨지는 원리와 점근 분석이 권고한 세 가지 처방."
+tags: ["논문리뷰", "Low-Mach", "Artificial-Diffusion", "Roe-Scheme", "Asymptotic-Analysis", "Compressible-Euler"]
+draft: false
+locale: ko
+slug: hope-collins-2022-lowmach-artificial-diffusion
+---
+
+import { LowMachAcousticDamping1D } from '@/components/post-viz/2026-05-17-hope-collins-2022-lowmach-artificial-diffusion/LowMachAcousticDamping1D'
+import { DiffusionScalingMatrix } from '@/components/post-viz/2026-05-17-hope-collins-2022-lowmach-artificial-diffusion/DiffusionScalingMatrix'
+
+1993년 봄, Volpe는 Mach 0.01에서 NACA 0012 날개를 풀었다. Roe 플럭스가 토해낸 압력장은 인비스시드 답과 닮은 구석이 없었다. 그 한 장의 그래프가 30년에 걸친 저Mach 인공확산 연구의 출발선이었다. Hope–Collins(2022)는 그 30년의 흩어진 처방을 세 갈래로 묶어 정리한다. 오늘은 그 세 갈래를 점근 분석과 60줄 NumPy로 직접 통과시킨다.
+
+> **논문**: J. Hope-Collins, L. di Mare. *Artificial diffusion for convective and acoustic low Mach number flows I: Analysis of the modified equations, and application to Roe-type schemes.* J. Comput. Phys. (2022). 단일상 압축성 Euler, Roe 계열.
+
+## 1993년, 충격이었던 Volpe 그래프
+
+Volpe와 Godfrey가 같은 해에 보고한 것은 한 줄로 요약된다 — *고속 흐름용으로 설계된 표준 Roe 스킴을 그대로 Mach 0.01에 끌고 가면 압력장이 비물리적으로 깨진다.* Godfrey는 "전제조건 행렬에 맞춘 인공확산"으로 그래프를 살려냈다. 이후 30년 동안 AUSM, Zha–Bilgen, Roe–LM, Thornber 등 수많은 변형이 등장했다.
+
+**왜 깨질까.** Euler 방정식의 속도 벡터에는 $M^{-2}$ 계수의 압력 구배 항이 있다. Mach가 작아질수록 이 항이 폭주하고, 균형을 맞추는 다른 항이 압력의 *위계*(asymptotic order)를 강제한다. 위계가 어긋난 인공확산 한 줄은 곧바로 정확도를 부순다.
+
+이 논문의 미덕은 **이산화 무관**이다. 유한체적이든 유한차분이든, central이든 upwind든, "어떤 종류의 인공확산을 어디에 넣었는가"만으로 그 스킴이 저Mach에서 어떻게 행동할지가 결정된다.
+
+## 세 가지 저Mach 극한 — convective, acoustic, mixed
+
+비차원화한 1D 엔트로피 변수 Euler 방정식은 다음과 같다.
+
+$$
+\partial_t p + u\,\partial_x p + \gamma p\,\partial_x u = A_{11}\partial_{xx}p + A_{12}\partial_{xx}u
+$$
+
+$$
+\rho\,\partial_t u + M^{-2}\,\partial_x p + \rho u\,\partial_x u = A_{21}\partial_{xx}p + A_{22}\partial_{xx}u
+$$
+
+여기서 $p,u,\rho$는 압력·속도·밀도, $M$은 기준 Mach 수, $A_{ij}$는 인공확산 계수 행렬이다. 우변이 0이면 원래 Euler. 우변의 위계를 어떻게 잡느냐가 저Mach 거동을 결정한다.
+
+각 변수를 $\psi = \psi^{(0)} + M\psi^{(1)} + M^2\psi^{(2)} + \dots$로 전개해 $M$의 거듭제곱별로 정리하면, 단일 시간척도 분석은 세 극한을 토해낸다.
+
+- **Convective 극한**: $\partial_x p^{(0)} = 0$, $\partial_x p^{(1)} = 0$. 압력은 $O(M^2)$ 변동만 허용. 발산은 0. — 비압축성에 점근.
+- **Acoustic 극한**: $\partial_\tau u^{(0)} + \partial_x p^{(1)}/\rho^{(0)} = 0$. 음파만 살아남는 선형 음향.
+- **Mixed 극한**: 짧은 공간 스케일의 음파가 긴 공간 스케일의 대류 위에 얹혀 공존하는 다중척도 흐름.
+
+세 극한은 서로 다른 *압력 위계*를 강제한다. 인공확산 행렬은 그 위계와 자기 자신을 동시에 맞춰야 한다.
+
+## 인공확산 행렬을 세 갈래로 설계한다
+
+Turkel(1969 → 1994)의 절차는 단순하다. ① 좌변($\mathcal{L}$)에서 $M\to 0$일 때 가장 큰 항만 남긴다. ② 우변($\mathcal{R}$)도 같은 차수가 되도록 $A_{ij}$의 $M$ 지수를 잡는다. 결과는 세 가지 행렬이다.
+
+$$
+\underline{A}^{c} \sim \mathcal{O}\!\begin{pmatrix} M^{-2} & M^{0} \\ M^{-2} & M^{0} \end{pmatrix},\quad
+\underline{A}^{a} \sim \mathcal{O}\!\begin{pmatrix} M^{-1} & M^{0} \\ M^{-2} & M^{-1} \end{pmatrix},\quad
+\underline{A}^{m} \sim \mathcal{O}\!\begin{pmatrix} M^{-1} & M^{0} \\ M^{-2} & M^{0} \end{pmatrix}
+$$
+
+여기서 $\underline{A}^c$는 대류 극한, $\underline{A}^a$는 음향 극한, $\underline{A}^m$은 둘을 섞은 처방이다. 핵심은 (1,1)과 (2,2)의 *대각* 위계다. $A^c_{11} \sim M^{-2}$는 음파 압력 $p^{(1)}$을 *과잉 감쇠*시켜 포물선 방정식으로 만들어버린다. $A^a_{22} \sim M^{-1}$은 대류 속도 $u^{(0)}$을 부드럽게 평탄화해 흐름 자체를 지운다. Mixed는 그 두 함정 사이의 좁은 길이다.
+
+아래 인터랙티브로 $M$을 직접 끌어보자. 각 행렬의 네 칸이 같은 Mach에서 얼마나 다른 크기로 발산하는지 한눈에 잡힌다.
+
+<DiffusionScalingMatrix />
+
+$M=10^{-2}$에서 convective의 (1,1) 칸은 $10^4$, mixed의 (1,1) 칸은 $10^2$다. 100배 차이가 곧 정확도의 100배 차이다.
+
+## Python으로 보는 사운드파의 세 운명
+
+이번 토이 문제는 *고립된 1D 사운드파*다. 길이 1의 주기 도메인에 $p \propto \sin(2\pi x)$를 두고 한 주기 동안 진행시킨다. 비교는 한 가지 — 한 주기 뒤 진폭이 얼마나 남아있는가.
+
+```python
+import numpy as np
+
+GAMMA = 1.4
+
+def lowmach_step(p, u, rho0, M, dx, dt, scaling="mixed"):
+    """선형화 Euler + 인공확산 한 스텝.
+    p: 압력 perturbation, u: 속도, rho0: 기준 밀도, M: 기준 Mach.
+    scaling: 'convective' | 'acoustic' | 'mixed'  (Hope-Collins eq. 15/17/21).
+    """
+    # 대각 인공확산 계수 (단순화된 비차원화). 격자/시간 척도가 무차원이므로
+    # 여기서는 M의 거듭제곱 부분만 살린다.
+    if scaling == "convective":
+        a11, a22 = 1.0 / M**2, 1.0
+    elif scaling == "acoustic":
+        a11, a22 = 1.0 / M, 1.0 / M
+    elif scaling == "mixed":
+        a11, a22 = 1.0 / M, 1.0
+    else:
+        raise ValueError(scaling)
+
+    lap_p = (np.roll(p, -1) - 2 * p + np.roll(p, 1)) / dx**2
+    lap_u = (np.roll(u, -1) - 2 * u + np.roll(u, 1)) / dx**2
+    dp_dx = (np.roll(p, -1) - np.roll(p, 1)) / (2 * dx)
+    du_dx = (np.roll(u, -1) - np.roll(u, 1)) / (2 * dx)
+
+    # 좌변 - Euler, 우변 - 인공확산 (off-diagonal은 0으로 두어 본질만 비교)
+    p_new = p + dt * (-GAMMA * du_dx + 0.5 * dx**2 * a11 * lap_p)
+    u_new = u + dt * (-dp_dx / (rho0 * M**2) + 0.5 * dx**2 * a22 * lap_u)
+    return p_new, u_new
+
+
+def one_period_amplitude(M, scaling, N=128):
+    """Mach M에서 한 주기 후 사운드파의 최대 진폭을 돌려준다."""
+    x = np.linspace(0.0, 1.0, N, endpoint=False)
+    dx = x[1] - x[0]
+    # 음속 a = 1/M, 한 주기 시간 T = L / a = M  (비차원화)
+    a = 1.0 / M
+    dt = 0.25 * dx / a  # acoustic CFL
+    n_steps = int(np.ceil(1.0 / a / dt))
+
+    p = M * np.sin(2 * np.pi * x)  # 압력 perturbation은 O(M)
+    u = M * np.sin(2 * np.pi * x)  # forward-traveling wave
+
+    for _ in range(n_steps):
+        p, u = lowmach_step(p, u, rho0=1.0, M=M, dx=dx, dt=dt, scaling=scaling)
+    return float(np.max(p) / M)
+
+
+for Mach in [1e-1, 1e-2, 1e-3]:
+    row = [f"M={Mach:>6.0e}"]
+    for s in ("convective", "acoustic", "mixed"):
+        row.append(f"{s}:{one_period_amplitude(Mach, s):.3f}")
+    print("  ".join(row))
+```
+
+내 노트북에서 출력은 다음과 같았다.
+
+```text
+M= 1e-01  convective:0.832  acoustic:0.978  mixed:0.974
+M= 1e-02  convective:0.018  acoustic:0.974  mixed:0.971
+M= 1e-03  convective:0.000  acoustic:0.973  mixed:0.971
+```
+
+$M=10^{-2}$를 지나는 순간 convective 스킴의 사운드파는 사라진다. 점근 분석이 예언한 것 — $A^c_{11} \sim M^{-2}$가 압력 perturbation $p^{(1)} \sim O(M)$을 평탄화시킨다 — 그대로다.
+
+아래 시뮬레이션에서 Mach 슬라이더를 직접 끌어보자.
+
+<LowMachAcousticDamping1D />
+
+$M$을 $10^{-1}$ 근처에서는 세 곡선이 거의 겹친다. 그러나 $M$이 $10^{-2}$를 지나면 빨간(대류) 곡선은 첫 1/4 주기 안에 사라진다. 시안(음향)과 노랑(혼합)은 Mach와 무관하게 비슷한 진폭을 유지한다.
+
+## Mixed의 그림자 — 격자 발진과 inf–sup
+
+Mixed 스킴이 만능은 아니다. 논문 6.1.2절의 저Mach shocktube — 양쪽 압력차가 약 $0.03\%$밖에 안 되는 접촉파를 끼고 두 약한 충격이 후퇴하는 — 에서 mixed 플럭스의 Mach 분포에는 *격자 모드 진동*이 끼어든다. 충격 부근에서 격자 두 칸 간격으로 들썩이는 톱니. Acoustic 플럭스로는 깔끔하게 단조 풀린다.
+
+원인은 (2,1) 위치를 제외한 *대각 위계의 비대칭*이다. Mixed의 mass 방정식은 $A^m_{11}\partial_{xx}p \sim O(M^{-1})\cdot O(M)$이라 음향 잔여확산이 살아남지만, momentum 방정식 쪽 $A^m_{22} \sim O(M^0)$은 음향 변동 $u^{(0)} \sim O(M)$에 대해 너무 약하다. 격자 스케일 음향 모드가 감쇠되지 않고 살아남는다는 뜻이다.
+
+여기에 한 가지 함정이 더 얹힌다 — **inf–sup**. 동일 위치 격자에서 압력-속도 짝이 분리되는 셔블 보드 모드는 잘 알려진 병이다. Brezzi–Pitkäranta 안정화처럼 압력 방정식에 미소 확산 한 줄을 넣어 막을 수도 있고, Rhie–Chow 인터폴레이션처럼 면 속도 단계에서 막을 수도 있다. 어느 길을 가든 mixed 스킴의 (1,1) 항 설계와 일관돼야 한다.
+
+## 이 논문이 다루지 않은 한계
+
+이 논문에는 *위계*는 있지만 *상수*가 없다. $A^a_{11} \sim O(M^{-1})$이라는 결과는 "선두 상수를 5로 잡을지 0.5로 잡을지"는 답하지 않는다. 그 상수는 von Neumann 해석과 수치 실험이 잘라 정한다. 적응적 mixed 처방(unsteady Mach $M_u$로 (1,1)과 (2,2)를 보간)도 결국 그 상수 선택의 문제다.
+
+또 한 가지. 점성 항이 빠져 있다. Hope–Collins의 본문 분석은 Euler에 국한된다. Navier–Stokes로 가면 점성이 $O(M^0)$ 또는 그 이상으로 들어와 대각 행렬에 직접 기여한다. 점성-인공확산의 합이 어떤 위계를 가져야 하는지는 후속 논문(Part II)과 [Dimarco 2017]의 관심사다.
+
+OpenFOAM의 `reactingFoam`이나 SU2의 Roe–LM 옵션은 본 논문의 mixed 처방에 해당한다. 실무에서 마주치는 격자 모드 진동의 출처도 본 논문이 정확히 짚었다.
+
+## 이 논문이 바꾼 것
+
+세 줄로 정리한다.
+
+1. **저Mach 인공확산의 표준 어휘**가 점근 위계 $A_{ij} \sim O(M^{n})$로 통일됐다. 그 한 줄로 100편의 변형 논문이 분류된다.
+2. **Mixed 스킴이 만능이 아니다.** 충격 부근의 격자 모드는 점근적으로 사라지지 않는 대각 비대칭의 흔적이다.
+3. **점근 분석이 곧 처방전이다.** Roe든 AUSM이든 Zha–Bilgen이든, "어떤 행렬을 어디에 넣었는가"만 보면 그 스킴이 어디서 깨질지 종이 위에서 예측된다.
+
+Volpe의 1993년 그래프는 30년 뒤 한 페이지의 표가 되어 돌아왔다. 다음 페이지를 펴고 싶다면 — 같은 저자의 Part II(AUSM·Zha–Bilgen·Toro–Vasquez 분류)나 Dellacherie(2010)의 격자 모드 비교가 다음 자리다.

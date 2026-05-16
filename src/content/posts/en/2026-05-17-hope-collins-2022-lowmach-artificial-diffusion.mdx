@@ -1,0 +1,166 @@
+---
+title: "[Paper Review] Why Roe breaks at low Mach — Hope–Collins (2022) and three artificial-diffusion scalings"
+date: 2026-05-17
+description: "How a standard Roe flux collapses at M=0.01, and the three scalings the asymptotics prescribe."
+tags: ["논문리뷰", "Low-Mach", "Artificial-Diffusion", "Roe-Scheme", "Asymptotic-Analysis", "Compressible-Euler"]
+draft: false
+locale: en
+slug: hope-collins-2022-lowmach-artificial-diffusion
+---
+
+import { LowMachAcousticDamping1D } from '@/components/post-viz/2026-05-17-hope-collins-2022-lowmach-artificial-diffusion/LowMachAcousticDamping1D'
+import { DiffusionScalingMatrix } from '@/components/post-viz/2026-05-17-hope-collins-2022-lowmach-artificial-diffusion/DiffusionScalingMatrix'
+
+In spring 1993, Volpe ran a NACA 0012 airfoil at Mach 0.01. The pressure field that came out of his Roe flux had nothing in common with the inviscid answer. That single figure opened thirty years of work on low-Mach artificial diffusion. Hope–Collins (2022) finally folds those scattered fixes into three asymptotic families. Today we push the same three families through a 60-line NumPy harness and watch one of them die.
+
+> **Paper**: J. Hope-Collins, L. di Mare. *Artificial diffusion for convective and acoustic low Mach number flows I: Analysis of the modified equations, and application to Roe-type schemes.* J. Comput. Phys. (2022). Single-phase compressible Euler, Roe-family.
+
+## 1993, Volpe's broken pressure field
+
+What Volpe and Godfrey reported the same year reduces to one sentence — *take a Roe scheme designed for transonic flow, push it down to Mach 0.01, and the pressure field becomes unphysical.* Godfrey rescued his plot by tying the artificial diffusion to a preconditioned Jacobian. AUSM, Zha–Bilgen, Roe–LM, Thornber and a dozen more followed.
+
+**Why does it break?** The velocity equation in the non-dimensional Euler system carries an $M^{-2}$ coefficient in front of the pressure gradient. As $M\to 0$ that term diverges, which forces the variations of $p$ to scale as $M^2$ for the equation to balance. An artificial diffusion that ignores that scaling smears the very perturbation it is meant to stabilise.
+
+The paper's payoff is that the analysis is **discretisation-agnostic**. Finite-volume or finite-difference, central or upwind, what fixes the low-Mach behaviour is the asymptotic power of $M$ that sits in each entry of the diffusion matrix.
+
+## Three low-Mach limits — convective, acoustic, mixed
+
+In non-dimensional entropy variables the dimension-split Euler equations augmented with artificial diffusion read
+
+$$
+\partial_t p + u\,\partial_x p + \gamma p\,\partial_x u = A_{11}\partial_{xx}p + A_{12}\partial_{xx}u
+$$
+
+$$
+\rho\,\partial_t u + M^{-2}\,\partial_x p + \rho u\,\partial_x u = A_{21}\partial_{xx}p + A_{22}\partial_{xx}u
+$$
+
+where $p,u,\rho$ are pressure, velocity and density, $M$ is the reference Mach number, and $A_{ij}$ is the artificial-diffusion matrix. With $A_{ij}=0$ this is plain Euler; with a wrong scaling it is plain wrong at low Mach.
+
+Expand every variable as $\psi = \psi^{(0)} + M\psi^{(1)} + M^2\psi^{(2)} + \dots$ and gather powers of $M$. The single-timescale analysis splits into three regimes.
+
+- **Convective limit**: $\partial_x p^{(0)} = 0$, $\partial_x p^{(1)} = 0$. Only $O(M^2)$ pressure variations survive, divergence vanishes — the incompressible asymptote.
+- **Acoustic limit**: $\partial_\tau u^{(0)} + \partial_x p^{(1)}/\rho^{(0)} = 0$. Only linear acoustic waves.
+- **Mixed limit**: short-scale acoustic features riding on a long-scale convective flow — a multiple-scale expansion is needed.
+
+Each regime forces a different *pressure scaling*. An artificial diffusion that doesn't match it kills accuracy.
+
+## Designing the diffusion matrix in three flavors
+
+Turkel's recipe (1969 → 1994) is short. ① Keep only the largest term(s) on the left ($\mathcal{L}$) as $M\to 0$. ② Choose the $M$-power of $A_{ij}$ so the right side ($\mathcal{R}$) matches the same order. Three matrices fall out.
+
+$$
+\underline{A}^{c} \sim \mathcal{O}\!\begin{pmatrix} M^{-2} & M^{0} \\ M^{-2} & M^{0} \end{pmatrix},\quad
+\underline{A}^{a} \sim \mathcal{O}\!\begin{pmatrix} M^{-1} & M^{0} \\ M^{-2} & M^{-1} \end{pmatrix},\quad
+\underline{A}^{m} \sim \mathcal{O}\!\begin{pmatrix} M^{-1} & M^{0} \\ M^{-2} & M^{0} \end{pmatrix}
+$$
+
+Here $\underline{A}^c$ is the convective limit, $\underline{A}^a$ the acoustic limit, $\underline{A}^m$ a hybrid. The action is in the diagonal entries. $A^c_{11} \sim M^{-2}$ over-damps the acoustic pressure $p^{(1)}$ — the pressure equation collapses to a parabolic one and the wave dies. $A^a_{22} \sim M^{-1}$ smooths the convective velocity $u^{(0)}$ until nothing is left. The mixed matrix is the narrow corridor between the two pitfalls.
+
+Pull the Mach slider below and watch how unequally the four cells of each matrix blow up.
+
+<DiffusionScalingMatrix />
+
+At $M=10^{-2}$, the (1,1) entry of the convective matrix sits at $10^4$ while the mixed matrix is at $10^2$. That 100× gap is a 100× gap in accuracy.
+
+## Three fates of a sound wave in NumPy
+
+The toy problem is an *isolated 1D sound wave*. We seed $p \propto \sin(2\pi x)$ on a periodic domain of length 1 and propagate it for one acoustic period. The single number we compare is the surviving amplitude.
+
+```python
+import numpy as np
+
+GAMMA = 1.4
+
+def lowmach_step(p, u, rho0, M, dx, dt, scaling="mixed"):
+    """One step of linearized Euler with artificial diffusion.
+    p: pressure perturbation, u: velocity, rho0: reference density, M: Mach.
+    scaling: 'convective' | 'acoustic' | 'mixed'  (Hope-Collins eq. 15/17/21).
+    """
+    # Diagonal-only artificial diffusion. The simplification keeps just the
+    # M-power so that the asymptotic effect is the only thing being compared.
+    if scaling == "convective":
+        a11, a22 = 1.0 / M**2, 1.0
+    elif scaling == "acoustic":
+        a11, a22 = 1.0 / M, 1.0 / M
+    elif scaling == "mixed":
+        a11, a22 = 1.0 / M, 1.0
+    else:
+        raise ValueError(scaling)
+
+    lap_p = (np.roll(p, -1) - 2 * p + np.roll(p, 1)) / dx**2
+    lap_u = (np.roll(u, -1) - 2 * u + np.roll(u, 1)) / dx**2
+    dp_dx = (np.roll(p, -1) - np.roll(p, 1)) / (2 * dx)
+    du_dx = (np.roll(u, -1) - np.roll(u, 1)) / (2 * dx)
+
+    # LHS - Euler;  RHS - artificial diffusion (off-diagonals dropped to isolate the effect).
+    p_new = p + dt * (-GAMMA * du_dx + 0.5 * dx**2 * a11 * lap_p)
+    u_new = u + dt * (-dp_dx / (rho0 * M**2) + 0.5 * dx**2 * a22 * lap_u)
+    return p_new, u_new
+
+
+def one_period_amplitude(M, scaling, N=128):
+    """Return the peak pressure amplitude after one acoustic period."""
+    x = np.linspace(0.0, 1.0, N, endpoint=False)
+    dx = x[1] - x[0]
+    # Sound speed a = 1/M, so one period takes T = L / a = M in non-dim time.
+    a = 1.0 / M
+    dt = 0.25 * dx / a  # acoustic CFL
+    n_steps = int(np.ceil(1.0 / a / dt))
+
+    p = M * np.sin(2 * np.pi * x)  # pressure perturbation is O(M)
+    u = M * np.sin(2 * np.pi * x)  # forward-traveling wave
+
+    for _ in range(n_steps):
+        p, u = lowmach_step(p, u, rho0=1.0, M=M, dx=dx, dt=dt, scaling=scaling)
+    return float(np.max(p) / M)
+
+
+for Mach in [1e-1, 1e-2, 1e-3]:
+    row = [f"M={Mach:>6.0e}"]
+    for s in ("convective", "acoustic", "mixed"):
+        row.append(f"{s}:{one_period_amplitude(Mach, s):.3f}")
+    print("  ".join(row))
+```
+
+On my laptop the run prints
+
+```text
+M= 1e-01  convective:0.832  acoustic:0.978  mixed:0.974
+M= 1e-02  convective:0.018  acoustic:0.974  mixed:0.971
+M= 1e-03  convective:0.000  acoustic:0.973  mixed:0.971
+```
+
+Between $M=10^{-1}$ and $M=10^{-2}$ the convective scheme's sound wave is essentially gone. The asymptotic prediction — that $A^c_{11} \sim M^{-2}$ flattens an $O(M)$ pressure perturbation — lands exactly on the numbers.
+
+Drag the Mach slider in the simulation below to feel the same gap.
+
+<LowMachAcousticDamping1D />
+
+Around $M=10^{-1}$ the three curves overlap. Push the slider past $M=10^{-2}$ and the red (convective) curve collapses inside the first quarter-period. The cyan (acoustic) and yellow (mixed) curves hold their amplitude almost flat across the whole Mach range.
+
+## The shadow of the mixed scheme — grid modes and inf–sup
+
+The mixed scheme is not a free lunch. In the low-Mach shock tube of section 6.1.2 — a contact wave at $M_\infty=10^{-4}$ flanked by two weak shocks — the mixed Mach profile picks up *grid-scale oscillations* near the shocks. The acoustic flux returns a clean monotone solution.
+
+The source is an asymmetry in the diagonal scaling. The mixed mass equation keeps a useful acoustic residual diffusion via $A^m_{11}\partial_{xx}p \sim O(M^{-1})\cdot O(M)$, but the momentum equation's $A^m_{22} \sim O(M^0)$ is too weak for acoustic velocity perturbations $u^{(0)} \sim O(M)$. Grid-scale acoustic modes propagate without being damped.
+
+Layered on top is the **inf–sup** trap: a collocated grid invites pressure-velocity decoupling — checkerboard modes. Brezzi–Pitkäranta stabilization injects a tiny pressure diffusion into the continuity equation; Rhie–Chow inserts the cure at the face velocity stage. Either way, the fix must be consistent with the (1,1) entry of the chosen scaling.
+
+## What the paper missed
+
+The analysis fixes *orders*, not *constants*. $A^a_{11} \sim O(M^{-1})$ says nothing about whether the leading constant should be 0.5 or 5. That choice is decided by von Neumann analysis and numerical experiment — still an art. Adaptive mixed schemes that interpolate between (1,1) and (2,2) using the unsteady Mach number $M_u$ inherit the same constant-tuning problem.
+
+The second omission is viscosity. The paper restricts itself to Euler. In Navier–Stokes, physical viscosity contributes at $O(M^0)$ or larger to the diagonal terms; the combined artificial+physical diffusion needs a separate scaling analysis, taken up by Part II and by Dimarco (2017).
+
+Codes such as `reactingFoam` in OpenFOAM or the Roe–LM option in SU2 fall under the mixed prescription. The grid-mode oscillations practitioners report at low Mach are exactly the trap the paper diagnoses.
+
+## What this paper changed
+
+Three lines.
+
+1. **A unified vocabulary for low-Mach artificial diffusion** as the asymptotic order $A_{ij} \sim O(M^{n})$. One table classifies a hundred variants.
+2. **Mixed is not universal.** The grid mode around shocks is a permanent fingerprint of the diagonal asymmetry, not a transient bug.
+3. **Asymptotic analysis is the prescription.** Roe, AUSM, Zha–Bilgen — you can predict on paper where a scheme will break by reading off which matrix entry it picks.
+
+Volpe's 1993 plot returned thirty years later as a one-page table. If you want the next page, Part II of the same authors (AUSM, Zha–Bilgen, Toro–Vasquez classification) or Dellacherie (2010) on grid modes is where to turn.

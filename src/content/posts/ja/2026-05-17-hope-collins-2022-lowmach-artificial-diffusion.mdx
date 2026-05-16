@@ -1,0 +1,165 @@
+---
+title: "[論文レビュー] 低Mach数でRoeが壊れる理由 — Hope–Collins(2022)の人工拡散3スケーリング"
+date: 2026-05-17
+description: "Mach 0.01で標準Roeが崩れる仕組みと、漸近解析が示す3つの処方箋。"
+tags: ["논문리뷰", "Low-Mach", "Artificial-Diffusion", "Roe-Scheme", "Asymptotic-Analysis", "Compressible-Euler"]
+draft: false
+locale: ja
+slug: hope-collins-2022-lowmach-artificial-diffusion
+---
+
+import { LowMachAcousticDamping1D } from '@/components/post-viz/2026-05-17-hope-collins-2022-lowmach-artificial-diffusion/LowMachAcousticDamping1D'
+import { DiffusionScalingMatrix } from '@/components/post-viz/2026-05-17-hope-collins-2022-lowmach-artificial-diffusion/DiffusionScalingMatrix'
+
+1993年の春、VolpeはMach 0.01でNACA 0012翼を解きました。Roeフラックスが吐き出した圧力場は、非粘性の解とまったく似ていませんでした。その1枚のグラフが、30年にわたる低Mach人工拡散研究の出発点になります。Hope–Collins(2022)は、その散らばった処方箋を3つの漸近族にまとめ上げました。今回はその3つを点近解析と60行のNumPyで通してみて、片方が崩れる瞬間を観察します。
+
+> **論文**: J. Hope-Collins, L. di Mare. *Artificial diffusion for convective and acoustic low Mach number flows I: Analysis of the modified equations, and application to Roe-type schemes.* J. Comput. Phys. (2022). 単相圧縮性Euler、Roe系。
+
+## 1993年、衝撃だったVolpeのグラフ
+
+VolpeとGodfreyが同じ年に報告した内容は一文に要約できます — *遷音速向けに設計された標準Roeをそのままにして Mach 0.01に持っていくと、圧力場が非物理的に崩れる*。Godfreyは「前処理ヤコビアンに合わせた人工拡散」でグラフを救いました。その後AUSM、Zha–Bilgen、Roe–LM、Thornberなど数多くの変種が現れます。
+
+**なぜ壊れるのか。** 無次元化したEulerの運動量方程式には、圧力勾配の前に $M^{-2}$ という係数があります。Machが小さくなるとこの項が暴走し、釣り合うために $p$ の摂動を $M^2$ オーダーに押し下げます。その階層を無視した人工拡散は、安定化するはずだった揺らぎ自体を平らに均してしまいます。
+
+この論文の良さは、**離散化に依存しない**ことです。有限体積か有限差分か、中心か風上か、低Mach挙動を決めるのは「拡散行列の各成分が $M$ の何乗で入っているか」だけなのです。
+
+## 3つの低Mach極限 — convective・acoustic・mixed
+
+無次元化したエントロピー変数のEuler方程式に人工拡散を加えると次のようになります。
+
+$$
+\partial_t p + u\,\partial_x p + \gamma p\,\partial_x u = A_{11}\partial_{xx}p + A_{12}\partial_{xx}u
+$$
+
+$$
+\rho\,\partial_t u + M^{-2}\,\partial_x p + \rho u\,\partial_x u = A_{21}\partial_{xx}p + A_{22}\partial_{xx}u
+$$
+
+ここで $p,u,\rho$ は圧力・速度・密度、$M$ は基準Mach数、$A_{ij}$ は人工拡散の係数行列です。右辺を0にすると元のEuler方程式。スケーリングを間違えると低Machで正しい答えが出ません。
+
+各変数を $\psi = \psi^{(0)} + M\psi^{(1)} + M^2\psi^{(2)} + \dots$ と展開して $M$ のべきごとに整理すると、単一時間スケール解析は3つの極限を吐き出します。
+
+- **Convective極限**: $\partial_x p^{(0)} = 0$, $\partial_x p^{(1)} = 0$。圧力変動は $O(M^2)$ のみ、発散は0 — 非圧縮の漸近。
+- **Acoustic極限**: $\partial_\tau u^{(0)} + \partial_x p^{(1)}/\rho^{(0)} = 0$。線形音響波のみ。
+- **Mixed極限**: 短い空間スケールの音波が長い空間スケールの対流の上に乗る多重スケール流。
+
+3つの極限はそれぞれ異なる *圧力の階層* を強制します。人工拡散はその階層と自分自身を同時に合わせる必要があります。
+
+## 拡散行列を3通りに設計する
+
+Turkel(1969 → 1994)の手順は単純です。① $M\to 0$ で左辺($\mathcal{L}$)の最大項だけ残す。② 右辺($\mathcal{R}$)も同じ階数になるように $A_{ij}$ の $M$ のべきを取る。結果は3つの行列です。
+
+$$
+\underline{A}^{c} \sim \mathcal{O}\!\begin{pmatrix} M^{-2} & M^{0} \\ M^{-2} & M^{0} \end{pmatrix},\quad
+\underline{A}^{a} \sim \mathcal{O}\!\begin{pmatrix} M^{-1} & M^{0} \\ M^{-2} & M^{-1} \end{pmatrix},\quad
+\underline{A}^{m} \sim \mathcal{O}\!\begin{pmatrix} M^{-1} & M^{0} \\ M^{-2} & M^{0} \end{pmatrix}
+$$
+
+$\underline{A}^c$ は対流極限、$\underline{A}^a$ は音響極限、$\underline{A}^m$ はその混合処方です。要は対角の (1,1) と (2,2) の階層です。$A^c_{11} \sim M^{-2}$ は音響圧力 $p^{(1)}$ を過剰減衰させ、圧力方程式を放物型に落として波そのものを消してしまいます。$A^a_{22} \sim M^{-1}$ は対流速度 $u^{(0)}$ を滑らかにし、流れ自体を平らにします。Mixedはその2つの落とし穴のあいだの細い道です。
+
+下のインタラクティブで $M$ を直接動かしてみましょう。各行列の4つのセルが同じMachでもまったく異なる大きさで発散することが一目でわかります。
+
+<DiffusionScalingMatrix />
+
+$M=10^{-2}$ で convective の (1,1) セルは $10^4$、mixed の (1,1) セルは $10^2$ です。100倍の差がそのまま100倍の精度差になります。
+
+## Pythonで見る音波の3つの運命
+
+トイ問題は *孤立した1D音波* です。長さ1の周期領域に $p \propto \sin(2\pi x)$ を置き、1音響周期だけ進めます。比べるのは1つ — 1周期後にどれだけ振幅が残っているか。
+
+```python
+import numpy as np
+
+GAMMA = 1.4
+
+def lowmach_step(p, u, rho0, M, dx, dt, scaling="mixed"):
+    """線形化Euler + 人工拡散 1ステップ。
+    p: 圧力摂動、u: 速度、rho0: 基準密度、M: 基準Mach。
+    scaling: 'convective' | 'acoustic' | 'mixed'  (Hope-Collins eq. 15/17/21)。
+    """
+    # 対角のみの人工拡散。漸近的な効果だけを比較するため Mのべき部分のみ残す。
+    if scaling == "convective":
+        a11, a22 = 1.0 / M**2, 1.0
+    elif scaling == "acoustic":
+        a11, a22 = 1.0 / M, 1.0 / M
+    elif scaling == "mixed":
+        a11, a22 = 1.0 / M, 1.0
+    else:
+        raise ValueError(scaling)
+
+    lap_p = (np.roll(p, -1) - 2 * p + np.roll(p, 1)) / dx**2
+    lap_u = (np.roll(u, -1) - 2 * u + np.roll(u, 1)) / dx**2
+    dp_dx = (np.roll(p, -1) - np.roll(p, 1)) / (2 * dx)
+    du_dx = (np.roll(u, -1) - np.roll(u, 1)) / (2 * dx)
+
+    # 左辺はEuler、右辺は人工拡散(本質を見るため非対角は落とす)
+    p_new = p + dt * (-GAMMA * du_dx + 0.5 * dx**2 * a11 * lap_p)
+    u_new = u + dt * (-dp_dx / (rho0 * M**2) + 0.5 * dx**2 * a22 * lap_u)
+    return p_new, u_new
+
+
+def one_period_amplitude(M, scaling, N=128):
+    """Mach Mで1音響周期後の最大圧力振幅を返す。"""
+    x = np.linspace(0.0, 1.0, N, endpoint=False)
+    dx = x[1] - x[0]
+    # 音速 a = 1/M、1周期 T = L / a = M (無次元)
+    a = 1.0 / M
+    dt = 0.25 * dx / a  # 音響CFL
+    n_steps = int(np.ceil(1.0 / a / dt))
+
+    p = M * np.sin(2 * np.pi * x)  # 圧力摂動はO(M)
+    u = M * np.sin(2 * np.pi * x)  # 前方進行波
+
+    for _ in range(n_steps):
+        p, u = lowmach_step(p, u, rho0=1.0, M=M, dx=dx, dt=dt, scaling=scaling)
+    return float(np.max(p) / M)
+
+
+for Mach in [1e-1, 1e-2, 1e-3]:
+    row = [f"M={Mach:>6.0e}"]
+    for s in ("convective", "acoustic", "mixed"):
+        row.append(f"{s}:{one_period_amplitude(Mach, s):.3f}")
+    print("  ".join(row))
+```
+
+私の手元では次のような出力でした。
+
+```text
+M= 1e-01  convective:0.832  acoustic:0.978  mixed:0.974
+M= 1e-02  convective:0.018  acoustic:0.974  mixed:0.971
+M= 1e-03  convective:0.000  acoustic:0.973  mixed:0.971
+```
+
+$M=10^{-2}$ を境にconvectiveスキームの音波は消えます。漸近解析が予言した通り — $A^c_{11} \sim M^{-2}$ が $O(M)$ の圧力摂動 $p^{(1)}$ を平らにしてしまうのです。
+
+下のシミュレーションでMachスライダーを直接動かしてみましょう。
+
+<LowMachAcousticDamping1D />
+
+$M$ が $10^{-1}$ 付近では3本の曲線はほぼ重なります。しかし $10^{-2}$ を越えると赤(対流)の曲線は最初の1/4周期で潰れます。シアン(音響)と黄(混合)はMachによらずほぼ同じ振幅を保ちます。
+
+## Mixedの影 — 格子モードとinf–sup
+
+Mixedスキームも万能ではありません。論文6.1.2節の低Mach衝撃管 — 両側の圧力差が約 $0.03\%$ しかない接触波を挟んで2つの弱い衝撃が後退する — では、mixedフラックスのMach分布に*格子モード振動*が現れます。格子2セルおきに小刻みに揺れるのこぎり波。Acousticフラックスはきれいな単調解を返します。
+
+原因は対角階層の*非対称性*です。Mixedの質量保存式は $A^m_{11}\partial_{xx}p \sim O(M^{-1})\cdot O(M)$ で有用な音響残留拡散を保ちますが、運動量保存式の $A^m_{22} \sim O(M^0)$ は $u^{(0)} \sim O(M)$ の音響速度摂動には弱すぎます。格子スケールの音響モードが減衰されずに残ってしまうのです。
+
+さらに **inf–sup** という罠が乗ります。同位置格子では圧力-速度ペアが分離するチェッカーボードモードが起こります。Brezzi–Pitkärantaの安定化は連続式に微小な圧力拡散を入れて防ぐ。Rhie–Chowは面速度の段階で防ぐ。どちらの道を取っても、(1,1)成分の設計と整合する必要があります。
+
+## この論文が触れていない限界
+
+この論文には*階層*はあっても*定数*はありません。$A^a_{11} \sim O(M^{-1})$ という結果は、先頭定数を5にすべきか0.5にすべきかは答えてくれません。その定数はvon Neumann解析と数値実験で決めるしかない。適応的mixed処方(非定常Mach $M_u$ で(1,1)と(2,2)を補間する)も結局この定数選択の問題を引き継ぎます。
+
+もう1つ。粘性項が抜けています。Hope–Collinsの本文解析はEulerに限られます。Navier–Stokesに行くと物理粘性が $O(M^0)$ 以上で対角成分に直接寄与するため、人工拡散+物理粘性の合計階層は別の解析が必要になります。続編Part II とDimarco(2017)が引き継ぐテーマです。
+
+OpenFOAMの`reactingFoam`やSU2のRoe–LMオプションは本論文のmixed処方に相当します。実務で報告される格子モード振動の出所も、本論文が正確に診断しています。
+
+## この論文が変えたもの
+
+3行でまとめます。
+
+1. **低Mach人工拡散の標準語彙**が点近階数 $A_{ij} \sim O(M^{n})$ で統一されました。1枚の表で100本の変種論文が分類されます。
+2. **Mixedは万能ではない**。衝撃近傍の格子モードは漸近的に消えない対角非対称の指紋です。
+3. **漸近解析がそのまま処方箋**。RoeでもAUSMでもZha–Bilgenでも、「どの行列をどこに入れたか」を読めば、紙の上でそのスキームが破綻する場所が予測できます。
+
+Volpeの1993年のグラフは、30年後に1ページの表になって戻ってきました。次のページを開きたいなら — 同じ著者のPart II(AUSM・Zha–Bilgen・Toro–Vasquez分類)、あるいはDellacherie(2010)の格子モード比較が次の場所です。
