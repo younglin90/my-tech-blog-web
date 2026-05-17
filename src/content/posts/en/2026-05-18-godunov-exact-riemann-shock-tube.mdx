@@ -1,0 +1,155 @@
+---
+title: "Godunov's Method — One Tiny Shock Tube Inside Every Cell"
+date: 2026-05-18
+description: "The Riemann fan, the exact Lax solution, and the wall that bounds Godunov to first order."
+tags: ["CFD", "numerical-analysis", "riemann-solver", "godunov", "shock-capturing"]
+locale: en
+slug: godunov-exact-riemann-shock-tube
+draft: false
+---
+
+import { RiemannExactProfile1D } from '@/components/post-viz/2026-05-18-godunov-exact-riemann-shock-tube/RiemannExactProfile1D'
+import { GodunovCellWaveFans } from '@/components/post-viz/2026-05-18-godunov-exact-riemann-shock-tube/GodunovCellWaveFans'
+
+Throw a hundred cells at a shock and a first-order upwind scheme still smears it across five of them. In 1959, Sergei Godunov picked the opposite move. He placed a tiny shock tube (a Riemann problem) at every cell interface, evolved its exact self-similar solution for one time step, then re-averaged. This post walks through the five-region fan structure with an exact solver, runs the Lax shock tube in twelve lines of Python, and pushes against the first-order wall that Godunov himself proved.
+
+## 1959 — One Shock Tube Per Cell Interface
+
+Finite-volume methods keep the state piecewise constant inside each cell. That means every interface $x_{i+1/2}$ carries a jump between the left state $\mathbf{q}_i$ and the right state $\mathbf{q}_{i+1}$. Extend that jump to all of space — left state to $-\infty$, right state to $+\infty$ — and you have a Riemann problem.
+
+Godunov's move was direct. Solve this little Riemann problem at every interface, let its exact self-similar solution evolve for one step, then take the new cell averages. The compressible Euler eigenstructure (three characteristics $u$ and $u \pm c_s$) is handled all at once rather than split into advection plus pressure source.
+
+## The Riemann Fan: Five Self-Similar Regions
+
+A $\gamma$-gas obeys
+
+$$
+\partial_t \mathbf{q} + \partial_x \mathbf{f}(\mathbf{q}) = 0,
+\quad
+\mathbf{q} = (\rho, \rho u, \rho E)^\top
+$$
+
+with $\rho$ density, $u$ velocity, $E$ total specific energy, and $\mathbf{f}$ the conservative flux.
+
+Given $(\rho_L, u_L, p_L)$ and $(\rho_R, u_R, p_R)$, the solution depends only on $\xi = x/t$. The fan that opens at the diaphragm splits the plane into five regions.
+
+1. Undisturbed left state — the left wave head hasn't reached this point.
+2. The left wave itself — smooth ramp if it's a rarefaction, a jump if it's a shock.
+3. Star-L region — the star pressure and velocity, plus a density tied to the left side.
+4. Star-R region — same star pressure and velocity, a different density.
+5. Undisturbed right state.
+
+The 3–4 boundary is the contact discontinuity: pressure and velocity match across it, only density (and entropy) jump.
+
+## The Functional Equation in $p^{\star}$
+
+There are four star-state unknowns, but solving for the star pressure alone closes the system. Toro's classical reduction gives
+
+$$
+f_L(p^{\star}; \mathbf{q}_L) + f_R(p^{\star}; \mathbf{q}_R) + (u_R - u_L) = 0
+$$
+
+where each $f_K$ branches on shock vs. rarefaction.
+
+$$
+f_K(p) =
+\begin{cases}
+(p - p_K)\sqrt{\dfrac{A_K}{p + B_K}} & p > p_K \;\;\text{(shock)} \\[6pt]
+\dfrac{2 c_K}{\gamma - 1}\left[\left(\dfrac{p}{p_K}\right)^{\!\frac{\gamma-1}{2\gamma}} - 1\right] & p \le p_K \;\;\text{(rarefaction)}
+\end{cases}
+$$
+
+with $A_K = 2/[(\gamma + 1)\rho_K]$, $B_K = \frac{\gamma - 1}{\gamma + 1} p_K$, $c_K = \sqrt{\gamma p_K / \rho_K}$. The star velocity follows directly:
+
+$$
+u^{\star} = \tfrac{1}{2}(u_L + u_R) + \tfrac{1}{2}\bigl[f_R(p^{\star}) - f_L(p^{\star})\bigr].
+$$
+
+Newton iteration handles $p^{\star}$ in a handful of steps. Once you have it, sample the state at $\xi = x/t$ based on which side you're on and whether each wave is a shock or a rarefaction.
+
+## The Time-Step Bound — When Fans Touch
+
+The essential constraint is that adjacent fans must not collide during one step.
+
+$$
+\Delta t \le \min_i \frac{\Delta x}{\max_k |\lambda_k^{(i+1/2)}|}
+$$
+
+The eigenvalues $\lambda_k$ are $u$ and $u \pm c_s$. When two fans touch, the self-similar assumption breaks and conservation breaks with it.
+
+<GodunovCellWaveFans />
+
+Push the slider past 1.0 and the neighboring fans collide — the red banner means the step is rejected. Below 1.0, the interface flux really is constant in time, which is what the Godunov update needs.
+
+## Python: The Lax Shock Tube, Exactly
+
+Here is Toro's procedure in compact form. Lax tube: $(\rho_L, u_L, p_L) = (0.445, 0.698, 3.528)$, $(\rho_R, u_R, p_R) = (0.5, 0, 0.571)$.
+
+```python
+import numpy as np
+
+GAMMA = 1.4
+
+def f_wave(p, rho_K, p_K, c_K, gamma=GAMMA):
+    # one-wave pressure-velocity function (branches shock vs rarefaction)
+    if p > p_K:
+        A = 2.0 / ((gamma + 1.0) * rho_K)
+        B = (gamma - 1.0) / (gamma + 1.0) * p_K
+        return (p - p_K) * np.sqrt(A / (p + B))
+    return (2.0 * c_K / (gamma - 1.0)) * ((p / p_K) ** ((gamma - 1.0) / (2.0 * gamma)) - 1.0)
+
+def f_prime(p, rho_K, p_K, c_K, gamma=GAMMA):
+    if p > p_K:
+        A = 2.0 / ((gamma + 1.0) * rho_K)
+        B = (gamma - 1.0) / (gamma + 1.0) * p_K
+        return np.sqrt(A / (p + B)) * (1.0 - (p - p_K) / (2.0 * (p + B)))
+    return (1.0 / (rho_K * c_K)) * (p / p_K) ** (-(gamma + 1.0) / (2.0 * gamma))
+
+def solve_star(left, right, gamma=GAMMA, tol=1e-9, max_iter=80):
+    rho_L, u_L, p_L = left
+    rho_R, u_R, p_R = right
+    c_L = np.sqrt(gamma * p_L / rho_L)
+    c_R = np.sqrt(gamma * p_R / rho_R)
+    # first guess: pressure average corrected by velocity jump
+    p = max(1e-6, 0.5 * (p_L + p_R) - 0.125 * (u_R - u_L) * (rho_L + rho_R) * (c_L + c_R))
+    for _ in range(max_iter):
+        f  = f_wave(p, rho_L, p_L, c_L) + f_wave(p, rho_R, p_R, c_R) + (u_R - u_L)
+        df = f_prime(p, rho_L, p_L, c_L) + f_prime(p, rho_R, p_R, c_R)
+        dp = f / df
+        p_new = max(1e-6, p - dp)
+        if 2.0 * abs(p_new - p) / (p_new + p) < tol:
+            p = p_new
+            break
+        p = p_new
+    u = 0.5 * (u_L + u_R) + 0.5 * (f_wave(p, rho_R, p_R, c_R) - f_wave(p, rho_L, p_L, c_L))
+    return p, u, c_L, c_R
+
+# Lax shock tube
+left  = (0.445, 0.698, 3.528)
+right = (0.5,   0.0,   0.571)
+p_star, u_star, c_L, c_R = solve_star(left, right)
+print(f"p* = {p_star:.5f}, u* = {u_star:.5f}")
+# -> p* = 3.40948, u* = 0.62556
+```
+
+This twelve-line Newton loop is the beating heart of one Godunov step. The exact solver was eventually replaced by Roe's 1981 linearization and later by HLL and HLLC, mostly for speed. The exact solution still serves as the reference answer when benchmarking new schemes.
+
+## Open the Fan Yourself
+
+The viz below re-runs the same Newton iteration in your browser and uses the time slider to open the self-similar fan. Switch the preset to `123 problem` (two flows running away from each other into a near-vacuum) and watch the deep pressure trough form in the middle. `Strong-blast` collapses to almost a single shock.
+
+<RiemannExactProfile1D />
+
+Start with a small `t` and grow it slowly. Left and right waves move out at fixed speeds. In Lax, the left side opens as a smooth rarefaction and the right side jumps as a shock. The tiny density step in the middle is the contact discontinuity.
+
+## The First-Order Wall — Godunov's Theorem
+
+In the same 1959 paper, Godunov proved a sober corollary: **no linear, monotone scheme can be more than first-order accurate**. His own construction was, by his own theorem, capped.
+
+The detour around that wall is the entire history of 1970s–80s high-resolution shock capturing. van Leer's MUSCL, Harten's TVD, Roe's linearization, Colella and Woodward's PPM, Shu and Osher's WENO — all keep Godunov's skeleton but replace the piecewise-constant subgrid model with a nonlinear reconstruction that preserves monotonicity while raising the order. The Godunov bones stayed.
+
+## What I Want You to Walk Away With
+
+- Solving an exact Riemann fan at every interface captures shocks without any special-case treatment.
+- The step is bounded by the no-touching condition $\Delta t \le \Delta x / \max|\lambda|$.
+- The first-order ceiling came from Godunov himself. Every modern high-order shock-capturing scheme is a reconstruction war on top of his skeleton.

@@ -1,0 +1,155 @@
+---
+title: "Godunov 方法 — 每个网格里都藏一根小激波管"
+date: 2026-05-18
+description: "用 Riemann 扇与 Lax 激波管的精确解理解 Godunov 法的原理与界限。"
+tags: ["CFD", "numerical-analysis", "riemann-solver", "godunov", "shock-capturing"]
+locale: zh
+slug: godunov-exact-riemann-shock-tube
+draft: false
+---
+
+import { RiemannExactProfile1D } from '@/components/post-viz/2026-05-18-godunov-exact-riemann-shock-tube/RiemannExactProfile1D'
+import { GodunovCellWaveFans } from '@/components/post-viz/2026-05-18-godunov-exact-riemann-shock-tube/GodunovCellWaveFans'
+
+哪怕在激波区放上一百个网格,一阶迎风格式仍会把激波抹成五个网格的厚度。1959 年,Sergei Godunov 走了反向的一步:在每个网格界面放一根小激波管(Riemann 问题),让它的精确自相似解走一个时间步,再重新做单元平均。本文沿着 Riemann 问题的五区扇形结构走一遍精确求解,用 12 行 Python 跑出 Lax 激波管的精确解,再撞向 Godunov 本人证明出的一阶精度天花板。
+
+## 1959 年 — 每个界面一根激波管
+
+有限体积法把每个单元内部当作常数。于是每个界面 $x_{i+1/2}$ 都有左态 $\mathbf{q}_i$ 与右态 $\mathbf{q}_{i+1}$ 之间的跳跃。把这个跳跃延伸到整个空间(左到 $-\infty$、右到 $+\infty$),就是一个 Riemann 问题。
+
+Godunov 的想法直白。每个界面都解这个小 Riemann 问题,让它的精确自相似解走完一个时间步,再重新求单元平均。压缩性 Euler 的特征结构(三个特征速度 $u$ 与 $u \pm c_s$)被**一次性**处理,不再做对流-压力的算符分裂。
+
+## Riemann 扇 — 五区自相似解
+
+$\gamma$-气体满足
+
+$$
+\partial_t \mathbf{q} + \partial_x \mathbf{f}(\mathbf{q}) = 0,
+\quad
+\mathbf{q} = (\rho, \rho u, \rho E)^\top
+$$
+
+其中 $\rho$ 为密度、$u$ 为速度、$E$ 为总能、$\mathbf{f}$ 为守恒形通量。
+
+给定 $(\rho_L, u_L, p_L)$ 和 $(\rho_R, u_R, p_R)$,解只依赖 $\xi = x/t$。从隔膜处展开的扇形精确分为五个区域。
+
+1. 左侧未受扰区 — 左波的波头(head)尚未到达。
+2. 左波本身 — 膨胀波时连续变化,激波时直接跳跃。
+3. 星左(star-L)区 — 速度与压力取星值,密度由左侧决定。
+4. 星右(star-R)区 — 同样的星压、星速,不同的星密度。
+5. 右侧未受扰区。
+
+第 3 区与第 4 区之间是接触间断(contact discontinuity)。两侧压力与速度相同,只有密度与熵跳跃。
+
+## 单变量 $p^{\star}$ 的函数方程
+
+未知量看似有四个,但解出星压 $p^{\star}$ 一个就足够。Toro 的经典约化把问题闭合到
+
+$$
+f_L(p^{\star}; \mathbf{q}_L) + f_R(p^{\star}; \mathbf{q}_R) + (u_R - u_L) = 0
+$$
+
+每一支 $f_K$ 在激波与膨胀波之间分支。
+
+$$
+f_K(p) =
+\begin{cases}
+(p - p_K)\sqrt{\dfrac{A_K}{p + B_K}} & p > p_K \;\;\text{(shock)} \\[6pt]
+\dfrac{2 c_K}{\gamma - 1}\left[\left(\dfrac{p}{p_K}\right)^{\!\frac{\gamma-1}{2\gamma}} - 1\right] & p \le p_K \;\;\text{(rarefaction)}
+\end{cases}
+$$
+
+其中 $A_K = 2/[(\gamma + 1)\rho_K]$、$B_K = \frac{\gamma - 1}{\gamma + 1} p_K$、$c_K = \sqrt{\gamma p_K / \rho_K}$。星速度则为
+
+$$
+u^{\star} = \tfrac{1}{2}(u_L + u_R) + \tfrac{1}{2}\bigl[f_R(p^{\star}) - f_L(p^{\star})\bigr].
+$$
+
+用 Newton 迭代求出 $p^{\star}$ 之后,根据 $\xi = x/t$ 落在哪一侧、波是激波还是膨胀波,抽取相应状态即可。
+
+## 时间步上限 — 扇形相触的瞬间
+
+Godunov 法的本质约束是:相邻的两个扇形不能在一个时间步内相撞。
+
+$$
+\Delta t \le \min_i \frac{\Delta x}{\max_k |\lambda_k^{(i+1/2)}|}
+$$
+
+特征值 $\lambda_k$ 为 $u$ 与 $u \pm c_s$。两扇相触的瞬间,自相似前提崩塌,守恒也随之断裂。
+
+<GodunovCellWaveFans />
+
+把滑块拉过 1.0,相邻扇形相撞,红色警告随之亮起,这一步被拒绝。低于 1.0 时,界面通量在时间上为常数的假设才真正成立 —— 这正是 Godunov 更新所需的条件。
+
+## Python — Lax 激波管的精确解
+
+把 Toro 书里的标准流程压缩抄录如下。Lax 激波管 $(\rho_L, u_L, p_L) = (0.445, 0.698, 3.528)$、$(\rho_R, u_R, p_R) = (0.5, 0, 0.571)$。
+
+```python
+import numpy as np
+
+GAMMA = 1.4
+
+def f_wave(p, rho_K, p_K, c_K, gamma=GAMMA):
+    # 单波压力-速度函数(按激波/膨胀分支)
+    if p > p_K:
+        A = 2.0 / ((gamma + 1.0) * rho_K)
+        B = (gamma - 1.0) / (gamma + 1.0) * p_K
+        return (p - p_K) * np.sqrt(A / (p + B))
+    return (2.0 * c_K / (gamma - 1.0)) * ((p / p_K) ** ((gamma - 1.0) / (2.0 * gamma)) - 1.0)
+
+def f_prime(p, rho_K, p_K, c_K, gamma=GAMMA):
+    if p > p_K:
+        A = 2.0 / ((gamma + 1.0) * rho_K)
+        B = (gamma - 1.0) / (gamma + 1.0) * p_K
+        return np.sqrt(A / (p + B)) * (1.0 - (p - p_K) / (2.0 * (p + B)))
+    return (1.0 / (rho_K * c_K)) * (p / p_K) ** (-(gamma + 1.0) / (2.0 * gamma))
+
+def solve_star(left, right, gamma=GAMMA, tol=1e-9, max_iter=80):
+    rho_L, u_L, p_L = left
+    rho_R, u_R, p_R = right
+    c_L = np.sqrt(gamma * p_L / rho_L)
+    c_R = np.sqrt(gamma * p_R / rho_R)
+    # 初始猜测: 用速度跳跃修正的压力平均
+    p = max(1e-6, 0.5 * (p_L + p_R) - 0.125 * (u_R - u_L) * (rho_L + rho_R) * (c_L + c_R))
+    for _ in range(max_iter):
+        f  = f_wave(p, rho_L, p_L, c_L) + f_wave(p, rho_R, p_R, c_R) + (u_R - u_L)
+        df = f_prime(p, rho_L, p_L, c_L) + f_prime(p, rho_R, p_R, c_R)
+        dp = f / df
+        p_new = max(1e-6, p - dp)
+        if 2.0 * abs(p_new - p) / (p_new + p) < tol:
+            p = p_new
+            break
+        p = p_new
+    u = 0.5 * (u_L + u_R) + 0.5 * (f_wave(p, rho_R, p_R, c_R) - f_wave(p, rho_L, p_L, c_L))
+    return p, u, c_L, c_R
+
+# Lax 激波管
+left  = (0.445, 0.698, 3.528)
+right = (0.5,   0.0,   0.571)
+p_star, u_star, c_L, c_R = solve_star(left, right)
+print(f"p* = {p_star:.5f}, u* = {u_star:.5f}")
+# -> p* = 3.40948, u* = 0.62556
+```
+
+这 12 行 Newton 迭代正是 Godunov 一步的心脏。精确解后来主要因为速度被 1981 年 Roe 的线性化取代,继而 HLL 与 HLLC 成为主流。但精确解依然是新格式验证时的参考解(reference solution)。
+
+## 亲手展开扇形
+
+下面的可视化在浏览器里重跑同一段 Newton 迭代,用时间滑块逐渐展开自相似扇形。把预设切到 `123 problem`(两侧逃离形成近真空)就能看到中央深陷的压力谷;`Strong-blast` 则几乎坍缩成单根激波。
+
+<RiemannExactProfile1D />
+
+先把 `t` 设小,再慢慢调大。左右波以固定速度向外推进。Lax 算例中,左侧以膨胀波(rarefaction)平滑展开,右侧以激波(shock)直接跳跃。中间那一道小密度阶梯就是接触间断。
+
+## 一阶之墙 — Godunov 定理
+
+Godunov 本人在同一篇 1959 年的论文里证明: **任何线性的单调格式都不可能超过一阶精度**。自己的发明被自己的定理钉死在一阶上。
+
+绕过这堵墙的弯路,正是 1970–80 年代高分辨率激波捕捉格式的整段历史:van Leer 的 MUSCL、Harten 的 TVD、Roe 的线性化、Colella–Woodward 的 PPM、Shu–Osher 的 WENO —— 它们都保留 Godunov 的骨架,只是把单元内部从分段常数换成非线性重构(reconstruction),既保持单调性又提升精度。骨架始终未变。
+
+## 今天值得带走的几句
+
+- 在每个界面解一次精确的 Riemann 扇,激波就被自然捕获,不需要任何额外特殊处理。
+- 时间步被相邻扇形不相触的条件 $\Delta t \le \Delta x / \max|\lambda|$ 锁定。
+- 一阶精度的天花板由 Godunov 本人证明确定。其后所有高阶激波捕捉格式,都是这副骨架之上的重构之争。

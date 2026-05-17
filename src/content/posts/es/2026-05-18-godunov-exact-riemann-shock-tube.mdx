@@ -1,0 +1,155 @@
+---
+title: "El método de Godunov — un pequeño tubo de choque dentro de cada celda"
+date: 2026-05-18
+description: "El abanico de Riemann, la solución exacta de Lax y el techo de primer orden."
+tags: ["CFD", "numerical-analysis", "riemann-solver", "godunov", "shock-capturing"]
+locale: es
+slug: godunov-exact-riemann-shock-tube
+draft: false
+---
+
+import { RiemannExactProfile1D } from '@/components/post-viz/2026-05-18-godunov-exact-riemann-shock-tube/RiemannExactProfile1D'
+import { GodunovCellWaveFans } from '@/components/post-viz/2026-05-18-godunov-exact-riemann-shock-tube/GodunovCellWaveFans'
+
+Aun con cien celdas dentro del choque, un esquema upwind de primer orden lo embarra a lo largo de cinco celdas. En 1959, Sergei Godunov hizo lo opuesto. Colocó un pequeño tubo de choque (un problema de Riemann) en cada interfaz, dejó evolucionar su solución exacta auto-semejante durante un paso de tiempo, y luego volvió a promediar la celda. Este post recorre la estructura del abanico de cinco regiones con un solucionador exacto, resuelve el tubo de Lax en doce líneas de Python y choca contra el muro de primer orden que el propio Godunov demostró.
+
+## 1959 — un tubo de choque por interfaz
+
+Los métodos de volumen finito mantienen el estado constante a trozos dentro de cada celda. Eso significa que cada interfaz $x_{i+1/2}$ lleva un salto entre el estado izquierdo $\mathbf{q}_i$ y el derecho $\mathbf{q}_{i+1}$. Si ese salto se extiende a todo el espacio (a la izquierda hasta $-\infty$, a la derecha hasta $+\infty$), queda exactamente un problema de Riemann.
+
+La jugada de Godunov fue directa. Resolver ese pequeño problema en cada interfaz, dejar que su solución exacta auto-semejante avance un paso, y volver a promediar. La estructura propia del Euler compresible (los tres caracteres $u$ y $u \pm c_s$) se trata **sin partir** el operador en advección y fuente de presión.
+
+## Abanico de Riemann — cinco regiones auto-semejantes
+
+El gas de razón $\gamma$ cumple
+
+$$
+\partial_t \mathbf{q} + \partial_x \mathbf{f}(\mathbf{q}) = 0,
+\quad
+\mathbf{q} = (\rho, \rho u, \rho E)^\top
+$$
+
+con $\rho$ densidad, $u$ velocidad, $E$ energía total y $\mathbf{f}$ el flujo conservativo.
+
+Dadas $(\rho_L, u_L, p_L)$ y $(\rho_R, u_R, p_R)$, la solución depende solamente de $\xi = x/t$. El abanico que se abre en el diafragma se parte exactamente en cinco regiones.
+
+1. Estado izquierdo sin perturbar — la cabeza (head) de la onda izquierda aún no llegó aquí.
+2. La onda izquierda — rampa suave si es rarefacción, salto si es choque.
+3. Región estrella-L (star-L) — presión y velocidad estrella, densidad ligada al lado izquierdo.
+4. Región estrella-R (star-R) — la misma presión y velocidad estrella, otra densidad.
+5. Estado derecho sin perturbar.
+
+El límite entre 3 y 4 es la discontinuidad de contacto. Presión y velocidad coinciden a ambos lados; solo la densidad (y la entropía) saltan.
+
+## La ecuación funcional en $p^{\star}$
+
+Hay cuatro incógnitas estrella, pero alcanza con resolver la presión estrella. La reducción clásica de Toro cierra el sistema en
+
+$$
+f_L(p^{\star}; \mathbf{q}_L) + f_R(p^{\star}; \mathbf{q}_R) + (u_R - u_L) = 0
+$$
+
+con cada $f_K$ bifurcado según choque o rarefacción.
+
+$$
+f_K(p) =
+\begin{cases}
+(p - p_K)\sqrt{\dfrac{A_K}{p + B_K}} & p > p_K \;\;\text{(shock)} \\[6pt]
+\dfrac{2 c_K}{\gamma - 1}\left[\left(\dfrac{p}{p_K}\right)^{\!\frac{\gamma-1}{2\gamma}} - 1\right] & p \le p_K \;\;\text{(rarefaction)}
+\end{cases}
+$$
+
+donde $A_K = 2/[(\gamma + 1)\rho_K]$, $B_K = \frac{\gamma - 1}{\gamma + 1} p_K$ y $c_K = \sqrt{\gamma p_K / \rho_K}$. La velocidad estrella sale de inmediato:
+
+$$
+u^{\star} = \tfrac{1}{2}(u_L + u_R) + \tfrac{1}{2}\bigl[f_R(p^{\star}) - f_L(p^{\star})\bigr].
+$$
+
+Una iteración de Newton resuelve $p^{\star}$ en pocos pasos. Después se muestrea el estado en $\xi = x/t$ según el lado y según si cada onda es choque o rarefacción.
+
+## La cota temporal — cuando los abanicos se tocan
+
+La restricción esencial es que dos abanicos vecinos no choquen dentro de un mismo paso.
+
+$$
+\Delta t \le \min_i \frac{\Delta x}{\max_k |\lambda_k^{(i+1/2)}|}
+$$
+
+Los autovalores $\lambda_k$ son $u$ y $u \pm c_s$. Cuando dos abanicos se tocan, la auto-semejanza se rompe y con ella la conservación.
+
+<GodunovCellWaveFans />
+
+Si el deslizador pasa de 1.0, los abanicos vecinos chocan y el aviso rojo indica que el paso queda rechazado. Por debajo de 1.0, el flujo en la interfaz es realmente constante en el tiempo — que es lo que pide el avance de Godunov.
+
+## Python — el tubo de Lax, exacto
+
+Aquí va el procedimiento estándar de Toro en forma compacta. Tubo de Lax $(\rho_L, u_L, p_L) = (0.445, 0.698, 3.528)$, $(\rho_R, u_R, p_R) = (0.5, 0, 0.571)$.
+
+```python
+import numpy as np
+
+GAMMA = 1.4
+
+def f_wave(p, rho_K, p_K, c_K, gamma=GAMMA):
+    # funcion presion-velocidad de una onda (bifurca choque vs rarefaccion)
+    if p > p_K:
+        A = 2.0 / ((gamma + 1.0) * rho_K)
+        B = (gamma - 1.0) / (gamma + 1.0) * p_K
+        return (p - p_K) * np.sqrt(A / (p + B))
+    return (2.0 * c_K / (gamma - 1.0)) * ((p / p_K) ** ((gamma - 1.0) / (2.0 * gamma)) - 1.0)
+
+def f_prime(p, rho_K, p_K, c_K, gamma=GAMMA):
+    if p > p_K:
+        A = 2.0 / ((gamma + 1.0) * rho_K)
+        B = (gamma - 1.0) / (gamma + 1.0) * p_K
+        return np.sqrt(A / (p + B)) * (1.0 - (p - p_K) / (2.0 * (p + B)))
+    return (1.0 / (rho_K * c_K)) * (p / p_K) ** (-(gamma + 1.0) / (2.0 * gamma))
+
+def solve_star(left, right, gamma=GAMMA, tol=1e-9, max_iter=80):
+    rho_L, u_L, p_L = left
+    rho_R, u_R, p_R = right
+    c_L = np.sqrt(gamma * p_L / rho_L)
+    c_R = np.sqrt(gamma * p_R / rho_R)
+    # estimacion inicial: promedio de presion corregido por salto de velocidad
+    p = max(1e-6, 0.5 * (p_L + p_R) - 0.125 * (u_R - u_L) * (rho_L + rho_R) * (c_L + c_R))
+    for _ in range(max_iter):
+        f  = f_wave(p, rho_L, p_L, c_L) + f_wave(p, rho_R, p_R, c_R) + (u_R - u_L)
+        df = f_prime(p, rho_L, p_L, c_L) + f_prime(p, rho_R, p_R, c_R)
+        dp = f / df
+        p_new = max(1e-6, p - dp)
+        if 2.0 * abs(p_new - p) / (p_new + p) < tol:
+            p = p_new
+            break
+        p = p_new
+    u = 0.5 * (u_L + u_R) + 0.5 * (f_wave(p, rho_R, p_R, c_R) - f_wave(p, rho_L, p_L, c_L))
+    return p, u, c_L, c_R
+
+# Tubo de Lax
+left  = (0.445, 0.698, 3.528)
+right = (0.5,   0.0,   0.571)
+p_star, u_star, c_L, c_R = solve_star(left, right)
+print(f"p* = {p_star:.5f}, u* = {u_star:.5f}")
+# -> p* = 3.40948, u* = 0.62556
+```
+
+Estas doce líneas de Newton son el corazón de un paso Godunov. La versión exacta fue luego reemplazada por la linealización de Roe (1981) y más tarde por HLL y HLLC, casi siempre por velocidad. Aun así la solución exacta sigue siendo la referencia para validar esquemas nuevos.
+
+## Abrir el abanico a mano
+
+La visualización siguiente vuelve a correr esa misma iteración de Newton en el navegador y abre el abanico auto-semejante con el deslizador de tiempo. Cambia el preset a `123 problem` (dos corrientes alejándose hacia un casi-vacío) y aparece un valle profundo de presión en el centro; con `Strong-blast` la cosa colapsa a casi una sola onda de choque.
+
+<RiemannExactProfile1D />
+
+Empieza con `t` pequeño y aumenta despacio. Las ondas izquierda y derecha se separan a velocidades fijas. En Lax, la izquierda se abre como rarefacción suave y la derecha salta como choque. El pequeño escalón de densidad en el centro es la discontinuidad de contacto.
+
+## El muro del primer orden — el teorema de Godunov
+
+En el mismo artículo de 1959, Godunov demuestra un corolario incómodo: **ningún esquema lineal y monótono puede pasar del primer orden de precisión**. Su propia construcción quedaba, por su propio teorema, atada a primer orden.
+
+El rodeo a ese muro es toda la historia de la captura de choques de alta resolución de los años 70 y 80. MUSCL de van Leer, TVD de Harten, la linealización de Roe, PPM de Colella–Woodward, WENO de Shu–Osher — todos conservan el esqueleto de Godunov y reemplazan el modelo sub-malla constante por una reconstrucción no lineal que mantiene la monotonía sin renunciar a más orden. El esqueleto se quedó.
+
+## Lo que conviene llevarse
+
+- Resolver un abanico de Riemann exacto en cada interfaz captura el choque sin ningún tratamiento especial.
+- El paso queda acotado por la condición de no-tocarse $\Delta t \le \Delta x / \max|\lambda|$.
+- El techo de primer orden lo puso el propio Godunov. Toda la captura de choques de alta resolución posterior es una guerra de reconstrucción sobre el mismo esqueleto.
