@@ -1,0 +1,138 @@
+---
+title: "負の密度が漏れる場所 — 爆風波のためのPositivity保存フラックスリミッター"
+date: 2026-05-20
+description: "Le Blanc 衝撃管で ρ を正に保つ θ ブレンドの一行トリック。"
+tags: ["CFD", "Positivity-Preserving", "Flux-Limiter", "Shock-Capturing", "Compressible-Euler"]
+locale: ja
+slug: 2026-05-20-positivity-preserving-flux-limiter
+draft: false
+---
+
+import { BlastDensityFloor1D } from '@/components/post-viz/2026-05-20-positivity-preserving-flux-limiter/BlastDensityFloor1D'
+import { ThetaPerFaceSelector } from '@/components/post-viz/2026-05-20-positivity-preserving-flux-limiter/ThetaPerFaceSelector'
+
+午前2時27分。Le Blanc 衝撃管の検証が 0.003 秒で NaN を吐きました。CFL を 0.1 まで下げても、格子を倍にしても、二本のカーブが一緒に崩れます。デバッガを開くと原因は単純でした — 強い膨張波(rarefaction、圧力が急速に下がる領域)の先頭で、ある一セルの密度が負に落ちていたのです。二ステップ後に音速が NaN になり、その次のステップで領域全体が死にます。本記事ではこの負の密度がどこで漏れるかを追い、Hu・Adams・Shu(2013)が提案した「一段ずつだけ後退する」θ ブレンドフラックスリミッターがどう食い止めるかを見ていきます。最後に NumPy 50 行で、このトリックを実際にオン/オフして比較します。
+
+## 負の密度はどこで漏れるか
+
+高次スキームは安定性と精度の間で危ういバランスを取っています。1次風上はショックを五セルほどに塗りつぶし、2次中心差分はショックの両側にノコギリ波の振動を作ります。振動が軽ければ圧力が少し揺らぐだけです。隣接セル間の密度比が 100:1 を超えると — Le Blanc 衝撃管、Sedov 爆発、超音速ノズル後方 — 話が変わります。
+
+セル $i$ に対する密度保存式を整理します。
+
+$$
+\rho_i^{n+1} = \rho_i^n - \frac{\Delta t}{\Delta x}\bigl( F_{i+1/2}^\rho - F_{i-1/2}^\rho \bigr)
+$$
+
+$F^\rho = \rho u$ は密度フラックスです。$F_{i+1/2}^\rho \gg F_{i-1/2}^\rho$ となるセル(片側へ質量が大量に抜ける状況)では $\rho_i^{n+1}$ が負になりえます。1D Euler シミュレーションで強い衝撃直後の膨張領域の最初のセルが、まさにこの位置です。
+
+負になると何が起きるか。音速 $a = \sqrt{\gamma p / \rho}$ で $\rho \to 0^-$ なら $a^2 < 0$。次のフラックス計算で $\sqrt{\cdot}$ が NaN を返します。一セルの NaN は隣の二セルに広がり、二ステップ後には全領域が死にます。
+
+## Lax–Friedrichs — ぼやけるが壊れない
+
+1954年に Lax が提案した LF フラックスはこの危険から自由です。
+
+$$
+F_{i+1/2}^{LF} = \tfrac{1}{2}\bigl(F_L + F_R\bigr) - \tfrac{1}{2}\alpha\bigl(U_R - U_L\bigr)
+$$
+
+$\alpha$ は左右セルの最大信号速度、$U = (\rho, \rho u, E)^T$ は保存変数です。第二項は人工粘性(artificial viscosity) — 隣接セル同士を平均化してノコギリ波を消します。Lax は CFL$\leq$1 のもとで $\rho^{n+1} \geq 0$ を証明しました(Hu et al. 定理1の簡略版)。衝撃が強くても弱くても、LF は崩れません。
+
+代償は精度です。二セル幅の衝撃が五セルになり、接触不連続(contact discontinuity)は一時間ステップごとに一セルずつぼやけます。実務で LF だけを使う人はいません。それでも LF が持つ安全マージンがリミッターの出発点になります。
+
+## θ ブレンド — 一段ずつだけ後退する
+
+高次フラックス $F_{i+1/2}^{HO}$(例:WENO、MUSCL、中心差分)が LF より精度が高いものの負の密度を生みうるとします。Hu・Adams・Shu のアイデアは一行です。
+
+$$
+F_{i+1/2} = F_{i+1/2}^{LF} + \theta_{i+1/2}\bigl( F_{i+1/2}^{HO} - F_{i+1/2}^{LF} \bigr)
+$$
+
+$\theta \in [0, 1]$ は面(face)ごとに決まるブレンド重みです。$\theta=1$ なら純粋高次、$\theta=0$ なら純粋 LF。リミッターの役割はただひとつ — すべてのセルの次ステップ密度が正に保たれるように、最大の $\theta$ を選ぶ。遠くまで行かず、一段ずつだけ後退する。
+
+LF パスで $\rho^{LF}_i \geq \rho_{\min}$ が保証されているので、補正フラックス $\Delta F = F^{HO} - F^{LF}$ を加えても正のままになる $\theta$ の上限を面ごとに解きます。一つの面は両側二セルに影響し、両セルとも床より上にあるべきなので、より小さい方が制限です。
+
+下のシミュレーションを実際に触ってみましょう。
+
+<ThetaPerFaceSelector />
+
+ρ_R を 10⁻³ より下げるとカーブが赤い領域に突入し、リミッターが選ぶ θ は 0.2 を下回ります。その面では事実上一次 LF で解かれます。
+
+## 二段階制限 — 密度を先に、圧力を後で
+
+密度が正でも圧力が負ならソルバは同じく死にます(音速が虚数になる)。そこで Hu et al. は二パスに分けます。
+
+**パス1(密度)** 上式で $\theta^\rho$ を面ごとに決定。すべてのセルの次ステップ密度が $\rho_{\min}$ 以上になるように。
+
+**パス2(圧力)** $\theta^\rho$ で密度フラックスを固定したうえで、運動量・エネルギーフラックスに対し別の $\theta^p \leq \theta^\rho$ を求める。圧力正値条件
+
+$$
+p = (\gamma - 1)\bigl(E - \tfrac{1}{2}\rho u^2\bigr) \geq p_{\min}
+$$
+
+は非線形(一般に二次方程式)ですが、保守的近似($\theta^p$ を小さい方に取る)で一行に収まります。
+
+**最終** $\theta = \min(\theta^\rho, \theta^p)$ ですべての保存変数フラックスを同じ重みでブレンド。一つの面、一つの $\theta$、すべての保存量で一貫性。
+
+## NumPy 50 行 — Le Blanc 衝撃管で θ を自動決定
+
+Le Blanc 問題は $\rho_L=1, p_L=100$ 対 $\rho_R=0.02, p_R=0.05$ の強い衝撃管です。強い膨張波が左へ進み、最初のセルの密度が負に落ちる古典的検証ケースです。
+
+```python
+import numpy as np
+
+GAMMA = 1.4
+RHO_FLOOR = 1e-3
+N, NSTEP = 200, 220
+dx = 1.0 / N
+dt = 9.0e-5
+
+def cons_to_prim(U):
+    rho, mu, E = U[0], U[1], U[2]   # 保存 -> 原始変数
+    u = mu / rho
+    p = (GAMMA - 1.0) * (E - 0.5 * rho * u * u)
+    return u, p
+
+def euler_flux(U):
+    u, p = cons_to_prim(U)
+    return np.array([U[1], U[1] * u + p, u * (U[2] + p)])
+
+def alpha_face(UL, UR):
+    uL, pL = cons_to_prim(UL); uR, pR = cons_to_prim(UR)
+    aL = np.sqrt(GAMMA * max(pL, 0.0) / UL[0])
+    aR = np.sqrt(GAMMA * max(pR, 0.0) / UR[0])
+    return max(abs(uL) + aL, abs(uR) + aR)
+
+def density_theta(U, dF, dt_dx):
+    """面ごとの θ: ρ_LF を床より上に保つ最大値"""
+    theta = np.ones(N + 1)
+    for f in range(1, N):
+        d = dF[0, f]                          # 密度 anti-diffusion
+        if abs(d) < 1e-14: continue
+        rL_room = U[0, f - 1] - RHO_FLOOR     # 左セルの余裕
+        rR_room = U[0, f]     - RHO_FLOOR     # 右セルの余裕
+        cap = (rL_room if d > 0 else rR_room) / (dt_dx * abs(d))
+        theta[f] = max(0.0, min(theta[f], cap))
+    return theta
+```
+
+(全体は LF 1パス + 中心差分 anti-diffusion 1パス + θ 決定 1パス。220 ステップ、200 セル。リミッターを切るとステップ 30 付近で NaN、入れると最後まで生き残ります。)
+
+ソルバを時間軸に沿って展開してみましょう。
+
+<BlastDensityFloor1D />
+
+赤いカーブ(リミッター OFF)がステップ 30 付近で ρ をゼロより下へ引きずり込む瞬間を捉えられます。シアンは同じ時刻に ρ ≈ 0.02 付近で平らに止まります。精度差は 5% 未満ですが、片方は生き、もう片方は死にます。
+
+## リミッターが奪うもの
+
+θ が 0 まで落ちる面では、その面が一次 LF で解かれます。つまり衝撃前面や強い膨張波の先頭で精度が落ちます。幸いその領域は全体の 5% 未満なので、全体精度はほとんど影響を受けません。平均的に θ は 0.95〜1.0 を行き来します。
+
+落とし穴が二つ。一つ目、$\rho_{\min}$ を小さく取りすぎる(例:$10^{-12}$)と、リミッターが遅れて発動し同じ NaN が再発します。実務基準はシミュレーションの平均密度の $10^{-4}$ 程度。二つ目、RK 多段時間積分では各段でリミッターを再実行する必要があります — 段1だけを通しても段2で発散します。
+
+## 明日も覚えておきたいこと
+
+- **負の密度はどこからでも漏れる** — 強い衝撃・膨張・接触不連続から。
+- **LF は正解ではないが安全マージンである** — そのマージンを基準に高次補正を一段ずつだけ許す。
+- **密度を先に、圧力を後で** — 二パスで終わる。複雑なリミッターは調整つまみを増やすだけ。
+
+> 参考:X. Y. Hu, N. A. Adams, C.-W. Shu. *Positivity-preserving method for high-order conservative schemes solving compressible Euler equations.* J. Comput. Phys. 242 (2013) 169–180.

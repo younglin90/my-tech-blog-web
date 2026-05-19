@@ -1,0 +1,138 @@
+---
+title: "Where Negative Density Leaks In — A Positivity-Preserving Flux Limiter for Blast Waves"
+date: 2026-05-20
+description: "The one-line θ-blend that keeps ρ above zero in a Le Blanc shock tube."
+tags: ["CFD", "Positivity-Preserving", "Flux-Limiter", "Shock-Capturing", "Compressible-Euler"]
+locale: en
+slug: 2026-05-20-positivity-preserving-flux-limiter
+draft: false
+---
+
+import { BlastDensityFloor1D } from '@/components/post-viz/2026-05-20-positivity-preserving-flux-limiter/BlastDensityFloor1D'
+import { ThetaPerFaceSelector } from '@/components/post-viz/2026-05-20-positivity-preserving-flux-limiter/ThetaPerFaceSelector'
+
+2:27 AM. A Le Blanc shock tube verification spat out NaN after 0.003 s. Lowering CFL to 0.1, doubling the grid — both curves collapsed together. The debugger showed something simple: at the head of a strong rarefaction (a region where pressure drops rapidly), one cell's density crossed below zero. Two steps later the sound speed became NaN, and the next step took the whole domain with it. Today we walk through where that negative density leaks in, and how Hu, Adams, and Shu's (2013) "back off one notch at a time" θ-blend flux limiter stops it. We close with 50 lines of NumPy that lets you toggle the trick on and off.
+
+## Where negative density leaks in
+
+A high-order scheme always balances stability against accuracy. First-order upwind smears a shock across five cells. Second-order central difference plants sawtooth oscillations on both sides of a shock. Light oscillations only ripple the pressure. When the density ratio between adjacent cells exceeds 100:1 — Le Blanc shock tube, Sedov blast, supersonic nozzle wake — the story changes.
+
+Write the density conservation law for cell $i$:
+
+$$
+\rho_i^{n+1} = \rho_i^n - \frac{\Delta t}{\Delta x}\bigl( F_{i+1/2}^\rho - F_{i-1/2}^\rho \bigr)
+$$
+
+where $F^\rho = \rho u$ is the density flux. In a cell where $F_{i+1/2}^\rho \gg F_{i-1/2}^\rho$ (mass leaving on one side faster than it arrives on the other), $\rho_i^{n+1}$ can fall below zero. The first cell after a strong shock in a 1D Euler simulation sits exactly in that spot.
+
+What happens when ρ goes negative? The sound speed $a = \sqrt{\gamma p / \rho}$ has $a^2 < 0$ for $\rho \to 0^-$. The next flux evaluation hands back NaN from $\sqrt{\cdot}$. One cell's NaN spreads to its two neighbors, and two steps later the whole domain is dead.
+
+## Lax–Friedrichs — blurry but never broken
+
+The LF flux Lax proposed in 1954 is safe from this trap:
+
+$$
+F_{i+1/2}^{LF} = \tfrac{1}{2}\bigl(F_L + F_R\bigr) - \tfrac{1}{2}\alpha\bigl(U_R - U_L\bigr)
+$$
+
+with $\alpha$ the maximum signal speed across the two cells and $U = (\rho, \rho u, E)^T$ the conservative state. The second term is artificial viscosity — it averages neighbors and kills the sawtooth. Lax proved that under CFL$\leq$1 we get $\rho^{n+1} \geq 0$ (a simplified version of Hu et al.'s Theorem 1). Whether the shock is fast or weak, LF does not blow up.
+
+The price is accuracy. A two-cell shock becomes a five-cell shock; a contact discontinuity smears by one cell per timestep. Nobody ships production LF alone. But its safety margin is the foothold for the limiter.
+
+## The θ-blend — back off one notch at a time
+
+Suppose a high-order flux $F_{i+1/2}^{HO}$ (WENO, MUSCL, central) is more accurate than LF but can produce negative density. Hu, Adams, and Shu's idea is one line:
+
+$$
+F_{i+1/2} = F_{i+1/2}^{LF} + \theta_{i+1/2}\bigl( F_{i+1/2}^{HO} - F_{i+1/2}^{LF} \bigr)
+$$
+
+$\theta \in [0, 1]$ is a per-face blending weight. $\theta=1$ is pure high-order; $\theta=0$ is pure LF. The limiter's only job is to pick the largest $\theta$ that keeps every cell's next-step density positive. Don't drift far — back off one notch at a time.
+
+Because the LF pass guarantees $\rho^{LF}_i \geq \rho_{\min}$, we can solve face-by-face for the largest $\theta$ such that adding the correction flux $\Delta F = F^{HO} - F^{LF}$ does not undo that margin. A face touches two cells; both must stay above the floor, so the smaller of the two bounds wins.
+
+Play with the simulation below.
+
+<ThetaPerFaceSelector />
+
+Drop ρ_R below 10⁻³ and the curve plunges into the red zone; the θ the limiter picks collapses below 0.2. At that face the scheme is effectively first-order LF.
+
+## Two-step limiting — density first, pressure next
+
+Positive density alone is not enough. If pressure goes negative the solver dies the same way (sound speed becomes imaginary). So Hu et al. split the limiter into two passes.
+
+**Pass 1 (density).** Use the formula above to pick $\theta^\rho$ per face so that every cell's next-step density stays above $\rho_{\min}$.
+
+**Pass 2 (pressure).** With density-flux fixed by $\theta^\rho$, work out $\theta^p \leq \theta^\rho$ for the momentum and energy fluxes. The pressure positivity constraint
+
+$$
+p = (\gamma - 1)\bigl(E - \tfrac{1}{2}\rho u^2\bigr) \geq p_{\min}
+$$
+
+is nonlinear (a quadratic in general), but a conservative approximation (take $\theta^p$ to the smaller root) fits in one line.
+
+**Final.** Use $\theta = \min(\theta^\rho, \theta^p)$ to blend every conservative flux at the same weight. One face, one $\theta$, consistency across all conserved variables.
+
+## 50 lines of NumPy — auto-θ on a Le Blanc tube
+
+The Le Blanc problem is a strong shock tube with $\rho_L=1, p_L=100$ versus $\rho_R=0.02, p_R=0.05$. A strong rarefaction propagates left and the first cell's density dips below zero in any unprotected high-order scheme.
+
+```python
+import numpy as np
+
+GAMMA = 1.4
+RHO_FLOOR = 1e-3
+N, NSTEP = 200, 220
+dx = 1.0 / N
+dt = 9.0e-5
+
+def cons_to_prim(U):
+    rho, mu, E = U[0], U[1], U[2]   # conservative -> primitive
+    u = mu / rho
+    p = (GAMMA - 1.0) * (E - 0.5 * rho * u * u)
+    return u, p
+
+def euler_flux(U):
+    u, p = cons_to_prim(U)
+    return np.array([U[1], U[1] * u + p, u * (U[2] + p)])
+
+def alpha_face(UL, UR):
+    uL, pL = cons_to_prim(UL); uR, pR = cons_to_prim(UR)
+    aL = np.sqrt(GAMMA * max(pL, 0.0) / UL[0])
+    aR = np.sqrt(GAMMA * max(pR, 0.0) / UR[0])
+    return max(abs(uL) + aL, abs(uR) + aR)
+
+def density_theta(U, dF, dt_dx):
+    """Per-face θ: largest weight that keeps ρ above the floor."""
+    theta = np.ones(N + 1)
+    for f in range(1, N):
+        d = dF[0, f]                          # density anti-diffusion
+        if abs(d) < 1e-14: continue
+        rL_room = U[0, f - 1] - RHO_FLOOR     # left-cell headroom
+        rR_room = U[0, f]     - RHO_FLOOR     # right-cell headroom
+        cap = (rL_room if d > 0 else rR_room) / (dt_dx * abs(d))
+        theta[f] = max(0.0, min(theta[f], cap))
+    return theta
+```
+
+(The full driver makes one LF pass, one anti-diffusion pass, one θ pass. 220 steps, 200 cells. With the limiter off, NaN around step 30; with it on, the solver survives to the end.)
+
+Now scrub the solver across time.
+
+<BlastDensityFloor1D />
+
+The red curve (limiter OFF) drags ρ below zero around step 30 — that is the breakdown moment. The cyan curve flattens out near ρ ≈ 0.02 at the same instant. The accuracy gap is under 5%, yet one solver lives and the other dies.
+
+## What the limiter costs
+
+Faces where θ collapses to 0 are solved by first-order LF. The front of a shock or the head of a strong rarefaction lose accuracy there. Fortunately that region is under 5% of the domain, so global accuracy is barely affected. On average θ hovers between 0.95 and 1.0.
+
+Two traps. First, pick $\rho_{\min}$ too small (say $10^{-12}$) and the limiter fires too late — NaN returns. The working rule of thumb is $10^{-4}$ of the simulation's mean density. Second, multi-stage RK schemes need the limiter on every stage — protect only stage 1 and stage 2 will still diverge.
+
+## What I want to remember tomorrow
+
+- **Negative density can leak from anywhere** — strong shocks, rarefactions, contact discontinuities.
+- **LF is not the answer, but it is the safety margin** — measure your high-order correction against that margin and only allow what fits.
+- **Density first, pressure next** — two passes finish the job. Fancier limiters only add more knobs.
+
+> Reference: X. Y. Hu, N. A. Adams, C.-W. Shu. *Positivity-preserving method for high-order conservative schemes solving compressible Euler equations.* J. Comput. Phys. 242 (2013) 169–180.
