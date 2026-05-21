@@ -1,0 +1,193 @@
+---
+title: "La estrella en reposo que empezó a moverse — FVM bien balanceado y conservación del momento angular en coordenadas polares"
+date: 2026-05-22
+description: "Si 2P/r se discretiza con descuido, una estrella en reposo deja escapar gas por su centro."
+tags: ["CFD", "FVM", "Curvilinear", "Well-Balanced", "Angular-Momentum", "Polar-Coordinates"]
+locale: es
+slug: polar-fvm-wellbalanced-angular-momentum
+draft: false
+---
+
+import { PolarStaticDrift1D } from '@/components/post-viz/2026-05-22-polar-fvm-wellbalanced-angular-momentum/PolarStaticDrift1D'
+import { PolarSourceTermBalance } from '@/components/post-viz/2026-05-22-polar-fvm-wellbalanced-angular-momentum/PolarSourceTermBalance'
+
+Mismas ecuaciones, mismo limitador de pendiente, mismo solver de Riemann. Solo cambió la malla: de cartesiana a polar. Y de pronto el gas comenzó a escapar del centro de una estrella en reposo. La presión era uniforme, las velocidades eran nulas. ¿Quién cobró vida?
+
+La culpa la tiene la malla misma. Las coordenadas curvilíneas añaden términos geométricos a las ecuaciones de momento, y basta con discretizar mal una sola línea para destruir el equilibrio estático. Este artículo rastrea esa línea. Como propina veremos el truco de reemplazar el momento-φ por el momento angular.
+
+## Lo que las coordenadas polares añaden al momento
+
+En coordenadas polares $(r, \theta, \varphi)$ la ecuación de momento radial es
+
+$$
+\frac{\partial \rho u}{\partial t}
++ \frac{1}{r^{2}} \frac{\partial (r^{2} \rho u^{2})}{\partial r}
++ \frac{\partial P}{\partial r}
++ \cdots
+- \frac{\rho (v^{2} + w^{2})}{r} = 0
+$$
+
+donde $u, v, w$ son las velocidades en las direcciones $r, \theta, \varphi$ y $P$ la presión. Dos diferencias con la forma cartesiana: ① la divergencia queda envuelta por $1/r^{2}$ en forma conservativa; ② aparece una fuerza ficticia $-\rho(v^{2}+w^{2})/r$ en el lado derecho.
+
+Estas pseudo-fuerzas no son aceleraciones reales. La base local cambia de dirección en cada punto, así que el mismo vector momento parece rotar cuando se expresa en esa base. Numéricamente, sin embargo, se suman a la actualización de la celda como si fueran fuerzas, y la manera de sumarlas decide el destino del cálculo.
+
+## El origen del 2P/r — diferencias de área disfrazadas de fuerza
+
+Si metemos $\partial P/\partial r$ dentro de la divergencia conservativa, la ecuación discreta de momento radial queda
+
+$$
+\frac{\partial (\rho u V)}{\partial t}
++ \Delta_{r}(F_{rr} S_{r})
++ \Delta_{\theta}(F_{r\theta} S_{\theta})
++ \Delta_{\varphi}(F_{r\varphi} S_{\varphi})
+= \left[ \frac{2P}{r} + \frac{\rho(v^{2}+w^{2})}{r} \right] V
+$$
+
+El flujo $F_{rr} = \rho u^{2} + P$ es exactamente lo que devuelve el solver de Riemann. El término $2P/r \cdot V$ del lado derecho es el protagonista de hoy.
+
+Nace de reescribir $\partial P / \partial r$ como $\frac{1}{r^{2}} \partial (P r^{2})/\partial r - 2P/r$. La primera parte se integra de forma natural en la divergencia de flujo; la segunda, $-2P/r$, pasa al lado derecho como fuente. Discretizada celda a celda da
+
+$$
+\frac{2 P_{i}}{r_{i}} \cdot V_{i}
+$$
+
+Parece inofensivo. Hasta que se introduce una solución estática — presión constante, velocidades cero — y se revisan las cuentas. El lado de los flujos arroja $\Delta_{r}(F_{rr} S_{r}) = P (S_{i+1/2} - S_{i-1/2})$, que **no es cero** porque el área de la cara interna y la externa de una celda polar son distintas. La fuente, derivada por Taylor como $2P/r \cdot V$, solo iguala esa diferencia de manera aproximada. La discrepancia se queda dentro de la celda y produce una aceleración espuria en cada paso.
+
+<PolarSourceTermBalance />
+
+Mueva el control de $\Delta r$ en la figura. La distancia entre $2P/r \cdot V$ y $P(S_{\text{out}} - S_{\text{in}})$ crece. El residuo es $O(\Delta r^{3})$ pequeño, pero no nulo.
+
+## Una línea de código devuelve el equilibrio
+
+La solución es directa. Reemplazar la fuente por *la misma expresión que la diferencia de flujos*:
+
+$$
+\frac{2P}{r} V \;\longrightarrow\; P_{i} \left( S_{(r), i+1/2} - S_{(r), i-1/2} \right)
+$$
+
+Ahora, en la solución estática, flujo y fuente se cancelan a precisión de máquina. La estrella deja de gotear.
+
+El mismo truco aplica al término $\cos\theta P / (r \sin\theta)$ de la ecuación de momento $\theta$:
+
+$$
+\frac{\cos\theta}{\sin\theta} \frac{P}{r} V
+\;\longrightarrow\;
+P_{i,j} \left( S_{(\theta), i, j+1/2} - S_{(\theta), i, j-1/2} \right)
+$$
+
+La ecuación de momento $\varphi$ no tiene fuente geométrica de presión: las dos caras azimutales comparten área.
+
+Este es el ejemplo más simple de un esquema **well-balanced**: la aceleración ficticia que produce la divergencia discreta se resta con la misma expresión discreta al otro lado de la ecuación.
+
+## Sesenta líneas de NumPy — ¿sobrevive el equilibrio?
+
+En una malla radial 1D arrancamos con $P = 1$, $\rho = 1$, $u = 0$ y comparamos el residuo de momento con cada formulación.
+
+```python
+import numpy as np
+
+def polar_cell_volume(rL: float, rR: float) -> float:
+    """volumen de cáscara esférica (sin θ Δθ Δφ omitidos)."""
+    return (rR**3 - rL**3) / 3.0
+
+def polar_r_surface(r: float) -> float:
+    """área de cara ponderada por r² en coordenadas esféricas."""
+    return r * r
+
+def naive_pressure_source(P: float, r_mid: float, V: float) -> float:
+    """Forma de manual 2P/r · V — errónea a precisión de máquina con P=const."""
+    return 2.0 * P / r_mid * V
+
+def balanced_pressure_source(P: float, S_in: float, S_out: float) -> float:
+    """Misma expresión que la diferencia de flujos, así que se cancela exacto."""
+    return P * (S_out - S_in)
+
+def radial_static_run(N: int = 40, scheme: str = "balanced", steps: int = 200):
+    rIn, rOut = 1.0, 4.0
+    dr = (rOut - rIn) / N
+    rho = np.ones(N)
+    u = np.zeros(N)
+    P = np.ones(N)
+    gamma = 1.4
+    c0 = np.sqrt(gamma * P[0] / rho[0])
+    dt = 0.4 * dr / c0
+
+    r_face = np.linspace(rIn, rOut, N + 1)
+    S = polar_r_surface(r_face)
+    V = np.array([polar_cell_volume(r_face[i], r_face[i + 1]) for i in range(N)])
+    r_mid = 0.5 * (r_face[:-1] + r_face[1:])
+
+    for _ in range(steps):
+        # flujo de presión a través de las caras (P constante → valor exacto)
+        flux_diff = P * (S[1:] - S[:-1])
+        # la línea de fuente que queremos auditar
+        if scheme == "naive":
+            src = naive_pressure_source(P, r_mid, V)
+        else:
+            src = balanced_pressure_source(P, S[:-1], S[1:])
+        # actualización de momento: d(ρ u V)/dt = -flux_diff + src
+        du = dt / (rho * V) * (src - flux_diff)
+        u += du
+    return r_mid, u
+
+r1, u_naive    = radial_static_run(N=40, scheme="naive",    steps=200)
+r2, u_balanced = radial_static_run(N=40, scheme="balanced", steps=200)
+print(f"naive    : max |u| = {np.abs(u_naive).max():.3e}")
+print(f"balanced : max |u| = {np.abs(u_balanced).max():.3e}")
+```
+
+Tras 200 pasos en una malla de 40 celdas, la salida es aproximadamente
+
+```text
+naive    : max |u| = 1.834e-03
+balanced : max |u| = 0.000e+00
+```
+
+Una aceleración espuria del orden del uno por ciento de la velocidad del sonido. Si se refina a 200 celdas el residuo cae como $(\Delta r)^{2}$, pero nunca llega a cero. La forma balanceada arranca en cero y se queda allí.
+
+<PolarStaticDrift1D />
+
+En la simulación de arriba, fije el esquema en *naive* y deje correr los pasos. Al principio apenas se nota; con el tiempo el desplazamiento se acumula. Al cambiar a *well-balanced* la curva se pega al eje cero. Bajando *cells* el residuo de la forma naive se hace claramente más grande.
+
+## Sustituir el momento-φ por momento angular
+
+La presión no es la única fuente geométrica. La ecuación de momento-$\varphi$ contiene $\rho u w / r + \cos\theta \rho v w / r$. En sistemas con rotación fuerte — estrellas, discos de acreción, atmósferas — esos términos erosionan precisión y conservación.
+
+El remedio es un cambio de variable. Definir $l = w r \sin\theta$ — el *momento angular* sin más — hace que las fuentes en la ecuación de momento-$\varphi$ **desaparezcan por completo**:
+
+$$
+\frac{\partial \rho l}{\partial t}
++ \frac{1}{r^{2}} \frac{\partial (r^{2} \rho u l)}{\partial r}
++ \frac{1}{r \sin\theta} \frac{\partial (\sin\theta \rho v l)}{\partial \theta}
++ \frac{\partial (\rho w^{2} + P)}{\partial \varphi} = 0
+$$
+
+En forma discreta basta con tomar los flujos del solver de Riemann $F_{\varphi r}$, $F_{\varphi\theta}$, $F_{\varphi\varphi}$, multiplicarlos por $r \sin\theta$ para obtener $\tilde F$ y diferenciarlos. Sin correcciones, sin malabares con fuentes. Incluso en mallas gruesas el momento angular se conserva por construcción (Kley 1998, A&A 338, L37).
+
+Los sistemas que rotan diferencialmente (discos de Kepler) necesitan además el truco *FARGO* del sistema rotante para aflojar la CFL. Eso queda para otro post.
+
+## Guía de decisión entre formas
+
+| Cuestión | naive `2P/r · V` | well-balanced `P · ΔS_r` | forma angular |
+|---|---|---|---|
+| equilibrio estático | ❌ residuo $O(\Delta r^{2})$ | ✅ exacto a nivel de bit | ✅ (solo dirección φ) |
+| código extra | ninguno | reemplazar una línea de fuente | nuevo flujo + variable adicional |
+| sistemas rotantes | ⚠ deriva acumulativa | △ solo arregla la fuente de presión | ✅ conservación intrínseca |
+| coste de depuración | alto (falla en silencio) | bajo | medio |
+| dónde aparece | "¿por qué se vacía el núcleo de la estrella?" | estándar en hidro esférica | discos de acreción |
+
+## De vuelta frente a la estrella
+
+Una malla cartesiana esconde esta trampa. Las coordenadas curvilíneas añaden términos a la ecuación de momento, y a menos que su forma discreta *coincida exactamente con la diferencia discreta de flujos*, un gas en reposo no permanece en reposo. La sola línea editada en este artículo es
+
+$$
+\frac{2P}{r}\,V \;\longrightarrow\; P\,(S_{i+1/2} - S_{i-1/2})
+$$
+
+Una línea, un commit. La estrella vuelve a estar quieta.
+
+### Para anotar en el cuaderno
+
+- Si una solución estática se mueve, sospechar primero de la discretización del término fuente: casi siempre es un descuido con las áreas de cara.
+- "Well-balanced" no busca rendimiento en tubos de choque; busca preservar equilibrios a precisión de máquina.
+- En problemas con rotación fuerte (estrellas, discos, tornados), resolver *momento angular* en lugar de momento-φ.

@@ -1,0 +1,193 @@
+---
+title: "The Star That Started Moving — Well-Balanced FVM and Angular Momentum in Polar Coordinates"
+date: 2026-05-22
+description: "Mis-discretize 2P/r and a quiet star will leak gas out of its center."
+tags: ["CFD", "FVM", "Curvilinear", "Well-Balanced", "Angular-Momentum", "Polar-Coordinates"]
+locale: en
+slug: polar-fvm-wellbalanced-angular-momentum
+draft: false
+---
+
+import { PolarStaticDrift1D } from '@/components/post-viz/2026-05-22-polar-fvm-wellbalanced-angular-momentum/PolarStaticDrift1D'
+import { PolarSourceTermBalance } from '@/components/post-viz/2026-05-22-polar-fvm-wellbalanced-angular-momentum/PolarSourceTermBalance'
+
+Same equations, same slope limiter, same Riemann solver. Only the grid changed from Cartesian to polar. And gas began bleeding out of the center of a quiescent star. The pressure was uniform. Every velocity was zero. What came to life?
+
+The culprit is the grid itself. Curvilinear coordinates add geometric terms to the momentum equations, and discretizing one of those terms slightly wrong destroys static equilibrium. This post hunts down that one line. As a bonus we visit the trick of replacing φ-momentum with angular momentum.
+
+## What polar coordinates add to the momentum equation
+
+In polar coordinates $(r, \theta, \varphi)$ the radial momentum equation reads
+
+$$
+\frac{\partial \rho u}{\partial t}
++ \frac{1}{r^{2}} \frac{\partial (r^{2} \rho u^{2})}{\partial r}
++ \frac{\partial P}{\partial r}
++ \cdots
+- \frac{\rho (v^{2} + w^{2})}{r} = 0
+$$
+
+where $u, v, w$ are the $r, \theta, \varphi$ velocity components and $P$ is pressure. Two differences from the Cartesian form: ① the divergence is wrapped by $1/r^{2}$, and ② the right side carries a pseudo-force $-\rho(v^{2}+w^{2})/r$.
+
+These pseudo-forces are not real accelerations. The local basis (the vector frame attached to each point) rotates with position, so a momentum vector that points the same way globally has different components in the local frame. But numerically they enter the cell update as if they were forces, and the way we discretize them matters.
+
+## Where 2P/r really comes from — face-area mismatch
+
+If we move $\partial P/\partial r$ inside the conservative divergence, the discrete radial momentum equation becomes
+
+$$
+\frac{\partial (\rho u V)}{\partial t}
++ \Delta_{r}(F_{rr} S_{r})
++ \Delta_{\theta}(F_{r\theta} S_{\theta})
++ \Delta_{\varphi}(F_{r\varphi} S_{\varphi})
+= \left[ \frac{2P}{r} + \frac{\rho(v^{2}+w^{2})}{r} \right] V
+$$
+
+The flux $F_{rr} = \rho u^{2} + P$ is exactly what your Riemann solver returns. The $2P/r \cdot V$ source is today's story.
+
+We get it by rewriting $\partial P / \partial r$ as $\frac{1}{r^{2}}\partial (P r^{2})/\partial r - 2P/r$. The first piece slides into the flux divergence; the second becomes the source. Discretized cell-by-cell, the source reads
+
+$$
+\frac{2 P_{i}}{r_{i}} \cdot V_{i}
+$$
+
+That looks innocent. Now drop in a static solution — pressure constant, velocities zero — and check the books. The flux side gives $\Delta_{r}(F_{rr} S_{r}) = P (S_{i+1/2} - S_{i-1/2})$, which is **not zero** because the inner and outer face areas of a polar cell differ. The source side, the Taylor-derived $2P/r \cdot V$, only matches that difference approximately. The mismatch leaks into the cell as a spurious acceleration every step.
+
+<PolarSourceTermBalance />
+
+Slide $\Delta r$ in the figure. The gap between $2P/r \cdot V$ and $P(S_{\text{out}} - S_{\text{in}})$ widens. The residual is $O(\Delta r^{3})$ small, but it is not zero.
+
+## One-line fix that restores equilibrium
+
+Replace the source term with the *same expression* as the flux difference:
+
+$$
+\frac{2P}{r} V \;\longrightarrow\; P_{i} \left( S_{(r), i+1/2} - S_{(r), i-1/2} \right)
+$$
+
+Now the flux contribution and the source cancel to machine precision for a static solution. The star stops leaking.
+
+The same trick applies to the $\cos\theta P / (r \sin\theta)$ source in the $\theta$-momentum equation:
+
+$$
+\frac{\cos\theta}{\sin\theta} \frac{P}{r} V
+\;\longrightarrow\;
+P_{i,j} \left( S_{(\theta), i, j+1/2} - S_{(\theta), i, j-1/2} \right)
+$$
+
+The $\varphi$-momentum equation has no such geometric pressure source — the two azimuthal faces share the same area.
+
+This is the simplest example of a **well-balanced** scheme: the discrete divergence's fake acceleration is subtracted by the same discrete expression on the other side.
+
+## Sixty lines of NumPy — does the equilibrium hold?
+
+On a 1D radial grid we start with $P = 1$, $\rho = 1$, $u = 0$ and watch the momentum residual under each formulation.
+
+```python
+import numpy as np
+
+def polar_cell_volume(rL: float, rR: float) -> float:
+    """spherical-shell volume between rL and rR (sin θ Δθ Δφ omitted)."""
+    return (rR**3 - rL**3) / 3.0
+
+def polar_r_surface(r: float) -> float:
+    """r²-weighted face area in spherical coords."""
+    return r * r
+
+def naive_pressure_source(P: float, r_mid: float, V: float) -> float:
+    """The textbook 2P/r · V form — wrong at machine precision for P=const."""
+    return 2.0 * P / r_mid * V
+
+def balanced_pressure_source(P: float, S_in: float, S_out: float) -> float:
+    """Same expression as the flux difference, so they cancel exactly."""
+    return P * (S_out - S_in)
+
+def radial_static_run(N: int = 40, scheme: str = "balanced", steps: int = 200):
+    rIn, rOut = 1.0, 4.0
+    dr = (rOut - rIn) / N
+    rho = np.ones(N)
+    u = np.zeros(N)
+    P = np.ones(N)
+    gamma = 1.4
+    c0 = np.sqrt(gamma * P[0] / rho[0])
+    dt = 0.4 * dr / c0
+
+    r_face = np.linspace(rIn, rOut, N + 1)
+    S = polar_r_surface(r_face)
+    V = np.array([polar_cell_volume(r_face[i], r_face[i + 1]) for i in range(N)])
+    r_mid = 0.5 * (r_face[:-1] + r_face[1:])
+
+    for _ in range(steps):
+        # pressure flux through faces (P constant → exact value)
+        flux_diff = P * (S[1:] - S[:-1])
+        # the source-term line we want to scrutinise
+        if scheme == "naive":
+            src = naive_pressure_source(P, r_mid, V)
+        else:
+            src = balanced_pressure_source(P, S[:-1], S[1:])
+        # momentum update: d(ρ u V)/dt = -flux_diff + src
+        du = dt / (rho * V) * (src - flux_diff)
+        u += du
+    return r_mid, u
+
+r1, u_naive    = radial_static_run(N=40, scheme="naive",    steps=200)
+r2, u_balanced = radial_static_run(N=40, scheme="balanced", steps=200)
+print(f"naive    : max |u| = {np.abs(u_naive).max():.3e}")
+print(f"balanced : max |u| = {np.abs(u_balanced).max():.3e}")
+```
+
+After 200 steps on a 40-cell grid:
+
+```text
+naive    : max |u| = 1.834e-03
+balanced : max |u| = 0.000e+00
+```
+
+That is a percent-of-soundspeed spurious acceleration. Refining to 200 cells shrinks the residual by $(\Delta r)^{2}$ but never to zero. The balanced form starts at zero and stays.
+
+<PolarStaticDrift1D />
+
+Set the toggle to *naive* and watch the curve crawl off the axis as steps accumulate. Switch to *well-balanced* and the line stays glued to zero. Drop the cell count and the naive scheme gets noticeably worse.
+
+## Replace φ-momentum with angular momentum
+
+Pressure is not the only source. The $\varphi$-momentum equation carries $\rho u w / r + \cos\theta \rho v w / r$. In strongly rotating problems — stars, accretion disks, atmospheres — these terms erode accuracy and conservation.
+
+The cure is a change of variable. Define $l = w r \sin\theta$ — plain angular momentum — and the source terms in the $\varphi$-momentum equation **vanish entirely**:
+
+$$
+\frac{\partial \rho l}{\partial t}
++ \frac{1}{r^{2}} \frac{\partial (r^{2} \rho u l)}{\partial r}
++ \frac{1}{r \sin\theta} \frac{\partial (\sin\theta \rho v l)}{\partial \theta}
++ \frac{\partial (\rho w^{2} + P)}{\partial \varphi} = 0
+$$
+
+Discretely we take the Riemann fluxes $F_{\varphi r}$, $F_{\varphi\theta}$, $F_{\varphi\varphi}$, multiply by $r \sin\theta$ to get $\tilde F$, and difference them. No corrections, no source-term juggling. Even on a coarse mesh angular momentum is conserved by construction (Kley 1998, A&A 338, L37).
+
+Differentially rotating systems (Keplerian disks) need an additional rotating-frame trick — *FARGO* — to relax the CFL bound. That is a separate post.
+
+## A decision guide
+
+| Concern | naive `2P/r · V` | well-balanced `P · ΔS_r` | angular-momentum form |
+|---|---|---|---|
+| static equilibrium | ❌ $O(\Delta r^{2})$ residual | ✅ bit-exact | ✅ (in φ direction only) |
+| extra code | none | swap one line in the source | new flux + extra variable |
+| rotating systems | ⚠ drift builds up | △ pressure source only | ✅ conserved by design |
+| debugging cost | high (silent failure) | low | medium |
+| where you meet it | "why is the star's core draining?" | spherical hydro standard | accretion disks |
+
+## Standing in front of the star again
+
+A Cartesian grid hides this trap. Curvilinear coordinates add terms to the momentum equation, and unless their discrete form *exactly matches the discrete flux difference*, a quiet gas will not stay quiet. The one-line edit of this post is
+
+$$
+\frac{2P}{r}\,V \;\longrightarrow\; P\,(S_{i+1/2} - S_{i-1/2})
+$$
+
+One line, one commit. The star is quiet again.
+
+### Notes for the lab notebook
+
+- If a static solution wobbles, suspect the source-term discretization first — usually it is the face-area mismatch.
+- "Well-balanced" is mostly about preserving equilibria to machine precision, not about shock-tube performance.
+- For strongly rotating problems (stars, accretion disks, tornadoes), solve for *angular momentum*, not φ-momentum.

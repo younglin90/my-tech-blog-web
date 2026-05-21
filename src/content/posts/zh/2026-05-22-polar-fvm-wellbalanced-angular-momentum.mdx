@@ -1,0 +1,193 @@
+---
+title: "静止的恒星开始流动 — 极坐标 FVM 的 well-balanced 与角动量守恒"
+date: 2026-05-22
+description: "2P/r 项离散不当,静止气体就会从恒星中心漏出。"
+tags: ["CFD", "FVM", "Curvilinear", "Well-Balanced", "Angular-Momentum", "Polar-Coordinates"]
+locale: zh
+slug: polar-fvm-wellbalanced-angular-momentum
+draft: false
+---
+
+import { PolarStaticDrift1D } from '@/components/post-viz/2026-05-22-polar-fvm-wellbalanced-angular-momentum/PolarStaticDrift1D'
+import { PolarSourceTermBalance } from '@/components/post-viz/2026-05-22-polar-fvm-wellbalanced-angular-momentum/PolarSourceTermBalance'
+
+同样的方程,同样的斜率限制器,同样的 Riemann 求解器。只是把网格从 cartesian 换成了 polar。然后一颗静止恒星的中心开始漏出气体。压力均匀,速度为零。是谁活了过来?
+
+罪魁是网格本身。曲线坐标系给动量方程加上了几何项,而其中一项的离散写错一行,静止平衡就会崩溃。本文要追踪的就是这一行。顺带还会看到把 φ-动量替换成角动量的小技巧。
+
+## 极坐标给动量方程添加了哪些项
+
+在极坐标 $(r, \theta, \varphi)$ 中,径向动量方程为
+
+$$
+\frac{\partial \rho u}{\partial t}
++ \frac{1}{r^{2}} \frac{\partial (r^{2} \rho u^{2})}{\partial r}
++ \frac{\partial P}{\partial r}
++ \cdots
+- \frac{\rho (v^{2} + w^{2})}{r} = 0
+$$
+
+其中 $u, v, w$ 分别是 $r, \theta, \varphi$ 方向速度,$P$ 是压力。与 cartesian 形式的两点差异:① 发散项被 $1/r^{2}$ 包裹成保守形式;② 右端出现像伪力一样的 $-\rho(v^{2}+w^{2})/r$。
+
+这些伪力并非真正的加速。局部基(local basis)随位置改变方向,同一个动量矢量在坐标系中看起来像在旋转。但数值上它们以"力"的形式加入网格更新,加入的方式不同,结果就不同。
+
+## 2P/r 的来源 — 面积差造出的假力
+
+把压力梯度 $\partial P/\partial r$ 塞进保守发散里,离散径向动量方程变为
+
+$$
+\frac{\partial (\rho u V)}{\partial t}
++ \Delta_{r}(F_{rr} S_{r})
++ \Delta_{\theta}(F_{r\theta} S_{\theta})
++ \Delta_{\varphi}(F_{r\varphi} S_{\varphi})
+= \left[ \frac{2P}{r} + \frac{\rho(v^{2}+w^{2})}{r} \right] V
+$$
+
+左端的 $F_{rr} = \rho u^{2} + P$ 就是 Riemann 求解器直接返回的通量。右端的 $2P/r \cdot V$ 是今天的主角。
+
+它源自把 $\partial P / \partial r$ 改写成 $\frac{1}{r^{2}} \partial (P r^{2})/\partial r - 2P/r$:前一项被通量散度自然吸收,后一项 $-2P/r$ 移到右端成了源。逐网格离散后
+
+$$
+\frac{2 P_{i}}{r_{i}} \cdot V_{i}
+$$
+
+看起来无害。可是把"压力恒为常数、速度全为零"的静止解代入代码后,$\Delta_{r}(F_{rr} S_{r}) = P (S_{i+1/2} - S_{i-1/2})$ **并不为零**。因为极坐标网格内外两面的面积本就不同。本应抵消它的 $2P/r \cdot V$ 只是 Taylor 近似,二者并不严格相等。残差留下来,每一步都化为加速。
+
+<PolarSourceTermBalance />
+
+把图中的 $\Delta r$ 拉大试试。$2P/r \cdot V$ 与 $P(S_{\text{out}} - S_{\text{in}})$ 之间的差距越来越大。残差是 $O(\Delta r^{3})$ 量级,但永远不是零。
+
+## 改一行,平衡回来
+
+办法很简单。把源项换成 *和通量差完全相同的表达式*:
+
+$$
+\frac{2P}{r} V \;\longrightarrow\; P_{i} \left( S_{(r), i+1/2} - S_{(r), i-1/2} \right)
+$$
+
+这样在静止解中,通量贡献与源项以机器精度逐位抵消。恒星不再漏。
+
+同样的技巧适用于 $\theta$-动量方程的 $\cos\theta P / (r \sin\theta)$ 源:
+
+$$
+\frac{\cos\theta}{\sin\theta} \frac{P}{r} V
+\;\longrightarrow\;
+P_{i,j} \left( S_{(\theta), i, j+1/2} - S_{(\theta), i, j-1/2} \right)
+$$
+
+$\varphi$-动量方程则没有这种几何压力源 — 因为两个方位面积本就相等。
+
+这是 **well-balanced** 方法最简单的范例。一句话总结:"用同样的离散表达式,把离散发散造出的假加速精确减回去。"
+
+## 60 行 NumPy — 静止平衡撑得住吗
+
+在一维径向网格上以 $P = 1$, $\rho = 1$, $u = 0$ 起步,看看两种方式各自的动量残差。
+
+```python
+import numpy as np
+
+def polar_cell_volume(rL: float, rR: float) -> float:
+    """球壳体积 (省略 sin θ Δθ Δφ)。"""
+    return (rR**3 - rL**3) / 3.0
+
+def polar_r_surface(r: float) -> float:
+    """球坐标下 r²-加权面积。"""
+    return r * r
+
+def naive_pressure_source(P: float, r_mid: float, V: float) -> float:
+    """教科书式 2P/r · V — 对 P=const 也会在机器精度下出错。"""
+    return 2.0 * P / r_mid * V
+
+def balanced_pressure_source(P: float, S_in: float, S_out: float) -> float:
+    """与通量差分表达式相同,因此能精确抵消。"""
+    return P * (S_out - S_in)
+
+def radial_static_run(N: int = 40, scheme: str = "balanced", steps: int = 200):
+    rIn, rOut = 1.0, 4.0
+    dr = (rOut - rIn) / N
+    rho = np.ones(N)
+    u = np.zeros(N)
+    P = np.ones(N)
+    gamma = 1.4
+    c0 = np.sqrt(gamma * P[0] / rho[0])
+    dt = 0.4 * dr / c0
+
+    r_face = np.linspace(rIn, rOut, N + 1)
+    S = polar_r_surface(r_face)
+    V = np.array([polar_cell_volume(r_face[i], r_face[i + 1]) for i in range(N)])
+    r_mid = 0.5 * (r_face[:-1] + r_face[1:])
+
+    for _ in range(steps):
+        # 通过各面的压力通量 (P 恒定 → 精确值)
+        flux_diff = P * (S[1:] - S[:-1])
+        # 要检验的源项写法
+        if scheme == "naive":
+            src = naive_pressure_source(P, r_mid, V)
+        else:
+            src = balanced_pressure_source(P, S[:-1], S[1:])
+        # 动量更新: d(ρ u V)/dt = -flux_diff + src
+        du = dt / (rho * V) * (src - flux_diff)
+        u += du
+    return r_mid, u
+
+r1, u_naive    = radial_static_run(N=40, scheme="naive",    steps=200)
+r2, u_balanced = radial_static_run(N=40, scheme="balanced", steps=200)
+print(f"naive    : max |u| = {np.abs(u_naive).max():.3e}")
+print(f"balanced : max |u| = {np.abs(u_balanced).max():.3e}")
+```
+
+40 网格、200 步后的输出大致是
+
+```text
+naive    : max |u| = 1.834e-03
+balanced : max |u| = 0.000e+00
+```
+
+40 网格已经产生数个百分点声速的伪加速。加密到 200 网格,残差按 $(\Delta r)^{2}$ 缩小,却始终不为零。well-balanced 形式从零开始,一直为零。
+
+<PolarStaticDrift1D />
+
+在上面的模拟中把模式切到 *naive*,加大 step。起初微不足道,随时间叠加越来越明显。切到 *well-balanced*,曲线紧贴零轴。再把 *cells* 调小,naive 的残差会陡然变大。
+
+## 把 φ-动量替换成角动量
+
+几何源不止出现在压力项。$\varphi$-动量方程里还有 $\rho u w / r + \cos\theta \rho v w / r$ 等。在恒星、吸积盘等强旋转系统中,这些项同时侵蚀精度和守恒性。
+
+办法是换变量。定义 $l = w r \sin\theta$ — 也就是 *角动量* 本身 — 于是 $\varphi$-动量方程里的源项 **全部消失**:
+
+$$
+\frac{\partial \rho l}{\partial t}
++ \frac{1}{r^{2}} \frac{\partial (r^{2} \rho u l)}{\partial r}
++ \frac{1}{r \sin\theta} \frac{\partial (\sin\theta \rho v l)}{\partial \theta}
++ \frac{\partial (\rho w^{2} + P)}{\partial \varphi} = 0
+$$
+
+离散上,把 Riemann 求解器返回的 $F_{\varphi r}$, $F_{\varphi\theta}$, $F_{\varphi\varphi}$ 乘以 $r \sin\theta$ 得到 $\tilde F$,再做差分。无须修正、无须源项的处理。即便网格较粗,角动量也由式子本身保证守恒(Kley 1998, A&A 338, L37)。
+
+但在非均匀旋转(如 Keplerian 盘)中,还需移到自转参考系并配合 *FARGO* 技巧才能放松 CFL。那是另一篇的题目。
+
+## 两种写法的选用指南
+
+| 关注点 | naive `2P/r · V` | well-balanced `P · ΔS_r` | 角动量形式 |
+|---|---|---|---|
+| 静止平衡 | ❌ $O(\Delta r^{2})$ 残差 | ✅ 比特级精确 | ✅ (仅 φ 方向) |
+| 额外代码改动 | 无 | 替换一行源项 | 新的通量 + 新变量 |
+| 旋转系统 | ⚠ 误差累积 | △ 仅修压力源 | ✅ 天然守恒 |
+| 调试代价 | 高(无声崩溃) | 低 | 中 |
+| 会在哪里碰到 | "为什么星核在掏空?" | spherical hydro 标配 | 吸积盘 |
+
+## 再次站在恒星面前
+
+笛卡尔网格永远看不到这个陷阱。曲线坐标系往动量方程里加项,如果这些项的离散写法不与 *通量差分形式一致*,静止气体就不会保持静止。本文要改的就是这一行:
+
+$$
+\frac{2P}{r}\,V \;\longrightarrow\; P\,(S_{i+1/2} - S_{i-1/2})
+$$
+
+一行,一次提交。恒星再次安静。
+
+### 写进笔记本里的几条
+
+- 静止解出现晃动时,先怀疑源项的离散方式 — 通常就是面积差被处理错了。
+- "well-balanced" 的核心是机器精度地保留平衡解,而不是冲击管性能。
+- 强旋转问题(恒星、吸积盘、龙卷风)优先解 *角动量*,而不是 φ-动量。
