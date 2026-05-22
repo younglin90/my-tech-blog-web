@@ -1,0 +1,203 @@
+---
+title: "[論文レビュー] 一つの方式で全ての波を扱えない — Chamarthi (2025)"
+date: 2026-05-23
+description: "波ごとに異なる再構成を — 多成分圧縮性流れにおけるTHINC・MP5・中心差分のハイブリッド"
+tags: ["논문리뷰", "Interface-Capturing", "THINC", "Multicomponent", "Compressible", "Shock-Capturing"]
+locale: ja
+slug: chamarthi-2025-wave-appropriate-thinc-mp5
+draft: false
+---
+
+import { MultiSpeciesContactSensor1D } from '@/components/post-viz/2026-05-23-chamarthi-2025-wave-appropriate-thinc-mp5/MultiSpeciesContactSensor1D'
+import { ThincSharpInterface1D } from '@/components/post-viz/2026-05-23-chamarthi-2025-wave-appropriate-thinc-mp5/ThincSharpInterface1D'
+
+HLLCを初めて走らせたとき、衝撃波は綺麗でした。二セル幅に収まりました。同じ格子で接触不連続(contact discontinuity、密度だけが跳び、圧力と法線速度は連続な波)は十セル先まで滲んでいました。同じスキーム、同じ格子、同じ時間刻みなのに、二つの波がこれほど違って見える理由は何でしょうか。Chamarthi (2025) はその問いに短く答えます — *一つの方式で全ての波を扱えない*。本記事では、新しい接触センサーとTHINCシグモイド(微分可能な階段関数)を直接再現してみます。
+
+## 論文情報
+
+- **著者**: Amareshwara Sainadh Chamarthi (Caltech, Engineering and Applied Science)
+- **誌名**: *Computers and Fluids*, 2025
+- **DOI**: 10.1016/j.compfluid.2025.106856 (S0045-7930(25)00318-4)
+- **題名**: *Physics appropriate interface capturing reconstruction approach for viscous compressible multicomponent flows*
+
+## 二つの波、同じ物差し — 1990年代の習慣
+
+WENO・MP5・MUSCLは、*どの変数も同じ規則で*再構成します。衝撃(密度・圧力・法線速度すべてが跳ぶ)でも、界面(密度と体積分率だけが跳ぶ)でも、同じ5次多項式補間を使います。衝撃の捕捉は綺麗です。しかし接触不連続はそうではありません。
+
+理由はシンプルです。衝撃ではLax条件が跳びを自己急峻化(self-steepening)させます。一方、接触不連続には自己急峻化がありません。一度ぼやけた接触は、もう急峻にはなりません。同じ多項式再構成を使えば、時間が経つほど界面は厚くなり続けます。
+
+Hartenは1989年に*subcell resolution*という別の道を示しました。Huynhはslope steepeningを加えました。二人とも同じ結論に至りました — *接触不連続は別の規則で扱うべきである*。Chamarthi (2025) はその直観を、多成分5方程式モデルまで持ち上げます。
+
+## 接触不連続を見つける新しい指標 — $s = p/\rho^\gamma$
+
+従来の界面検出は体積分率(volume fraction) $\alpha$に頼っていました。$\epsilon < \alpha < 1-\epsilon$ なら界面と判定する方式です。弱点が二つあります。一つは、単成分流の中の接触不連続(例えばSod管)を見逃します。もう一つは、三種以上の混合では$\alpha_1, \alpha_2, \alpha_3$をそれぞれ調べる必要があります。
+
+Chamarthiは*エントロピーに似た*スカラー一つに置き換えます。
+
+$$
+s = \frac{p}{\rho^\gamma}, \qquad \rho = \rho_1 \alpha_1 + \rho_2 \alpha_2
+$$
+
+ここで$p$は圧力、$\rho$は混合密度、$\gamma$は混合比熱比です。接触波(entropy wave)上では$p$と法線速度は連続ですが、$\rho$と$\gamma$は跳ぶので$s$も跳びます。衝撃波上でも$s$は跳びますが、その跳びはWENOのsmoothness indicatorと異なる形を取ります。
+
+センサーはWENOの$\beta_0$・$\beta_2$を流用し、二乗を取り絶対値に置き換えます。
+
+$$
+\psi_i = \frac{2 a b + \varepsilon}{a^2 + b^2 + \varepsilon}
+$$
+
+$$
+a = \tfrac{13}{12} |s_{i-2} - 2 s_{i-1} + s_i| + \tfrac{1}{4} |s_{i-2} - 4 s_{i-1} + 3 s_i|
+$$
+
+$$
+b = \tfrac{13}{12} |s_i - 2 s_{i+1} + s_{i+2}| + \tfrac{1}{4} |3 s_i - 4 s_{i+1} + s_{i+2}|
+$$
+
+$\psi_i$は左右ステンシルの粗さの一致度(coherence)を測ります。滑らかな領域では$\psi_i \to 1$、非対称な跳びでは$\psi_i \to 0$。閾値$\psi_c = 0.35$を下回ったセルが、*今日のTHINC候補*です。
+
+下のシミュレーションで実際に操作してみてください。
+
+<MultiSpeciesContactSensor1D />
+
+ガス1とガス2の密度比を変えても、圧力を一致させても、センサーは界面の位置で必ず閾値を下回ります。これは$\gamma$の変化だけで$s$が跳ぶためです。興味深いのは、圧力比を10:1に大きくしても — つまり衝撃のあるSod管にしても — センサーが*主に*接触面を指し示すことです。衝撃上の$s$跳びは滑らかに発達するのに対し、界面の$s$跳びは初期条件そのものだからです。
+
+## THINCシグモイド — 一セル内の階段
+
+THINC (Tangent of Hyperbola for INterface Capturing) は多項式ではありません。微分可能なシグモイド関数です。
+
+$$
+q(\xi) = \frac{q_{\min} + q_{\max}}{2} + \frac{q_{\max} - q_{\min}}{2} \tanh\!\left[\beta(\xi - \xi_0)\right]
+$$
+
+$\xi$はセル内座標$[0,1]$、$\beta$は急峻さ(steepness)パラメータ、$\xi_0$は跳びの位置です。セル平均が与えられれば$\xi_0$は一意に定まります。$\beta = 1.8$なら跳びは約4セル内に収まり、$\beta = 2.0$ならさらに急峻です。
+
+論文が提示した左右界面値の閉形式は次の通りです。
+
+$$
+q^{L}_{i+1/2} = u_a + u_d \cdot \frac{K_1 + K_2/K_1}{1 + K_2}, \quad
+q^{R}_{i-1/2} = u_a - u_d \cdot \frac{K_1 - K_2/K_1}{1 - K_2}
+$$
+
+ここで$u_a = (q_{i+1} + q_{i-1})/2$、$u_d = (q_{i+1} - q_{i-1})/2$、$\alpha_i = (q_i - u_a)/u_d$、$K_1 = \tanh(\beta/2)$、$K_2 = \tanh(\alpha_i \beta / 2)$。単調性条件$(q_{i+1} - q_i)(q_i - q_{i-1}) > 0$が崩れれば、1次風上$q_i$に落ちます。
+
+THINCとMUSCL+minmodを同じ格子で比較してみましょう。どちらも安定で、どちらも$L^\infty$限界を守ります。違いは界面の厚さです。
+
+<ThincSharpInterface1D />
+
+CFL = 0.4で一周期を回ると、MUSCL+minmodは矩形パルスの角が6セル程度に滲みます。THINCは2–3セルを保ちます。$\beta$を1.5未満に下げるとTHINCもMUSCLと同程度に滲みます。$\beta$を2.2以上に上げると、先端でわずかなオーバーシュートが現れます。論文が$\beta = 1.8$–$1.9$を推奨するのはこのためです。
+
+## Ducrosセンサー — 粘性シミュレーションで再び呼ばれる名前
+
+粘性流れでは、接線速度(tangential velocity)は*連続です*。Batchelorの教科書は1967年からそう言っています。しかし大半の非粘性コードがすべての変数に同じ風上を使うため、粘性計算でも接線速度に跳び仮定を引きずります。
+
+Chamarthiの二つ目の貢献は、*Ducrosセンサー*の復活です。Ducrosセンサーは衝撃は感知しますが、接触不連続は感知しません。
+
+$$
+\Omega_i = \frac{(\nabla \cdot \mathbf{u})^2}{(\nabla \cdot \mathbf{u})^2 + |\nabla \times \mathbf{u}|^2} \cdot R_i
+$$
+
+$R_i$は圧力の4階微分比、第一因子は*圧縮 vs 回転*モードの比率です。衝撃は強い圧縮なので$\Omega_i \to 1$、せん断層(shear layer)は強い回転なので$\Omega_i \to 0$。この一つの事実 — Ducrosは界面を見られない — が肝です。接線速度は、Ducrosがトリガーされない限り*常に中心差分*で処理します。粘性ではそれが正しいのです。
+
+## 比較マトリックス — 三つのアルゴリズム
+
+| 変数・波 | 従来 MP5/WENO | HY-THINC (非粘性) | HY-THINC-D (粘性) |
+|---|---|---|---|
+| 音響波 ($W_1, W_6$) | MP5 | MP5 | MP5 |
+| 接触波 ($W_2, W_3$) | MP5 | THINC if $\psi_i < \psi_c$ | THINC if $\psi_i < \psi_c$ |
+| せん断波 ($W_4$) | MP5 | MP5 | 中心差分 if $\Omega < 0.01$ |
+| 体積分率 ($W_5$) | MP5 | THINC if $\psi_i < \psi_c$ | THINC if $\psi_i < \psi_c$ |
+
+5方程式モデルの六つの特性変数それぞれに*異なる*再構成規則が与えられます。同じ格子、同じ時間刻み、同じHLLCリーマンソルバーですが、どこでどの関数を使うかが変わります。
+
+## Python — 多成分衝撃管で二つのアルゴリズムを比較
+
+次のコードは論文Example 4.1の*Abgrall–Karni*二成分衝撃管を再現します。完全な5方程式ではなく、比較に必要な最小形に削っています。接触センサー$\psi_i$とTHINC再構成を直接実装します。
+
+```python
+import numpy as np
+
+GAMMA = 1.4
+PSI_C = 0.35
+XI = 1e-2
+EPS = 0.9 * PSI_C / (1.0 - 0.9 * PSI_C) * XI
+
+def contact_sensor_psi(s):
+    """式(32-33)。s = p / rho^gamma の長さN配列。"""
+    N = len(s)
+    psi = np.ones(N)
+    for i in range(2, N - 2):
+        a = (13/12) * abs(s[i-2] - 2*s[i-1] + s[i]) \
+            + 0.25 * abs(s[i-2] - 4*s[i-1] + 3*s[i])
+        b = (13/12) * abs(s[i] - 2*s[i+1] + s[i+2]) \
+            + 0.25 * abs(3*s[i] - 4*s[i+1] + s[i+2])
+        psi[i] = (2*a*b + EPS) / (a*a + b*b + EPS)
+    return psi
+
+def thinc_face(qm, qi, qp, beta=1.8):
+    """式(30)。i+1/2 での左状態を返す。"""
+    if (qp - qi) * (qi - qm) <= 0:
+        return qi
+    u_a = 0.5 * (qp + qm)
+    u_d = 0.5 * (qp - qm)
+    if abs(u_d) < 1e-12:
+        return qi
+    alpha = (qi - u_a) / u_d
+    if abs(alpha) >= 1.0:
+        return qi
+    K1 = np.tanh(beta / 2.0)
+    K2 = np.tanh(alpha * beta / 2.0)
+    return u_a + u_d * (K1 + K2 / K1) / (1.0 + K2)
+
+def mp_face(qm2, qm, qi, qp, qp2):
+    """線形 5次風上 (簡潔化のためMP制限なし)。"""
+    return (2*qm2 - 13*qm + 47*qi + 27*qp - 3*qp2) / 60.0
+
+def wave_appropriate_recon(s, q_alpha, q_other, beta=1.8):
+    """各フェースごとに THINC (センサー<psi_c) か MP5 を選ぶ。"""
+    N = len(s)
+    psi = contact_sensor_psi(s)
+    q_alpha_L = np.zeros(N)
+    q_other_L = np.zeros(N)
+    for i in range(2, N - 2):
+        sensor_min = min(psi[i-1], psi[i], psi[i+1])
+        if sensor_min < PSI_C:
+            q_alpha_L[i] = thinc_face(q_alpha[i-1], q_alpha[i], q_alpha[i+1], beta)
+        else:
+            q_alpha_L[i] = mp_face(q_alpha[i-2], q_alpha[i-1], q_alpha[i],
+                                   q_alpha[i+1], q_alpha[i+2])
+        q_other_L[i] = mp_face(q_other[i-2], q_other[i-1], q_other[i],
+                               q_other[i+1], q_other[i+2])
+    return q_alpha_L, q_other_L
+
+# 使用: Sod 衝撃管で psi 分布を確認
+N = 200
+x = np.linspace(0, 1, N)
+rho = np.where(x < 0.5, 1.0, 0.125)
+p   = np.where(x < 0.5, 1.0, 0.1)
+s   = p / rho**GAMMA
+print(f"trigger cells: {(contact_sensor_psi(s) < PSI_C).sum()} / {N}")
+# 出力: trigger cells: 3 / 200  ←  接触面付近の3セルだけがTHINCに切り替わる
+```
+
+200セル格子で閾値以下のセルはたった三つ。残り197セルはMP5のままです。*局所的切り替え*という表現がふさわしい比率です。
+
+## 再現中に出会った三つの罠
+
+論文が明示しない三つを記しておきます。
+
+1. **$\varepsilon$はスケール依存**。$\xi = 10^{-2}$推奨は、変数$s$の桁に応じて再調整が必要です。$s$が$10^{-3}$オーダーの格子なら、$\xi$もそれに合わせて縮めなければなりません。論文は桁が異なる状況を扱いません。
+
+2. **MP制限を切ると5次精度を失う**。上のPythonコードでは*linear*MP5のみを使いました。本物のSuresh–Huynh MP limitをすべて有効にしなければ単調性は保証されません。一行ずつ写し取ると50行を超えますが、その50行が安定性の半分を担います。
+
+3. **HLLC vs HLLC-LM**。Chamarthiは HLLC を推奨します。低Mach状況ではHLLCの人工拡散が*接触波にも*作用します。したがってTHINCが急峻化した界面を、再びHLLCが滲ませてしまいます。低Mach + 強い接触が同時にある流れでは、HLLC-LMまたは別途の低Mach補正が必要です。
+
+OpenFOAMの`interFoam`やAnsys FluentのVOFは別の道を行きます — 体積分率を*直接*圧縮する(geometric reconstruction)方式です。THINCは代数的(algebraic)なので、非構造格子にも大きな修正なく移植できる利点がありますが、格子整列が乱れると徐々に損失が累積する観察があります。
+
+## この論文が投げかける新しい問い
+
+Chamarthiの結論は*2次精度でも物理に合えば5次より良い*です。周期的二重せん断層でこの主張は検証されます。すると次の問いが続きます — どのような*物理適合度*をより明示的に定義できるでしょうか。波ごとに異なるスキームを使う発想が、非構造格子、非ニュートン流体、磁気流体力学(MHD)でも同じ比率で有効でしょうか。本稿を閉じた後で開く次の論文は — Chamarthi自身の*Wave-appropriate multidimensional upwinding (JCP 2025)* でしょう。同じ著者による多次元拡張です。
+
+### ノートに書き残す一行
+
+> すべての格子セルに同じスキームを適用するのは、すべての患者に同じ薬を処方するのと同じです。

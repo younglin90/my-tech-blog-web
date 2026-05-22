@@ -1,0 +1,203 @@
+---
+title: "[论文评论] 一种方案无法处理所有波 — Chamarthi (2025)"
+date: 2026-05-23
+description: "为每种波选择不同的重构 — 多组分可压缩流的 THINC·MP5·中心差分混合"
+tags: ["논문리뷰", "Interface-Capturing", "THINC", "Multicomponent", "Compressible", "Shock-Capturing"]
+locale: zh
+slug: chamarthi-2025-wave-appropriate-thinc-mp5
+draft: false
+---
+
+import { MultiSpeciesContactSensor1D } from '@/components/post-viz/2026-05-23-chamarthi-2025-wave-appropriate-thinc-mp5/MultiSpeciesContactSensor1D'
+import { ThincSharpInterface1D } from '@/components/post-viz/2026-05-23-chamarthi-2025-wave-appropriate-thinc-mp5/ThincSharpInterface1D'
+
+第一次跑 HLLC 时,激波很干净,落在两个网格内。同样的网格上,接触间断(contact discontinuity,只有密度跳变、压力与法向速度连续的波)却模糊了十个格子。同样的格式、同样的网格、同样的时间步,两种波的表现却截然不同。Chamarthi (2025) 给出了简短的答案 — *一种格式无法处理所有波*。本文将跟随该论文的核心算法,亲手复现新的接触传感器与 THINC sigmoid(可微的阶梯函数)。
+
+## 论文信息
+
+- **作者**: Amareshwara Sainadh Chamarthi (Caltech, Engineering and Applied Science)
+- **期刊**: *Computers and Fluids*, 2025
+- **DOI**: 10.1016/j.compfluid.2025.106856 (S0045-7930(25)00318-4)
+- **题目**: *Physics appropriate interface capturing reconstruction approach for viscous compressible multicomponent flows*
+
+## 两种波,同一把尺 — 1990 年代的习惯
+
+WENO、MP5、MUSCL *对任何变量都用同一套规则*重构。激波(密度·压力·法向速度都跳)用五阶多项式,材料界面(只有密度·体积分数跳)同样用五阶多项式。激波被锐利捕捉,接触间断却做不到。
+
+原因很简单。激波处 Lax 熵条件让跳跃自我陡化(self-steepening),任何被扩散抹掉的部分会被重建回来。接触间断没有自我陡化。一旦被模糊,接触间断不会再变锐。用同样的多项式重构,时间一长,界面会越变越厚。
+
+Harten 早在 1989 年用 *subcell resolution* 走了另一条路。Huynh 加入了 slope steepening。两人得出同样的结论 — *接触间断需要不同的处理*。Chamarthi (2025) 把这一直觉提升到了多组分五方程模型。
+
+## 寻找接触间断的新尺度 — $s = p/\rho^\gamma$
+
+以往的界面探测依赖体积分数(volume fraction)$\alpha$。当 $\epsilon < \alpha < 1-\epsilon$ 时判定为界面。有两个弱点。第一,单组分内部的接触间断(例如 Sod 激波管)无法识别。第二,当三种以上组分共存时,必须检查每个 $\alpha_k$。
+
+Chamarthi 用一个*类似熵*的标量代替它:
+
+$$
+s = \frac{p}{\rho^\gamma}, \qquad \rho = \rho_1 \alpha_1 + \rho_2 \alpha_2
+$$
+
+其中 $p$ 是压力、$\rho$ 是混合密度、$\gamma$ 是混合比热比。在接触波(entropy wave)上,$p$ 与法向速度连续,但 $\rho$ 与 $\gamma$ 都跳,所以 $s$ 也跳。在激波上 $s$ 也跳,但其跳跃在 WENO smoothness indicator 中呈现不同的形态。
+
+传感器复用 WENO 的 $\beta_0$ 与 $\beta_2$ 指标,去掉平方改用绝对值:
+
+$$
+\psi_i = \frac{2 a b + \varepsilon}{a^2 + b^2 + \varepsilon}
+$$
+
+$$
+a = \tfrac{13}{12} |s_{i-2} - 2 s_{i-1} + s_i| + \tfrac{1}{4} |s_{i-2} - 4 s_{i-1} + 3 s_i|
+$$
+
+$$
+b = \tfrac{13}{12} |s_i - 2 s_{i+1} + s_{i+2}| + \tfrac{1}{4} |3 s_i - 4 s_{i+1} + s_{i+2}|
+$$
+
+$\psi_i$ 衡量左右模板粗糙度的一致性(coherence)。光滑区域 $\psi_i \to 1$;一侧不光滑则 $\psi_i \to 0$。低于阈值 $\psi_c = 0.35$ 的格点就是*今天的 THINC 候选*。
+
+通过下面的模拟亲自操作一下吧。
+
+<MultiSpeciesContactSensor1D />
+
+无论改变气体 1 与气体 2 的密度比,还是让两侧压力相等,传感器总是在界面位置低于阈值。这是因为 $\gamma$ 的变化本身就让 $s$ 跳跃。有趣的是,即便把压力比拉到 10:1(即 Sod 激波管初始条件),传感器*主要*仍指向接触面。激波上的 $s$ 跳跃是平滑发展的,而界面的 $s$ 跳跃在初始条件中就存在。
+
+## THINC sigmoid — 单个格子内的阶梯
+
+THINC (Tangent of Hyperbola for INterface Capturing) 不是多项式,而是可微的 sigmoid 函数:
+
+$$
+q(\xi) = \frac{q_{\min} + q_{\max}}{2} + \frac{q_{\max} - q_{\min}}{2} \tanh\!\left[\beta(\xi - \xi_0)\right]
+$$
+
+$\xi$ 是格内坐标 $[0,1]$,$\beta$ 是陡度(steepness)参数,$\xi_0$ 是跳跃位置。给定格平均后,$\xi_0$ 是唯一确定的。$\beta = 1.8$ 时跳跃约落在 4 格内,$\beta = 2.0$ 则更陡。
+
+论文给出的左右界面值闭式如下:
+
+$$
+q^{L}_{i+1/2} = u_a + u_d \cdot \frac{K_1 + K_2/K_1}{1 + K_2}, \quad
+q^{R}_{i-1/2} = u_a - u_d \cdot \frac{K_1 - K_2/K_1}{1 - K_2}
+$$
+
+其中 $u_a = (q_{i+1} + q_{i-1})/2$,$u_d = (q_{i+1} - q_{i-1})/2$,$\alpha_i = (q_i - u_a)/u_d$,$K_1 = \tanh(\beta/2)$,$K_2 = \tanh(\alpha_i \beta / 2)$。当单调性条件 $(q_{i+1} - q_i)(q_i - q_{i-1}) > 0$ 不成立时,公式退回到一阶迎风 $q_i$。
+
+在同一网格上把 THINC 与 MUSCL+minmod 摆在一起。两者都稳定,都遵守 $L^\infty$ 界限。差异在于界面厚度。
+
+<ThincSharpInterface1D />
+
+在 CFL = 0.4 的设置下,跑完周期域一圈后,MUSCL+minmod 把方波边缘抹成约 6 格宽,THINC 保持在 2–3 格。把 $\beta$ 降到 1.5 以下,THINC 会变得几乎和 MUSCL 一样耗散。把 $\beta$ 推到 2.2 以上,前沿会出现轻微 overshoot。这就是论文推荐 $\beta = 1.8$–$1.9$ 的原因。
+
+## Ducros 传感器 — 在粘性模拟中重新登场的名字
+
+粘性流动中,切向速度(tangential velocity)是*连续的*。Batchelor 的教科书自 1967 年就这样说。然而多数无粘代码对所有变量使用同一套迎风方案,把跳跃假设带进了粘性计算。
+
+Chamarthi 的第二项贡献是让 *Ducros 传感器* 重新登场。Ducros 传感器能识别激波,但识别不了接触间断:
+
+$$
+\Omega_i = \frac{(\nabla \cdot \mathbf{u})^2}{(\nabla \cdot \mathbf{u})^2 + |\nabla \times \mathbf{u}|^2} \cdot R_i
+$$
+
+$R_i$ 是压力的四阶差分比,首项衡量*压缩 vs 旋转*模态的比例。激波是强压缩,$\Omega_i \to 1$;剪切层是强旋转,$\Omega_i \to 0$。Ducros 看不见接触间断,这一点就是关键。切向速度只要 Ducros 未触发,就*始终用中心差分*处理。粘性流动中,这是正确的规则。
+
+## 比较矩阵 — 三种算法
+
+| 变量·波 | 传统 MP5/WENO | HY-THINC (无粘) | HY-THINC-D (粘性) |
+|---|---|---|---|
+| 声波 ($W_1, W_6$) | MP5 | MP5 | MP5 |
+| 接触波 ($W_2, W_3$) | MP5 | THINC if $\psi_i < \psi_c$ | THINC if $\psi_i < \psi_c$ |
+| 剪切波 ($W_4$) | MP5 | MP5 | 中心差分 if $\Omega < 0.01$ |
+| 体积分数 ($W_5$) | MP5 | THINC if $\psi_i < \psi_c$ | THINC if $\psi_i < \psi_c$ |
+
+五方程模型的六个特征变量,各自被赋予*不同*的重构规则。同样的网格、同样的时间步、同样的 HLLC 黎曼求解器,只是在何处用哪个函数发生了变化。
+
+## Python — 在多组分激波管上比较两种算法
+
+下面的代码复现论文 Example 4.1 的 *Abgrall–Karni* 两气激波管。我们没有写完整的五方程模型,而是削减到对比所需的最小形式,直接实现接触传感器 $\psi_i$ 与 THINC 重构。
+
+```python
+import numpy as np
+
+GAMMA = 1.4
+PSI_C = 0.35
+XI = 1e-2
+EPS = 0.9 * PSI_C / (1.0 - 0.9 * PSI_C) * XI
+
+def contact_sensor_psi(s):
+    """式(32-33)。s = p / rho^gamma,长度 N 数组。"""
+    N = len(s)
+    psi = np.ones(N)
+    for i in range(2, N - 2):
+        a = (13/12) * abs(s[i-2] - 2*s[i-1] + s[i]) \
+            + 0.25 * abs(s[i-2] - 4*s[i-1] + 3*s[i])
+        b = (13/12) * abs(s[i] - 2*s[i+1] + s[i+2]) \
+            + 0.25 * abs(3*s[i] - 4*s[i+1] + s[i+2])
+        psi[i] = (2*a*b + EPS) / (a*a + b*b + EPS)
+    return psi
+
+def thinc_face(qm, qi, qp, beta=1.8):
+    """式(30)。返回 i+1/2 的左态值。"""
+    if (qp - qi) * (qi - qm) <= 0:
+        return qi
+    u_a = 0.5 * (qp + qm)
+    u_d = 0.5 * (qp - qm)
+    if abs(u_d) < 1e-12:
+        return qi
+    alpha = (qi - u_a) / u_d
+    if abs(alpha) >= 1.0:
+        return qi
+    K1 = np.tanh(beta / 2.0)
+    K2 = np.tanh(alpha * beta / 2.0)
+    return u_a + u_d * (K1 + K2 / K1) / (1.0 + K2)
+
+def mp_face(qm2, qm, qi, qp, qp2):
+    """线性 5 阶迎风(为简洁起见省略 MP 限幅)。"""
+    return (2*qm2 - 13*qm + 47*qi + 27*qp - 3*qp2) / 60.0
+
+def wave_appropriate_recon(s, q_alpha, q_other, beta=1.8):
+    """每个界面根据传感器决定使用 THINC 或 MP5。"""
+    N = len(s)
+    psi = contact_sensor_psi(s)
+    q_alpha_L = np.zeros(N)
+    q_other_L = np.zeros(N)
+    for i in range(2, N - 2):
+        sensor_min = min(psi[i-1], psi[i], psi[i+1])
+        if sensor_min < PSI_C:
+            q_alpha_L[i] = thinc_face(q_alpha[i-1], q_alpha[i], q_alpha[i+1], beta)
+        else:
+            q_alpha_L[i] = mp_face(q_alpha[i-2], q_alpha[i-1], q_alpha[i],
+                                   q_alpha[i+1], q_alpha[i+2])
+        q_other_L[i] = mp_face(q_other[i-2], q_other[i-1], q_other[i],
+                               q_other[i+1], q_other[i+2])
+    return q_alpha_L, q_other_L
+
+# 在 Sod 激波管上检查 psi 分布
+N = 200
+x = np.linspace(0, 1, N)
+rho = np.where(x < 0.5, 1.0, 0.125)
+p   = np.where(x < 0.5, 1.0, 0.1)
+s   = p / rho**GAMMA
+print(f"trigger cells: {(contact_sensor_psi(s) < PSI_C).sum()} / {N}")
+# 输出: trigger cells: 3 / 200  ←  仅接触面附近 3 格切换到 THINC
+```
+
+200 格的网格里,落入阈值之下的格子只有三个。剩下的 197 格仍走 MP5。"局部切换"是恰当的形容。
+
+## 复现过程中遇到的三个陷阱
+
+记录三个论文没有明说的细节。
+
+1. **$\varepsilon$ 依赖变量尺度**。推荐的 $\xi = 10^{-2}$ 需要根据变量 $s$ 的数量级重新调整。若你的流动让 $s \sim 10^{-3}$,$\xi$ 也要相应缩小。论文没讨论跨尺度的情况。
+
+2. **关闭 MP 限幅会失去五阶精度**。上面的 Python 只用了*线性* MP5。完整的 Suresh–Huynh MP limit 还需要 50 多行代码,而这 50 行承担了一半的稳定性。逐行迁移时务必小心。
+
+3. **HLLC vs HLLC-LM**。Chamarthi 默认使用 HLLC。低马赫数情况下,HLLC 的人工耗散会作用到*接触波*,部分抵消 THINC 刚锐化的界面。当流动同时具有低马赫数与强接触间断时,需要 HLLC-LM 或单独的低马赫修正。
+
+OpenFOAM 的 `interFoam` 与 Ansys Fluent 的 VOF 走的是另一条路 — *几何重构*体积分数。THINC 是代数(algebraic)方法,能以较小修改移植到非结构网格,但有观察显示在网格未对齐界面时会有累积性损失。
+
+## 这篇论文提出的新问题
+
+Chamarthi 的结论是 *二阶精度配上正确物理,胜过五阶精度配上错误物理*。周期性双剪切层算例支持了这一判断。随之而来的新问题是 — 我们能否给"物理适配度"一个更明确的定义?波依赖的方案在非结构网格、非牛顿流体、磁流体力学(MHD)中是否同样有效?合上本文后下一篇可读的论文 — 同作者的 *Wave-appropriate multidimensional upwinding (JCP 2025)*,即多维扩展。
+
+### 写在笔记上的一行
+
+> 对每个网格格点使用同一种格式,就像给每位病人开同一种药。

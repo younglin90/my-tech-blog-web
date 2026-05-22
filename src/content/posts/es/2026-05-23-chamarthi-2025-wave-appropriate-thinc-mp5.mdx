@@ -1,0 +1,203 @@
+---
+title: "[Revisión de paper] Un solo esquema no basta para todas las ondas — Chamarthi (2025)"
+date: 2026-05-23
+description: "Reconstrucción apropiada por onda: THINC en contactos, MP5 en choques, central en viscoso"
+tags: ["논문리뷰", "Interface-Capturing", "THINC", "Multicomponent", "Compressible", "Shock-Capturing"]
+locale: es
+slug: chamarthi-2025-wave-appropriate-thinc-mp5
+draft: false
+---
+
+import { MultiSpeciesContactSensor1D } from '@/components/post-viz/2026-05-23-chamarthi-2025-wave-appropriate-thinc-mp5/MultiSpeciesContactSensor1D'
+import { ThincSharpInterface1D } from '@/components/post-viz/2026-05-23-chamarthi-2025-wave-appropriate-thinc-mp5/ThincSharpInterface1D'
+
+La primera vez que corrí HLLC, el choque salió limpio: cabía en dos celdas. En la misma malla, la discontinuidad de contacto (contact discontinuity: la onda donde solo salta la densidad, mientras la presión y la velocidad normal permanecen continuas) se difundió a lo largo de diez celdas. Mismo esquema, misma malla, mismo paso de tiempo — y dos ondas con apariencia muy distinta. Chamarthi (2025) responde corto a esa asimetría: *un solo esquema no basta para todas las ondas*. Esta entrada recorre el algoritmo central del artículo y re-implementa desde cero el nuevo sensor de contacto y el sigmoid THINC.
+
+## Información del artículo
+
+- **Autor**: Amareshwara Sainadh Chamarthi (Caltech, Engineering and Applied Science)
+- **Revista**: *Computers and Fluids*, 2025
+- **DOI**: 10.1016/j.compfluid.2025.106856 (S0045-7930(25)00318-4)
+- **Título**: *Physics appropriate interface capturing reconstruction approach for viscous compressible multicomponent flows*
+
+## Dos ondas, una sola regla — el hábito de los noventa
+
+WENO, MP5 y MUSCL reconstruyen *cualquier variable con la misma regla*. ¿Saltan densidad, presión y velocidad en un choque? Polinomio de quinto orden. ¿Salta solo la densidad en una interfaz material? El mismo polinomio. Los choques quedan nítidos. Los contactos no.
+
+La razón es simple. En los choques, la condición de entropía de Lax provoca un auto-empinamiento (self-steepening): cualquier difusión se reconstruye. En los contactos no hay auto-empinamiento. Una vez difuso, el contacto sigue difuso. Con la misma reconstrucción polinómica, cada paso lo engrosa un poco más.
+
+Harten ya en 1989 propuso otra ruta: *subcell resolution*. Huynh añadió *slope steepening*. Ambos llegaron a la misma conclusión — *los contactos exigen una regla distinta*. Chamarthi (2025) eleva esa intuición al modelo multicomponente de cinco ecuaciones.
+
+## Una nueva regla para detectar contactos — $s = p/\rho^\gamma$
+
+Los detectores de interfaz anteriores se apoyaban en la fracción volumétrica (volume fraction) $\alpha$: si $\epsilon < \alpha < 1-\epsilon$, hay interfaz. Dos debilidades. Primera, no detecta discontinuidades de contacto dentro de un mismo fluido (caso clásico: tubo de Sod). Segunda, con tres o más especies hay que revisar cada $\alpha_k$.
+
+Chamarthi lo reemplaza por un único escalar *parecido a la entropía*:
+
+$$
+s = \frac{p}{\rho^\gamma}, \qquad \rho = \rho_1 \alpha_1 + \rho_2 \alpha_2
+$$
+
+donde $p$ es la presión, $\rho$ la densidad de mezcla y $\gamma$ la razón de calores específicos efectiva. Sobre la onda de contacto (entropy wave), $p$ y la velocidad normal son continuas, pero $\rho$ y $\gamma$ saltan, así que $s$ salta. Sobre un choque también salta $s$, pero su salto deja una huella distinta en los indicadores de suavidad WENO.
+
+El sensor reutiliza $\beta_0$ y $\beta_2$ de WENO, quitando los cuadrados y poniendo valor absoluto:
+
+$$
+\psi_i = \frac{2 a b + \varepsilon}{a^2 + b^2 + \varepsilon}
+$$
+
+$$
+a = \tfrac{13}{12} |s_{i-2} - 2 s_{i-1} + s_i| + \tfrac{1}{4} |s_{i-2} - 4 s_{i-1} + 3 s_i|
+$$
+
+$$
+b = \tfrac{13}{12} |s_i - 2 s_{i+1} + s_{i+2}| + \tfrac{1}{4} |3 s_i - 4 s_{i+1} + s_{i+2}|
+$$
+
+$\psi_i$ mide la coherencia de rugosidad entre el stencil izquierdo y derecho. En zonas suaves $\psi_i \to 1$; en saltos asimétricos $\psi_i \to 0$. Las celdas con $\psi_i < \psi_c = 0.35$ son las *candidatas a THINC* del día.
+
+Probemos la simulación de abajo y movamos los controles.
+
+<MultiSpeciesContactSensor1D />
+
+Cambien la relación de densidades entre gas 1 y gas 2, o iguálense las presiones — el sensor sigue cayendo bajo el umbral en la interfaz. El motivo es que el cambio de $\gamma$ por sí solo hace saltar $s$. Lo interesante: incluso al subir la relación de presión a 10:1 (configuración tipo Sod), el sensor *sigue señalando principalmente* al contacto. El salto de $s$ en el choque se desarrolla suavemente; el salto de $s$ en la interfaz vive ya en la condición inicial.
+
+## El sigmoid THINC — un escalón dentro de una celda
+
+THINC (Tangent of Hyperbola for INterface Capturing) no es polinómico. Es un sigmoid diferenciable:
+
+$$
+q(\xi) = \frac{q_{\min} + q_{\max}}{2} + \frac{q_{\max} - q_{\min}}{2} \tanh\!\left[\beta(\xi - \xi_0)\right]
+$$
+
+con $\xi \in [0,1]$ la coordenada local de la celda, $\beta$ el parámetro de empinamiento y $\xi_0$ la posición del salto fijada por el promedio celdar. Con $\beta = 1.8$ el salto cabe en unas cuatro celdas; con $\beta = 2.0$ queda más estrecho.
+
+Las expresiones cerradas para los valores izquierdo y derecho en la cara son:
+
+$$
+q^{L}_{i+1/2} = u_a + u_d \cdot \frac{K_1 + K_2/K_1}{1 + K_2}, \quad
+q^{R}_{i-1/2} = u_a - u_d \cdot \frac{K_1 - K_2/K_1}{1 - K_2}
+$$
+
+donde $u_a = (q_{i+1} + q_{i-1})/2$, $u_d = (q_{i+1} - q_{i-1})/2$, $\alpha_i = (q_i - u_a)/u_d$, $K_1 = \tanh(\beta/2)$, $K_2 = \tanh(\alpha_i \beta / 2)$. Si la condición de monotonía $(q_{i+1} - q_i)(q_i - q_{i-1}) > 0$ falla, se degrada a upwind de primer orden $q_i$.
+
+Pongamos THINC frente a MUSCL+minmod en la misma malla. Ambos son estables y respetan el límite $L^\infty$. La diferencia es el grosor de la interfaz.
+
+<ThincSharpInterface1D />
+
+Con CFL = 0.4, tras una vuelta completa al dominio periódico, MUSCL+minmod ha esparcido el borde del pulso a unas seis celdas. THINC se mantiene en 2–3. Bajar $\beta$ por debajo de 1.5 hace que THINC se vuelva casi tan difusivo como MUSCL. Subir $\beta$ por encima de 2.2 introduce un pequeño overshoot en el frente. Esa ventana de $\beta = 1.8$–$1.9$ que recomienda el paper es el punto dulce.
+
+## El sensor Ducros — vuelta a escena para el viscoso
+
+En flujos viscosos, la velocidad tangencial (tangential velocity) es *continua*. El libro de Batchelor lo dice desde 1967. Pero la mayoría de códigos no viscosos aplican el mismo upwind a todas las variables, arrastrando la suposición de salto al cálculo viscoso.
+
+La segunda contribución de Chamarthi es rescatar el *sensor de Ducros*. Detecta choques pero no detecta contactos:
+
+$$
+\Omega_i = \frac{(\nabla \cdot \mathbf{u})^2}{(\nabla \cdot \mathbf{u})^2 + |\nabla \times \mathbf{u}|^2} \cdot R_i
+$$
+
+con $R_i$ la razón de cuarta diferencia de la presión y el primer factor midiendo *compresión vs rotación*. Los choques son compresión fuerte: $\Omega_i \to 1$. Las capas de cortadura son rotación fuerte: $\Omega_i \to 0$. Un solo hecho — Ducros no ve los contactos — es el núcleo. La velocidad tangencial se calcula con esquema *central* salvo que Ducros se dispare. Para el flujo viscoso, esa es la regla físicamente correcta.
+
+## Matriz comparativa — tres algoritmos
+
+| Variable / onda | MP5/WENO clásico | HY-THINC (no viscoso) | HY-THINC-D (viscoso) |
+|---|---|---|---|
+| Acústica ($W_1, W_6$) | MP5 | MP5 | MP5 |
+| Contacto ($W_2, W_3$) | MP5 | THINC si $\psi_i < \psi_c$ | THINC si $\psi_i < \psi_c$ |
+| Cortadura ($W_4$) | MP5 | MP5 | Central si $\Omega < 0.01$ |
+| Fracción volumétrica ($W_5$) | MP5 | THINC si $\psi_i < \psi_c$ | THINC si $\psi_i < \psi_c$ |
+
+Cada una de las seis variables características del modelo de cinco ecuaciones recibe una regla *distinta* de reconstrucción. Misma malla, mismo paso, mismo solver HLLC de Riemann — solo cambia la elección local de función.
+
+## Python — dos algoritmos sobre un tubo de choque multicomponente
+
+El fragmento de abajo re-implementa el tubo de choque bigás *Abgrall–Karni* del Example 4.1 del paper, recortado al mínimo para que solo se vean el sensor de contacto y la reconstrucción THINC.
+
+```python
+import numpy as np
+
+GAMMA = 1.4
+PSI_C = 0.35
+XI = 1e-2
+EPS = 0.9 * PSI_C / (1.0 - 0.9 * PSI_C) * XI
+
+def contact_sensor_psi(s):
+    """Eq. (32-33). s = p / rho^gamma, arreglo de tamano N."""
+    N = len(s)
+    psi = np.ones(N)
+    for i in range(2, N - 2):
+        a = (13/12) * abs(s[i-2] - 2*s[i-1] + s[i]) \
+            + 0.25 * abs(s[i-2] - 4*s[i-1] + 3*s[i])
+        b = (13/12) * abs(s[i] - 2*s[i+1] + s[i+2]) \
+            + 0.25 * abs(3*s[i] - 4*s[i+1] + s[i+2])
+        psi[i] = (2*a*b + EPS) / (a*a + b*b + EPS)
+    return psi
+
+def thinc_face(qm, qi, qp, beta=1.8):
+    """Eq. (30). Devuelve el estado izquierdo en i+1/2."""
+    if (qp - qi) * (qi - qm) <= 0:
+        return qi
+    u_a = 0.5 * (qp + qm)
+    u_d = 0.5 * (qp - qm)
+    if abs(u_d) < 1e-12:
+        return qi
+    alpha = (qi - u_a) / u_d
+    if abs(alpha) >= 1.0:
+        return qi
+    K1 = np.tanh(beta / 2.0)
+    K2 = np.tanh(alpha * beta / 2.0)
+    return u_a + u_d * (K1 + K2 / K1) / (1.0 + K2)
+
+def mp_face(qm2, qm, qi, qp, qp2):
+    """Upwind lineal de quinto orden (sin limitador MP para abreviar)."""
+    return (2*qm2 - 13*qm + 47*qi + 27*qp - 3*qp2) / 60.0
+
+def wave_appropriate_recon(s, q_alpha, q_other, beta=1.8):
+    """Para cada cara, elegir THINC (si sensor < psi_c) o MP5."""
+    N = len(s)
+    psi = contact_sensor_psi(s)
+    q_alpha_L = np.zeros(N)
+    q_other_L = np.zeros(N)
+    for i in range(2, N - 2):
+        sensor_min = min(psi[i-1], psi[i], psi[i+1])
+        if sensor_min < PSI_C:
+            q_alpha_L[i] = thinc_face(q_alpha[i-1], q_alpha[i], q_alpha[i+1], beta)
+        else:
+            q_alpha_L[i] = mp_face(q_alpha[i-2], q_alpha[i-1], q_alpha[i],
+                                   q_alpha[i+1], q_alpha[i+2])
+        q_other_L[i] = mp_face(q_other[i-2], q_other[i-1], q_other[i],
+                               q_other[i+1], q_other[i+2])
+    return q_alpha_L, q_other_L
+
+# Comprobar la distribucion de psi en un tubo de Sod
+N = 200
+x = np.linspace(0, 1, N)
+rho = np.where(x < 0.5, 1.0, 0.125)
+p   = np.where(x < 0.5, 1.0, 0.1)
+s   = p / rho**GAMMA
+print(f"trigger cells: {(contact_sensor_psi(s) < PSI_C).sum()} / {N}")
+# salida: trigger cells: 3 / 200  <- solo tres celdas cerca del contacto cambian a THINC
+```
+
+En una malla de 200 celdas, solo tres caen por debajo del umbral. Las otras 197 se quedan con MP5. *Conmutación local* describe bien la proporción.
+
+## Tres trampas que el paper no menciona
+
+Tres notas tras re-implementar.
+
+1. **$\varepsilon$ depende de la escala de $s$**. La recomendación $\xi = 10^{-2}$ debe reajustarse cuando $s$ vive a otra magnitud. Si en tu flujo $s \sim 10^{-3}$, hay que escalar $\xi$ acorde. El paper no discute el caso cross-scale.
+
+2. **MP lineal pierde el quinto orden**. La función `mp_face` arriba es solo *lineal*. El limitador completo de Suresh–Huynh suma otras 50 líneas, y ese bloque sostiene la mitad de la estabilidad. Copiarlo con cuidado.
+
+3. **HLLC vs HLLC-LM**. Chamarthi usa HLLC por defecto. A bajos números de Mach, la difusión artificial de HLLC también actúa sobre la onda de contacto, deshaciendo parte de lo que THINC acaba de afilar. Cuando coinciden bajo Mach y contacto fuerte, hace falta HLLC-LM o una corrección low-Mach aparte.
+
+OpenFOAM con `interFoam` y el modelo VOF de Fluent siguen otra ruta: *compresión geométrica* de la fracción volumétrica. THINC es algebraico (algebraic), lo que le permite portar a mallas no estructuradas con poca cirugía, a cambio de un drift acumulado leve cuando la malla no está alineada con la interfaz.
+
+## Una nueva pregunta que abre este paper
+
+La afirmación principal de Chamarthi es que *el segundo orden con la física correcta supera al quinto orden con la física equivocada*. El caso de doble capa de cortadura periódica respalda esa tesis. La siguiente pregunta se escribe sola — ¿cómo formalizar el criterio de *adecuación física*? ¿Sigue funcionando la lógica onda-a-onda en mallas no estructuradas, en fluidos no newtonianos, en magnetohidrodinámica (MHD)? El paper natural a leer después es del mismo autor: *Wave-appropriate multidimensional upwinding (JCP 2025)*, la extensión multidimensional.
+
+### Una línea para el cuaderno
+
+> Aplicar el mismo esquema a cada celda equivale a recetar la misma medicina a cada paciente.

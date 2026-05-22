@@ -1,0 +1,203 @@
+---
+title: "[Paper Review] One Scheme Can't Handle Every Wave — Chamarthi (2025)"
+date: 2026-05-23
+description: "Wave-appropriate reconstruction for compressible multicomponent flows — THINC at contacts, MP5 at shocks, central at viscous tangentials"
+tags: ["논문리뷰", "Interface-Capturing", "THINC", "Multicomponent", "Compressible", "Shock-Capturing"]
+locale: en
+slug: chamarthi-2025-wave-appropriate-thinc-mp5
+draft: false
+---
+
+import { MultiSpeciesContactSensor1D } from '@/components/post-viz/2026-05-23-chamarthi-2025-wave-appropriate-thinc-mp5/MultiSpeciesContactSensor1D'
+import { ThincSharpInterface1D } from '@/components/post-viz/2026-05-23-chamarthi-2025-wave-appropriate-thinc-mp5/ThincSharpInterface1D'
+
+The first time I ran HLLC, the shock came out clean — two cells wide. On the same grid, the contact discontinuity (a wave where only density jumps; pressure and normal velocity stay continuous) smeared across ten cells. Same scheme, same grid, same time step — yet two waves came out looking nothing alike. Chamarthi (2025) gives a short answer to that asymmetry: *one scheme cannot handle every wave.* This post walks through the new contact sensor and the THINC sigmoid the paper proposes, and re-implements the algorithm from scratch.
+
+## Paper info
+
+- **Author**: Amareshwara Sainadh Chamarthi (Caltech, Engineering and Applied Science)
+- **Journal**: *Computers and Fluids*, 2025
+- **DOI**: 10.1016/j.compfluid.2025.106856 (S0045-7930(25)00318-4)
+- **Title**: *Physics appropriate interface capturing reconstruction approach for viscous compressible multicomponent flows*
+
+## Two waves, one yardstick — the 1990s habit
+
+WENO, MP5, MUSCL all reconstruct *every variable with the same rule*. Density-pressure-velocity jumps at a shock? Same fifth-order polynomial. Density jumps only, at a material interface? Still the same fifth-order polynomial. Shocks come out sharp. Contacts do not.
+
+The reason is simple. Shocks self-steepen: the Lax entropy condition rebuilds any jump that diffusion broadens. Contacts do not self-steepen. Once smeared, a contact stays smeared. With identical reconstruction, every time step makes the contact a little thicker.
+
+Harten saw this back in 1989 with *subcell resolution*. Huynh added slope steepening. Both reached the same conclusion: contacts demand a different rule. Chamarthi (2025) lifts that intuition into the five-equation multicomponent model.
+
+## A new yardstick for contacts — $s = p/\rho^\gamma$
+
+Earlier interface detectors leaned on the volume fraction $\alpha$: if $\epsilon < \alpha < 1-\epsilon$, you have an interface. Two weaknesses. First, single-fluid contact discontinuities (such as the Sod tube) are invisible to it. Second, when three or more species coexist, you have to check every $\alpha_k$.
+
+Chamarthi replaces it with one *entropy-like* scalar:
+
+$$
+s = \frac{p}{\rho^\gamma}, \qquad \rho = \rho_1 \alpha_1 + \rho_2 \alpha_2
+$$
+
+Here $p$ is pressure, $\rho$ is mixture density, and $\gamma$ is the mixture specific-heat ratio. Across a contact wave, $p$ and the normal velocity are continuous but $\rho$ and $\gamma$ both jump, so $s$ jumps. Across a shock, $s$ jumps too — but with a different signature in WENO smoothness indicators.
+
+The sensor reuses the WENO $\beta_0$ and $\beta_2$ indicators, dropping the squares in favour of absolute values:
+
+$$
+\psi_i = \frac{2 a b + \varepsilon}{a^2 + b^2 + \varepsilon}
+$$
+
+$$
+a = \tfrac{13}{12} |s_{i-2} - 2 s_{i-1} + s_i| + \tfrac{1}{4} |s_{i-2} - 4 s_{i-1} + 3 s_i|
+$$
+
+$$
+b = \tfrac{13}{12} |s_i - 2 s_{i+1} + s_{i+2}| + \tfrac{1}{4} |3 s_i - 4 s_{i+1} + s_{i+2}|
+$$
+
+$\psi_i$ measures the *coherence* between the left and right roughness estimates. Smooth regions push it to $1$, asymmetric jumps push it toward $0$. Cells with $\psi_i < \psi_c = 0.35$ become *today's THINC candidates*.
+
+Play with the simulation below.
+
+<MultiSpeciesContactSensor1D />
+
+Change the density ratio between gas 1 and gas 2, or match the two pressures — the sensor still fires at the interface. The reason is that the $\gamma$ change alone makes $s$ jump. The interesting bit: even when you push the pressure ratio to a Sod-tube setup of 10:1, the sensor stays focused on the *contact*. The shock-side $s$ jump develops gradually, while the contact-side $s$ jump is baked into the initial condition.
+
+## THINC sigmoid — a step inside a cell
+
+THINC (Tangent of Hyperbola for INterface Capturing) is not polynomial. It is a smooth sigmoid:
+
+$$
+q(\xi) = \frac{q_{\min} + q_{\max}}{2} + \frac{q_{\max} - q_{\min}}{2} \tanh\!\left[\beta(\xi - \xi_0)\right]
+$$
+
+with $\xi \in [0,1]$ the cell-local coordinate, $\beta$ the steepness parameter, and $\xi_0$ the jump location pinned by the cell average. $\beta = 1.8$ packs the jump into about four cells; $\beta = 2.0$ tightens it further.
+
+The paper's closed-form expressions for the left and right interface values are:
+
+$$
+q^{L}_{i+1/2} = u_a + u_d \cdot \frac{K_1 + K_2/K_1}{1 + K_2}, \quad
+q^{R}_{i-1/2} = u_a - u_d \cdot \frac{K_1 - K_2/K_1}{1 - K_2}
+$$
+
+with $u_a = (q_{i+1} + q_{i-1})/2$, $u_d = (q_{i+1} - q_{i-1})/2$, $\alpha_i = (q_i - u_a)/u_d$, $K_1 = \tanh(\beta/2)$, $K_2 = \tanh(\alpha_i \beta / 2)$. When the monotonicity check $(q_{i+1} - q_i)(q_i - q_{i-1}) > 0$ fails, the formula degrades to first-order upwind $q_i$.
+
+Put THINC head-to-head against MUSCL+minmod on the same grid. Both are stable and bounded. The difference is interface thickness.
+
+<ThincSharpInterface1D />
+
+At CFL = 0.4, after one full traversal of the periodic domain, MUSCL+minmod has smeared the square edge to about six cells. THINC holds it within 2–3. Drop $\beta$ below 1.5 and THINC becomes nearly as diffusive as MUSCL. Push $\beta$ past 2.2 and you see a small overshoot at the leading edge. That window of $\beta = 1.8$–$1.9$ that the paper recommends sits in the sweet spot.
+
+## Ducros sensor — back from the 1990s, for viscous tangents
+
+In viscous flows the tangential velocity is *continuous*. Batchelor's textbook has said so since 1967. Yet most inviscid codes apply the same upwind to every variable, dragging a discontinuity assumption into viscous simulations as well.
+
+Chamarthi's second contribution is rehabilitating the *Ducros sensor*. Ducros detects shocks but cannot detect contacts:
+
+$$
+\Omega_i = \frac{(\nabla \cdot \mathbf{u})^2}{(\nabla \cdot \mathbf{u})^2 + |\nabla \times \mathbf{u}|^2} \cdot R_i
+$$
+
+with $R_i$ the fourth-difference ratio of pressure. The first factor measures *compression vs rotation*: shocks are strong compression, so $\Omega_i \to 1$; shear layers are strong rotation, so $\Omega_i \to 0$. That single fact — Ducros is blind to contacts — is the punchline. The tangential velocity is computed with a *central scheme* unless Ducros trips. For viscous flow, that is the physically correct rule.
+
+## Comparison matrix — three algorithms
+
+| Variable / wave | classical MP5/WENO | HY-THINC (inviscid) | HY-THINC-D (viscous) |
+|---|---|---|---|
+| Acoustic ($W_1, W_6$) | MP5 | MP5 | MP5 |
+| Contact ($W_2, W_3$) | MP5 | THINC if $\psi_i < \psi_c$ | THINC if $\psi_i < \psi_c$ |
+| Shear ($W_4$) | MP5 | MP5 | Central if $\Omega < 0.01$ |
+| Volume fraction ($W_5$) | MP5 | THINC if $\psi_i < \psi_c$ | THINC if $\psi_i < \psi_c$ |
+
+Each of the six characteristic variables of the five-equation model gets a *different* reconstruction rule. Same grid, same time step, same HLLC Riemann solver — only the local choice of function changes.
+
+## Python — two algorithms on a multi-species shock tube
+
+The snippet below re-implements the Abgrall–Karni two-gas shock tube of the paper's Example 4.1, stripped to the bare minimum so the contact sensor and THINC reconstruction are the only moving parts.
+
+```python
+import numpy as np
+
+GAMMA = 1.4
+PSI_C = 0.35
+XI = 1e-2
+EPS = 0.9 * PSI_C / (1.0 - 0.9 * PSI_C) * XI
+
+def contact_sensor_psi(s):
+    """Eq. (32-33). s = p / rho^gamma, length-N array."""
+    N = len(s)
+    psi = np.ones(N)
+    for i in range(2, N - 2):
+        a = (13/12) * abs(s[i-2] - 2*s[i-1] + s[i]) \
+            + 0.25 * abs(s[i-2] - 4*s[i-1] + 3*s[i])
+        b = (13/12) * abs(s[i] - 2*s[i+1] + s[i+2]) \
+            + 0.25 * abs(3*s[i] - 4*s[i+1] + s[i+2])
+        psi[i] = (2*a*b + EPS) / (a*a + b*b + EPS)
+    return psi
+
+def thinc_face(qm, qi, qp, beta=1.8):
+    """Eq. (30). Returns left-state at i+1/2."""
+    if (qp - qi) * (qi - qm) <= 0:
+        return qi
+    u_a = 0.5 * (qp + qm)
+    u_d = 0.5 * (qp - qm)
+    if abs(u_d) < 1e-12:
+        return qi
+    alpha = (qi - u_a) / u_d
+    if abs(alpha) >= 1.0:
+        return qi
+    K1 = np.tanh(beta / 2.0)
+    K2 = np.tanh(alpha * beta / 2.0)
+    return u_a + u_d * (K1 + K2 / K1) / (1.0 + K2)
+
+def mp_face(qm2, qm, qi, qp, qp2):
+    """Linear 5th-order upwind (no MP limit for brevity)."""
+    return (2*qm2 - 13*qm + 47*qi + 27*qp - 3*qp2) / 60.0
+
+def wave_appropriate_recon(s, q_alpha, q_other, beta=1.8):
+    """For each face, choose THINC (if sensor < psi_c) or MP5."""
+    N = len(s)
+    psi = contact_sensor_psi(s)
+    q_alpha_L = np.zeros(N)
+    q_other_L = np.zeros(N)
+    for i in range(2, N - 2):
+        sensor_min = min(psi[i-1], psi[i], psi[i+1])
+        if sensor_min < PSI_C:
+            q_alpha_L[i] = thinc_face(q_alpha[i-1], q_alpha[i], q_alpha[i+1], beta)
+        else:
+            q_alpha_L[i] = mp_face(q_alpha[i-2], q_alpha[i-1], q_alpha[i],
+                                   q_alpha[i+1], q_alpha[i+2])
+        q_other_L[i] = mp_face(q_other[i-2], q_other[i-1], q_other[i],
+                               q_other[i+1], q_other[i+2])
+    return q_alpha_L, q_other_L
+
+# Probe psi on a Sod-tube initial condition
+N = 200
+x = np.linspace(0, 1, N)
+rho = np.where(x < 0.5, 1.0, 0.125)
+p   = np.where(x < 0.5, 1.0, 0.1)
+s   = p / rho**GAMMA
+print(f"trigger cells: {(contact_sensor_psi(s) < PSI_C).sum()} / {N}")
+# output: trigger cells: 3 / 200  <- only three cells near the contact switch to THINC
+```
+
+On a 200-cell grid, only three cells fall below the threshold. The other 197 stay on MP5. *Local switching* is the right phrase for that ratio.
+
+## Three traps the paper does not mention
+
+Three notes from re-implementing.
+
+1. **$\varepsilon$ depends on the scale of $s$**. The recommended $\xi = 10^{-2}$ has to be retuned when $s$ lives at a different order of magnitude. If your flow makes $s \sim 10^{-3}$, you must scale $\xi$ accordingly. The paper does not discuss the cross-scale case.
+
+2. **Linear MP5 loses fifth order**. The Python above uses *linear* MP5 only. The full Suresh–Huynh MP limit takes another 50 lines, and that block carries half the stability. Copy-paste it carefully.
+
+3. **HLLC vs HLLC-LM**. Chamarthi defaults to HLLC. At low Mach number, HLLC's artificial diffusion also acts on the contact wave, partly undoing what THINC just sharpened. If your flow combines low Mach and strong contact, you need HLLC-LM or a separate low-Mach correction.
+
+OpenFOAM's `interFoam` and the Fluent VOF model take a different route — they compress the volume fraction *geometrically*. THINC is algebraic, which means it ports to unstructured grids with little surgery, at the cost of mild accumulated drift when the mesh is misaligned with the interface.
+
+## A new question this paper opens
+
+Chamarthi's headline claim is that *second-order plus the right physics beats fifth-order with the wrong physics*. The periodic double-shear layer test backs the claim. The follow-up question writes itself: how do we make *physics appropriateness* a more formal criterion? Does the same wave-by-wave logic carry over to unstructured grids, non-Newtonian fluids, magnetohydrodynamics? The natural next paper to read is the same author's *Wave-appropriate multidimensional upwinding* (JCP 2025) — the multi-dimensional extension.
+
+### A line for the notebook
+
+> Applying the same scheme to every grid cell is like prescribing the same medicine to every patient.

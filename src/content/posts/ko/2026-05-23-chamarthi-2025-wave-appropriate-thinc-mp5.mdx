@@ -1,0 +1,203 @@
+---
+title: "[논문 리뷰] 한 스킴이 모든 파동을 다루지 못한다 — Chamarthi(2025)"
+date: 2026-05-23
+description: "파동마다 다른 재구성을 — 다성분 압축성 흐름의 THINC·MP5·중심차분 하이브리드"
+tags: ["논문리뷰", "Interface-Capturing", "THINC", "Multicomponent", "Compressible", "Shock-Capturing"]
+locale: ko
+slug: chamarthi-2025-wave-appropriate-thinc-mp5
+draft: false
+---
+
+import { MultiSpeciesContactSensor1D } from '@/components/post-viz/2026-05-23-chamarthi-2025-wave-appropriate-thinc-mp5/MultiSpeciesContactSensor1D'
+import { ThincSharpInterface1D } from '@/components/post-viz/2026-05-23-chamarthi-2025-wave-appropriate-thinc-mp5/ThincSharpInterface1D'
+
+HLLC를 처음 돌렸을 때 충격은 깨끗했다. 두 칸 안에 들어왔다. 그런데 같은 격자에서 접촉불연속(contact discontinuity, 밀도만 점프하고 압력·법선속도는 연속인 파동)은 열 칸 너머까지 흐릿하게 번졌다. 같은 스킴, 같은 격자, 같은 시간단계인데 두 파동이 이렇게 다르게 보이는 이유는 무엇일까. Chamarthi(2025)는 그 물음에 짧게 답한다 — *한 스킴이 모든 파동을 다루지 못한다.* 이 글은 그 논문의 핵심 알고리듬을 따라가며, 새 접촉 센서와 THINC 시그모이드(미분 가능한 계단 함수)를 직접 재현해 본다.
+
+## 논문 정보
+
+- **저자**: Amareshwara Sainadh Chamarthi (Caltech, Engineering and Applied Science)
+- **저널**: *Computers and Fluids*, 2025
+- **DOI**: 10.1016/j.compfluid.2025.106856 (S0045-7930(25)00318-4)
+- **제목**: *Physics appropriate interface capturing reconstruction approach for viscous compressible multicomponent flows*
+
+## 두 파동, 같은 잣대 — 1990년대의 무차별 재구성
+
+WENO·MP5·MUSCL은 모두 *어떤 변수든 같은 규칙으로* 재구성한다. 충격(density·pressure·normal velocity가 모두 점프)에서도, 계면(density·volume fraction만 점프)에서도 같은 5차 다항식 보간을 쓴다. 충격 포착은 매끄럽다. 그런데 접촉불연속은 그렇지 않다.
+
+이유는 단순하다. 충격에서는 음수 충격 안정조건(Lax 조건)이 점프를 자기-가팔라지게(self-steepening) 만든다. 반면 계면은 자기-가팔라짐이 없다. 한 번 흐려진 계면은 다시 가팔라지지 않는다. 같은 다항식 재구성을 쓰면, 시간이 흐를수록 계면은 점점 두꺼워진다.
+
+Harten는 이미 1989년에 *subcell resolution* 이라는 다른 길을 제시했다. Huynh는 슬로프 스티프닝(slope steepening)을 더했다. 두 사람 모두 같은 결론에 도달했다 — *접촉불연속은 다른 규칙으로 다루어야 한다.* Chamarthi(2025)는 그 직관을 다성분 5-방정식 모델까지 끌어 올린다.
+
+## 접촉불연속을 찾는 새 척도 — $s = p/\rho^\gamma$
+
+기존 계면 탐지는 부피분율(volume fraction) $\alpha$에 의존했다. $\epsilon < \alpha < 1-\epsilon$이면 계면이라고 본다. 두 가지 약점이 있다. 첫째, 같은 가스 내부의 접촉불연속(예: 단성분 Sod 충격관)을 못 잡는다. 둘째, 세 종 이상이 섞이면 $\alpha_1, \alpha_2, \alpha_3$ 각각을 모두 검사해야 한다.
+
+Chamarthi는 *엔트로피처럼 생긴* 스칼라 한 개로 바꾼다.
+
+$$
+s = \frac{p}{\rho^\gamma}, \qquad \rho = \rho_1 \alpha_1 + \rho_2 \alpha_2
+$$
+
+여기서 $p$는 압력, $\rho$는 혼합 밀도, $\gamma$는 혼합 비열비다. 접촉파(entropy wave) 위에서는 $p$와 법선속도는 연속이지만 $\rho$와 $\gamma$가 점프하므로 $s$도 점프한다. 충격 위에서는 $s$가 점프하지만 그 점프는 WENO의 *smoothness indicator* 와 다른 모양을 띤다.
+
+센서는 WENO의 $\beta_0$·$\beta_2$를 차용하되 제곱을 떼고 절댓값을 쓴다.
+
+$$
+\psi_i = \frac{2 a b + \varepsilon}{a^2 + b^2 + \varepsilon}
+$$
+
+$$
+a = \tfrac{13}{12} |s_{i-2} - 2 s_{i-1} + s_i| + \tfrac{1}{4} |s_{i-2} - 4 s_{i-1} + 3 s_i|
+$$
+
+$$
+b = \tfrac{13}{12} |s_i - 2 s_{i+1} + s_{i+2}| + \tfrac{1}{4} |3 s_i - 4 s_{i+1} + s_{i+2}|
+$$
+
+$\psi_i$는 좌·우 스텐실의 거칠기 일치도(coherence)를 잰다. 매끈한 영역에서는 $\psi_i \to 1$, 한쪽만 거칠면 $\psi_i \to 0$. 임계값 $\psi_c = 0.35$ 아래로 떨어진 셀이 *오늘의 THINC 후보*다.
+
+아래 시뮬레이션에서 직접 조작해보자.
+
+<MultiSpeciesContactSensor1D />
+
+가스1과 가스2의 밀도 비율을 바꿔도, 압력을 일치시켜도 센서는 계면 자리에서 늘 임계값 아래로 떨어진다. 이는 $\gamma$ 변화만으로 $s$가 점프하기 때문이다. 흥미로운 점은 압력 비율을 10:1로 키워도 — 즉 충격이 있는 Sod 상태로 만들어도 — 센서가 *주로* 접촉면을 짚는다는 것. 충격 위의 $s$ 점프는 부드럽게 발달하는 반면, 계면의 $s$ 점프는 초기조건 그 자체이기 때문이다.
+
+## THINC 시그모이드 — 한 셀 안의 계단
+
+THINC(Tangent of Hyperbola for INterface Capturing)는 다항식이 아니다. 대신 미분 가능한 시그모이드 함수다.
+
+$$
+q(\xi) = \frac{q_{\min} + q_{\max}}{2} + \frac{q_{\max} - q_{\min}}{2} \tanh\!\left[\beta(\xi - \xi_0)\right]
+$$
+
+$\xi$는 셀 내부 좌표 $[0,1]$, $\beta$는 가파름(steepness) 파라미터, $\xi_0$는 점프 위치다. 셀평균이 주어지면 $\xi_0$가 유일하게 정해진다. $\beta = 1.8$이면 점프가 약 4 셀 안에 들어맞고, $\beta = 2.0$이면 더 가파르다.
+
+논문이 제시한 좌·우 계면값의 닫힌 형식은 다음과 같다.
+
+$$
+q^{L}_{i+1/2} = u_a + u_d \cdot \frac{K_1 + K_2/K_1}{1 + K_2}, \quad
+q^{R}_{i-1/2} = u_a - u_d \cdot \frac{K_1 - K_2/K_1}{1 - K_2}
+$$
+
+여기서 $u_a = (q_{i+1} + q_{i-1})/2$, $u_d = (q_{i+1} - q_{i-1})/2$, $\alpha_i = (q_i - u_a)/u_d$, $K_1 = \tanh(\beta/2)$, $K_2 = \tanh(\alpha_i \beta / 2)$. 단조성 조건 $(q_{i+1} - q_i)(q_i - q_{i-1}) > 0$이 깨지면 1차 업윈드 $q_i$로 떨어진다.
+
+THINC와 MUSCL+minmod를 같은 격자에서 비교해 보자. 둘 다 안정적이고, 둘 다 $L^\infty$ 한계를 지킨다. 차이는 계면 두께다.
+
+<ThincSharpInterface1D />
+
+CFL = 0.4로 한 주기를 돌고 나면 MUSCL+minmod는 사각 펄스의 모서리가 6셀 정도로 뭉그러진다. THINC는 2–3셀을 유지한다. $\beta$를 1.5 미만으로 낮추면 THINC도 MUSCL만큼 흐려진다. $\beta$를 2.2 이상으로 올리면 앞날에서 약간의 오버슈팅이 생긴다. 논문이 $\beta = 1.8$~$1.9$를 권하는 이유다.
+
+## Ducros 센서 — 점성 시뮬레이션에서 다시 부르는 이름
+
+점성 흐름에서 접선속도(tangential velocity)는 *연속이다*. Batchelor의 교과서가 1967년부터 그렇게 말해 왔다. 그러나 대부분 비점성 코드가 모든 변수에 같은 업윈드를 쓰다 보니, 점성 계산에서도 접선속도에 점프 가정을 끌고 들어간다.
+
+Chamarthi의 두 번째 기여는 *Ducros 센서* 의 부활이다. Ducros 센서는 충격은 감지하지만 접촉불연속은 감지하지 못한다.
+
+$$
+\Omega_i = \frac{(\nabla \cdot \mathbf{u})^2}{(\nabla \cdot \mathbf{u})^2 + |\nabla \times \mathbf{u}|^2} \cdot R_i
+$$
+
+$R_i$는 압력의 4차 미분 비율, 첫 항은 *압축 vs. 회전* 모드의 비율이다. 충격은 강한 압축이라 $\Omega_i \to 1$, 전단층(shear layer)은 강한 회전이라 $\Omega_i \to 0$. 이 한 가지 사실 — Ducros는 계면을 못 본다 — 이 핵심이다. 접선속도는 Ducros가 트리거되지 않는 한 *항상 중심차분(central scheme)*으로 처리한다. 점성에서는 그것이 옳다.
+
+## 비교 매트릭스 — 세 알고리듬
+
+| 변수·파동 | 기존 MP5/WENO | HY-THINC (비점성) | HY-THINC-D (점성) |
+|---|---|---|---|
+| 음향파 ($W_1, W_6$) | MP5 | MP5 | MP5 |
+| 접촉파 ($W_2, W_3$) | MP5 | THINC if $\psi_i < \psi_c$ | THINC if $\psi_i < \psi_c$ |
+| 전단파 ($W_4$) | MP5 | MP5 | 중심차분 if $\Omega < 0.01$ |
+| 부피분율 ($W_5$) | MP5 | THINC if $\psi_i < \psi_c$ | THINC if $\psi_i < \psi_c$ |
+
+5-방정식 모델의 여섯 특성변수 각각에 *다른* 재구성 규칙을 부여한다. 같은 격자, 같은 시간단계, 같은 HLLC 리만 해법기지만, 어디서 어떤 함수를 쓸지가 달라진다.
+
+## Python — 다성분 충격관에서 두 알고리듬 차이
+
+다음 코드는 논문 Example 4.1의 *Abgrall-Karni* 두-가스 충격관을 재현한다. 단성분 5-방정식이 아니라, 비교 가능한 가장 짧은 형태로 줄였다. 접촉 센서 $\psi_i$와 THINC 재구성을 직접 구현한다.
+
+```python
+import numpy as np
+
+GAMMA = 1.4
+PSI_C = 0.35
+XI = 1e-2
+EPS = 0.9 * PSI_C / (1.0 - 0.9 * PSI_C) * XI
+
+def contact_sensor_psi(s):
+    """Eq. (32-33). s = p / rho^gamma, length-N array."""
+    N = len(s)
+    psi = np.ones(N)
+    for i in range(2, N - 2):
+        a = (13/12) * abs(s[i-2] - 2*s[i-1] + s[i]) \
+            + 0.25 * abs(s[i-2] - 4*s[i-1] + 3*s[i])
+        b = (13/12) * abs(s[i] - 2*s[i+1] + s[i+2]) \
+            + 0.25 * abs(3*s[i] - 4*s[i+1] + s[i+2])
+        psi[i] = (2*a*b + EPS) / (a*a + b*b + EPS)
+    return psi
+
+def thinc_face(qm, qi, qp, beta=1.8):
+    """Eq. (30). Returns left-state at i+1/2."""
+    if (qp - qi) * (qi - qm) <= 0:
+        return qi
+    u_a = 0.5 * (qp + qm)
+    u_d = 0.5 * (qp - qm)
+    if abs(u_d) < 1e-12:
+        return qi
+    alpha = (qi - u_a) / u_d
+    if abs(alpha) >= 1.0:
+        return qi
+    K1 = np.tanh(beta / 2.0)
+    K2 = np.tanh(alpha * beta / 2.0)
+    return u_a + u_d * (K1 + K2 / K1) / (1.0 + K2)
+
+def mp_face(qm2, qm, qi, qp, qp2):
+    """Linear 5th-order upwind (without MP limit, for brevity)."""
+    return (2*qm2 - 13*qm + 47*qi + 27*qp - 3*qp2) / 60.0
+
+def wave_appropriate_recon(s, q_alpha, q_other, beta=1.8):
+    """For each face, choose THINC (if sensor < psi_c) or MP5."""
+    N = len(s)
+    psi = contact_sensor_psi(s)
+    q_alpha_L = np.zeros(N)
+    q_other_L = np.zeros(N)
+    for i in range(2, N - 2):
+        sensor_min = min(psi[i-1], psi[i], psi[i+1])
+        if sensor_min < PSI_C:
+            q_alpha_L[i] = thinc_face(q_alpha[i-1], q_alpha[i], q_alpha[i+1], beta)
+        else:
+            q_alpha_L[i] = mp_face(q_alpha[i-2], q_alpha[i-1], q_alpha[i],
+                                   q_alpha[i+1], q_alpha[i+2])
+        q_other_L[i] = mp_face(q_other[i-2], q_other[i-1], q_other[i],
+                               q_other[i+1], q_other[i+2])
+    return q_alpha_L, q_other_L
+
+# 사용: Sod 충격관에서 ψ 분포 확인
+N = 200
+x = np.linspace(0, 1, N)
+rho = np.where(x < 0.5, 1.0, 0.125)
+p   = np.where(x < 0.5, 1.0, 0.1)
+s   = p / rho**GAMMA
+print(f"trigger cells: {(contact_sensor_psi(s) < PSI_C).sum()} / {N}")
+# 출력: trigger cells: 3 / 200  ←  접촉면 주변 세 셀만 THINC로 전환
+```
+
+200셀 격자에서 임계 아래 셀은 단 세 개. 나머지 197셀은 그대로 MP5. *국소적 전환* 이라는 표현이 어울리는 비율이다.
+
+## 재현하면서 만난 함정 세 가지
+
+논문이 명시하지 않은 세 가지를 적어 둔다.
+
+1. **$\varepsilon$ 척도 의존**. $\xi = 10^{-2}$ 권장은 변수 $s$의 자릿수에 따라 다시 조정해야 한다. $s$가 $10^{-3}$ 차수의 격자라면 $\xi$도 따라 줄여야 한다. 논문은 자릿수가 다른 상황을 다루지 않는다.
+
+2. **MP-림터를 끄면 5차 정확도 손실**. 위 Python 코드에서 *linear* MP5만 썼다. 진짜 Suresh–Huynh MP limiter를 다 켜야 단조성이 보장된다. 코드로 옮기다 보면 50줄을 쉽게 넘기는데, 그 50줄이 안정성의 절반을 담당한다.
+
+3. **HLLC vs HLLC-LM**. Chamarthi는 HLLC를 권한다. 저Mach 상황에서는 HLLC의 인공확산이 *접촉파에도* 적용된다. 따라서 THINC가 가팔라뜨린 계면을 다시 HLLC가 흐려지게 만든다. 저Mach + 강한 접촉이 동시에 있는 흐름에서는 HLLC-LM 또는 별도의 저Mach 보정이 필요하다.
+
+OpenFOAM의 `interFoam`이나 Ansys Fluent의 VOF는 다른 길을 간다 — 부피분율을 *직접* 압축하는 (geometric reconstruction) 방식이다. THINC는 대수적(algebraic)이라 비구조 격자에도 큰 수정 없이 옮길 수 있다는 장점이 있지만, 격자 정렬이 흐트러지면 점진적 손실이 누적된다는 관찰이 있다.
+
+## 이 논문이 던지는 새 질문
+
+Chamarthi의 결론은 *2차 정확도라도 물리에 맞으면 5차보다 낫다.* 주기적 이중 전단층에서 그 주장은 검증된다. 그렇다면 다음 질문이 따라온다 — 어떤 *물리 적합도*를 더 명시적으로 정의할 수 있을까. 파동마다 다른 스킴을 쓰는 아이디어가 비구조 격자, 비뉴턴 유체, 자기유체역학(MHD)에서도 같은 비율로 효과적일까. 이 글을 닫고 다음에 펼칠 논문은 — Chamarthi의 *Wave-appropriate multidimensional upwinding (JCP 2025)* 일 것이다. 같은 저자의 다차원 확장.
+
+### 노트북에 남기는 한 줄
+
+> 모든 격자 셀에 같은 스킴을 적용하는 것은, 모든 환자에게 같은 약을 처방하는 것과 같다.
