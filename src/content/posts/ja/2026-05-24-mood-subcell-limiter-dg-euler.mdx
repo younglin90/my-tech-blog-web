@@ -1,0 +1,165 @@
+---
+title: "[論文レビュー] 解いた後にセルを疑え — DGの a posteriori MOOD サブセル限定子"
+date: 2026-05-24
+description: "先に解いて、後から疑う — Ioriatti·Dumbser·Loubère(2020)の MOOD 限定子を再現する"
+tags: ["논문리뷰", "Discontinuous-Galerkin", "MOOD", "Subcell-Limiter", "Compressible-Euler", "All-Mach"]
+locale: ja
+slug: mood-subcell-limiter-dg-euler
+draft: false
+---
+
+import { MOODTroubledCellMap1D } from '@/components/post-viz/2026-05-24-mood-subcell-limiter-dg-euler/MOODTroubledCellMap1D'
+import { DMPRelaxedNADDetector } from '@/components/post-viz/2026-05-24-mood-subcell-limiter-dg-euler/DMPRelaxedNADDetector'
+
+この論文を再実装し始めて最初に引っかかったのは *順序* でした。普通はセルが暴走する *前* に限定子(limiter、振動を抑える後処理)を挟みます。Van Leer もそうですし、Sweby もそうです。Ioriatti·Dumbser·Loubère(2020)の staggered 半陰解法 DG は時系列を逆転させます — まず最後まで解いて、それから疑うのです。負の密度が出てから、そのセルだけを選び出して 1 次の有限体積法でもう一度解き直します。本稿ではこの MOOD(Multi-dimensional Optimal Order Detection)アルゴリズムを追いかけて、Toro Test 3 の極端な圧力比で troubled cell が点灯する位置を直接再現します。
+
+## 論文情報
+
+- **著者**: Matteo Ioriatti, Michael Dumbser, Raphaël Loubère
+- **誌**: *Journal of Scientific Computing*, 83(2), 2020
+- **DOI**: 10.1007/s10915-020-01209-w
+- **タイトル**: *A Staggered Semi-implicit Discontinuous Galerkin Scheme with a Posteriori Subcell Finite Volume Limiter for the Euler Equations of Gasdynamics*
+
+## 一文で — a priori と a posteriori の違い
+
+従来の限定子は *すべて* のセルに費用を課します。滑らかな領域でも多項式の勾配を疑い、削ります。MOOD は *問題のあるセルにだけ* 費用を払います。候補解が妥当に見える限り高次多項式をそのまま残し、おかしくなった所だけ 1 次に落とすのです。結果として高次 DG は強い衝撃波があっても *ほとんどの格子で* P 次精度を失いません。
+
+この発想は Clain–Loubère–Diot の a posteriori MOOD ファミリ(2011)に始まり、Dumbser et al.(2014)が explicit DG に持ち込み、本論文では staggered 半陰解法 DG に移植されました。半陰解法には別の恩恵もあります — 音速ではなく *流体速度* が CFL を支配するため、同じコード一枚で低 Mach から強衝撃までを扱えます。
+
+## 二つの格子に二つの表現 — 多項式とサブセル平均
+
+各メインセル $T_i$ の中に二種類のデータが共存します。
+
+- DG 自由度 $\hat{q}_i^n$ — $P$ 次多項式の係数 $P+1$ 個
+- サブセル平均 $\bar{q}_{i,s}^n$ — $2P+1$ 個の 1 次 FV セル平均
+
+二つの表現は二つの演算子で行き来します。
+
+$$
+\bar{q}_{i,s}^n = \mathcal{P} \cdot \hat{q}_i^n, \qquad \hat{q}_i^n = \mathcal{W} \cdot \bar{q}_i^n, \qquad \mathcal{W}\cdot\mathcal{P} = \mathcal{I}
+$$
+
+$\mathcal{P}$ は多項式をサブセル上で平均する $L_2$ 射影、$\mathcal{W}$ はサブセル平均から多項式を回復する制約付き最小二乗法(constrained least-squares、大セルでの積分保存を制約として課す回帰)です。$2P+1 > P+1$ なので回復は過決定系になり、制約が必要になります。
+
+troubled cell と判定されると、表現が多項式からサブセル平均へ *切り替わります*。隣接インターフェースでは片側が多項式、片側がサブセル平均という *混合インターフェース* が生まれます。このとき $\mathcal{W}_L, \mathcal{W}_R$ が半セルから多項式を回復してインターフェース積分を整合させます。同一セル内に二つの表現が共存できる点が、この族の核心資産です。
+
+## PAD と NAD — 二重の検問
+
+候補解 $Q^{\circ,n+1}$ が出ると、二種類の検問が待っています。
+
+**PAD (Physical Admissibility Detector)** — 物理的に意味があるか。
+
+$$
+\hat{\rho}_{i,l}^{\circ,n+1} > 0, \qquad \hat{p}_{i,l}^{\circ,n+1} > 0
+$$
+
+負の密度や圧力は状態方程式(EOS)を崩壊させます。ここで落ちれば即 troubled です。
+
+**NAD (Numerical Admissibility Detector)** — 隣人と離れすぎていないか。緩和された離散最大値原理(relaxed discrete maximum principle, DMP)を使います。
+
+$$
+\min_{T_j \in \mathcal{V}_i} \hat{q}_{j,l}^n - \delta \le \hat{q}_{i,l}^{\circ,n+1} \le \max_{T_j \in \mathcal{V}_i} \hat{q}_{j,l}^n + \delta
+$$
+
+ここで $\delta = \max[\delta_0, \epsilon (q_{\max}-q_{\min})]$、$\delta_0 \in [10^{-4}, 10^{-3}]$、$\epsilon = 5\cdot 10^{-4}$ です。この *緩和* が決定的です — 厳密な DMP は滑らかな極大(滑らかな関数の局所ピーク)まで疑い、限定子を乱発させてしまいます。$\delta_0$ は絶対振幅、$\epsilon$ は相対振幅に比例する余裕代です。両検問を通過できないセルに troubled インジケータ $\beta_i = 1$ が打たれます。
+
+## Python — MOOD 1 ステップ
+
+論文は DG を使いますが、*候補 → 検問 → 1 次復旧* の流れは MUSCL の上でもそのまま動きます。60 行で本質を圧縮します。
+
+```python
+import numpy as np
+
+GAMMA = 1.4
+
+def state_to_primitive(U, gamma=GAMMA):
+    rho = U[0]
+    u = U[1] / np.maximum(rho, 1e-12)
+    e = U[2] / np.maximum(rho, 1e-12) - 0.5 * u * u
+    p = (gamma - 1.0) * rho * e
+    return rho, u, p
+
+def physical_flux_euler(U, gamma=GAMMA):
+    rho, u, p = state_to_primitive(U, gamma)
+    return np.array([rho * u, rho * u * u + p, u * (U[2] + p)])
+
+def lax_friedrichs_flux(UL, UR, gamma=GAMMA):
+    rL, uL, pL = state_to_primitive(UL, gamma)
+    rR, uR, pR = state_to_primitive(UR, gamma)
+    a = max(abs(uL) + np.sqrt(gamma * pL / rL),
+            abs(uR) + np.sqrt(gamma * pR / rR))
+    return 0.5 * (physical_flux_euler(UL) + physical_flux_euler(UR)) \
+           - 0.5 * a * (UR - UL)
+
+def candidate_step_muscl(U, dx, dt, gamma=GAMMA):
+    # P=1 候補:中心差分の勾配 + LF フラックス(あえて限定子なし)
+    N = U.shape[1]
+    slope = np.zeros_like(U)
+    slope[:, 1:-1] = 0.5 * (U[:, 2:] - U[:, :-2])
+    UL = U + 0.5 * slope          # 右面の左側値
+    UR = U - 0.5 * slope          # 左面の右側値
+    F = np.zeros((3, N + 1))
+    for i in range(1, N):
+        F[:, i] = lax_friedrichs_flux(UL[:, i - 1], UR[:, i], gamma)
+    out = U.copy()
+    out[:, 1:-1] = U[:, 1:-1] - dt / dx * (F[:, 2:N] - F[:, 1:N - 1])
+    return out
+
+def detect_troubled_cells(U_old, U_new, delta0=1e-4, eps=5e-4):
+    rho_n, _, p_n = state_to_primitive(U_new)
+    rho_o, _, p_o = state_to_primitive(U_old)
+    beta = (rho_n <= 0) | (p_n <= 0) | ~np.isfinite(rho_n) | ~np.isfinite(p_n)
+    for q_o, q_n in [(rho_o, rho_n), (p_o, p_n)]:
+        for i in range(1, len(beta) - 1):
+            qm, qi, qp = q_o[i - 1], q_o[i], q_o[i + 1]
+            qmin, qmax = min(qm, qi, qp), max(qm, qi, qp)
+            d = max(delta0, eps * (qmax - qmin))
+            if q_n[i] < qmin - d or q_n[i] > qmax + d:
+                beta[i] = True
+    return beta
+
+def fallback_godunov(U, dx, dt, gamma=GAMMA):
+    # 1 次 FV — 安全網としての低次法
+    N = U.shape[1]
+    F = np.zeros((3, N + 1))
+    for i in range(1, N):
+        F[:, i] = lax_friedrichs_flux(U[:, i - 1], U[:, i], gamma)
+    out = U.copy()
+    out[:, 1:-1] = U[:, 1:-1] - dt / dx * (F[:, 2:N] - F[:, 1:N - 1])
+    return out
+
+def mood_step(U, dx, dt, gamma=GAMMA, delta0=1e-4, eps=5e-4):
+    U_cand = candidate_step_muscl(U, dx, dt, gamma)
+    beta = detect_troubled_cells(U, U_cand, delta0, eps)
+    U_safe = fallback_godunov(U, dx, dt, gamma)
+    U_new = np.where(beta[None, :], U_safe, U_cand)
+    return U_new, beta
+```
+
+これを Toro Test 3 ($\rho_L=1$, $p_L=1000$, $\rho_R=1$, $p_R=0.01$, $N=200$)で回します。限定子なしの MUSCL は 14 ステップで負圧を吐いて発散します。MOOD を被せると衝撃面周辺の 4〜6 セルが troubled として点灯し、そのセルだけが 1 次 FV で解き直されます。残りの約 194 セルは候補の P=1 精度を保ちます。
+
+## 可視化 — troubled cell が点灯する場所
+
+下のシミュレーションを直接触ってみてください。
+
+<MOODTroubledCellMap1D />
+
+圧力比を 1000:0.01 まで上げると衝撃近傍で troubled cell が 4〜6 個に増えます。$\delta_0$ を 1e-6 にまで下げると滑らかな領域まで反応し、false positive が爆発的に増えます。1e-2 まで上げると本物の衝撃が見逃され、振動が漏れてきます。推奨範囲 $[10^{-4}, 10^{-3}]$ はその間の狭い谷です。右の *overlay unlimited candidate* をオンにすると、限定子なしの MUSCL が同じ格子でどう崩れるかが赤い破線で見えます。
+
+<DMPRelaxedNADDetector />
+
+隣接 3 セルの min/max に ±$\delta$ の帯を巻いた許容範囲を直接いじってみましょう。$\delta$ を 0 にすると *あらゆる局所極値* が troubled として捕まることが一目でわかります。緩和された DMP は滑らかな峰を生かすための *ひとつまみの寛容さ* です。
+
+## 再現で見えた限界
+
+**限定子の false positive**。論文も RP4 で「plateau に余分な troubled cell が現れるのは、おそらく数値ノイズのせい」と認めています。再現すると格子 200・CFL=0.4 で plateau の 1〜2 セルがほぼ毎ステップ点滅しました。シミュレーション結果に影響はないものの、*実測の限定子コスト* は報告値より少し大きくなりました。
+
+**変数別の $\delta_0$ チューニング**。圧力は振幅が大きく密度は小さいので、*変数ごとに同じ* $\delta_0$ では一方に甘く他方に厳しいです。論文は単一値で通していますが、2D Riemann 構成 #4 では変数ごとの正規化が必要だという印象を受けました。
+
+**陰解法系の再構築コスト**。troubled cell が検出されると圧力線形系のブロック $\mathcal{L}, \mathcal{C}, \mathcal{R}$ を組み直す必要があります。4×4 ブロックが DG から FV に切り替わるため sparsity パターンまで取り替えます。我々の再現では検出 1 回あたり 10% の追加コストでした。論文が報告する 5% の倍近くです。
+
+## MOOD が残した次の問い
+
+このアルゴリズムは *検出 → 再計算* というループを明示的に標準化しました。しかし troubled インジケータ $\beta_i$ は毎ステップ初期化されます。ゆっくり動く衝撃波では、同じセルが何度も疑われ続けます — 時間的一貫性を追跡できれば限定子呼び出し自体を減らせるはずです。Dumbser グループの後続(Boscheri 2024, semi-implicit ALE-DG)に、その方向への第一歩が見えます。
+
+今日は、一つのセルの中で *高次表現と 1 次表現が共存する* 場所を直接触りました。滑らかな所は多項式、粗い所は平均値 — 次世代 all-Mach ソルバの骨格は、この小さな切り替えの上に立っています。

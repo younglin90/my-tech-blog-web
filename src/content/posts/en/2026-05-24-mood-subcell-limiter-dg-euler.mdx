@@ -1,0 +1,165 @@
+---
+title: "[Paper Review] Suspect the Cell After Solving It — A Posteriori MOOD Subcell Limiter for DG"
+date: 2026-05-24
+description: "Solve first, doubt later — reproducing the MOOD limiter of Ioriatti, Dumbser, Loubère (2020)"
+tags: ["논문리뷰", "Discontinuous-Galerkin", "MOOD", "Subcell-Limiter", "Compressible-Euler", "All-Mach"]
+locale: en
+slug: mood-subcell-limiter-dg-euler
+draft: false
+---
+
+import { MOODTroubledCellMap1D } from '@/components/post-viz/2026-05-24-mood-subcell-limiter-dg-euler/MOODTroubledCellMap1D'
+import { DMPRelaxedNADDetector } from '@/components/post-viz/2026-05-24-mood-subcell-limiter-dg-euler/DMPRelaxedNADDetector'
+
+The first thing that tripped me up while re-implementing this paper was the *order of operations*. Most of us slip the limiter in *before* the cell can blow up — Van Leer did, Sweby did, the whole TVD lineage does. Ioriatti, Dumbser, and Loubère (2020) flip the timeline on the staggered semi-implicit DG scheme. Solve the cell first, then doubt it. Only after a negative density appears do they single that cell out and recompute it with a first-order finite volume scheme. This post walks through their MOOD (Multi-dimensional Optimal Order Detection) algorithm and reproduces the troubled-cell map on Toro Test 3, where the pressure jumps from 1000 to 0.01.
+
+## Paper details
+
+- **Authors**: Matteo Ioriatti, Michael Dumbser, Raphaël Loubère
+- **Journal**: *Journal of Scientific Computing*, 83(2), 2020
+- **DOI**: 10.1007/s10915-020-01209-w
+- **Title**: *A Staggered Semi-implicit Discontinuous Galerkin Scheme with a Posteriori Subcell Finite Volume Limiter for the Euler Equations of Gasdynamics*
+
+## One line — a priori vs a posteriori limiting
+
+Traditional limiters tax *every* cell. They suspect every steep slope, even in smooth regions, and clip the polynomial. MOOD taxes only the cells that actually misbehave. Keep the high-order polynomial wherever the candidate solution looks reasonable; drop the order to first only where it has gone wrong. The consequence is decisive — a high-order DG keeps its formal accuracy across *most* of the grid even when a strong shock is sitting on it.
+
+The idea descended from the a posteriori MOOD family of Clain, Loubère, and Diot (2011), was lifted to explicit DG by Dumbser et al. (2014), and is carried over to staggered semi-implicit DG in the paper under review. Semi-implicit treatment has its own payoff: the CFL is governed by the bulk velocity, not the sound speed. The same code therefore handles low Mach as well as strong shocks.
+
+## Two representations on two grids — polynomial and subcell averages
+
+Inside each main cell $T_i$, two data representations coexist.
+
+- DG degrees of freedom $\hat{q}_i^n$ — the $P+1$ coefficients of a $P$-th order polynomial.
+- Subcell averages $\bar{q}_{i,s}^n$ — the $2P+1$ first-order finite volume cell averages.
+
+Two operators travel between them.
+
+$$
+\bar{q}_{i,s}^n = \mathcal{P} \cdot \hat{q}_i^n, \qquad \hat{q}_i^n = \mathcal{W} \cdot \bar{q}_i^n, \qquad \mathcal{W}\cdot\mathcal{P} = \mathcal{I}
+$$
+
+$\mathcal{P}$ is the $L_2$ projection of the polynomial onto subcell averages. $\mathcal{W}$ is a constrained least-squares recovery — the constraint pins down the cell integral, since $2P+1 > P+1$ makes the recovery overdetermined.
+
+When a cell is flagged as troubled, its representation flips from polynomial to subcell averages. At interfaces between troubled and untroubled cells, a *mixed* configuration appears, and the operators $\mathcal{W}_L, \mathcal{W}_R$ recover a polynomial from the relevant half of the cell. The fact that the two representations can share a single cell is the cornerstone of this entire family.
+
+## PAD and NAD — twin checkpoints
+
+Once a candidate solution $Q^{\circ,n+1}$ comes out of the unlimited DG step, two checkpoints inspect it.
+
+**PAD (Physical Admissibility Detector)** — does this state make physical sense?
+
+$$
+\hat{\rho}_{i,l}^{\circ,n+1} > 0, \qquad \hat{p}_{i,l}^{\circ,n+1} > 0
+$$
+
+Negative density or pressure breaks the equation of state. Fail here and the cell is troubled immediately.
+
+**NAD (Numerical Admissibility Detector)** — is the new value too far from the neighbours? A relaxed discrete maximum principle does the work.
+
+$$
+\min_{T_j \in \mathcal{V}_i} \hat{q}_{j,l}^n - \delta \le \hat{q}_{i,l}^{\circ,n+1} \le \max_{T_j \in \mathcal{V}_i} \hat{q}_{j,l}^n + \delta
+$$
+
+with $\delta = \max[\delta_0, \epsilon (q_{\max}-q_{\min})]$, $\delta_0 \in [10^{-4}, 10^{-3}]$, and $\epsilon = 5\cdot 10^{-4}$. The *relaxation* matters. A strict DMP would flag every smooth peak (a benign local maximum of a smooth function) as troubled, and the limiter would fire constantly. The relaxed band gives smooth maxima a little breathing room. Cells that miss either checkpoint pick up the troubled indicator $\beta_i = 1$.
+
+## Python — one MOOD step
+
+The paper uses DG, but the *candidate → check → recover* shape carries over to plain MUSCL. Sixty lines compress the idea.
+
+```python
+import numpy as np
+
+GAMMA = 1.4
+
+def state_to_primitive(U, gamma=GAMMA):
+    rho = U[0]
+    u = U[1] / np.maximum(rho, 1e-12)
+    e = U[2] / np.maximum(rho, 1e-12) - 0.5 * u * u
+    p = (gamma - 1.0) * rho * e
+    return rho, u, p
+
+def physical_flux_euler(U, gamma=GAMMA):
+    rho, u, p = state_to_primitive(U, gamma)
+    return np.array([rho * u, rho * u * u + p, u * (U[2] + p)])
+
+def lax_friedrichs_flux(UL, UR, gamma=GAMMA):
+    rL, uL, pL = state_to_primitive(UL, gamma)
+    rR, uR, pR = state_to_primitive(UR, gamma)
+    a = max(abs(uL) + np.sqrt(gamma * pL / rL),
+            abs(uR) + np.sqrt(gamma * pR / rR))
+    return 0.5 * (physical_flux_euler(UL) + physical_flux_euler(UR)) \
+           - 0.5 * a * (UR - UL)
+
+def candidate_step_muscl(U, dx, dt, gamma=GAMMA):
+    # P=1 candidate: central slope + LF flux (no limiter on purpose)
+    N = U.shape[1]
+    slope = np.zeros_like(U)
+    slope[:, 1:-1] = 0.5 * (U[:, 2:] - U[:, :-2])
+    UL = U + 0.5 * slope          # left state at the right face
+    UR = U - 0.5 * slope          # right state at the left face
+    F = np.zeros((3, N + 1))
+    for i in range(1, N):
+        F[:, i] = lax_friedrichs_flux(UL[:, i - 1], UR[:, i], gamma)
+    out = U.copy()
+    out[:, 1:-1] = U[:, 1:-1] - dt / dx * (F[:, 2:N] - F[:, 1:N - 1])
+    return out
+
+def detect_troubled_cells(U_old, U_new, delta0=1e-4, eps=5e-4):
+    rho_n, _, p_n = state_to_primitive(U_new)
+    rho_o, _, p_o = state_to_primitive(U_old)
+    beta = (rho_n <= 0) | (p_n <= 0) | ~np.isfinite(rho_n) | ~np.isfinite(p_n)
+    for q_o, q_n in [(rho_o, rho_n), (p_o, p_n)]:
+        for i in range(1, len(beta) - 1):
+            qm, qi, qp = q_o[i - 1], q_o[i], q_o[i + 1]
+            qmin, qmax = min(qm, qi, qp), max(qm, qi, qp)
+            d = max(delta0, eps * (qmax - qmin))
+            if q_n[i] < qmin - d or q_n[i] > qmax + d:
+                beta[i] = True
+    return beta
+
+def fallback_godunov(U, dx, dt, gamma=GAMMA):
+    # 1st-order FV — the robust low-order safety net
+    N = U.shape[1]
+    F = np.zeros((3, N + 1))
+    for i in range(1, N):
+        F[:, i] = lax_friedrichs_flux(U[:, i - 1], U[:, i], gamma)
+    out = U.copy()
+    out[:, 1:-1] = U[:, 1:-1] - dt / dx * (F[:, 2:N] - F[:, 1:N - 1])
+    return out
+
+def mood_step(U, dx, dt, gamma=GAMMA, delta0=1e-4, eps=5e-4):
+    U_cand = candidate_step_muscl(U, dx, dt, gamma)
+    beta = detect_troubled_cells(U, U_cand, delta0, eps)
+    U_safe = fallback_godunov(U, dx, dt, gamma)
+    U_new = np.where(beta[None, :], U_safe, U_cand)
+    return U_new, beta
+```
+
+Run that on Toro Test 3 ($\rho_L=1$, $p_L=1000$, $\rho_R=1$, $p_R=0.01$, $N=200$). The unlimited MUSCL chokes out a negative pressure after roughly 14 steps and diverges. With MOOD wrapped around it, four to six cells around the shock light up troubled and get redone with the first-order flux, while the remaining ~194 cells keep their P=1 accuracy.
+
+## Visualization — where the troubled cells light up
+
+Try the simulation below.
+
+<MOODTroubledCellMap1D />
+
+Push the pressure ratio up to 1000:0.01 and four to six cells around the shock turn red. Drop $\delta_0$ to 1e-6 and the smooth regions start tripping the detector, swamping the limiter with false positives. Raise it to 1e-2 and real shocks slip past. The recommended band $[10^{-4}, 10^{-3}]$ is the narrow valley in between. Tick the *overlay unlimited candidate* checkbox and watch the red dashed curve — the same MUSCL candidate without MOOD — fall apart at the shock.
+
+<DMPRelaxedNADDetector />
+
+Drag the candidate $q^*$ around the relaxed band defined by the three neighbours. Set $\delta$ to zero and *every* local extremum gets flagged. The relaxation is the bit of forgiveness that lets smooth peaks survive.
+
+## What the reproduction surfaced
+
+**Limiter false positives**. The paper admits that RP4 sees "additional troubled cells in the plateau region, probably due to numerical noise". Re-running it on a 200-cell grid with CFL = 0.4, one or two cells in the plateau toggled troubled almost every step. The simulation result is unaffected, but the *measured limiter cost* runs slightly higher than the paper reports.
+
+**Per-variable $\delta_0$ tuning**. Pressure has a much larger amplitude than density in this test, so a single $\delta_0$ is generous on pressure and strict on density. The paper uses one value across variables. In 2D Riemann configuration 4 we found that variable-wise normalization gave a cleaner detector.
+
+**Reassembly cost of the implicit system**. Once a troubled cell is detected, the blocks $\mathcal{L}, \mathcal{C}, \mathcal{R}$ of the pressure linear system have to be rebuilt. The 4×4 blocks change shape from DG to FV, so the sparsity pattern itself has to be swapped. Our reproduction added about 10% per detection — nearly twice the ~5% the paper reports.
+
+## What MOOD leaves on the table
+
+The algorithm standardized a *detect → recompute* loop. But the troubled indicator $\beta_i$ resets every step. A slow-moving shock keeps re-flagging the same cells over and over. A persistent indicator could cut the limiter cost itself. The Dumbser group's follow-up (Boscheri 2024, semi-implicit ALE-DG) is the first concrete step in that direction.
+
+Today we touched a single point where two representations coexist inside one cell — polynomial where things are smooth, subcell averages where they are not. The skeleton of the next generation of all-Mach solvers stands on exactly this small switch.

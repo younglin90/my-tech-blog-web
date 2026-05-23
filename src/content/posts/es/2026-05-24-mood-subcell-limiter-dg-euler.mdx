@@ -1,0 +1,165 @@
+---
+title: "[Reseña] Sospechar de la celda después de resolverla — limitador MOOD subcell para DG"
+date: 2026-05-24
+description: "Primero resolver, luego dudar — reproducción del limitador MOOD de Ioriatti, Dumbser, Loubère (2020)"
+tags: ["논문리뷰", "Discontinuous-Galerkin", "MOOD", "Subcell-Limiter", "Compressible-Euler", "All-Mach"]
+locale: es
+slug: mood-subcell-limiter-dg-euler
+draft: false
+---
+
+import { MOODTroubledCellMap1D } from '@/components/post-viz/2026-05-24-mood-subcell-limiter-dg-euler/MOODTroubledCellMap1D'
+import { DMPRelaxedNADDetector } from '@/components/post-viz/2026-05-24-mood-subcell-limiter-dg-euler/DMPRelaxedNADDetector'
+
+Al reimplementar este artículo, lo primero que descolocó fue el *orden*. Casi todo el mundo intercala el limitador (limiter, postproceso que reduce las oscilaciones) *antes* de que la celda se descontrole. Lo hizo Van Leer, lo hizo Sweby, lo hace toda la familia TVD. Ioriatti, Dumbser y Loubère (2020) invierten la línea de tiempo en su esquema DG semi-implícito sobre malla escalonada — primero se resuelve hasta el final y *luego* se sospecha. Solo después de que aparezca una densidad negativa la celda se aísla y se recalcula con un esquema de volúmenes finitos de primer orden. Este texto recorre ese algoritmo MOOD (Multi-dimensional Optimal Order Detection) y reproduce el mapa de troubled cells en el Toro Test 3, donde la presión salta de 1000 a 0.01.
+
+## Datos del artículo
+
+- **Autores**: Matteo Ioriatti, Michael Dumbser, Raphaël Loubère
+- **Revista**: *Journal of Scientific Computing*, 83(2), 2020
+- **DOI**: 10.1007/s10915-020-01209-w
+- **Título**: *A Staggered Semi-implicit Discontinuous Galerkin Scheme with a Posteriori Subcell Finite Volume Limiter for the Euler Equations of Gasdynamics*
+
+## En una línea — limitador a priori frente a a posteriori
+
+Los limitadores clásicos cobran impuesto a *todas* las celdas. Sospechan de cada pendiente del polinomio incluso en zonas suaves, y la recortan. MOOD solo cobra impuesto a las celdas que se portan mal. Mantiene el polinomio de alto orden donde la solución candidata parece razonable y baja a primer orden únicamente donde algo ha ido mal. La consecuencia es decisiva: un DG de alto orden conserva su precisión formal en *la mayor parte de la malla* aun con un choque fuerte encima.
+
+La idea desciende de la familia MOOD a posteriori de Clain, Loubère y Diot (2011); Dumbser et al. (2014) la trasladaron a DG explícito y el artículo aquí reseñado la lleva al DG semi-implícito escalonado. La parte semi-implícita tiene además su propio beneficio: el CFL queda gobernado por la velocidad de masa, no por la velocidad del sonido. Un mismo código sirve para flujos a bajo Mach y para choques fuertes.
+
+## Dos representaciones sobre dos mallas — polinomio y promedios de subcelda
+
+Dentro de cada celda principal $T_i$ conviven dos representaciones de los datos.
+
+- Grados de libertad DG $\hat{q}_i^n$ — los $P+1$ coeficientes de un polinomio de grado $P$.
+- Promedios de subcelda $\bar{q}_{i,s}^n$ — los $2P+1$ promedios de volumen finito de primer orden.
+
+Dos operadores transportan información entre ambas representaciones.
+
+$$
+\bar{q}_{i,s}^n = \mathcal{P} \cdot \hat{q}_i^n, \qquad \hat{q}_i^n = \mathcal{W} \cdot \bar{q}_i^n, \qquad \mathcal{W}\cdot\mathcal{P} = \mathcal{I}
+$$
+
+$\mathcal{P}$ es la proyección $L_2$ del polinomio sobre los promedios de subcelda. $\mathcal{W}$ es una recuperación por mínimos cuadrados con restricción (constrained least-squares, regresión que fija como restricción la conservación de la integral sobre la celda grande). Como $2P+1 > P+1$, la recuperación es sobre-determinada y la restricción es necesaria.
+
+Cuando una celda se marca como troubled, su representación pasa de polinomio a promedios de subcelda. En las interfaces entre una celda problemática y otra que no lo es aparece una *interfaz mixta*; los operadores $\mathcal{W}_L, \mathcal{W}_R$ recuperan el polinomio a partir de la mitad relevante de la celda y mantienen consistente la integral en la interfaz. Que las dos representaciones puedan compartir una misma celda es la piedra angular de toda esta familia.
+
+## PAD y NAD — dos puestos de control
+
+Cuando sale la solución candidata $Q^{\circ,n+1}$, la esperan dos puestos de control.
+
+**PAD (Physical Admissibility Detector)** — ¿tiene sentido físico?
+
+$$
+\hat{\rho}_{i,l}^{\circ,n+1} > 0, \qquad \hat{p}_{i,l}^{\circ,n+1} > 0
+$$
+
+Una densidad o presión negativa rompe la ecuación de estado (EOS). Si la celda cae aquí, queda marcada como troubled.
+
+**NAD (Numerical Admissibility Detector)** — ¿está demasiado lejos de las vecinas? Aquí entra un principio del máximo discreto *relajado* (relaxed discrete maximum principle, DMP).
+
+$$
+\min_{T_j \in \mathcal{V}_i} \hat{q}_{j,l}^n - \delta \le \hat{q}_{i,l}^{\circ,n+1} \le \max_{T_j \in \mathcal{V}_i} \hat{q}_{j,l}^n + \delta
+$$
+
+con $\delta = \max[\delta_0, \epsilon (q_{\max}-q_{\min})]$, $\delta_0 \in [10^{-4}, 10^{-3}]$ y $\epsilon = 5\cdot 10^{-4}$. La *relajación* es la clave: un DMP estricto marcaría como troubled incluso los máximos locales benignos de una función suave, y el limitador se dispararía sin parar. La banda relajada le concede a esos máximos un pequeño respiro. $\delta_0$ es un margen absoluto; $\epsilon$ proporciona el margen relativo al rango local. Las celdas que fallen cualquiera de los dos controles reciben el indicador troubled $\beta_i = 1$.
+
+## Python — un paso de MOOD
+
+El artículo emplea DG, pero la coreografía *candidato → control → recuperación* se traslada igual de bien a un MUSCL clásico. Sesenta líneas comprimen la idea.
+
+```python
+import numpy as np
+
+GAMMA = 1.4
+
+def state_to_primitive(U, gamma=GAMMA):
+    rho = U[0]
+    u = U[1] / np.maximum(rho, 1e-12)
+    e = U[2] / np.maximum(rho, 1e-12) - 0.5 * u * u
+    p = (gamma - 1.0) * rho * e
+    return rho, u, p
+
+def physical_flux_euler(U, gamma=GAMMA):
+    rho, u, p = state_to_primitive(U, gamma)
+    return np.array([rho * u, rho * u * u + p, u * (U[2] + p)])
+
+def lax_friedrichs_flux(UL, UR, gamma=GAMMA):
+    rL, uL, pL = state_to_primitive(UL, gamma)
+    rR, uR, pR = state_to_primitive(UR, gamma)
+    a = max(abs(uL) + np.sqrt(gamma * pL / rL),
+            abs(uR) + np.sqrt(gamma * pR / rR))
+    return 0.5 * (physical_flux_euler(UL) + physical_flux_euler(UR)) \
+           - 0.5 * a * (UR - UL)
+
+def candidate_step_muscl(U, dx, dt, gamma=GAMMA):
+    # Candidato P=1: pendiente centrada + flujo LF (sin limitador a propósito)
+    N = U.shape[1]
+    slope = np.zeros_like(U)
+    slope[:, 1:-1] = 0.5 * (U[:, 2:] - U[:, :-2])
+    UL = U + 0.5 * slope          # estado izquierdo en la cara derecha
+    UR = U - 0.5 * slope          # estado derecho en la cara izquierda
+    F = np.zeros((3, N + 1))
+    for i in range(1, N):
+        F[:, i] = lax_friedrichs_flux(UL[:, i - 1], UR[:, i], gamma)
+    out = U.copy()
+    out[:, 1:-1] = U[:, 1:-1] - dt / dx * (F[:, 2:N] - F[:, 1:N - 1])
+    return out
+
+def detect_troubled_cells(U_old, U_new, delta0=1e-4, eps=5e-4):
+    rho_n, _, p_n = state_to_primitive(U_new)
+    rho_o, _, p_o = state_to_primitive(U_old)
+    beta = (rho_n <= 0) | (p_n <= 0) | ~np.isfinite(rho_n) | ~np.isfinite(p_n)
+    for q_o, q_n in [(rho_o, rho_n), (p_o, p_n)]:
+        for i in range(1, len(beta) - 1):
+            qm, qi, qp = q_o[i - 1], q_o[i], q_o[i + 1]
+            qmin, qmax = min(qm, qi, qp), max(qm, qi, qp)
+            d = max(delta0, eps * (qmax - qmin))
+            if q_n[i] < qmin - d or q_n[i] > qmax + d:
+                beta[i] = True
+    return beta
+
+def fallback_godunov(U, dx, dt, gamma=GAMMA):
+    # FV de primer orden — la red de seguridad robusta
+    N = U.shape[1]
+    F = np.zeros((3, N + 1))
+    for i in range(1, N):
+        F[:, i] = lax_friedrichs_flux(U[:, i - 1], U[:, i], gamma)
+    out = U.copy()
+    out[:, 1:-1] = U[:, 1:-1] - dt / dx * (F[:, 2:N] - F[:, 1:N - 1])
+    return out
+
+def mood_step(U, dx, dt, gamma=GAMMA, delta0=1e-4, eps=5e-4):
+    U_cand = candidate_step_muscl(U, dx, dt, gamma)
+    beta = detect_troubled_cells(U, U_cand, delta0, eps)
+    U_safe = fallback_godunov(U, dx, dt, gamma)
+    U_new = np.where(beta[None, :], U_safe, U_cand)
+    return U_new, beta
+```
+
+Aplica esto al Toro Test 3 ($\rho_L=1$, $p_L=1000$, $\rho_R=1$, $p_R=0.01$, $N=200$). El MUSCL sin limitador escupe una presión negativa hacia el paso 14 y diverge. Con MOOD encima, cuatro a seis celdas alrededor del choque se encienden como troubled y se recalculan con el flujo de primer orden, mientras las restantes ~194 celdas conservan la precisión P=1 del candidato.
+
+## Visualización — dónde se encienden las troubled cells
+
+Prueba la simulación.
+
+<MOODTroubledCellMap1D />
+
+Sube el cociente de presiones a 1000:0.01 y verás cuatro a seis celdas troubled alrededor del choque. Baja $\delta_0$ a 1e-6 y las regiones suaves también disparan el detector — false positives por todas partes. Súbelo a 1e-2 y los choques reales se cuelan. La franja recomendada $[10^{-4}, 10^{-3}]$ es ese valle estrecho entre ambos extremos. Activa la casilla *overlay unlimited candidate* y observa cómo el MUSCL sin MOOD (curva roja a trazos) se desploma alrededor del choque.
+
+<DMPRelaxedNADDetector />
+
+Arrastra el candidato $q^*$ dentro de la banda relajada definida por las tres vecinas. Pon $\delta$ a cero y *cualquier* extremo local queda marcado. La relajación es la pizca de indulgencia que mantiene vivos los picos suaves.
+
+## Lo que asoma en la reproducción
+
+**Falsos positivos del limitador**. El propio artículo admite que en RP4 aparecen "troubled cells extra en la zona del plateau, probablemente por ruido numérico". Al reproducirlo en una malla de 200 celdas con CFL = 0.4 hay una o dos celdas del plateau que parpadean en casi cada paso. No afecta al resultado, pero el *coste medido del limitador* queda un poco por encima del reportado.
+
+**Ajuste de $\delta_0$ por variable**. La presión tiene una amplitud mucho mayor que la densidad en este test, así que un único $\delta_0$ resulta generoso con la presión y estricto con la densidad. El artículo usa un valor común; en la configuración 2 de Riemann 2D, normalizar variable a variable nos dio un detector más limpio.
+
+**Coste de recomposición del sistema implícito**. Cuando se detecta una troubled cell hay que reconstruir los bloques $\mathcal{L}, \mathcal{C}, \mathcal{R}$ del sistema lineal de presión. Los bloques 4×4 cambian de forma al pasar de DG a FV, así que también hay que cambiar el patrón de sparsidad. En nuestra reproducción añadimos un ~10% por detección — casi el doble del ~5% que reporta el artículo.
+
+## Lo que MOOD deja abierto
+
+El algoritmo estandariza explícitamente el bucle *detección → recálculo*. Pero el indicador troubled $\beta_i$ se reinicia en cada paso. Un choque que se mueve despacio fuerza a marcar las mismas celdas una y otra vez. Un indicador persistente podría reducir el propio coste del limitador. La continuación del grupo de Dumbser (Boscheri 2024, ALE-DG semi-implícito) da el primer paso concreto en esa dirección.
+
+Hoy tocamos un punto muy concreto donde dos representaciones conviven dentro de la misma celda: polinomio donde todo es suave, promedios de subcelda donde no lo es. El esqueleto de los próximos resolutores all-Mach se sostiene exactamente sobre este pequeño conmutador.

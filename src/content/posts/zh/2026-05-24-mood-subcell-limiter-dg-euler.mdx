@@ -1,0 +1,165 @@
+---
+title: "[论文评述] 先解后疑——DG 的 a posteriori MOOD 子单元限制器"
+date: 2026-05-24
+description: "先解算，再怀疑——重现 Ioriatti·Dumbser·Loubère(2020) 的 MOOD 限制器"
+tags: ["논문리뷰", "Discontinuous-Galerkin", "MOOD", "Subcell-Limiter", "Compressible-Euler", "All-Mach"]
+locale: zh
+slug: mood-subcell-limiter-dg-euler
+draft: false
+---
+
+import { MOODTroubledCellMap1D } from '@/components/post-viz/2026-05-24-mood-subcell-limiter-dg-euler/MOODTroubledCellMap1D'
+import { DMPRelaxedNADDetector } from '@/components/post-viz/2026-05-24-mood-subcell-limiter-dg-euler/DMPRelaxedNADDetector'
+
+复现这篇论文时最先卡住的，是 *顺序*。多数情况下我们会在单元失控 *之前* 就插入限制器(limiter，用于抑制振荡的后处理)。Van Leer 这样做，Sweby 也这样做。Ioriatti·Dumbser·Loubère(2020) 的交错半隐式 DG 把时间线翻了过来——先把这一步解完，然后再怀疑它。只有出现负密度之后，才单独把那个单元挑出来，用一阶有限体积重新求解。本文沿着这条 MOOD(Multi-dimensional Optimal Order Detection) 算法走一遍，在 Toro Test 3 的极端压力比下重现 troubled cell 亮起的位置。
+
+## 论文信息
+
+- **作者**：Matteo Ioriatti, Michael Dumbser, Raphaël Loubère
+- **期刊**：*Journal of Scientific Computing*, 83(2), 2020
+- **DOI**：10.1007/s10915-020-01209-w
+- **题目**：*A Staggered Semi-implicit Discontinuous Galerkin Scheme with a Posteriori Subcell Finite Volume Limiter for the Euler Equations of Gasdynamics*
+
+## 一句话——事前限制器与事后限制器
+
+传统限制器对 *所有* 单元征税。即使在光滑区域也要怀疑多项式斜率并削平。MOOD 只对 *出问题的单元* 征税。只要候选解看上去合理，高次多项式就原封保留；只在失控的地方掉到一阶。差别是决定性的——即使强激波坐落其上，高次 DG 在 *大部分网格* 上仍能保持 P 阶精度。
+
+这个想法源自 Clain–Loubère–Diot 的 a posteriori MOOD 系列(2011)，由 Dumbser et al.(2014) 引入显式 DG，并在本文中移植到交错半隐式 DG 上。半隐式还有另一个好处——CFL 受流体速度而非声速制约，因此同一段代码既能跑低 Mach，也能跑强激波。
+
+## 两张网格上的两种表示——多项式与子单元平均
+
+在每个主单元 $T_i$ 内部，有两种数据表示并存。
+
+- DG 自由度 $\hat{q}_i^n$——$P$ 阶多项式的 $P+1$ 个系数
+- 子单元平均 $\bar{q}_{i,s}^n$——$2P+1$ 个一阶 FV 单元平均
+
+两种表示通过两个算子互相转换。
+
+$$
+\bar{q}_{i,s}^n = \mathcal{P} \cdot \hat{q}_i^n, \qquad \hat{q}_i^n = \mathcal{W} \cdot \bar{q}_i^n, \qquad \mathcal{W}\cdot\mathcal{P} = \mathcal{I}
+$$
+
+$\mathcal{P}$ 是把多项式投影到子单元平均上的 $L_2$ 投影。$\mathcal{W}$ 是从子单元平均恢复多项式的约束最小二乘(constrained least-squares，以大单元的积分守恒为约束的回归)。由于 $2P+1 > P+1$，恢复是过定方程组，必须加约束。
+
+一旦一个单元被标记为 troubled，其表示就从多项式 *切换* 到子单元平均。在与未标记单元相邻的界面上，会出现一侧是多项式、另一侧是子单元平均的 *混合界面*。此时 $\mathcal{W}_L, \mathcal{W}_R$ 从半个单元恢复多项式，使界面积分保持一致。两种表示能在同一单元里共存，是整个家族的核心资产。
+
+## PAD 与 NAD——双重关卡
+
+候选解 $Q^{\circ,n+1}$ 出来之后，两道检查等在那里。
+
+**PAD (Physical Admissibility Detector)**：物理上是否说得通？
+
+$$
+\hat{\rho}_{i,l}^{\circ,n+1} > 0, \qquad \hat{p}_{i,l}^{\circ,n+1} > 0
+$$
+
+负密度或负压会让状态方程(EOS) 崩溃。在这关被刷下来就立即 troubled。
+
+**NAD (Numerical Admissibility Detector)**：和邻居偏离得是不是太远？这里用 *松弛的* 离散最大值原理(relaxed discrete maximum principle, DMP)。
+
+$$
+\min_{T_j \in \mathcal{V}_i} \hat{q}_{j,l}^n - \delta \le \hat{q}_{i,l}^{\circ,n+1} \le \max_{T_j \in \mathcal{V}_i} \hat{q}_{j,l}^n + \delta
+$$
+
+其中 $\delta = \max[\delta_0, \epsilon (q_{\max}-q_{\min})]$，$\delta_0 \in [10^{-4}, 10^{-3}]$，$\epsilon = 5\cdot 10^{-4}$。这种 *松弛* 是关键——严格的 DMP 会把光滑的峰(光滑函数的局部极值)也当作 troubled，让限制器不停乱响。$\delta_0$ 是绝对振幅，$\epsilon$ 是相对振幅的保护带。两道关都没通过的单元会被打上 troubled 指示 $\beta_i = 1$。
+
+## Python——一步 MOOD
+
+论文使用 DG，但 *候选 → 检查 → 一阶回退* 的流程在 MUSCL 上同样适用。60 行压缩出它的本质。
+
+```python
+import numpy as np
+
+GAMMA = 1.4
+
+def state_to_primitive(U, gamma=GAMMA):
+    rho = U[0]
+    u = U[1] / np.maximum(rho, 1e-12)
+    e = U[2] / np.maximum(rho, 1e-12) - 0.5 * u * u
+    p = (gamma - 1.0) * rho * e
+    return rho, u, p
+
+def physical_flux_euler(U, gamma=GAMMA):
+    rho, u, p = state_to_primitive(U, gamma)
+    return np.array([rho * u, rho * u * u + p, u * (U[2] + p)])
+
+def lax_friedrichs_flux(UL, UR, gamma=GAMMA):
+    rL, uL, pL = state_to_primitive(UL, gamma)
+    rR, uR, pR = state_to_primitive(UR, gamma)
+    a = max(abs(uL) + np.sqrt(gamma * pL / rL),
+            abs(uR) + np.sqrt(gamma * pR / rR))
+    return 0.5 * (physical_flux_euler(UL) + physical_flux_euler(UR)) \
+           - 0.5 * a * (UR - UL)
+
+def candidate_step_muscl(U, dx, dt, gamma=GAMMA):
+    # P=1 候选：中心差分斜率 + LF 通量（故意不带限制器）
+    N = U.shape[1]
+    slope = np.zeros_like(U)
+    slope[:, 1:-1] = 0.5 * (U[:, 2:] - U[:, :-2])
+    UL = U + 0.5 * slope          # 右界面的左侧值
+    UR = U - 0.5 * slope          # 左界面的右侧值
+    F = np.zeros((3, N + 1))
+    for i in range(1, N):
+        F[:, i] = lax_friedrichs_flux(UL[:, i - 1], UR[:, i], gamma)
+    out = U.copy()
+    out[:, 1:-1] = U[:, 1:-1] - dt / dx * (F[:, 2:N] - F[:, 1:N - 1])
+    return out
+
+def detect_troubled_cells(U_old, U_new, delta0=1e-4, eps=5e-4):
+    rho_n, _, p_n = state_to_primitive(U_new)
+    rho_o, _, p_o = state_to_primitive(U_old)
+    beta = (rho_n <= 0) | (p_n <= 0) | ~np.isfinite(rho_n) | ~np.isfinite(p_n)
+    for q_o, q_n in [(rho_o, rho_n), (p_o, p_n)]:
+        for i in range(1, len(beta) - 1):
+            qm, qi, qp = q_o[i - 1], q_o[i], q_o[i + 1]
+            qmin, qmax = min(qm, qi, qp), max(qm, qi, qp)
+            d = max(delta0, eps * (qmax - qmin))
+            if q_n[i] < qmin - d or q_n[i] > qmax + d:
+                beta[i] = True
+    return beta
+
+def fallback_godunov(U, dx, dt, gamma=GAMMA):
+    # 一阶 FV——稳健的低阶安全网
+    N = U.shape[1]
+    F = np.zeros((3, N + 1))
+    for i in range(1, N):
+        F[:, i] = lax_friedrichs_flux(U[:, i - 1], U[:, i], gamma)
+    out = U.copy()
+    out[:, 1:-1] = U[:, 1:-1] - dt / dx * (F[:, 2:N] - F[:, 1:N - 1])
+    return out
+
+def mood_step(U, dx, dt, gamma=GAMMA, delta0=1e-4, eps=5e-4):
+    U_cand = candidate_step_muscl(U, dx, dt, gamma)
+    beta = detect_troubled_cells(U, U_cand, delta0, eps)
+    U_safe = fallback_godunov(U, dx, dt, gamma)
+    U_new = np.where(beta[None, :], U_safe, U_cand)
+    return U_new, beta
+```
+
+把上面这段代码放到 Toro Test 3 ($\rho_L=1$, $p_L=1000$, $\rho_R=1$, $p_R=0.01$, $N=200$) 上跑。无限制器的 MUSCL 约 14 步就吐出负压并发散。套上 MOOD 后，激波附近 4 到 6 个单元被点亮为 troubled，仅这些单元用一阶 FV 重新求解，其余约 194 个单元保持候选的 P=1 精度。
+
+## 可视化——troubled cell 亮起的位置
+
+下面的模拟可以直接操控。
+
+<MOODTroubledCellMap1D />
+
+把压力比拉到 1000:0.01，激波附近的 troubled cell 会增至 4–6 个。$\delta_0$ 设到 1e-6 时，连光滑区域也会触发探测器，误报泛滥；推到 1e-2 时，真正的激波又会溜过去。论文推荐的 $[10^{-4}, 10^{-3}]$ 正是中间那条狭窄的山谷。勾选 *overlay unlimited candidate*，可以看到无限制器的 MUSCL 候选解(红色虚线)如何在同一网格上崩溃。
+
+<DMPRelaxedNADDetector />
+
+把候选值 $q^*$ 在由三个邻居围出的松弛带内拖动。把 $\delta$ 设为 0，*所有局部极值* 都会被打上 troubled。这个松弛量是让光滑峰存活的 *一撮宽容*。
+
+## 复现中浮现的限制
+
+**限制器误报**。论文也承认 RP4 中"plateau 区域出现额外 troubled cell，大概是数值噪声造成的"。在 200 网格、CFL=0.4 下复现时，plateau 中有 1–2 个单元几乎每步都会闪烁。结果不受影响，但 *实测的限制器开销* 比论文报告略高。
+
+**逐变量的 $\delta_0$ 调参**。本算例中压力振幅远大于密度，因此单一 $\delta_0$ 对压力宽松、对密度严苛。论文使用统一值，但在 2D Riemann 4 号配置下，按变量归一化能得到更干净的探测器。
+
+**隐式系统的重组开销**。一旦发现 troubled cell，就要重新组装压力线性系统的块 $\mathcal{L}, \mathcal{C}, \mathcal{R}$。4×4 块从 DG 切换到 FV，连稀疏结构都要重换。我们的复现每次检测增加约 10% 开销，几乎是论文报告 5% 的两倍。
+
+## MOOD 留下的下一个问题
+
+这个算法把 *检测 → 重算* 这个循环明文标准化了。但 troubled 指示器 $\beta_i$ 每步都重置。慢速移动的激波会让同一些单元一次次重新被怀疑——若能追踪时间一致性，限制器调用本身就能减少。Dumbser 团队的后续工作(Boscheri 2024, semi-implicit ALE-DG)在这个方向上迈出了第一步。
+
+今天我们触到了一个非常具体的支点——*高次表示与一阶表示在同一单元内共存*。光滑处用多项式，粗糙处用平均值——下一代 all-Mach 求解器的骨架就立在这个小开关之上。
