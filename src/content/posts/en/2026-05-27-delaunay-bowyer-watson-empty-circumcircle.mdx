@@ -1,0 +1,154 @@
+---
+title: "Delaunay Triangulation — the Empty-Circumcircle Rule and Bowyer–Watson Insertion"
+date: 2026-05-27
+description: "Why an unstructured mesh repairs itself when you drop in one point"
+tags: ["Mesh-Generation", "Delaunay", "Unstructured-Grid", "Computational-Geometry", "Bowyer-Watson"]
+locale: en
+slug: delaunay-bowyer-watson-empty-circumcircle
+draft: false
+---
+
+import { DelaunayInsertionCanvas } from '@/components/post-viz/2026-05-27-delaunay-bowyer-watson-empty-circumcircle/DelaunayInsertionCanvas'
+import { EdgeFlipInCircleTest } from '@/components/post-viz/2026-05-27-delaunay-bowyer-watson-empty-circumcircle/EdgeFlipInCircleTest'
+
+In 1934, Boris Delaunay defined a triangulation in honor of his mentor Georgy Voronoi. The rule was a single line: no other point may lie inside any triangle's circumcircle. That one condition became the heart of nearly every unstructured mesh generator in use today.
+
+This post shows why that "empty circumcircle" rule produces good grids. Then we build a mesh point by point with the Bowyer–Watson algorithm in 40 lines of Python. At the end we watch how floating point quietly betrays this elegant rule.
+
+## A mesh defined by a single empty circle
+
+There are countless ways to connect a point set into triangles. Delaunay picks exactly one: the triangulation in which every triangle's circumcircle (the circle through its three vertices) is *empty*.
+
+Let $C(T)$ be the circumcircle of triangle $T = \{a, b, c\}$. The condition reads:
+
+$$
+\forall\, p \notin T : \quad p \notin \mathrm{int}\, C(T)
+$$
+
+Here $\mathrm{int}\,C(T)$ is the interior of the circumcircle and $p$ is every other point in the mesh. No point may sit *inside* another triangle's circumcircle.
+
+Why this rule? Among all triangulations of a point set, the Delaunay one **maximizes the minimum angle**. It avoids long, thin slivers as much as possible. Sliver triangles wreck gradient reconstruction and matrix conditioning in finite-volume and finite-element solvers. So mesh generators take Delaunay as the default.
+
+As a bonus, the dual of a Delaunay triangulation is exactly the Voronoi diagram. Get one structure and the other comes for free.
+
+## The InCircle determinant — testing "inside" in one shot
+
+You can answer "is this point inside the circumcircle?" without ever computing the circle's center or radius. For a counterclockwise triangle $(a, b, c)$, point $d$ lies inside the circumcircle if and only if this determinant is positive:
+
+$$
+\det
+\begin{pmatrix}
+a_x - d_x & a_y - d_y & (a_x - d_x)^2 + (a_y - d_y)^2 \\
+b_x - d_x & b_y - d_y & (b_x - d_x)^2 + (b_y - d_y)^2 \\
+c_x - d_x & c_y - d_y & (c_x - d_x)^2 + (c_y - d_y)^2
+\end{pmatrix}
+> 0
+$$
+
+Each row shifts one vertex into coordinates relative to $d$, then appends its squared distance. The sign depends on the triangle's orientation: it flips for a clockwise winding, so real code multiplies by the orientation sign to normalize it.
+
+In the figure below, drag vertex B upward with the slider.
+
+<EdgeFlipInCircleTest />
+
+As B rises, the circumcircle of triangle A–B–C grows. The moment point D crosses inside it, the diagonal A–C becomes *illegal* and the Delaunay answer flips to B–D. Notice too that the larger of the two min-angle numbers always belongs to the chosen diagonal.
+
+## Bowyer–Watson — drop a point, re-fill the hole
+
+Now we build the mesh. Bowyer–Watson is an incremental algorithm that inserts points one at a time while keeping the Delaunay property at every step. The flow is five steps.
+
+1. Start with a **super-triangle** large enough to contain every point.
+2. For a new point $p$, find all triangles whose circumcircle contains $p$ — call them the *bad triangles*.
+3. The bad triangles always form one star-shaped cavity. Its boundary is the set of edges that belong to *exactly one* bad triangle.
+4. Delete the bad triangles and connect $p$ to each boundary edge, forming new triangles.
+5. After all points are in, remove any triangle that shares a vertex with the super-triangle.
+
+The key is the property in step 3. Inserting $p$ breaks the *empty circumcircle* rule only for "triangles whose circumcircle contains $p$," and those always form one connected cavity. Re-fill just that cavity and the whole mesh is Delaunay again.
+
+Click the canvas below to add points yourself.
+
+<DelaunayInsertionCanvas />
+
+Every time you add a point, the mesh rebuilds itself. The thin cyan rings are the circumcircles. Leave *show circumcircles* on and you can see the empty-circumcircle property directly: no yellow dot ever lands inside another triangle's ring.
+
+## Lawson flips — the local choice of one diagonal
+
+Where Bowyer–Watson re-fills a whole cavity, Lawson's method fixes one edge at a time. Split the triangle containing the new point into three, then run the in-circle test on each affected edge. If the opposite point lies inside the circumcircle, *flip* the shared edge (the diagonal). Repeat until no illegal edge remains.
+
+A single flip always increases the minimum angle of the two triangles involved. So once the loop ends, you automatically have a Delaunay mesh with the minimum angle maximized. The A–C ↔ B–D switch you saw above is exactly one such flip.
+
+The same tool handles constrained Delaunay, when a boundary edge must survive. Find the pipe of triangles that a recovery edge AB crosses, and re-triangulate that strip by swapping diagonals until AB reappears as a mesh edge.
+
+## Python — 60 random points into a Delaunay mesh
+
+The whole incremental insertion in numpy. It runs with no external library.
+
+```python
+import numpy as np
+
+def in_circle(a, b, c, d):
+    """True if point d is strictly inside the circumcircle of triangle a,b,c.
+    Normalized by the triangle's orientation sign so winding does not matter."""
+    ax, ay = a[0] - d[0], a[1] - d[1]
+    bx, by = b[0] - d[0], b[1] - d[1]
+    cx, cy = c[0] - d[0], c[1] - d[1]
+    det = np.linalg.det(np.array([
+        [ax, ay, ax * ax + ay * ay],
+        [bx, by, bx * bx + by * by],
+        [cx, cy, cx * cx + cy * cy],
+    ]))
+    orient = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+    return det * np.sign(orient) > 1e-12
+
+def super_triangle(points):
+    pts = np.asarray(points)
+    cx, cy = pts.mean(axis=0)
+    r = np.max(np.linalg.norm(pts - [cx, cy], axis=1)) + 1.0
+    return [(cx - 3 * r, cy - r), (cx + 3 * r, cy - r), (cx, cy + 3 * r)]
+
+def bowyer_watson(points):
+    st = super_triangle(points)
+    tris = [(st[0], st[1], st[2])]
+    for p in points:
+        bad = [t for t in tris if in_circle(t[0], t[1], t[2], p)]
+        edge_n = {}                              # count how often each edge appears
+        for t in bad:
+            for e in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])]:
+                key = frozenset((e[0], e[1]))
+                edge_n[key] = edge_n.get(key, 0) + 1
+        boundary = [tuple(k) for k, n in edge_n.items() if n == 1]
+        tris = [t for t in tris if t not in bad]
+        for e in boundary:                       # re-fill the cavity with point p
+            tris.append((e[0], e[1], p))
+    s = set(st)
+    return [t for t in tris if not (set(t) & s)]
+
+rng = np.random.default_rng(7)
+pts = [tuple(p) for p in rng.random((60, 2))]
+mesh = bowyer_watson(pts)
+print(f"points = {len(pts)}   triangles = {len(mesh)}")
+```
+
+The output is roughly:
+
+```text
+points = 60   triangles = 110
+```
+
+The triangle count is no accident. In a planar Delaunay mesh the number of triangles is fixed at $2N - 2 - h$, where $N$ is the point count and $h$ is the number of points on the convex hull. With $N = 60$ and 8 hull points, you get exactly 110. You can sanity-check the count before the mesh is even drawn.
+
+## When the points nearly lie on one circle
+
+The elegant rule has a trap. When four points lie exactly on one circle (cocircular), the in-circle determinant is zero. Either diagonal is Delaunay, and the triangulation is not unique. The worst case is a square grid — the four corners of every square are cocircular, so the most regular input is the most ambiguous one.
+
+The real trouble starts near that zero, with floating point. When the determinant reaches the machine-precision limit, its sign flips at random, the topology becomes inconsistent, and the code spins in an infinite loop or crashes. That is why production libraries like Triangle and CGAL use **adaptive exact predicates** (Shewchuk) instead of plain `double`. They compute just enough digits to get the sign exactly right, every time.
+
+In three dimensions there is one more trap. The empty-circum*sphere* condition does not forbid nearly flat tetrahedra (slivers). So 3D meshing adds Delaunay refinement (Ruppert, Chew), inserting Steiner points to raise quality.
+
+The last practical trap is the boundary. A raw Delaunay mesh does not respect the geometry boundary you drew. To force a boundary edge to survive you need the constrained Delaunay step above. "Why does my mesh cut straight through the wall?" is the sign that you skipped it.
+
+## Three lines to keep before you lay a mesh
+
+- Delaunay = empty circumcircle = maximized minimum angle. The three phrasings are the same thing, all aimed at avoiding slivers.
+- Bowyer–Watson fits in five lines: "delete the bad triangles, re-fill the hole with the point." The trick is the theorem that the hole is always star-shaped.
+- Cocircular input and floating point break the in-circle sign. If a square grid is involved, reach for an exact predicate first.

@@ -1,0 +1,154 @@
+---
+title: "Delaunay 三角剖分 — 空外接圆条件与 Bowyer–Watson 插点法"
+date: 2026-05-27
+description: "为什么落下一个点，非结构网格就能自我修复"
+tags: ["Mesh-Generation", "Delaunay", "Unstructured-Grid", "Computational-Geometry", "Bowyer-Watson"]
+locale: zh
+slug: delaunay-bowyer-watson-empty-circumcircle
+draft: false
+---
+
+import { DelaunayInsertionCanvas } from '@/components/post-viz/2026-05-27-delaunay-bowyer-watson-empty-circumcircle/DelaunayInsertionCanvas'
+import { EdgeFlipInCircleTest } from '@/components/post-viz/2026-05-27-delaunay-bowyer-watson-empty-circumcircle/EdgeFlipInCircleTest'
+
+1934 年，Boris Delaunay 为纪念恩师 Georgy Voronoi，定义了一种三角剖分。规则只有一行：任何三角形的外接圆内部都不能有其他点。正是这一个条件，成了今天几乎所有非结构网格生成器的核心。
+
+本文先看这条「空外接圆」规则为什么能产生好网格。然后用 40 行 Python 逐点构建网格，实现 Bowyer–Watson 算法。最后我们会看到浮点数如何悄悄背叛这条优雅的规则。
+
+## 由一个空圆定义的网格
+
+把同一组点连成三角形的方法有无数种。Delaunay 只挑其中一种：每个三角形的外接圆(过三个顶点的圆)都*为空*的剖分。
+
+设三角形 $T = \{a, b, c\}$ 的外接圆为 $C(T)$，条件可写成：
+
+$$
+\forall\, p \notin T : \quad p \notin \mathrm{int}\, C(T)
+$$
+
+其中 $\mathrm{int}\,C(T)$ 是外接圆的内部，$p$ 是网格中其他所有点。任何点都不能落在另一个三角形外接圆的*内侧*。
+
+为什么是这条规则？在同一组点的所有三角剖分中，Delaunay 剖分**最大化最小内角**，也就是尽量避免细长的三角形(sliver)。细三角形会破坏有限体积法和有限元法中的梯度重构与矩阵条件数。所以网格生成器把 Delaunay 当作默认值。
+
+此外，Delaunay 三角剖分的对偶(dual)恰好是 Voronoi 图。得到一个结构，另一个就免费附送。
+
+## InCircle 行列式 — 一步判断点在圆内还是圆外
+
+「点是否在外接圆内」可以不求圆心和半径就一步给出答案。对逆时针排列的三角形 $(a, b, c)$，点 $d$ 在外接圆内部的充要条件是下面这个行列式为正：
+
+$$
+\det
+\begin{pmatrix}
+a_x - d_x & a_y - d_y & (a_x - d_x)^2 + (a_y - d_y)^2 \\
+b_x - d_x & b_y - d_y & (b_x - d_x)^2 + (b_y - d_y)^2 \\
+c_x - d_x & c_y - d_y & (c_x - d_x)^2 + (c_y - d_y)^2
+\end{pmatrix}
+> 0
+$$
+
+每一行把一个顶点平移到以 $d$ 为基准的相对坐标，再附上它到 $d$ 的距离平方。这个值的符号取决于三角形的方向(orientation)：顺时针时符号会翻转，所以实际代码会乘上三角形的方向符号来归一化。
+
+在下图中，用滑块把顶点 B 向上拉。
+
+<EdgeFlipInCircleTest />
+
+B 越往上，三角形 A–B–C 的外接圆就越大。当点 D 进入圆内的那一刻，对角线 A–C 变得*非法*，Delaunay 解翻转为 B–D。也请留意：两个 min-angle 数值中较大的那个，总是属于被选中的对角线。
+
+## Bowyer–Watson — 落点之后再把洞填回去
+
+现在来构建网格。Bowyer–Watson 是一种逐点插入、每步都保持 Delaunay 性质的增量(incremental)算法，流程分五步。
+
+1. 从一个大到能包住所有点的**超级三角形**开始。
+2. 对新点 $p$，找出所有外接圆包含 $p$ 的三角形 — 称为*坏三角形*。
+3. 坏三角形总是构成一个星形(star-shaped)的洞。它的边界，是*恰好属于一个*坏三角形的那些边。
+4. 删掉所有坏三角形，把 $p$ 与边界的每条边相连，形成新三角形。
+5. 放完所有点后，移除任何与超级三角形共享顶点的三角形。
+
+关键在第 3 步的性质。插入 $p$ 后违反*空外接圆*条件的三角形，只有「外接圆包含 $p$ 的三角形」，而它们总是构成一个连通的洞。只把那个洞填回去，整个网格就重新成为 Delaunay。
+
+点击下面的画布，自己加点试试。
+
+<DelaunayInsertionCanvas />
+
+每加一个点，网格就自己重新组合。细细的青色圆是各个三角形的外接圆。把 *show circumcircles* 打开，就能直接看到空外接圆性质：没有任何黄点会落进另一个三角形的圆里。
+
+## Lawson 翻边 — 一条对角线的局部选择
+
+Bowyer–Watson 整块填洞，Lawson 的方法则是一条边一条边地修。把含新点的三角形分成三个，然后对每条受影响的边做 in-circle 检测。如果对面的点落在外接圆内，就*翻转*那条共享边(对角线)。重复，直到没有非法边为止。
+
+一次翻转必然增大相关两个三角形的最小内角。所以循环结束时，自动得到一个最小内角被最大化的 Delaunay 网格。上图里看到的 A–C ↔ B–D 切换，正是这样一次翻转。
+
+要强制保留边界线时(constrained Delaunay)也用同一套工具。找出待恢复边 AB 穿过的三角形带(pipe)，在其中用对角线交换重新剖分，AB 就会作为网格边恢复出来。
+
+## Python — 把随机 60 个点变成 Delaunay 网格
+
+把整个增量插入搬进 numpy。无需外部库即可运行。
+
+```python
+import numpy as np
+
+def in_circle(a, b, c, d):
+    """若点 d 严格落在三角形 a,b,c 的外接圆内则返回 True。
+    用三角形方向符号归一化，使结果与 winding 无关。"""
+    ax, ay = a[0] - d[0], a[1] - d[1]
+    bx, by = b[0] - d[0], b[1] - d[1]
+    cx, cy = c[0] - d[0], c[1] - d[1]
+    det = np.linalg.det(np.array([
+        [ax, ay, ax * ax + ay * ay],
+        [bx, by, bx * bx + by * by],
+        [cx, cy, cx * cx + cy * cy],
+    ]))
+    orient = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+    return det * np.sign(orient) > 1e-12
+
+def super_triangle(points):
+    pts = np.asarray(points)
+    cx, cy = pts.mean(axis=0)
+    r = np.max(np.linalg.norm(pts - [cx, cy], axis=1)) + 1.0
+    return [(cx - 3 * r, cy - r), (cx + 3 * r, cy - r), (cx, cy + 3 * r)]
+
+def bowyer_watson(points):
+    st = super_triangle(points)
+    tris = [(st[0], st[1], st[2])]
+    for p in points:
+        bad = [t for t in tris if in_circle(t[0], t[1], t[2], p)]
+        edge_n = {}                              # 统计每条边出现的次数
+        for t in bad:
+            for e in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])]:
+                key = frozenset((e[0], e[1]))
+                edge_n[key] = edge_n.get(key, 0) + 1
+        boundary = [tuple(k) for k, n in edge_n.items() if n == 1]
+        tris = [t for t in tris if t not in bad]
+        for e in boundary:                       # 用点 p 把洞填回去
+            tris.append((e[0], e[1], p))
+    s = set(st)
+    return [t for t in tris if not (set(t) & s)]
+
+rng = np.random.default_rng(7)
+pts = [tuple(p) for p in rng.random((60, 2))]
+mesh = bowyer_watson(pts)
+print(f"points = {len(pts)}   triangles = {len(mesh)}")
+```
+
+输出大致如下：
+
+```text
+points = 60   triangles = 110
+```
+
+三角形数量并非偶然。在平面 Delaunay 中，三角形个数固定为 $2N - 2 - h$($N$ 是点数，$h$ 是凸包上的点数)。当 $N = 60$、凸包上有 8 个点时，恰好得到 110 个。网格还没画出来，就能用个数先验算一遍。
+
+## 当点几乎都落在同一个圆上
+
+优雅的规则有陷阱。当四个点恰好落在同一个圆上(cocircular)时，in-circle 行列式为 0。任选哪条对角线都是 Delaunay，剖分不唯一。最坏的情况是正方网格 — 每个正方形的四角都共圆，于是最规则的输入反而是最含糊的输入。
+
+真正的麻烦出在那个 0 附近，由浮点数引起。当行列式达到机器精度极限，它的符号会随机翻转，拓扑(topology)陷入矛盾，代码要么卡进死循环，要么崩溃。所以 Triangle、CGAL 这类实战库不用普通 `double`，而用**自适应精确谓词**(adaptive exact predicates，Shewchuk)。它们只精确计算到所需位数，保证符号永远不出错。
+
+到了三维，陷阱又多一个。空外接*球*条件并不禁止近乎扁平的四面体(sliver)。所以三维网格要用 Delaunay refinement(Ruppert、Chew)插入 Steiner 点来提升质量。
+
+最后一个实务陷阱是边界。原始 Delaunay 网格并不尊重你画的几何边界。要强制保留某条边界边，就需要上面说的 constrained Delaunay。「为什么网格直接穿墙而过」就是漏掉这一步的信号。
+
+## 铺网格之前记下的三行
+
+- Delaunay = 空外接圆 = 最大化最小内角。三种说法是同一件事，都为了避开 sliver。
+- Bowyer–Watson 五行就够：「删掉坏三角形，用点把洞填回去」。诀窍是那条「洞永远是星形」的定理。
+- 共圆输入和浮点数会摧毁 in-circle 的符号。一旦涉及正方网格，先准备好精确谓词。
