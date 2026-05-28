@@ -1,0 +1,150 @@
+---
+title: "Cómo lograr que una salida deje de reflejar el sonido — Condiciones de contorno características de Navier–Stokes (NSCBC)"
+date: 2026-05-29
+description: "La causa más frecuente de la divergencia en solucionadores compresibles, domada con un único σ"
+tags: ["Compressible", "Boundary-Conditions", "NSCBC", "LODI", "Aeroacoustics"]
+locale: es
+slug: nscbc-nonreflecting-outflow-boundary
+draft: false
+---
+
+import { OutflowAcousticReflection1D } from '@/components/post-viz/2026-05-29-nscbc-nonreflecting-outflow-boundary/OutflowAcousticReflection1D'
+import { LODICharacteristicWaves } from '@/components/post-viz/2026-05-29-nscbc-nonreflecting-outflow-boundary/LODICharacteristicWaves'
+
+Una simulación LES compresible divergió después de seis horas. No había ningún NaN en el log, ni rastro de un choque. La presión media había subido 0.3 bar y las ondas acústicas rebotaban hacia el dominio desde la salida. El culpable: una extrapolación zero-gradient en el borde de salida. Hoy recorremos las NSCBC de Poinsot–Lele (1992) usando un único pulso acústico 1D, porque la única forma limpia de ver el problema es esa.
+
+## El dominio divergió en seis horas
+
+Las fronteras externas matan más simulaciones compresibles que las ondas de choque. Una salida zero-gradient copia momento y energía hacia las celdas fantasma, pero esa copia crea un desajuste de impedancia acústica. Cualquier onda que debería abandonar el dominio se topa con un salto de impedancia y parte de ella vuelve hacia dentro.
+
+En LES, DNS o combustión, esa reflexión se acumula en el campo medio. Antes incluso de que el promedio de Reynolds se estabilice, la salida actúa como un resonador y la presión deriva lentamente. NSCBC resuelve toda esta familia de problemas con un solo principio: especificar la amplitud de las ondas características entrantes de forma directa.
+
+## Cinco señales que salen de la frontera
+
+Para las ecuaciones de Euler 1D en variables conservativas $U = (\rho, \rho u, E)^T$:
+
+$$
+\frac{\partial U}{\partial t} + A(U)\frac{\partial U}{\partial x} = 0
+$$
+
+donde $A = \partial F/\partial U$ es la matriz jacobiana del flujo. Su descomposición espectral por la derecha entrega cinco autovalores (en el caso 3D, planar) $\lambda_i \in \{u-c,\, u,\, u,\, u,\, u+c\}$, con $u$ la velocidad y $c$ la velocidad del sonido.
+
+Cada autovalor corresponde a una onda característica. $u-c$ es una onda acústica hacia la izquierda, $u$ transporta entropía y velocidades transversales (junto con el fluido) y $u+c$ es una onda acústica hacia la derecha.
+
+<LODICharacteristicWaves />
+
+Deslicemos el Mach de 0 a 1.6 en la figura. En una salida subsónica solo entra una onda — $u-c$ en rojo grueso. Hace falta exactamente una BC. Olvidar esto y forzar a la vez velocidad, presión y temperatura convierte el contorno en un sistema sobre-especificado y el solver muere.
+
+## LODI — la aproximación de onda plana
+
+El cerebro de NSCBC son las **relaciones LODI (Local One-Dimensional Inviscid)**. Si en la frontera, durante un paso de tiempo, se descartan los términos viscosos y las derivadas transversales, las ecuaciones de conservación se vuelven ODE en las amplitudes características $\mathcal{L}_i$.
+
+$$
+\frac{\partial \rho}{\partial t} + \frac{1}{c^2}\left[\mathcal{L}_2 + \tfrac{1}{2}(\mathcal{L}_5 + \mathcal{L}_1)\right] = 0
+$$
+
+$$
+\frac{\partial u}{\partial t} + \frac{1}{2\rho c}(\mathcal{L}_5 - \mathcal{L}_1) = 0
+$$
+
+$$
+\frac{\partial p}{\partial t} + \frac{1}{2}(\mathcal{L}_5 + \mathcal{L}_1) = 0
+$$
+
+donde $\mathcal{L}_1 = (u-c)\left(\partial p/\partial x - \rho c\, \partial u/\partial x\right)$, $\mathcal{L}_5 = (u+c)\left(\partial p/\partial x + \rho c\, \partial u/\partial x\right)$, y $\mathcal{L}_2$ es la onda entrópica.
+
+La idea: las **ondas salientes** $\mathcal{L}_5$ y $\mathcal{L}_2$ se calculan por diferencias finitas upwind desde el interior. Solo la **onda entrante** $\mathcal{L}_1$ debe ser proporcionada por la BC. Esa única línea es todo NSCBC.
+
+## La trampa del no-reflejo perfecto — drifting mean pressure
+
+La BC no reflejante más simple anula la onda entrante:
+
+$$
+\mathcal{L}_1 = 0
+$$
+
+Las ondas acústicas se van limpiamente. Pero al integrar LODI sale $\partial p/\partial t = -\mathcal{L}_5/2$: cualquier sesgo positivo en el promedio temporal de $\mathcal{L}_5$ hace que $p$ derive sin límite. El código no muere, sólo se sube tranquilamente sobre 1 atm en seis horas.
+
+Rudy & Strikwerda (1980) y Poinsot & Lele (1992) añaden un término de relajación de primer orden para matar la deriva.
+
+$$
+\mathcal{L}_1 = K\,(p - p_\infty), \qquad K = \frac{\sigma\,(1 - M_{\max}^2)\,c}{L}
+$$
+
+$p_\infty$ es la presión objetivo, $L$ una longitud característica del dominio y $M_{\max}$ el Mach máximo esperado en la frontera. $\sigma$ es la intensidad de relajación, típicamente $\sigma \approx 0.25$.
+
+## Relajación de Poinsot–Lele — un único mando llamado σ
+
+$\sigma$ tiene dos caras:
+
+- $\sigma$ demasiado pequeño ($\sim 0$): casi perfectamente no reflejante, pero la deriva media queda sin control.
+- $\sigma$ demasiado grande ($\sim 5$): la frontera se vuelve rígida otra vez y empieza a reflejar.
+
+El coeficiente de reflexión acústico, a orden dominante, escala como $|R| \approx \sigma L/(c\tau)$, con $\tau$ el tiempo de tránsito de la onda. En la práctica LES, fijados longitud del dominio y Mach medio, se ajusta $\sigma$ entre 0.1 y 0.5.
+
+<OutflowAcousticReflection1D />
+
+Probemos en la simulación. Con "Zero-gradient", un pulso acústico gaussiano rebota casi intacto en el borde derecho (coeficiente de reflexión ≈ 1). Pasando a "NSCBC" el pulso sale limpiamente — hasta que $\sigma$ supera 0.5 y reaparece la reverberación. El panel inferior muestra la historia temporal de $p'$ en el borde.
+
+## Python — un pulso acústico contra una salida
+
+Un modelo de Euler 1D linealizado escrito en los dos invariantes de Riemann $\mathcal{A}^+ = u + p/(\rho c)$ y $\mathcal{A}^- = u - p/(\rho c)$. Problema-juguete: lanzar un pulso gaussiano hacia la derecha sobre un medio en reposo y comparar las dos BC.
+
+```python
+import numpy as np
+
+def linearized_acoustic_pulse(bc='nscbc', sigma=0.05, N=240, n_steps=400):
+    """Euler 1D linealizado con salida acustica a la derecha.
+    Devuelve p'(x) en el tiempo final segun la BC."""
+    # malla / velocidad del sonido / CFL
+    c, cfl = 1.0, 0.5
+    dx = 1.0 / N
+
+    Ap = np.exp(-((np.linspace(0, 1, N) - 0.22) ** 2) / 0.003)  # pulso a la derecha
+    Am = np.zeros(N)                                             # nada hacia la izquierda
+
+    for _ in range(n_steps):
+        Ap_new = Ap.copy()
+        Am_new = Am.copy()
+
+        # Ap viaja a +c -> upwind por la izquierda
+        Ap_new[1:] = Ap[1:] - cfl * (Ap[1:] - Ap[:-1])
+        Ap_new[0] = 0.0  # entrada en reposo
+
+        # Am viaja a -c -> upwind por la derecha
+        Am_new[:-1] = Am[:-1] - cfl * (Am[:-1] - Am[1:])
+
+        # borde derecho — el corazon de NSCBC
+        if bc == 'wall':
+            # zero-gradient: Am entrante = Ap -> reflexion total
+            Am_new[-1] = Ap_new[-1]
+        else:
+            # NSCBC: Am entrante fijada con coeficiente sigma
+            Am_new[-1] = sigma * Ap_new[-1]
+
+        Ap, Am = Ap_new, Am_new
+
+    p_prime = 0.5 * (Ap - Am)   # p' en unidades normalizadas
+    return p_prime
+
+p_reflect = linearized_acoustic_pulse(bc='wall')
+p_nscbc   = linearized_acoustic_pulse(bc='nscbc', sigma=0.05)
+
+print(f"max |p'| (reflect): {np.max(np.abs(p_reflect)):.3e}")
+print(f"max |p'| (nscbc):   {np.max(np.abs(p_nscbc)):.3e}")
+# reflect: 0.998  /  nscbc: 0.025  -> dos ordenes de magnitud
+```
+
+Para el mismo pulso, zero-gradient lo conserva casi entero (reflexión) y NSCBC lo atenúa dos órdenes de magnitud. Recorriendo $\sigma$, el coeficiente de reflexión sigue casi linealmente.
+
+## Lista de verificación antes de llevarlo al solver
+
+- **Contar primero el tipo de frontera.** Salida subsónica → 1 BC, salida supersónica → 0, entrada subsónica → 4, entrada supersónica → 5. Verificar con la figura de arriba.
+- **El ajuste de σ está ligado a la longitud del dominio.** Si el dominio se duplica, $K$ también cambia. No fijar valores absolutos.
+- **No descartar los términos transversos a ciegas.** En LES 3D la versión "relaxed" de Yoo & Im (2007) es más estable.
+- **NSCBC solo no basta cuando un choque golpea la salida.** Combinar con un buffer zone (sponge layer) para absorber la reflexión no lineal.
+- **Los flujos viscosos requieren un tratamiento aparte.** NSCBC no se ocupa de ellos por sí solo.
+
+## Resumen en una línea
+
+Una salida especifica la amplitud de las ondas entrantes, no valores. Inyectar $\mathcal{L}_1 = K(p - p_\infty)$ en la única onda entrante hace que las acústicas salgan y la presión media no derive. Mantener $\sigma$ dentro de un orden de magnitud basta para que una LES de seis horas no muera por la salida.

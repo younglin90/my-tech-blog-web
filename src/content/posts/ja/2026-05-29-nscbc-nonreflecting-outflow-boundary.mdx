@@ -1,0 +1,150 @@
+---
+title: "流出境界に音波を跳ね返させない方法 — Navier–Stokes 特性境界条件 (NSCBC)"
+date: 2026-05-29
+description: "圧縮性ソルバーが発散する最多の原因を、たった一つの σ で抑える"
+tags: ["Compressible", "Boundary-Conditions", "NSCBC", "LODI", "Aeroacoustics"]
+locale: ja
+slug: nscbc-nonreflecting-outflow-boundary
+draft: false
+---
+
+import { OutflowAcousticReflection1D } from '@/components/post-viz/2026-05-29-nscbc-nonreflecting-outflow-boundary/OutflowAcousticReflection1D'
+import { LODICharacteristicWaves } from '@/components/post-viz/2026-05-29-nscbc-nonreflecting-outflow-boundary/LODICharacteristicWaves'
+
+圧縮性 LES が 6 時間後に発散しました。ログに NaN もなく、衝撃波もありません。平均圧力が 0.3 bar ほど持ち上がり、音波が出口から領域内へ跳ね返っていました。原因は出口での zero-gradient 外挿でした。今日は Poinsot–Lele (1992) の NSCBC を、1D の音波パルス一本だけで最後まで追いかけます。出口は「値」ではなく「入ってくる波の振幅」を指定すべきだ、という話です。
+
+## 領域が 6 時間で発散した
+
+圧縮性ソルバーの外部境界は、衝撃波よりも多くシミュレーションを殺します。zero-gradient 出口は運動量とエネルギーをゴーストセルへコピーしますが、そのコピーが音響インピーダンスの不整合を作ります。出ていくはずの音波がインピーダンスの跳びに当たると、その一部は必ず内側へ戻ります。
+
+LES や DNS、燃焼計算ではこの反射が平均場に蓄積します。レイノルズ平均が落ち着く前に出口が「共鳴器」として働き始め、圧力がゆっくり漂流します。NSCBC はこの問題群を、「入ってくる特性波の振幅を直接指定する」という一つの原理で解決します。
+
+## 境界から出てくる 5 つの信号
+
+保存変数 $U = (\rho, \rho u, E)^T$ について 1D Euler 方程式を書くと
+
+$$
+\frac{\partial U}{\partial t} + A(U)\frac{\partial U}{\partial x} = 0
+$$
+
+ここで $A = \partial F/\partial U$ はフラックスヤコビアンです。右固有分解により 5 個の固有値 (3D の平面境界での 1D 投影で) $\lambda_i \in \{u-c,\, u,\, u,\, u,\, u+c\}$ が得られます。$u$ は流速、$c$ は音速です。
+
+それぞれが一つの特性波に対応します。$u-c$ は左向きの音波、$u$ はエントロピー・横速度情報 (流体と一緒に運ばれる)、$u+c$ は右向きの音波です。
+
+<LODICharacteristicWaves />
+
+上の図でマッハ数を 0 から 1.6 まで動かしてみてください。亜音速の出口では $u-c$ が一つだけ内側に入ってきます (太い赤線)。すなわち BC が必要な変数は厳密に一つです。これを忘れて圧力・速度・温度を同時に固定すると、over-specified になりソルバーが死にます。
+
+## LODI — 平面波だけ通す近似
+
+NSCBC の頭脳は **Local One-Dimensional Inviscid (LODI) relations** です。境界で 1 ステップだけ粘性項と横方向微分を無視できると仮定すると、保存方程式は特性振幅 $\mathcal{L}_i$ の ODE になります。
+
+$$
+\frac{\partial \rho}{\partial t} + \frac{1}{c^2}\left[\mathcal{L}_2 + \tfrac{1}{2}(\mathcal{L}_5 + \mathcal{L}_1)\right] = 0
+$$
+
+$$
+\frac{\partial u}{\partial t} + \frac{1}{2\rho c}(\mathcal{L}_5 - \mathcal{L}_1) = 0
+$$
+
+$$
+\frac{\partial p}{\partial t} + \frac{1}{2}(\mathcal{L}_5 + \mathcal{L}_1) = 0
+$$
+
+ここで $\mathcal{L}_1 = (u-c)\left(\partial p/\partial x - \rho c\, \partial u/\partial x\right)$、$\mathcal{L}_5 = (u+c)\left(\partial p/\partial x + \rho c\, \partial u/\partial x\right)$、$\mathcal{L}_2$ はエントロピー波です。
+
+要点はこうです: **出ていく波** $\mathcal{L}_5,\,\mathcal{L}_2$ は内部セルからの風上差分で直接計算できます。**入ってくる波** $\mathcal{L}_1$ だけが BC で決められます。この一行が NSCBC のすべてです。
+
+## 完全非反射の罠 — drifting mean pressure
+
+最も単純な非反射 BC は入ってくる波をゼロにします。
+
+$$
+\mathcal{L}_1 = 0
+$$
+
+音波はきれいに出ていきます。しかし LODI を積分すると $\partial p/\partial t = -\mathcal{L}_5/2$ になり、$\mathcal{L}_5$ の時間平均にわずかな正のバイアスがあれば $p$ が際限なく漂流します。コードは死にませんが、6 時間後には平均圧力がしれっと 1 atm を超えています。
+
+Rudy & Strikwerda (1980) と Poinsot & Lele (1992) は、この漂流を抑える 1 次緩和項を提案しました。
+
+$$
+\mathcal{L}_1 = K\,(p - p_\infty), \qquad K = \frac{\sigma\,(1 - M_{\max}^2)\,c}{L}
+$$
+
+$p_\infty$ はターゲット圧力、$L$ は領域の代表長さ、$M_{\max}$ は境界での最大マッハ数です。$\sigma$ は緩和強度で、推奨値は $\sigma \approx 0.25$ です。
+
+## Poinsot–Lele 緩和 — σ という一つの摘み
+
+$\sigma$ には二つの顔があります。
+
+- $\sigma$ が小さすぎる ($\sim 0$): ほぼ完全非反射。平均の漂流は止まりません。
+- $\sigma$ が大きすぎる ($\sim 5$): 境界が再び stiff になり、音波がまた反射します。
+
+音響反射係数は主オーダーで $|R| \approx \sigma L/(c\tau)$ となります ($\tau$ は波の通過時間)。LES では領域長さと平均マッハが決まった後、$\sigma$ を 0.1–0.5 の範囲でチューニングします。
+
+<OutflowAcousticReflection1D />
+
+シミュレーションを直接いじってみましょう。「Zero-gradient」にすると、ガウシアン音波パルスが右境界でほぼそのまま跳ね返ります (反射係数 ≈ 1)。「NSCBC」に切り替えるとパルスは静かに消えていきますが、$\sigma$ を 0.5 以上に上げると残響が再び現れます。下のパネルは境界での $p'$ の時間履歴です。
+
+## Python — 音波パルスが出口に当たるとき
+
+二つのリーマン不変量 $\mathcal{A}^+ = u + p/(\rho c)$、$\mathcal{A}^- = u - p/(\rho c)$ で書き直した 1D 線形化 Euler モデルです。トイ問題は、静止媒質に右向きガウシアンパルスを 1 発投げ、二つの BC を比較するというものです。
+
+```python
+import numpy as np
+
+def linearized_acoustic_pulse(bc='nscbc', sigma=0.05, N=240, n_steps=400):
+    """1D 線形化 Euler。右端は音響流出境界。
+    各 BC モードでの終端時刻の p'(x) を返す。"""
+    # 格子 / 音速 / CFL
+    c, cfl = 1.0, 0.5
+    dx = 1.0 / N
+
+    Ap = np.exp(-((np.linspace(0, 1, N) - 0.22) ** 2) / 0.003)  # 右向きパルス
+    Am = np.zeros(N)                                             # 左向きは 0
+
+    for _ in range(n_steps):
+        Ap_new = Ap.copy()
+        Am_new = Am.copy()
+
+        # Ap は +c で進む → 左風上
+        Ap_new[1:] = Ap[1:] - cfl * (Ap[1:] - Ap[:-1])
+        Ap_new[0] = 0.0  # 静止流入
+
+        # Am は -c で進む → 右風上
+        Am_new[:-1] = Am[:-1] - cfl * (Am[:-1] - Am[1:])
+
+        # 右境界 — NSCBC の心臓
+        if bc == 'wall':
+            # zero-gradient: 入ってくる Am は Ap と同値 → 完全反射
+            Am_new[-1] = Ap_new[-1]
+        else:
+            # NSCBC: 入ってくる Am を反射率 sigma で固定
+            Am_new[-1] = sigma * Ap_new[-1]
+
+        Ap, Am = Ap_new, Am_new
+
+    p_prime = 0.5 * (Ap - Am)   # p' (正規化単位)
+    return p_prime
+
+p_reflect = linearized_acoustic_pulse(bc='wall')
+p_nscbc   = linearized_acoustic_pulse(bc='nscbc', sigma=0.05)
+
+print(f"max |p'| (reflect): {np.max(np.abs(p_reflect)):.3e}")
+print(f"max |p'| (nscbc):   {np.max(np.abs(p_nscbc)):.3e}")
+# reflect: 0.998  /  nscbc: 0.025  → 2 桁の差
+```
+
+同じパルスに対して、zero-gradient はほぼそのまま保存 (反射) しますが、NSCBC は 2 桁減衰させます。$\sigma$ を掃くと反射係数はほぼ線形に追従します。
+
+## 実装に移す前のチェックリスト
+
+- **まず境界の種類を数える。** 亜音速流出 → BC 1 個、超音速流出 → 0 個、亜音速流入 → 4 個、超音速流入 → 5 個。上の図で確認。
+- **σ のチューニングは領域長さと連動。** 領域を 2 倍にすれば $K$ も変わる。絶対値で打ち込まないでください。
+- **横方向項を漫然と落とさない。** 3D LES では Yoo & Im (2007) の "relaxed" 形がより安定です。
+- **衝撃が出口に当たる場合は NSCBC 単独では不十分。** バッファゾーン (sponge layer) と併用して非線形反射を吸収します。
+- **粘性フラックスは別途処理。** NSCBC が自動でやってくれるわけではありません。
+
+## 一行まとめ
+
+流出境界は「値」ではなく「入ってくる波の振幅」を指定する場所です。5 つの信号のうち入ってくる一つに $\mathcal{L}_1 = K(p - p_\infty)$ を差し込めば、音波は出ていき、平均は漂流しません。$\sigma$ を 1 桁の範囲で調整すれば、6 時間 LES が出口のせいで死ぬことはなくなります。

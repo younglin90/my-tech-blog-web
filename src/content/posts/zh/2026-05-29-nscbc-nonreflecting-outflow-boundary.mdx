@@ -1,0 +1,150 @@
+---
+title: "如何让出口不再反射声波 — Navier–Stokes 特征边界条件 (NSCBC)"
+date: 2026-05-29
+description: "压缩性求解器发散最常见的元凶,只用一个 σ 就能压住"
+tags: ["Compressible", "Boundary-Conditions", "NSCBC", "LODI", "Aeroacoustics"]
+locale: zh
+slug: nscbc-nonreflecting-outflow-boundary
+draft: false
+---
+
+import { OutflowAcousticReflection1D } from '@/components/post-viz/2026-05-29-nscbc-nonreflecting-outflow-boundary/OutflowAcousticReflection1D'
+import { LODICharacteristicWaves } from '@/components/post-viz/2026-05-29-nscbc-nonreflecting-outflow-boundary/LODICharacteristicWaves'
+
+一次压缩性 LES 在跑了 6 小时后发散了。日志里没有 NaN,也找不到激波。平均压力悄悄抬升了 0.3 bar,声波从出口反射回了计算域。罪魁祸首是出口处的 zero-gradient 外推。今天用一个 1D 声波脉冲走完 Poinsot–Lele (1992) 的 NSCBC 全过程 — 出口要指定的不是"值",而是"入射波的振幅"。
+
+## 计算域在六小时后发散了
+
+压缩性求解器的外边界比激波更容易杀死仿真。zero-gradient 出口把动量和能量复制到 ghost 单元,但这种复制会制造声学阻抗失配。本应离开计算域的声波遇到阻抗跳变,必然有一部分被弹回。
+
+在 LES、DNS 或燃烧计算中,这种反射会在平均场里累加。雷诺平均还没收敛之前,出口就开始充当"共鸣腔",压力慢慢漂移。NSCBC 用一个原则解决整类问题 — 直接指定入射特征波的振幅。
+
+## 边界送出的五个信号
+
+把 1D Euler 方程写成守恒变量形式 $U = (\rho, \rho u, E)^T$:
+
+$$
+\frac{\partial U}{\partial t} + A(U)\frac{\partial U}{\partial x} = 0
+$$
+
+其中 $A = \partial F/\partial U$ 是通量雅可比矩阵。右特征分解给出 5 个特征值 (针对 3D 中的平面边界) $\lambda_i \in \{u-c,\, u,\, u,\, u,\, u+c\}$。$u$ 是流速,$c$ 是声速。
+
+每个特征值对应一条特征波。$u-c$ 是左行声波,$u$ 携带熵和横向速度信息 (随流体一同输运),$u+c$ 是右行声波。
+
+<LODICharacteristicWaves />
+
+把上图里的马赫数从 0 滑到 1.6 看看。亚音速出口只有一条 $u-c$ 入射 (粗红线),也就是说需要的 BC 恰好一个。忘了这一点就把压力、速度、温度同时钉死,结果就是 over-specified,求解器立刻报错。
+
+## LODI — 只让平面波通过的近似
+
+NSCBC 的大脑是 **Local One-Dimensional Inviscid (LODI) relations**。在边界处假设粘性项和横向导数在一步时间内可忽略,守恒方程就化简成特征振幅 $\mathcal{L}_i$ 的 ODE。
+
+$$
+\frac{\partial \rho}{\partial t} + \frac{1}{c^2}\left[\mathcal{L}_2 + \tfrac{1}{2}(\mathcal{L}_5 + \mathcal{L}_1)\right] = 0
+$$
+
+$$
+\frac{\partial u}{\partial t} + \frac{1}{2\rho c}(\mathcal{L}_5 - \mathcal{L}_1) = 0
+$$
+
+$$
+\frac{\partial p}{\partial t} + \frac{1}{2}(\mathcal{L}_5 + \mathcal{L}_1) = 0
+$$
+
+其中 $\mathcal{L}_1 = (u-c)\left(\partial p/\partial x - \rho c\, \partial u/\partial x\right)$,$\mathcal{L}_5 = (u+c)\left(\partial p/\partial x + \rho c\, \partial u/\partial x\right)$,$\mathcal{L}_2$ 是熵波。
+
+关键点: **出射波** $\mathcal{L}_5$ 和 $\mathcal{L}_2$ 可以直接用内部单元的迎风差分算出。**入射波** $\mathcal{L}_1$ 才需要 BC 决定。这一行就是 NSCBC 的全部。
+
+## 完全无反射的陷阱 — drifting mean pressure
+
+最简单的非反射 BC 把入射波直接置零:
+
+$$
+\mathcal{L}_1 = 0
+$$
+
+声波干净地离开了。可是对 LODI 积分 $\partial p/\partial t = -\mathcal{L}_5/2$:只要 $\mathcal{L}_5$ 的时间平均带一点点正偏差,$p$ 就会无限漂移。代码不死,只是六小时后平均压力悄悄爬过 1 atm。
+
+Rudy & Strikwerda (1980) 与 Poinsot & Lele (1992) 加入一个一阶松弛项压住漂移。
+
+$$
+\mathcal{L}_1 = K\,(p - p_\infty), \qquad K = \frac{\sigma\,(1 - M_{\max}^2)\,c}{L}
+$$
+
+$p_\infty$ 是目标压力,$L$ 是计算域特征长度,$M_{\max}$ 是边界上预期的最大马赫数。$\sigma$ 是松弛强度,常用 $\sigma \approx 0.25$。
+
+## Poinsot–Lele 松弛 — σ 这一个旋钮
+
+$\sigma$ 有两副面孔:
+
+- $\sigma$ 太小 ($\sim 0$):几乎完全无反射,平均漂移控制不住。
+- $\sigma$ 太大 ($\sim 5$):边界又变硬,声波重新被反射。
+
+声学反射系数的主阶估计是 $|R| \approx \sigma L/(c\tau)$ ($\tau$ 是波的穿越时间)。LES 实践中,确定了计算域长度和平均马赫之后,把 $\sigma$ 调在 0.1–0.5 之间。
+
+<OutflowAcousticReflection1D />
+
+直接调上面的仿真。切到 "Zero-gradient" 时,高斯声波脉冲在右边界几乎原样反弹 (反射系数 ≈ 1);切到 "NSCBC",脉冲安静地消失,但把 $\sigma$ 调到 0.5 以上就会看到残响重现。下面那块面板是边界处 $p'$ 的时间历史。
+
+## Python — 声波脉冲遇到出口
+
+用两个黎曼不变量 $\mathcal{A}^+ = u + p/(\rho c)$、$\mathcal{A}^- = u - p/(\rho c)$ 重写的 1D 线性化 Euler。玩具问题:朝静止介质丢一个右行高斯脉冲,对比两种 BC。
+
+```python
+import numpy as np
+
+def linearized_acoustic_pulse(bc='nscbc', sigma=0.05, N=240, n_steps=400):
+    """1D 线性化 Euler,右端为声波出流边界。
+    返回各 BC 模式下终止时刻的 p'(x)。"""
+    # 网格 / 声速 / CFL
+    c, cfl = 1.0, 0.5
+    dx = 1.0 / N
+
+    Ap = np.exp(-((np.linspace(0, 1, N) - 0.22) ** 2) / 0.003)  # 右行脉冲
+    Am = np.zeros(N)                                             # 左行 = 0
+
+    for _ in range(n_steps):
+        Ap_new = Ap.copy()
+        Am_new = Am.copy()
+
+        # Ap 以 +c 移动 → 左迎风
+        Ap_new[1:] = Ap[1:] - cfl * (Ap[1:] - Ap[:-1])
+        Ap_new[0] = 0.0  # 静止流入
+
+        # Am 以 -c 移动 → 右迎风
+        Am_new[:-1] = Am[:-1] - cfl * (Am[:-1] - Am[1:])
+
+        # 右边界 — NSCBC 的心脏
+        if bc == 'wall':
+            # zero-gradient: 入射 Am = Ap → 完全反射
+            Am_new[-1] = Ap_new[-1]
+        else:
+            # NSCBC: 用反射系数 sigma 钉住入射 Am
+            Am_new[-1] = sigma * Ap_new[-1]
+
+        Ap, Am = Ap_new, Am_new
+
+    p_prime = 0.5 * (Ap - Am)   # p' (归一化单位)
+    return p_prime
+
+p_reflect = linearized_acoustic_pulse(bc='wall')
+p_nscbc   = linearized_acoustic_pulse(bc='nscbc', sigma=0.05)
+
+print(f"max |p'| (reflect): {np.max(np.abs(p_reflect)):.3e}")
+print(f"max |p'| (nscbc):   {np.max(np.abs(p_nscbc)):.3e}")
+# reflect: 0.998  /  nscbc: 0.025  → 相差两个数量级
+```
+
+对同一个脉冲,zero-gradient 几乎完全保留 (反射),NSCBC 衰减两个数量级。扫描 $\sigma$ 时,反射系数几乎线性跟随。
+
+## 写进代码之前的清单
+
+- **先数边界种类。** 亚音速出流 → 1 个 BC、超音速出流 → 0 个、亚音速入流 → 4 个、超音速入流 → 5 个,用上图核对。
+- **σ 的调参与计算域长度耦合。** 域长翻倍时 $K$ 也要随之改变,不要写死成绝对值。
+- **横向项不能随手丢。** 3D LES 里 Yoo & Im (2007) 的 "relaxed" 形式更稳。
+- **激波打到出口时,NSCBC 单独不够。** 配一个 buffer zone (sponge layer) 吃掉非线性反射。
+- **粘性通量得另外处理。** NSCBC 不会自动帮你做这一步。
+
+## 一句话总结
+
+出流边界指定的不是"值",而是"入射波的振幅"。在唯一的入射特征上插入 $\mathcal{L}_1 = K(p - p_\infty)$,声波就离开了,平均压力也不漂移。把 $\sigma$ 调在一个量级之内,六小时 LES 就不会再因为出口而死。

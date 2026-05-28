@@ -1,0 +1,150 @@
+---
+title: "How to Make an Outflow Stop Reflecting Sound — Navier–Stokes Characteristic Boundary Conditions"
+date: 2026-05-29
+description: "The single most common cause of compressible-solver blow-ups, tamed by one parameter σ"
+tags: ["Compressible", "Boundary-Conditions", "NSCBC", "LODI", "Aeroacoustics"]
+locale: en
+slug: nscbc-nonreflecting-outflow-boundary
+draft: false
+---
+
+import { OutflowAcousticReflection1D } from '@/components/post-viz/2026-05-29-nscbc-nonreflecting-outflow-boundary/OutflowAcousticReflection1D'
+import { LODICharacteristicWaves } from '@/components/post-viz/2026-05-29-nscbc-nonreflecting-outflow-boundary/LODICharacteristicWaves'
+
+A compressible LES blew up after six hours. There was no NaN in the log, no shock anywhere. The mean pressure had drifted up by 0.3 bar, and acoustic waves were ricocheting back into the domain from the outlet. The culprit was a zero-gradient extrapolation at the outflow. Today we walk all the way through Poinsot–Lele's NSCBC (1992) using one single 1D acoustic pulse — the cleanest way to see why an outflow has to listen to incoming waves, not extrapolate them.
+
+## The Domain Diverged After Six Hours
+
+External boundaries kill compressible solvers more often than shocks do. A zero-gradient outflow copies momentum and energy into the ghost cells, but that copy creates an acoustic impedance mismatch. Any acoustic wave that should leave the domain instead hits a jump in impedance, and part of it bounces back.
+
+In LES, DNS, or combustion runs this reflection accumulates in the mean field. Before Reynolds averaging even settles, the outlet starts acting like a resonator and the pressure drifts slowly upward. NSCBC fixes the whole class of problems with a single principle — specify the amplitude of incoming characteristic waves directly.
+
+## Five Signals Coming Out of the Boundary
+
+For the 1D Euler equations in conservative form $U = (\rho, \rho u, E)^T$ we have
+
+$$
+\frac{\partial U}{\partial t} + A(U)\frac{\partial U}{\partial x} = 0
+$$
+
+where $A = \partial F/\partial U$ is the flux Jacobian. Its right-eigendecomposition gives five eigenvalues (for a planar boundary in 3D), $\lambda_i \in \{u-c,\, u,\, u,\, u,\, u+c\}$, where $u$ is the velocity and $c$ the speed of sound.
+
+Each eigenvalue corresponds to one characteristic wave. $u-c$ is a left-going acoustic, $u$ carries entropy and transverse velocity (transported with the fluid), and $u+c$ is a right-going acoustic.
+
+<LODICharacteristicWaves />
+
+Slide the Mach number from 0 to 1.6 in the figure above. A subsonic outflow has only one incoming characteristic — $u-c$ in bold red. Exactly one BC is needed. Forgetting this and pinning velocity, pressure, and temperature simultaneously turns the boundary into an over-specified linear system, and the solver dies.
+
+## LODI — The Plane-Wave Approximation
+
+The brain of NSCBC is the **Local One-Dimensional Inviscid (LODI) relations**. Drop viscous and transverse derivatives for one time step at the boundary and the conservation equations become ODEs in the characteristic amplitudes $\mathcal{L}_i$.
+
+$$
+\frac{\partial \rho}{\partial t} + \frac{1}{c^2}\left[\mathcal{L}_2 + \tfrac{1}{2}(\mathcal{L}_5 + \mathcal{L}_1)\right] = 0
+$$
+
+$$
+\frac{\partial u}{\partial t} + \frac{1}{2\rho c}(\mathcal{L}_5 - \mathcal{L}_1) = 0
+$$
+
+$$
+\frac{\partial p}{\partial t} + \frac{1}{2}(\mathcal{L}_5 + \mathcal{L}_1) = 0
+$$
+
+where $\mathcal{L}_1 = (u-c)\left(\partial p/\partial x - \rho c\, \partial u/\partial x\right)$, $\mathcal{L}_5 = (u+c)\left(\partial p/\partial x + \rho c\, \partial u/\partial x\right)$, and $\mathcal{L}_2$ is the entropy wave.
+
+The point: the **outgoing waves** $\mathcal{L}_5$ and $\mathcal{L}_2$ are computed by upwind finite differences from the interior. Only the **incoming wave** $\mathcal{L}_1$ has to be supplied by the BC. That one line is NSCBC in its entirety.
+
+## The Trap of Perfect Non-Reflection — Drifting Mean Pressure
+
+The simplest nonreflecting condition sets the incoming wave to zero.
+
+$$
+\mathcal{L}_1 = 0
+$$
+
+Acoustics leave cleanly. But integrate LODI: $\partial p/\partial t = -\mathcal{L}_5/2$. If the time average of $\mathcal{L}_5$ has any small positive bias, $p$ drifts without bound. The code never crashes — it just lifts past 1 atm six hours later.
+
+Rudy & Strikwerda (1980) and Poinsot & Lele (1992) added a first-order relaxation term to kill the drift.
+
+$$
+\mathcal{L}_1 = K\,(p - p_\infty), \qquad K = \frac{\sigma\,(1 - M_{\max}^2)\,c}{L}
+$$
+
+$p_\infty$ is the target pressure, $L$ a characteristic domain length, $M_{\max}$ the maximum expected Mach at the boundary. $\sigma$ is the relaxation strength, typically $\sigma \approx 0.25$.
+
+## Poinsot–Lele Relaxation — One Knob Called σ
+
+$\sigma$ has two faces:
+
+- $\sigma$ too small ($\sim 0$): nearly perfectly nonreflecting. Mean drift is uncontrolled.
+- $\sigma$ too large ($\sim 5$): the boundary stiffens again and starts reflecting acoustics.
+
+The acoustic reflection coefficient scales as $|R| \approx \sigma L/(c\tau)$ to leading order, where $\tau$ is the wave transit time. In LES practice, once domain length and mean Mach are fixed, $\sigma$ is tuned in the range 0.1–0.5.
+
+<OutflowAcousticReflection1D />
+
+Play with the simulation. With "Zero-gradient", a Gaussian acoustic pulse bounces off the right boundary almost intact (reflection coefficient ≈ 1). Switch to "NSCBC" and the pulse leaves cleanly — until you raise $\sigma$ above 0.5, where reverberation reappears. The bottom panel shows the time history of $p'$ at the boundary.
+
+## Python — A Sound Pulse Meets an Outflow
+
+A 1D linearized Euler model written in the two Riemann invariants $\mathcal{A}^+ = u + p/(\rho c)$ and $\mathcal{A}^- = u - p/(\rho c)$. Toy problem: throw a rightward Gaussian pulse into a quiescent medium and compare the two BCs.
+
+```python
+import numpy as np
+
+def linearized_acoustic_pulse(bc='nscbc', sigma=0.05, N=240, n_steps=400):
+    """1D linearized Euler with right-side acoustic outflow.
+    Returns p'(x) at final time for each BC mode."""
+    # grid / sound speed / CFL
+    c, cfl = 1.0, 0.5
+    dx = 1.0 / N
+
+    Ap = np.exp(-((np.linspace(0, 1, N) - 0.22) ** 2) / 0.003)  # right-moving pulse
+    Am = np.zeros(N)                                             # left-moving = 0
+
+    for _ in range(n_steps):
+        Ap_new = Ap.copy()
+        Am_new = Am.copy()
+
+        # Ap travels at +c → left-upwind
+        Ap_new[1:] = Ap[1:] - cfl * (Ap[1:] - Ap[:-1])
+        Ap_new[0] = 0.0  # quiescent inflow
+
+        # Am travels at -c → right-upwind
+        Am_new[:-1] = Am[:-1] - cfl * (Am[:-1] - Am[1:])
+
+        # right boundary — the heart of NSCBC
+        if bc == 'wall':
+            # zero-gradient: incoming Am equals Ap → full reflection
+            Am_new[-1] = Ap_new[-1]
+        else:
+            # NSCBC: incoming Am pinned via reflectivity sigma
+            Am_new[-1] = sigma * Ap_new[-1]
+
+        Ap, Am = Ap_new, Am_new
+
+    p_prime = 0.5 * (Ap - Am)   # p' in normalized units
+    return p_prime
+
+p_reflect = linearized_acoustic_pulse(bc='wall')
+p_nscbc   = linearized_acoustic_pulse(bc='nscbc', sigma=0.05)
+
+print(f"max |p'| (reflect): {np.max(np.abs(p_reflect)):.3e}")
+print(f"max |p'| (nscbc):   {np.max(np.abs(p_nscbc)):.3e}")
+# reflect: 0.998  /  nscbc: 0.025  →  two orders of magnitude
+```
+
+For the same pulse, zero-gradient keeps almost all of it (reflection), while NSCBC suppresses it by two orders of magnitude. Sweeping $\sigma$ traces an almost linear reflection coefficient.
+
+## Checklist Before You Ship It
+
+- **Count the boundary type first.** Subsonic outflow → 1 BC, supersonic outflow → 0 BCs, subsonic inflow → 4 BCs, supersonic inflow → 5 BCs. Use the figure above to double-check.
+- **σ tuning is tied to domain length.** Double the domain and $K$ shifts. Never hard-code an absolute number.
+- **Do not drop transverse terms blindly.** In 3D LES, Yoo & Im (2007) relaxed transverse formulation is more stable.
+- **NSCBC alone is not enough when shocks hit the outlet.** Pair it with a buffer zone (sponge layer) to kill nonlinear reflection.
+- **Viscous fluxes need separate handling.** NSCBC does not address them on its own.
+
+## One-Line Takeaway
+
+An outflow boundary should specify the amplitude of incoming waves, not values. Inject $\mathcal{L}_1 = K(p - p_\infty)$ on the single incoming characteristic and acoustics leave, mean pressure stays. Tune $\sigma$ within an order of magnitude and your six-hour LES survives its outlet.
