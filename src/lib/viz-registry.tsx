@@ -12,6 +12,7 @@ function VizLoading() {
 }
 
 export const VIZ_COMPONENTS: Record<string, ComponentType> = {
+  "AcousticTransportSplit1D": dynamic(() => import("@/components/post-viz/2026-05-30-peluchon-acoustic-transport-imex/AcousticTransportSplit1D").then((m) => ({ default: m.AcousticTransportSplit1D })), { ssr: false, loading: VizLoading }),
   "AdvectionSchemeRace1D": dynamic(() => import("@/components/post-viz/2026-05-08-advection-ftcs-upwind-cfl/AdvectionSchemeRace1D").then((m) => ({ default: m.AdvectionSchemeRace1D })), { ssr: false, loading: VizLoading }),
   "AMRQuadtreeRefinement": dynamic(() => import("@/components/post-viz/2026-04-27-amr-quadtree-cell-refinement/AMRQuadtreeRefinement").then((m) => ({ default: m.AMRQuadtreeRefinement })), { ssr: false, loading: VizLoading }),
   "APIMEXAcousticPulse1D": dynamic(() => import("@/components/post-viz/2026-05-03-orlando-bonaventura-ap-imex-nonideal-gas/APIMEXAcousticPulse1D").then((m) => ({ default: m.APIMEXAcousticPulse1D })), { ssr: false, loading: VizLoading }),
@@ -72,6 +73,7 @@ export const VIZ_COMPONENTS: Record<string, ComponentType> = {
   "ReynoldsDyeExperiment": dynamic(() => import("@/components/post-viz/2026-05-05-reynolds-pipe-transition-turbulence/ReynoldsDyeExperiment").then((m) => ({ default: m.ReynoldsDyeExperiment })), { ssr: false, loading: VizLoading }),
   "RiemannExactProfile1D": dynamic(() => import("@/components/post-viz/2026-05-18-godunov-exact-riemann-shock-tube/RiemannExactProfile1D").then((m) => ({ default: m.RiemannExactProfile1D })), { ssr: false, loading: VizLoading }),
   "RiemannFan": dynamic(() => import("@/components/post-viz/riemann-solvers/RiemannFan").then((m) => ({ default: m.RiemannFan })), { ssr: false, loading: VizLoading }),
+  "RiemannSolverPositivityMap": dynamic(() => import("@/components/post-viz/2026-05-30-peluchon-acoustic-transport-imex/RiemannSolverPositivityMap").then((m) => ({ default: m.RiemannSolverPositivityMap })), { ssr: false, loading: VizLoading }),
   "ShallowWaterCasulli1D": dynamic(() => import("@/components/post-viz/2026-04-26-casulli-walters-unstructured-shallow-water/ShallowWaterCasulli1D").then((m) => ({ default: m.ShallowWaterCasulli1D })), { ssr: false, loading: VizLoading }),
   "SimpleResidualHistory": dynamic(() => import("@/components/post-viz/2026-03-27-simpleFoam-pressure-divergence/SimpleResidualHistory").then((m) => ({ default: m.SimpleResidualHistory })), { ssr: false, loading: VizLoading }),
   "SpeedOfSoundMix": dynamic(() => import("@/components/post-viz/compressible-multiphase-intro/SpeedOfSoundMix").then((m) => ({ default: m.SpeedOfSoundMix })), { ssr: false, loading: VizLoading }),

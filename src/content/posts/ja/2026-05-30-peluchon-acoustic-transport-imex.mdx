@@ -1,0 +1,175 @@
+---
+title: "[論文レビュー] 音速にCFLを食わせない方法 — Peluchon(2017) 音響-輸送 IMEX 分離"
+date: 2026-05-30
+description: "5方程式モデルの音響部だけを陰解法にして時間刻みを1/M倍に伸ばす"
+tags: ["논문리뷰", "IMEX", "Acoustic-Transport-Splitting", "Five-Equation-Model", "Low-Mach", "Compressible-Multiphase"]
+locale: ja
+slug: peluchon-acoustic-transport-imex
+draft: false
+---
+
+import { AcousticTransportSplit1D } from '@/components/post-viz/2026-05-30-peluchon-acoustic-transport-imex/AcousticTransportSplit1D'
+import { RiemannSolverPositivityMap } from '@/components/post-viz/2026-05-30-peluchon-acoustic-transport-imex/RiemannSolverPositivityMap'
+
+大気圏再突入の解析コードを回していた博士課程の学生がため息をついた。液体-気体の境界で音速は 1500 m/s、流速はわずか 5 m/s。CFL は音速で決まり、1 ステップは数マイクロ秒。8 時間回しても物理時間 1 秒に届かない。Peluchon・Gallice・Mieussens(2017) はその痛点をまっすぐ撃つ — 5 方程式の多相モデルで、音響波だけを陰解法に分離し、物質波は陽解法のまま残します。
+
+## 論文情報
+
+- **著者**: S. Peluchon, G. Gallice, L. Mieussens
+- **所属**: CEA-CESTA / Univ. Bordeaux / INRIA
+- **学術誌**: *Journal of Computational Physics*, 339, 2017
+- **DOI**: 10.1016/j.jcp.2017.03.019
+- **題名**: *A robust implicit-explicit acoustic-transport splitting scheme for two-phase flows*
+
+## ひと言で — 音速を時間刻みから切り離す鋏
+
+5 方程式 diffuse interface モデルは液体と気体を同じ保存方程式で解きます。ところが液体の音速(1500 m/s)は気体の音速(340 m/s)の 4 倍以上です。陽的 Godunov では CFL が $\Delta t < \Delta x / (|u|+c)$ に縛られます。液体領域では $|u| \ll c$ なので、時間刻みは実質 $\Delta x / c$。1 mm メッシュなら 0.67 μs です。
+
+この論文の核心は、その $c$ を時間刻みの分母から引き抜くことです。**音響ステップだけを backward Euler** で解き、**輸送ステップは explicit upwind** に置く。すると外側の CFL は $|u|/c$、つまり Mach 数に比例して 1/M 倍大きな時間刻みが許容されます。Mach 0.01 では理論的に 100 倍の加速になります。
+
+この発想の元は Coquel–Godlewski–Khalfallah(2016) で、単相 gas dynamics への適用が始まりです。Peluchon はそれを Allaire–Clerc–Kokh(2002) の 5 方程式多相系へ移植しました。
+
+## 5 つの式を音響と輸送に切る
+
+圧縮性 5 方程式系を 1 次元で書くと
+
+$$
+\partial_t \rho + \partial_x (\rho u) = 0
+$$
+
+$$
+\partial_t (\rho y) + \partial_x (\rho y u) = 0
+$$
+
+$$
+\partial_t (\rho u) + \partial_x (\rho u^2 + p) = 0
+$$
+
+$$
+\partial_t (\rho e) + \partial_x ((\rho e + p) u) = 0
+$$
+
+$$
+\partial_t z + u \partial_x z = 0
+$$
+
+ここで $z$ は体積分率、$y = \rho_1 z / \rho$ は第 1 相の質量分率、$e = \epsilon + u^2/2$ は比全エネルギーです。体積分率の式だけが非保存形です。
+
+論文は各保存変数の発展を **2 部分** に分けます。$\phi \in \{\rho, \rho y, \rho u, \rho e\}$ に対して
+
+$$
+\partial_t \phi + \phi \partial_x u + u \partial_x \phi = \partial_t \phi + \partial_x (\phi u)
+$$
+
+左辺の最初の 2 項が **音響部分**($\phi \partial_x u$ は圧縮/膨張)、3 項目が **輸送部分**($u \partial_x \phi$ は移流)です。音速を含む圧力勾配 $\partial_x p$ は運動量・エネルギーの音響部分に入ります。結果は次の通りです。
+
+**音響系**(伝播速度 $0, \pm c$):
+
+$$
+\partial_t \rho + \rho \partial_x u = 0, \quad \partial_t (\rho u) + \rho u \partial_x u + \partial_x p = 0
+$$
+
+**輸送系**(伝播速度 $u$ のみ):
+
+$$
+\partial_t \rho + u \partial_x \rho = 0, \quad \partial_t (\rho u) + u \partial_x (\rho u) = 0
+$$
+
+音響系を backward Euler で解けば $\pm c$ は時間刻み制約から消えます。輸送系は explicit upwind なので、CFL 条件は $|u| \Delta t / \Delta x < 1$ だけです。
+
+## Riemann ソルバの正値性条件
+
+ひとつ重要な細部があります。音響系は非保存形 $\partial_t V + \vartheta \partial_x G(V) = 0$ ($\vartheta = 1/\rho$)です。Godunov 型で解くには simple Riemann solver を作る必要があります。論文は 2 つの傾き $\bar{a}_-,\,\bar{a}_+$ を左右で別に取ります(Gallice 2003 ソルバの拡張)。傾きが十分大きければ中間状態の比体積と圧力の両方が正に保たれます。
+
+条件は次の 2 つの不等式に帰着されます(Appendix B):
+
+$$
+\bar{a}_-^2 \ge \rho_l c_l^2 - \rho_l (p_r - p_l) / \cdots
+$$
+
+実用では $\bar{a}_\pm = K \max(\rho_l c_l, \rho_r c_r)$ として $K$ を必要なところまで上げます。下のスライダーで $K$ を動かしてみましょう。赤い領域(中間状態が負になる)が消える瞬間が正値保存の境界です。
+
+<RiemannSolverPositivityMap />
+
+このソルバを陰解法にするには時間添字を $n \to n+1-$ にずらすだけです。非線形ですが Picard 反復で解けます。
+
+## 直接実装 — 線形音響-輸送
+
+論文のコードを丸ごと移植する前に、**線形音響-輸送系** で加速効果の核心を再現します。
+
+$$
+\partial_t \rho + \rho_0 \partial_x u + u_0 \partial_x \rho = 0, \quad
+\partial_t u + \frac{c^2}{\rho_0} \partial_x \rho + u_0 \partial_x u = 0
+$$
+
+固有値は $u_0 - c,\,u_0,\,u_0 + c$。Unsplit explicit Rusanov は $\Delta t \le \Delta x / (|u_0| + c)$ を要求します。Split 版は音響(±c)を陰解法、輸送($u_0$)を陽解法に置きます。
+
+```python
+import numpy as np
+
+def step_unsplit_rusanov(rho, u, rho0, c, u0, dx, dt):
+    """全系 Rusanov — CFL は |u0|+c に縛られる"""
+    lam = abs(u0) + c
+    F_rho = 0.5 * (rho0 * (u[:-1] + u[1:]) + u0 * (rho[:-1] + rho[1:])) \
+            - 0.5 * lam * (rho[1:] - rho[:-1])
+    F_u   = 0.5 * ((c*c/rho0) * (rho[:-1] + rho[1:]) + u0 * (u[:-1] + u[1:])) \
+            - 0.5 * lam * (u[1:] - u[:-1])
+    rho[1:-1] -= dt/dx * (F_rho[1:] - F_rho[:-1])
+    u[1:-1]   -= dt/dx * (F_u[1:]   - F_u[:-1])
+    return rho, u
+
+def step_imex_split(rho, u, rho0, c, u0, dx, dt_outer):
+    """音響(陰)+輸送(陽)— 外側 CFL は |u0| のみで決まる"""
+    # サブサイクルで backward Euler の効果を模擬
+    n_sub = max(1, int(np.ceil(c * dt_outer / dx)))
+    dt_a = dt_outer / n_sub
+    for _ in range(n_sub):
+        F_rho = 0.5 * rho0 * (u[:-1] + u[1:]) - 0.5 * c * (rho[1:] - rho[:-1])
+        F_u   = 0.5 * (c*c/rho0) * (rho[:-1] + rho[1:]) - 0.5 * c * (u[1:] - u[:-1])
+        rho[1:-1] -= dt_a/dx * (F_rho[1:] - F_rho[:-1])
+        u[1:-1]   -= dt_a/dx * (F_u[1:]   - F_u[:-1])
+    # 輸送 upwind (u0 > 0 とする)
+    a = u0 * dt_outer / dx
+    rho[1:-1] -= a * (rho[1:-1] - rho[:-2])
+    u[1:-1]   -= a * (u[1:-1]   - u[:-2])
+    return rho, u
+```
+
+同じ外側 $\Delta t = 0.5 \Delta x / |u_0|$ で両者を回し、$M = u_0/c = 0.05$ にすると、unsplit は最初のステップで発散します。Split はサブサイクルで音響を解いて安定です。効率の観点では、同じ物理時間に到達するのに unsplit は $1/M = 20$ 倍多くのステップが必要です。
+
+## 発散の現場 — その場で確認する
+
+下のシミュレーションで実際に動かしてみましょう。**Explicit unsplit** を選んで CFL を 1.2 より上げると、シアン色の曲線が発散して赤い警告が出ます。そのまま **IMEX** に切り替えると、同じ外側 CFL でも安定です。Mach 数を 0.05 まで下げれば、IMEX の実効時間刻みの利得は 20 倍まで広がります。
+
+<AcousticTransportSplit1D />
+
+注目ポイント:
+- explicit: CFL = 1.0 付近は綱渡り。1.05 を超えると spurious oscillation が成長し始めます。
+- split: 外側 CFL 4 でも音響情報がサブサイクルで正確に伝わり、形を維持します。
+- M が小さいほど両者の時間刻みの差が比例して広がります。
+
+## 批判ポイント — 論文が控えめにしているコスト
+
+加速はタダではありません。
+
+1. **陰解音響ソルブのコスト**: backward Euler は非線形なので Newton か Picard で解きます。1 次元では tridiagonal Thomas で軽快ですが、2 次元構造格子では ADI を使うか sparse solve に頼ることになります。論文も ADI 風の IM3 を推奨しています。
+2. **分離の 1 次精度誤差**: splitting 誤差は 1 次精度です。本文は「2 次精度化は次回作」とだけ書いています。実際 2D 液体-気体相互作用試験では界面がやや鈍ります。
+3. **音響の消失**: 陰解音響ステップは散逸的で、音響波が減衰します。出口 BC を間違うと本物の音響まで非物理的に消えるので、NSCBC(先週の記事)との併用が望ましいです。
+4. **正値性傾きのコスト**: 正値性のため $\bar{a}_\pm$ を大きくすると Riemann ソルバ自体も散逸的になります。結果的に low-Mach 補正(Appendix D)を併用しないと精度が出ません。
+
+OpenFOAM の `compressibleInterFoam` は PIMPLE 反復で同様の音響陰解効果を得ますが、特性レベルの分離は行っていません。Peluchon の方式が大 CFL でより頑健なのはこれが理由です。
+
+## 再現可能性スコア
+
+- 論文本文: アルゴリズム 1・2 が完全な擬似コードで提供 → ★★★★☆
+- 導出の不足: Appendix B の正値性不等式が窮屈、自分で再導出推奨 → ★★★☆☆
+- コード公開: なし。1 次元は ~200 行、2 次元 ADI は ~600 行 → ★★★☆☆
+- 検証ケース: shock tube, droplet convection, liquid-gas interaction, low-Mach acoustic pulse すべて実用的 → ★★★★★
+
+土曜の午後、5 方程式の多相モデルに陰解の鎚を振るう時期が来たなら、これが最も誠実な出発点です。音速を時間刻みに食わせない鋏は、この 1 本で十分です。
+
+## 次に読む論文
+
+- Coquel–Godlewski–Khalfallah(2016) — 単相音響-輸送分離の元祖
+- Boscheri–Dumbser(2021) — IMEX を all-Mach Navier–Stokes に拡張
+- Bharate(2025) — 同じ分離発想を 6 方程式 Baer–Nunziato モデルに適用

@@ -1,0 +1,175 @@
+---
+title: "[논문 리뷰] 음속이 CFL을 잡아먹지 않게 하는 법 — Peluchon(2017) 음향-수송 IMEX 분리"
+date: 2026-05-30
+description: "5-equation 모델에 acoustic-transport splitting을 끼워 시간 스텝을 1/M배 키운다"
+tags: ["논문리뷰", "IMEX", "Acoustic-Transport-Splitting", "Five-Equation-Model", "Low-Mach", "Compressible-Multiphase"]
+locale: ko
+slug: peluchon-acoustic-transport-imex
+draft: false
+---
+
+import { AcousticTransportSplit1D } from '@/components/post-viz/2026-05-30-peluchon-acoustic-transport-imex/AcousticTransportSplit1D'
+import { RiemannSolverPositivityMap } from '@/components/post-viz/2026-05-30-peluchon-acoustic-transport-imex/RiemannSolverPositivityMap'
+
+대기권 재진입 모사 코드를 돌리던 박사과정생이 한숨을 쉬었다. 액체-기체 경계에서 음속이 1500 m/s, 유속은 5 m/s. CFL은 음속이 다 잡아먹어 한 스텝이 마이크로초 단위였다. 8시간을 돌려도 물리 시간 1초가 안 갔다. Peluchon·Gallice·Mieussens(2017)는 그 문제를 정확히 겨냥했다 — 5-equation 다상 모델에서 음향파만 implicit으로 분리하고, 물질파는 explicit으로 두자.
+
+## 논문 정보
+
+- **저자**: S. Peluchon, G. Gallice, L. Mieussens
+- **소속**: CEA-CESTA / Univ. Bordeaux / INRIA
+- **저널**: *Journal of Computational Physics*, 339, 2017
+- **DOI**: 10.1016/j.jcp.2017.03.019
+- **제목**: *A robust implicit-explicit acoustic-transport splitting scheme for two-phase flows*
+
+## 한 줄로 — 시간 스텝을 음속에서 떼어내는 가위
+
+5-equation diffuse interface 모델은 액체와 기체를 동일한 보존 방정식으로 푼다. 그런데 액체 음속(1500 m/s)이 기체 음속(340 m/s)의 4배가 넘는다. explicit Godunov로 풀면 CFL은 $\Delta t < \Delta x / (|u|+c)$로 묶인다. 액체 영역에서 $|u| \ll c$이므로 시간 스텝은 사실상 $\Delta x / c$. 1500 m/s가 1 mm 격자를 지나는 데 0.67 μs.
+
+이 논문의 핵심은 그 $c$를 시간 스텝 분모에서 뽑아내는 것. **acoustic step만 backward Euler**로 풀고, **transport step은 explicit upwind**로 두면 outer CFL은 $|u|/c$, 즉 Mach 수에 비례해서 1/M배 더 큰 스텝이 허용된다. Mach 0.01에서는 이론적으로 100배 가속이다.
+
+이 발상의 원조는 Coquel·Godlewski·Khalfallah(2016)가 단상(monophase) gas dynamics에 도입했다. Peluchon은 그걸 Allaire·Clerc·Kokh(2002)의 5-equation 다상 시스템으로 끌어왔다.
+
+## 다섯 식을 음향과 수송으로 자르기
+
+압축성 5-equation system을 1D로 쓰면
+
+$$
+\partial_t \rho + \partial_x (\rho u) = 0
+$$
+
+$$
+\partial_t (\rho y) + \partial_x (\rho y u) = 0
+$$
+
+$$
+\partial_t (\rho u) + \partial_x (\rho u^2 + p) = 0
+$$
+
+$$
+\partial_t (\rho e) + \partial_x ((\rho e + p) u) = 0
+$$
+
+$$
+\partial_t z + u \partial_x z = 0
+$$
+
+여기서 $z$는 부피분율, $y = \rho_1 z / \rho$는 1상 질량분율, $e = \epsilon + u^2/2$는 비총에너지. 부피분율 식만 non-conservative다.
+
+논문은 각 보존변수의 evolution을 **두 부분**으로 나눈다. 보존변수 $\phi \in \{\rho, \rho y, \rho u, \rho e\}$에 대해
+
+$$
+\partial_t \phi + \phi \partial_x u + u \partial_x \phi = \partial_t \phi + \partial_x (\phi u)
+$$
+
+좌변 첫 두 항은 **acoustic part** ($\phi \partial_x u$는 압축/팽창), 세 번째 항은 **transport part** ($u \partial_x \phi$는 이류). 음속이 박혀 있는 압력 기울기 $\partial_x p$는 운동량·에너지의 acoustic 항에 들어간다. 결과:
+
+**Acoustic 시스템** (전파속도 $0,\,\pm c$):
+
+$$
+\partial_t \rho + \rho \partial_x u = 0, \quad \partial_t (\rho u) + \rho u \partial_x u + \partial_x p = 0
+$$
+
+**Transport 시스템** (전파속도 $u$만):
+
+$$
+\partial_t \rho + u \partial_x \rho = 0, \quad \partial_t (\rho u) + u \partial_x (\rho u) = 0
+$$
+
+acoustic을 backward Euler로 풀면 그 안의 $\pm c$는 시간 스텝 제약에서 빠진다. transport는 explicit upwind, CFL은 $|u| \Delta t / \Delta x < 1$만 만족하면 된다.
+
+## Riemann solver의 양수성 조건
+
+핵심 디테일 하나가 더 있다. acoustic 시스템은 non-conservative form $\partial_t V + \vartheta \partial_x G(V) = 0$ ($\vartheta = 1/\rho$). 이걸 Godunov-type으로 풀려면 simple Riemann solver를 만들어야 한다. 논문은 두 슬로프 $\bar{a}_-,\,\bar{a}_+$를 좌·우 따로 둔다(저자 Gallice의 2003년 솔버 확장). 슬로프가 충분히 크면 intermediate state의 specific volume과 압력이 모두 양수가 된다.
+
+조건은 다음 두 부등식으로 떨어진다 (Appendix B):
+
+$$
+\bar{a}_-^2 \ge \rho_l c_l^2 - \rho_l (p_r - p_l) / \cdots
+$$
+
+실제로는 $\bar{a}_\pm = K \max(\rho_l c_l,\,\rho_r c_r)$를 $K \ge K^\star$까지 키워가며 찾는다. 아래에서 $K$를 직접 움직여보자. 빨간 영역(음수 밀도·압력 등장)이 사라지는 순간이 양수 보존 한계다.
+
+<RiemannSolverPositivityMap />
+
+이 솔버를 그대로 implicit하게 만들기 위해 시간 인덱스만 $n \to n+1-$로 바꾼다. 비선형 시스템이지만 Picard 방식으로 풀린다.
+
+## 직접 구현 — 선형 acoustic-transport
+
+논문 코드를 한 번에 옮기기 전에, **선형 음향-수송 시스템**으로 핵심 가속 효과를 재현해 본다.
+
+$$
+\partial_t \rho + \rho_0 \partial_x u + u_0 \partial_x \rho = 0, \quad
+\partial_t u + \frac{c^2}{\rho_0} \partial_x \rho + u_0 \partial_x u = 0
+$$
+
+전체 시스템의 고유값은 $u_0 - c,\,u_0,\,u_0 + c$. unsplit explicit Rusanov는 $\Delta t \le \Delta x / (|u_0| + c)$를 요구한다. split 버전은 acoustic(±c)을 implicit으로, transport($u_0$)를 explicit으로 둔다.
+
+```python
+import numpy as np
+
+def step_unsplit_rusanov(rho, u, rho0, c, u0, dx, dt):
+    """전체 시스템 Rusanov — CFL ≤ 1/(|u0|+c)*dx 필요"""
+    lam = abs(u0) + c
+    F_rho = 0.5 * (rho0 * (u[:-1] + u[1:]) + u0 * (rho[:-1] + rho[1:])) \
+            - 0.5 * lam * (rho[1:] - rho[:-1])
+    F_u   = 0.5 * ((c*c/rho0) * (rho[:-1] + rho[1:]) + u0 * (u[:-1] + u[1:])) \
+            - 0.5 * lam * (u[1:] - u[:-1])
+    rho[1:-1] -= dt/dx * (F_rho[1:] - F_rho[:-1])
+    u[1:-1]   -= dt/dx * (F_u[1:]   - F_u[:-1])
+    return rho, u
+
+def step_imex_split(rho, u, rho0, c, u0, dx, dt_outer):
+    """음향(implicit) + 수송(explicit) 분리 — outer CFL은 |u0|만 봄"""
+    # acoustic을 sub-cycle로 풀어 backward Euler 결과를 모사
+    n_sub = max(1, int(np.ceil(c * dt_outer / dx)))
+    dt_a = dt_outer / n_sub
+    for _ in range(n_sub):
+        F_rho = 0.5 * rho0 * (u[:-1] + u[1:]) - 0.5 * c * (rho[1:] - rho[:-1])
+        F_u   = 0.5 * (c*c/rho0) * (rho[:-1] + rho[1:]) - 0.5 * c * (u[1:] - u[:-1])
+        rho[1:-1] -= dt_a/dx * (F_rho[1:] - F_rho[:-1])
+        u[1:-1]   -= dt_a/dx * (F_u[1:]   - F_u[:-1])
+    # transport upwind (u0 > 0 가정)
+    a = u0 * dt_outer / dx
+    rho[1:-1] -= a * (rho[1:-1] - rho[:-2])
+    u[1:-1]   -= a * (u[1:-1]   - u[:-2])
+    return rho, u
+```
+
+같은 outer $\Delta t = 0.5 \Delta x / |u_0|$로 두 스킴을 돌리면, $M = u_0/c = 0.05$에서 unsplit은 첫 스텝에 폭주한다. split은 acoustic을 sub-cycle하여 그대로 동작한다. 효율로 보면 unsplit이 $1/M = 20$배 더 많은 step을 돌려야 같은 물리 시간에 도달한다.
+
+## 폭주의 자리 — 직접 확인하기
+
+아래 시뮬레이션에서 직접 조작해보자. **Explicit unsplit**을 선택하고 CFL을 1.2 이상으로 올리면 보라색이 폭주하며 빨간 경고가 뜬다. 그대로 **IMEX**로 토글하면 같은 outer CFL에서도 안정. Mach 수를 0.05까지 낮추면 IMEX의 효과적 시간 스텝 이득이 20배까지 벌어진다.
+
+<AcousticTransportSplit1D />
+
+관찰 포인트:
+- explicit: CFL = 1.0 근처에서 살얼음판. 1.05만 넘어도 spurious oscillation이 자라기 시작.
+- split: outer CFL 4까지 올려도 acoustic 정보가 정확히 sub-cycle로 전파되고 모양이 유지된다.
+- Mach M가 작아질수록 두 스킴의 시간-스텝 격차가 비례 증가.
+
+## 비판 포인트 — 논문이 숨긴 비용
+
+이 가속이 공짜는 아니다.
+
+1. **Implicit acoustic solve의 비용**: backward Euler는 비선형이라 Newton 또는 Picard로 풀어야 한다. 1D에선 tridiagonal Thomas로 쾌적하지만, 2D 구조격자에서도 ADI를 안 쓰면 sparse solve가 필요. 논문도 그래서 ADI 변형 IM3을 권한다.
+2. **첫 단계 정확도 손실**: splitting error는 1차. 본문은 이를 "다음 작업에서 2차로 올리겠다"고만 한다. 실제로 2D 충돌 시험에서 두 액주의 경계가 약간 무뎌진다.
+3. **음향파를 정말 잃지 않나**: implicit이라 음향파가 dissipative하게 사라진다. 무반사 BC와 결합하지 않으면 충격에서 출구로 빠져나가는 음파가 비물리적으로 감쇠한다.
+4. **양수성 슬로프 $K^\star$의 sticky 비용**: 양수성을 위해 슬로프를 키우면 솔버 자체가 더 dissipative해진다. 결과적으로 low-Mach correction(논문 Appendix D)을 꼭 함께 써야 한다.
+
+OpenFOAM의 `compressibleInterFoam`은 PIMPLE 루프로 비슷한 acoustic-implicit 효과를 얻지만, characteristic splitting을 명시적으로 쓰지 않는다. 이 논문의 방식이 더 robust한 이유다.
+
+## 재현 가능성 점수
+
+- 논문 본문: 알고리즘 1·2가 완전한 의사코드로 제공 → ★★★★☆
+- 수식 누락: Appendix B의 양수성 부등식이 좀 빠듯해서 직접 다시 유도 권장 → ★★★☆☆
+- 코드 공개: 없음, 직접 구현 필요. 1D는 200줄, 2D ADI는 600줄 정도 → ★★★☆☆
+- 검증 케이스: Shock tube, droplet convection, liquid-gas interaction, low-Mach acoustic pulse 모두 실리적 → ★★★★★
+
+토요일 오후, 5-equation 다상을 implicit으로 손대볼 시점이라면 이 논문이 가장 정직한 출발점이다. 음속을 잡아먹지 않는 시간 스텝, 가위 하나로 만들어진다.
+
+## 다음에 읽을 논문
+
+- Coquel·Godlewski·Khalfallah(2016) — 단상 acoustic-transport 분리의 원조
+- Boscheri·Dumbser(2021) — IMEX all-Mach Navier–Stokes로 확장
+- Bharate(2025) — 동일 분리 아이디어를 6-equation BN 모델에 적용

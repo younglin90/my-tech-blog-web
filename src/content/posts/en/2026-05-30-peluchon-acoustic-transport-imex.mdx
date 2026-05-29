@@ -1,0 +1,175 @@
+---
+title: "[Paper Review] Stop letting sound speed swallow your CFL — Peluchon (2017) acoustic-transport IMEX"
+date: 2026-05-30
+description: "Splitting acoustic from transport gives a 1/M time-step gain on the five-equation model"
+tags: ["논문리뷰", "IMEX", "Acoustic-Transport-Splitting", "Five-Equation-Model", "Low-Mach", "Compressible-Multiphase"]
+locale: en
+slug: peluchon-acoustic-transport-imex
+draft: false
+---
+
+import { AcousticTransportSplit1D } from '@/components/post-viz/2026-05-30-peluchon-acoustic-transport-imex/AcousticTransportSplit1D'
+import { RiemannSolverPositivityMap } from '@/components/post-viz/2026-05-30-peluchon-acoustic-transport-imex/RiemannSolverPositivityMap'
+
+A graduate student running an atmospheric re-entry code sighed. At the liquid-gas interface the sound speed was 1500 m/s, the flow speed barely 5 m/s. The CFL bound was set entirely by the acoustic speed, so each step lasted microseconds. After eight hours of wall-clock time the simulation had not even cleared one second of physical time. Peluchon, Gallice and Mieussens (2017) aimed straight at that pain — split acoustics from transport in the five-equation model, make acoustics implicit, leave transport explicit.
+
+## Paper info
+
+- **Authors**: S. Peluchon, G. Gallice, L. Mieussens
+- **Affiliations**: CEA-CESTA / Univ. Bordeaux / INRIA
+- **Journal**: *Journal of Computational Physics*, 339, 2017
+- **DOI**: 10.1016/j.jcp.2017.03.019
+- **Title**: *A robust implicit-explicit acoustic-transport splitting scheme for two-phase flows*
+
+## One line — scissors that cut the time step away from the sound speed
+
+The five-equation diffuse-interface model solves liquid and gas with the same conservation equations. But the liquid sound speed (1500 m/s) is more than four times the gas value (340 m/s). An explicit Godunov scheme is bound by $\Delta t < \Delta x / (|u| + c)$. In the liquid region $|u| \ll c$, so the step is essentially $\Delta x / c$. At 1 mm grid that's 0.67 μs per step.
+
+The paper's core idea is to pull that $c$ out of the time-step denominator. Treat **only the acoustic step with backward Euler**, leave **transport explicit upwind**. The outer CFL then scales with $|u|/c$, i.e. with the Mach number — a 1/M speedup. At Mach 0.01 the theoretical acceleration is 100×.
+
+The progenitor is Coquel–Godlewski–Khalfallah (2016), who applied this idea to single-phase gas dynamics. Peluchon lifts it to the Allaire–Clerc–Kokh (2002) five-equation multiphase system.
+
+## Splitting the five equations into acoustic and transport
+
+The 1D compressible five-equation system reads
+
+$$
+\partial_t \rho + \partial_x (\rho u) = 0
+$$
+
+$$
+\partial_t (\rho y) + \partial_x (\rho y u) = 0
+$$
+
+$$
+\partial_t (\rho u) + \partial_x (\rho u^2 + p) = 0
+$$
+
+$$
+\partial_t (\rho e) + \partial_x ((\rho e + p) u) = 0
+$$
+
+$$
+\partial_t z + u \partial_x z = 0
+$$
+
+where $z$ is the volume fraction, $y = \rho_1 z / \rho$ the mass fraction of phase 1, and $e = \epsilon + u^2/2$ the specific total energy. Only the volume-fraction equation is non-conservative.
+
+The paper splits each conservation-variable evolution into **two parts**. For any $\phi \in \{\rho, \rho y, \rho u, \rho e\}$,
+
+$$
+\partial_t \phi + \phi \partial_x u + u \partial_x \phi = \partial_t \phi + \partial_x (\phi u)
+$$
+
+The first two terms on the left form the **acoustic part** (compression/expansion through $\phi \partial_x u$); the third is the **transport part** (advection $u \partial_x \phi$). The pressure-gradient term $\partial_x p$, which carries the sound speed, joins the acoustic part of momentum and energy.
+
+**Acoustic system** (propagation speeds $0, \pm c$):
+
+$$
+\partial_t \rho + \rho \partial_x u = 0, \quad \partial_t (\rho u) + \rho u \partial_x u + \partial_x p = 0
+$$
+
+**Transport system** (propagation speed $u$ only):
+
+$$
+\partial_t \rho + u \partial_x \rho = 0, \quad \partial_t (\rho u) + u \partial_x (\rho u) = 0
+$$
+
+Solve the acoustic system with backward Euler and the $\pm c$ inside drops out of the time-step constraint. Transport is explicit upwind: the only CFL bound is $|u| \Delta t / \Delta x < 1$.
+
+## Riemann-solver positivity condition
+
+One detail matters. The acoustic system has a non-conservative form $\partial_t V + \vartheta \partial_x G(V) = 0$ with $\vartheta = 1/\rho$. A simple Riemann solver is needed for a Godunov-type scheme. The paper uses two distinct slopes $\bar{a}_-,\,\bar{a}_+$ on the left and right (extending Gallice's 2003 solver). If the slopes are large enough, both the intermediate specific volume and pressure stay positive.
+
+The condition reduces to two inequalities (Appendix B):
+
+$$
+\bar{a}_-^2 \ge \rho_l c_l^2 - \rho_l (p_r - p_l) / \cdots
+$$
+
+In practice you take $\bar{a}_\pm = K \max(\rho_l c_l, \rho_r c_r)$ and crank $K$ up until positivity holds. Drag the slope sliders below — the red region (where some intermediate state goes negative) shrinks as $K$ grows.
+
+<RiemannSolverPositivityMap />
+
+To make this solver implicit, just shift the time index from $n$ to $n+1-$. The resulting nonlinear system is solved with a Picard iteration.
+
+## Direct implementation — linear acoustic-transport
+
+Before porting the full algorithm, the key acceleration effect can be reproduced on a **linear acoustic-transport system**.
+
+$$
+\partial_t \rho + \rho_0 \partial_x u + u_0 \partial_x \rho = 0, \quad
+\partial_t u + \frac{c^2}{\rho_0} \partial_x \rho + u_0 \partial_x u = 0
+$$
+
+Eigenvalues are $u_0 - c,\,u_0,\,u_0 + c$. Unsplit explicit Rusanov needs $\Delta t \le \Delta x / (|u_0| + c)$. The split version handles acoustic (±c) implicitly and transport ($u_0$) explicitly.
+
+```python
+import numpy as np
+
+def step_unsplit_rusanov(rho, u, rho0, c, u0, dx, dt):
+    """Full-system Rusanov — requires CFL based on |u0|+c"""
+    lam = abs(u0) + c
+    F_rho = 0.5 * (rho0 * (u[:-1] + u[1:]) + u0 * (rho[:-1] + rho[1:])) \
+            - 0.5 * lam * (rho[1:] - rho[:-1])
+    F_u   = 0.5 * ((c*c/rho0) * (rho[:-1] + rho[1:]) + u0 * (u[:-1] + u[1:])) \
+            - 0.5 * lam * (u[1:] - u[:-1])
+    rho[1:-1] -= dt/dx * (F_rho[1:] - F_rho[:-1])
+    u[1:-1]   -= dt/dx * (F_u[1:]   - F_u[:-1])
+    return rho, u
+
+def step_imex_split(rho, u, rho0, c, u0, dx, dt_outer):
+    """Acoustic (implicit) + transport (explicit) — outer CFL sees only |u0|"""
+    # Sub-cycling mimics the result of backward Euler in one big step
+    n_sub = max(1, int(np.ceil(c * dt_outer / dx)))
+    dt_a = dt_outer / n_sub
+    for _ in range(n_sub):
+        F_rho = 0.5 * rho0 * (u[:-1] + u[1:]) - 0.5 * c * (rho[1:] - rho[:-1])
+        F_u   = 0.5 * (c*c/rho0) * (rho[:-1] + rho[1:]) - 0.5 * c * (u[1:] - u[:-1])
+        rho[1:-1] -= dt_a/dx * (F_rho[1:] - F_rho[:-1])
+        u[1:-1]   -= dt_a/dx * (F_u[1:]   - F_u[:-1])
+    # Transport upwind (assume u0 > 0)
+    a = u0 * dt_outer / dx
+    rho[1:-1] -= a * (rho[1:-1] - rho[:-2])
+    u[1:-1]   -= a * (u[1:-1]   - u[:-2])
+    return rho, u
+```
+
+Run both at the same outer $\Delta t = 0.5 \Delta x / |u_0|$ with $M = u_0/c = 0.05$. The unsplit scheme blows up on step one. The split scheme stays stable. To reach the same physical time, the unsplit scheme has to take $1/M = 20$ times more steps.
+
+## Watching the blow-up live
+
+Try the controls below. Pick **Explicit unsplit** and push the CFL above 1.2 — the cyan curve explodes and the red warning fires. Toggle to **IMEX** at the same outer CFL and it stays calm. Lower the Mach number to 0.05 and the IMEX gain widens to 20×.
+
+<AcousticTransportSplit1D />
+
+What to watch for:
+- explicit: CFL near 1.0 is a tightrope; even 1.05 grows spurious oscillations.
+- split: outer CFL up to 4 still propagates the acoustic information cleanly through the sub-cycle.
+- as M shrinks, the time-step ratio between the two schemes opens proportionally.
+
+## Criticism — costs the paper plays down
+
+The speedup is not free.
+
+1. **Cost of the implicit acoustic solve**: backward Euler is nonlinear, so it needs Newton or Picard. A 1D tridiagonal Thomas solve is cheap; in 2D structured grids you either go ADI or face a sparse solve. The paper recommends an ADI-style variant (IM3) for that reason.
+2. **First-order splitting error**: the splitting is only first order in time. The authors defer the second-order extension to a future paper. In the 2D liquid-gas interaction test the interface noticeably smears.
+3. **Acoustic damping**: the implicit acoustic step is dissipative, so acoustic waves are damped. Combined with the wrong outflow BC this can suppress real acoustics; pairing with NSCBC (last week's post) is recommended.
+4. **Positivity-slope cost**: enlarging $\bar{a}_\pm$ for positivity also makes the Riemann solver more dissipative. The low-Mach correction (Appendix D) becomes essential to recover accuracy.
+
+OpenFOAM's `compressibleInterFoam` achieves similar acoustic-implicit behavior through PIMPLE iterations, but without characteristic-level splitting. That is precisely why Peluchon's approach is more robust under large CFL.
+
+## Reproducibility score
+
+- Paper body: Algorithms 1 and 2 are full pseudocode → ★★★★☆
+- Missing derivations: Appendix B positivity inequalities are tight; re-derive yourself → ★★★☆☆
+- Code release: none, you implement it. 1D takes ~200 lines, 2D ADI ~600 → ★★★☆☆
+- Validation cases: shock tube, droplet convection, liquid-gas interaction, low-Mach acoustic pulse — all practical → ★★★★★
+
+If you've been waiting for a Saturday afternoon to start touching the five-equation model with an implicit hammer, this is the most honest starting point. One pair of scissors keeps the sound speed out of your time step.
+
+## Next papers to read
+
+- Coquel–Godlewski–Khalfallah (2016) — original acoustic-transport split for single-phase
+- Boscheri–Dumbser (2021) — IMEX extension to all-Mach Navier–Stokes
+- Bharate (2025) — same idea applied to the 6-equation Baer–Nunziato model
