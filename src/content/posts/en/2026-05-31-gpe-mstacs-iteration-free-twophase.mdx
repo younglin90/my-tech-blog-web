@@ -1,0 +1,208 @@
+---
+title: "[Paper Review] Two-Phase Flow Without a Poisson Solver — Coupling the General Pressure Equation with MSTACS"
+date: 2026-05-31
+description: "Swap the elliptic Poisson step for a hyperbolic GPE and run two-phase flow fully explicitly"
+tags: ["논문리뷰", "Weakly-Compressible", "GPE", "VOF", "MSTACS", "Multiphase"]
+locale: en
+slug: gpe-mstacs-iteration-free-twophase
+draft: false
+---
+
+import { GPEAcousticPulseProbe1D } from '@/components/post-viz/2026-05-31-gpe-mstacs-iteration-free-twophase/GPEAcousticPulseProbe1D'
+import { MSTACSDonorAcceptorRamp1D } from '@/components/post-viz/2026-05-31-gpe-mstacs-iteration-free-twophase/MSTACSDonorAcceptorRamp1D'
+
+LBM, ACM, EDAC, GPE — four branching routes that simulate incompressible flow without ever solving a pressure Poisson equation. Bodhanwalla, Raghunathan, and Sudhakar (2025) picked the last one and pushed it into the two-phase regime. They also paired it with a sharper algebraic VOF named MSTACS inside an operator-split framework, producing a fully explicit solver that calls **zero linear-algebra routines**. It survives 1000:1 density ratios, and the trick is keeping the pressure equation hyperbolic by injecting an artificial sound speed.
+
+## Paper details
+
+- **Authors**: H. Bodhanwalla, D. Raghunathan, Y. Sudhakar
+- **Affiliation**: IIT Goa, School of Mechanical Sciences
+- **Journal**: *Computers & Fluids* (2025)
+- **Title**: *A general pressure equation based method for incompressible two-phase flows*
+- **Keywords**: general pressure equation, VOF, MSTACS, operator-split, weakly compressible
+
+## A comparison matrix of "skip-the-Poisson" methods
+
+| Method | Pressure-equation nature | Two-phase status | Memory | Parallel efficiency |
+|--------|--------------------------|-------------------|--------|---------------------|
+| **LBM** | Sum of kinetic distributions | Unstable at large density ratios | Heavy (Q19/Q27) | Excellent |
+| **ACM** | Artificial hyperbolic ($\partial_t p + \beta \nabla \cdot \mathbf{u} = 0$) | Needs dual time-stepping | Moderate | Moderate |
+| **EDAC** | Parabolic with acoustic damping | Interface switch parameter required | Moderate | Excellent |
+| **GPE** | Thermodynamically derived hyperbolic + diffusion | First direct application here | Moderate | Excellent |
+
+The three older approaches drift from similar starting points; GPE stands out because it comes from a **thermodynamic assumption ($\gamma = \mathrm{Pr}$)** rather than an artificial coupling. The equation is what the low-Mach limit hands you, not what you bolt on.
+
+## GPE — lending the pressure equation a sound speed
+
+The momentum equation is the usual incompressible Navier–Stokes. What changes is the pressure equation.
+
+$$
+\rho \left(\frac{\partial \mathbf{u}}{\partial t} + \mathbf{u} \cdot \nabla \mathbf{u}\right) = -\nabla p + \nabla \cdot \left[\mu(\nabla\mathbf{u} + \nabla\mathbf{u}^\top)\right] + \mathbf{F}
+$$
+
+$$
+\frac{\partial p}{\partial t} + \rho c_s^2 (\nabla \cdot \mathbf{u}) = \frac{1}{\rho}\nabla \cdot (\mu \nabla p)
+$$
+
+Here $c_s$ is the artificial sound speed, $\rho$ is the mixture density ($\rho = C\rho_1 + (1-C)\rho_2$ with volume fraction $C$), and $\mu$ is the mixture viscosity. The pressure-diffusion term on the right is not bolted in — it falls out of the GPE derivation naturally, unlike EDAC's hand-added damping.
+
+In non-dimensional form, the artificial compressibility is measured by the Mach number $\mathrm{Ma} = U/c_s$.
+
+$$
+\frac{\partial p}{\partial t} + \frac{\rho^*}{\mathrm{Ma}^2}(\nabla \cdot \mathbf{u}) = \frac{1}{\rho^*\mathrm{Re}}\nabla \cdot (\mu^* \nabla p)
+$$
+
+A smaller $\mathrm{Ma}$ means pressure propagates faster — closer to the incompressible limit — but stability shrinks the step to $\Delta t \le \Delta x / c_s$. That is the price of borrowing a sound speed.
+
+Table 5 of the paper shows $\Delta t_{\mathrm{GPE}} \approx \mathrm{Ma}\,\Delta t_{\mathrm{INS}}$. On a single core the GPE solver loses to a Poisson-based solver, but with no global linear solve the **HPC scalability is supposed to flip the verdict**, as the authors argue.
+
+## MSTACS — wrapping a cos⁴θ blend around donor–acceptor
+
+The volume-fraction transport becomes $\partial_t C + \nabla \cdot (\mathbf{u} C) = C(\nabla \cdot \mathbf{u})$. Notice the compressibility correction $C(\nabla \cdot \mathbf{u})$ on the right — a quiet handoff between the weakly compressible framework and the VOF.
+
+The interesting question is how to compute the face value $C_{\text{face}}$. In donor–acceptor form,
+
+$$
+C_{\text{face}} = (1 - \beta) C_D + \beta C_A
+$$
+
+with $\beta$ derived from the normalised donor value $\widetilde{C}_D = (C_D - C_U)/(C_A - C_U)$. MSTACS sets the normalised face value to a **blend** of two schemes.
+
+$$
+\widetilde{C}_{\text{face}} = \gamma \, \widetilde{C}_{\text{face}}^{\mathrm{CDS}} + (1 - \gamma) \, \widetilde{C}_{\text{face}}^{\mathrm{HR}}
+$$
+
+- **CDS** (compressive): packs the interface into one cell, but wrinkles on non-aligned faces.
+- **HR** (high resolution): safe and smooth, but it puffs the interface up.
+- **Blend $\gamma = \cos^4\theta$**: $\theta$ is the angle between the interface normal $\hat{\mathbf{n}}$ and the donor–acceptor direction $\hat{\mathbf{d}}$. Interface normal to the face → $\theta=0$, $\gamma=1$ → pure CDS. Interface parallel to the face → $\theta=\pi/2$, $\gamma=0$ → pure HR.
+
+It is a self-tuning gate: the algorithm uses sharp CDS only where the geometry is safe, and slides into the cushioned HR elsewhere.
+
+## Operator-split + SSP-RK3
+
+The paper's full algorithm in five lines:
+
+1. $C^{(n+1)}$ = OS-MSTACS($C^{(n)}, \mathbf{u}^{(n)}$). Sweep $x \to y \to z$, then permute the order each step.
+2. $\rho^{(n+1)}, \mu^{(n+1)}$ from the mixture rule.
+3. $\kappa^{(n+1)}$ from the height-function curvature.
+4. Three SSP-RK3 stages of momentum → GPE, in that order.
+
+SSP-RK3 is
+
+$$
+\Psi^{(1)} = \Psi^{(n)} + \Delta t L(\Psi^{(n)})
+$$
+
+$$
+\Psi^{(2)} = \tfrac{3}{4}\Psi^{(n)} + \tfrac{1}{4}\Psi^{(1)} + \tfrac{1}{4}\Delta t L(\Psi^{(1)})
+$$
+
+$$
+\Psi^{(n+1)} = \tfrac{1}{3}\Psi^{(n)} + \tfrac{2}{3}\Psi^{(2)} + \tfrac{2}{3}\Delta t L(\Psi^{(2)})
+$$
+
+**No linear solver is called anywhere.** That makes the algorithm easy to port to a GPU, and MPI only needs to exchange stencil halos.
+
+## Direct reproduction — a 1D acoustic pulse
+
+The smallest possible code that demonstrates GPE behaviour is a 1D linear acoustic system. Drop the viscosity term and you keep the essence.
+
+```python
+import numpy as np
+
+def gpe_step_1d(p, u, cs, nu, dx, dt):
+    """1D linear acoustics + GPE pressure diffusion, periodic BC.
+    p: pressure fluctuation, u: velocity, cs: artificial sound speed, nu: GPE diffusion
+    """
+    # periodic padding
+    pL = np.roll(p, 1); pR = np.roll(p, -1)
+    uL = np.roll(u, 1); uR = np.roll(u, -1)
+    # Rusanov flux for the linear system (eigenvalues = ±cs)
+    fp = 0.5*cs*cs*(uL + u) - 0.5*cs*(p - pL)
+    fu = 0.5*(pL + p) - 0.5*cs*(u - uL)
+    fp_r = 0.5*cs*cs*(u + uR) - 0.5*cs*(pR - p)
+    fu_r = 0.5*(p + pR) - 0.5*cs*(uR - u)
+    # GPE diffusion term (central difference)
+    diff = nu * (pL - 2*p + pR) / (dx*dx)
+    p_new = p - dt/dx*(fp_r - fp) + dt*diff
+    u_new = u - dt/dx*(fu_r - fu)
+    return p_new, u_new
+
+def run_demo(cs=5.0, nu=0.0, T=0.2, N=160):
+    dx = 1.0/N
+    dt = 0.4*dx/cs                # acoustic CFL
+    x = (np.arange(N) + 0.5)*dx
+    p = 0.4*np.exp(-((x - 0.5)/0.05)**2)
+    u = np.zeros_like(x)
+    steps = int(T/dt)
+    for _ in range(steps):
+        p, u = gpe_step_1d(p, u, cs, nu, dx, dt)
+    return x, p, u
+
+x, p, u = run_demo()                       # cs=5, no diffusion
+x2, p2, u2 = run_demo(cs=15.0, nu=0.0)     # cs=15 → wave 3× faster, dt 1/3× smaller
+```
+
+Pushing $c_s$ from 5 to 15 makes the wave move three times faster, and the allowed $\Delta t$ shrinks by the same factor. Reaching the same physical time takes three times more steps. That is the GPE bargain in one line.
+
+## Interactive — how $c_s$ eats the time step
+
+Try the simulation below. Sliders for the artificial sound speed and the pressure diffusion control how a Gaussian pulse splits into two acoustic waves.
+
+<GPEAcousticPulseProbe1D />
+
+What to watch:
+- Push $c_s$ from 5 to 20: the waves sweep the domain four times faster, and the permissible $\Delta t$ shrinks by the same factor.
+- Push $\nu$ to 0.05: the wave crests are shaved off rapidly — exactly the role EDAC's artificial pressure damping plays.
+- At $\nu = 0$ the pulse loops the periodic domain forever. Closer to the incompressible limit on paper, but in a rough flow unattenuated acoustics seed spurious oscillations.
+
+## Interactive — unpacking the MSTACS blend
+
+Now compare how CDS, HR, and MSTACS handle the same top-hat profile.
+
+<MSTACSDonorAcceptorRamp1D />
+
+What to watch:
+- **CDS only**: razor-sharp edges, but jitter appears once the Courant number exceeds 1/3.
+- **HR only**: stable, but the step smears over time. A pseudo-viscosity.
+- **MSTACS** with $\theta = 0°$: $\gamma = 1$ → identical to CDS.
+- **MSTACS** with $\theta = 90°$: $\gamma = 0$ → identical to HR.
+- In real 2D/3D every face sees a different $\theta$, so flat patches stay sharp while inclined ones fall safely to HR.
+
+## Validation summary — 2D RT, broken dam, bubble rise, 3D RT
+
+| Case | $\rho_1/\rho_2$ | Reference | Quantitative result |
+|------|------------------|-----------|----------------------|
+| 2D Rayleigh–Taylor | 3:1 | He & Doolen (1999) | spike/bubble position within 1% |
+| Broken dam | 1000:1 | Martin & Moyce (1952) experiment | front-arrival within 5% |
+| Single bubble rise | 1000:1, $Eo=10$ | Hysing benchmark (2009) | terminal velocity within 3% |
+| 3D Rayleigh–Taylor | 3:1 | Tryggvason (1988) | spike topology qualitatively matched |
+
+OS-MSTACS itself shows a volume-fraction error of $E_G = 6.57 \times 10^{-8}$ on the shear test, against OS-CICSAM's $E_G = 8.18 \times 10^{-4}$. **Four orders of magnitude** better, thanks to the conservative redistribution step that recovers mass to machine precision.
+
+## Critical points — costs the paper glosses over
+
+GPE itself is not free.
+
+1. **Time-step constraint from $c_s$**: $\Delta t \le \Delta x / c_s$. Too small a $c_s$ leaks artificial compressibility into the physics; too large a $c_s$ blows up the wall-clock cost as $1/\mathrm{Ma}$. The paper only states that $\mathrm{Couacs} \le 1.25$ is safe in practice.
+2. **Physical meaning of the GPE diffusion term**: $\frac{1}{\rho}\nabla \cdot (\mu \nabla p)$ has a clean single-phase derivation, but the meaning of that diffusion coefficient when $\rho$ jumps 1000× across the interface is left vague.
+3. **No well-balanced surface tension proof**: CSF + height-function curvature is a standard combination, but the paper offers no quantitative analysis of how spurious currents scale with $c_s$.
+4. **Serial cost vs HPC promise**: $\Delta t_{\mathrm{GPE}} \approx \mathrm{Ma}\,\Delta t_{\mathrm{INS}}$ means a single core always loses. The HPC comparison is explicitly deferred.
+
+OpenFOAM's `interFoam` (PIMPLE + MULES) has years of validation behind it. The selling point of this paper is the **GPU-friendly, iteration-free** territory where `interFoam` cannot easily go — but the GPU port is not released.
+
+## Reproducibility score
+
+- Algorithm pseudo-code (Section 3.3): ★★★★★ — eight tight steps.
+- MSTACS formulas (13)–(15): ★★★★☆ — possible typo (eqn. (13) printed twice). Better to consult Anghan et al. (2018) for the original derivation.
+- Code release: ★★☆☆☆ — none. Estimate roughly 200 lines for 1D, 1500 lines for the 3D OS-MSTACS.
+- Benchmark data: ★★★★☆ — quantitative comparisons for all four cases with grid-convergence tables.
+
+A Sunday afternoon and a desire to write a small two-phase solver from scratch? This paper is a friendlier starting point than you might expect. The price of skipping a Poisson solver is getting cosy with sound speeds and volume-fraction redistribution algorithms.
+
+## Papers to read next
+
+- Toutant (2017) — the original single-phase GPE derivation.
+- Saincher & Sriram (2022) — the operator-split algorithm.
+- Kajzer & Pozorski (2021) — the EDAC-based two-phase variant, the natural competitor.
+- Yang & Aoki (2021) — projection-based pressure evolution for VOF.

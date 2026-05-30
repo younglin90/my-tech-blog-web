@@ -1,0 +1,208 @@
+---
+title: "[Revisión de paper] Flujo bifásico sin Poisson — Acoplando la ecuación general de presión con MSTACS"
+date: 2026-05-31
+description: "Reemplazar la Poisson elíptica por una GPE hiperbólica y correr el bifásico totalmente explícito"
+tags: ["논문리뷰", "Weakly-Compressible", "GPE", "VOF", "MSTACS", "Multiphase"]
+locale: es
+slug: gpe-mstacs-iteration-free-twophase
+draft: false
+---
+
+import { GPEAcousticPulseProbe1D } from '@/components/post-viz/2026-05-31-gpe-mstacs-iteration-free-twophase/GPEAcousticPulseProbe1D'
+import { MSTACSDonorAcceptorRamp1D } from '@/components/post-viz/2026-05-31-gpe-mstacs-iteration-free-twophase/MSTACSDonorAcceptorRamp1D'
+
+LBM, ACM, EDAC, GPE — cuatro rutas que simulan flujo incompresible sin resolver jamás una ecuación de Poisson para la presión. Bodhanwalla, Raghunathan y Sudhakar (2025) eligieron la última y la llevaron al régimen bifásico. La acompañaron con un VOF algebraico más nítido llamado MSTACS dentro de un esquema de operator-split, produciendo un solver completamente explícito con **cero llamadas a rutinas de álgebra lineal**. Sobrevive a relaciones de densidad 1000:1; el truco es mantener la ecuación de presión hiperbólica mediante una velocidad del sonido artificial.
+
+## Datos del paper
+
+- **Autores**: H. Bodhanwalla, D. Raghunathan, Y. Sudhakar
+- **Afiliación**: IIT Goa, School of Mechanical Sciences
+- **Revista**: *Computers & Fluids* (2025)
+- **Título**: *A general pressure equation based method for incompressible two-phase flows*
+- **Palabras clave**: general pressure equation, VOF, MSTACS, operator-split, weakly compressible
+
+## Matriz comparativa de los métodos "sin Poisson"
+
+| Método | Naturaleza de la ecuación de presión | Estatus bifásico | Memoria | Eficiencia paralela |
+|--------|---------------------------------------|------------------|---------|----------------------|
+| **LBM** | Suma de distribuciones cinéticas | Inestable a relaciones de densidad grandes | Pesada (Q19/Q27) | Excelente |
+| **ACM** | Hiperbólica artificial ($\partial_t p + \beta \nabla \cdot \mathbf{u} = 0$) | Requiere dual time-stepping | Moderada | Moderada |
+| **EDAC** | Parabólica con amortiguamiento acústico | Necesita switch parameter en la interfaz | Moderada | Excelente |
+| **GPE** | Hiperbólica + difusión derivadas termodinámicamente | Primera aplicación directa en este paper | Moderada | Excelente |
+
+Las otras tres parten de orígenes similares; la GPE destaca porque proviene de una **hipótesis termodinámica ($\gamma = \mathrm{Pr}$)**, no de una variable artificial. La ecuación es lo que el límite de bajo Mach entrega por sí mismo, no algo que uno atornilla a posteriori.
+
+## GPE — prestarle a la presión una velocidad del sonido
+
+La ecuación de momento es la Navier–Stokes incompresible habitual. Lo que cambia es la ecuación de presión.
+
+$$
+\rho \left(\frac{\partial \mathbf{u}}{\partial t} + \mathbf{u} \cdot \nabla \mathbf{u}\right) = -\nabla p + \nabla \cdot \left[\mu(\nabla\mathbf{u} + \nabla\mathbf{u}^\top)\right] + \mathbf{F}
+$$
+
+$$
+\frac{\partial p}{\partial t} + \rho c_s^2 (\nabla \cdot \mathbf{u}) = \frac{1}{\rho}\nabla \cdot (\mu \nabla p)
+$$
+
+Aquí $c_s$ es la velocidad artificial del sonido, $\rho$ la densidad de la mezcla ($\rho = C\rho_1 + (1-C)\rho_2$ con fracción de volumen $C$) y $\mu$ la viscosidad de la mezcla. El término de difusión de presión a la derecha no es un añadido manual: cae de la propia derivación de la GPE, a diferencia del amortiguamiento agregado a mano en EDAC.
+
+En forma adimensional, la compresibilidad artificial se mide por el Mach $\mathrm{Ma} = U/c_s$.
+
+$$
+\frac{\partial p}{\partial t} + \frac{\rho^*}{\mathrm{Ma}^2}(\nabla \cdot \mathbf{u}) = \frac{1}{\rho^*\mathrm{Re}}\nabla \cdot (\mu^* \nabla p)
+$$
+
+Un $\mathrm{Ma}$ menor implica presión propagada más rápido — más cerca del límite incompresible — pero la estabilidad reduce el paso temporal a $\Delta t \le \Delta x / c_s$. Es el precio de tomar prestada una velocidad del sonido.
+
+La tabla 5 del paper muestra $\Delta t_{\mathrm{GPE}} \approx \mathrm{Ma}\,\Delta t_{\mathrm{INS}}$. En un solo núcleo el solver de GPE pierde frente a uno basado en Poisson, pero sin solver lineal global la **escalabilidad HPC supuestamente invierte el veredicto**, según los autores.
+
+## MSTACS — envolver un mezclado cos⁴θ alrededor de donor–acceptor
+
+El transporte de la fracción de volumen se vuelve $\partial_t C + \nabla \cdot (\mathbf{u} C) = C(\nabla \cdot \mathbf{u})$. Fíjense en el término correctivo $C(\nabla \cdot \mathbf{u})$ a la derecha — el punto silencioso donde el marco débilmente compresible se enlaza con el VOF.
+
+La pregunta interesante es cómo calcular el valor de cara $C_{\text{face}}$. En forma donor–acceptor,
+
+$$
+C_{\text{face}} = (1 - \beta) C_D + \beta C_A
+$$
+
+con $\beta$ derivado del valor donor normalizado $\widetilde{C}_D = (C_D - C_U)/(C_A - C_U)$. MSTACS define el valor de cara normalizado como **una mezcla** de dos esquemas.
+
+$$
+\widetilde{C}_{\text{face}} = \gamma \, \widetilde{C}_{\text{face}}^{\mathrm{CDS}} + (1 - \gamma) \, \widetilde{C}_{\text{face}}^{\mathrm{HR}}
+$$
+
+- **CDS** (compressive): aprieta la interfaz a una celda, pero arruga en caras no alineadas.
+- **HR** (high resolution): seguro y suave, pero infla la interfaz.
+- **Mezcla $\gamma = \cos^4\theta$**: $\theta$ es el ángulo entre la normal de la interfaz $\hat{\mathbf{n}}$ y la dirección donor–acceptor $\hat{\mathbf{d}}$. Interfaz normal a la cara → $\theta=0$, $\gamma=1$ → CDS puro. Interfaz paralela a la cara → $\theta=\pi/2$, $\gamma=0$ → HR puro.
+
+Una compuerta autoajustada: el algoritmo usa el CDS afilado donde la geometría es segura y se desliza al HR acolchado en el resto.
+
+## Operator-split + SSP-RK3
+
+El algoritmo completo del paper en cinco líneas:
+
+1. $C^{(n+1)}$ = OS-MSTACS($C^{(n)}, \mathbf{u}^{(n)}$). Sweep $x \to y \to z$, permutando el orden en cada paso.
+2. $\rho^{(n+1)}, \mu^{(n+1)}$ desde la regla de mezcla.
+3. $\kappa^{(n+1)}$ desde la curvatura por función de altura.
+4. Tres etapas de SSP-RK3 con momento → GPE, en ese orden.
+
+SSP-RK3 es
+
+$$
+\Psi^{(1)} = \Psi^{(n)} + \Delta t L(\Psi^{(n)})
+$$
+
+$$
+\Psi^{(2)} = \tfrac{3}{4}\Psi^{(n)} + \tfrac{1}{4}\Psi^{(1)} + \tfrac{1}{4}\Delta t L(\Psi^{(1)})
+$$
+
+$$
+\Psi^{(n+1)} = \tfrac{1}{3}\Psi^{(n)} + \tfrac{2}{3}\Psi^{(2)} + \tfrac{2}{3}\Delta t L(\Psi^{(2)})
+$$
+
+**No se invoca ningún solver lineal en ninguna parte.** Esto hace que el algoritmo sea fácil de portar a GPU, y MPI solo tiene que intercambiar halos de stencil.
+
+## Reproducción directa — un pulso acústico 1D
+
+El código más pequeño que demuestra el comportamiento de la GPE es un sistema acústico lineal 1D. Apagando la viscosidad se conserva la esencia.
+
+```python
+import numpy as np
+
+def gpe_step_1d(p, u, cs, nu, dx, dt):
+    """Acústica lineal 1D + difusión de presión GPE, BC periódico.
+    p: fluctuación de presión, u: velocidad, cs: velocidad del sonido artificial, nu: difusión GPE
+    """
+    # padding periódico
+    pL = np.roll(p, 1); pR = np.roll(p, -1)
+    uL = np.roll(u, 1); uR = np.roll(u, -1)
+    # flujo Rusanov para el sistema lineal (autovalores = ±cs)
+    fp = 0.5*cs*cs*(uL + u) - 0.5*cs*(p - pL)
+    fu = 0.5*(pL + p) - 0.5*cs*(u - uL)
+    fp_r = 0.5*cs*cs*(u + uR) - 0.5*cs*(pR - p)
+    fu_r = 0.5*(p + pR) - 0.5*cs*(uR - u)
+    # término de difusión GPE (diferencia central)
+    diff = nu * (pL - 2*p + pR) / (dx*dx)
+    p_new = p - dt/dx*(fp_r - fp) + dt*diff
+    u_new = u - dt/dx*(fu_r - fu)
+    return p_new, u_new
+
+def run_demo(cs=5.0, nu=0.0, T=0.2, N=160):
+    dx = 1.0/N
+    dt = 0.4*dx/cs                # CFL acústico
+    x = (np.arange(N) + 0.5)*dx
+    p = 0.4*np.exp(-((x - 0.5)/0.05)**2)
+    u = np.zeros_like(x)
+    steps = int(T/dt)
+    for _ in range(steps):
+        p, u = gpe_step_1d(p, u, cs, nu, dx, dt)
+    return x, p, u
+
+x, p, u = run_demo()                       # cs=5, sin difusión
+x2, p2, u2 = run_demo(cs=15.0, nu=0.0)     # cs=15 → onda 3× más rápida, dt 1/3× más pequeño
+```
+
+Subir $c_s$ de 5 a 15 hace que la onda se mueva tres veces más rápido, y el $\Delta t$ permitido se reduce por el mismo factor. Alcanzar el mismo tiempo físico cuesta tres veces más pasos. El trato de la GPE en una línea.
+
+## Interactivo — cómo $c_s$ se come el paso temporal
+
+Probar la simulación a continuación. Los controles deslizantes para la velocidad del sonido artificial y la difusión de presión gobiernan cómo un pulso gaussiano se divide en dos ondas acústicas.
+
+<GPEAcousticPulseProbe1D />
+
+Qué observar:
+- Subir $c_s$ de 5 a 20: las ondas barren el dominio cuatro veces más rápido y el $\Delta t$ permisible cae por el mismo factor.
+- Subir $\nu$ a 0.05: las crestas de la onda se rebajan rápidamente — exactamente el rol del amortiguamiento de presión artificial de EDAC.
+- Con $\nu = 0$ el pulso recorre el dominio periódico para siempre. Más cerca del límite incompresible sobre papel, pero en un flujo desordenado la acústica sin atenuación siembra oscilaciones espurias.
+
+## Interactivo — descomponer la mezcla MSTACS
+
+Comparar cómo CDS, HR y MSTACS manejan el mismo perfil tipo top-hat.
+
+<MSTACSDonorAcceptorRamp1D />
+
+Qué observar:
+- **Solo CDS**: bordes afilados como navaja, pero aparece jitter cuando el Courant supera 1/3.
+- **Solo HR**: estable, pero el step se difumina con el tiempo. Una pseudo-viscosidad.
+- **MSTACS** con $\theta = 0°$: $\gamma = 1$ → idéntico a CDS.
+- **MSTACS** con $\theta = 90°$: $\gamma = 0$ → idéntico a HR.
+- En 2D/3D real cada cara ve un $\theta$ distinto, así que las regiones planas quedan afiladas mientras las inclinadas caen con seguridad al HR.
+
+## Resumen de validación — 2D RT, presa rota, ascenso de burbuja, 3D RT
+
+| Caso | $\rho_1/\rho_2$ | Referencia | Resultado cuantitativo |
+|------|------------------|------------|------------------------|
+| Rayleigh–Taylor 2D | 3:1 | He & Doolen (1999) | posición de spike/bubble dentro del 1% |
+| Presa rota | 1000:1 | Experimento Martin & Moyce (1952) | llegada del frente dentro del 5% |
+| Ascenso de burbuja única | 1000:1, $Eo=10$ | Benchmark Hysing (2009) | velocidad terminal dentro del 3% |
+| Rayleigh–Taylor 3D | 3:1 | Tryggvason (1988) | topología del spike cualitativamente coincide |
+
+El propio OS-MSTACS muestra un error de fracción de volumen $E_G = 6.57 \times 10^{-8}$ en el test de cizalla, contra $E_G = 8.18 \times 10^{-4}$ de OS-CICSAM. **Cuatro órdenes de magnitud** mejor, gracias al paso de redistribución conservativa que recupera la masa a precisión de máquina.
+
+## Puntos críticos — costos que el paper minimiza
+
+La GPE en sí no es gratis.
+
+1. **Restricción temporal por $c_s$**: $\Delta t \le \Delta x / c_s$. Un $c_s$ demasiado pequeño filtra compresibilidad artificial en la física; uno demasiado grande dispara el costo de reloj de pared como $1/\mathrm{Ma}$. El paper solo declara que $\mathrm{Couacs} \le 1.25$ es seguro en la práctica.
+2. **Significado físico del término de difusión GPE**: $\frac{1}{\rho}\nabla \cdot (\mu \nabla p)$ tiene una derivación monofásica limpia, pero el significado de ese coeficiente de difusión cuando $\rho$ salta 1000× a través de la interfaz queda vago.
+3. **Sin prueba de well-balanced para tensión superficial**: CSF + curvatura por función de altura es una combinación estándar, pero el paper no ofrece análisis cuantitativo de cómo escalan las corrientes espurias con $c_s$.
+4. **Costo serial vs promesa HPC**: $\Delta t_{\mathrm{GPE}} \approx \mathrm{Ma}\,\Delta t_{\mathrm{INS}}$ significa que un solo núcleo siempre pierde. La comparación HPC se aplaza explícitamente.
+
+El `interFoam` de OpenFOAM (PIMPLE + MULES) tiene años de validación detrás. El punto fuerte de este paper es el territorio **GPU-friendly e iteration-free** al que `interFoam` no llega fácil — pero el porte a GPU no se ha liberado.
+
+## Puntaje de reproducibilidad
+
+- Pseudo-código del algoritmo (Sección 3.3): ★★★★★ — ocho pasos compactos.
+- Fórmulas MSTACS (13)–(15): ★★★★☆ — posible erratum (eqn. (13) impresa dos veces). Mejor consultar Anghan et al. (2018) para la derivación original.
+- Liberación de código: ★★☆☆☆ — ninguna. Estimación de ~200 líneas para 1D, ~1500 líneas para el OS-MSTACS 3D.
+- Datos de benchmark: ★★★★☆ — comparaciones cuantitativas para los cuatro casos con tablas de convergencia de malla.
+
+Una tarde de domingo y ganas de escribir un solver bifásico ligero desde cero: este paper es un punto de partida más amable de lo que parece. El precio de saltarse el solver de Poisson es familiarizarse con velocidades del sonido y algoritmos de redistribución de fracción de volumen.
+
+## Papers para leer después
+
+- Toutant (2017) — la derivación monofásica original de la GPE.
+- Saincher & Sriram (2022) — el algoritmo operator-split.
+- Kajzer & Pozorski (2021) — la variante bifásica basada en EDAC, el competidor natural.
+- Yang & Aoki (2021) — evolución de presión por proyección para VOF.

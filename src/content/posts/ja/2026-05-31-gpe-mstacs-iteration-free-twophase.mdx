@@ -1,0 +1,208 @@
+---
+title: "[論文レビュー] Poissonを使わずに二相流を解く — 一般圧力方程式とMSTACSの完全陽的結合"
+date: 2026-05-31
+description: "Poissonを双曲型GPEで置き換え、二相流を線形ソルバなしで陽的に解く"
+tags: ["논문리뷰", "Weakly-Compressible", "GPE", "VOF", "MSTACS", "Multiphase"]
+locale: ja
+slug: gpe-mstacs-iteration-free-twophase
+draft: false
+---
+
+import { GPEAcousticPulseProbe1D } from '@/components/post-viz/2026-05-31-gpe-mstacs-iteration-free-twophase/GPEAcousticPulseProbe1D'
+import { MSTACSDonorAcceptorRamp1D } from '@/components/post-viz/2026-05-31-gpe-mstacs-iteration-free-twophase/MSTACSDonorAcceptorRamp1D'
+
+LBM、ACM、EDAC、GPE — Poisson方程式を解かずに非圧縮流れを模擬する四つの分岐路があります。Bodhanwalla・Raghunathan・Sudhakar(2025)はその最後を選び、二相流まで持ち込みました。さらにMSTACSというより鋭いalgebraic VOFをoperator-splitと組み合わせ、**線形ソルバ呼び出しゼロ**の完全陽的ソルバを作っています。密度比1000:1でも回る秘密は、圧力方程式を双曲型に保ち、人工音速を埋め込んだ点にあります。
+
+## 論文情報
+
+- **著者**: H. Bodhanwalla, D. Raghunathan, Y. Sudhakar
+- **所属**: IIT Goa, School of Mechanical Sciences
+- **誌**: *Computers & Fluids* (2025)
+- **題**: *A general pressure equation based method for incompressible two-phase flows*
+- **キーワード**: general pressure equation, VOF, MSTACS, operator-split, weakly compressible
+
+## 「Poissonを捨てる」四つの方法の比較行列
+
+| 手法 | 圧力方程式の性質 | 二相適用 | メモリ | 並列効率 |
+|------|------------------|----------|--------|----------|
+| **LBM** | 速度分布関数の総和 | 大密度比で不安定 | 大(Q19/Q27) | 優秀 |
+| **ACM** | 人工双曲型($\partial_t p + \beta \nabla \cdot \mathbf{u} = 0$) | dual-time必須 | 中 | 中 |
+| **EDAC** | 音響減衰を伴う放物型 | 界面でswitch parameter必要 | 中 | 優秀 |
+| **GPE** | 熱力学から導出した双曲+拡散 | 本論文が初の直接適用 | 中 | 優秀 |
+
+他の三つが似た出発点から分岐したのに対し、GPEは**状態方程式の仮定$\gamma = \mathrm{Pr}$**から導かれる点が異なります。人工的に付け加えた変数ではなく、低Mach極限が自ら手渡してくれる式です。
+
+## GPE — 圧力に音速を貸し与える式
+
+運動量方程式は通常のNavier–Stokesそのまま。変わるのは圧力方程式です。
+
+$$
+\rho \left(\frac{\partial \mathbf{u}}{\partial t} + \mathbf{u} \cdot \nabla \mathbf{u}\right) = -\nabla p + \nabla \cdot \left[\mu(\nabla\mathbf{u} + \nabla\mathbf{u}^\top)\right] + \mathbf{F}
+$$
+
+$$
+\frac{\partial p}{\partial t} + \rho c_s^2 (\nabla \cdot \mathbf{u}) = \frac{1}{\rho}\nabla \cdot (\mu \nabla p)
+$$
+
+$c_s$は人工音速、$\rho$は混合密度($\rho = C\rho_1 + (1-C)\rho_2$、$C$は体積分率)、$\mu$は混合粘性です。右辺の圧力拡散項はEDACのように後付けで足したものではなく、GPEの導出過程で自然に落ちてくる項です。
+
+無次元化すると、人工圧縮性は人工Mach数$\mathrm{Ma} = U/c_s$で測られます。
+
+$$
+\frac{\partial p}{\partial t} + \frac{\rho^*}{\mathrm{Ma}^2}(\nabla \cdot \mathbf{u}) = \frac{1}{\rho^*\mathrm{Re}}\nabla \cdot (\mu^* \nabla p)
+$$
+
+$\mathrm{Ma}$を小さくすると圧力が速く伝わり非圧縮極限に近づきますが、安定性のため時間刻みは$\Delta t \le \Delta x / c_s$に縮みます。音速を借りる対価です。
+
+論文Table 5によると$\Delta t_{\mathrm{GPE}} \approx \mathrm{Ma}\,\Delta t_{\mathrm{INS}}$。直列実行ではINSのPoissonソルバに劣りますが、大域線形解がない分、**HPCスケーラビリティで逆転する**と著者は主張しています。
+
+## MSTACS — donor–acceptorにcos⁴θブレンドを挟む
+
+体積分率の輸送は$\partial_t C + \nabla \cdot (\mathbf{u} C) = C(\nabla \cdot \mathbf{u})$。右辺の圧縮性補正$C(\nabla \cdot \mathbf{u})$に注目してください。弱圧縮枠組みがVOFと静かにつながっている形です。
+
+問題は面値$C_{\text{face}}$の計算法。donor–acceptor形式では
+
+$$
+C_{\text{face}} = (1 - \beta) C_D + \beta C_A
+$$
+
+$\beta$は正規化donor値$\widetilde{C}_D = (C_D - C_U)/(C_A - C_U)$から決まります。MSTACSは正規化面値を二つのスキームの**ブレンド**にします。
+
+$$
+\widetilde{C}_{\text{face}} = \gamma \, \widetilde{C}_{\text{face}}^{\mathrm{CDS}} + (1 - \gamma) \, \widetilde{C}_{\text{face}}^{\mathrm{HR}}
+$$
+
+- **CDS** (compressive): 界面を1セル内に圧縮しますが、面に平行でないとしわが入ります。
+- **HR** (high resolution): 平滑で安全ですが、界面が膨らみます。
+- **ブレンド$\gamma = \cos^4\theta$**: $\theta$は界面法線$\hat{\mathbf{n}}$とdonor–acceptor方向$\hat{\mathbf{d}}$の角度。界面が面に垂直なら$\theta=0$、$\gamma=1$ → CDS。界面が面に平行なら$\theta=\pi/2$、$\gamma=0$ → HR。
+
+自然発生したゲートです。平らな面ではsharpなCDSを使い、斜めの面では安全なHRに滑らかに移行します。
+
+## 演算子分離 + SSP-RK3
+
+論文のフローチャートを五行に整理:
+
+1. $C^{(n+1)}$ = OS-MSTACS($C^{(n)}, \mathbf{u}^{(n)}$). $x \to y \to z$順次sweep、各stepでsweep順序を交替。
+2. $\rho^{(n+1)}, \mu^{(n+1)}$は混合則から更新。
+3. $\kappa^{(n+1)}$をheight functionで曲率計算。
+4. SSP-RK3の三段階で運動量 → GPE順に$\mathbf{u}^{(n+1)}, p^{(n+1)}$を計算。
+
+SSP-RK3は
+
+$$
+\Psi^{(1)} = \Psi^{(n)} + \Delta t L(\Psi^{(n)})
+$$
+
+$$
+\Psi^{(2)} = \tfrac{3}{4}\Psi^{(n)} + \tfrac{1}{4}\Psi^{(1)} + \tfrac{1}{4}\Delta t L(\Psi^{(1)})
+$$
+
+$$
+\Psi^{(n+1)} = \tfrac{1}{3}\Psi^{(n)} + \tfrac{2}{3}\Psi^{(2)} + \tfrac{2}{3}\Delta t L(\Psi^{(2)})
+$$
+
+**全体のアルゴリズム中に線形ソルバの呼び出しはありません。** そのためGPUに直接移植でき、MPI通信はstencil haloだけで済みます。
+
+## 直接実装 — 1D音響パルス
+
+GPEの動作原理を最小コードで確認しましょう。粘性を切ると1D線形音響系になります。
+
+```python
+import numpy as np
+
+def gpe_step_1d(p, u, cs, nu, dx, dt):
+    """1D線形音響 + GPE圧力拡散、周期境界。
+    p: 圧力擾乱, u: 速度, cs: 人工音速, nu: GPE拡散係数
+    """
+    # 周期パディング
+    pL = np.roll(p, 1); pR = np.roll(p, -1)
+    uL = np.roll(u, 1); uR = np.roll(u, -1)
+    # Rusanovフラックス(線形系、固有値±cs)
+    fp = 0.5*cs*cs*(uL + u) - 0.5*cs*(p - pL)
+    fu = 0.5*(pL + p) - 0.5*cs*(u - uL)
+    fp_r = 0.5*cs*cs*(u + uR) - 0.5*cs*(pR - p)
+    fu_r = 0.5*(p + pR) - 0.5*cs*(uR - u)
+    # GPE拡散項(中心差分)
+    diff = nu * (pL - 2*p + pR) / (dx*dx)
+    p_new = p - dt/dx*(fp_r - fp) + dt*diff
+    u_new = u - dt/dx*(fu_r - fu)
+    return p_new, u_new
+
+def run_demo(cs=5.0, nu=0.0, T=0.2, N=160):
+    dx = 1.0/N
+    dt = 0.4*dx/cs                # 音響CFL
+    x = (np.arange(N) + 0.5)*dx
+    p = 0.4*np.exp(-((x - 0.5)/0.05)**2)
+    u = np.zeros_like(x)
+    steps = int(T/dt)
+    for _ in range(steps):
+        p, u = gpe_step_1d(p, u, cs, nu, dx, dt)
+    return x, p, u
+
+x, p, u = run_demo()                       # cs=5、拡散なし
+x2, p2, u2 = run_demo(cs=15.0, nu=0.0)     # cs=15 → 音波3倍速、dt 1/3に縮小
+```
+
+$c_s$を5から15に上げると音波は3倍速く伝播し、安定のための$\Delta t$は1/3に縮みます。同じ物理時間に到達するには3倍のステップが必要。GPEの根本的な取引です。
+
+## インタラクティブ — $c_s$がどう時間刻みを食うか
+
+下のシミュレーションで直接操作してみましょう。スライダで人工音速と圧力拡散を変えると、中央のガウシアンパルスが左右の音波に分かれて伝播します。
+
+<GPEAcousticPulseProbe1D />
+
+観察ポイント:
+- $c_s$を5 → 20に上げると音波が4倍速く領域を駆け抜けます。許容$\Delta t$は4倍縮みます。
+- $\nu$を0.05まで上げると音波の峰が急速に削られます。EDACの人工圧力減衰項とまったく同じ役割です。
+- $\nu = 0$だとパルスが周期境界を回り永遠に生き残ります。非圧縮極限に近く理想的に見えますが、乱れた流れでは音波が消えないとspurious oscillationの種になります。
+
+## インタラクティブ — MSTACSのブレンドを解いてみる
+
+CDS、HR、MSTACSの三つの面補間スキームが同じtop-hatをどう違うように運ぶか、直接比べてみましょう。
+
+<MSTACSDonorAcceptorRamp1D />
+
+観察ポイント:
+- **CDS only**: 角を刃のように保ちますが、Courant > 1/3でわずかに跳ねます。
+- **HR only**: 安定ですがstepが徐々に丸まります。粘性のような擬似拡散です。
+- **MSTACS** with $\theta = 0°$: $\gamma = 1$ → CDSと同一。
+- **MSTACS** with $\theta = 90°$: $\gamma = 0$ → HRと同一。
+- 実際の2D/3Dでは面ごとに$\theta$が異なるため、平らな部分だけsharpに、斜面は安全なHRに自動的に切り替わります。
+
+## 検証結果のまとめ — 2D RT、ダム崩壊、気泡上昇、3D RT
+
+| ケース | $\rho_1/\rho_2$ | 比較対象 | 定量結果 |
+|--------|------------------|----------|----------|
+| 2D Rayleigh–Taylor | 3:1 | He & Doolen (1999) | spike・bubble位置1%以内 |
+| ダム崩壊 | 1000:1 | Martin & Moyce (1952) 実験 | 前面到達5%以内 |
+| 単一気泡上昇 | 1000:1, $Eo=10$ | Hysingベンチマーク (2009) | 終端速度3%以内 |
+| 3D Rayleigh–Taylor | 3:1 | Tryggvason (1988) | spike形状定性一致 |
+
+OS-MSTACS自体の体積分率保存誤差は$E_G = 6.57 \times 10^{-8}$で、OS-CICSAMの$E_G = 8.18 \times 10^{-4}$より**4桁**改善されています。conservative redistribution stepが質量を機械精度で回復させた結果です。
+
+## 批判ポイント — 論文が隠したコスト
+
+GPEそのものが持ち込む負担は明確にあります。
+
+1. **音速制約の時間刻み**: $\Delta t \le \Delta x / c_s$。$c_s$を小さくすると人工圧縮性が物理に漏れ、大きくすると壁時間が$1/\mathrm{Ma}$倍に伸びます。本文は$\mathrm{Couacs} \le 1.25$までは安全と述べるだけ。
+2. **GPE拡散項の物理的正当化**: $\frac{1}{\rho}\nabla \cdot (\mu \nabla p)$は単相では熱力学的導出がきれいですが、二相で$\rho$が界面を越えて1000倍ジャンプするときこの拡散係数が何を意味するか曖昧です。
+3. **表面張力のwell-balanced性未保証**: CSF + height function曲率は標準組み合わせですが、spurious currentが$c_s$とどうスケールするか定量解析がありません。静的droplet試験で定性確認のみ。
+4. **直列コストとHPC約束のギャップ**: $\Delta t_{\mathrm{GPE}} \approx \mathrm{Ma}\,\Delta t_{\mathrm{INS}}$なので1コアでは常に損。HPC比較はfuture workに先送り。
+
+OpenFOAMの`interFoam`はPIMPLE + MULES組み合わせで検証蓄積が十分。本論文の最大の魅力は**GPU + iteration-free**領域ですが、GPU実装は公開されていません。
+
+## 再現可能性スコア
+
+- アルゴリズム擬似コード(Section 3.3): ★★★★★ — 八段階で隙間なく。
+- MSTACS式(13)–(15): ★★★★☆ — Cou_adv分岐にtypo疑いあり(式(13)が二度登場)。結局Anghan et al. 2018原典を参照する必要。
+- コード公開: ★★☆☆☆ — なし。1Dは200行、3D OS-MSTACSは1500行程度と推定。
+- ベンチマークデータ: ★★★★☆ — 4ケース全てで定量比較、格子収束表付き。
+
+日曜の午後、OpenFOAMなしで軽量な二相ソルバを一から書きたいなら、本論文は意外に親切な出発点です。Poissonソルバのコードを書かない代わりに、音速と体積分率redistributionアルゴリズムと仲良くなることになります。
+
+## 次に読むべき論文
+
+- Toutant (2017) — GPEの原典単相導出。
+- Saincher & Sriram (2022) — operator-splitアルゴリズム原典。
+- Kajzer & Pozorski (2021) — EDACベースの二相変種、比較対象。
+- Yang & Aoki (2021) — VOF用のprojection-based pressure evolution。
