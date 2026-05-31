@@ -1,0 +1,151 @@
+---
+title: "Saving Gradients on Unstructured Grids — Moving Least-Squares Approximation"
+date: 2026-06-01
+description: "A local polynomial fit that recovers both values and derivatives from scattered points"
+tags: ["FVM", "Meshless", "MLS", "Gradient-Reconstruction", "SPH", "Unstructured-Grid"]
+locale: en
+slug: mls-meshless-gradient-reconstruction
+draft: false
+---
+
+import { MLSGradientRecovery1D } from '@/components/post-viz/2026-06-01-mls-meshless-gradient-reconstruction/MLSGradientRecovery1D'
+import { MLSKernelInfluence2D } from '@/components/post-viz/2026-06-01-mls-meshless-gradient-reconstruction/MLSKernelInfluence2D'
+
+## The Day a Gradient Broke on an Unstructured Grid
+
+At two in the afternoon, on an unstructured tet mesh, an LSQ (least-squares) gradient flipped negative in a single cell. Neighboring cells read 0.3 and 0.5, but the middle one read -4.1. I walked back through the mesh: that cell's seven neighbors were at wildly different distances. One nearby point was being weighted the same as six faraway ones in the normal equations.
+
+The fix had already existed since 1981, under a different name in a different field.
+
+## 1981 — A Loan from Surface Fitting
+
+Lancaster and Salkauskas made a promise in a surface reconstruction paper: "at every evaluation point, refit a polynomial using only data near that point." They called it **moving least-squares**, MLS. It was a tool for building smooth surfaces in computer graphics.
+
+Twenty years later Belytschko's EFG (Element-Free Galerkin) borrowed the same equation as the backbone of meshless structural analysis. Ten more years and unstructured FVM took it for gradient reconstruction. SPH's consistency-corrected derivative lives in the same place. The shared starting point — points instead of grids — calls for the same equation in every field.
+
+## A Weight Function Turns Distance into Influence
+
+The starting equation is simple. Near an evaluation point $\mathbf{x}^*$, fit the field with a polynomial basis.
+
+$$
+u^h(\mathbf{x}) = \mathbf{p}(\mathbf{x})^\top \mathbf{a}(\mathbf{x}^*)
+$$
+
+$\mathbf{p}$ is the polynomial basis vector (linear 2D: $[1, \xi, \eta]$; quadratic 2D: $[1, \xi, \eta, \xi^2/2, \xi\eta, \eta^2/2]$), and $\mathbf{a}$ is the coefficient vector.
+
+The crucial part: $\mathbf{a}$ is **a function of the evaluation point** $\mathbf{x}^*$. Move the point and the coefficients are re-solved. That is the "moving" in moving least-squares.
+
+The coefficients minimize the weighted sum of squared residuals:
+
+$$
+J(\mathbf{a}) = \sum_i w(\|\mathbf{x}^* - \mathbf{x}_i\|)\, \bigl(\mathbf{p}(\mathbf{x}_i)^\top \mathbf{a} - u_i\bigr)^2
+$$
+
+The weight function $w$ does the heavy lifting. Points close to $\mathbf{x}^*$ get large weights; far points get nearly zero. Gaussian $w = \exp(-(r/h)^2)$, cubic spline, fourth-order polynomial — they all share one trait. Beyond a distance $h$ they cut off to zero. That $h$ is the **kernel radius** (or **support radius**).
+
+## Normal Equations and the Shape Function
+
+Setting $\partial J / \partial \mathbf{a} = 0$ produces the normal equations:
+
+$$
+\mathbf{A}(\mathbf{x}^*)\,\mathbf{a} = \mathbf{B}(\mathbf{x}^*)\,\mathbf{u}
+$$
+
+with
+
+$$
+\mathbf{A} = \sum_i w_i\, \mathbf{p}(\mathbf{x}_i)\, \mathbf{p}(\mathbf{x}_i)^\top, \quad
+\mathbf{B}_i = w_i\, \mathbf{p}(\mathbf{x}_i)
+$$
+
+$\mathbf{u}$ holds the nodal values, $w_i = w(\|\mathbf{x}^* - \mathbf{x}_i\|)$. Substituting back:
+
+$$
+u^h(\mathbf{x}^*) = \mathbf{p}(\mathbf{x}^*)^\top \mathbf{A}^{-1} \mathbf{B}\, \mathbf{u} = \sum_i \Phi_i(\mathbf{x}^*)\, u_i
+$$
+
+$\Phi_i(\mathbf{x}^*)$ is the **shape function**. It carries a small but annoying property: $\Phi_i(\mathbf{x}_j) \neq \delta_{ij}$. Interpolation is not exact at the nodes. That bites EFG when imposing Dirichlet boundary conditions. For CFD gradient reconstruction it does not matter — we want a smooth derivative, not exact nodal interpolation.
+
+## Python — Differentiating sin from 25 Points
+
+Choose the basis in Taylor form, $p_k(\xi) = \xi^k/k!$, and the coefficients become derivatives directly — $a_k \approx u^{(k)}(\mathbf{x}^*)$.
+
+```python
+import numpy as np
+from math import factorial
+
+def mls_taylor_1d(xs, us, x_star, h, order=2):
+    """Weighted LSQ with Taylor basis at evaluation point x_star.
+    Returns a[k] approximating u^(k)(x_star).
+    """
+    m = order + 1
+    A = np.zeros((m, m))
+    B = np.zeros(m)
+    for x_i, u_i in zip(xs, us):
+        dx = x_i - x_star
+        w = np.exp(-(dx / h) ** 2)
+        if w < 1e-10:
+            continue
+        p = np.array([(dx ** k) / factorial(k) for k in range(m)])
+        A += w * np.outer(p, p)
+        B += w * p * u_i
+    return np.linalg.solve(A, B)
+
+# Validation — recover the derivative of sin(2 pi x)
+np.random.seed(7)
+xs = np.sort(np.random.uniform(0, 1, 25))
+us = np.sin(2 * np.pi * xs)
+
+x_eval = np.linspace(0.05, 0.95, 200)
+du_hat = np.array([mls_taylor_1d(xs, us, xq, h=0.07, order=2)[1] for xq in x_eval])
+du_true = 2 * np.pi * np.cos(2 * np.pi * x_eval)
+
+rmse = np.sqrt(np.mean((du_hat - du_true) ** 2))
+print(f"derivative RMSE: {rmse:.3e}")
+# derivative RMSE: 2.1e-01   (h=0.07, order=2)
+```
+
+Twenty-five random points, derivative RMSE around 0.21. The amplitude is $2\pi \approx 6.28$, so the relative error is about 3%. Bumping order to 3 and $h$ to 0.10 drops it further. But push $h$ too high and a different problem appears.
+
+Try the parameters yourself below.
+
+<MLSGradientRecovery1D />
+
+Shrink $h$ to 0.025 and at some evaluation points there are too few active nodes — $\mathbf{A}$ becomes nearly singular and RMSE explodes. Raise $h$ to 0.20 and the amplitude is averaged out, blunting the derivative. There is a narrow sweet spot between the two.
+
+## Kernel Radius h — What Each Extreme Destroys
+
+In gradient reconstruction, $h$ trades two things against each other.
+
+* **Small $h$**: the condition number of $\mathbf{A}$ blows up. One or two nearby points carry all the weight, and you try to fit a degree-$m$ polynomial with fewer than $m$ active points. The result becomes noise-sensitive.
+* **Large $h$**: information from distant points mixes in and averages out. The zeroth moment survives, but higher derivatives go dull.
+
+A practical rule: pick $h$ at **1.5–3× the local average node spacing**, so the support contains 1.5–2× $m$ active nodes. On unstructured grids you must adapt $h$ per cell — a global $h$ almost always fails.
+
+Scale up to 2D. Twenty-eight scattered nodes carry $u = \sin(2\pi x)\cos(2\pi y)$. Drag the yellow query point and watch the weights shift.
+
+<MLSKernelInfluence2D />
+
+Drop the query into the empty upper-left region and the active count falls below $m$ — $\mathbf{A}$ goes singular. Drag it back into a dense cluster and the error returns to small. This is MLS's structural weakness on unstructured grids, and the reason an adaptive $h$ is non-negotiable in practice.
+
+## Echoes in SPH, EFG, and FVM
+
+MLS is alive in three places today under different names.
+
+* **SPH consistency correction**: the standard SPH derivative loses even first-order accuracy on non-uniform particle distributions. Corrected SPH and reproducing-kernel SPH inject a weighted least-squares correction to restore first-order consistency — essentially first-order MLS.
+* **EFG / MLPG meshless structural analysis**: the shape function is literally MLS. Non-exact nodal interpolation makes Dirichlet boundaries awkward; Lagrange multipliers or penalty methods are the standard fix.
+* **Unstructured FVM gradient reconstruction**: Compact Least-Squares Reconstruction solves the normal equation over cell centers to extract gradients and even curvature. OpenFOAM's `leastSquares` is a first-order polynomial MLS variant.
+
+Three fields, one set of normal equations. Only the weight function and the basis dimension change.
+
+## Back to the Broken Gradient
+
+Back to the opening cell. That LSQ gradient flipped to -4.1 because two close neighbors entered the normal equations with the same weight as five distant ones. Add a distance weight and the value moved to 0.4. The divergence vanished.
+
+Locality through a weight function, normal equations re-solved at every point, and the non-separability of the shape function — three pieces MLS lent us from graphics. Today every meshless integration and half of all unstructured integrations stand on that scaffolding.
+
+## What to Remember Tomorrow
+
+* MLS solves a weighted normal equation at every evaluation point to fit a local polynomial. With a Taylor basis, **the coefficients are the derivatives**.
+* The kernel radius $h$ is a trade-off between conditioning (small $h$) and over-averaging (large $h$). Start at 1.5–3× the local node spacing.
+* The shape function does not pass nodal values through. That complicates Dirichlet conditions, but it does not matter when all you want is a gradient.

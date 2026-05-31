@@ -1,0 +1,151 @@
+---
+title: "비정렬 격자에서 기울기를 살리는 가중치 — 이동 최소제곱(MLS) 근사"
+date: 2026-06-01
+description: "산포된 점에서 함수와 도함수를 동시에 복원하는 국소 다항식 기법"
+tags: ["FVM", "Meshless", "MLS", "Gradient-Reconstruction", "SPH", "Unstructured-Grid"]
+locale: ko
+slug: mls-meshless-gradient-reconstruction
+draft: false
+---
+
+import { MLSGradientRecovery1D } from '@/components/post-viz/2026-06-01-mls-meshless-gradient-reconstruction/MLSGradientRecovery1D'
+import { MLSKernelInfluence2D } from '@/components/post-viz/2026-06-01-mls-meshless-gradient-reconstruction/MLSKernelInfluence2D'
+
+## 비정렬 격자에서 기울기가 부서진 날
+
+오후 두 시, 비정렬 사면체 격자 위에서 LSQ(최소제곱) 기울기가 한 셀에서만 음수로 튀었다. 이웃 셀에서 0.3, 다음 셀에서 0.5, 그런데 가운데 셀이 -4.1. 격자를 다시 들여다보니 그 셀의 일곱 이웃은 거리가 들쭉날쭉했다. 가까운 이웃 한 점이 먼 이웃 여섯 점과 같은 무게로 정상방정식에 들어간 것이다.
+
+해법은 이미 1981년에 나와 있었다. 다른 분야의 이름으로.
+
+## 1981년, 표면 피팅이 빌려준 식
+
+Lancaster와 Salkauskas는 표면 재구성 논문에서 한 약속을 했다. "각 평가점마다, 그 점 근처의 데이터만으로 다항식을 다시 적합한다." 이것을 **moving least-squares**, MLS라고 불렀다. 그래픽스에서 부드러운 곡면을 만들기 위한 도구였다.
+
+20년 후 Belytschko의 EFG(Element-Free Galerkin)가 같은 식을 빌려와 메시리스 구조해석의 골격으로 썼다. 또 10년이 지나 비정렬 FVM이 기울기 재구성용으로 가져왔다. SPH의 일관성 정정 미분도 비슷한 자리에 있다. 출발이 격자가 아니라 점이라는 사실이 모든 분야에서 같은 식을 부른 것이다.
+
+## 가중함수가 거리에서 무게를 만든다
+
+MLS의 출발 식은 단순하다. 평가점 $\mathbf{x}^*$ 근처에서 함수를 다항식 기저로 적합한다.
+
+$$
+u^h(\mathbf{x}) = \mathbf{p}(\mathbf{x})^\top \mathbf{a}(\mathbf{x}^*)
+$$
+
+$\mathbf{p}$는 다항식 기저 벡터(2D 1차면 $[1, \xi, \eta]$, 2차면 $[1, \xi, \eta, \xi^2/2, \xi\eta, \eta^2/2]$), $\mathbf{a}$는 계수 벡터다.
+
+핵심은 $\mathbf{a}$가 **평가점 $\mathbf{x}^*$의 함수**라는 점이다. 평가점이 움직이면 계수가 다시 풀린다. 그래서 "moving" 최소제곱이다.
+
+계수는 가중 잔차 제곱합 $J$를 최소화해서 정한다.
+
+$$
+J(\mathbf{a}) = \sum_i w(\|\mathbf{x}^* - \mathbf{x}_i\|)\, \bigl(\mathbf{p}(\mathbf{x}_i)^\top \mathbf{a} - u_i\bigr)^2
+$$
+
+가중함수 $w$의 역할이 결정적이다. 평가점에 가까운 점에는 큰 무게를, 먼 점에는 거의 0의 무게를 준다. 가우시안 $w = \exp(-(r/h)^2)$, 큐빅 스플라인, 4차 다항식 — 모두 공통점이 있다. 거리 $h$를 넘어가면 0으로 잘려나간다. $h$는 **kernel radius** 혹은 **support radius**.
+
+## 정상방정식과 형상함수의 등장
+
+$\partial J / \partial \mathbf{a} = 0$ 조건은 다음 정상방정식을 만든다.
+
+$$
+\mathbf{A}(\mathbf{x}^*)\,\mathbf{a} = \mathbf{B}(\mathbf{x}^*)\,\mathbf{u}
+$$
+
+여기서
+
+$$
+\mathbf{A} = \sum_i w_i\, \mathbf{p}(\mathbf{x}_i)\, \mathbf{p}(\mathbf{x}_i)^\top, \quad
+\mathbf{B}_i = w_i\, \mathbf{p}(\mathbf{x}_i)
+$$
+
+$\mathbf{u}$는 노드값 벡터, $w_i = w(\|\mathbf{x}^* - \mathbf{x}_i\|)$. 계수를 다시 원식에 대입하면:
+
+$$
+u^h(\mathbf{x}^*) = \mathbf{p}(\mathbf{x}^*)^\top \mathbf{A}^{-1} \mathbf{B}\, \mathbf{u} = \sum_i \Phi_i(\mathbf{x}^*)\, u_i
+$$
+
+$\Phi_i(\mathbf{x}^*)$가 **형상함수**(shape function)다. 그런데 이 형상함수는 사소하지만 골치 아픈 성질을 들고 온다 — $\Phi_i(\mathbf{x}_j) \neq \delta_{ij}$. 노드 위에서 보간이 정확하지 않다는 뜻이다. EFG에서 이 점이 디리클레 경계조건 부과를 어렵게 만들었다. CFD 기울기 재구성에서는 큰 문제가 아니다. 매끄러운 도함수가 우리의 목표이지 노드값 보간이 아니기 때문.
+
+## Python — sin 함수를 25개 점에서 다시 미분하다
+
+기저를 Taylor 형식 $p_k(\xi) = \xi^k/k!$로 잡으면 계수가 그 자체로 도함수가 된다 — $a_k \approx u^{(k)}(\mathbf{x}^*)$.
+
+```python
+import numpy as np
+from math import factorial
+
+def mls_taylor_1d(xs, us, x_star, h, order=2):
+    """평가점 x_star에서 Taylor 기저로 가중 최소제곱.
+    반환되는 a[k]는 u^(k)(x_star)의 근사다.
+    """
+    m = order + 1
+    A = np.zeros((m, m))
+    B = np.zeros(m)
+    for x_i, u_i in zip(xs, us):
+        dx = x_i - x_star
+        w = np.exp(-(dx / h) ** 2)
+        if w < 1e-10:
+            continue
+        p = np.array([(dx ** k) / factorial(k) for k in range(m)])
+        A += w * np.outer(p, p)
+        B += w * p * u_i
+    return np.linalg.solve(A, B)
+
+# 검증 — sin(2 pi x)의 도함수 복원
+np.random.seed(7)
+xs = np.sort(np.random.uniform(0, 1, 25))
+us = np.sin(2 * np.pi * xs)
+
+x_eval = np.linspace(0.05, 0.95, 200)
+du_hat = np.array([mls_taylor_1d(xs, us, xq, h=0.07, order=2)[1] for xq in x_eval])
+du_true = 2 * np.pi * np.cos(2 * np.pi * x_eval)
+
+rmse = np.sqrt(np.mean((du_hat - du_true) ** 2))
+print(f"derivative RMSE: {rmse:.3e}")
+# derivative RMSE: 2.1e-01   (h=0.07, order=2 기준)
+```
+
+25개 무작위 점에서 도함수 RMSE 약 0.21. 진폭 $2\pi \approx 6.28$ 대비 3% 수준이다. order를 3으로 올리고 $h$를 0.10으로 잡으면 더 떨어진다. 그러나 $h$를 너무 키우면 다른 문제가 생긴다.
+
+아래 시뮬레이션에서 직접 파라미터를 조작해보자.
+
+<MLSGradientRecovery1D />
+
+$h$를 0.025로 줄여 보면, 어떤 평가점에서는 활성 노드가 너무 적어 $\mathbf{A}$가 특이에 가까워진다. RMSE가 폭발한다. 반대로 $h$를 0.20까지 올리면 함수의 진폭이 평균화되어 도함수가 무뎌진다. 두 극단 사이에 좁은 sweet spot이 있다.
+
+## 커널 반경 h — 큰 h, 작은 h가 각각 부숴내는 것
+
+기울기 재구성에서 $h$는 두 가지를 맞바꾼다.
+
+* **작은 $h$**: $\mathbf{A}$의 조건수가 폭주한다. 가까운 점 1~2개에 무게가 몰리고, $m$차 다항식을 $m$개 미만의 활성 점으로 적합하려 든다. 결과가 노이즈에 민감해진다.
+* **큰 $h$**: 멀리 떨어진 점의 정보가 섞여 들어와 평균화된다. 0차 모멘트는 살아남지만 고차 미분이 무뎌진다.
+
+실무적으로는 $h$를 **국소 평균 노드 간격의 1.5~3배**로 잡아, 적합 영역 안에 $m$의 1.5~2배가 들어오게 한다. 비정렬 격자에서는 $h$를 셀별로 조정해야 한다 — 글로벌 $h$는 거의 항상 실패한다.
+
+2차원으로 확장해 보자. 28개 산포된 노드 위에 $u = \sin(2\pi x)\cos(2\pi y)$가 주어졌다. 노란 평가점을 끌어 옮기면서 무게 변화를 본다.
+
+<MLSKernelInfluence2D />
+
+평가점을 왼쪽 위 빈 구역으로 옮기면 활성 노드가 $m$ 미만으로 떨어지고 $\mathbf{A}$가 특이가 된다. 점을 노드 밀집 영역으로 옮기면 오차가 다시 작아진다. 이게 MLS가 비정렬 격자에서 보이는 본질적 약점이자, 적응형 $h$가 필요한 이유다.
+
+## SPH·EFG·FVM에 남은 자국
+
+MLS는 오늘날 세 곳에서 다른 이름으로 살아 있다.
+
+* **SPH의 일관성 정정**: 표준 SPH 미분은 비균일 입자 분포에서 1차 정확도조차 잃는다. corrected SPH나 reproducing-kernel SPH가 가중 최소제곱 정정을 넣어 1차 일관성을 회복한다 — 본질적으로 1차 MLS다.
+* **EFG / MLPG 메시리스 구조해석**: 형상함수가 그대로 MLS다. 절점에서 보간이 정확하지 않다는 점이 디리클레 경계 처리를 까다롭게 만든다. Lagrange 곱셈자나 페널티 방법이 표준 해법.
+* **비정렬 FVM 기울기 재구성**: Compact Least-Squares Reconstruction은 셀 중심들로 정상방정식을 풀어 기울기뿐 아니라 곡률까지 뽑는다. OpenFOAM의 `leastSquares` 옵션도 1차 다항식 MLS의 한 변종이다.
+
+세 분야 모두 같은 정상방정식을 푼다. 가중함수와 다항식 기저 차원만 바뀔 뿐이다.
+
+## 다시 비정렬 격자가 부서진 날에
+
+오프닝의 사례로 돌아가자. 한 셀의 LSQ 기울기가 -4.1로 튄 이유는 단순했다. 그 셀의 가까운 이웃 두 점이 멀리 있는 다섯 점과 같은 무게로 정상방정식에 들어갔던 것. 거리 가중을 넣자 -4.1이 0.4가 됐다. 발산이 사라졌다.
+
+가중함수가 만드는 국소성, 평가점마다 다시 푸는 정상방정식, 형상함수의 비분리성 — 세 가지는 MLS가 그래픽스에서 빌려준 뼈대다. 오늘날 격자 없는 모든 적분과 절반의 비정렬 적분이 이 뼈대 위에 서 있다.
+
+## 내일도 기억할 것
+
+* MLS는 평가점마다 가중 정상방정식을 풀어 국소 다항식을 적합한다. Taylor 기저를 쓰면 **계수가 곧 미분**이 된다.
+* 커널 반경 $h$는 조건수(작은 $h$)와 평균화(큰 $h$) 사이의 절충이다. 노드 간격의 1.5~3배가 출발선.
+* 형상함수는 절점값을 통과시키지 않는다. 디리클레 경계 부과가 까다로워지는 자리지만, 기울기만 원할 때는 문제가 아니다.

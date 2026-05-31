@@ -1,0 +1,151 @@
+---
+title: "Pesos que salvan el gradiente en mallas no estructuradas — aproximación por mínimos cuadrados móviles (MLS)"
+date: 2026-06-01
+description: "Ajuste polinómico local que recupera valores y derivadas desde puntos dispersos"
+tags: ["FVM", "Meshless", "MLS", "Gradient-Reconstruction", "SPH", "Unstructured-Grid"]
+locale: es
+slug: mls-meshless-gradient-reconstruction
+draft: false
+---
+
+import { MLSGradientRecovery1D } from '@/components/post-viz/2026-06-01-mls-meshless-gradient-reconstruction/MLSGradientRecovery1D'
+import { MLSKernelInfluence2D } from '@/components/post-viz/2026-06-01-mls-meshless-gradient-reconstruction/MLSKernelInfluence2D'
+
+## El día en que un gradiente se rompió en una malla no estructurada
+
+A las dos de la tarde, sobre una malla tetraédrica no estructurada, el gradiente LSQ (mínimos cuadrados) saltó negativo en una sola celda. La vecina marcaba 0.3, la siguiente 0.5, pero la del medio caía a -4.1. Al revisar la malla, los siete vecinos de esa celda estaban a distancias muy desiguales. Un punto cercano entraba en las ecuaciones normales con el mismo peso que seis lejanos.
+
+La solución ya existía desde 1981, con otro nombre y en otra disciplina.
+
+## 1981 — un préstamo del ajuste de superficies
+
+Lancaster y Salkauskas hicieron una promesa en un artículo sobre reconstrucción de superficies: "en cada punto de evaluación, reajustar un polinomio usando solo los datos cercanos a ese punto". Lo llamaron **moving least-squares**, MLS. Era una herramienta de gráficos para construir superficies suaves.
+
+Veinte años después el EFG (Element-Free Galerkin) de Belytschko tomó la misma ecuación como esqueleto del análisis estructural sin malla. Diez años más y el FVM no estructurado se la llevó para reconstruir gradientes. La derivada con corrección de consistencia de SPH vive en el mismo lugar. El punto de partida común — puntos en lugar de mallas — invoca la misma ecuación en cada campo.
+
+## Una función de peso transforma distancia en influencia
+
+La ecuación de partida del MLS es simple. Cerca del punto de evaluación $\mathbf{x}^*$, se ajusta la función con una base polinómica.
+
+$$
+u^h(\mathbf{x}) = \mathbf{p}(\mathbf{x})^\top \mathbf{a}(\mathbf{x}^*)
+$$
+
+$\mathbf{p}$ es el vector de la base polinómica (lineal en 2D: $[1, \xi, \eta]$; cuadrática en 2D: $[1, \xi, \eta, \xi^2/2, \xi\eta, \eta^2/2]$), y $\mathbf{a}$ es el vector de coeficientes.
+
+Lo crucial: $\mathbf{a}$ es **una función del punto de evaluación $\mathbf{x}^*$**. Si el punto se mueve, los coeficientes se vuelven a resolver. De ahí el "moving" en mínimos cuadrados móviles.
+
+Los coeficientes se obtienen minimizando la suma ponderada de residuos al cuadrado, $J$.
+
+$$
+J(\mathbf{a}) = \sum_i w(\|\mathbf{x}^* - \mathbf{x}_i\|)\, \bigl(\mathbf{p}(\mathbf{x}_i)^\top \mathbf{a} - u_i\bigr)^2
+$$
+
+La función de peso $w$ hace el trabajo pesado. Los puntos cercanos a $\mathbf{x}^*$ reciben pesos grandes; los lejanos, casi cero. Gaussiana $w = \exp(-(r/h)^2)$, spline cúbica, polinomio de cuarto orden — todas comparten un rasgo. Más allá de una distancia $h$ se cortan a cero. Esa $h$ es el **kernel radius** (radio de soporte).
+
+## Ecuaciones normales y la aparición de la función de forma
+
+La condición $\partial J / \partial \mathbf{a} = 0$ produce las ecuaciones normales:
+
+$$
+\mathbf{A}(\mathbf{x}^*)\,\mathbf{a} = \mathbf{B}(\mathbf{x}^*)\,\mathbf{u}
+$$
+
+con
+
+$$
+\mathbf{A} = \sum_i w_i\, \mathbf{p}(\mathbf{x}_i)\, \mathbf{p}(\mathbf{x}_i)^\top, \quad
+\mathbf{B}_i = w_i\, \mathbf{p}(\mathbf{x}_i)
+$$
+
+$\mathbf{u}$ contiene los valores nodales y $w_i = w(\|\mathbf{x}^* - \mathbf{x}_i\|)$. Sustituyendo los coeficientes:
+
+$$
+u^h(\mathbf{x}^*) = \mathbf{p}(\mathbf{x}^*)^\top \mathbf{A}^{-1} \mathbf{B}\, \mathbf{u} = \sum_i \Phi_i(\mathbf{x}^*)\, u_i
+$$
+
+$\Phi_i(\mathbf{x}^*)$ es la **función de forma** (shape function). Trae una propiedad pequeña pero molesta: $\Phi_i(\mathbf{x}_j) \neq \delta_{ij}$. La interpolación no es exacta en los nodos. Eso complica al EFG cuando se imponen condiciones Dirichlet. Para la reconstrucción de gradientes en CFD no es relevante: lo que queremos es una derivada suave, no una interpolación nodal exacta.
+
+## Python — derivar el seno desde 25 puntos
+
+Eligiendo la base en forma de Taylor, $p_k(\xi) = \xi^k/k!$, los coeficientes pasan a ser las derivadas directamente — $a_k \approx u^{(k)}(\mathbf{x}^*)$.
+
+```python
+import numpy as np
+from math import factorial
+
+def mls_taylor_1d(xs, us, x_star, h, order=2):
+    """Mínimos cuadrados ponderados con base de Taylor en x_star.
+    El a[k] devuelto aproxima u^(k)(x_star).
+    """
+    m = order + 1
+    A = np.zeros((m, m))
+    B = np.zeros(m)
+    for x_i, u_i in zip(xs, us):
+        dx = x_i - x_star
+        w = np.exp(-(dx / h) ** 2)
+        if w < 1e-10:
+            continue
+        p = np.array([(dx ** k) / factorial(k) for k in range(m)])
+        A += w * np.outer(p, p)
+        B += w * p * u_i
+    return np.linalg.solve(A, B)
+
+# Validación — recuperar la derivada de sin(2 pi x)
+np.random.seed(7)
+xs = np.sort(np.random.uniform(0, 1, 25))
+us = np.sin(2 * np.pi * xs)
+
+x_eval = np.linspace(0.05, 0.95, 200)
+du_hat = np.array([mls_taylor_1d(xs, us, xq, h=0.07, order=2)[1] for xq in x_eval])
+du_true = 2 * np.pi * np.cos(2 * np.pi * x_eval)
+
+rmse = np.sqrt(np.mean((du_hat - du_true) ** 2))
+print(f"derivative RMSE: {rmse:.3e}")
+# derivative RMSE: 2.1e-01   (h=0.07, order=2)
+```
+
+Veinticinco puntos aleatorios, RMSE de la derivada alrededor de 0.21. La amplitud es $2\pi \approx 6.28$, así que el error relativo ronda el 3%. Subiendo order a 3 y $h$ a 0.10 baja todavía más. Pero si $h$ se agranda demasiado, aparece otro problema.
+
+Es buen momento para mover los parámetros en la simulación de abajo.
+
+<MLSGradientRecovery1D />
+
+Reducir $h$ a 0.025 deja a algunos puntos de evaluación con demasiado pocos nodos activos: $\mathbf{A}$ se vuelve casi singular y el RMSE explota. Subir $h$ a 0.20 promedia la amplitud de la función y embota la derivada. Entre ambos extremos hay un sweet spot estrecho.
+
+## El radio de núcleo h — qué destruye cada extremo
+
+En reconstrucción de gradientes, $h$ negocia dos cosas.
+
+* **$h$ pequeño**: el número de condición de $\mathbf{A}$ se dispara. Uno o dos puntos cercanos cargan todo el peso, y se intenta ajustar un polinomio de grado $m$ con menos de $m$ puntos activos. El resultado se vuelve sensible al ruido.
+* **$h$ grande**: la información de puntos lejanos se mezcla y promedia. El momento de orden cero sobrevive, pero las derivadas de orden superior se embotan.
+
+En la práctica, se elige $h$ entre **1.5 y 3 veces el espaciado nodal local medio**, de modo que el soporte contenga entre 1.5 y 2 veces $m$ nodos activos. En mallas no estructuradas hay que adaptar $h$ celda a celda — un $h$ global casi siempre falla.
+
+Vamos al caso 2D. Veintiocho nodos dispersos llevan $u = \sin(2\pi x)\cos(2\pi y)$. Arrastra el punto amarillo de evaluación y observa cómo cambian los pesos.
+
+<MLSKernelInfluence2D />
+
+Si el punto se mueve a la esquina superior izquierda vacía, el número de nodos activos cae por debajo de $m$ y $\mathbf{A}$ se vuelve singular. Llevarlo a una zona densa devuelve el error a valores pequeños. Esta es la debilidad estructural del MLS en mallas no estructuradas, y la razón por la que en la práctica un $h$ adaptativo no es opcional.
+
+## Ecos en SPH, EFG y FVM
+
+El MLS vive hoy en tres lugares bajo nombres distintos.
+
+* **Corrección de consistencia en SPH**: la derivada estándar de SPH pierde incluso la precisión de primer orden con distribuciones no uniformes de partículas. SPH corregido y reproducing-kernel SPH inyectan una corrección por mínimos cuadrados ponderados para restaurar la consistencia de primer orden — esencialmente MLS de orden uno.
+* **EFG / MLPG, análisis estructural sin malla**: la función de forma es literalmente MLS. La no exactitud en la interpolación nodal complica las condiciones Dirichlet; multiplicadores de Lagrange o métodos de penalización son la solución habitual.
+* **Reconstrucción de gradientes en FVM no estructurado**: Compact Least-Squares Reconstruction resuelve las ecuaciones normales sobre los centros de celda y extrae no solo gradientes sino también curvatura. La opción `leastSquares` de OpenFOAM es una variante de MLS con base polinómica de orden uno.
+
+Tres campos, una sola familia de ecuaciones normales. Solo cambian la función de peso y la dimensión de la base polinómica.
+
+## Volviendo al gradiente roto
+
+De vuelta a la celda inicial. El gradiente LSQ saltó a -4.1 porque dos vecinos cercanos entraban en las ecuaciones normales con el mismo peso que cinco lejanos. Con un peso por distancia, -4.1 pasó a 0.4 y la divergencia desapareció.
+
+Localidad por función de peso, ecuaciones normales reformuladas en cada punto y la no separabilidad de la función de forma — tres piezas que el MLS prestó desde los gráficos. Hoy toda la integración sin malla y la mitad de la integración no estructurada se apoyan en ese andamiaje.
+
+## Lo que conviene recordar mañana
+
+* El MLS resuelve unas ecuaciones normales ponderadas en cada punto de evaluación para ajustar un polinomio local. Con base de Taylor, **los coeficientes son las derivadas**.
+* El radio de núcleo $h$ es un compromiso entre condicionamiento ($h$ pequeño) y exceso de promedio ($h$ grande). Empezar en 1.5–3× el espaciado nodal local.
+* La función de forma no preserva los valores nodales. Eso complica las condiciones Dirichlet, pero no afecta cuando solo se busca un gradiente.

@@ -1,0 +1,151 @@
+---
+title: "非構造格子で勾配を救う重み — 移動最小二乗(MLS)近似"
+date: 2026-06-01
+description: "散在点から値と導関数を同時に復元する局所多項式近似法"
+tags: ["FVM", "Meshless", "MLS", "Gradient-Reconstruction", "SPH", "Unstructured-Grid"]
+locale: ja
+slug: mls-meshless-gradient-reconstruction
+draft: false
+---
+
+import { MLSGradientRecovery1D } from '@/components/post-viz/2026-06-01-mls-meshless-gradient-reconstruction/MLSGradientRecovery1D'
+import { MLSKernelInfluence2D } from '@/components/post-viz/2026-06-01-mls-meshless-gradient-reconstruction/MLSKernelInfluence2D'
+
+## 非構造格子で勾配が壊れた日
+
+午後二時、非構造四面体メッシュ上で LSQ(最小二乗)勾配が一つのセルだけ負に跳ねました。隣のセルが 0.3、次が 0.5、しかし真ん中が -4.1。メッシュを見直すと、そのセルの七つの隣接点までの距離はばらばらでした。近い一点が、遠い六点と同じ重みで正規方程式に入っていたのです。
+
+解は 1981 年にはもう、別の分野で別の名前のもとに存在していました。
+
+## 1981 年、曲面フィッティングからの借り物
+
+Lancaster と Salkauskas は曲面再構成の論文で一つの約束をしました。「各評価点ごとに、その点の近傍データだけで多項式を再フィットする」。これを **moving least-squares**(MLS)と呼びました。コンピュータグラフィクスで滑らかな曲面を作る道具でした。
+
+二十年後、Belytschko の EFG(Element-Free Galerkin)が同じ式をメッシュレス構造解析の骨格として借りました。さらに十年、非構造 FVM が勾配再構成のために取り入れました。SPH の一貫性補正導関数も同じ位置にあります。出発点が格子ではなく点である、というだけで同じ式が各分野を呼ぶのです。
+
+## 重み関数が距離を影響に変える
+
+MLS の出発式は単純です。評価点 $\mathbf{x}^*$ 近傍で関数を多項式基底でフィットします。
+
+$$
+u^h(\mathbf{x}) = \mathbf{p}(\mathbf{x})^\top \mathbf{a}(\mathbf{x}^*)
+$$
+
+$\mathbf{p}$ は多項式基底ベクトル(2D 一次なら $[1, \xi, \eta]$、二次なら $[1, \xi, \eta, \xi^2/2, \xi\eta, \eta^2/2]$)、$\mathbf{a}$ は係数ベクトルです。
+
+要点は $\mathbf{a}$ が **評価点 $\mathbf{x}^*$ の関数** であること。評価点が動けば係数も解き直されます。これが "moving" 最小二乗の名前の由来です。
+
+係数は重み付き残差二乗和 $J$ を最小化して定めます。
+
+$$
+J(\mathbf{a}) = \sum_i w(\|\mathbf{x}^* - \mathbf{x}_i\|)\, \bigl(\mathbf{p}(\mathbf{x}_i)^\top \mathbf{a} - u_i\bigr)^2
+$$
+
+重み関数 $w$ が決定的です。評価点に近い点には大きな重み、遠い点にはほぼ 0 を与えます。ガウシアン $w = \exp(-(r/h)^2)$、三次スプライン、四次多項式 — 共通する性質は一つ。距離 $h$ を越えると 0 に切り捨てられます。この $h$ が **kernel radius**(サポート半径)です。
+
+## 正規方程式と形状関数の登場
+
+$\partial J / \partial \mathbf{a} = 0$ の条件から、次の正規方程式が出ます。
+
+$$
+\mathbf{A}(\mathbf{x}^*)\,\mathbf{a} = \mathbf{B}(\mathbf{x}^*)\,\mathbf{u}
+$$
+
+ここで
+
+$$
+\mathbf{A} = \sum_i w_i\, \mathbf{p}(\mathbf{x}_i)\, \mathbf{p}(\mathbf{x}_i)^\top, \quad
+\mathbf{B}_i = w_i\, \mathbf{p}(\mathbf{x}_i)
+$$
+
+$\mathbf{u}$ は節点値ベクトル、$w_i = w(\|\mathbf{x}^* - \mathbf{x}_i\|)$。係数を元の式へ戻すと:
+
+$$
+u^h(\mathbf{x}^*) = \mathbf{p}(\mathbf{x}^*)^\top \mathbf{A}^{-1} \mathbf{B}\, \mathbf{u} = \sum_i \Phi_i(\mathbf{x}^*)\, u_i
+$$
+
+$\Phi_i(\mathbf{x}^*)$ が **形状関数**(shape function)です。ただしこの形状関数は厄介な性質を持ちます。$\Phi_i(\mathbf{x}_j) \neq \delta_{ij}$。節点上で補間が厳密ではない、ということ。EFG ではこれがディリクレ境界条件の課し方を難しくしました。CFD の勾配再構成では大きな問題になりません。我々が欲しいのは滑らかな導関数であって、節点値の正確な補間ではないからです。
+
+## Python — 25 点から sin 関数を微分する
+
+基底を Taylor 形式 $p_k(\xi) = \xi^k/k!$ にとると、係数がそのまま導関数になります — $a_k \approx u^{(k)}(\mathbf{x}^*)$。
+
+```python
+import numpy as np
+from math import factorial
+
+def mls_taylor_1d(xs, us, x_star, h, order=2):
+    """評価点 x_star で Taylor 基底による重み付き最小二乗。
+    返却される a[k] は u^(k)(x_star) の近似値。
+    """
+    m = order + 1
+    A = np.zeros((m, m))
+    B = np.zeros(m)
+    for x_i, u_i in zip(xs, us):
+        dx = x_i - x_star
+        w = np.exp(-(dx / h) ** 2)
+        if w < 1e-10:
+            continue
+        p = np.array([(dx ** k) / factorial(k) for k in range(m)])
+        A += w * np.outer(p, p)
+        B += w * p * u_i
+    return np.linalg.solve(A, B)
+
+# 検証 — sin(2 pi x) の導関数復元
+np.random.seed(7)
+xs = np.sort(np.random.uniform(0, 1, 25))
+us = np.sin(2 * np.pi * xs)
+
+x_eval = np.linspace(0.05, 0.95, 200)
+du_hat = np.array([mls_taylor_1d(xs, us, xq, h=0.07, order=2)[1] for xq in x_eval])
+du_true = 2 * np.pi * np.cos(2 * np.pi * x_eval)
+
+rmse = np.sqrt(np.mean((du_hat - du_true) ** 2))
+print(f"derivative RMSE: {rmse:.3e}")
+# derivative RMSE: 2.1e-01   (h=0.07, order=2)
+```
+
+25 個のランダム点で導関数 RMSE は約 0.21。振幅 $2\pi \approx 6.28$ に対して相対誤差 3% ほど。order を 3、$h$ を 0.10 にするとさらに下がります。しかし $h$ を大きくしすぎると別の問題が現れます。
+
+下のシミュレーションでパラメータを直接操作してみましょう。
+
+<MLSGradientRecovery1D />
+
+$h$ を 0.025 に縮めると、評価点によってはアクティブ節点が少なすぎて $\mathbf{A}$ がほぼ特異になり、RMSE が爆発します。逆に $h$ を 0.20 まで上げると関数の振幅が平均化されて導関数が鈍ります。両極の間に狭い sweet spot があります。
+
+## カーネル半径 h — 大小それぞれが壊すもの
+
+勾配再構成における $h$ は二つの性質を取引します。
+
+* **小さい $h$**: $\mathbf{A}$ の条件数が暴走します。近い 1〜2 点に重みが集中し、次数 $m$ の多項式を $m$ 未満のアクティブ点でフィットすることになり、結果がノイズに敏感になります。
+* **大きい $h$**: 遠方点の情報が混じり込み平均化されます。0 次モーメントは残りますが、高次導関数が鈍ります。
+
+実務では $h$ を **局所平均節点間隔の 1.5〜3 倍** にとり、サポート内に $m$ の 1.5〜2 倍のアクティブ節点が入るようにします。非構造格子ではセルごとに $h$ を適応させる必要があります — グローバル $h$ はほぼ常に失敗します。
+
+二次元に広げてみましょう。28 個の散在節点に $u = \sin(2\pi x)\cos(2\pi y)$ が与えられています。黄色い評価点をドラッグして重みの変化を観察します。
+
+<MLSKernelInfluence2D />
+
+評価点を左上の空いた領域へ移すとアクティブ節点が $m$ 未満に落ち、$\mathbf{A}$ が特異になります。点を密集領域へ戻すと誤差は再び小さくなります。これが MLS の非構造格子における構造的弱点であり、適応的な $h$ が必須になる理由です。
+
+## SPH・EFG・FVM に残る痕跡
+
+MLS は今日、別の名前で三箇所に生きています。
+
+* **SPH の一貫性補正**: 標準 SPH 微分は不均一粒子分布で 1 次精度すら失います。corrected SPH や reproducing-kernel SPH は重み付き最小二乗補正で 1 次一貫性を回復させます — 本質は 1 次 MLS です。
+* **EFG / MLPG メッシュレス構造解析**: 形状関数がそのまま MLS です。節点での補間非正確性がディリクレ境界処理を難しくし、Lagrange 乗数法やペナルティ法が定番の対処です。
+* **非構造 FVM 勾配再構成**: Compact Least-Squares Reconstruction はセル中心で正規方程式を解き、勾配だけでなく曲率も取り出します。OpenFOAM の `leastSquares` オプションも 1 次多項式 MLS の変種です。
+
+三つの分野が同じ正規方程式を解いています。変わるのは重み関数と多項式基底の次元だけです。
+
+## 壊れた勾配の日に戻って
+
+冒頭のセルに戻りましょう。LSQ 勾配が -4.1 へ跳ねた理由は単純でした。近い 2 点が遠い 5 点と同じ重みで正規方程式に入っていたのです。距離重みを入れたら -4.1 が 0.4 になり、発散は消えました。
+
+重み関数が作る局所性、評価点ごとに解き直す正規方程式、形状関数の非分離性 — 三つは MLS がグラフィクスから貸してくれた骨格です。今日、メッシュレス積分のすべてと非構造積分の半分が、その骨格の上に立っています。
+
+## 明日も覚えておきたいこと
+
+* MLS は評価点ごとに重み付き正規方程式を解き、局所多項式をフィットします。Taylor 基底を取れば **係数がそのまま導関数** になります。
+* カーネル半径 $h$ は条件数(小さい $h$)と平均化(大きい $h$)の妥協点。節点間隔の 1.5〜3 倍が出発点。
+* 形状関数は節点値を通過させません。ディリクレ境界の課し方が難しくなる場所ですが、勾配だけが目当てなら問題になりません。
