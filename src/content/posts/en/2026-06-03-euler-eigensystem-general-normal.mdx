@@ -1,0 +1,197 @@
+---
+title: "The Euler Eigensystem in an Arbitrary Direction — Three Waves, Two Repeats, One Singularity"
+date: 2026-06-03
+description: "Where the left eigenvector breaks when n̂ tilts, and the three conventions that dodge it"
+tags: ["CFD", "Compressible", "Riemann", "Eigenvalue", "Roe-Scheme", "FVM"]
+locale: en
+slug: euler-eigensystem-general-normal
+draft: false
+---
+
+import { EulerWaveFanXT } from '@/components/post-viz/2026-06-03-euler-eigensystem-general-normal/EulerWaveFanXT'
+import { RoeWaveStrengthBars } from '@/components/post-viz/2026-06-03-euler-eigensystem-general-normal/RoeWaveStrengthBars'
+
+I opened the laptop in a hotel room on a business trip. For three days my solver had been spitting negative densities, but only after I started rotating the grid. With $n_x=1, n_y=0$ everything ran clean. The moment $n_x=0.01$ showed up, the run blew up. Walking the log backwards landed me on a single line with a flipped sign — the last row of the left eigenvector matrix. That row was hiding something, and it took three days to find out what.
+
+This post is the writeup. On an arbitrary unit normal $\hat n = (n_x, n_y, n_z)$, the 3D Euler eigenvalues and left/right eigenvectors fit on one page. We will see why one convention for the left eigenvectors always fails, and then build a Roe-type flux that runs in any direction.
+
+## Conservative Euler, written along a normal
+
+The 3D inviscid Euler equations are a vector conservation law:
+
+$$
+\frac{\partial}{\partial t}\int_{\mathrm{CV}} \mathbf{Q}\, dV + \oint_{\mathrm{CS}} \mathbf{F}\cdot \hat n\, dA = 0
+$$
+
+with $\mathbf{Q} = (\rho,\rho u,\rho v,\rho w,\rho e_o)^T$ the conservative state and $\mathbf{F}\cdot \hat n$ the normal flux on each face. The natural variable on a cell face is the normal velocity $v_n = u n_x + v n_y + w n_z$. The sound speed is $a^2 = \gamma p/\rho$, and the unit-normal constraint reads $n_x^2 + n_y^2 + n_z^2 = 1$.
+
+The advantage of this coordinate choice is plain: every wave family lines up with the single variable $v_n$.
+
+## The Jacobian A(n̂) — five waves inside a 5×5
+
+Differentiating $\mathbf{F}\cdot \hat n$ with respect to $\mathbf{Q}$ gives a Jacobian $A(\hat n)= \partial(\mathbf F\cdot\hat n)/\partial\mathbf Q$. We do not need a separate global $(x,y,z)$ matrix and a separate local $(\xi,\eta,\zeta)$ one — a single matrix carries $\hat n$ explicitly. This is the convention that has been the default since Yee–Kutler in 1983.
+
+The characteristic polynomial $\det(A - \lambda I) = 0$ has five roots:
+
+$$
+\lambda_i = \{\, v_n - a,\; v_n,\; v_n + a,\; v_n,\; v_n\,\}
+$$
+
+The flow speed $v_n$ appears *three* times — twice as a repeated root. That repetition is the first clue for what later wrecks the left eigenvectors.
+
+<EulerWaveFanXT />
+
+Drag $M = v_n/a$ above. The three rays open as a fan. For $|M|<1$ the acoustic rays split across the origin; the moment $|M|>1$ all three rays bend the same way in $x$. The number of boundary conditions you must supply at an inflow or outflow face — that count change with Mach number — sits right there in one frame.
+
+## Three families, two repeats — acoustic and entropy waves
+
+The five eigenvalues come in *three families*. The flow speed $v_n$ itself is the **entropy wave**, and it carries two distinct signals at the same speed: entropy and tangential momentum. Hence the double repetition.
+
+The pair $v_n \pm a$ are the **acoustic waves**. These two carry the pressure signal and the normal-velocity signal. In a Riemann fan, the middle ray is the contact, the outer ones are shocks or expansions.
+
+Keep this map in your head and debugging gets faster. If only the density jumps and $\Delta p = \Delta u = 0$, only the entropy wave should be alive — both acoustic strengths must read zero. Here is the picture that confirms it on the fly.
+
+<RoeWaveStrengthBars />
+
+Start from "no jump". Nudge $\rho_R$ a hair. Only the grey middle bar grows; the red and blue stay pinned at zero. Now switch to "Sod". The right-acoustic bar jumps — that one is the shock. Try "123 problem" instead: the two acoustic bars come up large and symmetric while the contact stays near zero — the rarefaction-rarefaction signature.
+
+## Right eigenvectors — written once
+
+Solving $A R_i = \lambda_i R_i$ gives a 5×5 matrix. One convention (R-1) reads
+
+$$
+R =
+\begin{pmatrix}
+1 & 1 & 1 & 0 & 0 \\
+u - a n_x & u & u + a n_x & n_y & -n_z \\
+v - a n_y & v & v + a n_y & -n_x & 0 \\
+w - a n_z & w & w + a n_z & 0 & n_x \\
+h_o - a v_n & e_k & h_o + a v_n & u n_y - v n_x & w n_x - u n_z
+\end{pmatrix}
+$$
+
+with $e_k = \tfrac12(u^2+v^2+w^2)$ the kinetic energy per unit mass and $h_o = h + e_k$ the total enthalpy per unit mass. The first three columns are paired with $\lambda_1, \lambda_2, \lambda_3$. The last two columns belong to the repeated $\lambda_4=\lambda_5=v_n$; they are two tangent-direction vectors, and which two depends on convention.
+
+The third and fifth columns mark "which pair of tangent directions did you pick". R-2 and R-3 simply span the same subspace with a different basis pair.
+
+## Left eigenvectors — the line that breaks at n_x → 0
+
+Compute $L = R^{-1}$ and the last two rows develop $1/n_x$ entries. In the R-1 convention there is always a row that divides by $n_x$. A face with $\hat n = (0, 1, 0)$ — that is, $n_x = 0$ — sends those entries to infinity. That was the bug I hunted for three days.
+
+The fix is small. R-2 divides by $n_y$; R-3 divides by $n_z$. Pick the convention per face by choosing the *largest component* of $|n_x|, |n_y|, |n_z|$ as the denominator. One line of code:
+
+```python
+def pick_convention(n):
+    # n: ndarray of shape (3,), unit normal
+    k = int(np.argmax(np.abs(n)))  # 0, 1, or 2
+    return k  # use R-1, R-2, or R-3 accordingly
+```
+
+On every face one of the three conventions is safe. Without this branching, no unstructured-grid Euler code survives long.
+
+## In 2D the singularity quietly vanishes
+
+Drop $w = n_z = 0$ and the 5×5 becomes 4×4. The eigenvalues collapse to $\{v_n - a, v_n, v_n + a, v_n\}$, and the apparent singularities in the last row of $L$ cancel by hand:
+
+$$
+\frac{v - v_n n_y}{n_x} = \frac{v(1 - n_y^2) - u n_x n_y}{n_x} = v n_x - u n_y
+$$
+
+The $n_x$ in the denominator divides the numerator exactly. Anyone whose career stayed in 2D will never have met this trap. It appears only when you move to 3D.
+
+## Python — a normal-direction Roe-type flux in one function
+
+We collect the family eigenvalues and the 1D Roe-average wave strengths into a single function that returns the Roe-type flux on any face. The toy problem is a *tilted shock tube*: throw left/right states across the face $\hat n = (\cos 30°, \sin 30°, 0)$.
+
+```python
+import numpy as np
+
+GAMMA = 1.4
+
+def primitive_to_state(rho, vel, p):
+    """rho: scalar, vel: (3,), p: scalar -> conservative Q (5,)"""
+    rE = p / (GAMMA - 1) + 0.5 * rho * np.dot(vel, vel)
+    return np.array([rho, rho * vel[0], rho * vel[1], rho * vel[2], rE])
+
+def flux_normal(Q, n_hat):
+    rho = Q[0]
+    vel = Q[1:4] / rho
+    rE = Q[4]
+    p = (GAMMA - 1) * (rE - 0.5 * rho * np.dot(vel, vel))
+    vn = np.dot(vel, n_hat)
+    H = (rE + p) / rho
+    return np.array([
+        rho * vn,
+        rho * vel[0] * vn + p * n_hat[0],
+        rho * vel[1] * vn + p * n_hat[1],
+        rho * vel[2] * vn + p * n_hat[2],
+        rho * H * vn,
+    ])
+
+def roe_normal_flux(QL, QR, n_hat):
+    rL, rR = QL[0], QR[0]
+    vL = QL[1:4] / rL
+    vR = QR[1:4] / rR
+    pL = (GAMMA - 1) * (QL[4] - 0.5 * rL * np.dot(vL, vL))
+    pR = (GAMMA - 1) * (QR[4] - 0.5 * rR * np.dot(vR, vR))
+    HL = (QL[4] + pL) / rL
+    HR = (QR[4] + pR) / rR
+
+    sL, sR = np.sqrt(rL), np.sqrt(rR)
+    inv = 1.0 / (sL + sR)
+    rho = sL * sR
+    vel = (sL * vL + sR * vR) * inv
+    H   = (sL * HL + sR * HR) * inv
+    vn  = np.dot(vel, n_hat)
+    a2  = (GAMMA - 1) * (H - 0.5 * np.dot(vel, vel))
+    a   = np.sqrt(max(a2, 1e-12))
+
+    eigs = np.array([vn - a, vn, vn + a])
+    dvel = vR - vL
+    dvn  = np.dot(dvel, n_hat)
+    drho = rR - rL
+    dp   = pR - pL
+
+    alpha_contact = drho - dp / a2
+    alpha_minus   = (dp - rho * a * dvn) / (2 * a2)
+    alpha_plus    = (dp + rho * a * dvn) / (2 * a2)
+
+    # average flux + |lambda| * alpha * R
+    Favg = 0.5 * (flux_normal(QL, n_hat) + flux_normal(QR, n_hat))
+
+    # build the three relevant right eigenvectors on the fly
+    R_minus = np.array([1, vel[0] - a * n_hat[0], vel[1] - a * n_hat[1],
+                        vel[2] - a * n_hat[2], H - a * vn])
+    R_cont  = np.array([1, vel[0], vel[1], vel[2], 0.5 * np.dot(vel, vel)])
+    R_plus  = np.array([1, vel[0] + a * n_hat[0], vel[1] + a * n_hat[1],
+                        vel[2] + a * n_hat[2], H + a * vn])
+
+    diss = (np.abs(eigs[0]) * alpha_minus   * R_minus
+          + np.abs(eigs[1]) * alpha_contact * R_cont
+          + np.abs(eigs[2]) * alpha_plus    * R_plus)
+
+    # tangential velocity jump (carried by contact, lambda = vn)
+    dvel_tan = dvel - dvn * n_hat
+    R_tan = np.zeros(5); R_tan[1:4] = dvel_tan
+    R_tan[4] = rho * np.dot(vel, dvel_tan)
+    diss = diss + np.abs(vn) * R_tan
+
+    return Favg - 0.5 * diss
+
+if __name__ == '__main__':
+    n_hat = np.array([np.cos(np.pi/6), np.sin(np.pi/6), 0.0])
+    QL = primitive_to_state(1.0,   np.array([0.0, 0.0, 0.0]), 1.0)
+    QR = primitive_to_state(0.125, np.array([0.0, 0.0, 0.0]), 0.1)
+    F = roe_normal_flux(QL, QR, n_hat)
+    print('Sod tilted by 30 deg, Roe flux =', F)
+```
+
+This is hand-written, not the fastest implementation. Every term on a face is visible, which is what you want during debugging. Production code wraps `pick_convention` per face to swap the left eigenvector convention, and tacks on an entropy fix (Harten or partial LLF) at the end.
+
+Skip the `np.argmax(np.abs(n_hat))` branch and hard-code R-1, and you will lose three days. What I lost in that hotel was not the breakfast bill — it was those three days.
+
+## Closing the debug diary
+
+- A single 5×5 Jacobian $A(\hat n)$ unifies global and local coordinates — one matrix carries the normal direction.
+- The eigenvalues split into three families: acoustic $v_n \pm a$, and the entropy wave $v_n$ with double multiplicity. That repetition creates the subspace that left eigenvectors must thread.
+- The R-1 left-eigenvector convention diverges where $n_x \to 0$. Branching by $\arg\max |n_i|$ per face is the single line that keeps an unstructured solver alive.

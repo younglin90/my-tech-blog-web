@@ -1,0 +1,197 @@
+---
+title: "El sistema propio de Euler en una dirección arbitraria — tres ondas, dos repeticiones, una singularidad"
+date: 2026-06-03
+description: "Dónde se rompe el autovector izquierdo cuando n̂ se inclina, y las tres convenciones que lo esquivan"
+tags: ["CFD", "Compressible", "Riemann", "Eigenvalue", "Roe-Scheme", "FVM"]
+locale: es
+slug: euler-eigensystem-general-normal
+draft: false
+---
+
+import { EulerWaveFanXT } from '@/components/post-viz/2026-06-03-euler-eigensystem-general-normal/EulerWaveFanXT'
+import { RoeWaveStrengthBars } from '@/components/post-viz/2026-06-03-euler-eigensystem-general-normal/RoeWaveStrengthBars'
+
+Abrí el portátil en un hotel durante un viaje de trabajo. Llevaba tres días viendo cómo el solver escupía densidades negativas, pero solo cuando la malla se rotaba a una dirección arbitraria. Con $n_x=1, n_y=0$ todo corría limpio. En cuanto aparecía $n_x=0.01$, el cálculo divergía. Repasando el log al revés llegué a una línea con un signo cambiado — la última fila de la matriz de autovectores izquierdos. Esa línea escondía algo, y costó tres días averiguar qué.
+
+Esta entrada recoge esos tres días. Sobre una normal unitaria arbitraria $\hat n = (n_x, n_y, n_z)$, los autovalores y autovectores izquierdos/derechos del Euler 3D caben en una página. Veremos por qué una convención de los autovectores izquierdos falla siempre, y construiremos un flujo tipo Roe que funciona en cualquier dirección.
+
+## El Euler conservativo, escrito a lo largo de una normal
+
+El sistema 3D de Euler no viscoso es una ley vectorial de conservación:
+
+$$
+\frac{\partial}{\partial t}\int_{\mathrm{CV}} \mathbf{Q}\, dV + \oint_{\mathrm{CS}} \mathbf{F}\cdot \hat n\, dA = 0
+$$
+
+con $\mathbf{Q} = (\rho,\rho u,\rho v,\rho w,\rho e_o)^T$ las variables conservativas y $\mathbf{F}\cdot \hat n$ el flujo normal en cada cara. La variable natural en la cara es la velocidad normal $v_n = u n_x + v n_y + w n_z$. La velocidad del sonido cumple $a^2 = \gamma p/\rho$, y la unitariedad da $n_x^2 + n_y^2 + n_z^2 = 1$.
+
+La ventaja de esta coordenada es directa: cada familia de ondas se alinea con la única variable $v_n$.
+
+## La jacobiana A(n̂) — cinco ondas dentro de una 5×5
+
+Derivando $\mathbf{F}\cdot \hat n$ respecto a $\mathbf{Q}$ se obtiene la jacobiana $A(\hat n)= \partial(\mathbf F\cdot\hat n)/\partial\mathbf Q$. No hace falta una matriz global $(x,y,z)$ y otra local $(\xi,\eta,\zeta)$ por separado: una sola matriz lleva $\hat n$ de forma explícita. Esa es la convención estándar desde Yee–Kutler en 1983.
+
+El polinomio característico $\det(A - \lambda I) = 0$ tiene cinco raíces:
+
+$$
+\lambda_i = \{\, v_n - a,\; v_n,\; v_n + a,\; v_n,\; v_n\,\}
+$$
+
+La velocidad de flujo $v_n$ aparece *tres veces*, dos de ellas como raíz repetida. Esa repetición es la primera pista de lo que más adelante hará temblar a los autovectores izquierdos.
+
+<EulerWaveFanXT />
+
+Mueva $M = v_n/a$. Los tres rayos forman un abanico. Para $|M|<1$ las ondas acústicas se reparten a ambos lados del origen; en cuanto $|M|>1$, los tres rayos se inclinan al mismo lado del eje $x$. El número de condiciones de contorno que hay que imponer en una entrada o salida — que cambia con el número de Mach — está dibujado en ese único fotograma.
+
+## Tres familias, dos repeticiones — ondas acústicas y de entropía
+
+Los cinco autovalores forman *tres familias*. La velocidad $v_n$ es la **onda de entropía**, y transporta dos señales independientes a la misma velocidad: entropía y momento tangencial. De ahí su doble multiplicidad.
+
+El par $v_n \pm a$ son las **ondas acústicas**, que cargan con la señal de presión y con la velocidad normal. En el abanico de Riemann, el rayo central es el contacto; los exteriores, choques o expansiones.
+
+Memorice este mapa y depurar se vuelve rápido. Si solo salta la densidad y $\Delta p = \Delta u = 0$, solo la onda de entropía debe sobrevivir; los dos pulsos acústicos tienen que medir cero. La figura siguiente confirma esto en vivo.
+
+<RoeWaveStrengthBars />
+
+Empiece en "no jump". Mueva un poco $\rho_R$: solo crece la barra gris central; las barras roja y azul siguen pegadas a cero. Cambie a "Sod" y la barra acústica derecha sube de golpe — ese es el choque. Pruebe "123 problem": dos rarefacciones simétricas, las dos barras acústicas grandes con el mismo signo y el contacto casi nulo — la firma rarefacción-rarefacción.
+
+## Autovectores derechos — escritos de una vez
+
+Resolviendo $A R_i = \lambda_i R_i$ aparece una matriz 5×5. En la convención R-1:
+
+$$
+R =
+\begin{pmatrix}
+1 & 1 & 1 & 0 & 0 \\
+u - a n_x & u & u + a n_x & n_y & -n_z \\
+v - a n_y & v & v + a n_y & -n_x & 0 \\
+w - a n_z & w & w + a n_z & 0 & n_x \\
+h_o - a v_n & e_k & h_o + a v_n & u n_y - v n_x & w n_x - u n_z
+\end{pmatrix}
+$$
+
+con $e_k = \tfrac12(u^2+v^2+w^2)$ la energía cinética específica y $h_o = h + e_k$ la entalpía total específica. Las tres primeras columnas corresponden a $\lambda_1, \lambda_2, \lambda_3$. Las dos últimas pertenecen a la raíz repetida $\lambda_4=\lambda_5=v_n$ y son dos vectores tangenciales cuya elección depende de la convención.
+
+La tercera y la quinta columna marcan qué par de direcciones tangenciales se eligió. R-2 y R-3 simplemente expanden el mismo subespacio con otra base.
+
+## Autovectores izquierdos — la fila que se rompe en n_x → 0
+
+Calcular $L = R^{-1}$ deja entradas con $1/n_x$ en las dos últimas filas. En R-1 siempre hay una fila que divide por $n_x$. Una cara con $\hat n = (0, 1, 0)$ — donde $n_x = 0$ — manda esas entradas al infinito. Ese fue el bug que cacé durante tres días.
+
+El parche es corto. R-2 divide por $n_y$; R-3, por $n_z$. Elija la convención cara a cara según la *componente mayor* de $|n_x|, |n_y|, |n_z|$. Una línea:
+
+```python
+def pick_convention(n):
+    # n: arreglo de forma (3,), normal unitaria
+    k = int(np.argmax(np.abs(n)))  # 0, 1 o 2
+    return k  # selecciona R-1, R-2 o R-3
+```
+
+En cualquier cara, al menos una de las tres convenciones es segura. Sin ese branch, ningún solver Euler sobre malla no estructurada dura mucho.
+
+## En 2D, la singularidad se cancela en silencio
+
+Con $w = n_z = 0$ la 5×5 pasa a 4×4. Los autovalores se reducen a $\{v_n - a, v_n, v_n + a, v_n\}$ y las singularidades aparentes en la última fila de $L$ se cancelan a mano:
+
+$$
+\frac{v - v_n n_y}{n_x} = \frac{v(1 - n_y^2) - u n_x n_y}{n_x} = v n_x - u n_y
+$$
+
+El $n_x$ del denominador divide exactamente al numerador. Quien viva siempre en 2D nunca conocerá la trampa. Solo aparece al pasar a 3D.
+
+## Python — un flujo Roe en cualquier dirección, en una sola función
+
+Reunimos los autovalores de las tres familias y las amplitudes de onda del promedio Roe 1D en una única función que devuelve el flujo tipo Roe sobre cualquier cara. El problema juguete es un *tubo de choque inclinado*: lanzamos los estados a la cara $\hat n = (\cos 30°, \sin 30°, 0)$.
+
+```python
+import numpy as np
+
+GAMMA = 1.4
+
+def primitive_to_state(rho, vel, p):
+    """rho: escalar, vel: (3,), p: escalar -> Q conservativa (5,)"""
+    rE = p / (GAMMA - 1) + 0.5 * rho * np.dot(vel, vel)
+    return np.array([rho, rho * vel[0], rho * vel[1], rho * vel[2], rE])
+
+def flux_normal(Q, n_hat):
+    rho = Q[0]
+    vel = Q[1:4] / rho
+    rE = Q[4]
+    p = (GAMMA - 1) * (rE - 0.5 * rho * np.dot(vel, vel))
+    vn = np.dot(vel, n_hat)
+    H = (rE + p) / rho
+    return np.array([
+        rho * vn,
+        rho * vel[0] * vn + p * n_hat[0],
+        rho * vel[1] * vn + p * n_hat[1],
+        rho * vel[2] * vn + p * n_hat[2],
+        rho * H * vn,
+    ])
+
+def roe_normal_flux(QL, QR, n_hat):
+    rL, rR = QL[0], QR[0]
+    vL = QL[1:4] / rL
+    vR = QR[1:4] / rR
+    pL = (GAMMA - 1) * (QL[4] - 0.5 * rL * np.dot(vL, vL))
+    pR = (GAMMA - 1) * (QR[4] - 0.5 * rR * np.dot(vR, vR))
+    HL = (QL[4] + pL) / rL
+    HR = (QR[4] + pR) / rR
+
+    sL, sR = np.sqrt(rL), np.sqrt(rR)
+    inv = 1.0 / (sL + sR)
+    rho = sL * sR
+    vel = (sL * vL + sR * vR) * inv
+    H   = (sL * HL + sR * HR) * inv
+    vn  = np.dot(vel, n_hat)
+    a2  = (GAMMA - 1) * (H - 0.5 * np.dot(vel, vel))
+    a   = np.sqrt(max(a2, 1e-12))
+
+    eigs = np.array([vn - a, vn, vn + a])
+    dvel = vR - vL
+    dvn  = np.dot(dvel, n_hat)
+    drho = rR - rL
+    dp   = pR - pL
+
+    alpha_contact = drho - dp / a2
+    alpha_minus   = (dp - rho * a * dvn) / (2 * a2)
+    alpha_plus    = (dp + rho * a * dvn) / (2 * a2)
+
+    # flujo promedio + |lambda| * alpha * R
+    Favg = 0.5 * (flux_normal(QL, n_hat) + flux_normal(QR, n_hat))
+
+    # construir los tres autovectores derechos in situ
+    R_minus = np.array([1, vel[0] - a * n_hat[0], vel[1] - a * n_hat[1],
+                        vel[2] - a * n_hat[2], H - a * vn])
+    R_cont  = np.array([1, vel[0], vel[1], vel[2], 0.5 * np.dot(vel, vel)])
+    R_plus  = np.array([1, vel[0] + a * n_hat[0], vel[1] + a * n_hat[1],
+                        vel[2] + a * n_hat[2], H + a * vn])
+
+    diss = (np.abs(eigs[0]) * alpha_minus   * R_minus
+          + np.abs(eigs[1]) * alpha_contact * R_cont
+          + np.abs(eigs[2]) * alpha_plus    * R_plus)
+
+    # salto de velocidad tangencial (lo lleva el contacto, lambda = vn)
+    dvel_tan = dvel - dvn * n_hat
+    R_tan = np.zeros(5); R_tan[1:4] = dvel_tan
+    R_tan[4] = rho * np.dot(vel, dvel_tan)
+    diss = diss + np.abs(vn) * R_tan
+
+    return Favg - 0.5 * diss
+
+if __name__ == '__main__':
+    n_hat = np.array([np.cos(np.pi/6), np.sin(np.pi/6), 0.0])
+    QL = primitive_to_state(1.0,   np.array([0.0, 0.0, 0.0]), 1.0)
+    QR = primitive_to_state(0.125, np.array([0.0, 0.0, 0.0]), 0.1)
+    F = roe_normal_flux(QL, QR, n_hat)
+    print('Sod inclinado 30 grados, flujo Roe =', F)
+```
+
+Está escrita a mano, por lo que no es la implementación más rápida. Cada término que entra en una cara queda visible — eso es exactamente lo que se necesita al depurar. El código de producción envuelve `pick_convention` cara a cara para cambiar la convención izquierda y añade una corrección de entropía (Harten o LLF parcial) al final.
+
+Si se olvida la línea `np.argmax(np.abs(n_hat))` y se deja cableado R-1, se pierden tres días. En aquel hotel no perdí el coste del desayuno — perdí esos tres días.
+
+## Cerrando el diario de depuración
+
+- Una sola jacobiana 5×5 $A(\hat n)$ unifica las coordenadas globales y locales — una matriz lleva la dirección normal.
+- Los autovalores se reparten en tres familias: acústicas $v_n \pm a$ y la onda de entropía $v_n$ con multiplicidad doble. Esa repetición crea el subespacio que los autovectores izquierdos deben atravesar.
+- La convención R-1 izquierda diverge donde $n_x \to 0$. Ramificar por $\arg\max |n_i|$ en cada cara es la línea que mantiene vivo a un solver no estructurado.
