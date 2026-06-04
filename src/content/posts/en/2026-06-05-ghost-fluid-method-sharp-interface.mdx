@@ -1,0 +1,184 @@
+---
+title: "Filling an Interface with a Fluid That Isn't There — The Ghost Fluid Method"
+date: 2026-06-05
+description: "GFM for sharp interfaces in compressible multi-material flow"
+tags: ["Ghost-Fluid-Method", "Multi-Material", "Compressible", "Sharp-Interface", "Stiffened-EOS"]
+draft: false
+locale: en
+slug: 2026-06-05-ghost-fluid-method-sharp-interface
+---
+
+import { GhostFluidInterface1D } from '@/components/post-viz/2026-06-05-ghost-fluid-method-sharp-interface/GhostFluidInterface1D'
+import { OriginalVsModifiedGFM1D } from '@/components/post-viz/2026-06-05-ghost-fluid-method-sharp-interface/OriginalVsModifiedGFM1D'
+
+Into the cell where water meets air, you pour fake air that isn't actually there. This ghost fluid (a fictitious fluid extrapolated across the interface) exists nowhere on the grid. Yet that very ghost is what keeps the solver stable when a shock crosses the interface. This post walks through the Ghost Fluid Method (GFM) for sharp interfaces in compressible multi-material flow — what gets copied, what gets extrapolated, why the original GFM rings, and how to fix it, all with code.
+
+## When two materials collide in one cell
+
+Gas and liquid, or explosive and metal — two materials with wildly different properties meet on the same grid. Use averaged properties and the interface smears numerically. Across a water-air interface with a 1000:1 density ratio, that smearing quickly turns into nonphysical oscillations.
+
+GFM takes a different route. It does not blur the interface. It extends each fluid as a fake fluid past its own region, then runs a single-material solver twice, as if only one material existed. The interface is tracked as the zero of a level set (a signed-distance function that splits the domain) $\phi$.
+
+$$
+\phi(x) < 0 \;\Rightarrow\; \text{fluid A}, \qquad \phi(x) > 0 \;\Rightarrow\; \text{fluid B}
+$$
+
+Here $\phi$ is the signed-distance function, and its zero set $\phi=0$ is the interface.
+
+## What breaks and what continues across the interface
+
+To fill the ghost correctly, you must know exactly what is continuous across the interface. Pressure $p$ and normal velocity $u_n$ are continuous there. Entropy $s$ and tangential velocity $u_t$ are not.
+
+$$
+[\,p\,] = 0, \quad [\,u_n\,] = 0, \qquad [\,s\,] \neq 0, \quad [\,u_t\,] \neq 0
+$$
+
+The brackets $[\cdot]$ denote the jump across the interface. These four lines are the whole of GFM. Copy the continuous quantities, extrapolate the discontinuous ones.
+
+Try the simulation below. Pressure and normal velocity pass smoothly through the interface (red dashed line), while density jumps like a staircase. Turn on "show ghost" and you can see each fluid extended past the boundary as a dashed line.
+
+<GhostFluidInterface1D />
+
+Increase the density jump or move the interface, and the pressure curve still never breaks. That is the visual meaning of "pressure continuous, entropy discontinuous."
+
+## Treating water like a gas — the stiffened EOS
+
+Water is nearly incompressible, so the ideal-gas equation of state cannot handle it. To bind both materials into the same Mie–Grüneisen form, GFM uses the stiffened-gas EOS.
+
+$$
+p = (\gamma - 1)\,\rho e - \gamma\, p_\infty
+$$
+
+$\rho$ is density, $e$ is internal energy per unit mass, $\gamma$ is the specific-heat ratio, and $p_\infty$ is a constant that encodes material stiffness. An ideal gas has $p_\infty = 0$; water is roughly $\gamma \approx 4.4$, $p_\infty \approx 6 \times 10^8\,\mathrm{Pa}$. The sound speed follows as:
+
+$$
+c = \sqrt{\frac{\gamma\,(p + p_\infty)}{\rho}}
+$$
+
+Thanks to $p_\infty$, water's sound speed comes out far larger than air's at the same pressure. Unify the EOS into one line and both fluids fit into the same solver.
+
+## Two touches that fill a ghost cell
+
+Here is the core procedure. When solving fluid A's region, fill the cells occupied by B with A's ghost. The touch splits in two.
+
+1. **Copy**: the continuous quantities — pressure and normal velocity — are taken directly from the real B cells across the interface.
+2. **Extrapolate**: the discontinuous quantities — entropy (hence density) and tangential velocity — are extrapolated isentropically from the nearest real A cell across the interface.
+
+Isentropic extrapolation preserves the entropy $s = p / \rho^\gamma$ and re-solves the density.
+
+$$
+\rho_{\text{ghost}} = \left( \frac{p_{\text{copy}}}{s_A} \right)^{1/\gamma}
+$$
+
+$s_A$ is the real A fluid's entropy and $p_\text{copy}$ is the copied pressure. The extrapolation is usually carried out with a fast-marching method that propagates values quickly along the interface normal. Once a single sweep completes A's ghost field, you forget B exists and solve A's single-material Euler equations. Repeat the same for B.
+
+## Where the original GFM rings
+
+The original GFM runs into trouble when one side of the interface is very stiff (like water, with large $p_\infty$). When a strong shock or detonation crosses the interface, the ghost state built by plain copy and extrapolation disagrees with the true Riemann solution. That mismatch shows up as pressure oscillations near the interface, and the oscillations often lead to divergence.
+
+In the simulation below, send a pressure pulse through the stiff fluid (pink region). The higher you push the stiffness ratio, the larger the ripples just past the interface.
+
+<OriginalVsModifiedGFM1D />
+
+Push the stiffness ratio to 9 and a high-frequency oscillation appears clearly just past the interface. It does not go away when you refine the grid, because the cause is the boundary condition, not the grid.
+
+## The modified GFM — set values from an interface Riemann problem
+
+The fix is to solve for the ghost state rather than guess it. The modified GFM (MGFM or IGFM) takes the real states on each side of the interface as the left and right states of a Riemann problem and solves it.
+
+$$
+(p^*, u^*) = \mathcal{R}\big(W_A,\, W_B\big)
+$$
+
+$W_A, W_B$ are the real states on each side, $\mathcal{R}$ is the Riemann solver, and $p^*, u^*$ are the contact-discontinuity pressure and velocity. Assign the same $p^*, u^*$ to both ghosts and the pressure–velocity continuity conditions are exactly satisfied. Turn on "use modified GFM" above and the oscillation disappears at the same stiffness.
+
+## Python — a gas-gas GFM shock tube
+
+Solve a shock tube where two ideal gases ($\gamma_A = 1.4$, $\gamma_B = 1.67$) meet, using isentropic-extrapolation GFM. It uses an HLL flux and, each step, two ghost sweeps merged by the level set.
+
+```python
+import numpy as np
+
+GAMMA = (1.4, 1.67)   # specific-heat ratios of left (air) and right (monatomic gas)
+
+def primitive(U, g):
+    rho = U[0]; u = U[1] / rho
+    e = U[2] / rho - 0.5 * u * u
+    p = (g - 1.0) * rho * e          # stiffened EOS, p_inf = 0 (ideal gas)
+    return rho, u, p
+
+def conserved(rho, u, p, g):
+    E = p / (g - 1.0) + 0.5 * rho * u * u
+    return np.array([rho, rho * u, E])
+
+def hll(UL, UR, g):
+    rL, uL, pL = primitive(UL, g); rR, uR, pR = primitive(UR, g)
+    aL = np.sqrt(g * pL / rL); aR = np.sqrt(g * pR / rR)
+    sL = min(uL - aL, uR - aR); sR = max(uL + aL, uR + aR)
+    FL = np.array([rL * uL, rL * uL * uL + pL, uL * (UL[2] + pL)])
+    FR = np.array([rR * uR, rR * uR * uR + pR, uR * (UR[2] + pR)])
+    if sL >= 0: return FL
+    if sR <= 0: return FR
+    return (sR * FL - sL * FR + sL * sR * (UR - UL)) / (sR - sL)
+
+def extrapolate_ghost(rho, u, p, mat, side):
+    # fill the whole domain with `side` fluid: copy p,u; extrapolate density isentropically
+    rg, ug, pg = rho.copy(), u.copy(), p.copy()
+    g = GAMMA[side]
+    idx = np.where(mat == side)[0]
+    lo, hi = idx[0], idx[-1]
+    ref = lo if side == 1 else hi      # real cell closest to the interface
+    s_ref = p[ref] / rho[ref] ** g     # entropy to preserve
+    for i in range(len(rho)):
+        if mat[i] != side:
+            j = min(max(i, lo), hi)            # nearest real cell
+            ug[i] = u[j]; pg[i] = p[j]         # copy
+            rg[i] = (pg[i] / s_ref) ** (1.0 / g)   # isentropic extrapolation
+    return rg, ug, pg
+
+def run_ghost_fluid_tube(N=400, t_end=0.14, cfl=0.4):
+    x = np.linspace(0, 1, N); dx = x[1] - x[0]
+    x0 = 0.5                                   # initial interface position
+    mat = np.where(x < x0, 0, 1)
+    rho = np.where(x < x0, 1.0, 0.125)
+    u   = np.zeros(N)
+    p   = np.where(x < x0, 1.0, 0.1)
+    t = 0.0
+    while t < t_end:
+        a = np.sqrt(np.where(mat == 0, GAMMA[0], GAMMA[1]) * p / rho)
+        dt = min(cfl * dx / np.max(np.abs(u) + a), t_end - t)
+        new = {}
+        for side in (0, 1):                    # two ghost sweeps
+            rg, ug, pg = extrapolate_ghost(rho, u, p, mat, side)
+            g = GAMMA[side]
+            U = np.array([conserved(rg[i], ug[i], pg[i], g) for i in range(N)]).T
+            F = np.zeros((3, N + 1))
+            for i in range(1, N):
+                F[:, i] = hll(U[:, i - 1], U[:, i], g)
+            F[:, 0] = F[:, 1]; F[:, N] = F[:, N - 1]
+            new[side] = U - dt / dx * (F[:, 1:] - F[:, :-1])
+        U = np.where(mat[None, :] == 0, new[0], new[1])   # level-set merge
+        for i in range(N):
+            rho[i], u[i], p[i] = primitive(U[:, i], GAMMA[mat[i]])
+        x0 += dt * u[np.argmin(np.abs(x - x0))]           # move the interface
+        mat = np.where(x < x0, 0, 1)
+        t += dt
+    return x, rho, u, p
+
+if __name__ == "__main__":
+    x, rho, u, p = run_ghost_fluid_tube()
+    print(f"t=0.14:  max p = {p.max():.3f}, "
+          f"density near contact {rho[180]:.3f} -> {rho[220]:.3f}")
+```
+
+The output shows the density jump surviving across the interface while the pressure stays smooth. Two single-material sweeps are the backbone of GFM.
+
+## Traps to avoid when you write the code
+
+Three things spare you the usual divergence in a GFM implementation. First, the extrapolation direction must be the interface normal. Extrapolating along grid axes pollutes the entropy at oblique interfaces. Second, a high stiffness ratio (water-air) almost always makes the original GFM ring; going straight to the Riemann-based modified GFM is safer. Third, reinitialize the level set periodically to keep its signed-distance property — otherwise the interface velocity becomes inaccurate.
+
+## A summary for those who won't read it twice
+
+- GFM does not mix the interface. It extends each fluid as a ghost and runs a single-material solver twice.
+- Copy pressure and normal velocity; extrapolate entropy and tangential velocity isentropically. Those four lines are everything.
+- At stiff interfaces the original GFM rings. The right answer is the modified GFM, which solves an interface Riemann problem to set $p^*, u^*$.

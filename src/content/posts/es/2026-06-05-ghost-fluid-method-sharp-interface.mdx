@@ -1,0 +1,184 @@
+---
+title: "Rellenar una interfaz con un fluido que no existe — Ghost Fluid Method"
+date: 2026-06-05
+description: "GFM para interfaces nítidas en flujo compresible multimaterial"
+tags: ["Ghost-Fluid-Method", "Multi-Material", "Compressible", "Sharp-Interface", "Stiffened-EOS"]
+draft: false
+locale: es
+slug: 2026-06-05-ghost-fluid-method-sharp-interface
+---
+
+import { GhostFluidInterface1D } from '@/components/post-viz/2026-06-05-ghost-fluid-method-sharp-interface/GhostFluidInterface1D'
+import { OriginalVsModifiedGFM1D } from '@/components/post-viz/2026-06-05-ghost-fluid-method-sharp-interface/OriginalVsModifiedGFM1D'
+
+En la celda donde el agua se encuentra con el aire, se vierte aire falso que en realidad no está ahí. Ese fluido fantasma (un fluido ficticio extrapolado a través de la interfaz) no existe en ningún punto de la malla. Y sin embargo es justo ese fantasma el que mantiene estable el cálculo cuando una onda de choque cruza la interfaz. Este artículo recorre el Ghost Fluid Method (GFM) para interfaces nítidas en flujo compresible multimaterial: qué se copia, qué se extrapola, por qué el GFM original oscila y cómo se corrige, todo con código.
+
+## Cuando dos materiales chocan en una misma celda
+
+Gas y líquido, o explosivo y metal: dos materiales con propiedades muy distintas se encuentran sobre la misma malla. Si se usan propiedades promediadas, la interfaz se difumina numéricamente. En una interfaz agua-aire con razón de densidad 1000:1, ese difuminado pronto se convierte en oscilaciones no físicas.
+
+El GFM toma otro camino. No mezcla la interfaz de forma borrosa. Extiende cada fluido como un fluido falso más allá de su propia región y luego corre un solver monomaterial dos veces, como si solo existiera un material. La interfaz se rastrea como el cero de un level set (una función distancia con signo que divide el dominio) $\phi$.
+
+$$
+\phi(x) < 0 \;\Rightarrow\; \text{fluido A}, \qquad \phi(x) > 0 \;\Rightarrow\; \text{fluido B}
+$$
+
+Aquí $\phi$ es la función distancia con signo y su conjunto cero $\phi=0$ es la interfaz.
+
+## Qué se rompe y qué continúa al cruzar la interfaz
+
+Para rellenar bien el fantasma hay que saber exactamente qué es continuo al cruzar la interfaz. La presión $p$ y la velocidad normal $u_n$ son continuas ahí. En cambio, la entropía $s$ y la velocidad tangencial $u_t$ son discontinuas.
+
+$$
+[\,p\,] = 0, \quad [\,u_n\,] = 0, \qquad [\,s\,] \neq 0, \quad [\,u_t\,] \neq 0
+$$
+
+Los corchetes $[\cdot]$ denotan el salto al cruzar la interfaz. Estas cuatro líneas son todo el GFM. Las magnitudes continuas se copian; las discontinuas se extrapolan.
+
+Prueba la simulación de abajo manipulándola tú mismo. La presión y la velocidad normal atraviesan la interfaz (línea roja discontinua) de forma suave, mientras la densidad salta como una escalera. Al activar "show ghost" se ve cómo cada fluido se prolonga más allá del borde como una línea discontinua.
+
+<GhostFluidInterface1D />
+
+Aunque se aumente el salto de densidad o se mueva la interfaz, la curva de presión nunca se rompe. Ese es el significado visual de "presión continua, entropía discontinua".
+
+## Tratar el agua como un gas — la EOS stiffened
+
+El agua es casi incompresible, así que la ecuación de estado de gas ideal no la puede tratar. Para encajar ambos materiales en la misma forma de Mie–Grüneisen, el GFM usa la EOS de gas stiffened.
+
+$$
+p = (\gamma - 1)\,\rho e - \gamma\, p_\infty
+$$
+
+$\rho$ es la densidad, $e$ la energía interna por unidad de masa, $\gamma$ la razón de calores específicos y $p_\infty$ una constante que codifica la rigidez del material. Un gas ideal tiene $p_\infty = 0$; el agua se ajusta a $\gamma \approx 4.4$, $p_\infty \approx 6 \times 10^8\,\mathrm{Pa}$. La velocidad del sonido resulta:
+
+$$
+c = \sqrt{\frac{\gamma\,(p + p_\infty)}{\rho}}
+$$
+
+Gracias a $p_\infty$, a igual presión la velocidad del sonido del agua sale mucho mayor que la del aire. Al unificar la EOS en una sola línea, ambos fluidos entran en el mismo solver.
+
+## Los dos toques que rellenan una celda fantasma
+
+Este es el procedimiento clave. Al resolver la región del fluido A, se rellenan con el fantasma de A las celdas que ocupa B. El toque se divide en dos.
+
+1. **Copiar**: las magnitudes continuas —presión y velocidad normal— se toman directamente de las celdas reales de B al otro lado de la interfaz.
+2. **Extrapolar**: las magnitudes discontinuas —entropía (y por tanto densidad) y velocidad tangencial— se extrapolan de forma isentrópica desde la celda real de A más cercana, cruzando la interfaz.
+
+La extrapolación isentrópica conserva la entropía $s = p / \rho^\gamma$ y vuelve a despejar la densidad.
+
+$$
+\rho_{\text{ghost}} = \left( \frac{p_{\text{copy}}}{s_A} \right)^{1/\gamma}
+$$
+
+$s_A$ es la entropía del fluido A real y $p_\text{copy}$ es la presión copiada. La extrapolación suele hacerse con un método fast marching que propaga los valores rápidamente a lo largo de la normal a la interfaz. Una vez que un barrido completa el campo fantasma de A, se olvida que B existe y se resuelven las ecuaciones de Euler monomaterial de A. Se repite lo mismo para B.
+
+## Dónde oscila el GFM original
+
+El GFM original tiene problemas cuando un lado de la interfaz es muy rígido (stiff, como el agua, con $p_\infty$ grande). Cuando una onda de choque o detonación fuerte cruza la interfaz, el estado fantasma construido por copia y extrapolación simples discrepa de la solución de Riemann verdadera. Esa discrepancia aparece como oscilaciones de presión cerca de la interfaz, y las oscilaciones a menudo conducen a la divergencia.
+
+En la simulación de abajo, haz pasar un pulso de presión por el fluido rígido (región rosa). Cuanto más se sube la stiffness ratio, mayores son las ondulaciones justo después de la interfaz.
+
+<OriginalVsModifiedGFM1D />
+
+Al llevar la stiffness ratio hasta 9, aparece con claridad una oscilación de alta frecuencia justo tras la interfaz. No desaparece al refinar la malla, porque la causa es la condición de contorno, no la malla.
+
+## El GFM modificado — fijar los valores con un problema de Riemann en la interfaz
+
+La solución es resolver el estado fantasma en lugar de adivinarlo. El GFM modificado (MGFM o IGFM) toma los estados reales a cada lado de la interfaz como estados izquierdo y derecho de un problema de Riemann y lo resuelve.
+
+$$
+(p^*, u^*) = \mathcal{R}\big(W_A,\, W_B\big)
+$$
+
+$W_A, W_B$ son los estados reales a cada lado, $\mathcal{R}$ es el solver de Riemann y $p^*, u^*$ son la presión y velocidad de la discontinuidad de contacto. Al asignar el mismo $p^*, u^*$ a ambos fantasmas, las condiciones de continuidad de presión y velocidad se satisfacen exactamente. Activa "use modified GFM" arriba y la oscilación desaparece con la misma rigidez.
+
+## Python — un tubo de choque GFM gas-gas
+
+Resolvamos un tubo de choque donde se encuentran dos gases ideales ($\gamma_A = 1.4$, $\gamma_B = 1.67$), con GFM de extrapolación isentrópica. Usa un flujo HLL y, en cada paso, dos barridos fantasma fusionados por el level set.
+
+```python
+import numpy as np
+
+GAMMA = (1.4, 1.67)   # razones de calores específicos de izquierda (aire) y derecha (gas monoatómico)
+
+def primitive(U, g):
+    rho = U[0]; u = U[1] / rho
+    e = U[2] / rho - 0.5 * u * u
+    p = (g - 1.0) * rho * e          # EOS stiffened, p_inf = 0 (gas ideal)
+    return rho, u, p
+
+def conserved(rho, u, p, g):
+    E = p / (g - 1.0) + 0.5 * rho * u * u
+    return np.array([rho, rho * u, E])
+
+def hll(UL, UR, g):
+    rL, uL, pL = primitive(UL, g); rR, uR, pR = primitive(UR, g)
+    aL = np.sqrt(g * pL / rL); aR = np.sqrt(g * pR / rR)
+    sL = min(uL - aL, uR - aR); sR = max(uL + aL, uR + aR)
+    FL = np.array([rL * uL, rL * uL * uL + pL, uL * (UL[2] + pL)])
+    FR = np.array([rR * uR, rR * uR * uR + pR, uR * (UR[2] + pR)])
+    if sL >= 0: return FL
+    if sR <= 0: return FR
+    return (sR * FL - sL * FR + sL * sR * (UR - UL)) / (sR - sL)
+
+def extrapolate_ghost(rho, u, p, mat, side):
+    # rellena todo el dominio con el fluido `side`: copia p,u; extrapola densidad isentropicamente
+    rg, ug, pg = rho.copy(), u.copy(), p.copy()
+    g = GAMMA[side]
+    idx = np.where(mat == side)[0]
+    lo, hi = idx[0], idx[-1]
+    ref = lo if side == 1 else hi      # celda real mas cercana a la interfaz
+    s_ref = p[ref] / rho[ref] ** g     # entropia a conservar
+    for i in range(len(rho)):
+        if mat[i] != side:
+            j = min(max(i, lo), hi)            # celda real mas cercana
+            ug[i] = u[j]; pg[i] = p[j]         # copia
+            rg[i] = (pg[i] / s_ref) ** (1.0 / g)   # extrapolacion isentropica
+    return rg, ug, pg
+
+def run_ghost_fluid_tube(N=400, t_end=0.14, cfl=0.4):
+    x = np.linspace(0, 1, N); dx = x[1] - x[0]
+    x0 = 0.5                                   # posicion inicial de la interfaz
+    mat = np.where(x < x0, 0, 1)
+    rho = np.where(x < x0, 1.0, 0.125)
+    u   = np.zeros(N)
+    p   = np.where(x < x0, 1.0, 0.1)
+    t = 0.0
+    while t < t_end:
+        a = np.sqrt(np.where(mat == 0, GAMMA[0], GAMMA[1]) * p / rho)
+        dt = min(cfl * dx / np.max(np.abs(u) + a), t_end - t)
+        new = {}
+        for side in (0, 1):                    # dos barridos fantasma
+            rg, ug, pg = extrapolate_ghost(rho, u, p, mat, side)
+            g = GAMMA[side]
+            U = np.array([conserved(rg[i], ug[i], pg[i], g) for i in range(N)]).T
+            F = np.zeros((3, N + 1))
+            for i in range(1, N):
+                F[:, i] = hll(U[:, i - 1], U[:, i], g)
+            F[:, 0] = F[:, 1]; F[:, N] = F[:, N - 1]
+            new[side] = U - dt / dx * (F[:, 1:] - F[:, :-1])
+        U = np.where(mat[None, :] == 0, new[0], new[1])   # fusion por level set
+        for i in range(N):
+            rho[i], u[i], p[i] = primitive(U[:, i], GAMMA[mat[i]])
+        x0 += dt * u[np.argmin(np.abs(x - x0))]           # movimiento de la interfaz
+        mat = np.where(x < x0, 0, 1)
+        t += dt
+    return x, rho, u, p
+
+if __name__ == "__main__":
+    x, rho, u, p = run_ghost_fluid_tube()
+    print(f"t=0.14:  max p = {p.max():.3f}, "
+          f"densidad cerca del contacto {rho[180]:.3f} -> {rho[220]:.3f}")
+```
+
+La salida muestra que el salto de densidad sobrevive al cruzar la interfaz mientras la presión se mantiene suave. Dos barridos monomaterial son la columna vertebral del GFM.
+
+## Trampas que evitar al escribir el código
+
+Tres cosas te ahorran la divergencia habitual en una implementación de GFM. Primera, la dirección de extrapolación debe ser la normal a la interfaz. Extrapolar a lo largo de los ejes de malla contamina la entropía en interfaces oblicuas. Segunda, una razón de rigidez alta (agua-aire) casi siempre hace oscilar el GFM original; ir directo al GFM modificado basado en Riemann es más seguro. Tercera, hay que reinicializar el level set periódicamente para conservar su propiedad de distancia con signo; de lo contrario la velocidad de la interfaz se vuelve imprecisa.
+
+## Un resumen para quien no lo leerá dos veces
+
+- El GFM no mezcla la interfaz. Extiende cada fluido como un fantasma y corre un solver monomaterial dos veces.
+- Copia presión y velocidad normal; extrapola entropía y velocidad tangencial de forma isentrópica. Esas cuatro líneas son todo.
+- En interfaces rígidas el GFM original oscila. La respuesta correcta es el GFM modificado, que resuelve un problema de Riemann en la interfaz para fijar $p^*, u^*$.

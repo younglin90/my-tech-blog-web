@@ -1,0 +1,184 @@
+---
+title: "존재하지 않는 유체로 경계면을 메운다 — Ghost Fluid Method"
+date: 2026-06-05
+description: "다물질 압축성 유동의 날카로운 경계면을 다루는 GFM"
+tags: ["Ghost-Fluid-Method", "Multi-Material", "Compressible", "Sharp-Interface", "Stiffened-EOS"]
+draft: false
+locale: ko
+slug: 2026-06-05-ghost-fluid-method-sharp-interface
+---
+
+import { GhostFluidInterface1D } from '@/components/post-viz/2026-06-05-ghost-fluid-method-sharp-interface/GhostFluidInterface1D'
+import { OriginalVsModifiedGFM1D } from '@/components/post-viz/2026-06-05-ghost-fluid-method-sharp-interface/OriginalVsModifiedGFM1D'
+
+물과 공기가 만나는 한 칸에, 실제로는 거기 없는 가짜 공기를 채워 넣는다. 이 유령 유체(ghost fluid, 경계 너머로 외삽한 가상의 유체)는 격자 어디에도 존재하지 않는다. 그런데 바로 그 유령이 충격파가 경계면을 지날 때 계산을 안정시킨다. 이 글은 압축성 다물질 유동에서 날카로운 경계면을 다루는 Ghost Fluid Method(GFM)를 다룬다. 무엇을 복사하고 무엇을 외삽하는지, 왜 오리지널 GFM이 떨리는지, 어떻게 고치는지를 코드와 함께 따라간다.
+
+## 한 칸에 두 물질이 부딪힐 때
+
+기체-액체, 폭약-금속처럼 물성이 크게 다른 두 물질이 한 격자 위에서 만난다. 단순히 평균 물성을 쓰면 경계면이 수치적으로 번진다(smearing). 밀도비가 1000배인 물-공기 경계에서는 이 번짐이 곧 비물리적 진동으로 번진다.
+
+GFM의 발상은 다르다. 경계면을 흐리게 섞지 않는다. 각 유체를 자기 영역 밖으로 가짜로 연장한 뒤, 한쪽 물질만 있는 것처럼 단일물질 솔버를 두 번 돌린다. 경계면은 레벨셋(level set, 부호로 영역을 나누는 거리함수) $\phi$의 영점으로 추적한다.
+
+$$
+\phi(x) < 0 \;\Rightarrow\; \text{유체 A}, \qquad \phi(x) > 0 \;\Rightarrow\; \text{유체 B}
+$$
+
+여기서 $\phi$는 부호 거리함수, 영점 $\phi=0$이 경계면이다.
+
+## 경계면에서 끊기는 것과 이어지는 것
+
+경계면을 가로질러 무엇이 연속인지 정확히 알아야 유령을 옳게 채운다. 압력 $p$와 수직 속도 $u_n$은 경계면에서 연속이다. 반면 엔트로피 $s$와 접선 속도 $u_t$는 불연속이다.
+
+$$
+[\,p\,] = 0, \quad [\,u_n\,] = 0, \qquad [\,s\,] \neq 0, \quad [\,u_t\,] \neq 0
+$$
+
+대괄호 $[\cdot]$는 경계면을 가로지른 점프를 뜻한다. 이 네 줄이 GFM의 전부다. 연속량은 복사하고, 불연속량은 외삽한다.
+
+아래 시뮬레이션에서 직접 조작해보자. 압력과 수직 속도는 경계면(빨간 점선)을 매끄럽게 지나지만, 밀도는 계단처럼 끊긴다. "show ghost"를 켜면 각 유체가 경계 너머로 점선처럼 연장되는 모습이 보인다.
+
+<GhostFluidInterface1D />
+
+밀도 점프를 키우거나 경계면을 움직여도 압력 곡선은 끊기지 않는다. 이것이 "압력 연속, 엔트로피 불연속"의 시각적 의미다.
+
+## 물을 기체처럼 — Stiffened EOS
+
+물은 거의 비압축성이라 이상기체 상태방정식으로는 다룰 수 없다. GFM은 두 물질을 같은 형식의 Mie–Grüneisen 계열로 묶기 위해 Stiffened Gas EOS를 쓴다.
+
+$$
+p = (\gamma - 1)\,\rho e - \gamma\, p_\infty
+$$
+
+$\rho$는 밀도, $e$는 단위질량당 내부에너지, $\gamma$는 비열비, $p_\infty$는 물질 강성을 나타내는 상수다. 이상기체는 $p_\infty = 0$, 물은 대략 $\gamma \approx 4.4$, $p_\infty \approx 6 \times 10^8\,\mathrm{Pa}$로 맞춘다. 음속은 다음과 같다.
+
+$$
+c = \sqrt{\frac{\gamma\,(p + p_\infty)}{\rho}}
+$$
+
+$p_\infty$ 덕분에 같은 압력에서도 물의 음속이 공기보다 훨씬 크게 나온다. 한 줄로 EOS를 통일하면 두 유체를 같은 솔버에 넣을 수 있다.
+
+## 유령 셀을 채우는 두 가지 손길
+
+이제 핵심 절차다. 유체 A의 영역을 풀 때, B가 차지한 칸을 A의 유령으로 메운다. 손길은 둘로 나뉜다.
+
+1. **복사**: 연속량인 압력과 수직 속도는 경계면 너머 실제 B 셀의 값을 그대로 가져온다.
+2. **외삽**: 불연속량인 엔트로피(즉 밀도)와 접선 속도는 가장 가까운 실제 A 셀에서 경계면을 넘어 등엔트로피로 외삽한다.
+
+등엔트로피 외삽은 엔트로피 $s = p / \rho^\gamma$를 보존하며 밀도를 다시 푼다.
+
+$$
+\rho_{\text{ghost}} = \left( \frac{p_{\text{copy}}}{s_A} \right)^{1/\gamma}
+$$
+
+$s_A$는 실제 A 유체의 엔트로피, $p_\text{copy}$는 복사해 온 압력이다. 외삽은 보통 경계면 법선 방향으로 빠르게 퍼뜨리는 fast marching 방법으로 수행한다. 한 번의 스윕으로 A의 유령장이 완성되면, B의 존재를 잊고 A만의 단일물질 Euler 방정식을 푼다. B에 대해서도 같은 절차를 반복한다.
+
+## 오리지널 GFM이 떨리는 자리
+
+오리지널 GFM은 경계면 한쪽이 매우 강성일 때(stiff, 물처럼 $p_\infty$가 클 때) 문제가 생긴다. 강한 충격파나 폭발파가 경계면을 지나면, 단순 복사·외삽으로 만든 유령 상태가 실제 Riemann 해와 어긋난다. 그 어긋남이 경계면 근처에서 압력 진동으로 나타나고, 진동은 종종 계산 발산으로 이어진다.
+
+아래 시뮬레이션에서 압력 펄스를 강성 유체(분홍 영역)로 통과시켜 보자. stiffness ratio를 올릴수록 경계면을 지난 직후의 잔물결이 커진다.
+
+<OriginalVsModifiedGFM1D />
+
+stiffness ratio를 9까지 올리면 경계면 직후에 고주파 진동이 또렷하게 보인다. 이 진동은 격자를 세분화해도 사라지지 않는다. 원인이 격자가 아니라 경계조건이기 때문이다.
+
+## 수정 GFM — 경계면 Riemann 문제로 값을 정하다
+
+해법은 유령 상태를 추측하지 말고 풀어서 구하는 것이다. 수정 GFM(Modified GFM, MGFM 또는 IGFM)은 경계면 양쪽 실제 상태를 좌·우로 삼아 Riemann 문제를 푼다.
+
+$$
+(p^*, u^*) = \mathcal{R}\big(W_A,\, W_B\big)
+$$
+
+$W_A, W_B$는 경계면 양쪽 실제 유체의 상태, $\mathcal{R}$은 Riemann 해법, $p^*, u^*$는 접촉 불연속의 압력·속도다. 이 $p^*, u^*$를 양쪽 유령에 똑같이 부여하면 압력·속도 연속 조건이 정확히 만족된다. 위 시뮬레이션에서 "use modified GFM"을 켜면 같은 강성에서도 진동이 사라진다.
+
+## Python — 기체-기체 GFM 충격관
+
+두 이상기체($\gamma_A = 1.4$, $\gamma_B = 1.67$)가 만나는 충격관을 등엔트로피 외삽 GFM으로 푼다. HLL 플럭스를 쓰고, 매 스텝 두 번의 유령 스윕 뒤 레벨셋으로 병합한다.
+
+```python
+import numpy as np
+
+GAMMA = (1.4, 1.67)   # 좌(공기), 우(단원자 기체)의 비열비
+
+def primitive(U, g):
+    rho = U[0]; u = U[1] / rho
+    e = U[2] / rho - 0.5 * u * u
+    p = (g - 1.0) * rho * e          # Stiffened EOS, p_inf = 0 (이상기체)
+    return rho, u, p
+
+def conserved(rho, u, p, g):
+    E = p / (g - 1.0) + 0.5 * rho * u * u
+    return np.array([rho, rho * u, E])
+
+def hll(UL, UR, g):
+    rL, uL, pL = primitive(UL, g); rR, uR, pR = primitive(UR, g)
+    aL = np.sqrt(g * pL / rL); aR = np.sqrt(g * pR / rR)
+    sL = min(uL - aL, uR - aR); sR = max(uL + aL, uR + aR)
+    FL = np.array([rL * uL, rL * uL * uL + pL, uL * (UL[2] + pL)])
+    FR = np.array([rR * uR, rR * uR * uR + pR, uR * (UR[2] + pR)])
+    if sL >= 0: return FL
+    if sR <= 0: return FR
+    return (sR * FL - sL * FR + sL * sR * (UR - UL)) / (sR - sL)
+
+def extrapolate_ghost(rho, u, p, mat, side):
+    # side 유체로 전체 영역을 채운다: 압력·속도는 복사, 밀도는 등엔트로피 외삽
+    rg, ug, pg = rho.copy(), u.copy(), p.copy()
+    g = GAMMA[side]
+    idx = np.where(mat == side)[0]
+    lo, hi = idx[0], idx[-1]
+    ref = lo if side == 1 else hi      # 경계면에 가장 가까운 실제 셀
+    s_ref = p[ref] / rho[ref] ** g     # 보존할 엔트로피
+    for i in range(len(rho)):
+        if mat[i] != side:
+            j = min(max(i, lo), hi)            # 가장 가까운 실제 셀
+            ug[i] = u[j]; pg[i] = p[j]         # 복사
+            rg[i] = (pg[i] / s_ref) ** (1.0 / g)   # 등엔트로피 외삽
+    return rg, ug, pg
+
+def run_ghost_fluid_tube(N=400, t_end=0.14, cfl=0.4):
+    x = np.linspace(0, 1, N); dx = x[1] - x[0]
+    x0 = 0.5                                   # 초기 경계면 위치
+    mat = np.where(x < x0, 0, 1)
+    rho = np.where(x < x0, 1.0, 0.125)
+    u   = np.zeros(N)
+    p   = np.where(x < x0, 1.0, 0.1)
+    t = 0.0
+    while t < t_end:
+        a = np.sqrt(np.where(mat == 0, GAMMA[0], GAMMA[1]) * p / rho)
+        dt = min(cfl * dx / np.max(np.abs(u) + a), t_end - t)
+        new = {}
+        for side in (0, 1):                    # 두 번의 유령 스윕
+            rg, ug, pg = extrapolate_ghost(rho, u, p, mat, side)
+            g = GAMMA[side]
+            U = np.array([conserved(rg[i], ug[i], pg[i], g) for i in range(N)]).T
+            F = np.zeros((3, N + 1))
+            for i in range(1, N):
+                F[:, i] = hll(U[:, i - 1], U[:, i], g)
+            F[:, 0] = F[:, 1]; F[:, N] = F[:, N - 1]
+            new[side] = U - dt / dx * (F[:, 1:] - F[:, :-1])
+        U = np.where(mat[None, :] == 0, new[0], new[1])   # 레벨셋 병합
+        for i in range(N):
+            rho[i], u[i], p[i] = primitive(U[:, i], GAMMA[mat[i]])
+        x0 += dt * u[np.argmin(np.abs(x - x0))]           # 경계면 이동
+        mat = np.where(x < x0, 0, 1)
+        t += dt
+    return x, rho, u, p
+
+if __name__ == "__main__":
+    x, rho, u, p = run_ghost_fluid_tube()
+    print(f"t=0.14:  max p = {p.max():.3f}, "
+          f"접촉면 부근 밀도 {rho[180]:.3f} -> {rho[220]:.3f}")
+```
+
+출력은 경계면을 가로지른 밀도 점프가 살아 있고 압력은 매끄럽게 이어졌음을 보여준다. 두 번의 단일물질 스윕이 GFM의 뼈대다.
+
+## 코드 짤 때 빠지지 말아야 할 함정
+
+세 가지만 기억하면 GFM 구현에서 흔한 발산을 피한다. 첫째, 외삽 방향은 반드시 경계면 법선이다. 격자 축 방향으로 외삽하면 비스듬한 경계면에서 엔트로피가 오염된다. 둘째, 강성비가 큰 물-공기는 오리지널 GFM이 거의 항상 떨린다. 처음부터 Riemann 기반 수정 GFM으로 가는 편이 안전하다. 셋째, 레벨셋은 주기적으로 재초기화(reinitialization)해 부호 거리 성질을 유지해야 한다. 그렇지 않으면 경계면 속도가 부정확해진다.
+
+## 다시 읽지 않을 사람을 위한 요약
+
+- GFM은 경계면을 섞지 않는다. 각 유체를 유령으로 연장해 단일물질 솔버를 두 번 돌린다.
+- 압력·수직속도는 복사, 엔트로피·접선속도는 등엔트로피 외삽. 이 네 줄이 전부다.
+- 강성 경계면에서 오리지널 GFM은 떨린다. 경계면 Riemann 문제를 풀어 $p^*, u^*$를 주는 수정 GFM이 정답이다.

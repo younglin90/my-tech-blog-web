@@ -1,0 +1,184 @@
+---
+title: "用并不存在的流体填满界面 — Ghost Fluid Method"
+date: 2026-06-05
+description: "处理可压缩多物质流动锐利界面的GFM"
+tags: ["Ghost-Fluid-Method", "Multi-Material", "Compressible", "Sharp-Interface", "Stiffened-EOS"]
+draft: false
+locale: zh
+slug: 2026-06-05-ghost-fluid-method-sharp-interface
+---
+
+import { GhostFluidInterface1D } from '@/components/post-viz/2026-06-05-ghost-fluid-method-sharp-interface/GhostFluidInterface1D'
+import { OriginalVsModifiedGFM1D } from '@/components/post-viz/2026-06-05-ghost-fluid-method-sharp-interface/OriginalVsModifiedGFM1D'
+
+在水与空气相遇的那个网格里，倒进一团本不在那里的假空气。这种鬼影流体(ghost fluid，越过界面外推得到的虚拟流体)在网格上任何位置都不存在。可正是这团鬼影，让冲击波穿过界面时计算保持稳定。本文讲解处理可压缩多物质流动锐利界面的Ghost Fluid Method(GFM)：复制什么、外推什么，为什么原始GFM会振荡，以及如何修复，全部配有代码。
+
+## 当两种物质在一个网格里相撞
+
+气体和液体、炸药和金属——两种物性差异巨大的物质在同一网格上相遇。直接用平均物性，界面就会在数值上被抹糊。在密度比1000倍的水-空气界面上，这种抹糊很快蔓延成非物理的振荡。
+
+GFM的思路不同。它不把界面模糊地混合。它把每种流体当作假流体延伸到自己区域之外，然后像只有一种物质那样把单物质求解器跑两遍。界面以水平集(level set，用符号划分区域的距离函数)$\phi$ 的零点来追踪。
+
+$$
+\phi(x) < 0 \;\Rightarrow\; \text{流体 A}, \qquad \phi(x) > 0 \;\Rightarrow\; \text{流体 B}
+$$
+
+这里 $\phi$ 是符号距离函数，其零点 $\phi=0$ 就是界面。
+
+## 越过界面，什么断裂什么延续
+
+要正确填充鬼影，必须确切知道越过界面什么是连续的。压力 $p$ 与法向速度 $u_n$ 在界面处连续。而熵 $s$ 与切向速度 $u_t$ 则不连续。
+
+$$
+[\,p\,] = 0, \quad [\,u_n\,] = 0, \qquad [\,s\,] \neq 0, \quad [\,u_t\,] \neq 0
+$$
+
+方括号 $[\cdot]$ 表示越过界面的跳跃。这四行就是GFM的全部。连续量复制，不连续量外推。
+
+在下面的模拟里亲手操作一下。压力和法向速度平滑地穿过界面(红色虚线)，而密度像台阶一样断裂。打开「show ghost」，就能看到每种流体越过边界延伸为虚线。
+
+<GhostFluidInterface1D />
+
+无论加大密度跳跃还是移动界面，压力曲线始终不断裂。这就是「压力连续、熵不连续」的视觉含义。
+
+## 把水当作气体 — Stiffened EOS
+
+水几乎不可压缩，所以理想气体状态方程无法处理它。为了把两种物质归入同一形式的Mie–Grüneisen族，GFM采用刚化气体状态方程(stiffened-gas EOS)。
+
+$$
+p = (\gamma - 1)\,\rho e - \gamma\, p_\infty
+$$
+
+$\rho$ 是密度，$e$ 是单位质量内能，$\gamma$ 是比热比，$p_\infty$ 是表征物质刚度的常数。理想气体取 $p_\infty = 0$；水约为 $\gamma \approx 4.4$、$p_\infty \approx 6 \times 10^8\,\mathrm{Pa}$。声速由此得到：
+
+$$
+c = \sqrt{\frac{\gamma\,(p + p_\infty)}{\rho}}
+$$
+
+正因为 $p_\infty$，相同压力下水的声速远大于空气。把状态方程统一成一行，两种流体就能放进同一个求解器。
+
+## 填满鬼影网格的两道手法
+
+这是核心步骤。求解流体A的区域时，用A的鬼影填满B占据的网格。手法分两道。
+
+1. **复制**：连续量——压力和法向速度——直接取自界面对面真实B网格的值。
+2. **外推**：不连续量——熵(即密度)和切向速度——从最近的真实A网格越过界面做等熵外推。
+
+等熵外推保持熵 $s = p / \rho^\gamma$ 不变，重新解出密度。
+
+$$
+\rho_{\text{ghost}} = \left( \frac{p_{\text{copy}}}{s_A} \right)^{1/\gamma}
+$$
+
+$s_A$ 是真实A流体的熵，$p_\text{copy}$ 是复制过来的压力。外推通常用快速行进(fast marching)方法沿界面法向快速铺开。一次扫掠完成A的鬼影场后，就忘掉B的存在，只解A的单物质Euler方程。对B重复同样的步骤。
+
+## 原始GFM振荡的地方
+
+当界面一侧非常刚硬(stiff，像水那样 $p_\infty$ 很大)时，原始GFM就会出问题。强冲击波或爆轰波穿过界面时，靠简单复制和外推构造的鬼影状态与真实Riemann解发生偏差。这种偏差在界面附近表现为压力振荡，振荡往往导致计算发散。
+
+在下面的模拟里，让一道压力脉冲穿过刚硬流体(粉色区域)。stiffness ratio越高，越过界面之后的涟漪就越大。
+
+<OriginalVsModifiedGFM1D />
+
+把stiffness ratio推到9，界面之后立刻出现清晰的高频振荡。加密网格也消不掉它，因为根源是边界条件而非网格。
+
+## 修正GFM — 用界面Riemann问题确定取值
+
+解法是把鬼影状态解出来，而不是去猜。修正GFM(Modified GFM，MGFM或IGFM)把界面两侧的真实状态作为左右态，求解Riemann问题。
+
+$$
+(p^*, u^*) = \mathcal{R}\big(W_A,\, W_B\big)
+$$
+
+$W_A, W_B$ 是界面两侧的真实状态，$\mathcal{R}$ 是Riemann解法，$p^*, u^*$ 是接触间断的压力与速度。把同一个 $p^*, u^*$ 赋给两侧鬼影，压力-速度连续条件就被精确满足。在上面的模拟里打开「use modified GFM」，相同刚度下振荡随即消失。
+
+## Python — 气-气GFM激波管
+
+用等熵外推GFM求解两种理想气体($\gamma_A = 1.4$、$\gamma_B = 1.67$)相遇的激波管。采用HLL通量，每步做两次鬼影扫掠后用水平集合并。
+
+```python
+import numpy as np
+
+GAMMA = (1.4, 1.67)   # 左(空气)、右(单原子气体)的比热比
+
+def primitive(U, g):
+    rho = U[0]; u = U[1] / rho
+    e = U[2] / rho - 0.5 * u * u
+    p = (g - 1.0) * rho * e          # 刚化气体EOS, p_inf = 0 (理想气体)
+    return rho, u, p
+
+def conserved(rho, u, p, g):
+    E = p / (g - 1.0) + 0.5 * rho * u * u
+    return np.array([rho, rho * u, E])
+
+def hll(UL, UR, g):
+    rL, uL, pL = primitive(UL, g); rR, uR, pR = primitive(UR, g)
+    aL = np.sqrt(g * pL / rL); aR = np.sqrt(g * pR / rR)
+    sL = min(uL - aL, uR - aR); sR = max(uL + aL, uR + aR)
+    FL = np.array([rL * uL, rL * uL * uL + pL, uL * (UL[2] + pL)])
+    FR = np.array([rR * uR, rR * uR * uR + pR, uR * (UR[2] + pR)])
+    if sL >= 0: return FL
+    if sR <= 0: return FR
+    return (sR * FL - sL * FR + sL * sR * (UR - UL)) / (sR - sL)
+
+def extrapolate_ghost(rho, u, p, mat, side):
+    # 用 side 流体填满整个区域: 压力、速度复制, 密度做等熵外推
+    rg, ug, pg = rho.copy(), u.copy(), p.copy()
+    g = GAMMA[side]
+    idx = np.where(mat == side)[0]
+    lo, hi = idx[0], idx[-1]
+    ref = lo if side == 1 else hi      # 离界面最近的真实网格
+    s_ref = p[ref] / rho[ref] ** g     # 需保持的熵
+    for i in range(len(rho)):
+        if mat[i] != side:
+            j = min(max(i, lo), hi)            # 最近的真实网格
+            ug[i] = u[j]; pg[i] = p[j]         # 复制
+            rg[i] = (pg[i] / s_ref) ** (1.0 / g)   # 等熵外推
+    return rg, ug, pg
+
+def run_ghost_fluid_tube(N=400, t_end=0.14, cfl=0.4):
+    x = np.linspace(0, 1, N); dx = x[1] - x[0]
+    x0 = 0.5                                   # 初始界面位置
+    mat = np.where(x < x0, 0, 1)
+    rho = np.where(x < x0, 1.0, 0.125)
+    u   = np.zeros(N)
+    p   = np.where(x < x0, 1.0, 0.1)
+    t = 0.0
+    while t < t_end:
+        a = np.sqrt(np.where(mat == 0, GAMMA[0], GAMMA[1]) * p / rho)
+        dt = min(cfl * dx / np.max(np.abs(u) + a), t_end - t)
+        new = {}
+        for side in (0, 1):                    # 两次鬼影扫掠
+            rg, ug, pg = extrapolate_ghost(rho, u, p, mat, side)
+            g = GAMMA[side]
+            U = np.array([conserved(rg[i], ug[i], pg[i], g) for i in range(N)]).T
+            F = np.zeros((3, N + 1))
+            for i in range(1, N):
+                F[:, i] = hll(U[:, i - 1], U[:, i], g)
+            F[:, 0] = F[:, 1]; F[:, N] = F[:, N - 1]
+            new[side] = U - dt / dx * (F[:, 1:] - F[:, :-1])
+        U = np.where(mat[None, :] == 0, new[0], new[1])   # 水平集合并
+        for i in range(N):
+            rho[i], u[i], p[i] = primitive(U[:, i], GAMMA[mat[i]])
+        x0 += dt * u[np.argmin(np.abs(x - x0))]           # 界面移动
+        mat = np.where(x < x0, 0, 1)
+        t += dt
+    return x, rho, u, p
+
+if __name__ == "__main__":
+    x, rho, u, p = run_ghost_fluid_tube()
+    print(f"t=0.14:  max p = {p.max():.3f}, "
+          f"接触面附近密度 {rho[180]:.3f} -> {rho[220]:.3f}")
+```
+
+输出显示越过界面的密度跳跃得以保留，而压力平滑相连。两次单物质扫掠就是GFM的脊梁。
+
+## 写代码时不该踩的陷阱
+
+记住三点就能避开GFM实现中常见的发散。第一，外推方向必须是界面法向。沿网格轴外推会在斜界面上污染熵。第二，刚度比很大的水-空气几乎总让原始GFM振荡；一开始就走基于Riemann的修正GFM更稳妥。第三，水平集需定期重新初始化以保持符号距离性质，否则界面速度会失准。
+
+## 给不会再读第二遍的人的小结
+
+- GFM不混合界面。它把每种流体延伸为鬼影，把单物质求解器跑两遍。
+- 压力、法向速度复制；熵、切向速度做等熵外推。这四行就是全部。
+- 在刚硬界面上原始GFM会振荡。正解是修正GFM，求解界面Riemann问题来确定 $p^*, u^*$。

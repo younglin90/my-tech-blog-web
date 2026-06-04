@@ -1,0 +1,184 @@
+---
+title: "存在しない流体で界面を埋める — Ghost Fluid Method"
+date: 2026-06-05
+description: "圧縮性多物質流れの鋭い界面を扱うGFM"
+tags: ["Ghost-Fluid-Method", "Multi-Material", "Compressible", "Sharp-Interface", "Stiffened-EOS"]
+draft: false
+locale: ja
+slug: 2026-06-05-ghost-fluid-method-sharp-interface
+---
+
+import { GhostFluidInterface1D } from '@/components/post-viz/2026-06-05-ghost-fluid-method-sharp-interface/GhostFluidInterface1D'
+import { OriginalVsModifiedGFM1D } from '@/components/post-viz/2026-06-05-ghost-fluid-method-sharp-interface/OriginalVsModifiedGFM1D'
+
+水と空気が出会うセルに、本当はそこに無い偽の空気を流し込みます。このゴースト流体(界面を越えて外挿した仮想流体)は格子のどこにも存在しません。それでもそのゴーストこそが、衝撃波が界面を横切るときに計算を安定させます。この記事は、圧縮性多物質流れの鋭い界面を扱うGhost Fluid Method(GFM)を取り上げます。何をコピーし何を外挿するのか、なぜオリジナルGFMが振動するのか、どう直すのかを、コードとともに追います。
+
+## 一つのセルで二つの物質がぶつかるとき
+
+気体と液体、火薬と金属のように、物性が大きく異なる二つの物質が同じ格子の上で出会います。単純に平均物性を使うと界面が数値的ににじみます。密度比1000倍の水-空気界面では、このにじみがすぐに非物理的な振動へと広がります。
+
+GFMの発想は違います。界面をぼかして混ぜません。各流体を自分の領域の外へ偽として延ばし、片方の物質しか無いかのように単一物質ソルバを二度走らせます。界面はレベルセット(符号で領域を分ける距離関数)$\phi$ の零点として追跡します。
+
+$$
+\phi(x) < 0 \;\Rightarrow\; \text{流体 A}, \qquad \phi(x) > 0 \;\Rightarrow\; \text{流体 B}
+$$
+
+ここで $\phi$ は符号付き距離関数、その零点 $\phi=0$ が界面です。
+
+## 界面を横切って切れるものと続くもの
+
+ゴーストを正しく埋めるには、界面を横切って何が連続かを正確に知る必要があります。圧力 $p$ と法線速度 $u_n$ は界面で連続です。一方、エントロピー $s$ と接線速度 $u_t$ は不連続です。
+
+$$
+[\,p\,] = 0, \quad [\,u_n\,] = 0, \qquad [\,s\,] \neq 0, \quad [\,u_t\,] \neq 0
+$$
+
+角括弧 $[\cdot]$ は界面を横切る飛びを表します。この四行がGFMのすべてです。連続量はコピーし、不連続量は外挿します。
+
+下のシミュレーションで直接操作してみましょう。圧力と法線速度は界面(赤い破線)を滑らかに通り抜けますが、密度は階段のように切れます。「show ghost」をオンにすると、各流体が境界を越えて破線として延びる様子が見えます。
+
+<GhostFluidInterface1D />
+
+密度の飛びを大きくしても界面を動かしても、圧力曲線は途切れません。これが「圧力連続・エントロピー不連続」の視覚的な意味です。
+
+## 水を気体のように — Stiffened EOS
+
+水はほぼ非圧縮なので、理想気体の状態方程式では扱えません。GFMは二つの物質を同じ形式のMie–Grüneisen系にまとめるためにStiffened Gas EOSを使います。
+
+$$
+p = (\gamma - 1)\,\rho e - \gamma\, p_\infty
+$$
+
+$\rho$ は密度、$e$ は単位質量あたりの内部エネルギー、$\gamma$ は比熱比、$p_\infty$ は物質剛性を表す定数です。理想気体は $p_\infty = 0$、水はおよそ $\gamma \approx 4.4$、$p_\infty \approx 6 \times 10^8\,\mathrm{Pa}$ に合わせます。音速は次のようになります。
+
+$$
+c = \sqrt{\frac{\gamma\,(p + p_\infty)}{\rho}}
+$$
+
+$p_\infty$ のおかげで、同じ圧力でも水の音速は空気よりずっと大きく出ます。EOSを一行に統一すれば、二つの流体を同じソルバに入れられます。
+
+## ゴーストセルを埋める二つの手つき
+
+ここが核心の手順です。流体Aの領域を解くとき、Bが占めるセルをAのゴーストで埋めます。手つきは二つに分かれます。
+
+1. **コピー**：連続量である圧力と法線速度は、界面の向こうの実際のBセルの値をそのまま取ります。
+2. **外挿**：不連続量であるエントロピー(つまり密度)と接線速度は、最も近い実際のAセルから界面を越えて等エントロピーで外挿します。
+
+等エントロピー外挿はエントロピー $s = p / \rho^\gamma$ を保ったまま密度を解き直します。
+
+$$
+\rho_{\text{ghost}} = \left( \frac{p_{\text{copy}}}{s_A} \right)^{1/\gamma}
+$$
+
+$s_A$ は実際のA流体のエントロピー、$p_\text{copy}$ はコピーしてきた圧力です。外挿は通常、界面の法線方向へ速く広げるfast marching法で行います。一度のスイープでAのゴースト場が完成したら、Bの存在を忘れてAだけの単一物質Euler方程式を解きます。Bについても同じ手順を繰り返します。
+
+## オリジナルGFMが振動する場所
+
+オリジナルGFMは、界面の片側が非常に剛い(stiff、水のように $p_\infty$ が大きい)とき問題が起きます。強い衝撃波やデトネーション波が界面を横切ると、単純なコピー・外挿で作ったゴースト状態が本当のRiemann解とずれます。そのずれが界面付近で圧力振動として現れ、振動はしばしば計算の発散につながります。
+
+下のシミュレーションで圧力パルスを剛い流体(ピンク領域)に通してみましょう。stiffness ratioを上げるほど、界面を通過した直後のさざ波が大きくなります。
+
+<OriginalVsModifiedGFM1D />
+
+stiffness ratioを9まで上げると、界面直後に高周波振動がはっきり見えます。この振動は格子を細かくしても消えません。原因が格子ではなく境界条件だからです。
+
+## 修正GFM — 界面Riemann問題で値を決める
+
+解法は、ゴースト状態を推測せず解いて求めることです。修正GFM(Modified GFM、MGFMまたはIGFM)は界面両側の実際の状態を左右として、Riemann問題を解きます。
+
+$$
+(p^*, u^*) = \mathcal{R}\big(W_A,\, W_B\big)
+$$
+
+$W_A, W_B$ は界面両側の実際の状態、$\mathcal{R}$ はRiemann解法、$p^*, u^*$ は接触不連続の圧力・速度です。この $p^*, u^*$ を両側のゴーストに同じく与えると、圧力・速度の連続条件が正確に満たされます。上のシミュレーションで「use modified GFM」をオンにすると、同じ剛性でも振動が消えます。
+
+## Python — 気体-気体GFM衝撃管
+
+二つの理想気体($\gamma_A = 1.4$、$\gamma_B = 1.67$)が出会う衝撃管を、等エントロピー外挿GFMで解きます。HLLフラックスを使い、各ステップで二度のゴーストスイープの後にレベルセットで併合します。
+
+```python
+import numpy as np
+
+GAMMA = (1.4, 1.67)   # 左(空気)・右(単原子気体)の比熱比
+
+def primitive(U, g):
+    rho = U[0]; u = U[1] / rho
+    e = U[2] / rho - 0.5 * u * u
+    p = (g - 1.0) * rho * e          # Stiffened EOS, p_inf = 0 (理想気体)
+    return rho, u, p
+
+def conserved(rho, u, p, g):
+    E = p / (g - 1.0) + 0.5 * rho * u * u
+    return np.array([rho, rho * u, E])
+
+def hll(UL, UR, g):
+    rL, uL, pL = primitive(UL, g); rR, uR, pR = primitive(UR, g)
+    aL = np.sqrt(g * pL / rL); aR = np.sqrt(g * pR / rR)
+    sL = min(uL - aL, uR - aR); sR = max(uL + aL, uR + aR)
+    FL = np.array([rL * uL, rL * uL * uL + pL, uL * (UL[2] + pL)])
+    FR = np.array([rR * uR, rR * uR * uR + pR, uR * (UR[2] + pR)])
+    if sL >= 0: return FL
+    if sR <= 0: return FR
+    return (sR * FL - sL * FR + sL * sR * (UR - UL)) / (sR - sL)
+
+def extrapolate_ghost(rho, u, p, mat, side):
+    # side 流体で全領域を埋める: 圧力・速度はコピー, 密度は等エントロピー外挿
+    rg, ug, pg = rho.copy(), u.copy(), p.copy()
+    g = GAMMA[side]
+    idx = np.where(mat == side)[0]
+    lo, hi = idx[0], idx[-1]
+    ref = lo if side == 1 else hi      # 界面に最も近い実セル
+    s_ref = p[ref] / rho[ref] ** g     # 保存するエントロピー
+    for i in range(len(rho)):
+        if mat[i] != side:
+            j = min(max(i, lo), hi)            # 最も近い実セル
+            ug[i] = u[j]; pg[i] = p[j]         # コピー
+            rg[i] = (pg[i] / s_ref) ** (1.0 / g)   # 等エントロピー外挿
+    return rg, ug, pg
+
+def run_ghost_fluid_tube(N=400, t_end=0.14, cfl=0.4):
+    x = np.linspace(0, 1, N); dx = x[1] - x[0]
+    x0 = 0.5                                   # 初期界面位置
+    mat = np.where(x < x0, 0, 1)
+    rho = np.where(x < x0, 1.0, 0.125)
+    u   = np.zeros(N)
+    p   = np.where(x < x0, 1.0, 0.1)
+    t = 0.0
+    while t < t_end:
+        a = np.sqrt(np.where(mat == 0, GAMMA[0], GAMMA[1]) * p / rho)
+        dt = min(cfl * dx / np.max(np.abs(u) + a), t_end - t)
+        new = {}
+        for side in (0, 1):                    # 二度のゴーストスイープ
+            rg, ug, pg = extrapolate_ghost(rho, u, p, mat, side)
+            g = GAMMA[side]
+            U = np.array([conserved(rg[i], ug[i], pg[i], g) for i in range(N)]).T
+            F = np.zeros((3, N + 1))
+            for i in range(1, N):
+                F[:, i] = hll(U[:, i - 1], U[:, i], g)
+            F[:, 0] = F[:, 1]; F[:, N] = F[:, N - 1]
+            new[side] = U - dt / dx * (F[:, 1:] - F[:, :-1])
+        U = np.where(mat[None, :] == 0, new[0], new[1])   # レベルセット併合
+        for i in range(N):
+            rho[i], u[i], p[i] = primitive(U[:, i], GAMMA[mat[i]])
+        x0 += dt * u[np.argmin(np.abs(x - x0))]           # 界面の移動
+        mat = np.where(x < x0, 0, 1)
+        t += dt
+    return x, rho, u, p
+
+if __name__ == "__main__":
+    x, rho, u, p = run_ghost_fluid_tube()
+    print(f"t=0.14:  max p = {p.max():.3f}, "
+          f"接触面付近の密度 {rho[180]:.3f} -> {rho[220]:.3f}")
+```
+
+出力は、界面を横切る密度の飛びが生き残り、圧力が滑らかにつながったことを示します。二度の単一物質スイープがGFMの背骨です。
+
+## コードを書くとき外してはいけない落とし穴
+
+三つだけ覚えればGFM実装でよくある発散を避けられます。第一に、外挿方向は必ず界面法線です。格子軸方向に外挿すると斜めの界面でエントロピーが汚染されます。第二に、剛性比が大きい水-空気ではオリジナルGFMがほぼ必ず振動します。最初からRiemannベースの修正GFMへ進む方が安全です。第三に、レベルセットは定期的に再初期化して符号付き距離の性質を保つ必要があります。そうしないと界面速度が不正確になります。
+
+## 二度と読まない人のためのまとめ
+
+- GFMは界面を混ぜません。各流体をゴーストとして延ばし、単一物質ソルバを二度走らせます。
+- 圧力・法線速度はコピー、エントロピー・接線速度は等エントロピー外挿。この四行がすべてです。
+- 剛い界面ではオリジナルGFMが振動します。界面Riemann問題を解いて $p^*, u^*$ を与える修正GFMが正解です。
