@@ -1,0 +1,144 @@
+---
+title: "[論文レビュー] GMRESが1000回回っても止まらなかった — 全速度 melt pool のための物理ベース・ブロック前処理"
+date: 2026-06-06
+description: "速度–圧力 Schur 補元前処理で、Mach がゼロに向かっても反復数を増やさない"
+tags: ["Block-Preconditioner", "Newton-Krylov", "All-Speed", "Schur-Complement", "JFNK", "論文レビュー"]
+locale: ja
+slug: weston-block-preconditioner-jfnk
+draft: false
+---
+
+import { AcousticConvectiveScales } from '@/components/post-viz/2026-06-06-weston-block-preconditioner-jfnk/AcousticConvectiveScales'
+import { GmresSchurConvergence } from '@/components/post-viz/2026-06-06-weston-block-preconditioner-jfnk/GmresSchurConvergence'
+
+レーザーで金属を溶かす melt pool シミュレーションを陰的に回しました。最初のタイムステップで GMRES が 1000 回回っても、残差が 1e-2 で止まったままです。Mach 数を 1e-3 に下げると症状は悪化しました — 音速が流速の 1000 倍で、ヤコビアンが病んでいたのです。Weston・Nourgaliev・Delplanque・Barker（2019）は、まさにこの問題を解きました。鍵は、速度–圧力 Schur 補元を前処理に使うこと。今日はその核心を 2 場の toy で再現し、たった一つの前処理で Mach に依存しない収束がどう蘇るかを見ます。
+
+## この論文が立つ場所
+
+- **著者**: B. Weston, R. Nourgaliev, J.-P. Delplanque, A. T. Barker (LLNL / UC Davis)
+- **ジャーナル**: *Journal of Computational Physics*, **397**, 108847 (2019)
+- **タイトル**: *Preconditioning a Newton-Krylov solver for all-speed melt pool flow physics*
+- **一言**: 相変化を含む全速度（all-speed）圧縮性 Navier–Stokes を完全陰的 JFNK で解き、**原始変数ブロック Schur 補元前処理**で低 Mach の剛性を抑える。
+
+既存の前処理 — element-block SOR、monolithic AMG、block Gauss–Seidel — はいずれも、タイムステップや Mach が極端になると反復数が爆発しました。論文の貢献は、物理結合の構造をそのまま写し取った `vP-vT` Schur 補元という前処理です。
+
+## M がゼロに向かうとヤコビアンが病む理由
+
+全速度とは、一つのコードで非圧縮（$M\to 0$）から超音速までを解くことです。問題は低 Mach 極限です。音響波速度 $c$ と流速 $u$ の比が $c/u = 1/M$ と広がります。$M=10^{-3}$ なら、音は流体より 1000 倍速いのです。
+
+完全陰的にすると、この二つのスケールが一つのヤコビアンに混ざります。圧力–速度結合ブロックが $1/M^2$ で大きくなり、行列の条件数が爆発します。Krylov ソルバーは固有値が広く散らばった行列の上で這うように進みます。これが GMRES の止まらなかった理由です。
+
+JFNK（Jacobian-Free Newton–Krylov）はヤコビアンを陽に作らず、行列–ベクトル積だけを Fréchet 差分で近似します。
+
+$$
+J\boldsymbol{\kappa} \approx \frac{F(x + h\boldsymbol{\kappa}) - F(x)}{h}
+$$
+
+$F$ は非線形残差、$\boldsymbol{\kappa}$ は Krylov ベクトル、$h$ は小さな有限数です。行列を保存しないのでメモリは節約できますが、**前処理なしでは低 Mach で収束が死にます**。前処理は選択肢ではなく必須です。
+
+## 保存変数を捨て原始変数 $(P,v,T)$ へ
+
+最初の一手は変数の置換です。保存変数 $U=(\rho, \rho v, E)$ の代わりに原始変数 $W=(P, v, T)$ を解きます。低 Mach では原始変数のほうがはるかに良く条件付けされるからです。
+
+$$
+\frac{\partial F(x)}{\partial U}\frac{\partial U}{\partial W}\,\delta W = -F(x)
+$$
+
+$\partial U/\partial W$ は変数変換ヤコビアンです。残差 $F$ は依然として保存則を満たすように書かれているので、**変数を変えても質量・運動量・エネルギーの保存は壊れません**。ここで自由度を場ごとに束ね、$3\times3$ ブロック行列に整列します。
+
+$$
+M = \begin{bmatrix} M_{vv} & M_{vP} & M_{vT} \\ M_{Pv} & M_{PP} & M_{PT} \\ M_{Tv} & M_{TP} & M_{TT} \end{bmatrix}
+$$
+
+各ブロックは一つの原始場（速度・圧力・温度）に対応します。この構造が次の一手の足場です。
+
+## ブロック LU と速度–圧力 Schur 補元
+
+圧力–温度結合（$M_{PT}, M_{TP}$）は弱いです。両者を捨てるとブロック LU 分解が綺麗になり、核心は**速度–圧力 Schur 補元**に凝縮されます。
+
+$$
+S_{vP} = M_{PP} - M_{Pv}\,M_{vv}^{-1}\,M_{vP}
+$$
+
+$S_{vP}$ は速度を消去したのちに圧力だけを残した有効方程式です — SIMPLE 系の圧力補正方程式と同じ骨格です。前処理 $P$ をこのブロック上三角の形に取ると、$P^{-1}A$ の固有値が 1 の近くに集まります。厳密な $S$ を使えば $A=LU$ の $U$ がそのまま $P$ となり、$P^{-1}A$ は冪零（unipotent）下三角と相似で、**すべての固有値が厳密に 1** です。GMRES は二、三回で終わります。
+
+## Python — Mach を下げながら GMRES 反復数を数える
+
+温度を外し、2 場 $(v,P)$ の toy で核心だけを再現します。ブロック系は $A=\begin{bmatrix} I & \beta G \\ D_v & I\end{bmatrix}$、$\beta=1/M^2$。前処理は厳密な Schur 補元 $S=I-\beta D_v G$ です。
+
+```python
+import numpy as np
+from scipy.sparse import diags, eye, bmat
+from scipy.sparse.linalg import gmres, LinearOperator, splu
+
+n = 64
+dx = 1.0 / n
+
+def fwd_diff():
+    # 周期境界の前進差分 (圧力勾配演算子)
+    D = diags([-1.0, 1.0], [0, 1], shape=(n, n)).tolil()
+    D[-1, 0] = 1.0
+    return (D / dx).tocsr()
+
+G = fwd_diff()
+Dv = (-G.T).tocsr()          # 発散 = -G^T  ->  Dv*G ~ ラプラシアン
+
+def all_speed_system(M):
+    beta = 1.0 / M**2        # 低 Mach 剛性係数
+    A = bmat([[eye(n), beta * G], [Dv, eye(n)]]).tocsr()
+    return A, beta
+
+def schur_preconditioner(beta):
+    # 速度-圧力 Schur 補元 S = M_PP - M_Pv M_vv^{-1} M_vP = I - beta Dv G
+    S = (eye(n) - beta * (Dv @ G)).tocsc()
+    luS = splu(S)
+    def apply(r):
+        ru, rp = r[:n], r[n:]
+        zp = luS.solve(rp)               # S z_p = r_p
+        zu = ru - beta * (G @ zp)        # z_u = r_u - beta G z_p
+        return np.concatenate([zu, zp])
+    return LinearOperator((2 * n, 2 * n), matvec=apply)
+
+def count_iters(M, use_prec):
+    A, beta = all_speed_system(M)
+    b = np.random.default_rng(0).standard_normal(2 * n)
+    P = schur_preconditioner(beta) if use_prec else None
+    it = {"k": 0}
+    x, info = gmres(A, b, M=P, rtol=1e-8, maxiter=500, restart=2 * n,
+                    callback=lambda xk: it.__setitem__("k", it["k"] + 1))
+    return it["k"]
+
+print(f"{'Mach':>8}  {'no-prec':>8}  {'Schur':>6}")
+for M in [1.0, 1e-1, 1e-2, 1e-3]:
+    print(f"{M:>8.0e}  {count_iters(M, False):>8d}  {count_iters(M, True):>6d}")
+```
+
+結果は明白です。前処理なしでは $M$ が小さくなるほど反復数が数十・数百へと跳ね上がり、$M=10^{-3}$ では上限内で収束すらできません。Schur 前処理は $M$ に関係なく二、三回で終わります。論文が示した「Mach 独立収束」が、この一行の前処理から生まれます。
+
+## インタラクティブ — 音響と対流、開いていく二つの速度
+
+まず、なぜ剛性が生じるかを目で見ましょう。下のシミュレーションで Mach を直接下げてみてください。上のトラックの音響波は $c=1/M$ で、下の対流トレーサは $u=1$ で走ります。
+
+<AcousticConvectiveScales />
+
+$M=10^{-2}$ に下げると、音響波がトラックを 100 周する間に対流トレーサは一目盛りだけ動きます。この 100:1 の速度差が、そのままヤコビアンの条件数へ移ります。陽的なら音響 CFL がタイムステップを $\Delta t \propto M\Delta x$ まで踏みつぶします。
+
+## インタラクティブ — 前処理が残差を崩す場所
+
+次に実際の GMRES 残差を見ましょう。下で Mach スライダーを動かすと、前処理の有無の二曲線が再描画されます。
+
+<GmresSchurConvergence />
+
+橙色（前処理なし）は $M$ を下げるほど平らになって止まります。シアン（Schur 前処理）は $M$ がどこでも二、三回で 1e-11 まで落ちます。二曲線の差は $M=10^{-3}$ で最も劇的です — 物理結合を写した前処理が、剛性を丸ごと吸収した結果です。
+
+## 自分で書いて疑わしかった三つ
+
+**第一に、厳密な $S$ が無料なのは toy だけ。** ここでは $S=I-\beta D_v G$ を LU で厳密に解き、二回で収束しました。実戦では $S_{vP}=M_{PP}-M_{Pv}M_{vv}^{-1}M_{vP}$ の $M_{vv}^{-1}$ は密な逆行列で、作ることができません。論文は $S$ を近似で解き（AMG 一回の V-cycle など）、その近似の質が外側の反復数を左右します。「Mach 独立」の本当のコストはここに隠れています。
+
+**第二に、結合をどこまで捨てるか。** 論文は $M_{PT}, M_{TP}$ を捨てても頑健性は崩れないと言います。これは melt pool の物性に特化した仮定です。強い圧縮性熱結合（爆燃・燃焼など）では、同じ切り捨てが収束を殺しかねません。前処理の単純化は物理に依存します。
+
+**第三に、JFNK の Fréchet 差分 $h$。** $h$ が小さすぎれば丸め誤差が、大きすぎれば打ち切り誤差が行列–ベクトル積を汚します。前処理が良くても、この $h$ の調整が外れると Newton が停滞します。OpenFOAM の分離型（SIMPLE）から完全結合の陰的へ移るとき、最初に出会う落とし穴です。
+
+## 結び — 前処理はタダではない
+
+GMRES が止まらなかったあの夜の教訓は単純でした。低 Mach 剛性は、ヤコビアンをより強く解くことでは解けません。結合構造そのものを写した前処理が要ります。Schur 補元は圧力のための有効方程式であり、それを厳密に解けば固有値が 1 に集まります。ただし実戦の $S$ は近似であり、その近似をどれだけ安く正確に解くかが次の戦いです。次は同じ toy にもう一層を足し、$S$ を AMG で近似したとき外側の反復数がどう変わるかを見る番です。
