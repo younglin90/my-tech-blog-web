@@ -12,6 +12,7 @@ function VizLoading() {
 }
 
 export const VIZ_COMPONENTS: Record<string, ComponentType> = {
+  "AcousticConvectiveScales": dynamic(() => import("@/components/post-viz/2026-06-06-weston-block-preconditioner-jfnk/AcousticConvectiveScales").then((m) => ({ default: m.AcousticConvectiveScales })), { ssr: false, loading: VizLoading }),
   "AcousticTransportSplit1D": dynamic(() => import("@/components/post-viz/2026-05-30-peluchon-acoustic-transport-imex/AcousticTransportSplit1D").then((m) => ({ default: m.AcousticTransportSplit1D })), { ssr: false, loading: VizLoading }),
   "AdvectionSchemeRace1D": dynamic(() => import("@/components/post-viz/2026-05-08-advection-ftcs-upwind-cfl/AdvectionSchemeRace1D").then((m) => ({ default: m.AdvectionSchemeRace1D })), { ssr: false, loading: VizLoading }),
   "AMRQuadtreeRefinement": dynamic(() => import("@/components/post-viz/2026-04-27-amr-quadtree-cell-refinement/AMRQuadtreeRefinement").then((m) => ({ default: m.AMRQuadtreeRefinement })), { ssr: false, loading: VizLoading }),
@@ -36,6 +37,7 @@ export const VIZ_COMPONENTS: Record<string, ComponentType> = {
   "EikonalFrontPropagation": dynamic(() => import("@/components/post-viz/2026-04-22-wall-distance-eikonal-fast-marching/EikonalFrontPropagation").then((m) => ({ default: m.EikonalFrontPropagation })), { ssr: false, loading: VizLoading }),
   "EulerWaveFanXT": dynamic(() => import("@/components/post-viz/2026-06-03-euler-eigensystem-general-normal/EulerWaveFanXT").then((m) => ({ default: m.EulerWaveFanXT })), { ssr: false, loading: VizLoading }),
   "GhostFluidInterface1D": dynamic(() => import("@/components/post-viz/2026-06-05-ghost-fluid-method-sharp-interface/GhostFluidInterface1D").then((m) => ({ default: m.GhostFluidInterface1D })), { ssr: false, loading: VizLoading }),
+  "GmresSchurConvergence": dynamic(() => import("@/components/post-viz/2026-06-06-weston-block-preconditioner-jfnk/GmresSchurConvergence").then((m) => ({ default: m.GmresSchurConvergence })), { ssr: false, loading: VizLoading }),
   "GodunovCellWaveFans": dynamic(() => import("@/components/post-viz/2026-05-18-godunov-exact-riemann-shock-tube/GodunovCellWaveFans").then((m) => ({ default: m.GodunovCellWaveFans })), { ssr: false, loading: VizLoading }),
   "GPEAcousticPulseProbe1D": dynamic(() => import("@/components/post-viz/2026-05-31-gpe-mstacs-iteration-free-twophase/GPEAcousticPulseProbe1D").then((m) => ({ default: m.GPEAcousticPulseProbe1D })), { ssr: false, loading: VizLoading }),
   "HeatDiffusionExplicitVsImplicit1D": dynamic(() => import("@/components/post-viz/2026-05-04-implicit-diffusion-thomas-algorithm/HeatDiffusionExplicitVsImplicit1D").then((m) => ({ default: m.HeatDiffusionExplicitVsImplicit1D })), { ssr: false, loading: VizLoading }),
