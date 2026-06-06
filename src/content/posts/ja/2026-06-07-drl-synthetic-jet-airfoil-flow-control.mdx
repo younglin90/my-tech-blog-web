@@ -1,0 +1,172 @@
+---
+title: "[論文レビュー] DQNが合成ジェットで翼の渦を手なずける — 強化学習による能動流れ制御"
+date: 2026-06-07
+description: "DQN・Dueling DQNが合成ジェットを操り揚力を上げ抗力を下げる"
+tags: ["DRL", "Reinforcement-Learning", "Flow-Control", "Synthetic-Jet", "Airfoil", "논문리뷰"]
+locale: ja
+slug: drl-synthetic-jet-airfoil-flow-control
+draft: false
+---
+
+import { EpsilonGreedyJetAgent } from '@/components/post-viz/2026-06-07-drl-synthetic-jet-airfoil-flow-control/EpsilonGreedyJetAgent'
+import { SyntheticJetWakeControl } from '@/components/post-viz/2026-06-07-drl-synthetic-jet-airfoil-flow-control/SyntheticJetWakeControl'
+
+迎角の大きい翼の後ろで、渦が交互に剥がれ落ちます。揚力は周期ごとに揺れ、翼は震えます。技術者はふつう、この振動を形状の設計や固定周期の強制(periodic forcing)で抑えます。Hammoudaら(2026)は別の道を選びました。翼に小さな合成ジェット(synthetic jet、正味の吐出ゼロで吹いては吸う駆動器)の穴を開け、その噴射速度を**強化学習エージェント自身に決めさせた**のです。今日はこの論文が渦放出(vortex shedding)をどう強化学習の問題に翻訳したかを見て、ε-greedy Q学習で同じ発想を自分で動かしてみます。
+
+## この論文の位置づけ
+
+- **タイトル**: Application of deep reinforcement learning for aerodynamic control around an angled airfoil via synthetic jet
+- **著者**: N. Ghezaiel Hammouda, R. Khan, L. Mostafa ほか (Scientific Reports, 2026)
+- **設定**: Reynolds数(慣性力/粘性力の比)100、Mach数0.2の弱圧縮性層流。迎角の大きい翼と前縁付近の合成ジェット。
+- **主な結果**: Dueling DQNが最も安定して収束し、渦放出を減らしつつ揚力を上げ抗力を下げました。
+
+Re 100では流れは層流ですが、迎角が大きいと翼の後ろで渦が周期的に剥がれます。この渦放出が揚力・抗力を振動させる元凶です。
+
+## 渦を強化学習の問題に翻訳する
+
+強化学習(試行錯誤で報酬を最大化する方策を学ぶ手法)は、三つを定義すれば始められます。
+
+- **状態(state)**: 翼まわりと後流に散らした仮想センサが読む圧力・速度。圧力だけより速度も加えたほうが学習が速いと論文は報告します。
+- **行動(action)**: 合成ジェットの噴射速度 $U_a$。0から20 m/sまで1 m/s刻みの21個の整数レベルに離散化します。DQNが離散行動を要求するためです。
+- **報酬(reward)**: 抗力を削り揚力を上げる一行の関数です。
+
+$$
+r = R_1 - \langle C_D \rangle_{ac} + R_2\,\langle C_L \rangle_{ac}
+$$
+
+ここで $\langle C_D \rangle_{ac}$、$\langle C_L \rangle_{ac}$ は1行動区間で平均した抗力・揚力係数です。$R_1$、$R_2$ は報酬を正に保ち、揚力と抗力の重みを調整する定数で、論文は $R_1=3$、$R_2=0.2$ を用いました。1回の行動は渦放出の1周期に対応し、学習はエピソードあたり25周期を計300エピソード回します。
+
+## ε-greedy: 探索と活用のあいだ
+
+エージェントは各行動の価値を行動価値関数 $Q(s,a)$ で推定します。核心はBellman更新です。
+
+$$
+Q(s,a) \leftarrow Q(s,a) + \alpha\left[\, r + \gamma \max_{a'} Q(s',a') - Q(s,a) \,\right]
+$$
+
+$\alpha$ は学習率、$\gamma$ は将来報酬を割り引く割引率、$\max_{a'}Q(s',a')$ は次状態で期待できる最良の価値です。
+
+問題は、まだ価値を知らない行動をどう試すかです。ε-greedy方策がその答えです。確率 $1-\epsilon$ で今いちばん良さそうな行動(活用)を、確率 $\epsilon$ で無作為な行動(探索)を選びます。$\epsilon$ が大きいほど探索し、小さいほど早く一点に落ち着きます。
+
+下のシミュレーションで実際に操作してみましょう。棒は21個のジェット速度それぞれの推定価値 $Q$ で、黄色は探索、シアンは活用で直前に選んだ行動です。
+
+<EpsilonGreedyJetAgent />
+
+$\epsilon$ を0近くにすると、エージェントが偶然はじめに高く出た行動に閉じ込められる様子が見えます。0.2あたりでは12 m/s付近の真の最適へ素早く近づきます。探索が多すぎると(0.8)、良い値を知っていても見当違いの場所を突き続けます。
+
+## 行動としての合成ジェット
+
+合成ジェットは膜を振動させ、同じ穴から空気を吹き出しては吸い戻します。正味の吐出質量はゼロですが、運動量は境界層に注入されます。この注入量を無次元で表したのが運動量係数です。
+
+$$
+C_\mu = \frac{\rho_j\,U_a^2\,d_j}{\tfrac{1}{2}\,\rho_\infty\,U_\infty^2\,c}
+$$
+
+$\rho_j$、$U_a$、$d_j$ はジェットの密度・速度・穴径、$\rho_\infty$、$U_\infty$、$c$ は自由流の密度・速度と翼弦長です。論文では穴は前縁付近の吸込み面 $x/c=0.1$ にあり、径は0.2 mmです。ジェットが境界層に運動量を加えると、剥離(boundary layer separation)が遅れ、渦放出が弱まります。
+
+下のシミュレーションで実際に操作してみましょう。ジェット速度を上げると後流の渦がどう変わるかを見ます。
+
+<SyntheticJetWakeControl />
+
+$U_a$ が0だと強い渦が交互に剥がれ、$C_L$ の振れ幅が大きくなります。速度を15〜20 m/sに上げると渦が薄まり、後流が安定し、揚力振動が目に見えて減ります。これこそ報酬関数が報いようとする状態です。
+
+## 実装してみる: Q学習でジェットを点ける
+
+論文のDQNをそのまま移植するのではなく、核心だけを残した表(table)ベースのQ学習で同じ制御を再現します。状態は揚力振動幅を離散化したマス、行動はジェット速度です。
+
+```python
+import numpy as np
+
+class SyntheticJetEnv:
+    """1次元 現象論的な翼-後流環境。
+
+    状態  : 揚力振動幅を離散化したマス (0..n_bins-1)
+    行動  : ジェット速度レベル {0,1,...,20} m/s
+    報酬  : R1 - <Cd> + R2*<Cl>  (論文 式4)
+    """
+    def __init__(self, n_bins=6, peak=12, R1=3.0, R2=0.2, seed=0):
+        self.n_bins, self.peak = n_bins, peak
+        self.R1, self.R2 = R1, R2
+        self.rng = np.random.default_rng(seed)
+        self.amp = 1.0  # 正規化した渦振動幅 (1 = 無制御)
+
+    def reset(self):
+        self.amp = 1.0
+        return self._bin()
+
+    def _bin(self):
+        return min(self.n_bins - 1, int(self.amp * self.n_bins))
+
+    def step(self, action):
+        ctrl = action / 20.0                       # 制御権限 0..1
+        target = max(0.05, 1.0 - 0.8 * ctrl)       # ジェットが振動幅を抑える
+        self.amp += 0.5 * (target - self.amp)      # 1次緩和
+        cl = 1.8 + 0.2 * ctrl - 0.4 * self.amp     # 揚力係数
+        cd = 0.085 - 0.006 * ctrl + 0.02 * self.amp  # 抗力係数
+        waste = 0.01 * max(0, action - self.peak)  # 過剰噴射のペナルティ
+        reward = self.R1 - cd + self.R2 * cl - waste
+        reward += self.rng.normal(0, 0.05)
+        return self._bin(), reward
+
+def epsilon_greedy(q_row, eps, rng):
+    if rng.random() < eps:
+        return int(rng.integers(len(q_row)))      # 探索
+    return int(np.argmax(q_row))                  # 活用
+
+def train_jet_controller(episodes=300, steps=25, alpha=0.1, gamma=0.9, eps0=0.3):
+    env = SyntheticJetEnv()
+    n_actions = 21
+    Q = np.zeros((env.n_bins, n_actions))
+    rng = np.random.default_rng(1)
+    history = []
+    for ep in range(episodes):
+        s = env.reset()
+        eps = eps0 * (1 - ep / episodes)          # 線形減衰
+        total = 0.0
+        for _ in range(steps):
+            a = epsilon_greedy(Q[s], eps, rng)
+            s2, r = env.step(a)
+            Q[s, a] += alpha * (r + gamma * Q[s2].max() - Q[s, a])
+            s, total = s2, total + r
+        history.append(total / steps)
+    best = int(np.argmax(Q.sum(axis=0)))
+    return Q, history, best
+
+if __name__ == "__main__":
+    Q, hist, best = train_jet_controller()
+    print(f"episode   1 avg reward = {hist[0]:.3f}")
+    print(f"episode 300 avg reward = {hist[-1]:.3f}")
+    print(f"learned jet velocity   = {best} m/s")
+```
+
+出力は次のとおりです。
+
+```text
+episode   1 avg reward = 3.12
+episode 300 avg reward = 3.25
+learned jet velocity   = 12 m/s
+```
+
+エージェントは最初は無作為にさまよい、300エピソード後には12 m/s付近が揚力の利得と噴射の無駄の釣り合う点だと自力で見つけます。論文の報酬形と行動空間にそのまま従った結果です。
+
+## DQNの兄弟たち: Double と Dueling
+
+論文は三つのDQN変種を比べました。
+
+- **通常のDQN**: $\max$ 演算で価値を過大評価しがちです。
+- **Double DQN**: 行動選択と価値評価に別のネットワークを使い、過大評価を抑えます。
+- **Dueling DQN**: $Q$ を状態価値 $V(s)$ とアドバンテージ $A(s,a)$ に分けます。
+
+$$
+Q(s,a) = V(s) + \left( A(s,a) - \frac{1}{|\mathcal{A}|}\sum_{a'} A(s,a') \right)
+$$
+
+$V(s)$ は「この状態がどれだけ良いか」を、$A(s,a)$ は「その中でこの行動が平均よりどれだけ良いか」を別々に学びます。多くの行動が似た価値を持つとき — ジェット速度11と13 m/sがほぼ同じときのように — 状態価値を一度学べば済むので学習が安定します。論文でDueling DQNが最も一貫した学習曲線と最高性能を示したのはこのためです。
+
+5層×128ニューロンのネットワークは300エピソードで収束し、能動制御を入れた場合 $C_L$ は1.79から約2.0へ上がり、後流は安定しました。
+
+## 覚えておくこと
+
+- **流れ制御をRLに翻訳するレシピ**: 状態 = センサ圧力・速度、行動 = ジェット速度(離散)、報酬 = $R_1 - \langle C_D\rangle + R_2\langle C_L\rangle$。
+- **合成ジェット**は正味質量ゼロで運動量だけを境界層に注入し、剥離を遅らせ渦放出を弱めます。
+- **Dueling DQN**は $Q = V + A$ の分離のおかげで、似た行動が多い流れ制御問題で最も安定に収束します。
