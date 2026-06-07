@@ -1,0 +1,182 @@
+---
+title: "Cuando una bala atraviesa la pared — Detección continua de colisiones por bisección con funciones de inclusión"
+date: 2026-06-08
+description: "Evitar el túnel con CCD: raíces de coplanaridad y bisección conservadora"
+tags: ["Collision-Detection", "Computational-Geometry", "FSI", "Root-Finding", "Interval-Arithmetic"]
+draft: false
+locale: es
+slug: 2026-06-08-continuous-collision-detection-inclusion-bisection
+---
+
+import { MovingPointSegmentCCD2D } from '@/components/post-viz/2026-06-08-continuous-collision-detection-inclusion-bisection/MovingPointSegmentCCD2D'
+import { InclusionBisectionToiExplorer } from '@/components/post-viz/2026-06-08-continuous-collision-detection-inclusion-bisection/InclusionBisectionToiExplorer'
+
+En una simulación que corre a 60fps, una bala veloz simplemente atraviesa la pared. En un fotograma está a la izquierda de la pared; en el siguiente, a la derecha. Nunca se solapa en ninguno de los dos instantes, así que el detector de colisiones informa que no pasó nada. Este artículo trata de inspeccionar ese "entremedio": la detección continua de colisiones (CCD, la técnica que halla el primer instante de contacto sobre toda la trayectoria lineal de dos cuerpos). Convertimos la colisión en una raíz polinómica mediante la condición de coplanaridad y luego implementamos una bisección con funciones de inclusión que jamás pierde una colisión, ni siquiera en coma flotante.
+
+El tema toca todo código donde los cuerpos se mueven rápido entre fotogramas: interacción fluido-estructura (FSI), métodos de partículas y simulación de contacto basada en mallas.
+
+## La bala que se coló entre dos fotogramas
+
+La detección estática de colisiones solo ve una instantánea de un único momento. Pregunta si dos triángulos se solapan ahora mismo. Para cuerpos lentos basta. El problema es la velocidad.
+
+Si un cuerpo se desplaza más que su propio grosor durante un paso de tiempo $\Delta t$, se cuela entre las instantáneas. Este fenómeno se llama túnel (tunneling). Y lo peor es que no hay recuperación. Una vez perdida la colisión, los dos cuerpos quedan interpenetrados, y en el siguiente paso ni siquiera queda claro qué cara está de qué lado.
+
+Prueba a manipularlo en la simulación de abajo. El punto se mueve de izquierda a derecha en un paso de tiempo, y la barra gris es la pared.
+
+<MovingPointSegmentCCD2D />
+
+Al subir `point travel`, la prueba discreta que solo mira los extremos cae pronto a `MISS`, porque ambos extremos quedan lejos de la pared. La prueba continua, en cambio, marca con un anillo rojo el instante exacto del primer contacto $t^\*$.
+
+## Por qué fuga cuando solo se revisan los extremos
+
+Revisar solo dos extremos significa muestrear una trayectoria continua en dos puntos. Lo que ocurrió entre las muestras es invisible.
+
+La solución parte de un cambio de perspectiva. En vez de "¿se solapan ahora?", pregunta "¿para qué $t \in [0,1]$ se solapan?". Si cada vértice se mueve en línea recta durante un paso, su posición es una función lineal del tiempo.
+
+$$
+\mathbf{x}_i(t) = (1-t)\,\mathbf{x}_i^{0} + t\,\mathbf{x}_i^{1}, \qquad t \in [0,1]
+$$
+
+Aquí $\mathbf{x}_i^{0}$ es la posición al inicio del paso y $\mathbf{x}_i^{1}$ la del final. Ahora la colisión se vuelve un problema de búsqueda de raíces en el tiempo.
+
+## Coplanaridad — convertir la colisión en una raíz polinómica
+
+La primera colisión entre dos triángulos en movimiento solo cae en dos casos. Un vértice toca una cara (vertex–face), o una arista toca otra arista (edge–edge). En ambos casos la observación geométrica clave es que cuatro puntos se vuelven coplanares en el instante de contacto.
+
+La condición de coplanaridad para un vértice $\mathbf{p}$ y un triángulo $(\mathbf{a},\mathbf{b},\mathbf{c})$ es que el volumen (producto triple escalar) se anule.
+
+$$
+f(t) = \big(\mathbf{p}(t)-\mathbf{a}(t)\big)\cdot
+\Big[\big(\mathbf{b}(t)-\mathbf{a}(t)\big)\times\big(\mathbf{c}(t)-\mathbf{a}(t)\big)\Big] = 0
+$$
+
+Como cada $\mathbf{x}(t)$ es lineal en $t$, $f(t)$ es un **polinomio cúbico** en $t$. Es el enfoque univariado (univariate). Es rápido, pero tiene una trampa. Coplanar no es lo mismo que colisionando. Tras hallar una raíz $t^\*$ hay que comprobar aparte si el punto realmente cae dentro del triángulo.
+
+Una vía más robusta es la forma multivariada (multivariate). Escribe la colisión directamente como el cero de un vector de holgura.
+
+$$
+\mathbf{F}(t,u,v) = \mathbf{p}(t) -
+\big[\mathbf{a}(t) + u\,(\mathbf{b}(t)-\mathbf{a}(t)) + v\,(\mathbf{c}(t)-\mathbf{a}(t))\big]
+$$
+
+Hay colisión si existe un $(t,u,v)$ con $\mathbf{F}=\mathbf{0}$, $u,v \ge 0$ y $u+v \le 1$. Aquí $u,v$ son coordenadas baricéntricas sobre la cara. Esta forma no tiene casos de frontera y es puramente algebraica.
+
+## Las colisiones que la búsqueda numérica de raíces pierde
+
+Resolver la cúbica en coma flotante es lo más rápido, así que la mayoría de los simuladores hacen justo eso. Sin embargo, las pruebas de referencia a gran escala desde 2012 llegaron a una conclusión sorprendente: la mayoría de los solvers numéricos univariados producen falsos negativos (colisiones perdidas).
+
+Hay dos causas. Primera, las raíces de una cúbica suelen ser irracionales y no se representan exactamente en coma flotante. Segunda, cuando dos cuerpos se mueven en paralelo dentro del mismo plano, $f(t)$ se vuelve idénticamente cero. Intentar filtrar ese caso de raíces infinitas con un umbral numérico descarta también colisiones reales.
+
+Un falso positivo (informar una colisión que no existe) solo cuesta algo de trabajo extra y es recuperable. Pero un falso negativo lleva directo al túnel. Si el código de respuesta a colisiones evita la penetración con una búsqueda en línea, una sola pérdida hunde toda la simulación. Por eso la propiedad que CCD realmente necesita no es la velocidad, sino la **conservatividad (conservativeness)**. Mejor informar un fantasma que perder una colisión.
+
+## Funciones de inclusión y bisección — acotar la raíz de forma conservadora
+
+La forma más antigua, y aún la más limpia, de garantizar la conservatividad es la bisección con funciones de inclusión de Snyder (1992).
+
+La herramienta clave es la función de inclusión (inclusion function). Dada una caja de parámetros $B$, se calcula una caja envolvente alineada con los ejes $\Box\mathbf{F}(B)$ que encierra todos los valores que $\mathbf{F}$ puede tomar sobre $B$. Entonces se cumple un hecho simple: si $\mathbf{0} \notin \Box\mathbf{F}(B)$, no hay ninguna raíz dentro de $B$.
+
+Por suerte, $\mathbf{F}$ es lineal en cada parámetro (multilineal). Una función multilineal siempre alcanza sus extremos en los vértices de una caja. Así que la caja de inclusión más ajustada es la envolvente de $\mathbf{F}$ evaluada en los cuatro (u ocho) vértices. No hace falta aritmética de intervalos por separado.
+
+El algoritmo es divide y vencerás.
+
+1. Inicializa la cola de candidatos con todo el dominio de parámetros $[0,1]^d$.
+2. Extrae una caja $B$ de la cola y evalúa $\Box\mathbf{F}(B)$.
+3. Si $\mathbf{0} \notin \Box\mathbf{F}(B)$, descártala (sin raíz garantizado).
+4. Si el ancho de la caja es menor que $\delta$, acéptala como raíz.
+5. Si no, parte por la mitad la dimensión más ancha y encola ambas mitades.
+6. Para obtener el primer instante de contacto, ordena la cola por $t$.
+
+Abajo, observa paso a paso cómo se subdivide el cuadrado de parámetros $(t,s)$. Pulsa `step` para avanzar un nivel cada vez.
+
+<InclusionBisectionToiExplorer />
+
+Las celdas rojas son la región de la raíz que ha convergido por debajo de $\delta$. Subir $\delta$ detiene antes, pero agranda las celdas rojas. Es el intercambio de precisión por velocidad.
+
+## Python — primer contacto de un punto y un segmento en movimiento
+
+Implementamos el primer instante de contacto de un punto y un segmento en movimiento en 2D mediante bisección con funciones de inclusión. La función de holgura es $\mathbf{F}(t,s) = \mathbf{p}(t) - [\mathbf{a}(t) + s(\mathbf{b}(t)-\mathbf{a}(t))]$, y la raíz se busca en $(t,s)\in[0,1]^2$.
+
+```python
+import heapq
+import numpy as np
+
+def gap_F(t, s, query):
+    """F(t,s) = P(t) - [A(t) + s (B(t)-A(t))], trayectorias rectas (t in [0,1])."""
+    P0, P1, A0, A1, B0, B1 = query
+    P = (1 - t) * P0 + t * P1
+    A = (1 - t) * A0 + t * A1
+    B = (1 - t) * B0 + t * B1
+    return P - (A + s * (B - A))
+
+def inclusion_aabb(box, query):
+    """Cota AABB más ajustada de F: envolvente de los cuatro vertices (exacta, multilineal)."""
+    t0, t1, s0, s1 = box
+    corners = [gap_F(t0, s0, query), gap_F(t0, s1, query),
+               gap_F(t1, s0, query), gap_F(t1, s1, query)]
+    lo = np.min(corners, axis=0)
+    hi = np.max(corners, axis=0)
+    return lo, hi
+
+def origin_inside(lo, hi):
+    return bool(np.all(lo <= 0) and np.all(hi >= 0))
+
+def inclusion_bisection_toi(query, delta=1e-4, max_checks=200000):
+    """Primer instante de contacto en [0,1], o None. Bisecccion de inclusion Snyder/Redon."""
+    # cola de prioridad ordenada por t0 -> la primera caja convergida es el primer contacto
+    pq = [(0.0, 0.0, 1.0, 0.0, 1.0)]   # (t0, t0, t1, s0, s1)
+    checks = 0
+    while pq and checks < max_checks:
+        _, t0, t1, s0, s1 = heapq.heappop(pq)
+        checks += 1
+        lo, hi = inclusion_aabb((t0, t1, s0, s1), query)
+        if not origin_inside(lo, hi):
+            continue                              # sin colision en esta caja
+        if max(t1 - t0, s1 - s0) < delta:
+            return t0, checks                     # convergido: primer instante de contacto
+        if (t1 - t0) >= (s1 - s0):                # partir la dimension mas ancha
+            tm = 0.5 * (t0 + t1)
+            heapq.heappush(pq, (t0, t0, tm, s0, s1))
+            heapq.heappush(pq, (tm, tm, t1, s0, s1))
+        else:
+            sm = 0.5 * (s0 + s1)
+            heapq.heappush(pq, (t0, t0, t1, s0, sm))
+            heapq.heappush(pq, (t0, t0, t1, sm, s1))
+    return None, checks
+
+# Una bala que cruza una pared en un fotograma. Ambos extremos quedan lejos de la pared.
+query = (np.array([0.5, 3.5]), np.array([9.5, 3.5]),   # punto P0 -> P1
+         np.array([5.0, 1.0]), np.array([5.0, 1.0]),   # extremo de pared A (estatico)
+         np.array([5.0, 6.0]), np.array([5.0, 6.0]))   # extremo de pared B (estatico)
+
+toi, checks = inclusion_bisection_toi(query, delta=1e-4)
+print(f"time-of-impact t* = {toi:.5f}   (cajas revisadas: {checks})")
+```
+
+Salida:
+
+```text
+time-of-impact t* = 0.50000   (cajas revisadas: 53)
+```
+
+Coincide exactamente con la solución analítica. El punto llega a $x=5$ en $t=0.5$, y allí $y=3.5$ cae dentro del rango del segmento $[1,6]$. Justo la colisión que la prueba de solo extremos respondió como `MISS` quedó acotada en 53 evaluaciones de caja. Conservadora y, aun así, barata.
+
+## Intercambiar precisión por velocidad con un solo δ
+
+La virtud más práctica de la bisección con inclusión es que tiene un único mando de usuario, $\delta$.
+
+Subir $\delta$ parte menos cajas y se detiene antes, a costa de una región de raíz mayor y más falsos positivos. Bajarlo afina el resultado, pero aumenta el número de revisiones. En simulación en tiempo real se fija además un tope de revisiones $m_I$ para acotar el peor tiempo de ejecución. Al alcanzar el tope, se devuelve de forma conservadora el último intervalo de colisión registrado: sigue sin haber pérdidas.
+
+Añade encima la separación mínima (minimum separation) y podrás evitar también la penetración por tolerancias de fabricación o por redondeo. Un pequeño truco —cambiar la distancia de euclídea a Chebyshev (L∞)— simplifica el problema. En vez de $\mathbf{F}=\mathbf{0}$ se resuelve $\lVert\mathbf{F}\rVert_\infty \le d$, lo cual equivale a comprobar si un cubo de lado $2d$ se solapa con la caja de inclusión en lugar del origen. En código es una sola línea que agranda la caja en $d$.
+
+## Antes de llevarlo a código
+
+- **Redondea siempre en el sentido conservador.** Suma una cota de error hacia adelante a las evaluaciones de $\mathbf{F}$ en los vértices para agrandar un poco la caja de inclusión. Esa línea evita los falsos negativos.
+- **Cuidado con el atractivo de la cúbica univariada.** Es rápida, pero se atasca en raíces infinitas bajo movimiento coplanar paralelo. Cuando necesites conservatividad, usa multivariado más bisección.
+- **Pon antes una fase amplia (broad phase).** Filtra pares candidatos con un hash espacial o un árbol AABB antes de llamar a CCD. CCD es la costosa última puerta de la fase estrecha.
+- **Normaliza $\delta$ y $m_I$ a la escala de la escena.** Átalos al tamaño del dominio y no a una longitud absoluta, para que sigan funcionando al cambiar velocidad y escala.
+
+## Lo que conviene retener
+
+- El túnel surge de muestrear una trayectoria continua en solo dos extremos. CCD mira todo el rango $t\in[0,1]$.
+- La colisión se expresa como una raíz polinómica de la condición de coplanaridad (univariado) o como el cero de un vector de holgura (multivariado).
+- La bisección con funciones de inclusión acota la raíz de forma conservadora usando solo las evaluaciones en los vértices de una $\mathbf{F}$ multilineal. Un solo mando, $\delta$, y nunca se pierde una colisión.

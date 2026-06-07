@@ -1,0 +1,182 @@
+---
+title: "총알이 벽을 그냥 통과할 때 — 연속 충돌 감지와 포함 기반 이분법"
+date: 2026-06-08
+description: "터널링을 막는 CCD: 공면 조건과 보수적 이분법 근 찾기"
+tags: ["Collision-Detection", "Computational-Geometry", "FSI", "Root-Finding", "Interval-Arithmetic"]
+draft: false
+locale: ko
+slug: 2026-06-08-continuous-collision-detection-inclusion-bisection
+---
+
+import { MovingPointSegmentCCD2D } from '@/components/post-viz/2026-06-08-continuous-collision-detection-inclusion-bisection/MovingPointSegmentCCD2D'
+import { InclusionBisectionToiExplorer } from '@/components/post-viz/2026-06-08-continuous-collision-detection-inclusion-bisection/InclusionBisectionToiExplorer'
+
+60fps로 도는 시뮬레이션에서 빠른 총알은 벽을 그냥 통과한다. 한 프레임에서는 벽 왼쪽, 다음 프레임에서는 오른쪽. 두 순간 어디에서도 겹치지 않았으니 충돌 감지기는 아무 일도 없었다고 보고한다. 이 글은 그 "사이"를 검사하는 연속 충돌 감지(CCD, 두 물체의 선형 궤적 전체에서 첫 접촉 시각을 찾는 기법)를 다룬다. 공면 조건이 충돌을 다항식의 근으로 바꾸는 과정, 그리고 부동소수점에서도 충돌을 절대 놓치지 않는 포함 기반 이분법을 직접 구현한다.
+
+이 주제는 유체-구조 연성(FSI), 입자법, 메쉬 기반 접촉 시뮬레이션처럼 "프레임 사이에 물체가 빠르게 움직이는" 모든 코드와 맞닿아 있다.
+
+## 두 프레임 사이로 빠져나간 총알
+
+정적 충돌 감지는 한 순간의 스냅샷만 본다. 두 삼각형이 지금 겹치는지를 묻는다. 빠르지 않은 물체에는 충분하다. 문제는 속도다.
+
+타임스텝 $\Delta t$ 동안 물체가 자기 두께보다 멀리 이동하면, 스냅샷 사이로 빠져나간다. 이 현상을 터널링(tunneling)이라 부른다. 더 무서운 건 복구가 안 된다는 점이다. 충돌을 한 번 놓치면 두 물체는 서로를 관통한 채로 남고, 다음 스텝에서는 어느 면이 어느 쪽인지조차 헷갈린다.
+
+아래 시뮬레이션에서 직접 조작해보자. 점은 한 타임스텝 동안 왼쪽에서 오른쪽으로 이동하고, 회색 막대는 벽이다.
+
+<MovingPointSegmentCCD2D />
+
+`point travel`을 키우면 끝점만 보는 discrete 검사는 곧 `MISS`로 떨어진다. 두 끝점 모두 벽에서 멀기 때문이다. 반면 continuous 검사는 빨간 원으로 첫 접촉 시각 $t^\*$를 정확히 짚는다.
+
+## 끝점만 검사하면 왜 새는가
+
+끝점 두 개만 검사한다는 건, 연속 궤적을 두 점으로 표본화한다는 뜻이다. 표본 사이에서 일어난 일은 보이지 않는다.
+
+해결의 출발점은 관점을 바꾸는 것이다. "지금 겹치는가"가 아니라 "$t \in [0,1]$ 중 언제 겹치는가"를 묻는다. 각 정점이 한 스텝 동안 직선으로 움직인다고 가정하면, 위치는 시간의 1차 함수다.
+
+$$
+\mathbf{x}_i(t) = (1-t)\,\mathbf{x}_i^{0} + t\,\mathbf{x}_i^{1}, \qquad t \in [0,1]
+$$
+
+여기서 $\mathbf{x}_i^{0}$는 스텝 시작 위치, $\mathbf{x}_i^{1}$은 끝 위치다. 이제 충돌은 시간에 대한 방정식의 근 찾기 문제가 된다.
+
+## 공면 조건 — 충돌을 다항식의 근으로
+
+움직이는 삼각형 사이의 첫 충돌은 두 가지 경우뿐이다. 한 정점이 면에 닿거나(vertex–face), 한 모서리가 다른 모서리에 닿거나(edge–edge). 두 경우 모두 충돌 순간 네 점이 한 평면 위에 놓인다는 기하 관찰이 핵심이다.
+
+정점 $\mathbf{p}$와 삼각형 $(\mathbf{a},\mathbf{b},\mathbf{c})$의 공면 조건은 부피(스칼라 삼중곱)가 0이 되는 것이다.
+
+$$
+f(t) = \big(\mathbf{p}(t)-\mathbf{a}(t)\big)\cdot
+\Big[\big(\mathbf{b}(t)-\mathbf{a}(t)\big)\times\big(\mathbf{c}(t)-\mathbf{a}(t)\big)\Big] = 0
+$$
+
+여기서 각 $\mathbf{x}(t)$는 $t$의 1차식이므로, $f(t)$는 $t$에 대한 **3차 다항식**이다. 단변량(univariate) 접근이라 부른다. 빠르지만 함정이 있다. 공면이라고 충돌은 아니다. 근 $t^\*$를 찾은 뒤 점이 실제로 삼각형 내부에 있는지 따로 확인해야 한다.
+
+더 견고한 길은 다변량(multivariate) 형식이다. 충돌을 간격(gap) 벡터의 영점으로 직접 쓴다.
+
+$$
+\mathbf{F}(t,u,v) = \mathbf{p}(t) -
+\big[\mathbf{a}(t) + u\,(\mathbf{b}(t)-\mathbf{a}(t)) + v\,(\mathbf{c}(t)-\mathbf{a}(t))\big]
+$$
+
+$\mathbf{F}=\mathbf{0}$이고 $u,v \ge 0$, $u+v \le 1$인 $(t,u,v)$가 존재하면 충돌이다. $u,v$는 면 위의 무게중심 좌표(barycentric coordinate)다. 이 형식은 경계 케이스가 없고 순수하게 대수적이다.
+
+## 수치 근 찾기가 놓치는 충돌
+
+3차식의 근을 부동소수점으로 푸는 게 가장 빠르다. 그래서 대부분의 시뮬레이터가 그렇게 한다. 그런데 2012년 이후 대규모 벤치마크가 충격적인 결론을 냈다. 단변량 수치 솔버 대부분이 false negative(놓친 충돌)를 만든다.
+
+원인은 두 가지다. 첫째, 3차식의 근은 일반적으로 무리수라서 부동소수점으로 정확히 표현되지 않는다. 둘째, 두 물체가 같은 평면 위를 평행하게 움직이면 $f(t)$가 항등적으로 0이 된다. 근이 무한히 많은 이 경우를 수치 임계값으로 거르려다 진짜 충돌까지 버린다.
+
+false positive(없는 충돌을 보고)는 비용을 약간 더 쓸 뿐 복구 가능하다. 그러나 false negative는 터널링으로 직결된다. 충돌 응답 코드가 라인 서치로 관통을 막는 구조라면, 한 번의 놓침이 시뮬레이션 전체를 무너뜨린다. 그래서 CCD에 요구되는 진짜 성질은 속도가 아니라 **보수성(conservativeness)** 이다. 놓치느니 차라리 헛것을 보고하라.
+
+## 포함 함수와 이분법 — 근을 보수적으로 가둔다
+
+보수성을 보장하는 가장 오래된, 그리고 여전히 가장 깔끔한 방법은 Snyder(1992)의 포함 기반 이분법이다.
+
+핵심 도구는 포함 함수(inclusion function)다. 매개변수 상자 $B$가 주어졌을 때, $\mathbf{F}$가 $B$ 위에서 가질 수 있는 모든 값을 감싸는 축 정렬 경계 상자 $\Box\mathbf{F}(B)$를 구한다. 그러면 단순한 사실이 성립한다. $\mathbf{0} \notin \Box\mathbf{F}(B)$이면 $B$ 안에 근은 절대 없다.
+
+다행히 $\mathbf{F}$는 각 매개변수에 대해 1차(다중 선형)다. 다중 선형 함수는 직육면체 위에서 극값을 항상 꼭짓점에서 갖는다. 따라서 가장 타이트한 포함 상자는 상자 네(또는 여덟) 꼭짓점에서 $\mathbf{F}$를 평가한 값들의 경계 상자다. 별도 구간 산술이 필요 없다.
+
+알고리즘은 분할 정복이다.
+
+1. 후보 큐를 매개변수 전체 영역 $[0,1]^d$로 초기화한다.
+2. 큐에서 상자 $B$를 꺼내 $\Box\mathbf{F}(B)$를 평가한다.
+3. $\mathbf{0} \notin \Box\mathbf{F}(B)$이면 버린다 (근 없음 보장).
+4. 상자 폭이 $\delta$보다 작으면 근으로 채택한다.
+5. 아니면 가장 넓은 차원을 반으로 갈라 둘 다 큐에 넣는다.
+6. 첫 충돌 시각을 원하면 큐를 $t$ 기준으로 정렬한다.
+
+아래에서 $(t,s)$ 매개변수 정사각형이 어떻게 쪼개지는지 단계별로 보자. `step`을 누르면 한 레벨씩 진행한다.
+
+<InclusionBisectionToiExplorer />
+
+빨간 칸이 $\delta$ 이하로 수렴한 근 영역이다. $\delta$를 키우면 더 빨리 멈추지만 빨간 칸이 커진다. 정확도를 속도와 맞바꾸는 것이다.
+
+## Python — 움직이는 점과 선분의 최초 충돌
+
+2D에서 움직이는 점과 움직이는 선분의 최초 충돌 시각을 포함 기반 이분법으로 구현한다. 간격 함수는 $\mathbf{F}(t,s) = \mathbf{p}(t) - [\mathbf{a}(t) + s(\mathbf{b}(t)-\mathbf{a}(t))]$이고, 근은 $(t,s)\in[0,1]^2$에서 찾는다.
+
+```python
+import heapq
+import numpy as np
+
+def gap_F(t, s, query):
+    """F(t,s) = P(t) - [A(t) + s (B(t)-A(t))], 직선 궤적 (t in [0,1])."""
+    P0, P1, A0, A1, B0, B1 = query
+    P = (1 - t) * P0 + t * P1
+    A = (1 - t) * A0 + t * A1
+    B = (1 - t) * B0 + t * B1
+    return P - (A + s * (B - A))
+
+def inclusion_aabb(box, query):
+    """F의 가장 타이트한 축 정렬 경계: 네 꼭짓점 값의 hull (다중선형이므로 정확)."""
+    t0, t1, s0, s1 = box
+    corners = [gap_F(t0, s0, query), gap_F(t0, s1, query),
+               gap_F(t1, s0, query), gap_F(t1, s1, query)]
+    lo = np.min(corners, axis=0)
+    hi = np.max(corners, axis=0)
+    return lo, hi
+
+def origin_inside(lo, hi):
+    return bool(np.all(lo <= 0) and np.all(hi >= 0))
+
+def inclusion_bisection_toi(query, delta=1e-4, max_checks=200000):
+    """[0,1]에서 최초 충돌 시각, 없으면 None. Snyder/Redon 포함 이분법."""
+    # 우선순위 큐를 t0 기준으로 정렬 → 먼저 수렴한 상자가 곧 최초 충돌
+    pq = [(0.0, 0.0, 1.0, 0.0, 1.0)]   # (t0, t0, t1, s0, s1)
+    checks = 0
+    while pq and checks < max_checks:
+        _, t0, t1, s0, s1 = heapq.heappop(pq)
+        checks += 1
+        lo, hi = inclusion_aabb((t0, t1, s0, s1), query)
+        if not origin_inside(lo, hi):
+            continue                              # 이 상자에 충돌 없음
+        if max(t1 - t0, s1 - s0) < delta:
+            return t0, checks                     # 수렴: 최초 접촉 시각
+        if (t1 - t0) >= (s1 - s0):                # 넓은 차원을 반으로
+            tm = 0.5 * (t0 + t1)
+            heapq.heappush(pq, (t0, t0, tm, s0, s1))
+            heapq.heappush(pq, (tm, tm, t1, s0, s1))
+        else:
+            sm = 0.5 * (s0 + s1)
+            heapq.heappush(pq, (t0, t0, t1, s0, sm))
+            heapq.heappush(pq, (t0, t0, t1, sm, s1))
+    return None, checks
+
+# 한 프레임에 벽을 가로지르는 총알. 끝점만 보면 둘 다 벽에서 멀다.
+query = (np.array([0.5, 3.5]), np.array([9.5, 3.5]),   # 점 P0 -> P1
+         np.array([5.0, 1.0]), np.array([5.0, 1.0]),   # 벽 끝 A (정지)
+         np.array([5.0, 6.0]), np.array([5.0, 6.0]))   # 벽 끝 B (정지)
+
+toi, checks = inclusion_bisection_toi(query, delta=1e-4)
+print(f"time-of-impact t* = {toi:.5f}   (검사한 상자: {checks})")
+```
+
+출력:
+
+```text
+time-of-impact t* = 0.50000   (검사한 상자: 53)
+```
+
+해석 해와 정확히 일치한다. 점은 $x=5$에 $t=0.5$일 때 도달하고, 그때 $y=3.5$는 선분 범위 $[1,6]$ 안이다. 끝점만 보는 검사가 `MISS`라고 답한 바로 그 충돌을, 53번의 상자 평가로 가둬냈다. 보수적이면서도 싸다.
+
+## δ 하나로 정확도와 속도를 맞바꾸다
+
+포함 이분법의 가장 실용적인 미덕은 사용자 손잡이가 단 하나, $\delta$라는 점이다.
+
+$\delta$를 키우면 상자를 덜 쪼개고 빨리 멈춘다. 대신 근 영역이 커져 false positive가 늘어난다. 줄이면 정밀해지지만 검사 횟수가 늘어난다. 실시간 시뮬레이션에서는 검사 횟수 상한 $m_I$를 함께 두어 최악의 실행 시간을 고정한다. 상한에 닿으면 가장 최근에 기록한 충돌 구간을 보수적으로 반환한다 — 여전히 놓치지 않는다.
+
+여기에 최소 분리(minimum separation)를 더하면 제조 공차나 반올림 침투까지 막을 수 있다. 거리를 유클리드 대신 체비셰프(L∞)로 바꾸는 작은 트릭이 문제를 단순화한다. $\mathbf{F}=\mathbf{0}$ 대신 $\lVert\mathbf{F}\rVert_\infty \le d$를 풀면 되고, 이는 원점 대신 변의 길이 $2d$인 정육면체가 포함 상자와 겹치는지 보는 것과 같다. 코드에서는 상자를 $d$만큼 키우는 한 줄이면 끝난다.
+
+## 코드에 옮기기 전 짚을 것
+
+- **항상 보수적 방향으로 반올림하라.** 꼭짓점 $\mathbf{F}$ 평가에 전방 오차 한계를 더해 포함 상자를 살짝 키운다. 이 한 줄이 false negative를 막는다.
+- **단변량 3차식의 유혹을 경계하라.** 빠르지만 공면 평행 운동에서 무한 근에 걸린다. 보수성이 필요하면 다변량 + 이분법을 쓴다.
+- **광역 단계(broad phase)를 먼저 깔아라.** 공간 해시나 AABB 트리로 후보 쌍을 거른 뒤 CCD를 호출한다. CCD는 좁은 단계(narrow phase)의 비싼 마지막 관문이다.
+- **$\delta$와 $m_I$를 장면 스케일로 정규화하라.** 절대 길이가 아니라 도메인 크기에 맞춰 둬야 속도·스케일이 바뀌어도 동작한다.
+
+## 한 줄로 남기는 것
+
+- 터널링은 연속 궤적을 끝점 두 개로 표본화해서 생긴다. CCD는 $t\in[0,1]$ 전체를 본다.
+- 충돌은 공면 조건의 다항식 근(단변량) 또는 간격 벡터의 영점(다변량)으로 표현된다.
+- 포함 기반 이분법은 다중 선형 $\mathbf{F}$의 꼭짓점 평가만으로 근을 보수적으로 가둔다. 손잡이는 $\delta$ 하나, 절대 놓치지 않는다.

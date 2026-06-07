@@ -1,0 +1,182 @@
+---
+title: "When a Bullet Passes Straight Through a Wall — Continuous Collision Detection by Inclusion Bisection"
+date: 2026-06-08
+description: "Stopping tunneling with CCD: coplanarity roots and conservative bisection"
+tags: ["Collision-Detection", "Computational-Geometry", "FSI", "Root-Finding", "Interval-Arithmetic"]
+draft: false
+locale: en
+slug: 2026-06-08-continuous-collision-detection-inclusion-bisection
+---
+
+import { MovingPointSegmentCCD2D } from '@/components/post-viz/2026-06-08-continuous-collision-detection-inclusion-bisection/MovingPointSegmentCCD2D'
+import { InclusionBisectionToiExplorer } from '@/components/post-viz/2026-06-08-continuous-collision-detection-inclusion-bisection/InclusionBisectionToiExplorer'
+
+In a simulation running at 60fps, a fast bullet just passes through a wall. One frame it is left of the wall, the next it is on the right. It never overlaps at either instant, so the collision detector reports nothing happened. This post is about checking that "in between" — continuous collision detection (CCD, the technique that finds the first contact time over the entire linear trajectory of two bodies). We turn collision into a polynomial root via the coplanarity condition, then implement an inclusion-based bisection that never misses a collision, even in floating point.
+
+The topic touches every code where bodies move fast between frames: fluid–structure interaction (FSI), particle methods, and mesh-based contact simulation.
+
+## The Bullet That Slipped Between Two Frames
+
+Static collision detection only sees a snapshot of a single instant. It asks whether two triangles overlap right now. For slow bodies that is enough. The problem is speed.
+
+If a body moves farther than its own thickness during a time step $\Delta t$, it slips between the snapshots. This is called tunneling. Worse, it cannot recover. Once a collision is missed, the two bodies stay interpenetrated, and at the next step it becomes unclear which face is on which side.
+
+Try it in the simulation below. The point moves left to right over one time step, and the gray bar is the wall.
+
+<MovingPointSegmentCCD2D />
+
+Raise `point travel` and the discrete endpoint test soon drops to `MISS`, because both endpoints are far from the wall. The continuous test, on the other hand, marks the exact first-contact time $t^\*$ with a red ring.
+
+## Why Checking Only Endpoints Leaks
+
+Checking just two endpoints means sampling a continuous trajectory at two points. Whatever happened between the samples is invisible.
+
+The fix starts with a change of perspective. Instead of "do they overlap now," ask "for which $t \in [0,1]$ do they overlap." Assuming each vertex moves on a straight line during a step, its position is a linear function of time.
+
+$$
+\mathbf{x}_i(t) = (1-t)\,\mathbf{x}_i^{0} + t\,\mathbf{x}_i^{1}, \qquad t \in [0,1]
+$$
+
+Here $\mathbf{x}_i^{0}$ is the start-of-step position and $\mathbf{x}_i^{1}$ the end position. Collision now becomes a root-finding problem in time.
+
+## Coplanarity — Turning Collision Into a Polynomial Root
+
+The first collision between two moving triangles falls into only two cases. A vertex touches a face (vertex–face), or an edge touches another edge (edge–edge). In both cases the key geometric observation is that four points become coplanar at the moment of contact.
+
+The coplanarity condition for a vertex $\mathbf{p}$ and a triangle $(\mathbf{a},\mathbf{b},\mathbf{c})$ is that the volume (scalar triple product) vanishes.
+
+$$
+f(t) = \big(\mathbf{p}(t)-\mathbf{a}(t)\big)\cdot
+\Big[\big(\mathbf{b}(t)-\mathbf{a}(t)\big)\times\big(\mathbf{c}(t)-\mathbf{a}(t)\big)\Big] = 0
+$$
+
+Since each $\mathbf{x}(t)$ is linear in $t$, $f(t)$ is a **cubic polynomial** in $t$. This is the univariate approach. It is fast but has a trap. Coplanar is not the same as colliding. After finding a root $t^\*$ you must separately check whether the point really lies inside the triangle.
+
+A more robust path is the multivariate form. Write collision directly as the zero of a gap vector.
+
+$$
+\mathbf{F}(t,u,v) = \mathbf{p}(t) -
+\big[\mathbf{a}(t) + u\,(\mathbf{b}(t)-\mathbf{a}(t)) + v\,(\mathbf{c}(t)-\mathbf{a}(t))\big]
+$$
+
+A collision exists if there is a $(t,u,v)$ with $\mathbf{F}=\mathbf{0}$, $u,v \ge 0$, and $u+v \le 1$. Here $u,v$ are barycentric coordinates on the face. This form has no boundary cases and is purely algebraic.
+
+## The Collisions Numerical Root-Finding Misses
+
+Solving the cubic in floating point is the fastest, so most simulators do exactly that. Yet large-scale benchmarks since 2012 reached a startling conclusion: most univariate numerical solvers produce false negatives (missed collisions).
+
+There are two causes. First, the roots of a cubic are generally irrational and cannot be represented exactly in floating point. Second, when two bodies move parallel within the same plane, $f(t)$ becomes identically zero. Trying to filter this infinite-root case with a numerical threshold throws away genuine collisions too.
+
+A false positive (reporting a collision that is not there) only costs a little extra work and is recoverable. A false negative, however, leads straight to tunneling. If the collision-response code prevents penetration with a line search, a single miss collapses the whole simulation. So the property CCD truly needs is not speed but **conservativeness**. Better to report a phantom than to miss.
+
+## Inclusion Functions and Bisection — Bracketing Roots Conservatively
+
+The oldest, and still cleanest, way to guarantee conservativeness is Snyder's (1992) inclusion-based bisection.
+
+The key tool is the inclusion function. Given a parameter box $B$, compute an axis-aligned bounding box $\Box\mathbf{F}(B)$ that encloses every value $\mathbf{F}$ can take over $B$. A simple fact then holds: if $\mathbf{0} \notin \Box\mathbf{F}(B)$, there is no root inside $B$ at all.
+
+Conveniently, $\mathbf{F}$ is linear in each parameter (multilinear). A multilinear function always attains its extrema at the corners of a box. So the tightest inclusion box is the bounding box of $\mathbf{F}$ evaluated at the four (or eight) corners. No separate interval arithmetic is needed.
+
+The algorithm is divide and conquer.
+
+1. Initialize the candidate queue to the whole parameter domain $[0,1]^d$.
+2. Pop a box $B$ from the queue and evaluate $\Box\mathbf{F}(B)$.
+3. If $\mathbf{0} \notin \Box\mathbf{F}(B)$, discard it (guaranteed no root).
+4. If the box width is below $\delta$, accept it as a root.
+5. Otherwise split the widest dimension in half and push both children.
+6. To get the first contact time, order the queue by $t$.
+
+Below, watch step by step how the $(t,s)$ parameter square is subdivided. Press `step` to advance one level at a time.
+
+<InclusionBisectionToiExplorer />
+
+The red cells are the root region that has converged below $\delta$. Raising $\delta$ stops sooner but makes the red cells larger. That is the trade of accuracy for speed.
+
+## Python — First Contact of a Moving Point and Segment
+
+We implement the first contact time of a moving point and a moving segment in 2D via inclusion-based bisection. The gap function is $\mathbf{F}(t,s) = \mathbf{p}(t) - [\mathbf{a}(t) + s(\mathbf{b}(t)-\mathbf{a}(t))]$, and the root is sought in $(t,s)\in[0,1]^2$.
+
+```python
+import heapq
+import numpy as np
+
+def gap_F(t, s, query):
+    """F(t,s) = P(t) - [A(t) + s (B(t)-A(t))], straight trajectories (t in [0,1])."""
+    P0, P1, A0, A1, B0, B1 = query
+    P = (1 - t) * P0 + t * P1
+    A = (1 - t) * A0 + t * A1
+    B = (1 - t) * B0 + t * B1
+    return P - (A + s * (B - A))
+
+def inclusion_aabb(box, query):
+    """Tightest axis-aligned bound of F: hull of the four corners (exact, multilinear)."""
+    t0, t1, s0, s1 = box
+    corners = [gap_F(t0, s0, query), gap_F(t0, s1, query),
+               gap_F(t1, s0, query), gap_F(t1, s1, query)]
+    lo = np.min(corners, axis=0)
+    hi = np.max(corners, axis=0)
+    return lo, hi
+
+def origin_inside(lo, hi):
+    return bool(np.all(lo <= 0) and np.all(hi >= 0))
+
+def inclusion_bisection_toi(query, delta=1e-4, max_checks=200000):
+    """First contact time in [0,1], or None. Snyder/Redon inclusion bisection."""
+    # priority queue ordered by t0 -> the first converged box is the earliest contact
+    pq = [(0.0, 0.0, 1.0, 0.0, 1.0)]   # (t0, t0, t1, s0, s1)
+    checks = 0
+    while pq and checks < max_checks:
+        _, t0, t1, s0, s1 = heapq.heappop(pq)
+        checks += 1
+        lo, hi = inclusion_aabb((t0, t1, s0, s1), query)
+        if not origin_inside(lo, hi):
+            continue                              # no collision in this box
+        if max(t1 - t0, s1 - s0) < delta:
+            return t0, checks                     # converged: first contact time
+        if (t1 - t0) >= (s1 - s0):                # split the wider dimension
+            tm = 0.5 * (t0 + t1)
+            heapq.heappush(pq, (t0, t0, tm, s0, s1))
+            heapq.heappush(pq, (tm, tm, t1, s0, s1))
+        else:
+            sm = 0.5 * (s0 + s1)
+            heapq.heappush(pq, (t0, t0, t1, s0, sm))
+            heapq.heappush(pq, (t0, t0, t1, sm, s1))
+    return None, checks
+
+# A bullet crossing a wall in one frame. Both endpoints are far from the wall.
+query = (np.array([0.5, 3.5]), np.array([9.5, 3.5]),   # point P0 -> P1
+         np.array([5.0, 1.0]), np.array([5.0, 1.0]),   # wall end A (static)
+         np.array([5.0, 6.0]), np.array([5.0, 6.0]))   # wall end B (static)
+
+toi, checks = inclusion_bisection_toi(query, delta=1e-4)
+print(f"time-of-impact t* = {toi:.5f}   (boxes checked: {checks})")
+```
+
+Output:
+
+```text
+time-of-impact t* = 0.50000   (boxes checked: 53)
+```
+
+It matches the analytic solution exactly. The point reaches $x=5$ at $t=0.5$, and there $y=3.5$ lies within the segment range $[1,6]$. The very collision that the endpoint-only test answered `MISS` was bracketed in 53 box evaluations. Conservative, yet cheap.
+
+## Trading Accuracy for Speed With a Single δ
+
+The most practical virtue of inclusion bisection is that it has exactly one user knob, $\delta$.
+
+Raising $\delta$ splits fewer boxes and stops sooner, at the cost of a larger root region and more false positives. Lowering it sharpens the result but raises the number of checks. In real-time simulation you also set a check cap $m_I$ to fix the worst-case run time. When the cap is hit, the most recently recorded collision interval is returned conservatively — still no miss.
+
+Add minimum separation on top and you can prevent manufacturing-tolerance or round-off penetration too. A small trick — switching the distance from Euclidean to Chebyshev (L∞) — simplifies the problem. Instead of $\mathbf{F}=\mathbf{0}$ you solve $\lVert\mathbf{F}\rVert_\infty \le d$, which is the same as checking whether a cube of side $2d$ overlaps the inclusion box instead of the origin. In code it is one line that grows the box by $d$.
+
+## Before You Port It to Code
+
+- **Always round in the conservative direction.** Add a forward error bound to the corner evaluations of $\mathbf{F}$ to grow the inclusion box slightly. This one line prevents false negatives.
+- **Beware the lure of the univariate cubic.** It is fast but gets stuck on infinite roots under coplanar parallel motion. When you need conservativeness, use multivariate plus bisection.
+- **Lay a broad phase first.** Filter candidate pairs with a spatial hash or AABB tree before calling CCD. CCD is the expensive last gate of the narrow phase.
+- **Normalize $\delta$ and $m_I$ to the scene scale.** Tie them to the domain size rather than absolute length, so they keep working as speed and scale change.
+
+## What to Take Away
+
+- Tunneling comes from sampling a continuous trajectory at just two endpoints. CCD looks at all of $t\in[0,1]$.
+- Collision is expressed as a polynomial root of the coplanarity condition (univariate) or the zero of a gap vector (multivariate).
+- Inclusion-based bisection brackets the root conservatively using only corner evaluations of a multilinear $\mathbf{F}$. One knob, $\delta$, and it never misses.

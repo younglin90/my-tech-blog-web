@@ -1,0 +1,182 @@
+---
+title: "当子弹直接穿过墙壁 — 连续碰撞检测与包含函数二分法"
+date: 2026-06-08
+description: "用CCD阻止隧穿：共面条件与保守的二分求根"
+tags: ["Collision-Detection", "Computational-Geometry", "FSI", "Root-Finding", "Interval-Arithmetic"]
+draft: false
+locale: zh
+slug: 2026-06-08-continuous-collision-detection-inclusion-bisection
+---
+
+import { MovingPointSegmentCCD2D } from '@/components/post-viz/2026-06-08-continuous-collision-detection-inclusion-bisection/MovingPointSegmentCCD2D'
+import { InclusionBisectionToiExplorer } from '@/components/post-viz/2026-06-08-continuous-collision-detection-inclusion-bisection/InclusionBisectionToiExplorer'
+
+在以60fps运行的模拟中，快速的子弹会直接穿过墙壁。这一帧在墙左侧，下一帧已在右侧。两个瞬间都没有重叠，于是碰撞检测器报告什么都没发生。本文讨论如何检查那个"之间"——连续碰撞检测（CCD，在两个物体的整条线性轨迹上寻找首次接触时刻的方法）。我们通过共面条件把碰撞变成多项式的求根，并实现一种即使在浮点数下也绝不漏掉碰撞的包含函数二分法。
+
+这个主题与流固耦合（FSI）、粒子方法、基于网格的接触模拟等"物体在帧间高速运动"的所有代码紧密相关。
+
+## 从两帧之间溜走的子弹
+
+静态碰撞检测只看某一瞬间的快照。它问两个三角形现在是否重叠。对慢速物体足够了。问题在于速度。
+
+如果物体在一个时间步 $\Delta t$ 内移动得比自身厚度还远，它就会从快照之间溜走。这种现象称为隧穿（tunneling）。更可怕的是无法恢复。一旦漏掉碰撞，两个物体就保持相互穿透，下一步甚至分不清哪个面在哪一侧。
+
+在下面的模拟中亲自操作一下。点在一个时间步内从左向右移动，灰色的横条是墙壁。
+
+<MovingPointSegmentCCD2D />
+
+增大 `point travel`，只看端点的 discrete 检查很快就会变成 `MISS`，因为两个端点都远离墙壁。而 continuous 检查会用红色圆圈精确指出首次接触时刻 $t^\*$。
+
+## 为什么只检查端点会漏
+
+只检查两个端点，意味着把连续轨迹只采样为两个点。采样之间发生的事看不见。
+
+解决的起点是换一个视角。不问"现在是否重叠"，而问"在 $t \in [0,1]$ 中何时重叠"。假设每个顶点在一步内沿直线运动，那么位置就是时间的一次函数。
+
+$$
+\mathbf{x}_i(t) = (1-t)\,\mathbf{x}_i^{0} + t\,\mathbf{x}_i^{1}, \qquad t \in [0,1]
+$$
+
+其中 $\mathbf{x}_i^{0}$ 是步首位置，$\mathbf{x}_i^{1}$ 是步末位置。于是碰撞变成关于时间的求根问题。
+
+## 共面条件 — 把碰撞变成多项式的根
+
+两个运动三角形之间的首次碰撞只有两种情形。一个顶点触及一个面（vertex–face），或一条边触及另一条边（edge–edge）。两种情形的核心都是同一个几何观察：接触瞬间四点共面。
+
+顶点 $\mathbf{p}$ 与三角形 $(\mathbf{a},\mathbf{b},\mathbf{c})$ 的共面条件，是体积（标量三重积）为零。
+
+$$
+f(t) = \big(\mathbf{p}(t)-\mathbf{a}(t)\big)\cdot
+\Big[\big(\mathbf{b}(t)-\mathbf{a}(t)\big)\times\big(\mathbf{c}(t)-\mathbf{a}(t)\big)\Big] = 0
+$$
+
+由于每个 $\mathbf{x}(t)$ 都是 $t$ 的一次式，$f(t)$ 是关于 $t$ 的**三次多项式**。这称为单变量（univariate）方法。它很快，但有陷阱。共面并不等于碰撞。求出根 $t^\*$ 后，还需另行确认点是否真的落在三角形内部。
+
+更稳健的途径是多变量（multivariate）形式。把碰撞直接写成间隙向量的零点。
+
+$$
+\mathbf{F}(t,u,v) = \mathbf{p}(t) -
+\big[\mathbf{a}(t) + u\,(\mathbf{b}(t)-\mathbf{a}(t)) + v\,(\mathbf{c}(t)-\mathbf{a}(t))\big]
+$$
+
+若存在 $(t,u,v)$ 使 $\mathbf{F}=\mathbf{0}$ 且 $u,v \ge 0$、$u+v \le 1$，即为碰撞。这里 $u,v$ 是面上的重心坐标。这种形式没有边界特例，纯粹是代数的。
+
+## 数值求根漏掉的碰撞
+
+用浮点数解三次方程最快，所以大多数模拟器正是这么做。然而2012年以来的大规模基准测试得出了令人震惊的结论：大多数单变量数值求解器会产生 false negative（漏掉的碰撞）。
+
+原因有两个。第一，三次方程的根一般是无理数，浮点数无法精确表示。第二，当两个物体在同一平面内平行运动时，$f(t)$ 恒等于零。试图用数值阈值滤掉这种无穷根的情形，会连真实碰撞一起丢弃。
+
+false positive（报告不存在的碰撞）只多花一点开销且可恢复。但 false negative 直接导致隧穿。如果碰撞响应代码用线搜索来防止穿透，一次漏检就会摧毁整个模拟。所以CCD真正需要的性质不是速度，而是**保守性（conservativeness）**。宁可报告幻象，也不要漏掉。
+
+## 包含函数与二分法 — 保守地把根框住
+
+保证保守性最古老、至今仍最简洁的方法，是 Snyder（1992）的包含函数二分法。
+
+核心工具是包含函数（inclusion function）。给定参数盒 $B$，求一个轴对齐包围盒 $\Box\mathbf{F}(B)$，把 $\mathbf{F}$ 在 $B$ 上所能取的全部值都包住。于是有一个简单事实成立：若 $\mathbf{0} \notin \Box\mathbf{F}(B)$，则 $B$ 内绝无根。
+
+幸运的是 $\mathbf{F}$ 对每个参数都是一次的（多重线性）。多重线性函数在长方体上的极值总在顶点取得。因此最紧的包含盒，就是在盒的四个（或八个）顶点上计算 $\mathbf{F}$ 所得值的包围盒。无需单独的区间运算。
+
+算法是分治。
+
+1. 把候选队列初始化为整个参数域 $[0,1]^d$。
+2. 从队列取出盒 $B$，计算 $\Box\mathbf{F}(B)$。
+3. 若 $\mathbf{0} \notin \Box\mathbf{F}(B)$，丢弃（保证无根）。
+4. 若盒宽小于 $\delta$，接受为根。
+5. 否则把最宽的维度对半切开，两个子盒都入队。
+6. 若想要首次接触时刻，按 $t$ 对队列排序。
+
+下面分步看看 $(t,s)$ 参数正方形是如何被细分的。按 `step` 每次推进一层。
+
+<InclusionBisectionToiExplorer />
+
+红色格子是已收敛到 $\delta$ 以下的根区域。增大 $\delta$ 会更早停止，但红色格子会变大。这就是用精度换速度。
+
+## Python — 运动点与线段的首次接触
+
+用包含函数二分法实现2D中运动点与运动线段的首次接触时刻。间隙函数为 $\mathbf{F}(t,s) = \mathbf{p}(t) - [\mathbf{a}(t) + s(\mathbf{b}(t)-\mathbf{a}(t))]$，在 $(t,s)\in[0,1]^2$ 中求根。
+
+```python
+import heapq
+import numpy as np
+
+def gap_F(t, s, query):
+    """F(t,s) = P(t) - [A(t) + s (B(t)-A(t))]，直线轨迹（t in [0,1]）。"""
+    P0, P1, A0, A1, B0, B1 = query
+    P = (1 - t) * P0 + t * P1
+    A = (1 - t) * A0 + t * A1
+    B = (1 - t) * B0 + t * B1
+    return P - (A + s * (B - A))
+
+def inclusion_aabb(box, query):
+    """F的最紧轴对齐包围：四顶点值的hull（多重线性，故精确）。"""
+    t0, t1, s0, s1 = box
+    corners = [gap_F(t0, s0, query), gap_F(t0, s1, query),
+               gap_F(t1, s0, query), gap_F(t1, s1, query)]
+    lo = np.min(corners, axis=0)
+    hi = np.max(corners, axis=0)
+    return lo, hi
+
+def origin_inside(lo, hi):
+    return bool(np.all(lo <= 0) and np.all(hi >= 0))
+
+def inclusion_bisection_toi(query, delta=1e-4, max_checks=200000):
+    """[0,1]中的首次接触时刻，无则None。Snyder/Redon包含二分法。"""
+    # 优先队列按t0排序 → 最先收敛的盒即首次接触
+    pq = [(0.0, 0.0, 1.0, 0.0, 1.0)]   # (t0, t0, t1, s0, s1)
+    checks = 0
+    while pq and checks < max_checks:
+        _, t0, t1, s0, s1 = heapq.heappop(pq)
+        checks += 1
+        lo, hi = inclusion_aabb((t0, t1, s0, s1), query)
+        if not origin_inside(lo, hi):
+            continue                              # 此盒内无碰撞
+        if max(t1 - t0, s1 - s0) < delta:
+            return t0, checks                     # 收敛：首次接触时刻
+        if (t1 - t0) >= (s1 - s0):                # 切开更宽的维度
+            tm = 0.5 * (t0 + t1)
+            heapq.heappush(pq, (t0, t0, tm, s0, s1))
+            heapq.heappush(pq, (tm, tm, t1, s0, s1))
+        else:
+            sm = 0.5 * (s0 + s1)
+            heapq.heappush(pq, (t0, t0, t1, s0, sm))
+            heapq.heappush(pq, (t0, t0, t1, sm, s1))
+    return None, checks
+
+# 一帧内穿越墙壁的子弹。只看端点，两端都远离墙壁。
+query = (np.array([0.5, 3.5]), np.array([9.5, 3.5]),   # 点 P0 -> P1
+         np.array([5.0, 1.0]), np.array([5.0, 1.0]),   # 墙端 A（静止）
+         np.array([5.0, 6.0]), np.array([5.0, 6.0]))   # 墙端 B（静止）
+
+toi, checks = inclusion_bisection_toi(query, delta=1e-4)
+print(f"time-of-impact t* = {toi:.5f}   (检查的盒: {checks})")
+```
+
+输出：
+
+```text
+time-of-impact t* = 0.50000   (检查的盒: 53)
+```
+
+与解析解完全一致。点在 $t=0.5$ 时到达 $x=5$，此时 $y=3.5$ 落在线段范围 $[1,6]$ 内。只看端点的检查回答 `MISS` 的那个碰撞，被53次盒评估框住了。既保守又便宜。
+
+## 用一个 δ 在精度与速度之间权衡
+
+包含二分法最实用的优点，是用户旋钮只有一个，$\delta$。
+
+增大 $\delta$ 则分割更少、停得更早，代价是根区域更大、false positive 更多。减小则更精确，但检查次数增加。在实时模拟中还要设一个检查上限 $m_I$，以固定最坏运行时间。达到上限时，保守地返回最近记录的碰撞区间——仍然不漏。
+
+在此基础上再加最小分离（minimum separation），还能防止制造公差或舍入造成的穿透。一个小技巧——把距离从欧几里得改为切比雪夫（L∞）——能简化问题。不再解 $\mathbf{F}=\mathbf{0}$，而是解 $\lVert\mathbf{F}\rVert_\infty \le d$，这等价于检查边长为 $2d$ 的立方体是否与包含盒重叠，而非检查原点。在代码里只需把盒扩大 $d$ 的一行。
+
+## 移植到代码前要把握的
+
+- **始终朝保守方向取整。** 在顶点的 $\mathbf{F}$ 计算上加上前向误差界，把包含盒略微放大。这一行能防止 false negative。
+- **警惕单变量三次式的诱惑。** 它快，但在共面平行运动下会卡在无穷根。需要保守性时，用多变量加二分法。
+- **先铺好广相（broad phase）。** 用空间哈希或AABB树筛出候选对，再调用CCD。CCD是窄相中昂贵的最后一道关。
+- **把 $\delta$ 和 $m_I$ 按场景尺度归一化。** 绑定到域的大小而非绝对长度，速度与尺度变化时才仍然有效。
+
+## 想留下的一句话
+
+- 隧穿源于把连续轨迹只采样为两个端点。CCD 看的是整个 $t\in[0,1]$。
+- 碰撞被表示为共面条件的多项式根（单变量）或间隙向量的零点（多变量）。
+- 包含函数二分法仅用多重线性 $\mathbf{F}$ 的顶点计算就能保守地框住根。旋钮只有一个 $\delta$，绝不漏检。
