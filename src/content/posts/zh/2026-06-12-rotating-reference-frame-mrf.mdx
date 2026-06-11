@@ -1,0 +1,162 @@
+---
+title: "把叶轮固定住来求解 — 旋转参考系与MRF"
+date: 2026-06-12
+description: "用代码验证旋转系的科里奥利、离心力源项与MRF界面变换"
+tags: ["OpenFOAM", "MRF", "Rotating-Frame", "Coriolis", "Turbomachinery"]
+locale: zh
+slug: rotating-reference-frame-mrf
+draft: false
+---
+
+import { RotatingFrameParticleTrajectory } from '@/components/post-viz/2026-06-12-rotating-reference-frame-mrf/RotatingFrameParticleTrajectory'
+import { MrfZoneInterface } from '@/components/post-viz/2026-06-12-rotating-reference-frame-mrf/MrfZoneInterface'
+
+把旋转的叶轮固定住，当作它从未转动来求解。可是答案却是对的。求泵或风机的稳态性能时，最常用的技巧正是这个。本文沿着旋转参考系（rotating reference frame）中动量方程如何改变、MRF（Multiple Reference Frame）如何把旋转「冻结」成稳态求解，一路追到能跑的Python。最后标出MRF失效的地方。
+
+## 抛弃绝对坐标系，风车就停了
+
+固定在地面的相机看到叶轮叶片快速旋转。几何形状随时间不断变化。所以需要非稳态（unsteady）求解。
+
+现在把相机装到叶片上。叶片是静止的。只有周围的流体相对流动。几何形状不变，于是稳态（steady）求解成为可能。把旋转体问题变成静止问题，就是旋转参考系的全部思想。
+
+代价不是免费的。因为坐标系本身在加速，动量方程里多出了原本没有的两项。
+
+## 混进动量方程的两个假想力
+
+设旋转角速度为 $\boldsymbol{\Omega}$，相对速度为 $\mathbf{u}_r$，位置为 $\mathbf{r}$。它与绝对速度的关系为：
+
+$$
+\mathbf{u}_a = \mathbf{u}_r + \boldsymbol{\Omega}\times\mathbf{r}
+$$
+
+其中 $\mathbf{u}_a$ 是绝对（惯性）坐标系速度，$\boldsymbol{\Omega}\times\mathbf{r}$ 是旋转带来的牵连速度。
+
+代入Navier–Stokes，得到关于相对速度的稳态动量方程：
+
+$$
+(\mathbf{u}_r\cdot\nabla)\mathbf{u}_r
++ 2\,\boldsymbol{\Omega}\times\mathbf{u}_r
++ \boldsymbol{\Omega}\times(\boldsymbol{\Omega}\times\mathbf{r})
+= -\frac{1}{\rho}\nabla p + \nu\nabla^2\mathbf{u}_r
+$$
+
+左边第二项 $2\,\boldsymbol{\Omega}\times\mathbf{u}_r$ 是科里奥利加速度（让运动方向偏转的项），第三项 $\boldsymbol{\Omega}\times(\boldsymbol{\Omega}\times\mathbf{r})$ 是离心加速度（从轴向外推的项）。两者都不是真实的力。它们只因坐标系加速而出现。
+
+科里奥利项作为源项进入动量方程。这正是OpenFOAM的 `MRFSource` 逐单元加上去的内容。
+
+## MRF — 把旋转冻结成frozen rotor
+
+MRF的核心是把区域分成两块：包住转子的旋转区（rotating zone）和它外面的静止区（stationary zone）。
+
+- 旋转区：求解上面的相对速度方程。科里奥利、离心源项被打开。
+- 静止区：求解普通的绝对坐标系方程。
+
+叶片实际上并不移动。网格也是固定的。我们只是把旋转效应作为源项注入旋转区的方程。所以这种方式叫frozen rotor（冻结转子）：在某一瞬间把叶片与周围流体的相对位置「冻结」，然后求稳态解。
+
+在下面的模拟中亲手调节参数吧。把坐标系从绝对切换到相对（MRF），看旋转区内部的箭头如何变化。
+
+<MrfZoneInterface />
+
+在绝对坐标系中，内部流体以 $\boldsymbol{\Omega}\times\mathbf{r}$ 做刚体旋转。箭头越靠近界面越大。切换到相对（MRF）坐标系，内部箭头塌缩到接近零，因为旋转区的流动看起来「静止」了。外部（粉色）的场保持不变。
+
+## 在界面上把速度重新缝合
+
+两个区域用不同的坐标系求解。于是边界上的速度对不上。旋转区存的是 $\mathbf{u}_r$，静止区存的是 $\mathbf{u}_a$。
+
+在界面上直接套用上面的变换式。从旋转区跨到静止区时，按 $\mathbf{u}_a = \mathbf{u}_r + \boldsymbol{\Omega}\times\mathbf{r}$ 相加；反方向则相减。压力、湍流量这类标量原样通过。只有矢量接受牵连速度的修正。
+
+漏掉这个变换，界面上的质量和动量就开始泄漏。残差降不下来，或者出现横穿界面的非物理射流。MRF设置中最常见的错误，是把旋转区边界放得离叶片太近。应把界面放在流动近乎轴对称的位置，变换误差才小。
+
+## MRF与sliding mesh，何时用哪个
+
+MRF是稳态近似。它无法捕捉叶片与蜗壳（volute）等静止结构相对位置随时间变化的效应（rotor–stator相互作用），因为它把某一瞬间冻结了。
+
+当你真正需要非稳态效应时，转向sliding mesh（滑移网格）。网格真正旋转，每一步重新插值界面。代价高，但准确。
+
+| 项目 | MRF (frozen rotor) | Sliding mesh |
+|---|---|---|
+| 网格运动 | 无（固定） | 真实旋转 |
+| 时间 | 稳态 | 非稳态 |
+| 成本 | 低 | 高 |
+| rotor–stator相互作用 | 无法近似 | 能捕捉 |
+| 用途 | 设计校核、性能曲线 | 噪声、压力脉动 |
+
+实务流程通常是这样：用MRF快速锁定工作点，再把该解作为初场跑sliding mesh，看非稳态细节。
+
+## Python — 旋转坐标系中自由粒子的轨迹
+
+用最简单的问题来检验理论。一个不受任何力的自由粒子。在绝对坐标系中它应当沿直线飞行。如果在旋转坐标系中只用科里奥利、离心项积分，再变换回绝对坐标系时直线被复原，就说明源项是对的。
+
+```python
+import numpy as np
+
+OMEGA = np.array([0.0, 0.0, 1.2])   # 旋转角速度矢量 (rad/s), 绕 z 轴
+
+def rotating_frame_acceleration(r, v_rel):
+    """自由粒子（真实力为零）在旋转坐标系中受到的视加速度。
+    只剩科里奥利项和离心项。"""
+    coriolis = -2.0 * np.cross(OMEGA, v_rel)              # -2 Omega x u_r
+    centrifugal = -np.cross(OMEGA, np.cross(OMEGA, r))    # -Omega x (Omega x r)
+    return coriolis + centrifugal
+
+def integrate_rotating_particle(r0, v0, dt, steps):
+    """用 velocity-Verlet 变体积分相对坐标系的轨迹。"""
+    r = np.array(r0, float); v = np.array(v0, float)
+    traj = [r.copy()]
+    a = rotating_frame_acceleration(r, v)
+    for _ in range(steps):
+        r = r + v * dt + 0.5 * a * dt * dt
+        a_half = rotating_frame_acceleration(r, v)        # 依赖速度 -> 修正一次
+        v = v + 0.5 * (a + a_half) * dt
+        a = rotating_frame_acceleration(r, v)
+        traj.append(r.copy())
+    return np.array(traj)
+
+def relative_to_absolute(traj_rel, dt):
+    """把相对坐标系轨迹变回绝对坐标系: 每个时刻反向旋转 Omega*t。"""
+    w = OMEGA[2]
+    out = []
+    for k, r in enumerate(traj_rel):
+        t = k * dt
+        c, s = np.cos(w * t), np.sin(w * t)
+        out.append([c * r[0] - s * r[1], s * r[0] + c * r[1], r[2]])
+    return np.array(out)
+
+# 选取初始条件，使运动在绝对坐标系中是一条直线
+V = 0.8
+r0 = np.array([1.0, 0.0, 0.0])
+v_abs0 = np.array([0.0, V, 0.0])                # 绝对速度: 沿 +y 的直线
+v_rel0 = v_abs0 - np.cross(OMEGA, r0)           # u_r = u_a - Omega x r
+
+dt = 0.002
+traj_rel = integrate_rotating_particle(r0, v_rel0, dt, 1500)
+traj_abs = relative_to_absolute(traj_rel, dt)
+
+x_dev = np.abs(traj_abs[:, 0] - 1.0).max()      # 若为直线, x 保持 ~ 1.0
+print(f"绝对坐标系 x 最大偏离: {x_dev:.4e}")
+print(f"绝对坐标系终点: {traj_abs[-1].round(3)}")
+```
+
+关键就在 `v_rel0` 这一行。把绝对坐标系的直线运动翻译成旋转坐标系的初速度时，要减去牵连速度 $\boldsymbol{\Omega}\times\mathbf{r}$。积分后变换回来，$x$ 坐标在1.0附近几乎不晃动。这是科里奥利项与离心项符号正确的直接证据。哪怕翻转一个符号，粒子都会被甩向外侧，$x$ 偏离急剧上升。
+
+现在用眼睛看同一个运动。在下面的模拟中操作一下吧。
+
+<RotatingFrameParticleTrajectory />
+
+灰色是绝对坐标系中真正的直线路径。青色是同一运动在旋转坐标系中看到的轨迹。$\Omega = 0$ 时两者重合。提高 $\Omega$，青色卷成螺旋——这就是转盘上的观测者误当作「力」的科里奥利偏转。
+
+## 落到代码之前要盯住的陷阱
+
+记住三点，就能挡住MRF设置八成的麻烦。
+
+第一，把旋转轴和 $\boldsymbol{\Omega}$ 的方向再跟图纸核对一遍。符号反了，推力就反向。它不发散，给出一个貌似合理却错误的答案，因此很难抓到。
+
+第二，把界面放在流动平滑的地方。从叶尖涡正中切过会放大变换误差。旋转区要比叶片留得足够大。
+
+第三，别把MRF解当成绝对真理。它是稳态近似。若rotor–stator脉动很重要，就再用sliding mesh验证一次。
+
+### 给不再回头读的人的总结
+
+- 旋转参考系让你把转子当作静止来求解，代价是给动量方程加上科里奥利、离心源项。
+- MRF只在相对坐标系中求解旋转区，并在界面按 $\mathbf{u}_a=\mathbf{u}_r+\boldsymbol{\Omega}\times\mathbf{r}$ 变换速度。
+- 在自由粒子检验中，若绝对轨迹复原为直线，就是源项符号正确的信号。

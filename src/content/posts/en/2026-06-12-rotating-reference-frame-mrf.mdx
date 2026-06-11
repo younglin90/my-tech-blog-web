@@ -1,0 +1,162 @@
+---
+title: "Solving an Impeller by Holding It Still — Rotating Frames and MRF"
+date: 2026-06-12
+description: "Coriolis and centrifugal source terms plus the MRF interface transform, checked in code"
+tags: ["OpenFOAM", "MRF", "Rotating-Frame", "Coriolis", "Turbomachinery"]
+locale: en
+slug: rotating-reference-frame-mrf
+draft: false
+---
+
+import { RotatingFrameParticleTrajectory } from '@/components/post-viz/2026-06-12-rotating-reference-frame-mrf/RotatingFrameParticleTrajectory'
+import { MrfZoneInterface } from '@/components/post-viz/2026-06-12-rotating-reference-frame-mrf/MrfZoneInterface'
+
+You freeze a spinning impeller in place and solve it as if it never moved. And the answer comes out right. This is the most widely used trick for getting the steady-state performance of a pump or fan. This post follows how the momentum equation changes in a rotating reference frame, how MRF (Multiple Reference Frame) "freezes" rotation into a steady solve, and traces it all the way to working Python. At the end we mark the spot where MRF breaks.
+
+## Drop the absolute frame and the windmill stops
+
+A camera bolted to the ground sees the impeller blades whirling fast. The geometry keeps changing in time. So you need an unsteady solve.
+
+Now mount the camera on a blade. The blade sits still. Only the surrounding fluid flows past it. With the geometry frozen, a steady solve becomes possible. Turning a rotating problem into a stationary one is the whole idea of the rotating reference frame.
+
+The price is not free. Because the frame itself accelerates, two terms that were never there appear in the momentum equation.
+
+## Two fictitious forces sneak into the momentum equation
+
+Let the angular velocity be $\boldsymbol{\Omega}$, the relative velocity $\mathbf{u}_r$, and position $\mathbf{r}$. The link to absolute velocity is:
+
+$$
+\mathbf{u}_a = \mathbf{u}_r + \boldsymbol{\Omega}\times\mathbf{r}
+$$
+
+where $\mathbf{u}_a$ is the absolute (inertial) velocity and $\boldsymbol{\Omega}\times\mathbf{r}$ is the drag velocity from rotation.
+
+Substituting into Navier–Stokes gives the steady momentum equation for the relative velocity:
+
+$$
+(\mathbf{u}_r\cdot\nabla)\mathbf{u}_r
++ 2\,\boldsymbol{\Omega}\times\mathbf{u}_r
++ \boldsymbol{\Omega}\times(\boldsymbol{\Omega}\times\mathbf{r})
+= -\frac{1}{\rho}\nabla p + \nu\nabla^2\mathbf{u}_r
+$$
+
+The second term $2\,\boldsymbol{\Omega}\times\mathbf{u}_r$ is the Coriolis acceleration (it bends the direction of motion); the third $\boldsymbol{\Omega}\times(\boldsymbol{\Omega}\times\mathbf{r})$ is the centrifugal acceleration (it pushes outward from the axis). Neither is a real force. They appear only because the frame accelerates.
+
+The Coriolis term enters as a source in the momentum equation. That is exactly what OpenFOAM's `MRFSource` adds, cell by cell.
+
+## MRF — freezing rotation into a frozen rotor
+
+The heart of MRF is splitting the domain in two: a rotating zone wrapping the rotor, and a stationary zone outside it.
+
+- Rotating zone: solve the relative-velocity equation above. The Coriolis and centrifugal sources are switched on.
+- Stationary zone: solve the ordinary absolute-frame equations.
+
+The blade never actually moves. The mesh is fixed too. We merely inject the rotation effect into the rotating-zone equations as a source. That is why the method is called a frozen rotor: the relative position of the blade and the surrounding fluid is "frozen" at one instant while we find the steady solution.
+
+Try the parameters in the simulation below. Switch the frame from absolute to relative (MRF) and watch the arrows inside the rotating zone.
+
+<MrfZoneInterface />
+
+In the absolute frame the inner fluid rotates as a solid body at $\boldsymbol{\Omega}\times\mathbf{r}$. The arrows grow toward the interface. Switch to the relative (MRF) frame and the inner arrows collapse near zero, because the rotating-zone flow now looks "stationary." The outer (pink) field is unchanged.
+
+## Stitching the velocity back together at the interface
+
+The two zones are solved in different frames. So the velocities do not match at the boundary — the rotating zone stores $\mathbf{u}_r$, the stationary zone stores $\mathbf{u}_a$.
+
+At the interface you apply the transform directly. Crossing from the rotating zone to the stationary zone, add $\mathbf{u}_a = \mathbf{u}_r + \boldsymbol{\Omega}\times\mathbf{r}$; in the other direction, subtract it. Scalars like pressure and turbulence quantities pass straight through. Only vectors get the drag-velocity correction.
+
+Skip this transform and mass and momentum start leaking at the interface. The residuals stall, or an unphysical jet appears across the interface. The most common MRF mistake is placing the rotating-zone boundary too close to the blade. Put the interface where the flow is nearly axisymmetric, so the transform error stays small.
+
+## MRF versus sliding mesh — what, and when
+
+MRF is a steady-state approximation. It cannot capture the effect of the changing relative position between the blade and stationary parts like a volute (rotor–stator interaction), because it freezes one instant.
+
+When you genuinely need unsteady effects, move to a sliding mesh. The mesh actually rotates and the interface is re-interpolated every step. Expensive, but accurate.
+
+| Item | MRF (frozen rotor) | Sliding mesh |
+|---|---|---|
+| Mesh motion | none (fixed) | real rotation |
+| Time | steady | unsteady |
+| Cost | low | high |
+| Rotor–stator interaction | cannot approximate | captured |
+| Use | design checks, performance curves | noise, pressure pulsation |
+
+The usual workflow looks like this: pin the operating point quickly with MRF, then use that solution as the initial field for a sliding-mesh run to see the unsteady detail.
+
+## Python — the trajectory of a free particle in a rotating frame
+
+Let us test the theory on the simplest problem there is: a free particle under no force. In the absolute frame it must fly in a straight line. If integrating only the Coriolis and centrifugal terms in the rotating frame, then transforming back to the absolute frame, recovers that straight line, the source terms are right.
+
+```python
+import numpy as np
+
+OMEGA = np.array([0.0, 0.0, 1.2])   # angular velocity vector (rad/s), about z
+
+def rotating_frame_acceleration(r, v_rel):
+    """Apparent acceleration of a free particle (zero real force) in the
+    rotating frame. Only the Coriolis and centrifugal terms survive."""
+    coriolis = -2.0 * np.cross(OMEGA, v_rel)              # -2 Omega x u_r
+    centrifugal = -np.cross(OMEGA, np.cross(OMEGA, r))    # -Omega x (Omega x r)
+    return coriolis + centrifugal
+
+def integrate_rotating_particle(r0, v0, dt, steps):
+    """Integrate the relative-frame trajectory with a velocity-Verlet variant."""
+    r = np.array(r0, float); v = np.array(v0, float)
+    traj = [r.copy()]
+    a = rotating_frame_acceleration(r, v)
+    for _ in range(steps):
+        r = r + v * dt + 0.5 * a * dt * dt
+        a_half = rotating_frame_acceleration(r, v)        # velocity-dependent -> one correction
+        v = v + 0.5 * (a + a_half) * dt
+        a = rotating_frame_acceleration(r, v)
+        traj.append(r.copy())
+    return np.array(traj)
+
+def relative_to_absolute(traj_rel, dt):
+    """Rotate the relative trajectory back to the absolute frame: by Omega*t each instant."""
+    w = OMEGA[2]
+    out = []
+    for k, r in enumerate(traj_rel):
+        t = k * dt
+        c, s = np.cos(w * t), np.sin(w * t)
+        out.append([c * r[0] - s * r[1], s * r[0] + c * r[1], r[2]])
+    return np.array(out)
+
+# Choose initial conditions so the motion is a straight line in the absolute frame
+V = 0.8
+r0 = np.array([1.0, 0.0, 0.0])
+v_abs0 = np.array([0.0, V, 0.0])                # absolute velocity: straight along +y
+v_rel0 = v_abs0 - np.cross(OMEGA, r0)           # u_r = u_a - Omega x r
+
+dt = 0.002
+traj_rel = integrate_rotating_particle(r0, v_rel0, dt, 1500)
+traj_abs = relative_to_absolute(traj_rel, dt)
+
+x_dev = np.abs(traj_abs[:, 0] - 1.0).max()      # for a straight line, x stays ~ 1.0
+print(f"max x deviation in absolute frame: {x_dev:.4e}")
+print(f"absolute end point: {traj_abs[-1].round(3)}")
+```
+
+The key is the single line `v_rel0`. Translating straight-line motion in the absolute frame into a rotating-frame initial velocity means subtracting the drag velocity $\boldsymbol{\Omega}\times\mathbf{r}$. After integrating and transforming back, the $x$ coordinate barely wavers from 1.0. That is direct evidence the Coriolis and centrifugal signs are correct. Flip a single sign and the particle flings outward, with the $x$ deviation shooting up.
+
+Now watch the same motion. Try it in the simulation below.
+
+<RotatingFrameParticleTrajectory />
+
+Gray is the true straight path in the absolute frame. Cyan is the same motion seen in the rotating frame. At $\Omega = 0$ the two overlap. Raise $\Omega$ and the cyan curls into a spiral — the Coriolis deflection that an observer on the turntable mistakes for a force.
+
+## Pitfalls to check before you write the code
+
+Three things head off most MRF setup trouble.
+
+First, cross-check the axis of rotation and the direction of $\boldsymbol{\Omega}$ against the drawing once more. A flipped sign sends the thrust the wrong way. It is hard to catch because the solve does not diverge — it gives a plausible but wrong answer.
+
+Second, place the interface where the flow is smooth. Slicing through the middle of a blade-tip vortex inflates the transform error. Make the rotating zone comfortably larger than the blade.
+
+Third, do not trust an MRF solution as absolute truth. It is a steady-state approximation. If rotor–stator pulsation matters, verify once more with a sliding mesh.
+
+### A summary for those who will not reread
+
+- A rotating frame lets you solve a rotor as stationary, at the cost of adding Coriolis and centrifugal sources to the momentum equation.
+- MRF solves only the rotating zone in the relative frame and transforms velocity at the interface via $\mathbf{u}_a=\mathbf{u}_r+\boldsymbol{\Omega}\times\mathbf{r}$.
+- In the free-particle test, recovering a straight absolute trajectory signals that the source-term signs are right.

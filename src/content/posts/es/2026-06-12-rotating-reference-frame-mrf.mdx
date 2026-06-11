@@ -1,0 +1,162 @@
+---
+title: "Resolver un rodete dejándolo quieto — Marcos rotativos y MRF"
+date: 2026-06-12
+description: "Términos de Coriolis y centrífugo y la transformación de interfaz MRF, verificados en código"
+tags: ["OpenFOAM", "MRF", "Rotating-Frame", "Coriolis", "Turbomachinery"]
+locale: es
+slug: rotating-reference-frame-mrf
+draft: false
+---
+
+import { RotatingFrameParticleTrajectory } from '@/components/post-viz/2026-06-12-rotating-reference-frame-mrf/RotatingFrameParticleTrajectory'
+import { MrfZoneInterface } from '@/components/post-viz/2026-06-12-rotating-reference-frame-mrf/MrfZoneInterface'
+
+Se congela un rodete que gira y se resuelve como si nunca se hubiera movido. Y aun así la respuesta sale bien. Es el truco más usado para obtener el rendimiento en estado estacionario de una bomba o un ventilador. Esta entrada sigue cómo cambia la ecuación de cantidad de movimiento en un marco de referencia rotativo (rotating reference frame), cómo MRF (Multiple Reference Frame) "congela" la rotación en un cálculo estacionario, y lo lleva todo hasta Python funcional. Al final se marca el punto donde MRF se rompe.
+
+## Si se abandona el marco absoluto, el molino se detiene
+
+Una cámara fijada al suelo ve las palas del rodete girar a toda velocidad. La geometría cambia con el tiempo sin parar. Por eso hace falta un cálculo no estacionario (unsteady).
+
+Ahora montemos la cámara sobre una pala. La pala queda quieta. Solo el fluido alrededor circula de forma relativa. Con la geometría congelada, un cálculo estacionario (steady) se vuelve posible. Convertir un problema rotativo en uno estático es toda la idea del marco rotativo.
+
+El precio no es gratis. Como el propio marco acelera, en la ecuación de cantidad de movimiento aparecen dos términos que antes no estaban.
+
+## Dos fuerzas ficticias se cuelan en la ecuación de cantidad de movimiento
+
+Sea la velocidad angular $\boldsymbol{\Omega}$, la velocidad relativa $\mathbf{u}_r$ y la posición $\mathbf{r}$. La relación con la velocidad absoluta es:
+
+$$
+\mathbf{u}_a = \mathbf{u}_r + \boldsymbol{\Omega}\times\mathbf{r}
+$$
+
+donde $\mathbf{u}_a$ es la velocidad absoluta (inercial) y $\boldsymbol{\Omega}\times\mathbf{r}$ es la velocidad de arrastre por la rotación.
+
+Al sustituir en Navier–Stokes se obtiene la ecuación de cantidad de movimiento estacionaria para la velocidad relativa:
+
+$$
+(\mathbf{u}_r\cdot\nabla)\mathbf{u}_r
++ 2\,\boldsymbol{\Omega}\times\mathbf{u}_r
++ \boldsymbol{\Omega}\times(\boldsymbol{\Omega}\times\mathbf{r})
+= -\frac{1}{\rho}\nabla p + \nu\nabla^2\mathbf{u}_r
+$$
+
+El segundo término $2\,\boldsymbol{\Omega}\times\mathbf{u}_r$ es la aceleración de Coriolis (desvía la dirección del movimiento); el tercero $\boldsymbol{\Omega}\times(\boldsymbol{\Omega}\times\mathbf{r})$ es la aceleración centrífuga (empuja hacia afuera desde el eje). Ninguna es una fuerza real. Aparecen solo porque el marco acelera.
+
+El término de Coriolis entra como fuente en la ecuación de cantidad de movimiento. Eso es exactamente lo que el `MRFSource` de OpenFOAM añade, celda a celda.
+
+## MRF — congelar la rotación en un frozen rotor
+
+El corazón de MRF es dividir el dominio en dos: una zona rotativa (rotating zone) que envuelve al rotor, y una zona estacionaria (stationary zone) afuera.
+
+- Zona rotativa: se resuelve la ecuación de velocidad relativa de arriba. Las fuentes de Coriolis y centrífuga se activan.
+- Zona estacionaria: se resuelven las ecuaciones ordinarias del marco absoluto.
+
+La pala nunca se mueve de verdad. La malla también está fija. Solo inyectamos el efecto de rotación en las ecuaciones de la zona rotativa como una fuente. Por eso el método se llama frozen rotor (rotor congelado): la posición relativa entre la pala y el fluido se "congela" en un instante mientras se busca la solución estacionaria.
+
+Prueba los parámetros en la simulación de abajo. Cambia el marco de absoluto a relativo (MRF) y observa las flechas dentro de la zona rotativa.
+
+<MrfZoneInterface />
+
+En el marco absoluto el fluido interior gira como sólido rígido a $\boldsymbol{\Omega}\times\mathbf{r}$. Las flechas crecen hacia la interfaz. Al cambiar al marco relativo (MRF) las flechas interiores se desploman cerca de cero, porque el flujo de la zona rotativa ahora parece "quieto". El campo exterior (rosa) no cambia.
+
+## Volver a coser la velocidad en la interfaz
+
+Las dos zonas se resuelven en marcos distintos. Así que las velocidades no coinciden en la frontera: la zona rotativa guarda $\mathbf{u}_r$ y la estacionaria guarda $\mathbf{u}_a$.
+
+En la interfaz se aplica la transformación directamente. Al cruzar de la zona rotativa a la estacionaria, se suma $\mathbf{u}_a = \mathbf{u}_r + \boldsymbol{\Omega}\times\mathbf{r}$; en sentido contrario, se resta. Los escalares como la presión y las cantidades de turbulencia pasan sin cambio. Solo los vectores reciben la corrección de la velocidad de arrastre.
+
+Si falta esta transformación, la masa y la cantidad de movimiento empiezan a fugarse en la interfaz. Los residuos se estancan, o aparece un chorro no físico que cruza la interfaz. El error más común al configurar MRF es colocar la frontera de la zona rotativa demasiado cerca de la pala. La interfaz debe ir donde el flujo es casi axisimétrico, para que el error de transformación quede pequeño.
+
+## MRF frente a sliding mesh — qué y cuándo
+
+MRF es una aproximación de estado estacionario. No puede captar el efecto del cambio en la posición relativa entre la pala y las partes estáticas como una voluta (interacción rotor–estator), porque congela un instante.
+
+Cuando de verdad se necesitan efectos no estacionarios, se pasa a una sliding mesh (malla deslizante). La malla gira de verdad y la interfaz se vuelve a interpolar en cada paso. Costosa, pero precisa.
+
+| Aspecto | MRF (frozen rotor) | Sliding mesh |
+|---|---|---|
+| Movimiento de malla | ninguno (fija) | rotación real |
+| Tiempo | estacionario | no estacionario |
+| Costo | bajo | alto |
+| Interacción rotor–estator | no aproximable | captada |
+| Uso | verificación de diseño, curvas de rendimiento | ruido, pulsación de presión |
+
+El flujo de trabajo habitual es así: fijar el punto de operación rápido con MRF y luego usar esa solución como campo inicial de una corrida de sliding mesh para ver el detalle no estacionario.
+
+## Python — la trayectoria de una partícula libre en un marco rotativo
+
+Pongamos a prueba la teoría con el problema más simple que hay: una partícula libre sin fuerza alguna. En el marco absoluto debe volar en línea recta. Si al integrar solo los términos de Coriolis y centrífugo en el marco rotativo, y luego transformar de vuelta al marco absoluto, se recupera esa línea recta, entonces los términos fuente están bien.
+
+```python
+import numpy as np
+
+OMEGA = np.array([0.0, 0.0, 1.2])   # vector de velocidad angular (rad/s), eje z
+
+def rotating_frame_acceleration(r, v_rel):
+    """Aceleracion aparente de una particula libre (fuerza real cero) en el
+    marco rotativo. Solo sobreviven los terminos de Coriolis y centrifugo."""
+    coriolis = -2.0 * np.cross(OMEGA, v_rel)              # -2 Omega x u_r
+    centrifugal = -np.cross(OMEGA, np.cross(OMEGA, r))    # -Omega x (Omega x r)
+    return coriolis + centrifugal
+
+def integrate_rotating_particle(r0, v0, dt, steps):
+    """Integra la trayectoria del marco relativo con una variante velocity-Verlet."""
+    r = np.array(r0, float); v = np.array(v0, float)
+    traj = [r.copy()]
+    a = rotating_frame_acceleration(r, v)
+    for _ in range(steps):
+        r = r + v * dt + 0.5 * a * dt * dt
+        a_half = rotating_frame_acceleration(r, v)        # depende de la velocidad -> una correccion
+        v = v + 0.5 * (a + a_half) * dt
+        a = rotating_frame_acceleration(r, v)
+        traj.append(r.copy())
+    return np.array(traj)
+
+def relative_to_absolute(traj_rel, dt):
+    """Rota la trayectoria relativa de vuelta al marco absoluto: en Omega*t cada instante."""
+    w = OMEGA[2]
+    out = []
+    for k, r in enumerate(traj_rel):
+        t = k * dt
+        c, s = np.cos(w * t), np.sin(w * t)
+        out.append([c * r[0] - s * r[1], s * r[0] + c * r[1], r[2]])
+    return np.array(out)
+
+# Se eligen condiciones iniciales para que el movimiento sea recto en el marco absoluto
+V = 0.8
+r0 = np.array([1.0, 0.0, 0.0])
+v_abs0 = np.array([0.0, V, 0.0])                # velocidad absoluta: recta en +y
+v_rel0 = v_abs0 - np.cross(OMEGA, r0)           # u_r = u_a - Omega x r
+
+dt = 0.002
+traj_rel = integrate_rotating_particle(r0, v_rel0, dt, 1500)
+traj_abs = relative_to_absolute(traj_rel, dt)
+
+x_dev = np.abs(traj_abs[:, 0] - 1.0).max()      # si es recta, x se mantiene ~ 1.0
+print(f"desviacion maxima de x en el marco absoluto: {x_dev:.4e}")
+print(f"punto final absoluto: {traj_abs[-1].round(3)}")
+```
+
+La clave es la única línea `v_rel0`. Traducir el movimiento rectilíneo del marco absoluto a una velocidad inicial en el marco rotativo significa restar la velocidad de arrastre $\boldsymbol{\Omega}\times\mathbf{r}$. Tras integrar y transformar de vuelta, la coordenada $x$ apenas se desvía de 1.0. Es prueba directa de que los signos de Coriolis y centrífugo son correctos. Basta invertir un signo para que la partícula salga disparada hacia afuera y la desviación de $x$ se dispare.
+
+Ahora veamos el mismo movimiento. Prueba la simulación de abajo.
+
+<RotatingFrameParticleTrajectory />
+
+El gris es la verdadera trayectoria recta en el marco absoluto. El cian es el mismo movimiento visto en el marco rotativo. Con $\Omega = 0$ ambos coinciden. Al subir $\Omega$ el cian se enrosca en espiral: la desviación de Coriolis que un observador sobre la plataforma giratoria confunde con una fuerza.
+
+## Trampas que revisar antes de pasar al código
+
+Tres cosas evitan la mayoría de los problemas al configurar MRF.
+
+Primero, contrasta el eje de rotación y la dirección de $\boldsymbol{\Omega}$ con el plano una vez más. Un signo invertido manda el empuje al revés. Cuesta detectarlo porque el cálculo no diverge: da una respuesta verosímil pero equivocada.
+
+Segundo, coloca la interfaz donde el flujo sea suave. Cortar por el centro de un vórtice de punta de pala infla el error de transformación. Haz la zona rotativa cómodamente más grande que la pala.
+
+Tercero, no confíes en una solución MRF como verdad absoluta. Es una aproximación estacionaria. Si importa la pulsación rotor–estator, verifica una vez más con una sliding mesh.
+
+### Un resumen para quien no volverá a leer
+
+- Un marco rotativo permite resolver un rotor como estático, a cambio de añadir fuentes de Coriolis y centrífuga a la ecuación de cantidad de movimiento.
+- MRF resuelve solo la zona rotativa en el marco relativo y transforma la velocidad en la interfaz mediante $\mathbf{u}_a=\mathbf{u}_r+\boldsymbol{\Omega}\times\mathbf{r}$.
+- En la prueba de la partícula libre, recuperar una trayectoria absoluta recta indica que los signos de los términos fuente son correctos.

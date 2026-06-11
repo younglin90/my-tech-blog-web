@@ -1,0 +1,162 @@
+---
+title: "インペラを止めたまま解く — 回転基準系とMRF"
+date: 2026-06-12
+description: "回転系のコリオリ・遠心力項とMRFインターフェース変換をコードで検証する"
+tags: ["OpenFOAM", "MRF", "Rotating-Frame", "Coriolis", "Turbomachinery"]
+locale: ja
+slug: rotating-reference-frame-mrf
+draft: false
+---
+
+import { RotatingFrameParticleTrajectory } from '@/components/post-viz/2026-06-12-rotating-reference-frame-mrf/RotatingFrameParticleTrajectory'
+import { MrfZoneInterface } from '@/components/post-viz/2026-06-12-rotating-reference-frame-mrf/MrfZoneInterface'
+
+回転するインペラを止めたまま解析します。それでも答えは合います。ポンプやファンの定常性能を求めるとき、最も広く使われるトリックがこれです。この記事では、回転基準系（rotating reference frame）で運動量方程式がどう変わるか、MRF（Multiple Reference Frame）がどうやって回転を「凍結」して定常解析にするかを、数式とPythonで追っていきます。最後にMRFが破綻する場所も示します。
+
+## 絶対座標系を捨てると風車が止まる
+
+地面に固定したカメラで見ると、インペラの羽根は速く回ります。形状が時間とともに変わり続けます。だから非定常（unsteady）解析が必要になります。
+
+今度はカメラを羽根の上に載せてみましょう。羽根は止まっています。周りの流体だけが相対的に流れます。形状が変わらないので定常（steady）解析が可能になります。回転体の問題を静止問題に変える、この発想が回転基準系のすべてです。
+
+ただし代償があります。座標系そのものが加速するため、運動量方程式にもともと無かった項が二つ加わります。
+
+## 運動量方程式に紛れ込む二つの見かけの力
+
+回転角速度を $\boldsymbol{\Omega}$、相対速度を $\mathbf{u}_r$、位置を $\mathbf{r}$ とします。絶対速度との関係は次のとおりです。
+
+$$
+\mathbf{u}_a = \mathbf{u}_r + \boldsymbol{\Omega}\times\mathbf{r}
+$$
+
+ここで $\mathbf{u}_a$ は絶対（慣性）座標系の速度、$\boldsymbol{\Omega}\times\mathbf{r}$ は回転による引きずり速度です。
+
+これをNavier–Stokesに代入すると、相対速度に対する定常運動量方程式が得られます。
+
+$$
+(\mathbf{u}_r\cdot\nabla)\mathbf{u}_r
++ 2\,\boldsymbol{\Omega}\times\mathbf{u}_r
++ \boldsymbol{\Omega}\times(\boldsymbol{\Omega}\times\mathbf{r})
+= -\frac{1}{\rho}\nabla p + \nu\nabla^2\mathbf{u}_r
+$$
+
+左辺第2項 $2\,\boldsymbol{\Omega}\times\mathbf{u}_r$ がコリオリ加速度（運動方向を曲げる項）、第3項 $\boldsymbol{\Omega}\times(\boldsymbol{\Omega}\times\mathbf{r})$ が遠心加速度（軸から外向きに押す項）です。どちらも実在の力ではありません。座標系が加速するために現れる見かけの項です。
+
+コリオリ項は運動量方程式のソースとして入ります。それがまさにOpenFOAMの `MRFSource` がセルごとに加える処理です。
+
+## MRF — 回転を静止に凍らせるfrozen rotor
+
+MRFの核心は領域を二つに分けることです。回転体を包む回転領域（rotating zone）と、その外側の静止領域（stationary zone）です。
+
+- 回転領域：上の相対速度方程式を解く。コリオリ・遠心ソースがオンになる。
+- 静止領域：通常の絶対座標系方程式を解く。
+
+羽根は実際には動きません。メッシュも固定です。ただ回転領域の方程式に回転効果をソースとして注入するだけです。だからこの方式をfrozen rotor（凍結ローター）と呼びます。羽根と周囲流体の相対位置を一瞬で「凍結」したまま定常解を求めます。
+
+下のシミュレーションでパラメータを直接操作してみましょう。フレームを絶対から相対（MRF）に切り替えると、回転領域内の矢印がどう変わるか見てください。
+
+<MrfZoneInterface />
+
+絶対フレームでは内側の流体が $\boldsymbol{\Omega}\times\mathbf{r}$ だけ剛体回転します。矢印はインターフェースに近づくほど大きくなります。相対（MRF）フレームに切り替えると、内側の矢印がゼロ近くまで沈みます。回転領域の流れが「静止」したように見えるからです。外側（ピンク）の場はそのままです。
+
+## インターフェースで速度を縫い合わせる
+
+二つの領域は異なる座標系で解きます。すると境界で速度が合いません。回転領域は $\mathbf{u}_r$、静止領域は $\mathbf{u}_a$ で保存するからです。
+
+インターフェースでは上の変換式をそのまま適用します。回転領域から静止領域へ渡るとき $\mathbf{u}_a = \mathbf{u}_r + \boldsymbol{\Omega}\times\mathbf{r}$ で足し、逆方向なら引きます。圧力や乱流量のようなスカラーはそのまま通過します。ベクトルだけが引きずり速度の補正を受けます。
+
+この変換が抜けると、インターフェースで質量と運動量が漏れ始めます。残差が下がらなかったり、インターフェースを横切る非物理的なジェットが生じたりします。MRF設定で最も多い間違いは、回転領域の境界を羽根に近づけすぎることです。インターフェースは流れがほぼ軸対称になる場所に置くと、変換誤差が小さくなります。
+
+## MRFとsliding mesh、何をいつ
+
+MRFは定常状態の近似です。羽根とボリュート（volute）のような静止構造との相対位置が時間とともに変わる効果（rotor–stator相互作用）を捉えられません。一瞬の位置で凍結するからです。
+
+本当に非定常効果が必要なら、sliding mesh（滑りメッシュ）に進みます。メッシュが実際に回転し、毎ステップでインターフェースを再補間します。高価ですが正確です。
+
+| 項目 | MRF (frozen rotor) | Sliding mesh |
+|---|---|---|
+| メッシュ運動 | なし（固定） | 実際に回転 |
+| 時間 | 定常 | 非定常 |
+| コスト | 低い | 高い |
+| rotor–stator相互作用 | 近似できない | 捉える |
+| 用途 | 設計チェック、性能曲線 | 騒音、圧力脈動 |
+
+実務の流れはたいていこうです。MRFで素早く作動点を押さえ、その解を初期場としてsliding meshを回し、非定常の細部を見ます。
+
+## Python — 回転座標系における自由粒子の軌道
+
+理論が正しいか、最も単純な問題で検証しましょう。何の力も受けない自由粒子です。絶対座標系では直線で飛ぶはずです。回転座標系でコリオリ・遠心項だけで積分し、再び絶対座標系へ戻したとき直線が復元されれば、ソース項が正しいという意味です。
+
+```python
+import numpy as np
+
+OMEGA = np.array([0.0, 0.0, 1.2])   # 回転角速度ベクトル (rad/s), z軸まわり
+
+def rotating_frame_acceleration(r, v_rel):
+    """自由粒子（実際の力ゼロ）が回転座標系で受ける見かけの加速度。
+    コリオリ項と遠心項だけが残る。"""
+    coriolis = -2.0 * np.cross(OMEGA, v_rel)              # -2 Omega x u_r
+    centrifugal = -np.cross(OMEGA, np.cross(OMEGA, r))    # -Omega x (Omega x r)
+    return coriolis + centrifugal
+
+def integrate_rotating_particle(r0, v0, dt, steps):
+    """velocity-Verlet 変種で相対座標系の軌道を積分する。"""
+    r = np.array(r0, float); v = np.array(v0, float)
+    traj = [r.copy()]
+    a = rotating_frame_acceleration(r, v)
+    for _ in range(steps):
+        r = r + v * dt + 0.5 * a * dt * dt
+        a_half = rotating_frame_acceleration(r, v)        # 速度依存 -> 一度補正
+        v = v + 0.5 * (a + a_half) * dt
+        a = rotating_frame_acceleration(r, v)
+        traj.append(r.copy())
+    return np.array(traj)
+
+def relative_to_absolute(traj_rel, dt):
+    """相対座標系の軌道を絶対座標系へ戻す: 各時刻 Omega*t だけ逆回転。"""
+    w = OMEGA[2]
+    out = []
+    for k, r in enumerate(traj_rel):
+        t = k * dt
+        c, s = np.cos(w * t), np.sin(w * t)
+        out.append([c * r[0] - s * r[1], s * r[0] + c * r[1], r[2]])
+    return np.array(out)
+
+# 絶対座標系で直線運動になるよう初期条件を設定する
+V = 0.8
+r0 = np.array([1.0, 0.0, 0.0])
+v_abs0 = np.array([0.0, V, 0.0])                # 絶対速度: +y 方向の直線
+v_rel0 = v_abs0 - np.cross(OMEGA, r0)           # u_r = u_a - Omega x r
+
+dt = 0.002
+traj_rel = integrate_rotating_particle(r0, v_rel0, dt, 1500)
+traj_abs = relative_to_absolute(traj_rel, dt)
+
+x_dev = np.abs(traj_abs[:, 0] - 1.0).max()      # 直線なら x は ~ 1.0 を保つ
+print(f"絶対座標系の x 最大ずれ: {x_dev:.4e}")
+print(f"絶対座標系の終点: {traj_abs[-1].round(3)}")
+```
+
+鍵は `v_rel0` の一行です。絶対座標系の直線運動を回転座標系の初期速度へ翻訳するとき、引きずり速度 $\boldsymbol{\Omega}\times\mathbf{r}$ を引きます。積分後に戻すと、$x$ 座標は1.0付近でほとんど揺れません。コリオリ項と遠心項の符号が合っている直接の証拠です。符号を一つでも反転させると、粒子は外へ弾き飛ばされ、$x$ のずれが急増します。
+
+今度は同じ運動を目で見ましょう。下のシミュレーションで操作してみましょう。
+
+<RotatingFrameParticleTrajectory />
+
+灰色は絶対座標系での本当の直線経路です。シアンは同じ運動を回転座標系で見た軌道です。$\Omega = 0$ なら二つは重なります。$\Omega$ を上げるとシアンが螺旋に巻きます。回転盤上の観測者が「力」と勘違いするコリオリの曲がりです。
+
+## コードに移す前に押さえる落とし穴
+
+三つだけ覚えれば、MRF設定の8割の問題は防げます。
+
+第一に、回転軸と $\boldsymbol{\Omega}$ の向きを図面ともう一度照合してください。符号が逆だと推力が真逆に出ます。発散せず「もっともらしく間違った」答えになるので見つけにくいです。
+
+第二に、インターフェースは流れが滑らかな場所に置いてください。羽根端渦の真ん中を切ると変換誤差が大きくなります。回転領域は羽根より十分大きく取ります。
+
+第三に、MRF解を絶対の真実と信じないでください。定常状態の近似です。rotor–stator脈動が重要な問題なら、sliding meshでもう一度検証します。
+
+### もう読み返さない人のための要約
+
+- 回転基準系は回転体を静止として解けるようにし、その代償にコリオリ・遠心ソース項を運動量方程式へ加える。
+- MRFは回転領域だけを相対座標系で解き、インターフェースで $\mathbf{u}_a=\mathbf{u}_r+\boldsymbol{\Omega}\times\mathbf{r}$ により速度を変換する。
+- 自由粒子の検証で絶対軌道が直線に復元されれば、ソース項の符号が正しいという合図です。
