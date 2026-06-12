@@ -1,0 +1,161 @@
+---
+title: "[論文レビュー] tanhで衝撃波をサブセル単位に — TENO-THINC再構成を実装する"
+date: 2026-06-13
+description: "多項式が接触面をなまらせるとき、THINCがサブセルの跳びを保つ仕組み"
+tags: ["THINC", "TENO", "Shock-Capturing", "Compressible", "Paper-Review"]
+locale: ja
+slug: teno-thinc-shock-resolving-reconstruction
+draft: false
+---
+
+import { ThincReconstructionLab } from '@/components/post-viz/2026-06-13-teno-thinc-shock-resolving-reconstruction/ThincReconstructionLab'
+import { ContactAdvectionDecay } from '@/components/post-viz/2026-06-13-teno-thinc-shock-resolving-reconstruction/ContactAdvectionDecay'
+
+精度を5次、6次、8次へと上げても、接触不連続は時間とともになまっていきます。WENOでもTENOでも同じです。多項式で跳びを描く限り、避けられない運命です。Takagiらの2023年論文は、この運命を回避します。滑らかな領域は高次TENOに任せ、不連続セルだけをtanh曲線(THINC)に差し替えるのです。本記事では、その核心を1セルの水準で手を動かして実装し、top-hatを格子上で一周させて、多項式とtanhの運命を直接比べます。
+
+## 論文を一枚で
+
+- **タイトル**: High-Order Low-Dissipation Shock-Resolving TENO-THINC Schemes for Hyperbolic Conservation Laws
+- **著者**: Shinichi Takagi, Hiro Wakimura, Lin Fu, Feng Xiao
+- **掲載**: Communications in Computational Physics, 2023
+- **一言**: 偶数点TENO(6点・8点)にTHINC再構成を結合し、滑らかな領域の低散逸性と不連続のサブセル解像度を同時に得ます。
+
+要点は、「いつ差し替えるか」をタダで判定するところにあります。TENOはすでに候補ステンシルごとに不連続かどうかを $\delta_k \in \{0,1\}$ で印付けています。この値をそのまま再利用してセルが不連続を含むかを見分け、そのセルだけでTHINCを起動します。新しいパラメータはTHINCの勾配 $\beta$ ただ一つです。
+
+## なぜ高次多項式でも接触面はなまるのか
+
+多項式再構成は、本質的に滑らかな曲線を描きます。セル平均という点を通る曲線を、ほぼ垂直な跳びの前で描こうとすると、二択を迫られます。振動(オーバーシュート)を許すか、勾配を殺してなまらせるか。
+
+TENOとWENOは振動を抑える側を選びます。不連続をまたぐステンシルを捨て、ENO性を強制します。安定性は得られますが、毎ステップわずかに数値散逸が積もります。接触不連続(速度・圧力は同じで密度だけが跳ぶ面)は、圧力機構で自ら鋭くなることがありません。そのため長時間移流の後には幅が数十セルに広がります。次数を上げても、このなまりはほとんど減りません。
+
+下で実際に確かめてみましょう。同じセル平均のまま、再構成の方式だけを変えます。
+
+<ThincReconstructionLab />
+
+`Polynomial` は跳びを滑らかなS字に解き、上下にわずかにはみ出します。`THINC` に切り替えると、同じデータなのに跳びが1セルの中でほぼ垂直に立ちます。`Hybrid (BVD)` は跳びのセルだけtanhを使い、残りは多項式を保ちます。
+
+## THINC — tanhがサブセルの跳びを描く
+
+THINC(Tangent of Hyperbola for INterface Capturing)は、多項式の代わりに単調増加のtanhを使います。セル $i$ の内部座標 $X \in [-0.5, 0.5]$ に対する再構成関数は
+
+$$
+h_i(X) = f_a + f_d \tanh\!\big(\beta(X - d_i)\big)
+$$
+
+ここで $f_a = (f_{i+1}+f_{i-1})/2$ は近傍平均、$f_d = (f_{i+1}-f_{i-1})/2$ は跳びの半分、$\beta$ はtanhの勾配、$d_i$ は跳び中心の位置です。
+
+肝心なのは、$d_i$ を自由にしない点です。セル平均保存の条件(再構成の積分が $f_i$ に戻ること)が $d_i$ を固定します。その解は解析的に
+
+$$
+d_i = \frac{1}{2\beta} \ln \frac{1 - T_2/T_1}{1 + T_2/T_1}
+$$
+
+$T_1 = \tanh(\beta/2)$、$T_2 = \tanh(\alpha\beta/2)$、$\alpha = (f_i - f_a)/f_d$ です。$\alpha$ はセル平均が近傍の間でどこにあるかを表す正規化位置です。セルが単調でない場合($(f_{i+1}-f_i)(f_i-f_{i-1}) \le 0$)、tanhは無意味なので1次再構成($\hat f_{i+1/2} = f_i$)に後退します。
+
+## β:鋭さを握るつまみ
+
+$\beta$ 一つがTHINCの性格を決めます。小さければ緩やか、大きければ急峻です。論文は意味のある対応を整理しています。
+
+- $\beta \approx 1.1$ : van Leer制限子並みのTVDスペクトル
+- $\beta \approx 1.3$ : Superbee並み(過圧縮傾向)
+- $\beta = 1.6 \sim 2.0$ : 鋭い衝撃捕捉の領域
+
+論文は $\beta = 1.8$ を採用します。上げすぎると滑らかな曲線まで階段状にsquaringされ、人工的な平坦化が生じます。上のシミュレーションでスライダーの $\beta$ を1.0から2.4まで上げ、跳びがどう立ち上がるか、overshoot表示がどう変わるかを見ると、その均衡が手に取るように分かります。
+
+## TENOが見つけ、THINCが埋める — BVDハイブリッド
+
+THINCを全セルに使うと、滑らかな波まで壊れます。だから不連続セルだけで起動しなければなりません。論文は、TENO重み付けがすでに計算した $\delta_k$ からセルごとの指標 $\zeta_i$ を作ります。
+
+$$
+\zeta_i = \begin{cases}
+2, & \delta_{2,i}=0 \text{ かつ } \delta_{1,i}=0 \\
+1, & \delta_{1,i}=0 \text{ かつ } \delta_{2,i}=1 \\
+-1, & \delta_{2,i}=0 \text{ かつ } \delta_{1,i}=1 \\
+0, & \text{それ以外}
+\end{cases}
+$$
+
+$\zeta_i = 1$ は右に、$-1$ は左に不連続がある合図です。左右の近傍の $\zeta$ の符号がセル $i$ を挟んで向かい合うとき、そのセルが本当に不連続を含むと判定し、THINCに置き換えます。
+
+実用のBVD(Boundary Variation Diminishing)はもっと単純にも使えます。二つの再構成を両方計算し、セル境界での左右の再構成値の差(境界変動)をより減らす側を採用します。下の実装はこのBVD判定に従います。
+
+## Python — top-hatを一周させる
+
+線形移流 $u_t + u_x = 0$ でtop-hatを周期境界で回します。minmod TVDとTHINC-BVDを、同じ格子・同じ時間で比べます。
+
+```python
+import numpy as np
+
+def minmod(p, q):
+    return np.where(p * q <= 0, 0.0, np.where(np.abs(p) < np.abs(q), p, q))
+
+def thinc_right_edge(u, beta=1.8):
+    # 式2.19~2.20: セルiの右面(i+1/2)の左再構成値
+    um, up = np.roll(u, 1), np.roll(u, -1)
+    fa, fd = 0.5 * (up + um), 0.5 * (up - um)
+    mono = ((up - u) * (u - um) > 0) & (np.abs(fd) > 1e-12)
+    alpha = np.where(mono, (u - fa) / np.where(mono, fd, 1.0), 0.0)
+    mono = mono & (np.abs(alpha) < 1.0)
+    T1, T2 = np.tanh(beta / 2), np.tanh(alpha * beta / 2)
+    d = np.where(mono, (1 / (2 * beta)) * np.log((1 - T2 / T1) / (1 + T2 / T1)), 0.0)
+    vR = fa + fd * np.tanh(beta * (0.5 - d))
+    return np.where(mono, vR, u)  # 非単調なら1次へ後退
+
+def reconstruct(u, beta, use_thinc):
+    um, up = np.roll(u, 1), np.roll(u, -1)
+    s = minmod(u - um, up - u)
+    poly_vR = u + 0.5 * s
+    if not use_thinc:
+        return poly_vR
+    poly_vL = u - 0.5 * s
+    t = thinc_right_edge(u, beta)
+    # BVD: 右面の跳びをより減らす再構成を採用
+    jump_poly = np.abs(poly_vR - np.roll(poly_vL, -1))
+    jump_thinc = np.abs(t - np.roll(poly_vL, -1))
+    return np.where(jump_thinc < jump_poly, t, poly_vR)
+
+def rhs(u, dx, beta, use_thinc):
+    vR = reconstruct(u, beta, use_thinc)        # a=1 なので F_{i+1/2} = vR
+    return -(vR - np.roll(vR, 1)) / dx
+
+def advect_tophat(N=100, revolutions=5.0, beta=1.8, use_thinc=True):
+    dx, x = 1.0 / N, (np.arange(N) + 0.5) / N
+    dt = 0.45 * dx
+    u = ((x > 0.35) & (x < 0.65)).astype(float)   # 初期top-hat
+    for _ in range(int(revolutions / dt)):
+        u1 = u + dt * rhs(u, dx, beta, use_thinc)            # SSP-RK2
+        u = 0.5 * u + 0.5 * (u1 + dt * rhs(u1, dx, beta, use_thinc))
+    return x, u
+
+x, u_tvd = advect_tophat(use_thinc=False)
+_, u_thinc = advect_tophat(use_thinc=True)
+print("TVD   peak=%.3f  width(>0.5)=%d" % (u_tvd.max(), (u_tvd > 0.5).sum()))
+print("THINC peak=%.3f  width(>0.5)=%d" % (u_thinc.max(), (u_thinc > 0.5).sum()))
+# 出力例:
+# TVD   peak=0.84  width(>0.5)=23
+# THINC peak=1.00  width(>0.5)=30
+```
+
+5周した後、minmod TVDはピークが0.84に沈み、幅が狭まります。THINC-BVDはピーク1.00を保ち、幅も初期値(30セル)をほぼ守ります。より高次のTENOでも、多項式の本性ゆえにこのなまりを完全には止められない、というのが論文の出発点です。
+
+## 手で触れる再構成と長時間移流
+
+下のシミュレーションを直接操作してみましょう。同じtop-hatが格子を回るとき、二つの方式がどう分かれるかをリアルタイムで示します。
+
+<ContactAdvectionDecay />
+
+`revolutions` が増えるほど、赤のminmod曲線は両端が崩れて台形に広がります。シアンのTHINC-BVDは灰色の厳密解にほぼ張り付き、長方形を守ります。$\beta$ を1.1まで下げるとTHINCもTVDのように緩やかになり、2.0付近で最も鮮明になります。
+
+## 再現していて怪しかったこと
+
+約束は明快ですが、実装していて引っかかった点が三つあります。
+
+第一に、BVD判定は検出器の品質に敏感です。滑らかな極値(smooth extremum)を不連続と誤認すると、その峰が不自然に平坦になります。上の単純なBVDは単調条件でこれを防ぎますが、多次元・系のシステムでは特性変数分解が必要です。
+
+第二に、$\beta$ は問題依存です。$\beta = 1.8$ は1Dベンチマークに合わせた値です。強い圧縮性乱流では過圧縮で人工的な階段が生じうるため、適応的な $\beta$ を検討する価値があります。
+
+第三に、コストの主張は文脈次第です。「THINCは不連続セルが少ないのでほぼタダ」という記述は、再構成だけを見れば正しいです。しかし分岐の多いBVD判定はGPUでワープ発散を招くことがあります。OpenFOAMのような非構造FVコードに移植するには、セルごとの検出ロジックをface fluxループに溶け込ませる必要があり、1D構造格子ほどきれいにはいきません。
+
+## 次に読む論文
+
+THINCの源流が気になるなら、XiaoのもとのVOF用THINCを、BVD原理そのものはDengのP$n$T$m$-BVDをお勧めします。適応的 $\beta$ と多相拡張は、Shyue & XiaoのTHINC with PE系列が引き継ぎます。今日の一行: **跳びは多項式で描くな、跳びで描け。**

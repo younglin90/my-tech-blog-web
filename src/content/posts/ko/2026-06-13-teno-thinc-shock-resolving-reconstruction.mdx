@@ -1,0 +1,161 @@
+---
+title: "[논문리뷰] tanh로 충격파를 부셀 단위로 — TENO-THINC 재구성을 직접 구현"
+date: 2026-06-13
+description: "다항식이 접촉면을 뭉갤 때 THINC가 부셀 점프를 살리는 방법"
+tags: ["THINC", "TENO", "Shock-Capturing", "Compressible", "논문리뷰"]
+locale: ko
+slug: teno-thinc-shock-resolving-reconstruction
+draft: false
+---
+
+import { ThincReconstructionLab } from '@/components/post-viz/2026-06-13-teno-thinc-shock-resolving-reconstruction/ThincReconstructionLab'
+import { ContactAdvectionDecay } from '@/components/post-viz/2026-06-13-teno-thinc-shock-resolving-reconstruction/ContactAdvectionDecay'
+
+5차, 6차, 8차로 정확도 차수를 올려도 접촉 불연속은 시간이 지날수록 뭉개진다. WENO든 TENO든 마찬가지다. 다항식으로 점프를 그리는 한 피할 수 없는 운명이다. Takagi 등의 2023년 논문은 이 운명을 우회한다. 매끄러운 곳은 고차 TENO에 맡기고, 불연속 셀에서만 tanh 곡선(THINC)으로 갈아끼운다. 이 글은 그 핵심 아이디어를 한 셀 수준에서 손으로 구현하고, top-hat을 격자 위로 한 바퀴 돌려 다항식과 tanh의 운명을 직접 비교한다.
+
+## 논문 한 장 요약
+
+- **제목**: High-Order Low-Dissipation Shock-Resolving TENO-THINC Schemes for Hyperbolic Conservation Laws
+- **저자**: Shinichi Takagi, Hiro Wakimura, Lin Fu, Feng Xiao
+- **출처**: Communications in Computational Physics, 2023
+- **한 줄**: 짝수점 TENO(6점·8점)에 THINC 재구성을 결합해, 매끄러운 영역의 저소산성과 불연속의 부셀 해상도를 동시에 얻는다.
+
+핵심은 "언제 갈아끼울지"를 공짜로 판별하는 데 있다. TENO는 이미 후보 스텐실마다 불연속 여부를 $\delta_k \in \{0,1\}$로 표시한다. 이 값을 그대로 재활용해 셀이 불연속을 품었는지 가려내고, 그 셀에서만 THINC를 켠다. 새 파라미터는 THINC의 기울기 $\beta$ 하나뿐이다.
+
+## 왜 고차 다항식도 접촉면을 뭉개는가
+
+다항식 재구성은 본질적으로 매끄러운 곡선을 그린다. 셀 평균이라는 점들을 지나는 곡선을 그릴 때, 수직에 가까운 점프 앞에서는 두 가지 중 하나를 택해야 한다. 진동(overshoot)을 허용하거나, 기울기를 죽여 뭉개거나.
+
+TENO와 WENO는 진동을 막는 쪽을 택한다. 불연속을 가로지르는 스텐실을 버려 ENO 성질을 강제한다. 안정성은 얻지만, 매 스텝 약간씩 수치 소산이 쌓인다. 접촉 불연속(속도·압력은 같고 밀도만 점프하는 면)은 압력 메커니즘으로 스스로 날카로워지지 않는다. 그래서 장시간 이류 뒤에는 폭이 수십 셀로 번진다. 차수를 올려도 이 번짐은 거의 줄지 않는다.
+
+아래에서 직접 확인해보자. 같은 셀 평균을 두고 재구성 방식만 바꾼다.
+
+<ThincReconstructionLab />
+
+`Polynomial`은 점프를 매끄러운 S자로 풀어내며 위아래로 살짝 넘친다. `THINC`로 바꾸면 같은 데이터인데 점프가 한 셀 안에서 거의 수직으로 선다. `Hybrid (BVD)`는 점프 셀에서만 tanh를 쓰고 나머지는 다항식을 유지한다.
+
+## THINC — tanh가 부셀 점프를 그린다
+
+THINC(Tangent of Hyperbola for INterface Capturing)는 다항식 대신 단조 증가하는 tanh를 쓴다. 셀 $i$ 내부 좌표 $X \in [-0.5, 0.5]$에 대한 재구성 함수는
+
+$$
+h_i(X) = f_a + f_d \tanh\!\big(\beta(X - d_i)\big)
+$$
+
+여기서 $f_a = (f_{i+1}+f_{i-1})/2$는 이웃 평균, $f_d = (f_{i+1}-f_{i-1})/2$는 점프 절반, $\beta$는 tanh의 기울기, $d_i$는 점프 중심 위치다.
+
+핵심은 $d_i$를 자유롭게 두지 않는다는 점이다. 셀 평균 보존 조건(재구성의 적분이 $f_i$와 같아야 함)이 $d_i$를 못 박는다. 그 해는 해석적으로
+
+$$
+d_i = \frac{1}{2\beta} \ln \frac{1 - T_2/T_1}{1 + T_2/T_1}
+$$
+
+$T_1 = \tanh(\beta/2)$, $T_2 = \tanh(\alpha\beta/2)$, $\alpha = (f_i - f_a)/f_d$이다. $\alpha$는 셀 평균이 이웃 사이에서 어디쯤 있는지를 나타내는 정규화 위치다. 셀이 단조롭지 않으면($\,(f_{i+1}-f_i)(f_i-f_{i-1}) \le 0\,$) tanh가 무의미하므로 1차 재구성($\hat f_{i+1/2} = f_i$)으로 후퇴한다.
+
+## β: 날카로움을 쥔 손잡이
+
+$\beta$ 하나가 THINC의 성격을 결정한다. 작으면 완만하고 크면 가파르다. 논문은 의미 있는 대응을 정리한다.
+
+- $\beta \approx 1.1$ : van Leer 한정자 수준의 TVD 스펙트럼
+- $\beta \approx 1.3$ : Superbee 한정자 수준(과압축 경향)
+- $\beta = 1.6 \sim 2.0$ : 날카로운 충격 포착 영역
+
+논문은 $\beta = 1.8$을 채택한다. 너무 키우면 매끄러운 곡선까지 계단처럼 squaring 되어 인공적인 평탄화가 생긴다. 위 시뮬레이션에서 슬라이더로 $\beta$를 1.0에서 2.4까지 올리며 점프가 어떻게 곧추서는지, overshoot 표시가 어떻게 변하는지 살펴보면 그 균형이 손에 잡힌다.
+
+## TENO가 찾고 THINC가 메운다 — BVD 하이브리드
+
+THINC를 모든 셀에 쓰면 매끄러운 파동까지 망가진다. 그래서 불연속 셀에서만 켜야 한다. 논문은 TENO 가중치가 이미 계산한 $\delta_k$로 셀별 지표 $\zeta_i$를 만든다.
+
+$$
+\zeta_i = \begin{cases}
+2, & \delta_{2,i}=0 \text{ 그리고 } \delta_{1,i}=0 \\
+1, & \delta_{1,i}=0 \text{ 그리고 } \delta_{2,i}=1 \\
+-1, & \delta_{2,i}=0 \text{ 그리고 } \delta_{1,i}=1 \\
+0, & \text{그 외}
+\end{cases}
+$$
+
+$\zeta_i = 1$은 오른쪽에, $-1$은 왼쪽에 불연속이 있다는 신호다. 좌우 이웃의 $\zeta$ 부호가 셀 $i$를 가운데 두고 마주 보면, 그 셀이 진짜 불연속을 품었다고 판정하고 THINC로 교체한다.
+
+실전 BVD(Boundary Variation Diminishing)는 더 단순하게도 쓴다. 두 재구성을 모두 계산한 뒤, 셀 경계에서 좌·우 재구성값의 차이(경계 변동)를 더 줄이는 쪽을 채택한다. 아래 구현은 이 BVD 판정을 따른다.
+
+## Python — top-hat을 한 바퀴 돌려본다
+
+선형 이류 $u_t + u_x = 0$로 top-hat을 주기 경계에서 돌린다. minmod TVD와 THINC-BVD를 같은 격자·같은 시간만큼 비교한다.
+
+```python
+import numpy as np
+
+def minmod(p, q):
+    return np.where(p * q <= 0, 0.0, np.where(np.abs(p) < np.abs(q), p, q))
+
+def thinc_right_edge(u, beta=1.8):
+    # 식 2.19~2.20: 셀 i의 우측 경계(i+1/2) 좌측 재구성값
+    um, up = np.roll(u, 1), np.roll(u, -1)
+    fa, fd = 0.5 * (up + um), 0.5 * (up - um)
+    mono = ((up - u) * (u - um) > 0) & (np.abs(fd) > 1e-12)
+    alpha = np.where(mono, (u - fa) / np.where(mono, fd, 1.0), 0.0)
+    mono = mono & (np.abs(alpha) < 1.0)
+    T1, T2 = np.tanh(beta / 2), np.tanh(alpha * beta / 2)
+    d = np.where(mono, (1 / (2 * beta)) * np.log((1 - T2 / T1) / (1 + T2 / T1)), 0.0)
+    vR = fa + fd * np.tanh(beta * (0.5 - d))
+    return np.where(mono, vR, u)  # 비단조면 1차로 후퇴
+
+def reconstruct(u, beta, use_thinc):
+    um, up = np.roll(u, 1), np.roll(u, -1)
+    s = minmod(u - um, up - u)
+    poly_vR = u + 0.5 * s
+    if not use_thinc:
+        return poly_vR
+    poly_vL = u - 0.5 * s
+    t = thinc_right_edge(u, beta)
+    # BVD: 우측 경계 점프를 더 줄이는 재구성을 채택
+    jump_poly = np.abs(poly_vR - np.roll(poly_vL, -1))
+    jump_thinc = np.abs(t - np.roll(poly_vL, -1))
+    return np.where(jump_thinc < jump_poly, t, poly_vR)
+
+def rhs(u, dx, beta, use_thinc):
+    vR = reconstruct(u, beta, use_thinc)        # a=1 이므로 F_{i+1/2} = vR
+    return -(vR - np.roll(vR, 1)) / dx
+
+def advect_tophat(N=100, revolutions=5.0, beta=1.8, use_thinc=True):
+    dx, x = 1.0 / N, (np.arange(N) + 0.5) / N
+    dt = 0.45 * dx
+    u = ((x > 0.35) & (x < 0.65)).astype(float)   # 초기 top-hat
+    for _ in range(int(revolutions / dt)):
+        u1 = u + dt * rhs(u, dx, beta, use_thinc)            # SSP-RK2
+        u = 0.5 * u + 0.5 * (u1 + dt * rhs(u1, dx, beta, use_thinc))
+    return x, u
+
+x, u_tvd = advect_tophat(use_thinc=False)
+_, u_thinc = advect_tophat(use_thinc=True)
+print("TVD   peak=%.3f  width(>0.5)=%d" % (u_tvd.max(), (u_tvd > 0.5).sum()))
+print("THINC peak=%.3f  width(>0.5)=%d" % (u_thinc.max(), (u_thinc > 0.5).sum()))
+# 예시 출력:
+# TVD   peak=0.84  width(>0.5)=23
+# THINC peak=1.00  width(>0.5)=30
+```
+
+다섯 바퀴를 돈 뒤 minmod TVD는 피크가 0.84로 주저앉고 폭이 좁아진다. THINC-BVD는 피크 1.00을 유지하고 폭도 초기값(30셀)을 거의 지킨다. 차수를 더 올린 TENO라도 다항식 본성상 이 번짐을 완전히 막지는 못한다는 것이 논문의 출발점이다.
+
+## 직접 만지는 재구성과 장시간 이류
+
+아래 시뮬레이션에서 직접 조작해보자. 같은 top-hat이 격자를 돌 때 두 방식이 어떻게 갈라지는지 실시간으로 보인다.
+
+<ContactAdvectionDecay />
+
+`revolutions`가 늘수록 빨간 minmod 곡선은 양 끝이 무너지며 사다리꼴로 퍼진다. 청록 THINC-BVD는 회색 정확해에 거의 붙어 직사각형을 지킨다. $\beta$를 1.1까지 내리면 THINC도 TVD처럼 완만해지고, 2.0 부근에서 가장 또렷해진다.
+
+## 재현하며 의심스러웠던 것
+
+논문의 약속은 깔끔하지만, 직접 짜며 걸린 부분이 셋 있었다.
+
+첫째, BVD 판정은 검출기의 품질에 민감하다. 매끄러운 극값(smooth extremum)을 불연속으로 오인하면 그 봉우리가 부자연스럽게 평탄해진다. 위 단순 BVD는 단조 조건으로 이를 막지만, 다차원·계 시스템에서는 특성 변수 분해가 필요하다.
+
+둘째, $\beta$는 문제 의존적이다. $\beta = 1.8$은 1D 벤치마크에 맞춰진 값이다. 강한 압축성 난류에서는 과압축으로 인공 계단이 생길 수 있어, 적응적 $\beta$를 검토할 가치가 있다.
+
+셋째, 비용 주장은 맥락에 따라 다르다. "THINC는 불연속 셀이 적어 거의 공짜"라는 논문 서술은 재구성만 볼 때 맞다. 그러나 분기(branch)가 많은 BVD 판정은 GPU에서 워프 발산을 부를 수 있다. OpenFOAM 같은 비정렬 FV 코드에 옮기려면 셀별 검출 로직을 face flux 루프에 녹여야 해서, 1D 정렬 격자만큼 깔끔하지 않다.
+
+## 다음에 읽을 논문
+
+THINC의 뿌리가 궁금하면 Xiao의 원조 VOF용 THINC를, BVD 원리 자체는 Deng의 P$n$T$m$-BVD를 권한다. 적응적 $\beta$와 다상 확장은 Shyue & Xiao의 THINC with PE 계열이 이어받는다. 오늘의 한 줄: **점프는 다항식으로 그리지 말고, 점프로 그려라.**

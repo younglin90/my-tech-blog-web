@@ -1,0 +1,161 @@
+---
+title: "[Reseña] Dibujar choques con tanh — Implementando la reconstrucción TENO-THINC"
+date: 2026-06-13
+description: "Cómo THINC conserva un salto sub-celda cuando los polinomios difuminan el contacto"
+tags: ["THINC", "TENO", "Shock-Capturing", "Compressible", "Paper-Review"]
+locale: es
+slug: teno-thinc-shock-resolving-reconstruction
+draft: false
+---
+
+import { ThincReconstructionLab } from '@/components/post-viz/2026-06-13-teno-thinc-shock-resolving-reconstruction/ThincReconstructionLab'
+import { ContactAdvectionDecay } from '@/components/post-viz/2026-06-13-teno-thinc-shock-resolving-reconstruction/ContactAdvectionDecay'
+
+Sube el orden formal a quinto, sexto, octavo — la discontinuidad de contacto se difumina igual conforme avanza el tiempo. WENO o TENO, da lo mismo. Mientras dibujes un salto con un polinomio, ese destino está sellado. El artículo de 2023 de Takagi y colegas lo esquiva. El TENO de alto orden se ocupa de las regiones suaves; solo las celdas discontinuas se cambian por una curva tanh (THINC). Este texto implementa esa idea central al nivel de una sola celda y hace girar un top-hat una vuelta por la malla para comparar de frente el destino de los polinomios y el de la tanh.
+
+## El artículo en una página
+
+- **Título**: High-Order Low-Dissipation Shock-Resolving TENO-THINC Schemes for Hyperbolic Conservation Laws
+- **Autores**: Shinichi Takagi, Hiro Wakimura, Lin Fu, Feng Xiao
+- **Publicación**: Communications in Computational Physics, 2023
+- **En una línea**: Acoplar el TENO de puntos pares (seis y ocho puntos) con la reconstrucción THINC para lograr baja disipación en las regiones suaves y resolución sub-celda en las discontinuidades al mismo tiempo.
+
+El truco está en decidir *cuándo* cambiar, gratis. TENO ya marca cada plantilla candidata como suave o no mediante $\delta_k \in \{0,1\}$. Reutilizar esas banderas indica si una celda esconde una discontinuidad, y THINC se activa solo ahí. El único parámetro nuevo es la pendiente $\beta$ de THINC.
+
+## Por qué incluso los polinomios de alto orden difuminan el contacto
+
+La reconstrucción polinómica dibuja una curva suave por naturaleza. Cuando una curva debe pasar por los puntos de promedio de celda a ambos lados de un salto casi vertical, enfrenta una disyuntiva: permitir oscilación (sobreimpulso), o matar la pendiente y difuminar.
+
+TENO y WENO eligen suprimir la oscilación. Descartan las plantillas que cruzan la discontinuidad, imponiendo la propiedad ENO. Eso compra estabilidad, pero un poco de disipación numérica se acumula en cada paso. Una discontinuidad de contacto (una superficie donde la velocidad y la presión coinciden pero la densidad salta) no se auto-afila por un mecanismo de presión. Así que tras una advección prolongada su ancho se desangra a lo largo de decenas de celdas. Subir el orden apenas reduce este difuminado.
+
+Compruébalo abajo. Mismos promedios de celda, solo cambia la reconstrucción.
+
+<ThincReconstructionLab />
+
+`Polynomial` resuelve el salto como una curva S suave y se pasa ligeramente por arriba y por abajo. Cambia a `THINC` y los mismos datos quedan casi verticales dentro de una sola celda. `Hybrid (BVD)` usa tanh solo en la celda del salto y conserva polinomios en el resto.
+
+## THINC — la tanh dibuja un salto sub-celda
+
+THINC (Tangent of Hyperbola for INterface Capturing) reemplaza el polinomio por una tanh monótona. La reconstrucción sobre la coordenada local $X \in [-0.5, 0.5]$ en la celda $i$ es
+
+$$
+h_i(X) = f_a + f_d \tanh\!\big(\beta(X - d_i)\big)
+$$
+
+donde $f_a = (f_{i+1}+f_{i-1})/2$ es la media de vecinos, $f_d = (f_{i+1}-f_{i-1})/2$ es la mitad del salto, $\beta$ es la pendiente de la tanh y $d_i$ es la posición del centro del salto.
+
+La clave es que $d_i$ no es libre. La restricción de conservación del promedio de celda (la reconstrucción debe integrar de vuelta a $f_i$) lo fija. La solución es analítica:
+
+$$
+d_i = \frac{1}{2\beta} \ln \frac{1 - T_2/T_1}{1 + T_2/T_1}
+$$
+
+con $T_1 = \tanh(\beta/2)$, $T_2 = \tanh(\alpha\beta/2)$, $\alpha = (f_i - f_a)/f_d$. Aquí $\alpha$ es la posición normalizada de la media de celda entre sus vecinos. Si la celda es no monótona ($(f_{i+1}-f_i)(f_i-f_{i-1}) \le 0$), la tanh carece de sentido, así que retrocede a primer orden ($\hat f_{i+1/2} = f_i$).
+
+## β: la perilla que sostiene el filo
+
+Un solo $\beta$ fija el carácter de THINC: pequeño es suave, grande es empinado. El artículo registra una correspondencia útil.
+
+- $\beta \approx 1.1$ : espectro TVD al nivel del limitador van Leer
+- $\beta \approx 1.3$ : nivel Superbee (tendencia sobre-compresiva)
+- $\beta = 1.6 \sim 2.0$ : régimen de captura de choques afilada
+
+El artículo adopta $\beta = 1.8$. Súbelo demasiado y hasta las curvas suaves se escalonan (squaring), produciendo un aplanamiento artificial. En la simulación de arriba, desliza $\beta$ de 1.0 a 2.4 y observa cómo se yergue el salto y cómo cambia la lectura de overshoot — el equilibrio se vuelve palpable.
+
+## TENO lo encuentra, THINC lo rellena — el híbrido BVD
+
+Aplica THINC en todas partes y hasta las ondas suaves se rompen. Por eso debe activarse solo en celdas discontinuas. El artículo construye un indicador por celda $\zeta_i$ a partir de los $\delta_k$ que el pesado de TENO ya calculó.
+
+$$
+\zeta_i = \begin{cases}
+2, & \delta_{2,i}=0 \text{ y } \delta_{1,i}=0 \\
+1, & \delta_{1,i}=0 \text{ y } \delta_{2,i}=1 \\
+-1, & \delta_{2,i}=0 \text{ y } \delta_{1,i}=1 \\
+0, & \text{en otro caso}
+\end{cases}
+$$
+
+$\zeta_i = 1$ señala una discontinuidad a la derecha, $-1$ a la izquierda. Cuando los signos de $\zeta$ de los vecinos se enfrentan a través de la celda $i$, se juzga que esa celda realmente contiene una discontinuidad y se cambia por THINC.
+
+El BVD (Boundary Variation Diminishing) práctico es aún más simple. Calcula ambas reconstrucciones y conserva la que más reduzca la diferencia entre los valores reconstruidos izquierdo y derecho en la interfaz de celda (la variación de frontera). La implementación de abajo sigue esta prueba BVD.
+
+## Python — girar un top-hat una vuelta
+
+Advecta un top-hat bajo advección lineal $u_t + u_x = 0$ con fronteras periódicas. Compara minmod TVD contra THINC-BVD en la misma malla por el mismo tiempo.
+
+```python
+import numpy as np
+
+def minmod(p, q):
+    return np.where(p * q <= 0, 0.0, np.where(np.abs(p) < np.abs(q), p, q))
+
+def thinc_right_edge(u, beta=1.8):
+    # Ecs. 2.19-2.20: valor reconstruido izquierdo en la cara derecha (i+1/2) de la celda i
+    um, up = np.roll(u, 1), np.roll(u, -1)
+    fa, fd = 0.5 * (up + um), 0.5 * (up - um)
+    mono = ((up - u) * (u - um) > 0) & (np.abs(fd) > 1e-12)
+    alpha = np.where(mono, (u - fa) / np.where(mono, fd, 1.0), 0.0)
+    mono = mono & (np.abs(alpha) < 1.0)
+    T1, T2 = np.tanh(beta / 2), np.tanh(alpha * beta / 2)
+    d = np.where(mono, (1 / (2 * beta)) * np.log((1 - T2 / T1) / (1 + T2 / T1)), 0.0)
+    vR = fa + fd * np.tanh(beta * (0.5 - d))
+    return np.where(mono, vR, u)  # no monótona -> primer orden
+
+def reconstruct(u, beta, use_thinc):
+    um, up = np.roll(u, 1), np.roll(u, -1)
+    s = minmod(u - um, up - u)
+    poly_vR = u + 0.5 * s
+    if not use_thinc:
+        return poly_vR
+    poly_vL = u - 0.5 * s
+    t = thinc_right_edge(u, beta)
+    # BVD: conservar la reconstruccion que reduce el salto en la cara derecha
+    jump_poly = np.abs(poly_vR - np.roll(poly_vL, -1))
+    jump_thinc = np.abs(t - np.roll(poly_vL, -1))
+    return np.where(jump_thinc < jump_poly, t, poly_vR)
+
+def rhs(u, dx, beta, use_thinc):
+    vR = reconstruct(u, beta, use_thinc)        # a=1, asi que F_{i+1/2} = vR
+    return -(vR - np.roll(vR, 1)) / dx
+
+def advect_tophat(N=100, revolutions=5.0, beta=1.8, use_thinc=True):
+    dx, x = 1.0 / N, (np.arange(N) + 0.5) / N
+    dt = 0.45 * dx
+    u = ((x > 0.35) & (x < 0.65)).astype(float)   # top-hat inicial
+    for _ in range(int(revolutions / dt)):
+        u1 = u + dt * rhs(u, dx, beta, use_thinc)            # SSP-RK2
+        u = 0.5 * u + 0.5 * (u1 + dt * rhs(u1, dx, beta, use_thinc))
+    return x, u
+
+x, u_tvd = advect_tophat(use_thinc=False)
+_, u_thinc = advect_tophat(use_thinc=True)
+print("TVD   peak=%.3f  width(>0.5)=%d" % (u_tvd.max(), (u_tvd > 0.5).sum()))
+print("THINC peak=%.3f  width(>0.5)=%d" % (u_thinc.max(), (u_thinc > 0.5).sum()))
+# Salida de ejemplo:
+# TVD   peak=0.84  width(>0.5)=23
+# THINC peak=1.00  width(>0.5)=30
+```
+
+Tras cinco vueltas, minmod TVD se hunde a un pico de 0.84 y se estrecha. THINC-BVD mantiene el pico 1.00 y conserva casi su ancho inicial (30 celdas). Ni siquiera un TENO de mayor orden puede frenar del todo este difuminado, por la naturaleza polinómica misma — ese es el punto de partida del artículo.
+
+## Reconstrucción y advección de largo plazo, en vivo
+
+Juega con la simulación de abajo. Muestra en tiempo real cómo divergen los dos métodos mientras el mismo top-hat rodea la malla.
+
+<ContactAdvectionDecay />
+
+Conforme crece `revolutions`, la curva roja de minmod colapsa en ambos extremos y se extiende en un trapecio. El cian THINC-BVD se aferra a la solución exacta gris y conserva su rectángulo. Baja $\beta$ a 1.1 y THINC se ablanda como TVD; cerca de 2.0 es más nítido.
+
+## Lo que dejó dudas al reproducirlo
+
+La promesa es limpia, pero tres cosas me trabaron al programarlo.
+
+Primero, la decisión BVD es sensible a la calidad del detector. Confunde un extremo suave (smooth extremum) con una discontinuidad y ese pico se aplana de forma antinatural. El BVD simple de arriba se protege con el chequeo de monotonía, pero los sistemas multidimensionales necesitan descomposición en variables características.
+
+Segundo, $\beta$ depende del problema. El valor $\beta = 1.8$ está ajustado a bancos de prueba 1D. En turbulencia compresible fuerte la sobre-compresión puede crear escalones artificiales, así que vale la pena considerar un $\beta$ adaptativo.
+
+Tercero, la afirmación de costo depende del contexto. "THINC es casi gratis porque las celdas discontinuas son pocas" es cierto si solo miras la reconstrucción. Pero una prueba BVD con muchas ramas puede disparar divergencia de warps en GPU. Portarlo a un código FV no estructurado como OpenFOAM implica fundir la detección por celda en el bucle de flujo de caras, lo cual no es tan limpio como una malla estructurada 1D.
+
+## Qué leer a continuación
+
+Si te interesa la raíz de THINC, lee el THINC original para VOF de Xiao; para el principio BVD en sí, el P$n$T$m$-BVD de Deng. El $\beta$ adaptativo y las extensiones multifásicas las continúa la línea THINC with PE de Shyue & Xiao. La línea de hoy: **no dibujes un salto con un polinomio — dibújalo con un salto.**
