@@ -1,0 +1,164 @@
+---
+title: "Why a Shout Above Water Never Reaches Below — Acoustics Across a Diffuse Interface"
+date: 2026-06-14
+description: "How an impedance jump reflects and refracts sound, reproduced with a weak-compressibility model"
+tags: ["Aeroacoustics", "Diffuse-Interface", "Weak-Compressibility", "Multiphase", "Paper-Review"]
+locale: en
+slug: acoustic-interface-transmission-snell
+draft: false
+---
+
+import { AcousticImpedanceTube1D } from '@/components/post-viz/2026-06-14-acoustic-interface-transmission-snell/AcousticImpedanceTube1D'
+import { SnellAcousticRefraction } from '@/components/post-viz/2026-06-14-acoustic-interface-transmission-snell/SnellAcousticRefraction'
+
+Call a friend at full volume from the edge of a pool, and the swimmer underwater barely hears you. Roughly 99.9% of airborne sound bounces straight off the surface. The same physics drives ocean acoustics, medical ultrasound, and underwater noise prediction. This post follows Ballout et al. (2025) and reproduces the reflection, transmission, and refraction of sound across an interface with a 1D acoustic solver I built from scratch. By the end, a single impedance jump will predict all of it.
+
+First, the paper. Abbas Ballout et al., *"Acoustic Propagation/Refraction Through Diffuse Interface Models"*, arXiv:2504.01727 (2025). The contribution fits in one line: by tweaking the **weak-compressibility** term of an incompressible Navier–Stokes/Cahn–Hilliard system, the authors let two phases carry different sound speeds and propagate acoustic waves at the correct speed across them.
+
+## Acoustic Impedance — How a Medium Resists Sound
+
+The resistance a medium offers to a passing sound wave is its **acoustic impedance (density times sound speed)**.
+
+$$
+z = \rho\, c_s
+$$
+
+Here $\rho$ is density and $c_s$ is the sound speed. Air gives $z_\text{air} = 1.2 \times 343 \approx 410$; water gives $z_\text{water} = 1000 \times 1481 \approx 1.5\times10^6$. A factor of 3600 apart.
+
+Impedance measures how readily sound loads into a medium. When two impedances are close, the wave crosses smoothly. When they differ wildly, most of it bounces back. That enormous jump at the water surface is exactly why your shout reflects.
+
+## Reflection and Transmission — Decided by the Impedance Jump
+
+For a plane wave at normal incidence, the reflection coefficient $R$ and transmission coefficient $T$ depend only on impedance (paper eq. 37).
+
+$$
+R = \frac{z_2 - z_1}{z_1 + z_2}, \qquad T = \frac{2 z_2}{z_1 + z_2}
+$$
+
+$z_1$ and $z_2$ are the incident-side and transmitted-side impedances. For air-to-water, $z_2 \gg z_1$, so $R \to 1$: almost total reflection. Curiously, the pressure transmission coefficient $T$ can exceed 1. A larger pressure amplitude does not violate energy conservation: the transmitted particle velocity drops, so the energy flux still balances.
+
+Play with the parameters in the simulation below. A Gaussian pulse launches from the left and strikes the interface at the center.
+
+<AcousticImpedanceTube1D />
+
+Widen $z_2/z_1$ by raising the speed and density ratios, and the transmitted pulse shrinks while the reflected one grows. Match the two impedances 1:1 and the pulse sails straight through. The reflection vanishes.
+
+## The 13-Degree Wall — Snell's Law and the Critical Angle
+
+At oblique incidence the transmitted wave bends. The same **Snell's law (the ratio of the sines of the incidence and transmission angles equals the ratio of sound speeds)** that governs light holds for sound too (paper eq. 41).
+
+$$
+\frac{\sin\theta_i}{c_{s1}} = \frac{\sin\theta_t}{c_{s2}}
+$$
+
+$\theta_i$ is the incidence angle and $\theta_t$ the transmission angle. When the transmitted medium is faster ($c_{s2} > c_{s1}$, like air to water), $\sin\theta_t$ exceeds 1 once the incidence angle passes a threshold. No transmitted wave can exist. That threshold is the **critical angle**.
+
+$$
+\theta_c = \arcsin\!\left(\frac{c_{s1}}{c_{s2}}\right) = \arcsin\!\left(\frac{343}{1481}\right) \approx 13.4^\circ
+$$
+
+If an airborne source hits the surface more obliquely than 13.4 degrees, not a single bit of sound enters the water. Total reflection.
+
+Change the incidence angle and speed ratio below.
+
+<SnellAcousticRefraction />
+
+Push the incidence angle toward 13 degrees and the transmitted ray lies almost flat against the surface before disappearing. Only the reflected ray remains. Lower the speed ratio and the critical angle grows, admitting transmission even at steeper incidence.
+
+## Loading Sound onto a Weak-Compressibility Model
+
+An incompressible solver uses pressure only as a tool to enforce the divergence constraint. That pressure field cannot carry sound. The paper introduces a **weak-compressibility (a time-derivative term added to pressure that grants a finite sound speed)** equation.
+
+$$
+\partial_t p + \rho\, c_s^2\, \nabla\cdot\mathbf{u} = 0
+$$
+
+$p$ is pressure, $\mathbf{u}$ is velocity, and $c_s$ is the local sound speed. The key move is interpolating $c_s$ per phase. Density and sound speed mix through the concentration $c$.
+
+$$
+(\,\cdot\,) = (\,\cdot\,)_1\, c + (\,\cdot\,)_2\,(1 - c)
+$$
+
+With this one-line change, the same solver carries sound at $c_{s1}$ in medium 1 and $c_{s2}$ in medium 2. The authors discretize it with an entropy-stable discontinuous Galerkin spectral element method (DGSEM) and show spectral convergence.
+
+## The Modeling Error a Diffuse Interface Introduces
+
+Unlike VOF or level set, which cut the interface into a single cell, the Cahn–Hilliard model smears it over a width $\varepsilon$.
+
+$$
+c_0 = 1 - 0.5\left(1 + \tanh\frac{2x}{\varepsilon}\right)
+$$
+
+This smearing introduces a modeling error. The paper confirms numerically that the error decays as the square of the interface width — precisely $\mathcal{O}\!\left((\varepsilon/\lambda)^2\right)$ once normalized by wavelength. As $\varepsilon \to 0$, it converges to the sharp-interface analytic solution above. The "interface width" slider in the 1D simulation is exactly this $\varepsilon$. Crank it up and the transmitted and reflected pulses smear slightly.
+
+## Python — Reproducing the Coefficients in a 1D Tube
+
+We integrate the linear acoustic equations with a staggered-grid FDTD scheme. Fire a Gaussian pulse and compare the post-interface reflected and transmitted amplitudes against the analytic values.
+
+```python
+import numpy as np
+
+def impedance(rho, c):
+    """Acoustic impedance z = rho * c (density x sound speed)"""
+    return rho * c
+
+def analytic_coeffs(z1, z2):
+    """Reflection / transmission for a normal-incidence plane wave (paper eq. 37)"""
+    R = (z2 - z1) / (z1 + z2)
+    T = 2.0 * z2 / (z1 + z2)
+    return R, T
+
+def tanh_interface(x, eps):
+    """Concentration field smearing the interface over width eps (paper eq. 32)"""
+    return 1.0 - 0.5 * (1.0 + np.tanh(2.0 * x / eps))
+
+def run_acoustic_tube(rho1=1.0, c1=1.0, rho2=2.5, c2=1.8,
+                      N=2000, L=4.0, eps=0.04, steps=2600):
+    """Integrate the 1D linear acoustic system and measure pulse amplitudes."""
+    dx = L / N
+    x = -L / 2 + (np.arange(N) + 0.5) * dx
+    conc = tanh_interface(x, eps)            # 1: medium 1, 0: medium 2
+    rho = rho1 * conc + rho2 * (1.0 - conc)  # density interpolation
+    cs  = c1   * conc + c2   * (1.0 - conc)  # sound speed interpolation
+    K   = rho * cs**2                        # bulk modulus rho c^2
+
+    p = np.exp(-((x + 0.55) / 0.12)**2)      # right-going Gaussian pulse
+    u = p / (rho1 * c1)                      # medium-1 characteristic: u = p/(rho c)
+
+    dt = 0.4 * dx / cs.max()                 # CFL-limited time step
+    left, right = N // 4, 3 * N // 4         # left / right probes
+    p_inc = p.max()
+    refl_peak = tran_peak = 0.0
+    for n in range(steps):
+        u[:-1] += -dt / (0.5 * (rho[:-1] + rho[1:]) * dx) * (p[1:] - p[:-1])
+        p[1:]  += -dt * K[1:] / dx * (u[1:] - u[:-1])
+        if n > steps // 2:                   # after the pulse crosses
+            refl_peak = max(refl_peak, np.abs(p[:left]).max())
+            tran_peak = max(tran_peak, np.abs(p[right:]).max())
+    return p_inc, refl_peak, tran_peak
+
+if __name__ == "__main__":
+    rho1, c1, rho2, c2 = 1.0, 1.0, 2.5, 1.8
+    z1, z2 = impedance(rho1, c1), impedance(rho2, c2)
+    R, T = analytic_coeffs(z1, z2)
+    p_inc, refl, tran = run_acoustic_tube(rho1, c1, rho2, c2)
+    print(f"z1={z1:.3f}  z2={z2:.3f}")
+    print(f"analytic   |R|={abs(R):.3f}  T={T:.3f}")
+    print(f"measured   |R|={refl / p_inc:.3f}  T={tran / p_inc:.3f}")
+```
+
+At $z_1=1.0$ and $z_2=4.5$, the measured values track the analytic $|R|=0.636$ and $T=1.636$. Refine the grid and shrink $\varepsilon$, and the gap narrows further.
+
+## What Felt Shaky While Reproducing It
+
+The first trap was **separating the reflected wave**. The left probe sees the sum of incident and reflected pressure. The paper runs a separate single-phase simulation to subtract the incident part. The code above sidesteps this by measuring only the residual signal on the left after the pulse has left, but it is inaccurate while incident and reflected waves overlap.
+
+Second, weak compressibility is not true compressibility. It cannot handle shocks or high Mach numbers. The authors themselves restrict it to low-Mach, linear acoustics. Its purpose differs from solving acoustics directly with a compressible solver.
+
+Third, the 3D air-water example burned 67.5 million degrees of freedom, because the diffuse interface needs more than ten points packed into it for accuracy. The cost explodes as the interface thins. Whether this method replaces VOF in practice depends on the problem scale.
+
+## A Paper to Read Next
+
+The essentials. The fate of a sound wave hinges on the impedance jump $z_2/z_1$. Oblique incidence refracts by Snell's law and reflects totally beyond $\theta_c$. Interpolate a single weak-compressibility term per phase and even an incompressible solver carries sound at the right speed.
+
+To dig deeper, read the same group's entropy-stable DGSEM iNS/CH paper (Manzanero et al., 2020) or studies extending the Ffowcs-Williams–Hawkings acoustic analogy to multiphase flows.
