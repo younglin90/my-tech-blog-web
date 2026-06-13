@@ -13,6 +13,7 @@ function VizLoading() {
 
 export const VIZ_COMPONENTS: Record<string, ComponentType> = {
   "AcousticConvectiveScales": dynamic(() => import("@/components/post-viz/2026-06-06-weston-block-preconditioner-jfnk/AcousticConvectiveScales").then((m) => ({ default: m.AcousticConvectiveScales })), { ssr: false, loading: VizLoading }),
+  "AcousticImpedanceTube1D": dynamic(() => import("@/components/post-viz/2026-06-14-acoustic-interface-transmission-snell/AcousticImpedanceTube1D").then((m) => ({ default: m.AcousticImpedanceTube1D })), { ssr: false, loading: VizLoading }),
   "AcousticTransportSplit1D": dynamic(() => import("@/components/post-viz/2026-05-30-peluchon-acoustic-transport-imex/AcousticTransportSplit1D").then((m) => ({ default: m.AcousticTransportSplit1D })), { ssr: false, loading: VizLoading }),
   "AdvectionSchemeRace1D": dynamic(() => import("@/components/post-viz/2026-05-08-advection-ftcs-upwind-cfl/AdvectionSchemeRace1D").then((m) => ({ default: m.AdvectionSchemeRace1D })), { ssr: false, loading: VizLoading }),
   "AMRQuadtreeRefinement": dynamic(() => import("@/components/post-viz/2026-04-27-amr-quadtree-cell-refinement/AMRQuadtreeRefinement").then((m) => ({ default: m.AMRQuadtreeRefinement })), { ssr: false, loading: VizLoading }),
@@ -102,6 +103,7 @@ export const VIZ_COMPONENTS: Record<string, ComponentType> = {
   "RotatingFrameParticleTrajectory": dynamic(() => import("@/components/post-viz/2026-06-12-rotating-reference-frame-mrf/RotatingFrameParticleTrajectory").then((m) => ({ default: m.RotatingFrameParticleTrajectory })), { ssr: false, loading: VizLoading }),
   "ShallowWaterCasulli1D": dynamic(() => import("@/components/post-viz/2026-04-26-casulli-walters-unstructured-shallow-water/ShallowWaterCasulli1D").then((m) => ({ default: m.ShallowWaterCasulli1D })), { ssr: false, loading: VizLoading }),
   "SimpleResidualHistory": dynamic(() => import("@/components/post-viz/2026-03-27-simpleFoam-pressure-divergence/SimpleResidualHistory").then((m) => ({ default: m.SimpleResidualHistory })), { ssr: false, loading: VizLoading }),
+  "SnellAcousticRefraction": dynamic(() => import("@/components/post-viz/2026-06-14-acoustic-interface-transmission-snell/SnellAcousticRefraction").then((m) => ({ default: m.SnellAcousticRefraction })), { ssr: false, loading: VizLoading }),
   "SpeedOfSoundMix": dynamic(() => import("@/components/post-viz/compressible-multiphase-intro/SpeedOfSoundMix").then((m) => ({ default: m.SpeedOfSoundMix })), { ssr: false, loading: VizLoading }),
   "SPHKernelShapeExplorer": dynamic(() => import("@/components/post-viz/2026-04-29-sph-meshfree-particle-hydrodynamics/SPHKernelShapeExplorer").then((m) => ({ default: m.SPHKernelShapeExplorer })), { ssr: false, loading: VizLoading }),
   "SPHParticleDrop2D": dynamic(() => import("@/components/post-viz/2026-04-29-sph-meshfree-particle-hydrodynamics/SPHParticleDrop2D").then((m) => ({ default: m.SPHParticleDrop2D })), { ssr: false, loading: VizLoading }),
