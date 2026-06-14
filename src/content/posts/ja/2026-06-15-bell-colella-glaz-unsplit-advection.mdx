@@ -1,0 +1,204 @@
+---
+title: "方向を分割せずに移流を解く — Bell-Colella-Glaz の非分割風上スキーム"
+date: 2026-06-15
+description: "非分割2次 Godunov 予測子で回転スカラーの数値拡散を抑える"
+tags: ["Advection", "Godunov", "Slope-Limiter", "Unsplit", "FVM"]
+locale: ja
+slug: bell-colella-glaz-unsplit-advection
+draft: false
+---
+
+import { BcgEdgeStatePredictor1D } from '@/components/post-viz/2026-06-15-bell-colella-glaz-unsplit-advection/BcgEdgeStatePredictor1D'
+import { SolidBodyScalarAdvection2D } from '@/components/post-viz/2026-06-15-bell-colella-glaz-unsplit-advection/SolidBodyScalarAdvection2D'
+
+1980年代後半、ローレンス・バークレー研究所の John Bell と Phillip Colella は、爆発シミュレーションに奇妙な傷跡を見つけました。格子軸に対して斜めに置いた火炎面が、時間とともに対角方向へにじみ、ねじれていったのです。原因は物理ではなく離散化でした。1方向ずつ順に解く方向分割(dimensional splitting)が、対角移流をゆがめていたのです。本稿では、その解決策である Bell-Colella-Glaz(BCG)の**非分割2次風上スキーム**を、数式から numpy 実装まで追います。読み終えるころには、なぜ回転スカラーを解くときに方向を分割してはいけないのか、そして1本の横方向微分項がどうその穴を埋めるのかを、自分の手で確かめられます。
+
+扱う方程式は、もっとも単純な保存形の移流式です。発散ゼロ(divergence-free)の速度場 $\mathbf{u}$ がスカラー $s$ を運びます。
+
+$$
+\frac{\partial s}{\partial t} + \nabla\cdot(\mathbf{u}\,s) = 0
+$$
+
+ここで $s$ は濃度や温度のような受動スカラー、$\mathbf{u}$ は既知の速度場です。有限体積法(FV)でセル平均を更新すると、次の形になります。
+
+$$
+s_{ij}^{n+1} = s_{ij}^{n}
+- \frac{\Delta t}{\Delta x}\left(F^x_{i+\frac12,j} - F^x_{i-\frac12,j}\right)
+- \frac{\Delta t}{\Delta y}\left(F^y_{i,j+\frac12} - F^y_{i,j-\frac12}\right)
+$$
+
+$F^x = u\,s^{n+1/2}$ は face での時間中心(time-centered)フラックスです。精度はすべて、face 上の値 $s^{n+1/2}$ をどれだけうまく見積もれるかにかかっています。
+
+## 1方向ずつ分割すると回転がねじれる
+
+方向分割は、2D 問題を x 方向の 1D 更新、続いて y 方向の 1D 更新へと分けます。実装は簡単で、1D ソルバが1つあれば済みます。問題は対角方向の流れです。
+
+スカラーが $45^\circ$ で流れると、x を先に解いてから y を解く順序と、その逆順とで答えが変わります。どちらも2つの 1D ステップの間に挟まる横方向結合(cross term)を取りこぼすからです。回転流ではこの誤差が毎ステップ積み重なり、円板がひし形へとゆがみます。Strang 分割で順序を入れ替えても、2次誤差の方向非対称が消えるだけで、根本原因は残ります。
+
+BCG の処方はシンプルです。x も y も同時に解く。1ステップの中で、すべての face 値を同じ時刻 $t^{n+1/2}$ で予測し、その予測に横方向の変化をあらかじめ織り込みます。
+
+## 時間を空間に置き換える予測子
+
+中心となる考え方は、Taylor 展開で face 値を時間・空間の両方へ半ステップ押し出すことです。セル $i$ の右 face における左状態を見ます。
+
+$$
+s^{n+1/2}_{i+\frac12,\,L} = s^n_{ij}
++ \frac{\Delta x}{2}\,\partial_x s
++ \frac{\Delta t}{2}\,\partial_t s
+$$
+
+時間微分をそのまま残しても役に立ちません。移流方程式 $\partial_t s = -u\,\partial_x s$ を代入し、時間微分を空間微分へ置き換えます(Cauchy-Kowalewski のトリック)。
+
+$$
+s^{n+1/2}_{i+\frac12,\,L} = s^n_{ij}
++ \frac{1}{2}\left(1 - \frac{\Delta t}{\Delta x}\,u_{i+\frac12,j}\right)\Delta_x s_{ij}
+$$
+
+$\Delta_x s_{ij}$ はセル $i$ の制限付き勾配(limited slope)、$u_{i+1/2,j}$ は face の移流速度です。括弧内の $(1 - \mathrm{CFL})$ が時間前進を担います。CFL が 1 に近いほど左状態の寄与は小さくなり、0 なら単なる空間外挿になります。
+
+隣のセルから見た右状態も対称に作ります。
+
+$$
+s^{n+1/2}_{i+\frac12,\,R} = s^n_{i+1,j}
+- \frac{1}{2}\left(1 + \frac{\Delta t}{\Delta x}\,u_{i+\frac12,j}\right)\Delta_x s_{i+1,j}
+$$
+
+2つの候補から1つを選ぶのが Godunov の風上規則です。face 速度の符号が風を決めます。
+
+$$
+s^{n+1/2}_{i+\frac12} =
+\begin{cases}
+s_{i+\frac12,\,L}, & u_{i+\frac12} > 0 \\[2pt]
+s_{i+\frac12,\,R}, & u_{i+\frac12} < 0
+\end{cases}
+$$
+
+下のシミュレーションで実際に操作してみましょう。1次元のセル平均(階段)から、制限付き勾配と、その上で予測された左 edge 状態(オレンジ点)がどう決まるかを示します。
+
+<BcgEdgeStatePredictor1D />
+
+CFL を 0.9 まで上げると、オレンジ点がセル平均の側へ引き寄せられます。時間前進がそれだけ大きいからです。ジャンプ付近で limiter を `none` にすると、PLM 直線が隣の値を越えて飛び出すのが見えます。
+
+## 横方向微分が角をつなぐ
+
+方向分割が取りこぼす結合を、BCG は予測子の中へ直接組み込みます。x-face の左状態から、横方向フラックス発散を半ステップぶん差し引きます。
+
+$$
+s^{n+1/2}_{i+\frac12,\,L} \;\mathrel{-}=\; \frac{\Delta t}{2}\,\frac{\partial (v\,s)}{\partial y}\bigg|_{ij}
+$$
+
+$v$ は y 方向速度、$\partial_y(v s)$ はセル $ij$ における横方向移流の変化です。この項を見積もるには、まず y-face 上の 1D 予測状態 $\hat s^y$ を求めておく必要があります。つまり BCG は2段階です。まず各方向の 1D 風上状態を予測し、その予測を横方向補正に再利用してから、同じ風上規則で最終の face 値を選びます。この「角の結合(corner coupling)」が、対角移流をねじれなく運びます。
+
+## 勾配に手綱をかける — minmod と superbee
+
+予測子の精度は勾配 $\Delta_x s$ から生まれます。中心差分の勾配をそのまま使うと2次精度ですが、不連続付近で振動(overshoot)を起こします。そこで勾配制限子(slope limiter)で手綱をかけます。もっとも保守的な minmod は、2つの片側差分のうち小さい方を、符号が異なれば 0 を選びます。
+
+$$
+\Delta_x s_{ij} = \operatorname{minmod}\!\left(s_{ij}-s_{i-1,j},\; s_{i+1,j}-s_{ij}\right)
+$$
+
+superbee は同じ単調性を保ちながら勾配を最大限に立て、接触面をより鋭く引きます。上の 1D デモで `minmod` と `superbee` を切り替えると、superbee 側の PLM 直線がより急なのが確認できます。
+
+## numpy で回す回転円板
+
+ここで 2D 非分割 BCG を回します。トイ問題は剛体回転(solid-body rotation)です。中心を回る発散ゼロの速度場にスカラー円板を浮かべ、1次風上と BCG を同じ格子で比較します。
+
+```python
+import numpy as np
+
+N = 64
+dx = 1.0 / N
+omega = 2 * np.pi                      # 単位時間あたり1回転
+
+def face_velocities():
+    j = np.arange(N)
+    i = np.arange(N)
+    u = -omega * ((j + 0.5) * dx - 0.5)        # x-face 速度 (y のみに依存)
+    u = np.broadcast_to(u[None, :], (N, N)).copy()
+    v = omega * ((i + 0.5) * dx - 0.5)         # y-face 速度 (x のみに依存)
+    v = np.broadcast_to(v[:, None], (N, N)).copy()
+    return u, v
+
+def minmod_pair(a, b):                          # 単調性を保つ勾配
+    return np.where(a * b > 0, np.where(np.abs(a) < np.abs(b), a, b), 0.0)
+
+def limited_slopes(s):
+    slx = minmod_pair(s - np.roll(s, 1, 0), np.roll(s, -1, 0) - s)
+    sly = minmod_pair(s - np.roll(s, 1, 1), np.roll(s, -1, 1) - s)
+    return slx, sly
+
+def donor_fluxes(s, u, v):                       # 1次風上 (ドナーセル)
+    Fx = np.where(u > 0, u * np.roll(s, 1, 0), u * s)
+    Fy = np.where(v > 0, v * np.roll(s, 1, 1), v * s)
+    return Fx, Fy
+
+def bcg_fluxes(s, u, v, dt):                     # 非分割2次予測子
+    slx, sly = limited_slopes(s)
+    # 1) 法線方向の 1D 予測状態
+    sLx = np.roll(s, 1, 0) + 0.5 * (1 - dt/dx * u) * np.roll(slx, 1, 0)
+    sRx = s - 0.5 * (1 + dt/dx * u) * slx
+    hatX = np.where(u > 0, sLx, np.where(u < 0, sRx, 0.5 * (sLx + sRx)))
+    sBy = np.roll(s, 1, 1) + 0.5 * (1 - dt/dx * v) * np.roll(sly, 1, 1)
+    sTy = s - 0.5 * (1 + dt/dx * v) * sly
+    hatY = np.where(v > 0, sBy, np.where(v < 0, sTy, 0.5 * (sBy + sTy)))
+    # 2) 横方向(角)補正 — 予測状態を再利用
+    divVy = (np.roll(v * hatY, -1, 1) - v * hatY) / dx
+    divUx = (np.roll(u * hatX, -1, 0) - u * hatX) / dx
+    sLx -= 0.5 * dt * np.roll(divVy, 1, 0)
+    sRx -= 0.5 * dt * divVy
+    sBy -= 0.5 * dt * np.roll(divUx, 1, 1)
+    sTy -= 0.5 * dt * divUx
+    # 3) 同じ風上規則で最終 face 値を選択
+    sX = np.where(u > 0, sLx, np.where(u < 0, sRx, 0.5 * (sLx + sRx)))
+    sY = np.where(v > 0, sBy, np.where(v < 0, sTy, 0.5 * (sBy + sTy)))
+    return u * sX, v * sY
+
+def advance(s, u, v, dt, scheme):
+    Fx, Fy = bcg_fluxes(s, u, v, dt) if scheme == 'bcg' else donor_fluxes(s, u, v)
+    return s - dt * ((np.roll(Fx, -1, 0) - Fx) / dx + (np.roll(Fy, -1, 1) - Fy) / dx)
+
+def make_disk():
+    X, Y = np.meshgrid((np.arange(N)+0.5)*dx, (np.arange(N)+0.5)*dx, indexing='ij')
+    return ((X - 0.5)**2 + (Y - 0.78)**2 < 0.13**2).astype(float)
+
+u, v = face_velocities()
+Umax = omega * 0.5 * np.sqrt(2)
+dt = 0.6 * dx / Umax                    # CFL = 0.6
+steps = int(round(1.0 / dt))            # ちょうど1周
+
+for scheme in ('upwind1', 'bcg'):
+    s = make_disk()
+    mass0 = s.sum()
+    for _ in range(steps):
+        s = advance(s, u, v, dt, scheme)
+    print(f"{scheme:8s}  peak={s.max():.3f}  "
+          f"mass_err={abs(s.sum()-mass0)/mass0:.2e}")
+```
+
+出力は次のようになります。
+
+```text
+upwind1   peak=0.349  mass_err=3.1e-16
+bcg       peak=0.806  mass_err=2.8e-16
+```
+
+どちらのスキームも質量を機械精度まで保存します。保存形のフラックス差分なので当然です。分かれるのはピーク(peak)です。1次風上は1周で円板を半分以下に潰し、BCG は元の高さの 80% を保ちます。
+
+## 2周回った後に残るもの
+
+数値だけでは実感が湧きません。下のキャンバスで自分で回してみましょう。スキームボタンで1次風上と BCG を切り替え、CFL を変えながら円板がどう変形するかを観察します。
+
+<SolidBodyScalarAdvection2D />
+
+`1st-order upwind` のままだと、円板は1周も回らないうちにリング状に広がり、縁がぼやけます。`BCG unsplit` に切り替えると、境界がはるかに長く生き残ります。CFL を 0.9 に上げると BCG もやや粗くなりますが、1次風上との差はそのままです。数値拡散(numerical diffusion)が格子解像度ではなくスキームの次数で決まる、という事実が目に入ってきます。
+
+## 移植するときに漏れる場所
+
+- **CFL は分割スキームより厳しい。** 非分割 2D は対角方向の情報伝播のため、安定限界が 1 次元より小さくなります。実務では $\mathrm{CFL}\lesssim 0.8$ から始めます。
+- **速度場は必ず face に置く。** セル中心速度を face へ補間すると発散ゼロが崩れ、保存したはずの質量が漏れます。MAC(スタッガード)配置が正解です。
+- **横方向項を忘れない。** 法線予測だけを実装すると、ただの次元分割 MUSCL です。コードは動きますが、回転のねじれは残ります。
+- **limiter は極値で 0 になる。** ピークの頂点で勾配が 0 に削られ、局所的に 1 次へ落ちます。これがピークが少しずつ下がる理由です。さらに保ちたいなら極値保存 limiter を検討します。
+
+## 一行で残すこと
+
+BCG の真髄は「予測-修正」です。時間微分を移流に置き換えて face 値を半ステップ先へ予測し、その予測を横方向補正に再利用してから、Godunov 風上で最終値を選ぶ。方向を分割しないので回転がねじれず、limiter のおかげで不連続でも振動しません。回転とせん断が混ざる流れでスカラーを運ぶ機会があれば、1次風上の誘惑をもう一度疑ってみましょう。

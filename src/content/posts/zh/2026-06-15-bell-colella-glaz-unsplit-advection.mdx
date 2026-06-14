@@ -1,0 +1,204 @@
+---
+title: "不分裂方向求解对流 — Bell-Colella-Glaz 非分裂迎风格式"
+date: 2026-06-15
+description: "用非分裂二阶 Godunov 预测子让旋转标量的数值耗散更小"
+tags: ["Advection", "Godunov", "Slope-Limiter", "Unsplit", "FVM"]
+locale: zh
+slug: bell-colella-glaz-unsplit-advection
+draft: false
+---
+
+import { BcgEdgeStatePredictor1D } from '@/components/post-viz/2026-06-15-bell-colella-glaz-unsplit-advection/BcgEdgeStatePredictor1D'
+import { SolidBodyScalarAdvection2D } from '@/components/post-viz/2026-06-15-bell-colella-glaz-unsplit-advection/SolidBodyScalarAdvection2D'
+
+1980 年代后期，劳伦斯伯克利实验室的 John Bell 和 Phillip Colella 在爆炸模拟中发现了一道奇怪的疤痕。一个相对网格轴线斜放的火焰面，随着时间推移不断沿对角线方向扩散、扭曲。元凶不是物理，而是离散化。逐方向求解的方向分裂(dimensional splitting)扭曲了对角对流。本文沿着他们的解法，把 Bell-Colella-Glaz(BCG)**非分裂二阶迎风格式**从公式一路追到 numpy 实现。读完之后，你会亲手体会到：为什么求解旋转标量时不能分裂方向，以及一项横向导数如何补上这个漏洞。
+
+要处理的方程是最简单的守恒型对流方程。一个无散度(divergence-free)的速度场 $\mathbf{u}$ 携带标量 $s$。
+
+$$
+\frac{\partial s}{\partial t} + \nabla\cdot(\mathbf{u}\,s) = 0
+$$
+
+其中 $s$ 是浓度、温度之类的被动标量，$\mathbf{u}$ 是给定的速度场。用有限体积(FV)更新单元平均值，就得到下面的形式。
+
+$$
+s_{ij}^{n+1} = s_{ij}^{n}
+- \frac{\Delta t}{\Delta x}\left(F^x_{i+\frac12,j} - F^x_{i-\frac12,j}\right)
+- \frac{\Delta t}{\Delta y}\left(F^y_{i,j+\frac12} - F^y_{i,j-\frac12}\right)
+$$
+
+$F^x = u\,s^{n+1/2}$ 是面上的时间居中(time-centered)通量。全部精度最终都归结为：你能多准确地估计面上的值 $s^{n+1/2}$。
+
+## 逐方向分裂会扭曲旋转
+
+方向分裂把 2D 问题拆成先做 x 方向的 1D 更新，再做 y 方向的 1D 更新。实现很简单，一个 1D 求解器就够了。麻烦出在对角流动。
+
+当标量以 $45^\circ$ 流动时，先解 x 再解 y 的顺序，与相反顺序会给出不同的答案。两者都漏掉了夹在两个 1D 步之间的横向耦合(cross term)。在旋转流动中，这个误差每一步都累积，圆盘逐渐扭曲成菱形。用 Strang 分裂交替顺序，也只是消去二阶误差的方向不对称，根本原因依旧存在。
+
+BCG 的药方很简单：x 和 y 同时求解。在一步之内，把所有面值都预测到同一时刻 $t^{n+1/2}$，并把横向变化预先纳入这个预测。
+
+## 把时间换成空间的预测子
+
+核心思路是用 Taylor 展开把面值在时间和空间两个方向都推进半步。看单元 $i$ 右面上的左状态。
+
+$$
+s^{n+1/2}_{i+\frac12,\,L} = s^n_{ij}
++ \frac{\Delta x}{2}\,\partial_x s
++ \frac{\Delta t}{2}\,\partial_t s
+$$
+
+把时间导数原封不动留着没有用。代入对流方程 $\partial_t s = -u\,\partial_x s$，把时间导数换成空间导数(Cauchy-Kowalewski 技巧)。
+
+$$
+s^{n+1/2}_{i+\frac12,\,L} = s^n_{ij}
++ \frac{1}{2}\left(1 - \frac{\Delta t}{\Delta x}\,u_{i+\frac12,j}\right)\Delta_x s_{ij}
+$$
+
+$\Delta_x s_{ij}$ 是单元 $i$ 的限制斜率(limited slope)，$u_{i+1/2,j}$ 是面上的对流速度。括号里的 $(1 - \mathrm{CFL})$ 承载时间推进。CFL 越接近 1，左状态的贡献越小；为 0 时就退化为单纯的空间外推。
+
+从邻居单元看到的右状态也对称地构造。
+
+$$
+s^{n+1/2}_{i+\frac12,\,R} = s^n_{i+1,j}
+- \frac{1}{2}\left(1 + \frac{\Delta t}{\Delta x}\,u_{i+\frac12,j}\right)\Delta_x s_{i+1,j}
+$$
+
+在两个候选中挑一个，靠的是 Godunov 的迎风规则。面速度的符号决定风向。
+
+$$
+s^{n+1/2}_{i+\frac12} =
+\begin{cases}
+s_{i+\frac12,\,L}, & u_{i+\frac12} > 0 \\[2pt]
+s_{i+\frac12,\,R}, & u_{i+\frac12} < 0
+\end{cases}
+$$
+
+在下面的模拟中亲手操作一下。它从一维单元平均(阶梯)出发，展示限制斜率，以及在其上预测出的左 edge 状态(橙色点)是如何确定的。
+
+<BcgEdgeStatePredictor1D />
+
+把 CFL 提到 0.9，橙色点会被拉向单元平均一侧，因为时间推进就有那么大。在跳变附近把 limiter 设为 `none`，可以看到 PLM 直线越过邻值往外冲出。
+
+## 横向导数把角落缝起来
+
+方向分裂漏掉的耦合，BCG 把它直接塞进预测子。在 x 面的左状态上，减去半步的横向通量散度。
+
+$$
+s^{n+1/2}_{i+\frac12,\,L} \;\mathrel{-}=\; \frac{\Delta t}{2}\,\frac{\partial (v\,s)}{\partial y}\bigg|_{ij}
+$$
+
+$v$ 是 y 方向速度，$\partial_y(v s)$ 是单元 $ij$ 处的横向对流变化。要估计这一项，得先求出 y 面上的 1D 预测状态 $\hat s^y$。所以 BCG 分两趟：先在每个方向预测 1D 迎风状态，再把这个预测复用到横向修正，然后用同一条迎风规则选出最终面值。这种“角耦合(corner coupling)”能把对角对流无扭曲地搬运过去。
+
+## 给斜率套上缰绳 — minmod 与 superbee
+
+预测子的精度来自斜率 $\Delta_x s$。直接用中心差分斜率是二阶精度，但在间断附近会产生振荡(overshoot)。于是用斜率限制器(slope limiter)套上缰绳。最保守的 minmod 取两个单侧差分中较小的一个，符号不同时取 0。
+
+$$
+\Delta_x s_{ij} = \operatorname{minmod}\!\left(s_{ij}-s_{i-1,j},\; s_{i+1,j}-s_{ij}\right)
+$$
+
+superbee 在保持同样单调性的同时，把斜率立得尽可能陡，把接触面拉得更锐利。在上面的 1D 演示里切换 `minmod` 和 `superbee`，可以看到 superbee 一侧的 PLM 直线更陡。
+
+## 用 numpy 转动的旋转圆盘
+
+现在来跑 2D 非分裂 BCG。玩具问题是刚体旋转(solid-body rotation)。在绕中心旋转的无散度速度场中浮起一个标量圆盘，在同一网格上比较一阶迎风与 BCG。
+
+```python
+import numpy as np
+
+N = 64
+dx = 1.0 / N
+omega = 2 * np.pi                      # 单位时间一圈
+
+def face_velocities():
+    j = np.arange(N)
+    i = np.arange(N)
+    u = -omega * ((j + 0.5) * dx - 0.5)        # x 面速度 (只依赖 y)
+    u = np.broadcast_to(u[None, :], (N, N)).copy()
+    v = omega * ((i + 0.5) * dx - 0.5)         # y 面速度 (只依赖 x)
+    v = np.broadcast_to(v[:, None], (N, N)).copy()
+    return u, v
+
+def minmod_pair(a, b):                          # 保单调的斜率
+    return np.where(a * b > 0, np.where(np.abs(a) < np.abs(b), a, b), 0.0)
+
+def limited_slopes(s):
+    slx = minmod_pair(s - np.roll(s, 1, 0), np.roll(s, -1, 0) - s)
+    sly = minmod_pair(s - np.roll(s, 1, 1), np.roll(s, -1, 1) - s)
+    return slx, sly
+
+def donor_fluxes(s, u, v):                       # 一阶迎风 (施主单元)
+    Fx = np.where(u > 0, u * np.roll(s, 1, 0), u * s)
+    Fy = np.where(v > 0, v * np.roll(s, 1, 1), v * s)
+    return Fx, Fy
+
+def bcg_fluxes(s, u, v, dt):                     # 非分裂二阶预测子
+    slx, sly = limited_slopes(s)
+    # 1) 法向 1D 预测状态
+    sLx = np.roll(s, 1, 0) + 0.5 * (1 - dt/dx * u) * np.roll(slx, 1, 0)
+    sRx = s - 0.5 * (1 + dt/dx * u) * slx
+    hatX = np.where(u > 0, sLx, np.where(u < 0, sRx, 0.5 * (sLx + sRx)))
+    sBy = np.roll(s, 1, 1) + 0.5 * (1 - dt/dx * v) * np.roll(sly, 1, 1)
+    sTy = s - 0.5 * (1 + dt/dx * v) * sly
+    hatY = np.where(v > 0, sBy, np.where(v < 0, sTy, 0.5 * (sBy + sTy)))
+    # 2) 横向(角)修正 —— 复用预测状态
+    divVy = (np.roll(v * hatY, -1, 1) - v * hatY) / dx
+    divUx = (np.roll(u * hatX, -1, 0) - u * hatX) / dx
+    sLx -= 0.5 * dt * np.roll(divVy, 1, 0)
+    sRx -= 0.5 * dt * divVy
+    sBy -= 0.5 * dt * np.roll(divUx, 1, 1)
+    sTy -= 0.5 * dt * divUx
+    # 3) 用同一迎风规则选最终面值
+    sX = np.where(u > 0, sLx, np.where(u < 0, sRx, 0.5 * (sLx + sRx)))
+    sY = np.where(v > 0, sBy, np.where(v < 0, sTy, 0.5 * (sBy + sTy)))
+    return u * sX, v * sY
+
+def advance(s, u, v, dt, scheme):
+    Fx, Fy = bcg_fluxes(s, u, v, dt) if scheme == 'bcg' else donor_fluxes(s, u, v)
+    return s - dt * ((np.roll(Fx, -1, 0) - Fx) / dx + (np.roll(Fy, -1, 1) - Fy) / dx)
+
+def make_disk():
+    X, Y = np.meshgrid((np.arange(N)+0.5)*dx, (np.arange(N)+0.5)*dx, indexing='ij')
+    return ((X - 0.5)**2 + (Y - 0.78)**2 < 0.13**2).astype(float)
+
+u, v = face_velocities()
+Umax = omega * 0.5 * np.sqrt(2)
+dt = 0.6 * dx / Umax                    # CFL = 0.6
+steps = int(round(1.0 / dt))            # 正好转一圈
+
+for scheme in ('upwind1', 'bcg'):
+    s = make_disk()
+    mass0 = s.sum()
+    for _ in range(steps):
+        s = advance(s, u, v, dt, scheme)
+    print(f"{scheme:8s}  peak={s.max():.3f}  "
+          f"mass_err={abs(s.sum()-mass0)/mass0:.2e}")
+```
+
+输出类似下面这样。
+
+```text
+upwind1   peak=0.349  mass_err=3.1e-16
+bcg       peak=0.806  mass_err=2.8e-16
+```
+
+两种格式都把质量守恒到机器精度——这由守恒型通量差分保证。分歧在于峰值(peak)。一阶迎风一圈就把圆盘压到不足原高的一半，而 BCG 保住了原始高度的 80%。
+
+## 转两圈之后还剩下什么
+
+光看数字没有感觉。在下面的画布里自己转一转。用格式按钮在一阶迎风和 BCG 之间切换，再改变 CFL，观察圆盘如何变形。
+
+<SolidBodyScalarAdvection2D />
+
+保持在 `1st-order upwind`，圆盘还没转完一圈就摊成一个环，边缘模糊。切到 `BCG unsplit`，边界存活得久得多。把 CFL 提到 0.9，BCG 也会略微变粗，但相对一阶迎风的差距依然保持。这让人切身明白：数值耗散(numerical diffusion)由格式的阶数决定，而非网格分辨率。
+
+## 移植时漏水的地方
+
+- **CFL 比分裂格式更紧。** 非分裂 2D 因为沿对角线传播信息，稳定极限比一维更小。实践中从 $\mathrm{CFL}\lesssim 0.8$ 起步。
+- **速度场一定放在面上。** 把单元中心速度插值到面会破坏无散度性，你以为守恒的质量会漏掉。MAC(交错)布置才是正解。
+- **别漏掉横向项。** 只实现法向预测，就只是普通的维度分裂 MUSCL。代码能跑，但旋转扭曲依旧。
+- **limiter 在极值处归零。** 在峰顶斜率被削为零，局部退回一阶。这正是峰值慢慢下沉的原因。想再保住一些，就考虑保极值的 limiter。
+
+## 用一句话留下的
+
+BCG 的精髓是“预测-修正”。把时间导数换成对流，将面值预测到半步之后，再把这个预测复用到横向修正，最后用 Godunov 迎风选出最终值。因为不分裂方向，旋转不会扭曲；因为有 limiter，间断处不会振荡。下次要在带旋转和剪切的流动中搬运标量时，请再多怀疑一次一阶迎风的诱惑。

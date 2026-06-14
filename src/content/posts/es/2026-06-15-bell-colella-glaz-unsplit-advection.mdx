@@ -1,0 +1,204 @@
+---
+title: "Advectar sin dividir direcciones — El esquema upwind no dividido de Bell-Colella-Glaz"
+date: 2026-06-15
+description: "Un predictor Godunov de segundo orden no dividido que difumina mucho menos un escalar en rotación"
+tags: ["Advection", "Godunov", "Slope-Limiter", "Unsplit", "FVM"]
+locale: es
+slug: bell-colella-glaz-unsplit-advection
+draft: false
+---
+
+import { BcgEdgeStatePredictor1D } from '@/components/post-viz/2026-06-15-bell-colella-glaz-unsplit-advection/BcgEdgeStatePredictor1D'
+import { SolidBodyScalarAdvection2D } from '@/components/post-viz/2026-06-15-bell-colella-glaz-unsplit-advection/SolidBodyScalarAdvection2D'
+
+A finales de los años 80, John Bell y Phillip Colella, en Lawrence Berkeley, notaron una cicatriz extraña en sus simulaciones de explosiones. Un frente de llama colocado en diagonal respecto a los ejes de la malla se iba difuminando y torciendo en esa misma diagonal con el tiempo. El culpable no era la física, sino la discretización. La división direccional (dimensional splitting) —resolver una dirección a la vez— distorsionaba la advección diagonal. Este artículo sigue su solución, el esquema upwind no dividido de segundo orden de Bell-Colella-Glaz (BCG), desde las ecuaciones hasta una implementación en numpy. Al terminar habrás palpado con tus propias manos por qué dividir direcciones arruina un escalar en rotación y cómo un único término de derivada transversal tapa ese hueco.
+
+La ecuación es la advección conservativa más simple que existe. Un campo de velocidad sin divergencia (divergence-free) $\mathbf{u}$ transporta un escalar $s$.
+
+$$
+\frac{\partial s}{\partial t} + \nabla\cdot(\mathbf{u}\,s) = 0
+$$
+
+Aquí $s$ es un escalar pasivo como concentración o temperatura, y $\mathbf{u}$ es un campo de velocidad dado. Al actualizar los promedios de celda con volúmenes finitos (FV) se obtiene esta forma.
+
+$$
+s_{ij}^{n+1} = s_{ij}^{n}
+- \frac{\Delta t}{\Delta x}\left(F^x_{i+\frac12,j} - F^x_{i-\frac12,j}\right)
+- \frac{\Delta t}{\Delta y}\left(F^y_{i,j+\frac12} - F^y_{i,j-\frac12}\right)
+$$
+
+$F^x = u\,s^{n+1/2}$ es un flujo centrado en el tiempo (time-centered) en la cara. Toda la precisión se reduce a qué tan bien se estima el valor en la cara $s^{n+1/2}$.
+
+## Dividir una dirección a la vez tuerce la rotación
+
+La división direccional parte un problema 2D en una actualización 1D en x seguida de otra 1D en y. La implementación es fácil: basta un único solver 1D. El problema es el flujo diagonal.
+
+Cuando un escalar se mueve a $45^\circ$, resolver x primero y luego y da una respuesta distinta que el orden inverso. Ambos pierden el término cruzado (cross term) que vive entre los dos pasos 1D. En un flujo en rotación ese error se acumula en cada paso, y un disco redondo se deforma en un rombo. Alternar el orden con división de Strang solo cancela la asimetría direccional del error de segundo orden; la causa raíz permanece.
+
+La receta de BCG es sencilla: resolver x e y a la vez. Dentro de un mismo paso, predecir todos los valores de cara al mismo instante $t^{n+1/2}$ e incorporar de antemano el cambio transversal a esa predicción.
+
+## Convertir tiempo en espacio dentro del predictor
+
+La idea central es empujar el valor de cara medio paso adelante en tiempo y en espacio con una expansión de Taylor. En la cara derecha de la celda $i$, el estado izquierdo se lee así.
+
+$$
+s^{n+1/2}_{i+\frac12,\,L} = s^n_{ij}
++ \frac{\Delta x}{2}\,\partial_x s
++ \frac{\Delta t}{2}\,\partial_t s
+$$
+
+Dejar la derivada temporal tal cual no sirve de nada. Se sustituye la ecuación de advección $\partial_t s = -u\,\partial_x s$ para cambiar la derivada temporal por una espacial (el truco de Cauchy-Kowalewski).
+
+$$
+s^{n+1/2}_{i+\frac12,\,L} = s^n_{ij}
++ \frac{1}{2}\left(1 - \frac{\Delta t}{\Delta x}\,u_{i+\frac12,j}\right)\Delta_x s_{ij}
+$$
+
+$\Delta_x s_{ij}$ es la pendiente limitada (limited slope) de la celda $i$, y $u_{i+1/2,j}$ es la velocidad advectiva en la cara. El factor $(1 - \mathrm{CFL})$ entre paréntesis carga el avance temporal. A medida que CFL se acerca a 1, la contribución del estado izquierdo se reduce; en 0 queda una simple extrapolación espacial.
+
+El estado derecho, visto desde la celda vecina, se construye de forma simétrica.
+
+$$
+s^{n+1/2}_{i+\frac12,\,R} = s^n_{i+1,j}
+- \frac{1}{2}\left(1 + \frac{\Delta t}{\Delta x}\,u_{i+\frac12,j}\right)\Delta_x s_{i+1,j}
+$$
+
+Elegir entre los dos candidatos es la regla upwind de Godunov. El signo de la velocidad de cara decide el viento.
+
+$$
+s^{n+1/2}_{i+\frac12} =
+\begin{cases}
+s_{i+\frac12,\,L}, & u_{i+\frac12} > 0 \\[2pt]
+s_{i+\frac12,\,R}, & u_{i+\frac12} < 0
+\end{cases}
+$$
+
+Conviene experimentar con la simulación de abajo. A partir de una escalera de promedios de celda 1D, muestra la pendiente limitada y el estado de borde izquierdo predicho (punto ámbar) apoyado sobre ella.
+
+<BcgEdgeStatePredictor1D />
+
+Al subir CFL hasta 0.9, los puntos ámbar se jalan hacia el promedio de celda: así de grande es el avance temporal. Si se pone el limiter en `none` cerca del salto, se ve cómo la recta PLM se dispara más allá de los valores vecinos.
+
+## La derivada transversal cose las esquinas
+
+BCG inyecta el acoplamiento que la división deja caer directamente en el predictor. Al estado izquierdo de una cara en x se le resta medio paso de la divergencia del flujo transversal.
+
+$$
+s^{n+1/2}_{i+\frac12,\,L} \;\mathrel{-}=\; \frac{\Delta t}{2}\,\frac{\partial (v\,s)}{\partial y}\bigg|_{ij}
+$$
+
+$v$ es la velocidad en y, y $\partial_y(v s)$ es el cambio advectivo transversal en la celda $ij$. Para estimar este término primero hace falta obtener los estados predichos 1D $\hat s^y$ sobre las caras en y. Así que BCG tiene dos pasadas. Primero predecir el estado upwind 1D en cada dirección, luego reutilizar esa predicción en la corrección transversal, y por último elegir el valor de cara final con la misma regla upwind. Este "acoplamiento de esquina (corner coupling)" transporta la advección diagonal sin torsión.
+
+## Ponerle riendas a la pendiente — minmod y superbee
+
+La precisión del predictor sale de la pendiente $\Delta_x s$. Usar la pendiente centrada en crudo es de segundo orden, pero sobrepasa (overshoot) cerca de las discontinuidades. Un limitador de pendiente (slope limiter) le pone riendas. El más conservador, minmod, toma la menor de las dos diferencias laterales, o cero cuando difieren en signo.
+
+$$
+\Delta_x s_{ij} = \operatorname{minmod}\!\left(s_{ij}-s_{i-1,j},\; s_{i+1,j}-s_{ij}\right)
+$$
+
+Superbee mantiene la misma monotonía pero exprime la pendiente lo más empinada posible, afilando más los frentes de contacto. En la demo 1D de arriba, al alternar entre `minmod` y `superbee` se observa que la recta PLM del lado superbee es más empinada.
+
+## Girando un disco en numpy
+
+Ahora corremos el BCG 2D no dividido. El problema de juguete es rotación de cuerpo rígido (solid-body rotation). Se flota un disco escalar en un campo sin divergencia que gira alrededor del centro, y se compara el upwind de primer orden contra BCG en la misma malla.
+
+```python
+import numpy as np
+
+N = 64
+dx = 1.0 / N
+omega = 2 * np.pi                      # una vuelta por unidad de tiempo
+
+def face_velocities():
+    j = np.arange(N)
+    i = np.arange(N)
+    u = -omega * ((j + 0.5) * dx - 0.5)        # velocidad en cara x (depende de y)
+    u = np.broadcast_to(u[None, :], (N, N)).copy()
+    v = omega * ((i + 0.5) * dx - 0.5)         # velocidad en cara y (depende de x)
+    v = np.broadcast_to(v[:, None], (N, N)).copy()
+    return u, v
+
+def minmod_pair(a, b):                          # pendiente que preserva monotonia
+    return np.where(a * b > 0, np.where(np.abs(a) < np.abs(b), a, b), 0.0)
+
+def limited_slopes(s):
+    slx = minmod_pair(s - np.roll(s, 1, 0), np.roll(s, -1, 0) - s)
+    sly = minmod_pair(s - np.roll(s, 1, 1), np.roll(s, -1, 1) - s)
+    return slx, sly
+
+def donor_fluxes(s, u, v):                       # upwind de primer orden (celda donante)
+    Fx = np.where(u > 0, u * np.roll(s, 1, 0), u * s)
+    Fy = np.where(v > 0, v * np.roll(s, 1, 1), v * s)
+    return Fx, Fy
+
+def bcg_fluxes(s, u, v, dt):                     # predictor no dividido de segundo orden
+    slx, sly = limited_slopes(s)
+    # 1) estados predichos 1D en la direccion normal
+    sLx = np.roll(s, 1, 0) + 0.5 * (1 - dt/dx * u) * np.roll(slx, 1, 0)
+    sRx = s - 0.5 * (1 + dt/dx * u) * slx
+    hatX = np.where(u > 0, sLx, np.where(u < 0, sRx, 0.5 * (sLx + sRx)))
+    sBy = np.roll(s, 1, 1) + 0.5 * (1 - dt/dx * v) * np.roll(sly, 1, 1)
+    sTy = s - 0.5 * (1 + dt/dx * v) * sly
+    hatY = np.where(v > 0, sBy, np.where(v < 0, sTy, 0.5 * (sBy + sTy)))
+    # 2) correccion transversal (de esquina) — reusar los estados predichos
+    divVy = (np.roll(v * hatY, -1, 1) - v * hatY) / dx
+    divUx = (np.roll(u * hatX, -1, 0) - u * hatX) / dx
+    sLx -= 0.5 * dt * np.roll(divVy, 1, 0)
+    sRx -= 0.5 * dt * divVy
+    sBy -= 0.5 * dt * np.roll(divUx, 1, 1)
+    sTy -= 0.5 * dt * divUx
+    # 3) elegir el valor de cara final con la misma regla upwind
+    sX = np.where(u > 0, sLx, np.where(u < 0, sRx, 0.5 * (sLx + sRx)))
+    sY = np.where(v > 0, sBy, np.where(v < 0, sTy, 0.5 * (sBy + sTy)))
+    return u * sX, v * sY
+
+def advance(s, u, v, dt, scheme):
+    Fx, Fy = bcg_fluxes(s, u, v, dt) if scheme == 'bcg' else donor_fluxes(s, u, v)
+    return s - dt * ((np.roll(Fx, -1, 0) - Fx) / dx + (np.roll(Fy, -1, 1) - Fy) / dx)
+
+def make_disk():
+    X, Y = np.meshgrid((np.arange(N)+0.5)*dx, (np.arange(N)+0.5)*dx, indexing='ij')
+    return ((X - 0.5)**2 + (Y - 0.78)**2 < 0.13**2).astype(float)
+
+u, v = face_velocities()
+Umax = omega * 0.5 * np.sqrt(2)
+dt = 0.6 * dx / Umax                    # CFL = 0.6
+steps = int(round(1.0 / dt))            # exactamente una vuelta
+
+for scheme in ('upwind1', 'bcg'):
+    s = make_disk()
+    mass0 = s.sum()
+    for _ in range(steps):
+        s = advance(s, u, v, dt, scheme)
+    print(f"{scheme:8s}  peak={s.max():.3f}  "
+          f"mass_err={abs(s.sum()-mass0)/mass0:.2e}")
+```
+
+La salida se ve así.
+
+```text
+upwind1   peak=0.349  mass_err=3.1e-16
+bcg       peak=0.806  mass_err=2.8e-16
+```
+
+Ambos esquemas conservan la masa hasta la precisión de máquina —lo garantiza la diferenciación conservativa de flujos. Lo que cambia es el pico (peak). El upwind de primer orden aplasta el disco a menos de la mitad de su altura en una sola vuelta, mientras que BCG conserva el 80% de la altura original.
+
+## Qué queda después de dos vueltas
+
+Los números solos no convencen. Conviene girarlo en el lienzo de abajo. Los botones de esquema alternan entre upwind de primer orden y BCG, y se puede cambiar el CFL para ver cómo se deforma el disco.
+
+<SolidBodyScalarAdvection2D />
+
+Si se deja en `1st-order upwind`, el disco se expande en un anillo antes de completar una vuelta, con el borde borroso. Al cambiar a `BCG unsplit`, la frontera sobrevive mucho más. Al subir CFL a 0.9, BCG también se vuelve algo más rugoso, pero la brecha frente al upwind de primer orden se mantiene. Queda claro que la difusión numérica (numerical diffusion) la fija el orden del esquema, no la resolución de la malla.
+
+## Dónde se filtra al portarlo
+
+- **El CFL es más estricto que en un esquema dividido.** El 2D no dividido propaga información por la diagonal, así que su límite de estabilidad es menor que el 1D. En la práctica conviene empezar con $\mathrm{CFL}\lesssim 0.8$.
+- **Guardar siempre la velocidad en las caras.** Interpolar la velocidad centrada en celda a las caras rompe la propiedad de divergencia nula, y la masa que se creía conservada se fuga. La disposición MAC (escalonada) es la respuesta.
+- **No descartar el término transversal.** Si solo se implementa la predicción normal, queda un MUSCL con división dimensional sin más. El código corre, pero la torsión rotacional permanece.
+- **El limiter se anula en los extremos.** En la cima de un montículo la pendiente se recorta a cero y cae a primer orden localmente. Por eso el pico se hunde poco a poco. Para preservarlo más, conviene revisar limiters que conservan extremos.
+
+## Lo que vale la pena guardar en una línea
+
+La esencia de BCG es "predecir-corregir". Cambiar la derivada temporal por advección para predecir el valor de cara medio paso adelante, reutilizar esa predicción en la corrección transversal, y luego elegir el valor final con un upwind de Godunov. Como no divide direcciones, la rotación no se tuerce; gracias al limiter, las discontinuidades no oscilan. La próxima vez que haya que transportar un escalar por un flujo con rotación y cizalla, conviene dudar una vez más de la tentación del upwind de primer orden.

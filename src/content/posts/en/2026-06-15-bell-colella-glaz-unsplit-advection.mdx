@@ -1,0 +1,204 @@
+---
+title: "Advecting Without Splitting Directions — The Bell-Colella-Glaz Unsplit Upwind Scheme"
+date: 2026-06-15
+description: "An unsplit second-order Godunov predictor that smears a rotating scalar far less"
+tags: ["Advection", "Godunov", "Slope-Limiter", "Unsplit", "FVM"]
+locale: en
+slug: bell-colella-glaz-unsplit-advection
+draft: false
+---
+
+import { BcgEdgeStatePredictor1D } from '@/components/post-viz/2026-06-15-bell-colella-glaz-unsplit-advection/BcgEdgeStatePredictor1D'
+import { SolidBodyScalarAdvection2D } from '@/components/post-viz/2026-06-15-bell-colella-glaz-unsplit-advection/SolidBodyScalarAdvection2D'
+
+In the late 1980s, John Bell and Phillip Colella at Lawrence Berkeley spotted an odd scar in their explosion runs. A flame front set at an angle to the grid axes kept smearing and twisting along the diagonal as time went on. The culprit was not physics but discretization. Dimensional splitting — solving one direction at a time — was distorting diagonal advection. This post follows their fix, the Bell-Colella-Glaz (BCG) **unsplit second-order upwind scheme**, from the equations all the way to a numpy implementation. By the end you will feel, with your own hands, why splitting directions wrecks a rotating scalar and how one transverse-derivative term patches it.
+
+The equation is the simplest conservative advection there is. A divergence-free velocity field $\mathbf{u}$ carries a scalar $s$.
+
+$$
+\frac{\partial s}{\partial t} + \nabla\cdot(\mathbf{u}\,s) = 0
+$$
+
+Here $s$ is a passive scalar like concentration or temperature, and $\mathbf{u}$ is a prescribed velocity field. Updating cell averages with finite volumes (FV) gives this form.
+
+$$
+s_{ij}^{n+1} = s_{ij}^{n}
+- \frac{\Delta t}{\Delta x}\left(F^x_{i+\frac12,j} - F^x_{i-\frac12,j}\right)
+- \frac{\Delta t}{\Delta y}\left(F^y_{i,j+\frac12} - F^y_{i,j-\frac12}\right)
+$$
+
+$F^x = u\,s^{n+1/2}$ is a time-centered flux at the face. All the accuracy comes down to how well you estimate the face value $s^{n+1/2}$.
+
+## Splitting one direction at a time twists rotation
+
+Dimensional splitting breaks a 2D problem into an x-direction 1D update followed by a y-direction 1D update. The implementation is easy — a single 1D solver does it all. The trouble is diagonal flow.
+
+When a scalar moves at $45^\circ$, doing x first then y gives a different answer than the reverse order. Both miss the cross term that lives between the two 1D steps. In a rotating flow this error piles up every step, and a round disk warps into a rhombus. Alternating the order with Strang splitting only cancels the directional bias of the second-order error; the root cause stays.
+
+BCG's prescription is plain: solve x and y at the same time. Within one step, predict every face value at the same time level $t^{n+1/2}$, and bake the transverse change into that prediction.
+
+## Turning time into space in the predictor
+
+The core idea is to push the face value forward by half a step in both time and space with a Taylor expansion. At the right face of cell $i$, the left state reads:
+
+$$
+s^{n+1/2}_{i+\frac12,\,L} = s^n_{ij}
++ \frac{\Delta x}{2}\,\partial_x s
++ \frac{\Delta t}{2}\,\partial_t s
+$$
+
+Leaving the time derivative as is would be useless. Substitute the advection equation $\partial_t s = -u\,\partial_x s$ to trade the time derivative for a spatial one (the Cauchy-Kowalewski trick).
+
+$$
+s^{n+1/2}_{i+\frac12,\,L} = s^n_{ij}
++ \frac{1}{2}\left(1 - \frac{\Delta t}{\Delta x}\,u_{i+\frac12,j}\right)\Delta_x s_{ij}
+$$
+
+$\Delta_x s_{ij}$ is the limited slope in cell $i$, and $u_{i+1/2,j}$ is the advecting face velocity. The $(1 - \mathrm{CFL})$ factor carries the time advance. As CFL approaches 1 the left state's contribution shrinks; at 0 it becomes a plain spatial extrapolation.
+
+The right state seen from the neighboring cell is built symmetrically.
+
+$$
+s^{n+1/2}_{i+\frac12,\,R} = s^n_{i+1,j}
+- \frac{1}{2}\left(1 + \frac{\Delta t}{\Delta x}\,u_{i+\frac12,j}\right)\Delta_x s_{i+1,j}
+$$
+
+Choosing between the two candidates is Godunov's upwind rule. The sign of the face velocity decides the wind.
+
+$$
+s^{n+1/2}_{i+\frac12} =
+\begin{cases}
+s_{i+\frac12,\,L}, & u_{i+\frac12} > 0 \\[2pt]
+s_{i+\frac12,\,R}, & u_{i+\frac12} < 0
+\end{cases}
+$$
+
+Play with the simulation below. From a 1D cell-average staircase, it shows the limited slope and the predicted left edge state (amber dot) sitting on top of it.
+
+<BcgEdgeStatePredictor1D />
+
+Push CFL up to 0.9 and the amber dots get pulled back toward the cell average — that is how much the time advance bites. Set the limiter to `none` near the jump and watch the PLM line shoot past the neighboring values.
+
+## The transverse derivative stitches the corners
+
+BCG injects the coupling that splitting drops straight into the predictor. From the left state at an x-face, subtract half a step of the transverse flux divergence.
+
+$$
+s^{n+1/2}_{i+\frac12,\,L} \;\mathrel{-}=\; \frac{\Delta t}{2}\,\frac{\partial (v\,s)}{\partial y}\bigg|_{ij}
+$$
+
+$v$ is the y-velocity and $\partial_y(v s)$ is the transverse advective change in cell $ij$. To estimate this term you first need the 1D predicted states $\hat s^y$ on the y-faces. So BCG has two passes. First predict the 1D upwind state in each direction, then reuse that prediction for the transverse correction, then pick the final face value with the same upwind rule. This "corner coupling" carries diagonal advection without the twist.
+
+## Putting a leash on the slope — minmod and superbee
+
+The predictor's accuracy comes from the slope $\Delta_x s$. Using a raw centered slope is second order but overshoots near discontinuities. A slope limiter puts a leash on it. The most conservative one, minmod, takes the smaller of the two one-sided differences, or zero when they disagree in sign.
+
+$$
+\Delta_x s_{ij} = \operatorname{minmod}\!\left(s_{ij}-s_{i-1,j},\; s_{i+1,j}-s_{ij}\right)
+$$
+
+Superbee keeps the same monotonicity but squeezes the slope as steep as it can, pulling contact fronts sharper. In the 1D demo above, flip between `minmod` and `superbee` and you will see the superbee PLM line is steeper.
+
+## Spinning a disk in numpy
+
+Now we run the 2D unsplit BCG. The toy problem is solid-body rotation. Float a scalar disk in a divergence-free field spinning about the center, and compare first-order upwind against BCG on the same grid.
+
+```python
+import numpy as np
+
+N = 64
+dx = 1.0 / N
+omega = 2 * np.pi                      # one revolution per unit time
+
+def face_velocities():
+    j = np.arange(N)
+    i = np.arange(N)
+    u = -omega * ((j + 0.5) * dx - 0.5)        # x-face velocity (depends on y)
+    u = np.broadcast_to(u[None, :], (N, N)).copy()
+    v = omega * ((i + 0.5) * dx - 0.5)         # y-face velocity (depends on x)
+    v = np.broadcast_to(v[:, None], (N, N)).copy()
+    return u, v
+
+def minmod_pair(a, b):                          # monotonicity-preserving slope
+    return np.where(a * b > 0, np.where(np.abs(a) < np.abs(b), a, b), 0.0)
+
+def limited_slopes(s):
+    slx = minmod_pair(s - np.roll(s, 1, 0), np.roll(s, -1, 0) - s)
+    sly = minmod_pair(s - np.roll(s, 1, 1), np.roll(s, -1, 1) - s)
+    return slx, sly
+
+def donor_fluxes(s, u, v):                       # first-order upwind (donor cell)
+    Fx = np.where(u > 0, u * np.roll(s, 1, 0), u * s)
+    Fy = np.where(v > 0, v * np.roll(s, 1, 1), v * s)
+    return Fx, Fy
+
+def bcg_fluxes(s, u, v, dt):                     # unsplit second-order predictor
+    slx, sly = limited_slopes(s)
+    # 1) normal-direction 1D predicted states
+    sLx = np.roll(s, 1, 0) + 0.5 * (1 - dt/dx * u) * np.roll(slx, 1, 0)
+    sRx = s - 0.5 * (1 + dt/dx * u) * slx
+    hatX = np.where(u > 0, sLx, np.where(u < 0, sRx, 0.5 * (sLx + sRx)))
+    sBy = np.roll(s, 1, 1) + 0.5 * (1 - dt/dx * v) * np.roll(sly, 1, 1)
+    sTy = s - 0.5 * (1 + dt/dx * v) * sly
+    hatY = np.where(v > 0, sBy, np.where(v < 0, sTy, 0.5 * (sBy + sTy)))
+    # 2) transverse (corner) correction — reuse the predicted states
+    divVy = (np.roll(v * hatY, -1, 1) - v * hatY) / dx
+    divUx = (np.roll(u * hatX, -1, 0) - u * hatX) / dx
+    sLx -= 0.5 * dt * np.roll(divVy, 1, 0)
+    sRx -= 0.5 * dt * divVy
+    sBy -= 0.5 * dt * np.roll(divUx, 1, 1)
+    sTy -= 0.5 * dt * divUx
+    # 3) pick the final face value with the same upwind rule
+    sX = np.where(u > 0, sLx, np.where(u < 0, sRx, 0.5 * (sLx + sRx)))
+    sY = np.where(v > 0, sBy, np.where(v < 0, sTy, 0.5 * (sBy + sTy)))
+    return u * sX, v * sY
+
+def advance(s, u, v, dt, scheme):
+    Fx, Fy = bcg_fluxes(s, u, v, dt) if scheme == 'bcg' else donor_fluxes(s, u, v)
+    return s - dt * ((np.roll(Fx, -1, 0) - Fx) / dx + (np.roll(Fy, -1, 1) - Fy) / dx)
+
+def make_disk():
+    X, Y = np.meshgrid((np.arange(N)+0.5)*dx, (np.arange(N)+0.5)*dx, indexing='ij')
+    return ((X - 0.5)**2 + (Y - 0.78)**2 < 0.13**2).astype(float)
+
+u, v = face_velocities()
+Umax = omega * 0.5 * np.sqrt(2)
+dt = 0.6 * dx / Umax                    # CFL = 0.6
+steps = int(round(1.0 / dt))            # exactly one revolution
+
+for scheme in ('upwind1', 'bcg'):
+    s = make_disk()
+    mass0 = s.sum()
+    for _ in range(steps):
+        s = advance(s, u, v, dt, scheme)
+    print(f"{scheme:8s}  peak={s.max():.3f}  "
+          f"mass_err={abs(s.sum()-mass0)/mass0:.2e}")
+```
+
+The output looks like this.
+
+```text
+upwind1   peak=0.349  mass_err=3.1e-16
+bcg       peak=0.806  mass_err=2.8e-16
+```
+
+Both schemes conserve mass to machine precision — that is guaranteed by the conservative flux differencing. What differs is the peak. First-order upwind crushes the disk to less than half its height in a single revolution, while BCG keeps 80% of the original height.
+
+## What is left after two turns
+
+Numbers alone do not land it. Spin it yourself in the canvas below. The scheme buttons switch between first-order upwind and BCG, and you can change the CFL to watch how the disk deforms.
+
+<SolidBodyScalarAdvection2D />
+
+Leave it on `1st-order upwind` and the disk spreads into a ring before it even finishes one turn, with a blurred edge. Switch to `BCG unsplit` and the boundary survives far longer. Push CFL to 0.9 and BCG roughens a little, but the gap over first-order upwind stays. It drives home that numerical diffusion is set by the scheme's order, not by grid resolution.
+
+## Where it leaks when you port it
+
+- **The CFL is tighter than a split scheme.** Unsplit 2D propagates information along the diagonal, so its stability limit is smaller than the 1D one. In practice, start with $\mathrm{CFL}\lesssim 0.8$.
+- **Always store velocity on the faces.** Interpolating cell-centered velocity to faces breaks the divergence-free property, and the mass you thought was conserved leaks out. A MAC (staggered) layout is the answer.
+- **Do not drop the transverse term.** Implement only the normal prediction and you have plain dimensionally split MUSCL. The code runs, but the rotational twist stays.
+- **The limiter goes to zero at extrema.** At the peak of a hump the slope gets clipped to zero, dropping to locally first order. That is why the peak slowly sags. To preserve it, look at extremum-preserving limiters.
+
+## What to keep in one line
+
+The essence of BCG is "predict-correct". Trade the time derivative for advection to predict the face value half a step ahead, reuse that prediction in the transverse correction, then choose the final value with a Godunov upwind. Because it does not split directions, rotation does not twist; because of the limiter, discontinuities do not oscillate. Next time you have to carry a scalar through a flow with rotation and shear, doubt the temptation of first-order upwind one more time.
