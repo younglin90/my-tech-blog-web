@@ -1,0 +1,138 @@
+---
+title: "Why Droplets Are Round and Water Climbs the Glass — Surface Tension and Contact Angle"
+date: 2026-06-16
+description: "From the physics of surface tension to contact angle and the CSF model in CFD"
+tags: ["Multiphase", "Surface-Tension", "Contact-Angle", "Capillarity", "유동현상"]
+draft: false
+locale: en
+slug: surface-tension-contact-angle-csf
+---
+
+import { ContactAngleWettingLab } from '@/components/post-viz/2026-06-16-surface-tension-contact-angle-csf/ContactAngleWettingLab'
+import { CapillaryRiseExplorer } from '@/components/post-viz/2026-06-16-surface-tension-contact-angle-csf/CapillaryRiseExplorer'
+
+In 1881, Agnes Pockels measured the surface tension of water at her kitchen sink, using a button, a thread, and a tin basin. Barred from university, she watched oil films drift across the water while doing dishes and built her own apparatus to relate area to tension. This post follows the physics of that kitchen experiment — surface tension and contact angle — all the way to how CFD reproduces this force on a grid (the CSF model). At the end, we check capillary rise with real numbers.
+
+## Surface Tension Is Energy a Molecule Loses at the Edge
+
+A molecule deep inside a liquid is surrounded by neighbors on all sides. A molecule at the surface has empty space on one side. It is short on bonding energy by exactly that much.
+
+Nature minimizes this penalty by minimizing surface area. That is why a droplet in zero gravity becomes a sphere — the shape with the least surface area for a given volume.
+
+Surface tension $\sigma$ (force per unit length, N/m) is the energy cost of stretching the surface. The water–air interface is about $\sigma \approx 0.072$ N/m at room temperature.
+
+The world ruled by surface tension is sorted by dimensionless numbers. A small Weber number (inertia/surface tension) $We = \rho U^2 L / \sigma$ keeps a drop from breaking up. A small Bond number (gravity/surface tension) $Bo = \rho g L^2 / \sigma$ keeps it round instead of flattened by gravity. In a capillary, both numbers go small.
+
+## Young–Laplace — A Curved Surface Presses Inward
+
+When a surface curves, surface tension produces a net inward force. The result is a pressure jump across the interface.
+
+$$\Delta p = \sigma\left(\frac{1}{R_1} + \frac{1}{R_2}\right)$$
+
+Here $\Delta p$ is the pressure excess inside, and $R_1, R_2$ are the two principal radii of curvature. For a spherical drop $R_1 = R_2 = R$, so $\Delta p = 2\sigma/R$.
+
+The key point: the smaller the radius, the higher the inner pressure. The inside of a 5 µm fog droplet is about 29 kPa above ambient. That is why small bubbles get swallowed by large ones.
+
+## Contact Angle — A Tug-of-War Between Three Tensions
+
+When a drop rests on a solid, three interfaces meet along a line: solid–gas ($\sigma_{sg}$), solid–liquid ($\sigma_{sl}$), and liquid–gas ($\sigma_{lg}$). The angle at which they reach horizontal force balance is the contact angle $\theta$.
+
+$$\sigma_{sg} = \sigma_{sl} + \sigma_{lg}\cos\theta$$
+
+This is Young's equation. Rearranged, $\cos\theta = (\sigma_{sg} - \sigma_{sl})/\sigma_{lg}$.
+
+If $\theta < 90^\circ$, the liquid likes the solid and spreads (wetting, hydrophilic). If $\theta > 90^\circ$, the drop beads up (non-wetting, hydrophobic). A water drop on a lotus leaf shows $\theta$ above 150 degrees.
+
+Play with the simulation below. Move the contact-angle slider and watch a drop of the same volume spread out or bead up.
+
+<ContactAngleWettingLab />
+
+Drop $\theta$ below 30 degrees and the droplet flattens; push it past 120 degrees and it rises almost like a ball. The yellow arc at the contact line marks the Young balance.
+
+## CSF — Turning a Surface Force Into a Body Force on the Grid
+
+Here is the CFD problem. Surface tension acts on a surface of zero thickness. But a grid cell has volume. How do we put a force living on a surface into a cell?
+
+Brackbill's CSF (Continuum Surface Force) model converts the surface force into a body force smeared across the interface region.
+
+$$\mathbf{f}_{sv} = \sigma\,\kappa\,\hat{\mathbf{n}}\,\delta_s$$
+
+$\kappa$ is the interface curvature, $\hat{\mathbf{n}}$ the interface normal, and $\delta_s$ a surface delta function that is near 1 only at the interface. The normal and curvature come from a phase indicator $c$ (for example the VOF volume fraction).
+
+$$\hat{\mathbf{n}} = \frac{\nabla c}{|\nabla c|},\qquad \kappa = -\nabla\cdot\hat{\mathbf{n}}$$
+
+Curvature accuracy decides this model's fate. Using $\nabla c$ raw injects noise into the curvature and produces spurious flow (parasitic currents). So we smooth the normal — by distance-weighted interpolation or a least-squares plane fit — before computing curvature.
+
+## Wall Adhesion Forces the Contact Angle
+
+An interface touching a wall gets one extra condition: the contact angle at the wall must equal the $\theta$ we prescribe.
+
+CSF enforces this by tilting the normal in near-wall cells. Using the wall normal $\hat{\mathbf{n}}_w$ and tangent $\hat{\mathbf{t}}_w$, we rewrite the interface normal.
+
+$$\hat{\mathbf{n}} = \hat{\mathbf{n}}_w\cos\theta + \hat{\mathbf{t}}_w\sin\theta$$
+
+Tilting the normal changes the curvature, and that curvature then generates surface tension that drags the drop toward the prescribed angle. This is the wall adhesion model. Handling the motion of the three-phase contact line needs additional modeling.
+
+## Python — Checking Jurin's Law With Numbers
+
+Dip a thin tube in water and the water climbs on its own. That is capillary rise. The equilibrium height comes from balancing Young–Laplace against hydrostatic pressure.
+
+$$h = \frac{2\sigma\cos\theta}{\rho g r}$$
+
+$r$ is the tube radius and $\theta$ the contact angle. The thinner the tube (smaller $r$), the higher the climb.
+
+```python
+import numpy as np
+
+SIGMA = 0.072    # N/m, water-air (room temperature)
+RHO   = 1000.0   # kg/m^3
+G     = 9.81     # m/s^2
+
+def young_laplace_dp(sigma, R1, R2):
+    """Pressure jump across a curved interface dp = sigma*(1/R1 + 1/R2)."""
+    return sigma * (1.0 / R1 + 1.0 / R2)
+
+def jurin_capillary_rise(r, theta_deg, sigma=SIGMA, rho=RHO, g=G):
+    """Equilibrium rise height (m) in a capillary of radius r."""
+    theta = np.radians(theta_deg)
+    return 2.0 * sigma * np.cos(theta) / (rho * g * r)
+
+# Spherical drop (R1=R2=R): smaller radius means higher inner pressure
+for R_um in (5, 50, 500):
+    R = R_um * 1e-6
+    print(f"R={R_um:4d} um -> dp = {young_laplace_dp(SIGMA, R, R):8.1f} Pa")
+
+# Jurin's law: a thinner tube lifts the water higher
+print()
+for r_mm in (0.1, 0.5, 1.0):
+    h = jurin_capillary_rise(r_mm * 1e-3, theta_deg=30)
+    print(f"r={r_mm:.1f} mm -> h = {h*1000:6.1f} mm")
+```
+
+Output:
+
+```text
+R=   5 um -> dp =  28800.0 Pa
+R=  50 um -> dp =   2880.0 Pa
+R= 500 um -> dp =    288.0 Pa
+
+r=0.1 mm -> h =  127.1 mm
+r=0.5 mm -> h =   25.4 mm
+r=1.0 mm -> h =   12.7 mm
+```
+
+Shrink the radius tenfold and both the pressure jump and the rise height grow tenfold. It is one piece of how plants pull water tens of meters up through capillaries and transpiration.
+
+Play with the simulation below. Change the tube radius and contact angle, and the water column rises to its equilibrium height.
+
+<CapillaryRiseExplorer />
+
+Push the contact angle past 90 degrees and $\cos\theta$ turns negative, so the level drops instead. That is exactly how mercury is pushed down in a glass tube (a convex meniscus).
+
+## What the Phenomenon Tells Us
+
+Surface tension is a force born from the energy a molecule loses at the surface. So nature works to shrink surface area.
+
+A curved surface presses inward (Young–Laplace), and the angle where it meets a solid is set by the balance of three tensions (Young). The smaller the scale, the more this force overpowers gravity.
+
+CFD converts this surface force into a body force via curvature and normals (CSF). How smoothly you compute the curvature is the key to taming spurious flow.
