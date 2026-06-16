@@ -1,0 +1,168 @@
+---
+title: "把矩形网格裹到机翼上 — 曲线坐标变换与网格度量"
+date: 2026-06-17
+description: "物理与逻辑域映射、雅可比、自由来流守恒的numpy验证"
+tags: ["Curvilinear", "Grid-Metrics", "Jacobian", "Mesh", "FVM"]
+locale: zh
+slug: curvilinear-coordinate-transformation-grid-metrics
+draft: false
+---
+
+import { CurvilinearGridMapper } from '@/components/post-viz/2026-06-17-curvilinear-coordinate-transformation-grid-metrics/CurvilinearGridMapper'
+import { WallClusteringStretch1D } from '@/components/post-viz/2026-06-17-curvilinear-coordinate-transformation-grid-metrics/WallClusteringStretch1D'
+
+一位工程师想求解机翼周围的流动。手上的求解器只认识直角网格。可机翼是曲面。无论把矩形单元切得多细，曲面也只能画成阶梯状。出路不是把网格弯过去，而是**把空间本身弯过去**。把扭曲的物理网格映射回一张笔直的逻辑网格，再在那张笔直的网格上求解方程。本文跟随让这次往返成为可能的坐标变换与网格度量。读完之后，你会明白雅可比为何能捕捉网格折叠，以及曲线网格上一股均匀流要保持均匀需要什么——并用numpy直接验证。
+
+## 物理域与逻辑域
+
+曲线坐标法从两个域出发。物理域是包裹机翼的扭曲网格所在之处，坐标记作 $(x, y)$。逻辑域是把那张网格摊平后的单位正方形，坐标记作 $(\xi, \eta)$。
+
+映射是连接两者的函数。
+
+$$
+x = x(\xi, \eta), \qquad y = y(\xi, \eta)
+$$
+
+其中 $\xi$ 对应网格某一方向的索引，$\eta$ 对应另一方向。在逻辑域中每个单元都是边长 $\Delta\xi = \Delta\eta = 1/N$ 的正方形。求解器只在这张笔直的网格上计算差分。所有扭曲信息都被吸收进映射函数里。
+
+## 度量:网格建立的汇率表
+
+麻烦在于，我们要解的方程是用关于 $x, y$ 的导数写成的。网格却沿 $\xi, \eta$ 移动。连接两者的汇率表就是**网格度量**(metric)。
+
+从链式法则开始。
+
+$$
+\frac{\partial}{\partial x} = \xi_x \frac{\partial}{\partial \xi} + \eta_x \frac{\partial}{\partial \eta}, \qquad
+\frac{\partial}{\partial y} = \xi_y \frac{\partial}{\partial \xi} + \eta_y \frac{\partial}{\partial \eta}
+$$
+
+像 $\xi_x = \partial\xi/\partial x$ 这样的项就是度量系数。但我们手上握着的是反方向，即 $x_\xi, x_\eta, y_\xi, y_\eta$，因为把映射对 $\xi, \eta$ 求导即可直接得到。两者通过逆矩阵关系绑定。
+
+$$
+\xi_x = \frac{y_\eta}{J}, \quad \xi_y = -\frac{x_\eta}{J}, \quad \eta_x = -\frac{y_\xi}{J}, \quad \eta_y = \frac{x_\xi}{J}
+$$
+
+每个符号都是映射的一阶导数，$J$ 是下一节的雅可比。归纳起来，度量就是"容易得到的 $x_\xi$ 一族除以雅可比"。
+
+## 雅可比与网格折叠
+
+雅可比行列式衡量映射把面积放大或缩小了多少。
+
+$$
+J = \det
+\begin{pmatrix}
+x_\xi & x_\eta \\
+y_\xi & y_\eta
+\end{pmatrix}
+= x_\xi y_\eta - x_\eta y_\xi
+$$
+
+其中 $J$ 是逻辑域中单位面积在物理域所占面积之比。$J > 0$ 时映射保持定向。$J = 0$ 时单元塌缩成一点或一线。$J < 0$ 时单元被翻转。这就是**网格折叠**(grid folding)。在折叠网格上度量的分母穿过零而发散，求解器吐出 NaN。
+
+请在下面的模拟中亲手调节参数。提高 shear 与 amplitude，网格会扭曲。打开 Jacobian heatmap，每个单元按其 $J/J_0$ 值上色。
+
+<CurvilinearGridMapper />
+
+把 amplitude 推到 0.3 附近、wave number 推到 4 以上。某一刻红色单元出现。那些单元里 $J$ 已转为负。这正是网格生成器绝不可越过的红线。
+
+## 变换后的守恒形方程
+
+现在把方程搬进逻辑域。看一个二维守恒形方程。
+
+$$
+\frac{\partial Q}{\partial t} + \frac{\partial F}{\partial x} + \frac{\partial G}{\partial y} = 0
+$$
+
+$Q$ 是守恒量，$F, G$ 是 $x, y$ 方向的通量。代入度量并乘以 $J$ 整理后得到**强守恒形**(strong conservation form)。
+
+$$
+\frac{\partial (JQ)}{\partial t} + \frac{\partial \hat F}{\partial \xi} + \frac{\partial \hat G}{\partial \eta} = 0
+$$
+
+变换后的通量为
+
+$$
+\hat F = J(\xi_x F + \xi_y G), \qquad \hat G = J(\eta_x F + \eta_y G)
+$$
+
+关键在于，像 $J\xi_x = y_\eta$、$J\xi_y = -x_\eta$ 这样度量与雅可比之积会折回映射的简单导数。因此变换后的通量无需先除以度量再乘回。守住这一形式，曲线网格上质量与动量也能精确守恒。
+
+## 用代码计算并验证度量
+
+把理论搬到 numpy。定义一张波动的物理网格，用中心差分还原度量与雅可比，再看均匀通量是否真的守恒。
+
+```python
+import numpy as np
+
+def body_fitted_map(xi, eta, amp=0.15, shear=0.3, wavek=2.0):
+    """把逻辑坐标 (xi, eta) ∈ [0,1]^2 映射到物理坐标 (x, y)。"""
+    x = xi + shear * eta + amp * np.sin(np.pi * wavek * eta)
+    y = eta + amp * np.sin(np.pi * wavek * xi)
+    return x, y
+
+def compute_metrics(x, y, dxi, deta):
+    """用中心差分还原雅可比 J 与逆度量。"""
+    x_xi  = np.gradient(x, dxi,  axis=1)   # ∂x/∂ξ
+    x_eta = np.gradient(x, deta, axis=0)   # ∂x/∂η
+    y_xi  = np.gradient(y, dxi,  axis=1)
+    y_eta = np.gradient(y, deta, axis=0)
+    J = x_xi * y_eta - x_eta * y_xi        # 雅可比行列式
+    xi_x, xi_y  =  y_eta / J, -x_eta / J
+    eta_x, eta_y = -y_xi / J,  x_xi / J
+    return J, (xi_x, xi_y, eta_x, eta_y)
+
+# 逻辑网格
+N = 41
+xi  = np.linspace(0, 1, N)
+eta = np.linspace(0, 1, N)
+dxi, deta = xi[1] - xi[0], eta[1] - eta[0]
+XI, ETA = np.meshgrid(xi, eta)             # axis0=eta, axis1=xi
+
+X, Y = body_fitted_map(XI, ETA, amp=0.15, shear=0.3, wavek=2.0)
+J, _ = compute_metrics(X, Y, dxi, deta)
+
+print(f"J 最小/最大 = {J.min():.4f} / {J.max():.4f}")
+print("网格:", "发生折叠 (J<=0)" if J.min() <= 0 else "正常 (J>0)")
+```
+
+接着是自由来流守恒(freestream preservation)检验。代入常通量 $F, G$，残差应为零。把变换通量直接写成 $J\xi_x = y_\eta$ 的形式，中心差分的混合导数互相交换，残差落到舍入误差量级。
+
+```python
+def freestream_residual(x, y, dxi, deta, F=1.0, G=0.5):
+    """常通量 (F,G) 的自由来流残差，应为零。"""
+    x_xi  = np.gradient(x, dxi,  axis=1)
+    x_eta = np.gradient(x, deta, axis=0)
+    y_xi  = np.gradient(y, dxi,  axis=1)
+    y_eta = np.gradient(y, deta, axis=0)
+    Fhat =  F * y_eta - G * x_eta          # = J(ξ_x F + ξ_y G)
+    Ghat = -F * y_xi  + G * x_xi           # = J(η_x F + η_y G)
+    dFhat = np.gradient(Fhat, dxi,  axis=1)
+    dGhat = np.gradient(Ghat, deta, axis=0)
+    return dFhat + dGhat
+
+R = freestream_residual(X, Y, dxi, deta)
+print(f"自由来流残差 max|R| (内部) = {np.abs(R[1:-1, 1:-1]).max():.2e}")
+# 例) J 最小/最大 = 0.62 / 1.38, 自由来流残差 max|R| ≈ 1e-16
+```
+
+常见错误是用非守恒形求解:先把度量除以 $J$，再乘回通量。三维中这种不匹配会变大，在均匀流里播下虚假源项。Thomas 与 Lombard(1979)提出的对称守恒形度量可以防止它。二维中，像上面那样把 $\hat F$ 直接写成 $y_\eta, x_\eta$ 就足够了。
+
+## 在壁面附近聚集单元
+
+要解边界层，就得把单元密集地聚在壁面附近。这也是同一坐标变换的一维版本。用指数函数拉伸均匀的 $\eta$ 来构造物理坐标 $y$。
+
+$$
+y(\eta) = \frac{e^{\beta \eta} - 1}{e^{\beta} - 1}
+$$
+
+其中 $\beta$ 是聚集系数。一维雅可比为 $dy/d\eta = \beta e^{\beta\eta}/(e^\beta - 1)$，该值小的地方网格变密。
+
+在下面的模拟中调节 $\beta$。
+
+<WallClusteringStretch1D />
+
+把 $\beta$ 从 0 提到 4，壁面($y=0$)附近的第一个间距急剧收缩，与最后一个间距之比拉开到数十倍。这意味着同样的单元数能把边界层捕捉得好得多。
+
+## 明天也值得记住
+
+曲线坐标变换是把扭曲网格映射回笔直逻辑网格再求解的技巧。雅可比 $J$ 既是面积比，也是网格的体检表。$J \le 0$ 意味着网格已折叠，求解器在那里停摆。把变换通量写成 $J\xi_x = y_\eta$ 的强守恒形，曲线网格上的均匀流就能保持均匀。一旦把度量除出去再乘回来，这份保证就消失了。

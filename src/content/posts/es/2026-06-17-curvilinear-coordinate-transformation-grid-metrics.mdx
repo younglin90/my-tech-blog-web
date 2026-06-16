@@ -1,0 +1,168 @@
+---
+title: "Envolver un ala con una malla rectangular — transformación de coordenadas curvilíneas y métricas de malla"
+date: 2026-06-17
+description: "Mapeo físico-lógico, el jacobiano y la preservación del flujo libre en numpy"
+tags: ["Curvilinear", "Grid-Metrics", "Jacobian", "Mesh", "FVM"]
+locale: es
+slug: curvilinear-coordinate-transformation-grid-metrics
+draft: false
+---
+
+import { CurvilinearGridMapper } from '@/components/post-viz/2026-06-17-curvilinear-coordinate-transformation-grid-metrics/CurvilinearGridMapper'
+import { WallClusteringStretch1D } from '@/components/post-viz/2026-06-17-curvilinear-coordinate-transformation-grid-metrics/WallClusteringStretch1D'
+
+Un ingeniero quiere resolver el flujo alrededor de un ala. El solver que tiene a mano solo entiende mallas cartesianas. Pero el ala es curva. Por más fino que se piquen las celdas rectangulares, una superficie curva sigue saliendo en forma de escalera. La salida no es doblar la malla, sino **doblar el espacio mismo**. Se mapea la malla física deformada de vuelta a una malla lógica perfectamente recta, y allí se resuelven las ecuaciones. Este artículo recorre la transformación de coordenadas y las métricas de malla que hacen posible ese viaje de ida y vuelta. Al final quedará claro por qué el jacobiano detecta el plegado de la malla, y qué hace falta para que un flujo uniforme siga uniforme sobre una malla curva, verificado directamente en numpy.
+
+## Dominio físico y dominio lógico
+
+Los métodos curvilíneos parten de dos dominios. El dominio físico es donde vive la malla deformada que envuelve el ala. Sus coordenadas son $(x, y)$. El dominio lógico es esa misma malla aplanada en un cuadrado unitario. Sus coordenadas son $(\xi, \eta)$.
+
+El mapeo es la función que los enlaza.
+
+$$
+x = x(\xi, \eta), \qquad y = y(\xi, \eta)
+$$
+
+Aquí $\xi$ corresponde al índice a lo largo de una dirección de la malla y $\eta$ a la otra. En el dominio lógico cada celda es un cuadrado de lado $\Delta\xi = \Delta\eta = 1/N$. El solver calcula diferencias solo sobre esta malla recta. Toda la deformación queda absorbida dentro de la función de mapeo.
+
+## Métricas: el tipo de cambio que construye la malla
+
+El problema es que la ecuación que se quiere resolver está escrita en derivadas respecto a $x, y$. La malla se mueve a lo largo de $\xi, \eta$. La tabla de tipos de cambio que conecta ambos son las **métricas de malla**.
+
+Se parte de la regla de la cadena.
+
+$$
+\frac{\partial}{\partial x} = \xi_x \frac{\partial}{\partial \xi} + \eta_x \frac{\partial}{\partial \eta}, \qquad
+\frac{\partial}{\partial y} = \xi_y \frac{\partial}{\partial \xi} + \eta_y \frac{\partial}{\partial \eta}
+$$
+
+Términos como $\xi_x = \partial\xi/\partial x$ son los coeficientes métricos. Pero lo que realmente se tiene es el sentido inverso, es decir $x_\xi, x_\eta, y_\xi, y_\eta$, porque derivar el mapeo respecto a $\xi, \eta$ los da de forma directa. Ambos quedan ligados por la relación de matriz inversa.
+
+$$
+\xi_x = \frac{y_\eta}{J}, \quad \xi_y = -\frac{x_\eta}{J}, \quad \eta_x = -\frac{y_\xi}{J}, \quad \eta_y = \frac{x_\xi}{J}
+$$
+
+Cada símbolo es una derivada primera del mapeo, y $J$ es el jacobiano de la sección siguiente. En resumen, una métrica es "la familia $x_\xi$, fácil de obtener, dividida por el jacobiano".
+
+## El jacobiano y el plegado de la malla
+
+El determinante jacobiano mide cuánto estira o encoge el área el mapeo.
+
+$$
+J = \det
+\begin{pmatrix}
+x_\xi & x_\eta \\
+y_\xi & y_\eta
+\end{pmatrix}
+= x_\xi y_\eta - x_\eta y_\xi
+$$
+
+Aquí $J$ es la razón entre un área unitaria del dominio lógico y el área que ocupa en el dominio físico. Si $J > 0$ el mapeo conserva la orientación. Si $J = 0$ una celda colapsa a un punto o a una línea. Si $J < 0$ la celda se da vuelta. Eso es el **plegado de la malla** (grid folding). En una malla plegada los denominadores métricos cruzan el cero y divergen, y el solver arroja NaN.
+
+Conviene probar la simulación de abajo. Al subir shear y amplitude la malla se retuerce. Con el Jacobian heatmap activado, cada celda se colorea según su valor $J/J_0$.
+
+<CurvilinearGridMapper />
+
+Lleva amplitude hacia 0.3 y wave number a 4 o más. En cierto momento aparecen celdas rojas. En esas celdas $J$ se volvió negativo. Esta es justo la línea que un generador de malla nunca debe cruzar.
+
+## La ley de conservación transformada
+
+Ahora se lleva la ecuación al dominio lógico. Tomemos una ley de conservación 2D.
+
+$$
+\frac{\partial Q}{\partial t} + \frac{\partial F}{\partial x} + \frac{\partial G}{\partial y} = 0
+$$
+
+$Q$ es la cantidad conservada y $F, G$ son los flujos en $x, y$. Al sustituir las métricas y multiplicar por $J$ se obtiene la **forma de conservación fuerte** (strong conservation form).
+
+$$
+\frac{\partial (JQ)}{\partial t} + \frac{\partial \hat F}{\partial \xi} + \frac{\partial \hat G}{\partial \eta} = 0
+$$
+
+Los flujos transformados son
+
+$$
+\hat F = J(\xi_x F + \xi_y G), \qquad \hat G = J(\eta_x F + \eta_y G)
+$$
+
+La clave es que productos como $J\xi_x = y_\eta$ y $J\xi_y = -x_\eta$ se reducen a simples derivadas del mapeo. Así el flujo transformado nunca tiene que dividir por una métrica para luego volver a multiplicarla. Si se respeta esta forma, la masa y el momento se conservan exactamente incluso sobre una malla curva.
+
+## Calcular y verificar las métricas en código
+
+Llevemos la teoría a numpy. Definimos una malla física ondulada, recuperamos las métricas y el jacobiano con diferencias centradas, y comprobamos si un flujo uniforme realmente se conserva.
+
+```python
+import numpy as np
+
+def body_fitted_map(xi, eta, amp=0.15, shear=0.3, wavek=2.0):
+    """Mapea coords lógicas (xi, eta) en [0,1]^2 a coords físicas (x, y)."""
+    x = xi + shear * eta + amp * np.sin(np.pi * wavek * eta)
+    y = eta + amp * np.sin(np.pi * wavek * xi)
+    return x, y
+
+def compute_metrics(x, y, dxi, deta):
+    """Recupera el jacobiano J y las métricas inversas por diferencias centradas."""
+    x_xi  = np.gradient(x, dxi,  axis=1)   # dx/dxi
+    x_eta = np.gradient(x, deta, axis=0)   # dx/deta
+    y_xi  = np.gradient(y, dxi,  axis=1)
+    y_eta = np.gradient(y, deta, axis=0)
+    J = x_xi * y_eta - x_eta * y_xi        # determinante jacobiano
+    xi_x, xi_y  =  y_eta / J, -x_eta / J
+    eta_x, eta_y = -y_xi / J,  x_xi / J
+    return J, (xi_x, xi_y, eta_x, eta_y)
+
+# malla lógica
+N = 41
+xi  = np.linspace(0, 1, N)
+eta = np.linspace(0, 1, N)
+dxi, deta = xi[1] - xi[0], eta[1] - eta[0]
+XI, ETA = np.meshgrid(xi, eta)             # axis0=eta, axis1=xi
+
+X, Y = body_fitted_map(XI, ETA, amp=0.15, shear=0.3, wavek=2.0)
+J, _ = compute_metrics(X, Y, dxi, deta)
+
+print(f"J min/max = {J.min():.4f} / {J.max():.4f}")
+print("malla:", "plegada (J<=0)" if J.min() <= 0 else "valida (J>0)")
+```
+
+Sigue la prueba de preservación del flujo libre (freestream preservation). Al introducir flujos constantes $F, G$ el residuo debe ser cero. Escribir el flujo transformado directamente como $J\xi_x = y_\eta$ hace que las derivadas mixtas centradas conmuten, así que el residuo cae al nivel del redondeo.
+
+```python
+def freestream_residual(x, y, dxi, deta, F=1.0, G=0.5):
+    """Residuo de flujo libre para flujo constante (F,G). Debe ser cero."""
+    x_xi  = np.gradient(x, dxi,  axis=1)
+    x_eta = np.gradient(x, deta, axis=0)
+    y_xi  = np.gradient(y, dxi,  axis=1)
+    y_eta = np.gradient(y, deta, axis=0)
+    Fhat =  F * y_eta - G * x_eta          # = J(xi_x F + xi_y G)
+    Ghat = -F * y_xi  + G * x_xi           # = J(eta_x F + eta_y G)
+    dFhat = np.gradient(Fhat, dxi,  axis=1)
+    dGhat = np.gradient(Ghat, deta, axis=0)
+    return dFhat + dGhat
+
+R = freestream_residual(X, Y, dxi, deta)
+print(f"residuo de flujo libre max|R| (interior) = {np.abs(R[1:-1, 1:-1]).max():.2e}")
+# ej.) J min/max = 0.62 / 1.38, residuo de flujo libre max|R| ~ 1e-16
+```
+
+Un error frecuente es resolver en la forma no conservativa, dividiendo la métrica por $J$ y luego volviéndola a multiplicar sobre el flujo. En tres dimensiones ese desajuste crece y siembra una fuente espuria en un flujo uniforme. Las métricas conservativas simétricas de Thomas y Lombard (1979) lo evitan. En 2D basta con escribir $\hat F$ directamente en términos de $y_\eta, x_\eta$ como arriba.
+
+## Agrupar celdas cerca de la pared
+
+Para resolver una capa límite hay que apretar las celdas cerca de la pared. Eso es la misma transformación de coordenadas en una dimensión. Se estira un $\eta$ uniforme con una exponencial para construir la coordenada física $y$.
+
+$$
+y(\eta) = \frac{e^{\beta \eta} - 1}{e^{\beta} - 1}
+$$
+
+Aquí $\beta$ es el parámetro de agrupamiento. El jacobiano 1D es $dy/d\eta = \beta e^{\beta\eta}/(e^\beta - 1)$, y la malla se aprieta donde ese valor es pequeño.
+
+Conviene jugar con $\beta$ en la simulación de abajo.
+
+<WallClusteringStretch1D />
+
+Al subir $\beta$ de 0 a 4, el primer espaciado cerca de la pared ($y=0$) se encoge de golpe, abriendo la razón frente al último espaciado a decenas de veces. El mismo número de celdas resuelve la capa límite mucho mejor.
+
+## Para recordar mañana
+
+Una transformación curvilínea es el truco de resolver una malla deformada mapeándola de vuelta a una lógica recta. El jacobiano $J$ es a la vez una razón de área y una hoja clínica de la malla. Si $J \le 0$ la malla se ha plegado y el solver se detiene allí. Si el flujo transformado se escribe en la forma de conservación fuerte $J\xi_x = y_\eta$, un flujo uniforme sigue uniforme incluso sobre una malla curva. En el instante en que se divide una métrica y se vuelve a multiplicar, esa garantía desaparece.

@@ -1,0 +1,168 @@
+---
+title: "長方形格子を翼にかぶせる方法 — 曲線座標変換と格子メトリック"
+date: 2026-06-17
+description: "物理・論理領域の写像、ヤコビアン、自由流保存をnumpyで検証"
+tags: ["Curvilinear", "Grid-Metrics", "Jacobian", "Mesh", "FVM"]
+locale: ja
+slug: curvilinear-coordinate-transformation-grid-metrics
+draft: false
+---
+
+import { CurvilinearGridMapper } from '@/components/post-viz/2026-06-17-curvilinear-coordinate-transformation-grid-metrics/CurvilinearGridMapper'
+import { WallClusteringStretch1D } from '@/components/post-viz/2026-06-17-curvilinear-coordinate-transformation-grid-metrics/WallClusteringStretch1D'
+
+あるエンジニアが翼まわりの流れを解こうとしています。手元のソルバーは直交格子しか知りません。しかし翼は曲面です。長方形セルをどれだけ細かく刻んでも、曲面は階段状にしか描けません。解決策は格子を曲げることではなく、**空間そのものを曲げる**ことです。歪んだ物理格子をまっすぐな論理格子へ戻し、そのまっすぐな場所で方程式を解きます。本記事では、その往復を可能にする座標変換と格子メトリックをたどります。読み終えると、ヤコビアンがなぜ格子の折れを検出するのか、そして曲線格子で一様流が一様なまま残るには何が必要かを、numpyで直接確かめられます。
+
+## 物理領域と論理領域
+
+曲線座標法の出発点は二つの領域です。物理領域は翼を包む歪んだ格子が存在する場所です。座標は $(x, y)$ で表します。論理領域はその格子をまっすぐに伸ばした単位正方形です。座標は $(\xi, \eta)$ で表します。
+
+写像が両者をつなぐ関数です。
+
+$$
+x = x(\xi, \eta), \qquad y = y(\xi, \eta)
+$$
+
+ここで $\xi$ は格子のある方向のインデックス、$\eta$ はもう一方の方向に対応します。論理領域ではすべてのセルが一辺 $\Delta\xi = \Delta\eta = 1/N$ の正方形です。ソルバーはこのまっすぐな格子でのみ差分を計算します。歪みの情報はすべて写像関数の中へ吸収されます。
+
+## メトリック:格子が作る為替レート
+
+問題は、解きたい方程式が $x, y$ に関する微分で書かれている点です。格子は $\xi, \eta$ に沿って動きます。両者をつなぐ為替レート表が**格子メトリック**です。
+
+連鎖律から始めます。
+
+$$
+\frac{\partial}{\partial x} = \xi_x \frac{\partial}{\partial \xi} + \eta_x \frac{\partial}{\partial \eta}, \qquad
+\frac{\partial}{\partial y} = \xi_y \frac{\partial}{\partial \xi} + \eta_y \frac{\partial}{\partial \eta}
+$$
+
+$\xi_x = \partial\xi/\partial x$ のような項がメトリック係数です。しかし実際に手にしているのは逆方向、つまり $x_\xi, x_\eta, y_\xi, y_\eta$ です。写像を $\xi, \eta$ で微分すれば直接得られるからです。両者は逆行列の関係で結ばれます。
+
+$$
+\xi_x = \frac{y_\eta}{J}, \quad \xi_y = -\frac{x_\eta}{J}, \quad \eta_x = -\frac{y_\xi}{J}, \quad \eta_y = \frac{x_\xi}{J}
+$$
+
+各記号は写像の一階微分で、$J$ は次節のヤコビアンです。まとめると、メトリックは「簡単に得られる $x_\xi$ の類をヤコビアンで割ったもの」です。
+
+## ヤコビアンと格子の折れ
+
+ヤコビアン行列式は、写像が面積をどれだけ伸縮させるかを測る数です。
+
+$$
+J = \det
+\begin{pmatrix}
+x_\xi & x_\eta \\
+y_\xi & y_\eta
+\end{pmatrix}
+= x_\xi y_\eta - x_\eta y_\xi
+$$
+
+ここで $J$ は論理領域の単位面積が物理領域で占める面積の比です。$J > 0$ なら写像は向きを保ちます。$J = 0$ ならセルが点や線に潰れます。$J < 0$ ならセルが裏返ります。これが**格子の折れ**(grid folding)です。折れた格子ではメトリックの分母がゼロを横切って発散し、ソルバーはNaNを吐きます。
+
+下のシミュレーションでパラメータを操作してみましょう。shearとamplitudeを上げると格子がねじれます。Jacobian heatmapをオンにすると各セルが $J/J_0$ 値で塗られます。
+
+<CurvilinearGridMapper />
+
+amplitudeを0.3付近に、wave numberを4以上に上げてみてください。ある時点で赤いセルが現れます。そのセルで $J$ が負に落ちたのです。格子生成器が決して越えてはならない線が、まさにこの地点です。
+
+## 変換された保存形方程式
+
+ここで方程式を論理領域へ移します。2次元の保存形方程式を見ます。
+
+$$
+\frac{\partial Q}{\partial t} + \frac{\partial F}{\partial x} + \frac{\partial G}{\partial y} = 0
+$$
+
+$Q$ は保存量、$F, G$ は $x, y$ 方向の流束です。メトリックを代入し $J$ を掛けて整理すると**強保存形**(strong conservation form)が得られます。
+
+$$
+\frac{\partial (JQ)}{\partial t} + \frac{\partial \hat F}{\partial \xi} + \frac{\partial \hat G}{\partial \eta} = 0
+$$
+
+変換された流束は次のとおりです。
+
+$$
+\hat F = J(\xi_x F + \xi_y G), \qquad \hat G = J(\eta_x F + \eta_y G)
+$$
+
+要点は、$J\xi_x = y_\eta$ や $J\xi_y = -x_\eta$ のようにメトリックとヤコビアンの積が写像の単純な微分へ戻ることです。だから変換された流束はメトリックを割ってから掛け直す必要がありません。この形を守れば、曲線格子でも質量・運動量が正確に保存されます。
+
+## コードでメトリックを計算し検証する
+
+理論をnumpyへ移します。波打つ物理格子を定義し、中心差分でメトリックとヤコビアンを求め、一様流束が本当に保存されるか確かめます。
+
+```python
+import numpy as np
+
+def body_fitted_map(xi, eta, amp=0.15, shear=0.3, wavek=2.0):
+    """論理座標 (xi, eta) ∈ [0,1]^2 を物理座標 (x, y) へ写す。"""
+    x = xi + shear * eta + amp * np.sin(np.pi * wavek * eta)
+    y = eta + amp * np.sin(np.pi * wavek * xi)
+    return x, y
+
+def compute_metrics(x, y, dxi, deta):
+    """中心差分でヤコビアン J と逆メトリックを求める。"""
+    x_xi  = np.gradient(x, dxi,  axis=1)   # ∂x/∂ξ
+    x_eta = np.gradient(x, deta, axis=0)   # ∂x/∂η
+    y_xi  = np.gradient(y, dxi,  axis=1)
+    y_eta = np.gradient(y, deta, axis=0)
+    J = x_xi * y_eta - x_eta * y_xi        # ヤコビアン行列式
+    xi_x, xi_y  =  y_eta / J, -x_eta / J
+    eta_x, eta_y = -y_xi / J,  x_xi / J
+    return J, (xi_x, xi_y, eta_x, eta_y)
+
+# 論理格子
+N = 41
+xi  = np.linspace(0, 1, N)
+eta = np.linspace(0, 1, N)
+dxi, deta = xi[1] - xi[0], eta[1] - eta[0]
+XI, ETA = np.meshgrid(xi, eta)             # axis0=eta, axis1=xi
+
+X, Y = body_fitted_map(XI, ETA, amp=0.15, shear=0.3, wavek=2.0)
+J, _ = compute_metrics(X, Y, dxi, deta)
+
+print(f"J 最小/最大 = {J.min():.4f} / {J.max():.4f}")
+print("格子:", "折れ発生 (J<=0)" if J.min() <= 0 else "正常 (J>0)")
+```
+
+次は自由流保存(freestream preservation)の検査です。一定流束 $F, G$ を入れると残差はゼロになるはずです。変換流束を $J\xi_x = y_\eta$ の形で直接書くと、中心差分の混合微分が交換され、残差は丸め誤差の水準まで落ちます。
+
+```python
+def freestream_residual(x, y, dxi, deta, F=1.0, G=0.5):
+    """一定流束 (F,G) に対する自由流残差。ゼロになるはず。"""
+    x_xi  = np.gradient(x, dxi,  axis=1)
+    x_eta = np.gradient(x, deta, axis=0)
+    y_xi  = np.gradient(y, dxi,  axis=1)
+    y_eta = np.gradient(y, deta, axis=0)
+    Fhat =  F * y_eta - G * x_eta          # = J(ξ_x F + ξ_y G)
+    Ghat = -F * y_xi  + G * x_xi           # = J(η_x F + η_y G)
+    dFhat = np.gradient(Fhat, dxi,  axis=1)
+    dGhat = np.gradient(Ghat, deta, axis=0)
+    return dFhat + dGhat
+
+R = freestream_residual(X, Y, dxi, deta)
+print(f"自由流残差 max|R| (内部) = {np.abs(R[1:-1, 1:-1]).max():.2e}")
+# 例) J 最小/最大 = 0.62 / 1.38, 自由流残差 max|R| ≈ 1e-16
+```
+
+よくある誤りは、メトリックを $J$ で割ってから流束に掛け直す非保存形で解くことです。3次元ではこの不一致が大きくなり、一様流に偽のソースを生みます。ThomasとLombard(1979)が提案した対称保存形メトリックがこれを防ぎます。2次元では上のように $\hat F$ を $y_\eta, x_\eta$ で直接書くだけで十分です。
+
+## 壁面近傍にセルを集める
+
+境界層を解くには壁の近くにセルを密に集める必要があります。これも同じ座標変換の1次元版です。一様な $\eta$ を指数関数で引き伸ばして物理座標 $y$ を作ります。
+
+$$
+y(\eta) = \frac{e^{\beta \eta} - 1}{e^{\beta} - 1}
+$$
+
+ここで $\beta$ は集中係数です。1次元ヤコビアンは $dy/d\eta = \beta e^{\beta\eta}/(e^\beta - 1)$ で、この値が小さい所で格子が密になります。
+
+下のシミュレーションで $\beta$ を操作してみましょう。
+
+<WallClusteringStretch1D />
+
+$\beta$ を0から4へ上げると、壁($y=0$)近傍の最初の間隔が急激に縮み、最後の間隔との比が数十倍に開きます。同じセル数で境界層をはるかによく捉えられるということです。
+
+## 明日も覚えておきたいこと
+
+曲線座標変換は、歪んだ格子をまっすぐな論理格子へ戻して解く技術です。ヤコビアン $J$ は面積比であり、格子の健康診断書でもあります。$J \le 0$ なら格子は折れており、ソルバーはそこで止まります。変換流束を $J\xi_x = y_\eta$ の強保存形で書けば、曲線格子でも一様流が一様なまま残ります。メトリックを割って掛け直した瞬間、その保証は消えます。

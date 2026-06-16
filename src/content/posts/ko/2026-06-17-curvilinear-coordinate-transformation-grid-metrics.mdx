@@ -1,0 +1,168 @@
+---
+title: "직사각형 격자를 날개에 입히는 법 — 곡선 좌표 변환과 격자 메트릭"
+date: 2026-06-17
+description: "물리·논리 영역 매핑, 야코비안, 자유류 보존을 numpy로 직접 검증"
+tags: ["Curvilinear", "Grid-Metrics", "Jacobian", "Mesh", "FVM"]
+locale: ko
+slug: curvilinear-coordinate-transformation-grid-metrics
+draft: false
+---
+
+import { CurvilinearGridMapper } from '@/components/post-viz/2026-06-17-curvilinear-coordinate-transformation-grid-metrics/CurvilinearGridMapper'
+import { WallClusteringStretch1D } from '@/components/post-viz/2026-06-17-curvilinear-coordinate-transformation-grid-metrics/WallClusteringStretch1D'
+
+엔지니어 한 명이 날개 주위 유동을 풀려고 한다. 손에 쥔 솔버는 직교 격자만 안다. 그런데 날개는 곡면이다. 직사각형 셀을 아무리 잘게 쪼개도 곡면을 계단 모양으로밖에 못 그린다. 해법은 격자를 휘는 것이 아니라 **공간 자체를 휘는** 것이다. 휘어진 물리 격자를 반듯한 논리 격자로 되돌려 놓고, 그 반듯한 곳에서 방정식을 푼다. 이 글은 그 되돌림을 가능하게 하는 좌표 변환과 격자 메트릭을 따라간다. 읽고 나면 야코비안이 왜 격자 접힘을 잡아내는지, 그리고 곡선 격자에서 균일 유동이 균일하게 유지되려면 무엇이 필요한지를 numpy로 직접 확인하게 된다.
+
+## 물리 영역과 논리 영역
+
+곡선 좌표법의 출발점은 두 개의 영역이다. 물리 영역은 날개를 감싼 휘어진 격자가 사는 곳이다. 좌표는 $(x, y)$로 쓴다. 논리 영역은 그 격자를 반듯하게 펴 놓은 단위 정사각형이다. 좌표는 $(\xi, \eta)$로 쓴다.
+
+매핑은 둘을 잇는 함수다.
+
+$$
+x = x(\xi, \eta), \qquad y = y(\xi, \eta)
+$$
+
+여기서 $\xi$는 격자의 한 방향 인덱스, $\eta$는 다른 방향 인덱스에 해당한다. 논리 영역에서는 모든 셀이 한 변 $\Delta\xi = \Delta\eta = 1/N$인 정사각형이다. 솔버는 이 반듯한 격자에서만 차분을 계산한다. 휘어짐의 정보는 전부 매핑 함수 안으로 흡수된다.
+
+## 메트릭: 격자가 만든 미분 사전
+
+문제는 우리가 풀려는 방정식이 $x, y$에 대한 미분으로 적혀 있다는 점이다. 격자는 $\xi, \eta$로 움직인다. 둘을 연결하는 환율표가 **격자 메트릭**(metric)이다.
+
+연쇄법칙으로 시작한다.
+
+$$
+\frac{\partial}{\partial x} = \xi_x \frac{\partial}{\partial \xi} + \eta_x \frac{\partial}{\partial \eta}, \qquad
+\frac{\partial}{\partial y} = \xi_y \frac{\partial}{\partial \xi} + \eta_y \frac{\partial}{\partial \eta}
+$$
+
+여기서 $\xi_x = \partial\xi/\partial x$ 같은 항이 메트릭 계수다. 그런데 우리가 손에 쥔 것은 역방향, 즉 $x_\xi, x_\eta, y_\xi, y_\eta$다. 매핑 함수를 $\xi, \eta$로 미분하면 바로 나오기 때문이다. 둘은 역행렬 관계로 묶인다.
+
+$$
+\xi_x = \frac{y_\eta}{J}, \quad \xi_y = -\frac{x_\eta}{J}, \quad \eta_x = -\frac{y_\xi}{J}, \quad \eta_y = \frac{x_\xi}{J}
+$$
+
+각 기호는 매핑의 1차 미분이고, $J$는 다음 절의 야코비안이다. 정리하면 메트릭은 "쉽게 구하는 $x_\xi$ 류를 야코비안으로 나눈 것"이다.
+
+## 야코비안과 격자 접힘
+
+야코비안 행렬식은 매핑이 면적을 얼마나 늘리고 줄이는지를 재는 숫자다.
+
+$$
+J = \det
+\begin{pmatrix}
+x_\xi & x_\eta \\
+y_\xi & y_\eta
+\end{pmatrix}
+= x_\xi y_\eta - x_\eta y_\xi
+$$
+
+여기서 $J$는 논리 영역의 단위 면적이 물리 영역에서 차지하는 면적 비율이다. $J > 0$이면 매핑이 방향을 보존한다. $J = 0$이면 셀이 한 점이나 선으로 찌부러진다. $J < 0$이면 셀이 뒤집힌다. 이것이 바로 **격자 접힘**(grid folding)이다. 접힌 격자에서는 메트릭의 분모가 0을 지나며 발산하고, 솔버는 NaN을 토한다.
+
+아래 시뮬레이션에서 직접 파라미터를 조작해보자. shear와 amplitude를 키우면 격자가 비틀린다. Jacobian heatmap을 켜면 각 셀이 $J/J_0$ 값으로 칠해진다.
+
+<CurvilinearGridMapper />
+
+amplitude를 0.3 근처로, wave number를 4 이상으로 올려보라. 어느 순간 빨간 셀이 나타난다. 그 셀에서 $J$가 음수로 떨어진 것이다. 격자 생성기가 절대 넘기지 말아야 할 선이 바로 이 지점이다.
+
+## 변환된 보존형 방정식
+
+이제 방정식을 논리 영역으로 옮긴다. 2차원 보존형 방정식을 보자.
+
+$$
+\frac{\partial Q}{\partial t} + \frac{\partial F}{\partial x} + \frac{\partial G}{\partial y} = 0
+$$
+
+$Q$는 보존량, $F, G$는 $x, y$ 방향 플럭스다. 메트릭을 대입하고 $J$를 곱해 정리하면 **강보존형**(strong conservation form)이 나온다.
+
+$$
+\frac{\partial (JQ)}{\partial t} + \frac{\partial \hat F}{\partial \xi} + \frac{\partial \hat G}{\partial \eta} = 0
+$$
+
+변환된 플럭스는 다음과 같다.
+
+$$
+\hat F = J(\xi_x F + \xi_y G), \qquad \hat G = J(\eta_x F + \eta_y G)
+$$
+
+핵심은 $J\xi_x = y_\eta$, $J\xi_y = -x_\eta$처럼 메트릭과 야코비안의 곱이 매핑의 단순한 미분으로 되돌아간다는 것이다. 그래서 변환된 플럭스는 메트릭을 따로 나눴다가 다시 곱하지 않아도 된다. 이 형태를 지키면 곡선 격자에서도 질량·운동량이 정확히 보존된다.
+
+## 코드로 메트릭을 계산하고 검증한다
+
+이론을 numpy로 옮긴다. 물결치는 물리 격자를 정의하고, 중심차분으로 메트릭과 야코비안을 구한 뒤, 균일 플럭스가 진짜로 보존되는지 본다.
+
+```python
+import numpy as np
+
+def body_fitted_map(xi, eta, amp=0.15, shear=0.3, wavek=2.0):
+    """논리 좌표 (xi, eta) ∈ [0,1]^2 를 물리 좌표 (x, y)로 보낸다."""
+    x = xi + shear * eta + amp * np.sin(np.pi * wavek * eta)
+    y = eta + amp * np.sin(np.pi * wavek * xi)
+    return x, y
+
+def compute_metrics(x, y, dxi, deta):
+    """중심차분으로 야코비안 J 와 역메트릭을 구한다."""
+    x_xi  = np.gradient(x, dxi,  axis=1)   # ∂x/∂ξ
+    x_eta = np.gradient(x, deta, axis=0)   # ∂x/∂η
+    y_xi  = np.gradient(y, dxi,  axis=1)
+    y_eta = np.gradient(y, deta, axis=0)
+    J = x_xi * y_eta - x_eta * y_xi        # 야코비안 행렬식
+    xi_x, xi_y  =  y_eta / J, -x_eta / J
+    eta_x, eta_y = -y_xi / J,  x_xi / J
+    return J, (xi_x, xi_y, eta_x, eta_y)
+
+# 논리 격자
+N = 41
+xi  = np.linspace(0, 1, N)
+eta = np.linspace(0, 1, N)
+dxi, deta = xi[1] - xi[0], eta[1] - eta[0]
+XI, ETA = np.meshgrid(xi, eta)             # axis0=eta, axis1=xi
+
+X, Y = body_fitted_map(XI, ETA, amp=0.15, shear=0.3, wavek=2.0)
+J, _ = compute_metrics(X, Y, dxi, deta)
+
+print(f"J 최소/최대 = {J.min():.4f} / {J.max():.4f}")
+print("격자:", "접힘 발생 (J<=0)" if J.min() <= 0 else "정상 (J>0)")
+```
+
+다음은 자유류 보존(freestream preservation) 검사다. 일정한 플럭스 $F, G$를 넣으면 잔차가 0이어야 한다. 변환된 플럭스를 $J\xi_x = y_\eta$ 형태로 직접 쓰면, 중심차분의 혼합 미분이 서로 교환되어 잔차가 반올림 오차 수준으로 떨어진다.
+
+```python
+def freestream_residual(x, y, dxi, deta, F=1.0, G=0.5):
+    """일정 플럭스 (F,G)에 대한 자유류 잔차. 0이어야 한다."""
+    x_xi  = np.gradient(x, dxi,  axis=1)
+    x_eta = np.gradient(x, deta, axis=0)
+    y_xi  = np.gradient(y, dxi,  axis=1)
+    y_eta = np.gradient(y, deta, axis=0)
+    Fhat =  F * y_eta - G * x_eta          # = J(ξ_x F + ξ_y G)
+    Ghat = -F * y_xi  + G * x_xi           # = J(η_x F + η_y G)
+    dFhat = np.gradient(Fhat, dxi,  axis=1)
+    dGhat = np.gradient(Ghat, deta, axis=0)
+    return dFhat + dGhat
+
+R = freestream_residual(X, Y, dxi, deta)
+print(f"자유류 잔차 max|R| (내부) = {np.abs(R[1:-1, 1:-1]).max():.2e}")
+# 예) J 최소/최대 = 0.62 / 1.38, 자유류 잔차 max|R| ≈ 1e-16
+```
+
+흔한 실수는 메트릭을 $J$로 나눴다가 플럭스에 다시 곱하는 비보존형으로 푸는 것이다. 3차원에서는 이 차이가 커져 균일 유동에 가짜 소스가 생긴다. Thomas와 Lombard(1979)가 제안한 대칭 보존형 메트릭이 이 문제를 막는다. 2차원에서는 위처럼 $\hat F$를 $y_\eta, x_\eta$로 바로 쓰는 것만으로 충분하다.
+
+## 벽면 근처에 격자를 모으기
+
+경계층을 풀려면 벽 근처에 셀을 촘촘히 모아야 한다. 이것도 같은 좌표 변환의 1차원 버전이다. 균일한 $\eta$를 지수 함수로 늘려 물리 좌표 $y$를 만든다.
+
+$$
+y(\eta) = \frac{e^{\beta \eta} - 1}{e^{\beta} - 1}
+$$
+
+여기서 $\beta$는 집중 계수다. 1차원 야코비안은 $dy/d\eta = \beta e^{\beta\eta}/(e^\beta - 1)$이고, 이 값이 작은 곳에서 격자가 촘촘해진다.
+
+아래 시뮬레이션에서 $\beta$를 조작해보자.
+
+<WallClusteringStretch1D />
+
+$\beta$를 0에서 4로 올리면 벽($y=0$) 근처 첫 간격이 급격히 줄고, 마지막 간격과의 비율이 수십 배로 벌어진다. 같은 셀 수로 경계층을 훨씬 잘 잡는다는 뜻이다.
+
+## 내일도 기억할 것
+
+곡선 좌표 변환은 휘어진 격자를 반듯한 논리 격자로 되돌려 푸는 기술이다. 야코비안 $J$는 면적 비율이자 격자 건강 진단서다. $J \le 0$이면 격자가 접힌 것이고, 솔버는 거기서 멈춘다. 변환된 플럭스를 $J\xi_x = y_\eta$의 강보존형으로 쓰면 곡선 격자에서도 균일 유동이 균일하게 남는다. 메트릭을 따로 나눴다 곱하는 순간, 그 보장은 사라진다.

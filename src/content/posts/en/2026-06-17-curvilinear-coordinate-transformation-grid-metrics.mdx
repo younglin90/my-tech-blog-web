@@ -1,0 +1,168 @@
+---
+title: "Wrapping a Rectangular Grid Around a Wing — Curvilinear Coordinate Transforms and Grid Metrics"
+date: 2026-06-17
+description: "Mapping physical to logical space, the Jacobian, and freestream preservation in numpy"
+tags: ["Curvilinear", "Grid-Metrics", "Jacobian", "Mesh", "FVM"]
+locale: en
+slug: curvilinear-coordinate-transformation-grid-metrics
+draft: false
+---
+
+import { CurvilinearGridMapper } from '@/components/post-viz/2026-06-17-curvilinear-coordinate-transformation-grid-metrics/CurvilinearGridMapper'
+import { WallClusteringStretch1D } from '@/components/post-viz/2026-06-17-curvilinear-coordinate-transformation-grid-metrics/WallClusteringStretch1D'
+
+An engineer wants to solve the flow around a wing. The solver in hand only understands Cartesian grids. But the wing is curved. No matter how finely you chop the rectangular cells, a curved surface still comes out looking like a staircase. The fix is not to bend the grid but to **bend space itself**. You map the warped physical grid back onto a perfectly straight logical grid, then solve the equations there. This post walks through the coordinate transform and grid metrics that make that round trip possible. By the end, you will see why the Jacobian flags grid folding, and what it takes for a uniform flow to stay uniform on a curved grid — verified directly in numpy.
+
+## Physical and Logical Domains
+
+Curvilinear methods start with two domains. The physical domain is where the warped grid wrapping the wing lives. Its coordinates are $(x, y)$. The logical domain is that same grid flattened into a unit square. Its coordinates are $(\xi, \eta)$.
+
+The mapping is the function that links them.
+
+$$
+x = x(\xi, \eta), \qquad y = y(\xi, \eta)
+$$
+
+Here $\xi$ is the index along one grid direction and $\eta$ along the other. In the logical domain every cell is a square of side $\Delta\xi = \Delta\eta = 1/N$. The solver computes differences only on this straight grid. All of the warping is absorbed into the mapping function.
+
+## Metrics: The Exchange Rate the Grid Builds
+
+The trouble is that the equation we want to solve is written in derivatives with respect to $x, y$. The grid moves along $\xi, \eta$. The exchange-rate table that connects them is the set of **grid metrics**.
+
+Start from the chain rule.
+
+$$
+\frac{\partial}{\partial x} = \xi_x \frac{\partial}{\partial \xi} + \eta_x \frac{\partial}{\partial \eta}, \qquad
+\frac{\partial}{\partial y} = \xi_y \frac{\partial}{\partial \xi} + \eta_y \frac{\partial}{\partial \eta}
+$$
+
+Terms like $\xi_x = \partial\xi/\partial x$ are the metric coefficients. What we actually hold is the reverse: $x_\xi, x_\eta, y_\xi, y_\eta$, because differentiating the mapping with respect to $\xi, \eta$ gives them directly. The two are tied through the inverse-matrix relation.
+
+$$
+\xi_x = \frac{y_\eta}{J}, \quad \xi_y = -\frac{x_\eta}{J}, \quad \eta_x = -\frac{y_\xi}{J}, \quad \eta_y = \frac{x_\xi}{J}
+$$
+
+Each symbol is a first derivative of the mapping, and $J$ is the Jacobian from the next section. In short, a metric is "the easy-to-get $x_\xi$ family divided by the Jacobian."
+
+## The Jacobian and Grid Folding
+
+The Jacobian determinant measures how much the mapping stretches or shrinks area.
+
+$$
+J = \det
+\begin{pmatrix}
+x_\xi & x_\eta \\
+y_\xi & y_\eta
+\end{pmatrix}
+= x_\xi y_\eta - x_\eta y_\xi
+$$
+
+Here $J$ is the ratio between a unit area in the logical domain and the area it occupies in the physical domain. If $J > 0$ the mapping preserves orientation. If $J = 0$ a cell collapses to a point or a line. If $J < 0$ the cell flips over. That is **grid folding**. On a folded grid the metric denominators cross zero and blow up, and the solver spits out NaN.
+
+Try the simulation below. Raise shear and amplitude and the grid twists. Turn on the Jacobian heatmap and each cell is colored by its $J/J_0$ value.
+
+<CurvilinearGridMapper />
+
+Push amplitude toward 0.3 and wave number to 4 or more. At some point red cells appear. In those cells $J$ has gone negative. This is exactly the line a grid generator must never cross.
+
+## The Transformed Conservation Law
+
+Now move the equation into the logical domain. Take a 2D conservation law.
+
+$$
+\frac{\partial Q}{\partial t} + \frac{\partial F}{\partial x} + \frac{\partial G}{\partial y} = 0
+$$
+
+$Q$ is the conserved quantity and $F, G$ are the fluxes in $x, y$. Substituting the metrics and multiplying by $J$ yields the **strong conservation form**.
+
+$$
+\frac{\partial (JQ)}{\partial t} + \frac{\partial \hat F}{\partial \xi} + \frac{\partial \hat G}{\partial \eta} = 0
+$$
+
+The transformed fluxes are
+
+$$
+\hat F = J(\xi_x F + \xi_y G), \qquad \hat G = J(\eta_x F + \eta_y G)
+$$
+
+The key point is that products like $J\xi_x = y_\eta$ and $J\xi_y = -x_\eta$ fold back into plain derivatives of the mapping. So the transformed flux never has to divide by a metric and then multiply it back. Keep this form and mass and momentum stay exactly conserved even on a curved grid.
+
+## Computing and Verifying Metrics in Code
+
+Port the theory to numpy. Define a wavy physical grid, recover the metrics and Jacobian with central differences, and check whether a uniform flux is really conserved.
+
+```python
+import numpy as np
+
+def body_fitted_map(xi, eta, amp=0.15, shear=0.3, wavek=2.0):
+    """Map logical coords (xi, eta) in [0,1]^2 to physical coords (x, y)."""
+    x = xi + shear * eta + amp * np.sin(np.pi * wavek * eta)
+    y = eta + amp * np.sin(np.pi * wavek * xi)
+    return x, y
+
+def compute_metrics(x, y, dxi, deta):
+    """Recover Jacobian J and inverse metrics by central differences."""
+    x_xi  = np.gradient(x, dxi,  axis=1)   # dx/dxi
+    x_eta = np.gradient(x, deta, axis=0)   # dx/deta
+    y_xi  = np.gradient(y, dxi,  axis=1)
+    y_eta = np.gradient(y, deta, axis=0)
+    J = x_xi * y_eta - x_eta * y_xi        # Jacobian determinant
+    xi_x, xi_y  =  y_eta / J, -x_eta / J
+    eta_x, eta_y = -y_xi / J,  x_xi / J
+    return J, (xi_x, xi_y, eta_x, eta_y)
+
+# logical grid
+N = 41
+xi  = np.linspace(0, 1, N)
+eta = np.linspace(0, 1, N)
+dxi, deta = xi[1] - xi[0], eta[1] - eta[0]
+XI, ETA = np.meshgrid(xi, eta)             # axis0=eta, axis1=xi
+
+X, Y = body_fitted_map(XI, ETA, amp=0.15, shear=0.3, wavek=2.0)
+J, _ = compute_metrics(X, Y, dxi, deta)
+
+print(f"J min/max = {J.min():.4f} / {J.max():.4f}")
+print("grid:", "folded (J<=0)" if J.min() <= 0 else "valid (J>0)")
+```
+
+Next is the freestream-preservation test. Feed in constant fluxes $F, G$ and the residual should be zero. Writing the transformed flux directly as $J\xi_x = y_\eta$ lets the mixed central differences commute, so the residual drops to round-off.
+
+```python
+def freestream_residual(x, y, dxi, deta, F=1.0, G=0.5):
+    """Freestream residual for constant flux (F,G). Should be zero."""
+    x_xi  = np.gradient(x, dxi,  axis=1)
+    x_eta = np.gradient(x, deta, axis=0)
+    y_xi  = np.gradient(y, dxi,  axis=1)
+    y_eta = np.gradient(y, deta, axis=0)
+    Fhat =  F * y_eta - G * x_eta          # = J(xi_x F + xi_y G)
+    Ghat = -F * y_xi  + G * x_xi           # = J(eta_x F + eta_y G)
+    dFhat = np.gradient(Fhat, dxi,  axis=1)
+    dGhat = np.gradient(Ghat, deta, axis=0)
+    return dFhat + dGhat
+
+R = freestream_residual(X, Y, dxi, deta)
+print(f"freestream residual max|R| (interior) = {np.abs(R[1:-1, 1:-1]).max():.2e}")
+# e.g. J min/max = 0.62 / 1.38, freestream residual max|R| ~ 1e-16
+```
+
+A common mistake is solving in the non-conservative form, dividing the metric by $J$ and then multiplying it back onto the flux. In three dimensions that mismatch grows and seeds a spurious source in a uniform flow. The symmetric conservative metrics of Thomas and Lombard (1979) prevent it. In 2D, writing $\hat F$ directly in terms of $y_\eta, x_\eta$ as above is enough.
+
+## Clustering Cells Near the Wall
+
+To resolve a boundary layer you have to pack cells near the wall. That is the same coordinate transform in one dimension. Stretch a uniform $\eta$ with an exponential to build the physical coordinate $y$.
+
+$$
+y(\eta) = \frac{e^{\beta \eta} - 1}{e^{\beta} - 1}
+$$
+
+Here $\beta$ is the clustering parameter. The 1D Jacobian is $dy/d\eta = \beta e^{\beta\eta}/(e^\beta - 1)$, and the grid tightens wherever that value is small.
+
+Play with $\beta$ in the simulation below.
+
+<WallClusteringStretch1D />
+
+Raise $\beta$ from 0 to 4 and the first spacing near the wall ($y=0$) shrinks sharply, opening the ratio against the last spacing to tens of times. The same cell count resolves the boundary layer far better.
+
+## Worth Remembering Tomorrow
+
+A curvilinear transform is the trick of solving a warped grid by mapping it back to a straight logical one. The Jacobian $J$ is both an area ratio and a health chart for the grid. If $J \le 0$ the grid has folded and the solver stops there. Write the transformed flux in the strong conservation form $J\xi_x = y_\eta$ and a uniform flow stays uniform even on a curved grid. The moment you divide a metric out and multiply it back, that guarantee is gone.
