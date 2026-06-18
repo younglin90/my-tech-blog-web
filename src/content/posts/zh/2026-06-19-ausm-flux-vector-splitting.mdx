@@ -1,0 +1,211 @@
+---
+title: "不在每个面上做矩阵乘法也能捕捉激波 — AUSM 通量分裂"
+date: 2026-06-19
+description: "无需 Roe 即可捕捉激波的 AUSM 通量分裂原理与实现"
+tags: ["Compressible", "Riemann", "AUSM", "Flux-Splitting", "Euler"]
+draft: false
+---
+
+import { MachSplitFunctions } from '@/components/post-viz/2026-06-19-ausm-flux-vector-splitting/MachSplitFunctions'
+import { AusmEulerShockTube } from '@/components/post-viz/2026-06-19-ausm-flux-vector-splitting/AusmEulerShockTube'
+
+1993 年，NASA Lewis 研究中心的 Meng-Sing Liou 对 Roe 求解器里的矩阵运算并不满意。激波捕捉得不错。可是每解一个面，都要把 5×5 雅可比矩阵的整个特征结构分解一遍。Liou 走了另一条路。他把通量分成"对流"和"压力"两部分，再用马赫数的多项式各自切开。由此诞生的 AUSM(Advection Upstream Splitting Method)从不做矩阵乘法。本文用公式追踪这个分裂如何运作，再用 Python 求解 Shu–Osher 问题来检验。
+
+## 1993 年，Liou 把通量一分为二
+
+看欧拉方程的面通量。在一维下，
+
+$$
+\mathbf{F} = \begin{pmatrix} \rho u \\ \rho u^2 + p \\ (E+p)u \end{pmatrix}
+= \underbrace{\rho u \begin{pmatrix} 1 \\ u \\ H \end{pmatrix}}_{\text{对流}} + \underbrace{\begin{pmatrix} 0 \\ p \\ 0 \end{pmatrix}}_{\text{压力}}
+$$
+
+其中 $\rho$ 是密度，$u$ 是速度，$p$ 是压力，$E$ 是总能量，$H=(E+p)/\rho$ 是总焓。
+
+Liou 的洞见很简单。对流项由质量通量 $\dot m = \rho u$ 从哪个方向来决定。压力项则乘着声波向两个方向传播。物理不同，那就分开处理。Roe 用雅可比矩阵一次性求解两个状态之差(flux-difference splitting)，而 AUSM 把每个状态对面的贡献单独分开(flux-vector splitting)。
+
+面(interface)上的 AUSM 通量这样组装。
+
+$$
+\mathbf{F}_{1/2} = \dot m_{1/2}\,\boldsymbol{\Psi}_{L/R} + \mathbf{p}_{1/2}
+$$
+
+$\boldsymbol{\Psi}=(1,\,u,\,H)^{T}$ 是对流携带的量，$\mathbf{p}_{1/2}=(0,\,p_{1/2},\,0)^{T}$ 是压力贡献。关键在于如何确定面质量通量 $\dot m_{1/2}$ 与面压力 $p_{1/2}$。
+
+## 用多项式切开马赫数
+
+面质量通量来自面马赫数 $M_{1/2}$。
+
+$$
+M_{1/2} = \mathcal{M}^{+}_{(4)}(M_L) + \mathcal{M}^{-}_{(4)}(M_R)
+$$
+
+$M_L=u_L/a_{1/2}$、$M_R=u_R/a_{1/2}$ 是左右单元的马赫数，$a_{1/2}$ 是面声速。分裂函数 $\mathcal{M}^{\pm}$ 是本文的核心。
+
+最简单的一次分裂就是简单迎风。
+
+$$
+\mathcal{M}^{\pm}_{(1)}(M) = \tfrac{1}{2}\left(M \pm |M|\right)
+$$
+
+在超声速($|M|\ge 1$)下直接用这个式子。一侧变为 0，得到完全迎风。问题出在跨声速附近。一次函数在 $M=0$ 处折断，导数不连续。求解器的收敛就卡在那里。
+
+AUSM+ 用四次多项式把跨声速区间平滑地填上($\beta=1/8$)。
+
+$$
+\mathcal{M}^{\pm}_{(4)}(M) =
+\begin{cases}
+\tfrac{1}{2}(M\pm|M|) & |M|\ge 1 \\
+\pm\tfrac{1}{4}(M\pm 1)^2 \pm \beta(M^2-1)^2 & |M|<1
+\end{cases}
+$$
+
+压力也用同样方式切开($\alpha=3/16$)。
+
+$$
+\mathcal{P}^{\pm}_{(5)}(M) =
+\begin{cases}
+\tfrac{1}{2}(1\pm\operatorname{sgn}M) & |M|\ge 1 \\
+\tfrac{1}{4}(M\pm 1)^2(2\mp M) \pm \alpha M(M^2-1)^2 & |M|<1
+\end{cases}
+$$
+
+光说显得抽象。在下面的模拟里亲自调一调参数。
+
+<MachSplitFunctions />
+
+在 $|M|>1$ 之外，两条曲线贴到完全迎风的分支上。在内部，多项式把它们平滑连接，保持函数可微。增大 β 会让跨声速区间的曲率变大。正是这种光滑，让无需 Roe 求解器的收敛成为可能。
+
+## 压力归压力，对流归对流
+
+分裂函数备好后，面值汇成一行。质量通量为
+
+$$
+\dot m_{1/2} = a_{1/2}\,M_{1/2}\,
+\begin{cases}\rho_L & M_{1/2}>0 \\ \rho_R & M_{1/2}\le 0\end{cases}
+$$
+
+符号就是迎风方向。$M_{1/2}>0$ 时，左单元的 $\rho,u,H$ 被带出。压力是左右的加权和。
+
+$$
+p_{1/2} = \mathcal{P}^{+}_{(5)}(M_L)\,p_L + \mathcal{P}^{-}_{(5)}(M_R)\,p_R
+$$
+
+对流只从一侧来，压力从两侧来。这种不对称正是 AUSM 把接触间断(密度跳变但压力平坦的面)捕捉得清晰的原因。Roe 把接触面当作雅可比矩阵的一个特征值处理，而 AUSM 在质量通量为零处自然分离。不会有制造压力振荡的额外耗散混进来。
+
+## AUSM+ 与 AUSM+-up — 一直到低马赫
+
+原始 AUSM 有个弱点。在马赫数低至 0.01 的近不可压极限下，压力场会逐格振荡。原因是声学项相对动量被耗散得过强。2006 年，Liou 用 AUSM+-up 修补了这一区间。他给质量通量加上压力扩散项，给压力加上速度扩散项。
+
+$$
+M_{1/2} = \mathcal{M}^{+}_{(4)}(M_L) + \mathcal{M}^{-}_{(4)}(M_R) + M_p
+$$
+
+$$
+M_p = -\frac{K_p}{f_a}\,\max\!\left(1-\sigma \bar{M}^2,\,0\right)\frac{p_R-p_L}{\rho_{1/2}\,a_{1/2}^2}
+$$
+
+$M_p$ 把压力差拉进质量通量，压住低马赫振荡。$f_a$ 是随局部马赫数在 0 与 1 之间滑动的缩放函数。马赫数高时 $f_a\to 1$，附加项消失，原本的激波捕捉性能原封不动地回来。一个公式同时担起不可压极限与高超声速。这就是 AUSM+-up 被称作"全速度(all-speed)"格式的原因。
+
+## Python — 用 Shu–Osher 来试
+
+验证问题选 Shu–Osher。一道马赫 3 的激波冲向正弦波密度扰动，这是同时考验激波捕捉与高频波动保持的一维欧拉问题。下面的代码用一阶 AUSM+ 求解。
+
+```python
+import numpy as np
+
+GAMMA = 1.4
+
+def mach_split(M, sign):
+    # AUSM+ 四次分裂马赫多项式 (beta = 1/8)
+    beta = 1.0 / 8.0
+    if abs(M) >= 1.0:
+        return 0.5 * (M + abs(M)) if sign > 0 else 0.5 * (M - abs(M))
+    if sign > 0:
+        return 0.25 * (M + 1.0) ** 2 + beta * (M * M - 1.0) ** 2
+    return -0.25 * (M - 1.0) ** 2 - beta * (M * M - 1.0) ** 2
+
+def pressure_split(M, sign):
+    # AUSM+ 五次分裂压力多项式 (alpha = 3/16)
+    alpha = 3.0 / 16.0
+    if abs(M) >= 1.0:
+        return 0.5 * (1.0 + np.sign(M)) if sign > 0 else 0.5 * (1.0 - np.sign(M))
+    if sign > 0:
+        return 0.25 * (M + 1.0) ** 2 * (2.0 - M) + alpha * M * (M * M - 1.0) ** 2
+    return 0.25 * (M - 1.0) ** 2 * (2.0 + M) - alpha * M * (M * M - 1.0) ** 2
+
+def ausm_plus(wl, wr):
+    rl, ul, pl = wl
+    rr, ur, pr = wr
+    al = np.sqrt(GAMMA * pl / rl)
+    ar = np.sqrt(GAMMA * pr / rr)
+    a12 = 0.5 * (al + ar)                    # 面声速 (简单平均)
+    Ml, Mr = ul / a12, ur / a12
+    M12 = mach_split(Ml, +1) + mach_split(Mr, -1)
+    p12 = pressure_split(Ml, +1) * pl + pressure_split(Mr, -1) * pr
+    Hl = (pl / (GAMMA - 1) + 0.5 * rl * ul * ul + pl) / rl
+    Hr = (pr / (GAMMA - 1) + 0.5 * rr * ur * ur + pr) / rr
+    mdot = a12 * M12 * (rl if M12 > 0 else rr)
+    psi = np.array([1.0, ul, Hl]) if M12 > 0 else np.array([1.0, ur, Hr])
+    return mdot * psi + np.array([0.0, p12, 0.0])
+
+def euler_step(U, dx, cfl):
+    r = U[0]
+    u = U[1] / r
+    p = (GAMMA - 1.0) * (U[2] - 0.5 * r * u * u)
+    a = np.sqrt(GAMMA * p / r)
+    dt = cfl * dx / np.max(np.abs(u) + a)
+    n = U.shape[1]
+    F = np.zeros((3, n + 1))
+    for f in range(1, n):                    # 内部面通量
+        F[:, f] = ausm_plus((r[f-1], u[f-1], p[f-1]), (r[f], u[f], p[f]))
+    F[:, 0] = F[:, 1]                         # 透射边界
+    F[:, n] = F[:, n - 1]
+    return U - (dt / dx) * (F[:, 1:] - F[:, :-1]), dt
+
+def shu_osher(n=400, t_end=1.8):
+    x = np.linspace(-5, 5, n, endpoint=False) + 5.0 / n
+    dx = 10.0 / n
+    r = np.where(x < -4, 3.857143, 1.0 + 0.2 * np.sin(5.0 * x))
+    u = np.where(x < -4, 2.629369, 0.0)
+    p = np.where(x < -4, 10.33333, 1.0)
+    U = np.zeros((3, n))
+    U[0], U[1], U[2] = r, r * u, p / (GAMMA - 1.0) + 0.5 * r * u * u
+    t = 0.0
+    while t < t_end:
+        U, dt = euler_step(U, dx, cfl=0.4)
+        t += dt
+    return x, U[0]
+
+if __name__ == "__main__":
+    x, rho = shu_osher()
+    print(f"密度 min/max : {rho.min():.3f} / {rho.max():.3f}")
+    print(f"x=2.0 处密度 : {rho[np.argmin(np.abs(x - 2.0))]:.3f}")
+```
+
+运行后会得到一个密度场，正弦波被压缩并在激波后存活下来。马赫 3 的激波通过后，密度峰值越过 4。仅凭分裂函数就稳定地捕捉了激波，同时压力光滑、无振荡。
+
+把同一个 AUSM+ 通量用到一维 Sod 激波管上，结果在下面实时显示。
+
+<AusmEulerShockTube />
+
+一片隔膜分出三种结构：向左扩散的稀疏波、中间的接触间断(密度折弯，压力平坦)、右侧的激波。即便把 CFL 推到 0.95，一阶格式也不会发散。它只是把接触面抹得更糊。
+
+## 和 Roe 并排来看
+
+AUSM 并非免费。一阶版本比 Roe 把接触面抹得更糊一点。像上面代码那样直接用单元值，只停留在一阶精度。实践中先对左右状态做 MUSCL 或 WENO 重构以提升到高阶。分裂函数不变，只改输入即可。
+
+| 项目 | Roe (FDS) | AUSM+ (FVS) |
+|------|-----------|-------------|
+| 每面成本 | 雅可比特征分解 | 多项式求值 |
+| 接触间断 | 非常清晰 | 清晰 (无需熵修正) |
+| 红斑(carbuncle)现象 | 脆弱 | 稳健 |
+| 低马赫行为 | 需单独预处理 | AUSM+-up 已内置 |
+
+当网格与高超声速激波垂直对齐时，Roe 会产生名为红斑(carbuncle)的非物理凸起。AUSM 系列对这种病症稳健得多。把对流与压力分开的结构本身，就更少地喂养激波前沿的横向不稳定。
+
+## 最后想留下的话
+
+- AUSM 把通量分成对流与压力两部分，再用马赫数的多项式分裂函数把各自汇到面上。没有雅可比分解。
+- 用四次、五次多项式平滑填充跨声速带，保持了可微性并稳住收敛。AUSM+-up 的扩散项用同一公式延伸到低马赫。
+- 它在接触面清晰，对红斑稳健。需要高阶时，保留分裂函数，只把左右输入做重构。

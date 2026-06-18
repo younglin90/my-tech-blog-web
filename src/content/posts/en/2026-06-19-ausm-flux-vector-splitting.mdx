@@ -1,0 +1,211 @@
+---
+title: "Catching Shocks Without Multiplying a Matrix at Every Face — AUSM Flux Splitting"
+date: 2026-06-19
+description: "How AUSM splits the Euler flux to capture shocks without Roe — with code"
+tags: ["Compressible", "Riemann", "AUSM", "Flux-Splitting", "Euler"]
+draft: false
+---
+
+import { MachSplitFunctions } from '@/components/post-viz/2026-06-19-ausm-flux-vector-splitting/MachSplitFunctions'
+import { AusmEulerShockTube } from '@/components/post-viz/2026-06-19-ausm-flux-vector-splitting/AusmEulerShockTube'
+
+In 1993, Meng-Sing Liou at NASA Lewis was unhappy with the matrix work inside the Roe solver. Shocks came out fine. But solving every single face meant decomposing the full eigenstructure of a 5×5 Jacobian. Liou took another road. He split the flux into "convective" and "pressure" parts and separated each with polynomials of the Mach number. The result, AUSM (Advection Upstream Splitting Method), never multiplies a matrix. This post follows that split through the math, then solves the Shu–Osher problem in Python to check it.
+
+## 1993: Liou splits the flux in two
+
+Look at the face flux of the Euler equations. In one dimension,
+
+$$
+\mathbf{F} = \begin{pmatrix} \rho u \\ \rho u^2 + p \\ (E+p)u \end{pmatrix}
+= \underbrace{\rho u \begin{pmatrix} 1 \\ u \\ H \end{pmatrix}}_{\text{convective}} + \underbrace{\begin{pmatrix} 0 \\ p \\ 0 \end{pmatrix}}_{\text{pressure}}
+$$
+
+Here $\rho$ is density, $u$ velocity, $p$ pressure, $E$ total energy, and $H=(E+p)/\rho$ the total enthalpy.
+
+Liou's insight was simple. The convective term is decided by which direction the mass flux $\dot m = \rho u$ comes from. The pressure term rides acoustic waves in both directions. Different physics, so handle them separately. Where Roe resolved the difference of two states through a Jacobian (flux-difference splitting), AUSM divides each state's contribution to the face on its own (flux-vector splitting).
+
+The AUSM flux at the interface is assembled like this.
+
+$$
+\mathbf{F}_{1/2} = \dot m_{1/2}\,\boldsymbol{\Psi}_{L/R} + \mathbf{p}_{1/2}
+$$
+
+$\boldsymbol{\Psi}=(1,\,u,\,H)^{T}$ is what the convection carries, and $\mathbf{p}_{1/2}=(0,\,p_{1/2},\,0)^{T}$ is the pressure piece. Everything hinges on how we choose the face mass flux $\dot m_{1/2}$ and the face pressure $p_{1/2}$.
+
+## Splitting the Mach number into polynomials
+
+The face mass flux comes from the face Mach number $M_{1/2}$.
+
+$$
+M_{1/2} = \mathcal{M}^{+}_{(4)}(M_L) + \mathcal{M}^{-}_{(4)}(M_R)
+$$
+
+$M_L=u_L/a_{1/2}$ and $M_R=u_R/a_{1/2}$ are the left and right cell Mach numbers, and $a_{1/2}$ is the face sound speed. The split functions $\mathcal{M}^{\pm}$ are the heart of the method.
+
+The simplest first-degree split is plain upwinding.
+
+$$
+\mathcal{M}^{\pm}_{(1)}(M) = \tfrac{1}{2}\left(M \pm |M|\right)
+$$
+
+In supersonic flow ($|M|\ge 1$) we use this directly. One side goes to zero, giving full upwinding. The trouble is near sonic. The first-degree function kinks at $M=0$ where its derivative is discontinuous, and solver convergence stalls there.
+
+AUSM+ fills the transonic band smoothly with a fourth-degree polynomial ($\beta=1/8$).
+
+$$
+\mathcal{M}^{\pm}_{(4)}(M) =
+\begin{cases}
+\tfrac{1}{2}(M\pm|M|) & |M|\ge 1 \\
+\pm\tfrac{1}{4}(M\pm 1)^2 \pm \beta(M^2-1)^2 & |M|<1
+\end{cases}
+$$
+
+Pressure is split the same way ($\alpha=3/16$).
+
+$$
+\mathcal{P}^{\pm}_{(5)}(M) =
+\begin{cases}
+\tfrac{1}{2}(1\pm\operatorname{sgn}M) & |M|\ge 1 \\
+\tfrac{1}{4}(M\pm 1)^2(2\mp M) \pm \alpha M(M^2-1)^2 & |M|<1
+\end{cases}
+$$
+
+Words stay abstract. Play with the simulation below and move the parameters yourself.
+
+<MachSplitFunctions />
+
+Outside $|M|>1$ the two curves snap onto the fully upwind branch. Inside, the polynomial joins them smoothly and keeps the function differentiable. Raise β to bulge the curvature in the transonic band. That smoothness is exactly what makes convergence possible without a Roe solver.
+
+## Pressure with pressure, convection with convection
+
+Once the split functions are ready, the face value gathers in one line. The mass flux is
+
+$$
+\dot m_{1/2} = a_{1/2}\,M_{1/2}\,
+\begin{cases}\rho_L & M_{1/2}>0 \\ \rho_R & M_{1/2}\le 0\end{cases}
+$$
+
+The sign is the upwind direction. If $M_{1/2}>0$, the left cell's $\rho,u,H$ ride out. The pressure is a weighted sum of both sides.
+
+$$
+p_{1/2} = \mathcal{P}^{+}_{(5)}(M_L)\,p_L + \mathcal{P}^{-}_{(5)}(M_R)\,p_R
+$$
+
+Convection comes from one side only; pressure comes from both. That asymmetry is why AUSM keeps a contact discontinuity (density jumps but pressure stays flat) sharp. Roe treats the contact through one eigenvalue of the Jacobian, but AUSM separates it naturally at the point where the mass flux vanishes. No extra dissipation sneaks in to rattle the pressure.
+
+## AUSM+ and AUSM+-up — all the way down to low Mach
+
+The original AUSM had a weakness. In the nearly incompressible limit, with Mach as low as 0.01, the pressure field oscillated cell by cell. The acoustic term was dissipated too strongly relative to momentum. In 2006 Liou patched this band with AUSM+-up, adding a pressure-diffusion term to the mass flux and a velocity-diffusion term to the pressure.
+
+$$
+M_{1/2} = \mathcal{M}^{+}_{(4)}(M_L) + \mathcal{M}^{-}_{(4)}(M_R) + M_p
+$$
+
+$$
+M_p = -\frac{K_p}{f_a}\,\max\!\left(1-\sigma \bar{M}^2,\,0\right)\frac{p_R-p_L}{\rho_{1/2}\,a_{1/2}^2}
+$$
+
+$M_p$ pulls the pressure difference into the mass flux and damps the low-Mach oscillation. $f_a$ is a scaling function that slides between 0 and 1 with the local Mach number. At high Mach, $f_a\to 1$, the extra term vanishes, and the original shock-capturing returns untouched. One formula handles both the incompressible limit and hypersonic flow. That is why AUSM+-up is called an "all-speed" scheme.
+
+## Python — testing it on Shu–Osher
+
+For the verification problem we pick Shu–Osher. A Mach 3 shock charges into a sine-wave density disturbance — a one-dimensional Euler test that probes shock capturing and high-frequency preservation at once. The code below solves it with first-order AUSM+.
+
+```python
+import numpy as np
+
+GAMMA = 1.4
+
+def mach_split(M, sign):
+    # AUSM+ fourth-degree split Mach polynomial (beta = 1/8)
+    beta = 1.0 / 8.0
+    if abs(M) >= 1.0:
+        return 0.5 * (M + abs(M)) if sign > 0 else 0.5 * (M - abs(M))
+    if sign > 0:
+        return 0.25 * (M + 1.0) ** 2 + beta * (M * M - 1.0) ** 2
+    return -0.25 * (M - 1.0) ** 2 - beta * (M * M - 1.0) ** 2
+
+def pressure_split(M, sign):
+    # AUSM+ fifth-degree split pressure polynomial (alpha = 3/16)
+    alpha = 3.0 / 16.0
+    if abs(M) >= 1.0:
+        return 0.5 * (1.0 + np.sign(M)) if sign > 0 else 0.5 * (1.0 - np.sign(M))
+    if sign > 0:
+        return 0.25 * (M + 1.0) ** 2 * (2.0 - M) + alpha * M * (M * M - 1.0) ** 2
+    return 0.25 * (M - 1.0) ** 2 * (2.0 + M) - alpha * M * (M * M - 1.0) ** 2
+
+def ausm_plus(wl, wr):
+    rl, ul, pl = wl
+    rr, ur, pr = wr
+    al = np.sqrt(GAMMA * pl / rl)
+    ar = np.sqrt(GAMMA * pr / rr)
+    a12 = 0.5 * (al + ar)                    # face sound speed (simple mean)
+    Ml, Mr = ul / a12, ur / a12
+    M12 = mach_split(Ml, +1) + mach_split(Mr, -1)
+    p12 = pressure_split(Ml, +1) * pl + pressure_split(Mr, -1) * pr
+    Hl = (pl / (GAMMA - 1) + 0.5 * rl * ul * ul + pl) / rl
+    Hr = (pr / (GAMMA - 1) + 0.5 * rr * ur * ur + pr) / rr
+    mdot = a12 * M12 * (rl if M12 > 0 else rr)
+    psi = np.array([1.0, ul, Hl]) if M12 > 0 else np.array([1.0, ur, Hr])
+    return mdot * psi + np.array([0.0, p12, 0.0])
+
+def euler_step(U, dx, cfl):
+    r = U[0]
+    u = U[1] / r
+    p = (GAMMA - 1.0) * (U[2] - 0.5 * r * u * u)
+    a = np.sqrt(GAMMA * p / r)
+    dt = cfl * dx / np.max(np.abs(u) + a)
+    n = U.shape[1]
+    F = np.zeros((3, n + 1))
+    for f in range(1, n):                    # interior face fluxes
+        F[:, f] = ausm_plus((r[f-1], u[f-1], p[f-1]), (r[f], u[f], p[f]))
+    F[:, 0] = F[:, 1]                         # transmissive boundary
+    F[:, n] = F[:, n - 1]
+    return U - (dt / dx) * (F[:, 1:] - F[:, :-1]), dt
+
+def shu_osher(n=400, t_end=1.8):
+    x = np.linspace(-5, 5, n, endpoint=False) + 5.0 / n
+    dx = 10.0 / n
+    r = np.where(x < -4, 3.857143, 1.0 + 0.2 * np.sin(5.0 * x))
+    u = np.where(x < -4, 2.629369, 0.0)
+    p = np.where(x < -4, 10.33333, 1.0)
+    U = np.zeros((3, n))
+    U[0], U[1], U[2] = r, r * u, p / (GAMMA - 1.0) + 0.5 * r * u * u
+    t = 0.0
+    while t < t_end:
+        U, dt = euler_step(U, dx, cfl=0.4)
+        t += dt
+    return x, U[0]
+
+if __name__ == "__main__":
+    x, rho = shu_osher()
+    print(f"density min/max : {rho.min():.3f} / {rho.max():.3f}")
+    print(f"density at x=2.0 : {rho[np.argmin(np.abs(x - 2.0))]:.3f}")
+```
+
+Running it gives a density field where the sine wave is compressed and survives behind the shock. After the Mach 3 shock passes, the peak density climbs past 4. The split functions alone capture the shock stably, while the pressure stays smooth and free of oscillation.
+
+The same AUSM+ flux applied to a 1D Sod shock tube runs live below.
+
+<AusmEulerShockTube />
+
+Three structures split out of one diaphragm: a rarefaction fan spreading left, a contact discontinuity in the middle (density bends, pressure stays flat), and a shock on the right. Even pushed to CFL 0.95 the first-order scheme never blows up. It just smears the contact further.
+
+## Standing it next to Roe
+
+AUSM is not free. The first-order version smears the contact a little more than Roe. Using the raw cell values, as in the code above, stays first-order accurate. In practice you apply MUSCL or WENO reconstruction to the left and right states first to lift it to higher order. The split functions stay the same; only the inputs change.
+
+| Item | Roe (FDS) | AUSM+ (FVS) |
+|------|-----------|-------------|
+| Cost per face | Jacobian eigendecomposition | Polynomial evaluation |
+| Contact discontinuity | Very sharp | Sharp (no entropy fix) |
+| Carbuncle phenomenon | Fragile | Robust |
+| Low-Mach behavior | Needs separate preconditioning | Built into AUSM+-up |
+
+When the grid aligns normal to a hypersonic shock, Roe produces an unphysical bulge called the carbuncle. The AUSM family is far more robust against this illness. The very structure of separating convection and pressure feeds less energy into the transverse instability of the shock front.
+
+## What to take away
+
+- AUSM splits the flux into convective and pressure parts and gathers each onto the face through polynomial split functions of the Mach number. No Jacobian decomposition.
+- Filling the transonic band with fourth- and fifth-degree polynomials keeps differentiability and steadies convergence. The diffusion terms of AUSM+-up extend the same formula down to low Mach.
+- It is sharp at contacts and robust against the carbuncle. When you need higher order, keep the split functions and reconstruct only the left and right inputs.

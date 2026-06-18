@@ -1,0 +1,211 @@
+---
+title: "면마다 행렬을 곱하지 않고도 충격파를 잡는다 — AUSM 플럭스 분리"
+date: 2026-06-19
+description: "Roe 없이 충격파를 잡는 AUSM 플럭스 분리의 원리와 구현"
+tags: ["Compressible", "Riemann", "AUSM", "Flux-Splitting", "Euler"]
+draft: false
+---
+
+import { MachSplitFunctions } from '@/components/post-viz/2026-06-19-ausm-flux-vector-splitting/MachSplitFunctions'
+import { AusmEulerShockTube } from '@/components/post-viz/2026-06-19-ausm-flux-vector-splitting/AusmEulerShockTube'
+
+1993년, NASA Lewis 연구소의 Meng-Sing Liou는 Roe 솔버의 행렬 연산이 못마땅했다. 충격파는 잘 잡혔다. 그런데 면 하나를 풀 때마다 5×5 자코비안의 고유구조를 통째로 분해해야 했다. Liou는 다른 길을 택했다. 플럭스를 "대류"와 "압력" 둘로 쪼개고, 각각을 마하수의 다항식으로 가른 것이다. 이렇게 태어난 AUSM(Advection Upstream Splitting Method)은 행렬 한 번 곱하지 않는다. 이 글은 그 분리가 어떻게 작동하는지 수식으로 따라가고, Python으로 Shu–Osher 문제를 직접 풀어 검증한다.
+
+## 1993년, Liou가 플럭스를 둘로 쪼개다
+
+오일러 방정식의 면 플럭스를 보자. 1차원에서
+
+$$
+\mathbf{F} = \begin{pmatrix} \rho u \\ \rho u^2 + p \\ (E+p)u \end{pmatrix}
+= \underbrace{\rho u \begin{pmatrix} 1 \\ u \\ H \end{pmatrix}}_{\text{대류}} + \underbrace{\begin{pmatrix} 0 \\ p \\ 0 \end{pmatrix}}_{\text{압력}}
+$$
+
+여기서 $\rho$는 밀도, $u$는 속도, $p$는 압력, $E$는 총에너지, $H=(E+p)/\rho$는 총엔탈피다.
+
+Liou의 통찰은 단순했다. 대류항은 질량 플럭스 $\dot m = \rho u$가 어느 방향에서 오느냐로 결정된다. 압력항은 음파를 타고 양방향으로 전달된다. 둘의 물리가 다르니, 분리해서 처리하자는 것이다. Roe가 두 상태의 차이를 자코비안으로 한꺼번에 풀었다면(flux-difference splitting), AUSM은 각 상태가 면에 기여하는 양을 따로 나눈다(flux-vector splitting).
+
+면(interface)에서의 AUSM 플럭스는 이렇게 조립된다.
+
+$$
+\mathbf{F}_{1/2} = \dot m_{1/2}\,\boldsymbol{\Psi}_{L/R} + \mathbf{p}_{1/2}
+$$
+
+$\boldsymbol{\Psi}=(1,\,u,\,H)^{T}$는 대류로 실려가는 양, $\mathbf{p}_{1/2}=(0,\,p_{1/2},\,0)^{T}$는 압력 기여다. 핵심은 면 질량 플럭스 $\dot m_{1/2}$와 면 압력 $p_{1/2}$를 어떻게 정하느냐에 있다.
+
+## 마하수를 다항식으로 가른다
+
+면 질량 플럭스는 면 마하수 $M_{1/2}$에서 나온다.
+
+$$
+M_{1/2} = \mathcal{M}^{+}_{(4)}(M_L) + \mathcal{M}^{-}_{(4)}(M_R)
+$$
+
+$M_L=u_L/a_{1/2}$, $M_R=u_R/a_{1/2}$는 좌·우 셀의 마하수이고 $a_{1/2}$는 면 음속이다. 분리 함수 $\mathcal{M}^{\pm}$가 이 글의 심장이다.
+
+가장 단순한 1차 분리는 단순 업윈드다.
+
+$$
+\mathcal{M}^{\pm}_{(1)}(M) = \tfrac{1}{2}\left(M \pm |M|\right)
+$$
+
+초음속($|M|\ge 1$)에서는 이 식을 그대로 쓴다. 한쪽이 0이 되어 완전한 업윈드가 된다. 문제는 천음속 부근이다. 1차 함수는 $M=0$에서 꺾여 미분이 불연속이다. 솔버 수렴이 거기서 막힌다.
+
+AUSM+는 천음속 구간을 4차 다항식으로 부드럽게 메운다($\beta=1/8$).
+
+$$
+\mathcal{M}^{\pm}_{(4)}(M) =
+\begin{cases}
+\tfrac{1}{2}(M\pm|M|) & |M|\ge 1 \\
+\pm\tfrac{1}{4}(M\pm 1)^2 \pm \beta(M^2-1)^2 & |M|<1
+\end{cases}
+$$
+
+압력도 같은 방식으로 가른다($\alpha=3/16$).
+
+$$
+\mathcal{P}^{\pm}_{(5)}(M) =
+\begin{cases}
+\tfrac{1}{2}(1\pm\operatorname{sgn}M) & |M|\ge 1 \\
+\tfrac{1}{4}(M\pm 1)^2(2\mp M) \pm \alpha M(M^2-1)^2 & |M|<1
+\end{cases}
+$$
+
+말로는 추상적이다. 아래 시뮬레이션에서 직접 조작해보자.
+
+<MachSplitFunctions />
+
+$|M|>1$ 바깥에서는 두 곡선이 완전 업윈드 가지로 붙는다. 안쪽에서는 다항식이 매끈하게 이어 미분 가능성을 지킨다. β를 키우면 천음속 구간의 곡률이 커진다. 이 매끄러움이 Roe 솔버 없이도 수렴을 가능하게 한 비결이다.
+
+## 압력은 압력대로, 대류는 대류대로
+
+분리 함수가 준비되면 면 값은 한 줄로 모인다. 질량 플럭스는
+
+$$
+\dot m_{1/2} = a_{1/2}\,M_{1/2}\,
+\begin{cases}\rho_L & M_{1/2}>0 \\ \rho_R & M_{1/2}\le 0\end{cases}
+$$
+
+부호가 곧 업윈드 방향이다. $M_{1/2}>0$이면 왼쪽 셀의 $\rho,u,H$가 실려 나간다. 압력은 좌우의 가중합이다.
+
+$$
+p_{1/2} = \mathcal{P}^{+}_{(5)}(M_L)\,p_L + \mathcal{P}^{-}_{(5)}(M_R)\,p_R
+$$
+
+대류는 한쪽에서만 오고, 압력은 양쪽에서 온다. 이 비대칭이 AUSM이 접촉 불연속(밀도는 튀지만 압력은 평평한 면)을 또렷하게 잡는 이유다. Roe는 접촉면을 자코비안의 한 고유값으로 다루지만, AUSM은 질량 플럭스가 0이 되는 지점으로 자연스럽게 분리한다. 압력 진동을 만드는 추가 소산이 끼어들지 않는다.
+
+## AUSM+ 그리고 AUSM+-up — 저마하까지
+
+원래 AUSM에는 약점이 있었다. 마하수가 0.01처럼 아주 낮은 비압축성 극한에서 압력장이 격자 단위로 진동했다. 음향 항이 운동량에 비해 너무 강하게 소산되기 때문이다. 2006년 Liou는 AUSM+-up으로 이 구간을 손봤다. 질량 플럭스에 압력 확산항을, 압력에 속도 확산항을 더한 것이다.
+
+$$
+M_{1/2} = \mathcal{M}^{+}_{(4)}(M_L) + \mathcal{M}^{-}_{(4)}(M_R) + M_p
+$$
+
+$$
+M_p = -\frac{K_p}{f_a}\,\max\!\left(1-\sigma \bar{M}^2,\,0\right)\frac{p_R-p_L}{\rho_{1/2}\,a_{1/2}^2}
+$$
+
+$M_p$는 압력 차이를 질량 플럭스로 끌어와 저마하 진동을 누른다. $f_a$는 국소 마하수에 따라 0과 1 사이를 오가는 스케일 함수다. 마하수가 높으면 $f_a\to 1$이 되어 추가항이 사라지고, 원래의 충격 포착 성능이 그대로 돌아온다. 하나의 식이 비압축 극한과 극초음속을 모두 감당한다. 이것이 AUSM+-up을 "all-speed" 스킴이라 부르는 이유다.
+
+## Python — Shu–Osher로 시험하다
+
+검증 문제로 Shu–Osher를 고른다. 마하 3 충격파가 사인파 밀도 교란을 향해 달려드는 1차원 오일러 문제다. 충격파 포착과 고주파 파동 보존을 동시에 시험한다. 아래 코드는 1차 AUSM+로 푼다.
+
+```python
+import numpy as np
+
+GAMMA = 1.4
+
+def mach_split(M, sign):
+    # AUSM+ 4차 분리 마하 다항식 (beta = 1/8)
+    beta = 1.0 / 8.0
+    if abs(M) >= 1.0:
+        return 0.5 * (M + abs(M)) if sign > 0 else 0.5 * (M - abs(M))
+    if sign > 0:
+        return 0.25 * (M + 1.0) ** 2 + beta * (M * M - 1.0) ** 2
+    return -0.25 * (M - 1.0) ** 2 - beta * (M * M - 1.0) ** 2
+
+def pressure_split(M, sign):
+    # AUSM+ 5차 분리 압력 다항식 (alpha = 3/16)
+    alpha = 3.0 / 16.0
+    if abs(M) >= 1.0:
+        return 0.5 * (1.0 + np.sign(M)) if sign > 0 else 0.5 * (1.0 - np.sign(M))
+    if sign > 0:
+        return 0.25 * (M + 1.0) ** 2 * (2.0 - M) + alpha * M * (M * M - 1.0) ** 2
+    return 0.25 * (M - 1.0) ** 2 * (2.0 + M) - alpha * M * (M * M - 1.0) ** 2
+
+def ausm_plus(wl, wr):
+    rl, ul, pl = wl
+    rr, ur, pr = wr
+    al = np.sqrt(GAMMA * pl / rl)
+    ar = np.sqrt(GAMMA * pr / rr)
+    a12 = 0.5 * (al + ar)                    # 면 음속 (단순 평균)
+    Ml, Mr = ul / a12, ur / a12
+    M12 = mach_split(Ml, +1) + mach_split(Mr, -1)
+    p12 = pressure_split(Ml, +1) * pl + pressure_split(Mr, -1) * pr
+    Hl = (pl / (GAMMA - 1) + 0.5 * rl * ul * ul + pl) / rl
+    Hr = (pr / (GAMMA - 1) + 0.5 * rr * ur * ur + pr) / rr
+    mdot = a12 * M12 * (rl if M12 > 0 else rr)
+    psi = np.array([1.0, ul, Hl]) if M12 > 0 else np.array([1.0, ur, Hr])
+    return mdot * psi + np.array([0.0, p12, 0.0])
+
+def euler_step(U, dx, cfl):
+    r = U[0]
+    u = U[1] / r
+    p = (GAMMA - 1.0) * (U[2] - 0.5 * r * u * u)
+    a = np.sqrt(GAMMA * p / r)
+    dt = cfl * dx / np.max(np.abs(u) + a)
+    n = U.shape[1]
+    F = np.zeros((3, n + 1))
+    for f in range(1, n):                    # 내부 면 플럭스
+        F[:, f] = ausm_plus((r[f-1], u[f-1], p[f-1]), (r[f], u[f], p[f]))
+    F[:, 0] = F[:, 1]                         # 투과 경계
+    F[:, n] = F[:, n - 1]
+    return U - (dt / dx) * (F[:, 1:] - F[:, :-1]), dt
+
+def shu_osher(n=400, t_end=1.8):
+    x = np.linspace(-5, 5, n, endpoint=False) + 5.0 / n
+    dx = 10.0 / n
+    r = np.where(x < -4, 3.857143, 1.0 + 0.2 * np.sin(5.0 * x))
+    u = np.where(x < -4, 2.629369, 0.0)
+    p = np.where(x < -4, 10.33333, 1.0)
+    U = np.zeros((3, n))
+    U[0], U[1], U[2] = r, r * u, p / (GAMMA - 1.0) + 0.5 * r * u * u
+    t = 0.0
+    while t < t_end:
+        U, dt = euler_step(U, dx, cfl=0.4)
+        t += dt
+    return x, U[0]
+
+if __name__ == "__main__":
+    x, rho = shu_osher()
+    print(f"밀도 min/max : {rho.min():.3f} / {rho.max():.3f}")
+    print(f"x=2.0 밀도   : {rho[np.argmin(np.abs(x - 2.0))]:.3f}")
+```
+
+실행하면 충격파 뒤로 사인파가 압축되어 살아남은 밀도장이 나온다. 마하 3 충격이 통과한 뒤 밀도 최대값이 4를 넘는다. 분리 함수만으로 충격을 안정적으로 잡으면서, 압력은 진동 없이 매끈하다.
+
+같은 AUSM+ 플럭스를 1차원 Sod 충격관에 적용한 결과를 아래에서 실시간으로 본다.
+
+<AusmEulerShockTube />
+
+격막 하나에서 세 구조가 갈라진다. 왼쪽으로 퍼지는 팽창파, 가운데 접촉 불연속(밀도는 꺾이고 압력은 평평하다), 오른쪽 충격파다. CFL을 0.95까지 올려도 1차 스킴은 발산하지 않는다. 대신 접촉면이 더 뭉개진다.
+
+## Roe와 나란히 세워보면
+
+AUSM은 공짜가 아니다. 1차 버전은 접촉면을 Roe보다 약간 더 뭉갠다. 위 코드처럼 셀 값을 그대로 쓰면 1차 정확도에 머문다. 실무에서는 MUSCL이나 WENO 재구성을 좌·우 상태에 먼저 적용해 고차로 끌어올린다. 분리 함수는 그대로 두고 입력만 바꾸면 된다.
+
+| 항목 | Roe (FDS) | AUSM+ (FVS) |
+|------|-----------|-------------|
+| 면당 비용 | 자코비안 고유분해 | 다항식 평가 |
+| 접촉 불연속 | 매우 선명 | 선명 (엔트로피 픽스 불필요) |
+| 카본큘 현상 | 취약 | 강건 |
+| 저마하 거동 | 별도 전처리 필요 | AUSM+-up이 내장 |
+
+극초음속 충격파에 수직으로 격자가 정렬되면 Roe는 카본큘(carbuncle)이라는 비물리적 돌출을 만든다. AUSM 계열은 이 병에 훨씬 강건하다. 대류와 압력을 분리한 구조 자체가 충격면의 횡방향 불안정을 덜 키우기 때문이다.
+
+## 마지막에 남기고 싶은 것
+
+- AUSM은 플럭스를 대류·압력으로 쪼개고, 각각을 마하수의 다항식 분리 함수로 면 값에 모은다. 자코비안 분해가 없다.
+- 천음속을 4차·5차 다항식으로 매끄럽게 메운 덕에 미분 가능성이 유지되고 수렴이 안정적이다. AUSM+-up의 확산항은 같은 식으로 저마하까지 끌고 간다.
+- 접촉 불연속에 선명하고 카본큘에 강건하다. 고차가 필요하면 분리 함수는 두고 좌·우 입력만 재구성으로 바꾼다.

@@ -1,0 +1,211 @@
+---
+title: "Capturar choques sin multiplicar una matriz en cada cara — Separación de flujo AUSM"
+date: 2026-06-19
+description: "Cómo AUSM separa el flujo de Euler para capturar choques sin Roe, con código"
+tags: ["Compressible", "Riemann", "AUSM", "Flux-Splitting", "Euler"]
+draft: false
+---
+
+import { MachSplitFunctions } from '@/components/post-viz/2026-06-19-ausm-flux-vector-splitting/MachSplitFunctions'
+import { AusmEulerShockTube } from '@/components/post-viz/2026-06-19-ausm-flux-vector-splitting/AusmEulerShockTube'
+
+En 1993, Meng-Sing Liou, en el NASA Lewis, no estaba conforme con el trabajo matricial del solver de Roe. Los choques salían bien. Pero resolver cada cara exigía descomponer la estructura propia completa de un jacobiano 5×5. Liou tomó otro camino. Separó el flujo en una parte "convectiva" y otra "de presión", y dividió cada una con polinomios del número de Mach. Así nació AUSM (Advection Upstream Splitting Method), que nunca multiplica una matriz. Esta entrada sigue esa separación a través de las ecuaciones y luego resuelve el problema de Shu–Osher en Python para comprobarlo.
+
+## 1993: Liou parte el flujo en dos
+
+Mira el flujo de cara de las ecuaciones de Euler. En una dimensión,
+
+$$
+\mathbf{F} = \begin{pmatrix} \rho u \\ \rho u^2 + p \\ (E+p)u \end{pmatrix}
+= \underbrace{\rho u \begin{pmatrix} 1 \\ u \\ H \end{pmatrix}}_{\text{convectivo}} + \underbrace{\begin{pmatrix} 0 \\ p \\ 0 \end{pmatrix}}_{\text{presión}}
+$$
+
+Aquí $\rho$ es la densidad, $u$ la velocidad, $p$ la presión, $E$ la energía total y $H=(E+p)/\rho$ la entalpía total.
+
+La intuición de Liou era simple. El término convectivo lo decide la dirección desde la que llega el flujo de masa $\dot m = \rho u$. El término de presión viaja sobre ondas acústicas en ambas direcciones. Física distinta, así que se tratan por separado. Donde Roe resolvía la diferencia entre dos estados mediante un jacobiano (flux-difference splitting), AUSM divide por su cuenta la contribución de cada estado a la cara (flux-vector splitting).
+
+El flujo AUSM en la interfaz se ensambla así.
+
+$$
+\mathbf{F}_{1/2} = \dot m_{1/2}\,\boldsymbol{\Psi}_{L/R} + \mathbf{p}_{1/2}
+$$
+
+$\boldsymbol{\Psi}=(1,\,u,\,H)^{T}$ es lo que arrastra la convección, y $\mathbf{p}_{1/2}=(0,\,p_{1/2},\,0)^{T}$ es la parte de presión. Todo depende de cómo se elijan el flujo de masa en la cara $\dot m_{1/2}$ y la presión en la cara $p_{1/2}$.
+
+## Partir el número de Mach en polinomios
+
+El flujo de masa en la cara proviene del número de Mach de cara $M_{1/2}$.
+
+$$
+M_{1/2} = \mathcal{M}^{+}_{(4)}(M_L) + \mathcal{M}^{-}_{(4)}(M_R)
+$$
+
+$M_L=u_L/a_{1/2}$ y $M_R=u_R/a_{1/2}$ son los números de Mach de las celdas izquierda y derecha, y $a_{1/2}$ es la velocidad del sonido en la cara. Las funciones de separación $\mathcal{M}^{\pm}$ son el corazón del método.
+
+La separación de primer grado más simple es el puro esquema upwind.
+
+$$
+\mathcal{M}^{\pm}_{(1)}(M) = \tfrac{1}{2}\left(M \pm |M|\right)
+$$
+
+En régimen supersónico ($|M|\ge 1$) se usa esto directamente. Un lado se anula y queda un upwind completo. El problema está cerca del régimen sónico. La función de primer grado se quiebra en $M=0$, donde su derivada es discontinua, y allí la convergencia del solver se atasca.
+
+AUSM+ rellena la banda transónica de forma suave con un polinomio de cuarto grado ($\beta=1/8$).
+
+$$
+\mathcal{M}^{\pm}_{(4)}(M) =
+\begin{cases}
+\tfrac{1}{2}(M\pm|M|) & |M|\ge 1 \\
+\pm\tfrac{1}{4}(M\pm 1)^2 \pm \beta(M^2-1)^2 & |M|<1
+\end{cases}
+$$
+
+La presión se separa de la misma manera ($\alpha=3/16$).
+
+$$
+\mathcal{P}^{\pm}_{(5)}(M) =
+\begin{cases}
+\tfrac{1}{2}(1\pm\operatorname{sgn}M) & |M|\ge 1 \\
+\tfrac{1}{4}(M\pm 1)^2(2\mp M) \pm \alpha M(M^2-1)^2 & |M|<1
+\end{cases}
+$$
+
+En palabras suena abstracto. Prueba la simulación de abajo y mueve los parámetros por tu cuenta.
+
+<MachSplitFunctions />
+
+Fuera de $|M|>1$, las dos curvas se pegan a la rama totalmente upwind. Dentro, el polinomio las une con suavidad y mantiene la función diferenciable. Sube β para abultar la curvatura en la banda transónica. Esa suavidad es justo lo que hace posible la convergencia sin un solver de Roe.
+
+## Presión con presión, convección con convección
+
+Con las funciones de separación listas, el valor de cara se reúne en una línea. El flujo de masa es
+
+$$
+\dot m_{1/2} = a_{1/2}\,M_{1/2}\,
+\begin{cases}\rho_L & M_{1/2}>0 \\ \rho_R & M_{1/2}\le 0\end{cases}
+$$
+
+El signo es la dirección upwind. Si $M_{1/2}>0$, salen arrastrados el $\rho,u,H$ de la celda izquierda. La presión es una suma ponderada de ambos lados.
+
+$$
+p_{1/2} = \mathcal{P}^{+}_{(5)}(M_L)\,p_L + \mathcal{P}^{-}_{(5)}(M_R)\,p_R
+$$
+
+La convección llega de un solo lado; la presión llega de ambos. Esa asimetría es la razón por la que AUSM mantiene nítida una discontinuidad de contacto (una cara donde la densidad salta pero la presión queda plana). Roe trata el contacto a través de un autovalor del jacobiano, pero AUSM lo separa de forma natural en el punto donde el flujo de masa se anula. No se cuela ninguna disipación extra que agite la presión.
+
+## AUSM+ y AUSM+-up — hasta números de Mach bajos
+
+El AUSM original tenía una debilidad. En el límite casi incompresible, con Mach tan bajo como 0,01, el campo de presión oscilaba celda por celda. El término acústico se disipaba demasiado en relación con el momento. En 2006, Liou corrigió esa banda con AUSM+-up, añadiendo un término de difusión de presión al flujo de masa y un término de difusión de velocidad a la presión.
+
+$$
+M_{1/2} = \mathcal{M}^{+}_{(4)}(M_L) + \mathcal{M}^{-}_{(4)}(M_R) + M_p
+$$
+
+$$
+M_p = -\frac{K_p}{f_a}\,\max\!\left(1-\sigma \bar{M}^2,\,0\right)\frac{p_R-p_L}{\rho_{1/2}\,a_{1/2}^2}
+$$
+
+$M_p$ arrastra la diferencia de presión hacia el flujo de masa y amortigua la oscilación a bajo Mach. $f_a$ es una función de escala que se desliza entre 0 y 1 con el número de Mach local. A Mach alto, $f_a\to 1$, el término extra desaparece y vuelve intacta la captura de choques original. Una sola fórmula cubre tanto el límite incompresible como el flujo hipersónico. Por eso AUSM+-up se llama un esquema "all-speed".
+
+## Python — probándolo en Shu–Osher
+
+Como problema de verificación elegimos Shu–Osher. Un choque a Mach 3 embiste contra una perturbación de densidad en onda senoidal, un problema de Euler unidimensional que pone a prueba a la vez la captura del choque y la conservación de la alta frecuencia. El código de abajo lo resuelve con AUSM+ de primer orden.
+
+```python
+import numpy as np
+
+GAMMA = 1.4
+
+def mach_split(M, sign):
+    # polinomio de Mach de cuarto grado de AUSM+ (beta = 1/8)
+    beta = 1.0 / 8.0
+    if abs(M) >= 1.0:
+        return 0.5 * (M + abs(M)) if sign > 0 else 0.5 * (M - abs(M))
+    if sign > 0:
+        return 0.25 * (M + 1.0) ** 2 + beta * (M * M - 1.0) ** 2
+    return -0.25 * (M - 1.0) ** 2 - beta * (M * M - 1.0) ** 2
+
+def pressure_split(M, sign):
+    # polinomio de presion de quinto grado de AUSM+ (alpha = 3/16)
+    alpha = 3.0 / 16.0
+    if abs(M) >= 1.0:
+        return 0.5 * (1.0 + np.sign(M)) if sign > 0 else 0.5 * (1.0 - np.sign(M))
+    if sign > 0:
+        return 0.25 * (M + 1.0) ** 2 * (2.0 - M) + alpha * M * (M * M - 1.0) ** 2
+    return 0.25 * (M - 1.0) ** 2 * (2.0 + M) - alpha * M * (M * M - 1.0) ** 2
+
+def ausm_plus(wl, wr):
+    rl, ul, pl = wl
+    rr, ur, pr = wr
+    al = np.sqrt(GAMMA * pl / rl)
+    ar = np.sqrt(GAMMA * pr / rr)
+    a12 = 0.5 * (al + ar)                    # velocidad del sonido en la cara (media simple)
+    Ml, Mr = ul / a12, ur / a12
+    M12 = mach_split(Ml, +1) + mach_split(Mr, -1)
+    p12 = pressure_split(Ml, +1) * pl + pressure_split(Mr, -1) * pr
+    Hl = (pl / (GAMMA - 1) + 0.5 * rl * ul * ul + pl) / rl
+    Hr = (pr / (GAMMA - 1) + 0.5 * rr * ur * ur + pr) / rr
+    mdot = a12 * M12 * (rl if M12 > 0 else rr)
+    psi = np.array([1.0, ul, Hl]) if M12 > 0 else np.array([1.0, ur, Hr])
+    return mdot * psi + np.array([0.0, p12, 0.0])
+
+def euler_step(U, dx, cfl):
+    r = U[0]
+    u = U[1] / r
+    p = (GAMMA - 1.0) * (U[2] - 0.5 * r * u * u)
+    a = np.sqrt(GAMMA * p / r)
+    dt = cfl * dx / np.max(np.abs(u) + a)
+    n = U.shape[1]
+    F = np.zeros((3, n + 1))
+    for f in range(1, n):                    # flujos en caras interiores
+        F[:, f] = ausm_plus((r[f-1], u[f-1], p[f-1]), (r[f], u[f], p[f]))
+    F[:, 0] = F[:, 1]                         # frontera transmisiva
+    F[:, n] = F[:, n - 1]
+    return U - (dt / dx) * (F[:, 1:] - F[:, :-1]), dt
+
+def shu_osher(n=400, t_end=1.8):
+    x = np.linspace(-5, 5, n, endpoint=False) + 5.0 / n
+    dx = 10.0 / n
+    r = np.where(x < -4, 3.857143, 1.0 + 0.2 * np.sin(5.0 * x))
+    u = np.where(x < -4, 2.629369, 0.0)
+    p = np.where(x < -4, 10.33333, 1.0)
+    U = np.zeros((3, n))
+    U[0], U[1], U[2] = r, r * u, p / (GAMMA - 1.0) + 0.5 * r * u * u
+    t = 0.0
+    while t < t_end:
+        U, dt = euler_step(U, dx, cfl=0.4)
+        t += dt
+    return x, U[0]
+
+if __name__ == "__main__":
+    x, rho = shu_osher()
+    print(f"densidad min/max : {rho.min():.3f} / {rho.max():.3f}")
+    print(f"densidad en x=2.0 : {rho[np.argmin(np.abs(x - 2.0))]:.3f}")
+```
+
+Al ejecutarlo se obtiene un campo de densidad donde la onda senoidal queda comprimida y sobrevive tras el choque. Después de que pasa el choque a Mach 3, la densidad pico supera 4. Solo con las funciones de separación se captura el choque de forma estable, mientras la presión queda suave y sin oscilaciones.
+
+El mismo flujo AUSM+ aplicado a un tubo de choque de Sod 1D corre en vivo abajo.
+
+<AusmEulerShockTube />
+
+De un solo diafragma se separan tres estructuras: un abanico de rarefacción que se extiende a la izquierda, una discontinuidad de contacto en el centro (la densidad se dobla, la presión queda plana) y un choque a la derecha. Incluso empujado a CFL 0,95 el esquema de primer orden nunca explota. Solo emborrona más el contacto.
+
+## Poniéndolo junto a Roe
+
+AUSM no es gratis. La versión de primer orden emborrona el contacto un poco más que Roe. Usar los valores de celda en bruto, como en el código de arriba, se queda en precisión de primer orden. En la práctica se aplica primero una reconstrucción MUSCL o WENO a los estados izquierdo y derecho para subir el orden. Las funciones de separación no cambian; solo cambian las entradas.
+
+| Concepto | Roe (FDS) | AUSM+ (FVS) |
+|----------|-----------|-------------|
+| Coste por cara | descomposición propia del jacobiano | evaluación de polinomios |
+| Discontinuidad de contacto | muy nítida | nítida (sin entropy fix) |
+| Fenómeno de carbúnculo | frágil | robusto |
+| Comportamiento a bajo Mach | requiere precondicionamiento aparte | incorporado en AUSM+-up |
+
+Cuando la malla se alinea normal a un choque hipersónico, Roe produce una protuberancia no física llamada carbúnculo. La familia AUSM es mucho más robusta frente a este mal. La propia estructura de separar convección y presión alimenta menos la inestabilidad transversal del frente de choque.
+
+## Lo que conviene llevarse
+
+- AUSM separa el flujo en partes convectiva y de presión, y reúne cada una en la cara mediante funciones de separación polinómicas del número de Mach. Sin descomposición del jacobiano.
+- Rellenar la banda transónica con polinomios de cuarto y quinto grado conserva la diferenciabilidad y estabiliza la convergencia. Los términos de difusión de AUSM+-up extienden la misma fórmula hasta bajo Mach.
+- Es nítido en los contactos y robusto frente al carbúnculo. Cuando necesites orden alto, conserva las funciones de separación y reconstruye solo las entradas izquierda y derecha.

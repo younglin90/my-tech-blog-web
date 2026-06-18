@@ -1,0 +1,211 @@
+---
+title: "面ごとに行列を掛けずに衝撃波を捉える — AUSM フラックス分離"
+date: 2026-06-19
+description: "Roe なしで衝撃波を捉える AUSM フラックス分離の原理と実装"
+tags: ["Compressible", "Riemann", "AUSM", "Flux-Splitting", "Euler"]
+draft: false
+---
+
+import { MachSplitFunctions } from '@/components/post-viz/2026-06-19-ausm-flux-vector-splitting/MachSplitFunctions'
+import { AusmEulerShockTube } from '@/components/post-viz/2026-06-19-ausm-flux-vector-splitting/AusmEulerShockTube'
+
+1993年、NASA ルイス研究所の Meng-Sing Liou は Roe ソルバーの行列演算が気に入りませんでした。衝撃波はきれいに捉えられます。しかし面を一つ解くたびに、5×5 ヤコビアンの固有構造を丸ごと分解する必要があったのです。Liou は別の道を選びました。フラックスを「対流」と「圧力」に分け、それぞれをマッハ数の多項式で切り分けたのです。こうして生まれた AUSM(Advection Upstream Splitting Method)は、行列を一度も掛けません。本稿ではその分離が数式でどう働くかを追い、Python で Shu–Osher 問題を実際に解いて検証します。
+
+## 1993年、Liou がフラックスを二つに割る
+
+オイラー方程式の面フラックスを見てみましょう。一次元では
+
+$$
+\mathbf{F} = \begin{pmatrix} \rho u \\ \rho u^2 + p \\ (E+p)u \end{pmatrix}
+= \underbrace{\rho u \begin{pmatrix} 1 \\ u \\ H \end{pmatrix}}_{\text{対流}} + \underbrace{\begin{pmatrix} 0 \\ p \\ 0 \end{pmatrix}}_{\text{圧力}}
+$$
+
+ここで $\rho$ は密度、$u$ は速度、$p$ は圧力、$E$ は全エネルギー、$H=(E+p)/\rho$ は全エンタルピーです。
+
+Liou の洞察は単純でした。対流項は質量フラックス $\dot m = \rho u$ がどちらの方向から来るかで決まります。圧力項は音波に乗って両方向へ伝わります。物理が違うのだから、分けて扱おうというわけです。Roe が二つの状態の差をヤコビアンで一度に解いた(flux-difference splitting)のに対し、AUSM は各状態が面に与える寄与を別々に分けます(flux-vector splitting)。
+
+面(interface)での AUSM フラックスはこう組み立てられます。
+
+$$
+\mathbf{F}_{1/2} = \dot m_{1/2}\,\boldsymbol{\Psi}_{L/R} + \mathbf{p}_{1/2}
+$$
+
+$\boldsymbol{\Psi}=(1,\,u,\,H)^{T}$ は対流が運ぶ量、$\mathbf{p}_{1/2}=(0,\,p_{1/2},\,0)^{T}$ は圧力の寄与です。鍵は面質量フラックス $\dot m_{1/2}$ と面圧力 $p_{1/2}$ をどう決めるかにあります。
+
+## マッハ数を多項式で切り分ける
+
+面質量フラックスは面マッハ数 $M_{1/2}$ から出てきます。
+
+$$
+M_{1/2} = \mathcal{M}^{+}_{(4)}(M_L) + \mathcal{M}^{-}_{(4)}(M_R)
+$$
+
+$M_L=u_L/a_{1/2}$、$M_R=u_R/a_{1/2}$ は左右セルのマッハ数、$a_{1/2}$ は面音速です。分離関数 $\mathcal{M}^{\pm}$ が本稿の心臓部です。
+
+最も単純な一次分離は単純な風上化です。
+
+$$
+\mathcal{M}^{\pm}_{(1)}(M) = \tfrac{1}{2}\left(M \pm |M|\right)
+$$
+
+超音速($|M|\ge 1$)ではこの式をそのまま使います。片側が 0 になり完全な風上化となります。問題は遷音速付近です。一次関数は $M=0$ で折れ、微分が不連続になります。そこでソルバーの収束が止まります。
+
+AUSM+ は遷音速域を 4 次多項式で滑らかに埋めます($\beta=1/8$)。
+
+$$
+\mathcal{M}^{\pm}_{(4)}(M) =
+\begin{cases}
+\tfrac{1}{2}(M\pm|M|) & |M|\ge 1 \\
+\pm\tfrac{1}{4}(M\pm 1)^2 \pm \beta(M^2-1)^2 & |M|<1
+\end{cases}
+$$
+
+圧力も同じように切り分けます($\alpha=3/16$)。
+
+$$
+\mathcal{P}^{\pm}_{(5)}(M) =
+\begin{cases}
+\tfrac{1}{2}(1\pm\operatorname{sgn}M) & |M|\ge 1 \\
+\tfrac{1}{4}(M\pm 1)^2(2\mp M) \pm \alpha M(M^2-1)^2 & |M|<1
+\end{cases}
+$$
+
+言葉では抽象的です。下のシミュレーションで自分でパラメータを動かしてみましょう。
+
+<MachSplitFunctions />
+
+$|M|>1$ の外では二つの曲線が完全風上の枝に張り付きます。内側では多項式が滑らかにつなぎ、微分可能性を保ちます。β を大きくすると遷音速域の曲率が増します。この滑らかさこそ、Roe ソルバーなしで収束を可能にした秘訣です。
+
+## 圧力は圧力で、対流は対流で
+
+分離関数が用意できれば、面の値は一行に集まります。質量フラックスは
+
+$$
+\dot m_{1/2} = a_{1/2}\,M_{1/2}\,
+\begin{cases}\rho_L & M_{1/2}>0 \\ \rho_R & M_{1/2}\le 0\end{cases}
+$$
+
+符号がそのまま風上方向です。$M_{1/2}>0$ なら左セルの $\rho,u,H$ が運び出されます。圧力は左右の重み付き和です。
+
+$$
+p_{1/2} = \mathcal{P}^{+}_{(5)}(M_L)\,p_L + \mathcal{P}^{-}_{(5)}(M_R)\,p_R
+$$
+
+対流は片側からだけ来て、圧力は両側から来ます。この非対称性が、AUSM が接触不連続(密度は跳ぶが圧力は平らな面)をくっきり捉える理由です。Roe は接触面をヤコビアンの一つの固有値として扱いますが、AUSM は質量フラックスが 0 になる点で自然に分離します。圧力振動を生む余分な散逸が入り込みません。
+
+## AUSM+ そして AUSM+-up — 低マッハまで
+
+元の AUSM には弱点がありました。マッハ数が 0.01 のように非常に低い非圧縮極限で、圧力場が格子単位で振動したのです。音響項が運動量に比べて強く散逸されすぎるためです。2006 年、Liou は AUSM+-up でこの域を手直ししました。質量フラックスに圧力拡散項を、圧力に速度拡散項を加えたのです。
+
+$$
+M_{1/2} = \mathcal{M}^{+}_{(4)}(M_L) + \mathcal{M}^{-}_{(4)}(M_R) + M_p
+$$
+
+$$
+M_p = -\frac{K_p}{f_a}\,\max\!\left(1-\sigma \bar{M}^2,\,0\right)\frac{p_R-p_L}{\rho_{1/2}\,a_{1/2}^2}
+$$
+
+$M_p$ は圧力差を質量フラックスに引き込み、低マッハの振動を抑えます。$f_a$ は局所マッハ数に応じて 0 と 1 の間を動くスケール関数です。マッハ数が高いと $f_a\to 1$ となって追加項が消え、本来の衝撃波捕捉性能がそのまま戻ります。一つの式が非圧縮極限も極超音速も担います。これが AUSM+-up を「all-speed」スキームと呼ぶ理由です。
+
+## Python — Shu–Osher で試す
+
+検証問題には Shu–Osher を選びます。マッハ 3 の衝撃波が正弦波の密度擾乱に突っ込む一次元オイラー問題です。衝撃波捕捉と高周波波動の保存を同時に試します。下のコードは一次精度の AUSM+ で解きます。
+
+```python
+import numpy as np
+
+GAMMA = 1.4
+
+def mach_split(M, sign):
+    # AUSM+ 4 次分離マッハ多項式 (beta = 1/8)
+    beta = 1.0 / 8.0
+    if abs(M) >= 1.0:
+        return 0.5 * (M + abs(M)) if sign > 0 else 0.5 * (M - abs(M))
+    if sign > 0:
+        return 0.25 * (M + 1.0) ** 2 + beta * (M * M - 1.0) ** 2
+    return -0.25 * (M - 1.0) ** 2 - beta * (M * M - 1.0) ** 2
+
+def pressure_split(M, sign):
+    # AUSM+ 5 次分離圧力多項式 (alpha = 3/16)
+    alpha = 3.0 / 16.0
+    if abs(M) >= 1.0:
+        return 0.5 * (1.0 + np.sign(M)) if sign > 0 else 0.5 * (1.0 - np.sign(M))
+    if sign > 0:
+        return 0.25 * (M + 1.0) ** 2 * (2.0 - M) + alpha * M * (M * M - 1.0) ** 2
+    return 0.25 * (M - 1.0) ** 2 * (2.0 + M) - alpha * M * (M * M - 1.0) ** 2
+
+def ausm_plus(wl, wr):
+    rl, ul, pl = wl
+    rr, ur, pr = wr
+    al = np.sqrt(GAMMA * pl / rl)
+    ar = np.sqrt(GAMMA * pr / rr)
+    a12 = 0.5 * (al + ar)                    # 面音速 (単純平均)
+    Ml, Mr = ul / a12, ur / a12
+    M12 = mach_split(Ml, +1) + mach_split(Mr, -1)
+    p12 = pressure_split(Ml, +1) * pl + pressure_split(Mr, -1) * pr
+    Hl = (pl / (GAMMA - 1) + 0.5 * rl * ul * ul + pl) / rl
+    Hr = (pr / (GAMMA - 1) + 0.5 * rr * ur * ur + pr) / rr
+    mdot = a12 * M12 * (rl if M12 > 0 else rr)
+    psi = np.array([1.0, ul, Hl]) if M12 > 0 else np.array([1.0, ur, Hr])
+    return mdot * psi + np.array([0.0, p12, 0.0])
+
+def euler_step(U, dx, cfl):
+    r = U[0]
+    u = U[1] / r
+    p = (GAMMA - 1.0) * (U[2] - 0.5 * r * u * u)
+    a = np.sqrt(GAMMA * p / r)
+    dt = cfl * dx / np.max(np.abs(u) + a)
+    n = U.shape[1]
+    F = np.zeros((3, n + 1))
+    for f in range(1, n):                    # 内部面フラックス
+        F[:, f] = ausm_plus((r[f-1], u[f-1], p[f-1]), (r[f], u[f], p[f]))
+    F[:, 0] = F[:, 1]                         # 透過境界
+    F[:, n] = F[:, n - 1]
+    return U - (dt / dx) * (F[:, 1:] - F[:, :-1]), dt
+
+def shu_osher(n=400, t_end=1.8):
+    x = np.linspace(-5, 5, n, endpoint=False) + 5.0 / n
+    dx = 10.0 / n
+    r = np.where(x < -4, 3.857143, 1.0 + 0.2 * np.sin(5.0 * x))
+    u = np.where(x < -4, 2.629369, 0.0)
+    p = np.where(x < -4, 10.33333, 1.0)
+    U = np.zeros((3, n))
+    U[0], U[1], U[2] = r, r * u, p / (GAMMA - 1.0) + 0.5 * r * u * u
+    t = 0.0
+    while t < t_end:
+        U, dt = euler_step(U, dx, cfl=0.4)
+        t += dt
+    return x, U[0]
+
+if __name__ == "__main__":
+    x, rho = shu_osher()
+    print(f"密度 min/max : {rho.min():.3f} / {rho.max():.3f}")
+    print(f"x=2.0 の密度 : {rho[np.argmin(np.abs(x - 2.0))]:.3f}")
+```
+
+実行すると、衝撃波の後ろで正弦波が圧縮され生き残った密度場が得られます。マッハ 3 の衝撃が通過したあと、密度の最大値は 4 を超えます。分離関数だけで衝撃を安定に捉えつつ、圧力は振動なく滑らかです。
+
+同じ AUSM+ フラックスを一次元 Sod 衝撃管に適用した結果を、下でリアルタイムに見られます。
+
+<AusmEulerShockTube />
+
+一枚の隔膜から三つの構造が分かれます。左へ広がる膨張波、中央の接触不連続(密度は折れ、圧力は平ら)、右の衝撃波です。CFL を 0.95 まで上げても一次スキームは発散しません。代わりに接触面がさらにぼやけます。
+
+## Roe と並べてみると
+
+AUSM はタダではありません。一次版は接触面を Roe より少しぼかします。上のコードのようにセル値をそのまま使うと一次精度に留まります。実務では MUSCL や WENO 再構成を左右の状態に先に適用して高次に引き上げます。分離関数はそのまま、入力だけを変えればよいのです。
+
+| 項目 | Roe (FDS) | AUSM+ (FVS) |
+|------|-----------|-------------|
+| 面あたりのコスト | ヤコビアン固有分解 | 多項式評価 |
+| 接触不連続 | 非常に鮮明 | 鮮明 (エントロピー修正不要) |
+| カーバンクル現象 | 脆弱 | 頑健 |
+| 低マッハ挙動 | 別途前処理が必要 | AUSM+-up に内蔵 |
+
+極超音速の衝撃波に対して格子が垂直に揃うと、Roe はカーバンクル(carbuncle)という非物理的な突出を生みます。AUSM 系はこの病にはるかに頑健です。対流と圧力を分けた構造そのものが、衝撃面の横方向不安定をあまり育てないためです。
+
+## 最後に残しておきたいこと
+
+- AUSM はフラックスを対流・圧力に割り、それぞれをマッハ数の多項式分離関数で面の値に集めます。ヤコビアン分解はありません。
+- 遷音速を 4 次・5 次多項式で滑らかに埋めたおかげで微分可能性が保たれ、収束が安定します。AUSM+-up の拡散項は同じ式で低マッハまで伸ばします。
+- 接触不連続に鮮明でカーバンクルに頑健です。高次が必要なら、分離関数は残して左右の入力だけを再構成で変えます。
