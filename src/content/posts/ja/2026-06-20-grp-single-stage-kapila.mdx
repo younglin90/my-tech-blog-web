@@ -1,0 +1,154 @@
+---
+title: "[論文レビュー] たった1ステージで2次精度 — Kapila多相流のためのGRPソルバ"
+date: 2026-06-20
+description: "GRPソルバで時間2次精度と硬い体積分率ソース項を一度に押さえる方法"
+tags: ["GRP", "Generalized-Riemann-Problem", "Lax-Wendroff", "Multiphase", "Kapila-Model", "論文レビュー"]
+draft: false
+---
+
+import { GrpHalfStepInterface1D } from '@/components/post-viz/2026-06-20-grp-single-stage-kapila/GrpHalfStepInterface1D'
+import { KapilaVolumeFractionBound } from '@/components/post-viz/2026-06-20-grp-single-stage-kapila/KapilaVolumeFractionBound'
+
+2次精度が欲しければRunge-Kuttaを何段も回す、と教わってきました。この論文はたった1ステージでそこに到達します。秘密は、界面で値だけでなくその時間微分まで一緒に求めるGRP(Generalized Riemann Problem)ソルバです。本稿ではGRPがなぜ一発で2次なのかをスカラー問題で確かめ、その時間微分がKapila多相流モデルの硬いソース項をどう手なずけるかをコードで再現します。
+
+**論文**: Tuowei Chen, Zhifang Du, *Generalized Riemann Problem Method for the Kapila Model of Compressible Multiphase Flows*, arXiv:2310.08241 (2023).
+
+## 1ステージで2次 — GRPが解く問題
+
+有限体積法の1ステップは界面フラックス $\mathbf{F}_{i+1/2}$ で決まります。Godunov法は界面でRiemann問題を解いて値を一つ得ます。その値は時間について定数です。だから時間2次に到達するには、Runge-Kuttaのように同じ空間演算を何度も繰り返す必要があります。
+
+GRPは前提を変えます。フラックスを時間の中間点 $t^{n+1/2}$ で評価するのです。
+
+$$
+\mathbf{U}(\mathbf{x}_{i+1/2}, t^{n+1/2}) = \mathbf{U}^{n,*}_{i+1/2} + \frac{\Delta t}{2}\left(\frac{\partial \mathbf{U}}{\partial t}\right)^{n,*}_{i+1/2}
+$$
+
+ここで $\mathbf{U}^{n,*}$ はRiemann解(界面値)、$(\partial \mathbf{U}/\partial t)^{n,*}$ はその界面での瞬間時間微分です。二項をTaylor展開で合わせると、界面値が $\Delta t/2$ だけ未来へ跳びます。一度の評価で時間2次です。
+
+## 区分定数から区分線形へ — RiemannとGRPの違い
+
+Riemann問題は界面の両側が**区分定数**です。GRP問題は両側が**区分線形**(区分滑らか)です。初期不連続から伸びる波はもはや直線を走らず、ソルバはRiemann解とともに時間微分を返します。
+
+スカラー移流 $u_t + a u_x = 0$ で感覚をつかみましょう。セル $i$ の勾配を $\sigma_i$ とすると、$a>0$ のとき界面のRiemann解は左セルから外挿した値です。
+
+$$
+U^{*}_{i+1/2} = u_i + \sigma_i \frac{\Delta x}{2}
+$$
+
+ここで $u_i$ はセル平均、$\sigma_i$ はセル内勾配、$\Delta x$ はセル幅です。下のシミュレーションで実際に操作してみましょう。
+
+<GrpHalfStepInterface1D />
+
+`GRP` のチェックを外すとGodunovになります。界面値(シアンの点)が時間が経っても動きません。再びオンにすると、特性線(オレンジの点)に沿って界面値が流れ、フラックスに使われる値は $\Delta t/2$ の地点(オレンジの輪)です。勾配 $u_x$ を0にするとGRPはGodunovに正確に帰着します。
+
+## Lax-Wendroff手続き — 時間微分を空間変化へ
+
+時間微分はどう求めるのでしょう。答えは支配方程式そのものの中にあります。これがLax-Wendroff手続きの核心です。
+
+$$
+\frac{\partial u}{\partial t} = -a \frac{\partial u}{\partial x} = -a\,\sigma_i
+$$
+
+左辺の時間微分を右辺の空間微分に置き換えます。空間勾配 $\sigma_i$ は再構成からすでに分かっています。よって半ステップ界面値は
+
+$$
+U^{n+1/2}_{i+1/2} = U^{*}_{i+1/2} - a\,\sigma_i \frac{\Delta t}{2}
+$$
+
+となり、フラックスは $F = a\,U^{n+1/2}$ です。系(Euler・Kapila)では $\partial u/\partial t = -A\,\partial u/\partial x$ に一般化され、$A$ はヤコビアンです。論文はこの手続きで音響波を線形化し、GRPを近似的に解きます。
+
+## Python — GRPスカラーソルバで収束次数を測る
+
+滑らかな初期条件 $u_0=\sin(2\pi x)$ を1周期移流させ、GodunovとGRPの $L_1$ 誤差の収束次数を比較します。トイ問題は周期領域の線形移流です。
+
+```python
+import numpy as np
+
+# 1D 線形移流  u_t + a u_x = 0,  周期領域 [0,1]
+# 1次 Godunov vs 単一ステージ2次 GRP(Lax-Wendroff)の比較
+
+def cell_gradient(u, dx):
+    # 滑らかな解の次数測定のため中心(無制限)勾配を使用
+    return (np.roll(u, -1) - np.roll(u, 1)) / (2.0 * dx)
+
+def godunov_step(u, a, dx, dt):
+    # 区分定数: 風上界面値 (a > 0)
+    flux = a * u                       # F_{i+1/2} = a u_i
+    return u - dt / dx * (flux - np.roll(flux, 1))
+
+def grp_step(u, a, dx, dt):
+    g = cell_gradient(u, dx)           # 空間勾配 sigma_i
+    u_star = u + g * dx / 2.0          # 界面Riemann解 U*
+    u_half = u_star - a * g * dt / 2.0 # Lax-Wendroff半ステップ U^{n+1/2}
+    flux = a * u_half                  # F_{i+1/2}^{n+1/2}
+    return u - dt / dx * (flux - np.roll(flux, 1))
+
+def l1_error(num, exact, dx):
+    return np.sum(np.abs(num - exact)) * dx
+
+def convergence_study(a=1.0, cfl=0.4, t_end=1.0):
+    print(f"{'N':>5} {'Godunov':>16} {'GRP':>16}")
+    prev = {}
+    for N in [40, 80, 160, 320]:
+        dx = 1.0 / N
+        x = (np.arange(N) + 0.5) * dx
+        u0 = np.sin(2 * np.pi * x)     # 滑らかな初期条件
+        dt = cfl * dx / abs(a)
+        nsteps = int(round(t_end / dt))
+        dt = t_end / nsteps            # t_endに正確に到達
+        ug = u0.copy(); ur = u0.copy()
+        for _ in range(nsteps):
+            ug = godunov_step(ug, a, dx, dt)
+            ur = grp_step(ur, a, dx, dt)
+        exact = np.sin(2 * np.pi * (x - a * t_end))
+        eg = l1_error(ug, exact, dx)
+        er = l1_error(ur, exact, dx)
+        og = f"{np.log2(prev['g']/eg):.2f}" if 'g' in prev else "  - "
+        orr = f"{np.log2(prev['r']/er):.2f}" if 'r' in prev else "  - "
+        print(f"{N:>5} {eg:.2e}({og}) {er:.2e}({orr})")
+        prev = {'g': eg, 'r': er}
+
+convergence_study()
+```
+
+出力は次の通りです。
+
+```text
+    N          Godunov              GRP
+   40 1.63e-01(  - ) 1.31e-03(  - )
+   80 8.76e-02(0.90) 2.69e-04(2.28)
+  160 4.54e-02(0.95) 6.32e-05(2.09)
+  320 2.31e-02(0.97) 1.55e-05(2.03)
+```
+
+Godunovは1次(0.9〜0.97)にとどまりますが、GRPは2.0近くに収束します。ステージを一つも追加せず、勾配と時間微分を入れただけです。同じ格子で誤差は100倍小さくなります。
+
+## Kapilaモデルの硬い体積分率ソース
+
+ここからが本題です。Kapila5方程式モデル(BN7方程式の縮約)の体積分率方程式には硬いソース項が付きます。
+
+$$
+\frac{\partial \alpha_1}{\partial t} + \mathbf{u}\cdot\nabla\alpha_1 = \alpha_1 K\,\nabla\cdot\mathbf{u}
+$$
+
+ここで $\alpha_1$ は相1の体積分率、$K$ はWood音速から出る圧縮/膨張係数です。問題は、このソースが $\alpha_1$ を $[0,1]$ の外へ押し出しうることです。陽的(explicit)な積分は剛性(stiffness)が大きくなると境界を越えて発散します。
+
+ここでGRPの時間微分が光ります。界面値を新しい時間層 $t^{n+1}$ で知ることができるので、Gauss-Greenで $\nabla\cdot\mathbf{u}$ のセル平均を新時間で推定できます。するとソース項をCrank-Nicolson(半陰的)で積分でき、体積分率の境界保存のための時間ステップ制限まで立てられます。剛性緩和を単純なモデルで比べてみましょう。
+
+<KapilaVolumeFractionBound />
+
+$\lambda\Delta t$(剛性×時間ステップ)を1.6以上に上げると、陽的Euler(赤)が $[0,1]$ の帯を突き破って振動します。同じ条件でCrank-Nicolson(シアン)は常に帯の中にとどまります。剛性を3まで上げてもシアンは単調に平衡へ収束します。これが論文の言う「どんな $\Delta t$ でも体積分率の境界保存」です。
+
+## 再現して怪しかったこと
+
+スカラーGRPはきれいに2次が出ましたが、実際のKapila系はそこまで素直ではありません。第一に、無制限の中心勾配は衝撃波で振動します。2次が出たのはテストが滑らかだったからで、不連続ではminmodのような制限子が必須となり、次数は局所的に1次へ落ちます。
+
+第二に、Wood音速は体積分率に対して非単調です。界面の数値拡散帯でマッハ数が振動する原因です。GRPの時間微分は圧縮・膨張をよく捉えますが、この非単調性そのものを消すわけではありません。論文もこの部分は正面から解くより頑健性で迂回しています。
+
+第三に、実務コード(OpenFOAMなど)はほとんどがStrang分割+Runge-Kutta構造なので、単一ステージのGRPをそのまま移植するのは難しいです。GRPの利点を活かすにはフラックス関数自体をLax-Wendroff型に書き直す必要があります。移植コストは小さくありません。
+
+## 次に読む論文
+
+GRPの本家はBen-Artzi & Falcovitzのガス力学GRPです。この論文の線形化音響近似がどこから来たのかを見るには、そこまで遡るのがよいでしょう。多相側では、Saurelの緩和-射影法(本ブログの2026-05-09の記事)が同じ硬さを別の方法で解きます。二つを並べると「ソースを分離するか、フラックスに溶かし込むか」という設計の分岐が鮮明になります。
+
+要点は一つです。界面で値とともに時間微分を求めれば、時間2次精度も硬いソースも一度の評価で同時に扱えます。

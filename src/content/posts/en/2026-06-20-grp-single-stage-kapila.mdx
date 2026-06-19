@@ -1,0 +1,154 @@
+---
+title: "[Paper Review] Second-Order Accuracy in a Single Stage — A GRP Solver for the Kapila Multiphase Model"
+date: 2026-06-20
+description: "How a GRP solver buys second-order time accuracy and tames the stiff volume-fraction source at once"
+tags: ["GRP", "Generalized-Riemann-Problem", "Lax-Wendroff", "Multiphase", "Kapila-Model", "Paper-Review"]
+draft: false
+---
+
+import { GrpHalfStepInterface1D } from '@/components/post-viz/2026-06-20-grp-single-stage-kapila/GrpHalfStepInterface1D'
+import { KapilaVolumeFractionBound } from '@/components/post-viz/2026-06-20-grp-single-stage-kapila/KapilaVolumeFractionBound'
+
+We were taught that second-order accuracy means cycling through several Runge-Kutta stages. This paper gets there in a single stage. The trick is a GRP (Generalized Riemann Problem) solver that returns not just the interface value but its time derivative too. Here we confirm on a scalar problem why GRP is second-order in one shot, then reproduce in code how that time derivative tames the stiff source term of the Kapila multiphase model.
+
+**Paper**: Tuowei Chen, Zhifang Du, *Generalized Riemann Problem Method for the Kapila Model of Compressible Multiphase Flows*, arXiv:2310.08241 (2023).
+
+## Second-order in one stage — the problem GRP solves
+
+A finite-volume step is decided by the interface flux $\mathbf{F}_{i+1/2}$. The Godunov method solves a Riemann problem at the interface and gets one value. That value is constant in time. So to reach second-order in time you repeat the same spatial operator several times, Runge-Kutta style.
+
+GRP changes the premise. It evaluates the flux at the half time level $t^{n+1/2}$.
+
+$$
+\mathbf{U}(\mathbf{x}_{i+1/2}, t^{n+1/2}) = \mathbf{U}^{n,*}_{i+1/2} + \frac{\Delta t}{2}\left(\frac{\partial \mathbf{U}}{\partial t}\right)^{n,*}_{i+1/2}
+$$
+
+Here $\mathbf{U}^{n,*}$ is the Riemann solution (interface value) and $(\partial \mathbf{U}/\partial t)^{n,*}$ is the instantaneous time derivative at that interface. Combining the two through a Taylor expansion pushes the interface value $\Delta t/2$ into the future. A single evaluation, second-order in time.
+
+## From piecewise-constant to piecewise-linear — Riemann vs GRP
+
+A Riemann problem has **piecewise-constant** data on either side of the interface. A GRP problem has **piecewise-linear** data (piecewise smooth). Waves emanating from the initial discontinuity no longer travel along straight lines, and the solver returns the time derivative alongside the Riemann solution.
+
+Let's build intuition on scalar advection $u_t + a u_x = 0$. With cell slope $\sigma_i$, the Riemann solution at the interface for $a>0$ is the value extrapolated from the left cell.
+
+$$
+U^{*}_{i+1/2} = u_i + \sigma_i \frac{\Delta x}{2}
+$$
+
+Here $u_i$ is the cell average, $\sigma_i$ the in-cell slope, and $\Delta x$ the cell width. Try manipulating it in the simulation below.
+
+<GrpHalfStepInterface1D />
+
+Turn off the `GRP` checkbox and you get Godunov: the interface value (cyan dot) sits frozen as time passes. Turn it back on and the interface value flows along the characteristic (amber dot); the value fed to the flux is the one at $\Delta t/2$ (amber ring). Set the slope $u_x$ to zero and GRP reduces exactly to Godunov.
+
+## The Lax-Wendroff procedure — turning a time derivative into a spatial one
+
+How do we get that time derivative? The answer lives inside the governing equation itself. That is the heart of the Lax-Wendroff procedure.
+
+$$
+\frac{\partial u}{\partial t} = -a \frac{\partial u}{\partial x} = -a\,\sigma_i
+$$
+
+The time derivative on the left becomes the spatial derivative on the right. We already know the spatial slope $\sigma_i$ from the reconstruction. So the half-step interface value is
+
+$$
+U^{n+1/2}_{i+1/2} = U^{*}_{i+1/2} - a\,\sigma_i \frac{\Delta t}{2}
+$$
+
+and the flux is $F = a\,U^{n+1/2}$. For a system (Euler, Kapila) this generalizes to $\partial u/\partial t = -A\,\partial u/\partial x$ with the Jacobian $A$. The paper uses this procedure to linearize the acoustic waves and solve the GRP approximately.
+
+## Python — measuring the convergence order of a scalar GRP solver
+
+We advect a smooth initial condition $u_0=\sin(2\pi x)$ over one period and compare the $L_1$-error convergence order of Godunov and GRP. The toy problem is linear advection on a periodic domain.
+
+```python
+import numpy as np
+
+# 1D linear advection  u_t + a u_x = 0,  periodic domain [0,1]
+# First-order Godunov vs single-stage second-order GRP (Lax-Wendroff)
+
+def cell_gradient(u, dx):
+    # central (unlimited) slope so the smooth-solution order is clean
+    return (np.roll(u, -1) - np.roll(u, 1)) / (2.0 * dx)
+
+def godunov_step(u, a, dx, dt):
+    # piecewise constant: upwind interface value (a > 0)
+    flux = a * u                       # F_{i+1/2} = a u_i
+    return u - dt / dx * (flux - np.roll(flux, 1))
+
+def grp_step(u, a, dx, dt):
+    g = cell_gradient(u, dx)           # spatial slope sigma_i
+    u_star = u + g * dx / 2.0          # interface Riemann solution U*
+    u_half = u_star - a * g * dt / 2.0 # Lax-Wendroff half-step U^{n+1/2}
+    flux = a * u_half                  # F_{i+1/2}^{n+1/2}
+    return u - dt / dx * (flux - np.roll(flux, 1))
+
+def l1_error(num, exact, dx):
+    return np.sum(np.abs(num - exact)) * dx
+
+def convergence_study(a=1.0, cfl=0.4, t_end=1.0):
+    print(f"{'N':>5} {'Godunov':>16} {'GRP':>16}")
+    prev = {}
+    for N in [40, 80, 160, 320]:
+        dx = 1.0 / N
+        x = (np.arange(N) + 0.5) * dx
+        u0 = np.sin(2 * np.pi * x)     # smooth initial condition
+        dt = cfl * dx / abs(a)
+        nsteps = int(round(t_end / dt))
+        dt = t_end / nsteps            # land exactly on t_end
+        ug = u0.copy(); ur = u0.copy()
+        for _ in range(nsteps):
+            ug = godunov_step(ug, a, dx, dt)
+            ur = grp_step(ur, a, dx, dt)
+        exact = np.sin(2 * np.pi * (x - a * t_end))
+        eg = l1_error(ug, exact, dx)
+        er = l1_error(ur, exact, dx)
+        og = f"{np.log2(prev['g']/eg):.2f}" if 'g' in prev else "  - "
+        orr = f"{np.log2(prev['r']/er):.2f}" if 'r' in prev else "  - "
+        print(f"{N:>5} {eg:.2e}({og}) {er:.2e}({orr})")
+        prev = {'g': eg, 'r': er}
+
+convergence_study()
+```
+
+The output is:
+
+```text
+    N          Godunov              GRP
+   40 1.63e-01(  - ) 1.31e-03(  - )
+   80 8.76e-02(0.90) 2.69e-04(2.28)
+  160 4.54e-02(0.95) 6.32e-05(2.09)
+  320 2.31e-02(0.97) 1.55e-05(2.03)
+```
+
+Godunov hovers at first order (0.9–0.97) while GRP converges near 2.0. We added no extra stage — only the slope and the time derivative. On the same grid the error is a hundred times smaller.
+
+## The stiff volume-fraction source of the Kapila model
+
+Now the main act. The volume-fraction equation of the Kapila five-equation model (a reduction of the BN seven-equation model) carries a stiff source term.
+
+$$
+\frac{\partial \alpha_1}{\partial t} + \mathbf{u}\cdot\nabla\alpha_1 = \alpha_1 K\,\nabla\cdot\mathbf{u}
+$$
+
+Here $\alpha_1$ is the volume fraction of phase 1 and $K$ is the compaction/expansion coefficient coming from the Wood sound speed. The trouble is that this source can push $\alpha_1$ outside $[0,1]$. An explicit integration blows past the bound and diverges once the stiffness grows.
+
+This is where the GRP time derivative shines. Because we know the interface value at the new time level $t^{n+1}$, the Gauss-Green formula lets us estimate the cell average of $\nabla\cdot\mathbf{u}$ at that new time. We can then integrate the source with Crank-Nicolson (semi-implicit) and even set a time-step restriction that preserves the volume-fraction bound. Let's compare the relaxation with a simple model.
+
+<KapilaVolumeFractionBound />
+
+Push $\lambda\Delta t$ (stiffness × time step) above 1.6 and explicit Euler (red) breaks through the $[0,1]$ band and oscillates. Under the same condition Crank-Nicolson (cyan) stays inside the band. Crank the stiffness to 3 and cyan still converges monotonically to equilibrium. That is the paper's "volume-fraction bound preservation for any $\Delta t$."
+
+## What felt shaky while reproducing it
+
+The scalar GRP came out cleanly second-order, but the real Kapila system is not so gentle. First, an unlimited central slope oscillates at shocks. Second order appeared because the test was smooth; at discontinuities a limiter like minmod is mandatory, and then the order drops locally to first.
+
+Second, the Wood sound speed is non-monotone in the volume fraction. That is the source of Mach-number oscillations in the numerical diffusion zone of an interface. The GRP time derivative captures compaction and expansion well, but it does not remove that non-monotonicity itself. The paper, too, sidesteps it through robustness rather than confronting it head-on.
+
+Third, production codes (OpenFOAM and friends) are mostly built on Strang splitting plus Runge-Kutta, so a single-stage GRP is hard to drop in. To enjoy the GRP advantage you have to rewrite the flux function itself in Lax-Wendroff form. The porting cost is not small.
+
+## What to read next
+
+The home of GRP is Ben-Artzi & Falcovitz's gas-dynamics GRP. To see where this paper's linearized acoustic approximation comes from, that is the place to trace back to. On the multiphase side, Saurel's relaxation-projection method (this blog's 2026-05-09 post) solves the same stiffness a different way. Place the two side by side and the design fork sharpens: split the source off, or dissolve it into the flux?
+
+The point is one thing. If you compute the time derivative alongside the value at the interface, second-order time accuracy and a stiff source can both be handled in a single evaluation.

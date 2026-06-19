@@ -1,0 +1,154 @@
+---
+title: "[논문리뷰] 단 한 스테이지로 2차 정확도 — Kapila 다상류를 위한 GRP 솔버"
+date: 2026-06-20
+description: "GRP 솔버로 시간 2차 정확도와 뻣뻣한 부피분율 소스를 한 번에 잡는 법"
+tags: ["GRP", "Generalized-Riemann-Problem", "Lax-Wendroff", "Multiphase", "Kapila-Model", "논문리뷰"]
+draft: false
+---
+
+import { GrpHalfStepInterface1D } from '@/components/post-viz/2026-06-20-grp-single-stage-kapila/GrpHalfStepInterface1D'
+import { KapilaVolumeFractionBound } from '@/components/post-viz/2026-06-20-grp-single-stage-kapila/KapilaVolumeFractionBound'
+
+2차 정확도를 원하면 Runge-Kutta를 여러 단계 돌려야 한다고 배웠다. 이 논문은 단 한 스테이지로 그걸 해낸다. 비결은 계면에서 값뿐 아니라 그 값의 시간 미분까지 같이 구하는 GRP(Generalized Riemann Problem) 솔버다. 이 글에서는 GRP가 왜 한 번에 2차인지 스칼라 문제로 직접 확인하고, 그 시간 미분이 Kapila 다상류 모델의 뻣뻣한 소스항을 어떻게 길들이는지 코드로 재현한다.
+
+**논문**: Tuowei Chen, Zhifang Du, *Generalized Riemann Problem Method for the Kapila Model of Compressible Multiphase Flows*, arXiv:2310.08241 (2023).
+
+## 한 스테이지로 2차 — GRP가 푸는 문제
+
+유한체적법의 1스텝은 계면 플럭스 $\mathbf{F}_{i+1/2}$로 결정된다. Godunov 방법은 계면에서 Riemann 문제를 풀어 값 하나를 얻는다. 그 값은 시간에 대해 상수다. 그래서 시간 2차를 얻으려면 Runge-Kutta처럼 같은 공간 연산을 여러 번 반복해야 한다.
+
+GRP는 발상을 바꾼다. 플럭스를 시간의 중간점 $t^{n+1/2}$에서 평가한다.
+
+$$
+\mathbf{U}(\mathbf{x}_{i+1/2}, t^{n+1/2}) = \mathbf{U}^{n,*}_{i+1/2} + \frac{\Delta t}{2}\left(\frac{\partial \mathbf{U}}{\partial t}\right)^{n,*}_{i+1/2}
+$$
+
+여기서 $\mathbf{U}^{n,*}$는 Riemann 해(계면 값), $(\partial \mathbf{U}/\partial t)^{n,*}$는 그 계면에서의 순간 시간 미분이다. 두 항을 Taylor 전개로 합치면 계면 값이 $\Delta t/2$만큼 미래로 점프한다. 단 한 번의 평가로 시간 2차가 된다.
+
+## 조각상수에서 조각선형으로 — Riemann과 GRP의 차이
+
+Riemann 문제는 계면 양쪽이 **조각상수**다. GRP 문제는 양쪽이 **조각선형**이다(piecewise smooth). 초기 불연속에서 뻗는 파동은 더 이상 직선이 아니고, 솔버는 Riemann 해와 함께 시간 미분을 돌려준다.
+
+스칼라 이류 $u_t + a u_x = 0$로 감을 잡아보자. 셀 $i$의 기울기를 $\sigma_i$라 하면, $a>0$일 때 계면의 Riemann 해는 왼쪽 셀에서 외삽한 값이다.
+
+$$
+U^{*}_{i+1/2} = u_i + \sigma_i \frac{\Delta x}{2}
+$$
+
+여기서 $u_i$는 셀 평균, $\sigma_i$는 셀 내 기울기, $\Delta x$는 셀 크기다. 아래 시뮬레이션에서 직접 조작해보자.
+
+<GrpHalfStepInterface1D />
+
+`GRP` 체크를 끄면 Godunov가 된다. 계면 값(시안 점)이 시간이 흘러도 꼼짝하지 않는다. 다시 켜면 특성선(주황 점)을 따라 계면 값이 흐르고, 플럭스에 쓰이는 값은 $\Delta t/2$ 지점(주황 원)이다. 기울기 $u_x$를 0으로 두면 GRP가 Godunov로 정확히 환원된다.
+
+## Lax-Wendroff 절차 — 시간 미분을 공간 변화로
+
+시간 미분을 어떻게 구할까. 정답은 지배방정식 자신에 있다. 이게 Lax-Wendroff 절차의 핵심이다.
+
+$$
+\frac{\partial u}{\partial t} = -a \frac{\partial u}{\partial x} = -a\,\sigma_i
+$$
+
+좌변의 시간 미분을 우변의 공간 미분으로 바꾼다. 공간 기울기 $\sigma_i$는 이미 재구성에서 알고 있다. 그래서 반스텝 계면 값은
+
+$$
+U^{n+1/2}_{i+1/2} = U^{*}_{i+1/2} - a\,\sigma_i \frac{\Delta t}{2}
+$$
+
+가 되고, 플럭스는 $F = a\,U^{n+1/2}$다. 시스템(Euler·Kapila)에서는 $\partial u/\partial t = -A\,\partial u/\partial x$로 일반화되며 $A$는 자코비안이다. 논문은 이 절차로 음향파를 선형화해 GRP를 근사적으로 푼다.
+
+## Python — GRP 스칼라 솔버로 수렴 차수를 잰다
+
+매끄러운 초기조건 $u_0=\sin(2\pi x)$를 한 주기 이류시켜 Godunov와 GRP의 $L_1$ 오차 수렴 차수를 비교한다. 토이 문제는 주기 영역의 선형 이류다.
+
+```python
+import numpy as np
+
+# 1D 선형 이류  u_t + a u_x = 0,  주기 영역 [0,1]
+# 1차 Godunov vs 단일 스테이지 2차 GRP(Lax-Wendroff) 비교
+
+def cell_gradient(u, dx):
+    # 매끄러운 해의 차수 측정을 위해 중심(무제한) 기울기 사용
+    return (np.roll(u, -1) - np.roll(u, 1)) / (2.0 * dx)
+
+def godunov_step(u, a, dx, dt):
+    # 조각상수: 업윈드 계면 값 (a > 0)
+    flux = a * u                       # F_{i+1/2} = a u_i
+    return u - dt / dx * (flux - np.roll(flux, 1))
+
+def grp_step(u, a, dx, dt):
+    g = cell_gradient(u, dx)           # 공간 기울기 sigma_i
+    u_star = u + g * dx / 2.0          # 계면 Riemann 해 U*
+    u_half = u_star - a * g * dt / 2.0 # Lax-Wendroff 반스텝 U^{n+1/2}
+    flux = a * u_half                  # F_{i+1/2}^{n+1/2}
+    return u - dt / dx * (flux - np.roll(flux, 1))
+
+def l1_error(num, exact, dx):
+    return np.sum(np.abs(num - exact)) * dx
+
+def convergence_study(a=1.0, cfl=0.4, t_end=1.0):
+    print(f"{'N':>5} {'Godunov':>16} {'GRP':>16}")
+    prev = {}
+    for N in [40, 80, 160, 320]:
+        dx = 1.0 / N
+        x = (np.arange(N) + 0.5) * dx
+        u0 = np.sin(2 * np.pi * x)     # 매끄러운 초기조건
+        dt = cfl * dx / abs(a)
+        nsteps = int(round(t_end / dt))
+        dt = t_end / nsteps            # t_end에 정확히 도달
+        ug = u0.copy(); ur = u0.copy()
+        for _ in range(nsteps):
+            ug = godunov_step(ug, a, dx, dt)
+            ur = grp_step(ur, a, dx, dt)
+        exact = np.sin(2 * np.pi * (x - a * t_end))
+        eg = l1_error(ug, exact, dx)
+        er = l1_error(ur, exact, dx)
+        og = f"{np.log2(prev['g']/eg):.2f}" if 'g' in prev else "  - "
+        orr = f"{np.log2(prev['r']/er):.2f}" if 'r' in prev else "  - "
+        print(f"{N:>5} {eg:.2e}({og}) {er:.2e}({orr})")
+        prev = {'g': eg, 'r': er}
+
+convergence_study()
+```
+
+출력은 다음과 같다.
+
+```text
+    N          Godunov              GRP
+   40 1.63e-01(  - ) 1.31e-03(  - )
+   80 8.76e-02(0.90) 2.69e-04(2.28)
+  160 4.54e-02(0.95) 6.32e-05(2.09)
+  320 2.31e-02(0.97) 1.55e-05(2.03)
+```
+
+Godunov는 1차(0.9~0.97)에 머물지만 GRP는 2.0 근처로 수렴한다. 단계를 하나도 추가하지 않고, 기울기와 시간 미분만 더 넣었을 뿐이다. 같은 격자에서 오차가 100배 작다.
+
+## Kapila 모델의 뻣뻣한 부피분율 소스
+
+이제 본론. Kapila 5방정식 모델(BN 7방정식의 축소형)의 부피분율 방정식에는 뻣뻣한 소스항이 붙는다.
+
+$$
+\frac{\partial \alpha_1}{\partial t} + \mathbf{u}\cdot\nabla\alpha_1 = \alpha_1 K\,\nabla\cdot\mathbf{u}
+$$
+
+여기서 $\alpha_1$은 1상의 부피분율, $K$는 Wood 음속에서 나오는 압축/팽창 계수다. 문제는 이 소스가 $\alpha_1$을 $[0,1]$ 밖으로 밀어낼 수 있다는 것. 명시적(explicit) 적분은 강성(stiffness)이 커지면 경계를 넘어 발산한다.
+
+GRP의 시간 미분이 여기서 빛난다. 계면 값을 새 시간층 $t^{n+1}$에서 알 수 있으므로 Gauss-Green으로 $\nabla\cdot\mathbf{u}$의 셀 평균을 새 시간에 추정할 수 있다. 그러면 소스항을 Crank-Nicolson(반음함수)으로 적분하고, 부피분율 경계 보존을 위한 시간 스텝 제한까지 세울 수 있다. 강성 완화를 단순 모델로 비교해보자.
+
+<KapilaVolumeFractionBound />
+
+$\lambda\Delta t$(강성×시간스텝)를 1.6 이상으로 올리면 명시적 Euler(빨강)가 $[0,1]$ 밴드를 뚫고 진동한다. 같은 조건에서 Crank-Nicolson(시안)은 항상 밴드 안에 머문다. $\lambda\Delta t$를 3까지 올려도 시안은 단조롭게 평형으로 수렴한다. 이게 논문이 말하는 "어떤 $\Delta t$에서도 부피분율 경계 보존"이다.
+
+## 재현하며 의심스러웠던 것
+
+스칼라 GRP는 깔끔하게 2차가 나왔지만, 실제 Kapila 시스템은 그렇게 순하지 않다. 첫째, 무제한 중심 기울기는 충격파에서 진동한다. 매끄러운 테스트라 2차가 나온 것이고, 불연속에서는 minmod 같은 제한자가 필수다. 그러면 차수는 국소적으로 1차로 떨어진다.
+
+둘째, Wood 음속은 부피분율에 비단조적이다. 계면의 수치 확산대에서 마하수가 진동하는 원인이다. GRP의 시간 미분이 압축/팽창을 잘 잡아주지만, 이 비단조성 자체를 없애지는 못한다. 논문도 이 부분은 정면으로 풀기보다 강건성으로 우회한다.
+
+셋째, 실무 코드(OpenFOAM 등)는 대부분 Strang 분할 + Runge-Kutta 구조라 단일 스테이지 GRP를 그대로 이식하기 어렵다. GRP의 이점을 살리려면 플럭스 함수 자체를 Lax-Wendroff형으로 다시 짜야 한다. 이식 비용이 만만치 않다.
+
+## 다음에 읽을 논문
+
+GRP의 본가는 Ben-Artzi & Falcovitz의 가스동역학 GRP다. 이 논문의 선형화 음향 근사가 어디서 왔는지 보려면 거기로 거슬러 올라가는 게 좋다. 다상 쪽으로는 Saurel의 완화-투영 기법(이 블로그의 2026-05-09 글)이 같은 뻣뻣함을 다른 방식으로 푼다. 둘을 나란히 두면 "소스를 분리할 것인가, 플럭스에 녹일 것인가"라는 설계 분기가 선명해진다.
+
+핵심은 하나다. 계면에서 값과 함께 시간 미분을 구하면, 시간 2차도 뻣뻣한 소스도 한 번의 평가로 함께 해결할 수 있다.
