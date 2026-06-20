@@ -1,0 +1,155 @@
+---
+title: "[論文レビュー] 低マッハで音を殺さない方法 — AP-IMEX波動スキーム"
+date: 2026-06-21
+description: "低マッハ極限で風上粘性が解を消す理由と、AP-IMEXによる処方"
+tags: ["CFD", "논문리뷰", "저마하", "점근보존", "IMEX"]
+draft: false
+---
+
+import { LowMachWaveDecay1D } from '@/components/post-viz/2026-06-21-asymptotic-preserving-low-mach-wave/LowMachWaveDecay1D'
+import { NumericalDiffusionScaling } from '@/components/post-viz/2026-06-21-asymptotic-preserving-low-mach-wave/NumericalDiffusionScaling'
+
+低マッハ（low Mach）流れを圧縮性コードで解くと、音速が速くなるほど解が鮮明になりそうに思えます。実際は逆です。マッハ数が小さくなるほど、標準的な風上（upwind）スキームは健全な波を格子から消し去ります。本稿では Arun・Das Gupta・Samantaray（2019）に従い、線形波動方程式系をモデルとしてこの崩壊の原因を診断し、IMEX-RK時間積分によってマッハ数に依存せず安定な漸近保存（AP）スキームを構築する流れを追います。読み終える頃には「なぜ音響演算子を陰的に解かねば低マッハで正確なのか」をコードで直接確かめられます。
+
+## ε が 0 に近づくと格子が波を食べる
+
+スケールを整えた等エントロピーEuler方程式には、小さなパラメータが一つ埋め込まれています。マッハ数 $\varepsilon$ です。圧力項は運動量方程式に $\nabla p / \varepsilon^2$ として入ります。
+
+$$
+\partial_t \rho + \nabla\cdot(\rho \mathbf{u}) = 0, \qquad
+\partial_t (\rho\mathbf{u}) + \nabla\cdot(\rho\mathbf{u}\otimes\mathbf{u}) + \frac{\nabla p}{\varepsilon^2} = 0
+$$
+
+ここで $\rho$ は密度、$\mathbf{u}$ は速度、$p=\rho^\gamma$ は圧力、$\varepsilon$ は基準速度と基準音速の比（マッハ数）です。
+
+$\varepsilon \to 0$ で解は非圧縮極限へ収束します。数学的には特異摂動（singular perturbation）問題です。解析を簡単にするため、著者らは線形波動方程式系を用います。
+
+$$
+\partial_t \varrho + (\mathbf{u}\cdot\nabla)\varrho + \frac{a}{\varepsilon}\nabla\cdot\mathbf{u} = 0, \qquad
+\partial_t \mathbf{u} + (\mathbf{u}\cdot\nabla)\mathbf{u} + \frac{a}{\varepsilon}\nabla\varrho = 0
+$$
+
+ここで $\varrho$ は線形化された密度摂動、$a$ は線形化状態の音速です。実効音速は $c = a/\varepsilon$ です。マッハ数が小さくなると、この音響速度が爆発します。
+
+## well-prepared 空間 — 生き残るべき解
+
+極限 $\varepsilon\to 0$ で解はどこへでも漂うわけではありません。「準備の整った（well-prepared）」空間へ収束します。密度が一定で速度の発散がゼロの場の集合です。
+
+$$
+\varrho^{(0)} = \text{const}, \qquad \nabla\cdot\mathbf{u}^{(0)} = 0
+$$
+
+この空間は音響演算子 $L(U)=(a\nabla\cdot\mathbf{u},\,a\nabla\varrho)$ の核（kernel）です。良いスキームなら離散解も同じ空間へ収束すべきです。Dellacherie（2010）は、この不変性を破るスキームが低マッハで精度を失うことを示しました。核を保てば漸近精度（AA）、安定制約が $\varepsilon$ に依存しなければ漸近保存（AP）です。
+
+## 風上粘性は音速に比例して大きくなる
+
+問題の正体は風上スキームの数値粘性です。波動系を特性変数で対角化すると、速度 $\pm c$ で流れる二つのスカラー移流に分かれます。各モードに風上（Rusanov）スキームを適用すると、1ステップあたりの増幅係数が得られます。
+
+$$
+|g|^2 = \big(1 - \nu(1-\cos\theta)\big)^2 + \nu^2\sin^2\theta, \qquad \nu = \frac{c\,\Delta t}{\Delta x},\ \ \theta = k\Delta x
+$$
+
+ここで $\nu$ は音響CFL数、$\theta$ はセルあたりの位相、$k$ は波数です。
+
+鍵は累積です。固定された物理時間 $T$ に到達するには $M = T/\Delta t = T c /(\nu\Delta x)$ の音響ステップが必要です。小さな $\theta$ では1ステップの減衰が $\tfrac{1}{2}\nu(1-\nu)\theta^2$ で、$M$ 回積み重ねると対数減衰はこうなります。
+
+$$
+M\cdot\tfrac{1}{2}\nu(1-\nu)\theta^2 \;=\; \tfrac{1}{2}\,T\,c\,(1-\nu)\,k^2\Delta x \;\propto\; c \;\propto\; \frac{1}{\varepsilon}
+$$
+
+マッハ数が一桁小さくなるたびに、実効粘性が一桁大きくなります。下のグラフで自分で動かしてみましょう。
+
+<NumericalDiffusionScaling />
+
+$\varepsilon$ を左へ動かすと風上曲線（赤）は傾き $-1$ で跳ね上がり、AP曲線（シアン）は平らなままです。$\varepsilon=10^{-3}$ で両者の比は数百倍に開きます。これが低マッハ精度崩壊の定量的な姿です。
+
+## 演算子分割 — 対流は陽的に、音響は陰的に
+
+処方の出発点は、方程式を時間スケールで分けることです。発展形に書き直すと二つの演算子が見えます。
+
+$$
+\partial_t U + H(U) + \frac{1}{\varepsilon}L(U) = 0
+$$
+
+ここで $H$ は時間スケール $O(1)$ の対流演算子、$L/\varepsilon$ は時間スケール $O(\varepsilon)$ の音響演算子です。硬さ（stiffness）はすべて $L/\varepsilon$ から来ます。ならばこの部分だけ陰的に解けばよいのです。対流は高くつかないので陽的に残します。この陽-陰の混合がIMEX（Implicit-Explicit）です。
+
+音響を陰的に扱えば中心差分でも安定です。風上粘性が消えます。時間刻みは速い音響ではなく遅い対流スケールが決めます。$\varepsilon$ が小さくても $\Delta t$ を縮める必要はありません。
+
+## IMEX-RK が硬さを受け止める
+
+著者らは時間積分にIMEXルンゲ・クッタ（IMEX-RK）を用います。陽的表 $(\tilde A,\tilde b)$ が $H$ を、陰的表 $(A,b)$ が $L/\varepsilon$ を担当します。各ステージで音響部分が密度に対する楕円型方程式（圧力ポアソンに似た形）へ凝縮されます。
+
+$$
+\varrho - \beta^2 \Delta t^2\, a^2 \nabla^2 \varrho = (\text{陽的な項})
+$$
+
+ここで $\beta$ はIMEX表の対角係数、$\nabla^2$ はラプラシアンです。この楕円型問題の可逆性は変分の鞍点（saddle point）理論で保証されます。離散段階では循環行列（circulant matrix）の理論で同じ結果が得られます。結果は三つです。一意解の存在、$\varepsilon$ に依存しない一様安定性、そして well-prepared 空間の不変性です。
+
+## Python — 1モードの振幅減衰を再現する
+
+以下のコードは単一フーリエモードの風上増幅係数を計算し、固定物理時間 $T$ の後に残る振幅をマッハ数ごとに出力します。陰的スキームはモードを保存するので振幅は1に留まります。
+
+```python
+import numpy as np
+
+a  = 1.0        # 線形化音速
+k  = 2 * np.pi  # [0,1] 上の単一フーリエモード
+T  = 1.0        # 固定物理終了時刻
+nu = 0.5        # 音響CFL数
+
+def upwind_amp_factor(eps, N):
+    """波動系Rusanovにおける1特性モードの増幅 |g|。"""
+    c  = a / eps              # 音響速度 c = a/ε
+    dx = 1.0 / N
+    th = k * dx               # セルあたり位相 θ = kΔx
+    re = 1.0 - nu * (1.0 - np.cos(th))
+    im = nu * np.sin(th)
+    return np.hypot(re, im)   # |g| <= 1
+
+def retained_amplitude(eps, N):
+    """物理時間 T 後のモード振幅（風上 vs 陰的）。"""
+    c  = a / eps
+    dx = 1.0 / N
+    dt = nu * dx / c          # 音響CFLステップ
+    M  = T / dt               # 陽的ステップ数
+    explicit = upwind_amp_factor(eps, N) ** M
+    implicit = 1.0            # 中心-陰的はモードを保存
+    return M, explicit, implicit
+
+if __name__ == "__main__":
+    N = 64
+    print(f"{'eps':>8} {'steps M':>10} {'explicit':>12} {'AP':>6}")
+    for eps in [0.4, 0.2, 0.1, 0.05, 0.02, 0.01]:
+        M, ex, ap = retained_amplitude(eps, N)
+        print(f"{eps:8.3f} {M:10.0f} {ex:12.3e} {ap:6.2f}")
+```
+
+出力はこうなります。
+
+```text
+     eps    steps M     explicit     AP
+   0.400        320    6.804e-01   1.00
+   0.200        640    4.629e-01   1.00
+   0.100       1280    2.143e-01   1.00
+   0.050       2560    4.591e-02   1.00
+   0.020       6400    4.430e-04   1.00
+   0.010      12800    1.980e-07   1.00
+```
+
+$\varepsilon$ が10倍小さくなるたびにステップ数が2倍になり、風上振幅は指数的にゼロへ落ちます。$\varepsilon=0.01$ ではモードが実質的に消えます。同じ格子で陰的スキームは100%を守ります。
+
+下のシミュレーションで直接操作してみましょう。Mach $\varepsilon$ スライダーを下げると、赤い曲線（風上）が物理時間が流れる前に床まで沈みます。
+
+<LowMachWaveDecay1D />
+
+CFL $\nu$ を1に近づけると $\nu(1-\nu)$ が小さくなり、減衰が一瞬和らぎます。しかし $\varepsilon$ をさらに下げれば、その利得はやがて $1/\varepsilon$ の累積に埋もれます。格子 $N$ を大きくしても $\theta^2\propto N^{-2}$ と $\Delta x \propto N^{-1}$ が部分的にしか相殺せず、根本問題は残ります。
+
+## 漸近保存（AP）と漸近精度（AA）
+
+二つの性質は混同しやすいです。APは「離散スキームの $\varepsilon\to 0$ 極限が極限方程式の正しい離散化になるか」を問い、安定制約が $\varepsilon$ に依存しないことを求めます。AAはさらに一歩進みます。有限の格子で、小さいがゼロでない $\varepsilon$ に対し、解が well-prepared 空間の近くに留まるかを見ます。風上スキームは両方とも失敗します。IMEX-陰的スキームは両方を満たします。決め手は時間離散化の選択であり、空間差分の精度ではありません。
+
+## 覚えておく3行
+
+- 低マッハで風上粘性は音速 $c=a/\varepsilon$ に比例して $1/\varepsilon$ で大きくなり、固定物理時間に累積して波を消します。
+- well-prepared 空間（一定密度・発散ゼロ速度）を保つかどうかが精度の分かれ目で、それを左右するのは時間離散化です。
+- 音響演算子 $L/\varepsilon$ だけをIMEXで陰的に扱えば $\Delta t$ が対流スケールへ解放され、マッハ数に依存せず安定・正確になります（AP＋AA）。

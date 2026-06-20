@@ -1,0 +1,155 @@
+---
+title: "[Paper Review] Not Killing Sound at Low Mach — An AP IMEX Wave Scheme"
+date: 2026-06-21
+description: "Why upwind viscosity erases the solution at low Mach, and the AP-IMEX cure"
+tags: ["CFD", "논문리뷰", "저마하", "점근보존", "IMEX"]
+draft: false
+---
+
+import { LowMachWaveDecay1D } from '@/components/post-viz/2026-06-21-asymptotic-preserving-low-mach-wave/LowMachWaveDecay1D'
+import { NumericalDiffusionScaling } from '@/components/post-viz/2026-06-21-asymptotic-preserving-low-mach-wave/NumericalDiffusionScaling'
+
+Solve a low-Mach flow with a compressible code and you'd expect a faster sound speed to sharpen the answer. The opposite happens. The smaller the Mach number, the more a standard upwind scheme erases a perfectly good wave from the grid. This post follows Arun, Das Gupta, and Samantaray (2019), who use the linear wave-equation system as a model to diagnose that collapse and build an asymptotic-preserving (AP) scheme — stable independent of the Mach number — through IMEX-RK time integration. By the end you can check in code exactly why the acoustic operator must be solved implicitly to stay accurate at low Mach.
+
+## When ε goes to zero, the grid eats the wave
+
+The scaled isentropic Euler equations carry one small parameter: the Mach number $\varepsilon$. The pressure term enters the momentum equation as $\nabla p / \varepsilon^2$.
+
+$$
+\partial_t \rho + \nabla\cdot(\rho \mathbf{u}) = 0, \qquad
+\partial_t (\rho\mathbf{u}) + \nabla\cdot(\rho\mathbf{u}\otimes\mathbf{u}) + \frac{\nabla p}{\varepsilon^2} = 0
+$$
+
+Here $\rho$ is density, $\mathbf{u}$ is velocity, $p=\rho^\gamma$ is pressure, and $\varepsilon$ is the ratio of reference velocity to reference sound speed (the Mach number).
+
+As $\varepsilon \to 0$ the solution converges to the incompressible limit. Mathematically it is a singular perturbation problem. To simplify the analysis the authors use the linear wave-equation system.
+
+$$
+\partial_t \varrho + (\mathbf{u}\cdot\nabla)\varrho + \frac{a}{\varepsilon}\nabla\cdot\mathbf{u} = 0, \qquad
+\partial_t \mathbf{u} + (\mathbf{u}\cdot\nabla)\mathbf{u} + \frac{a}{\varepsilon}\nabla\varrho = 0
+$$
+
+Here $\varrho$ is the linearized density perturbation and $a$ is the sound speed of the linearization state. The effective sound speed is $c = a/\varepsilon$. Shrink the Mach number and that acoustic speed blows up.
+
+## The well-prepared space — the solutions that must survive
+
+In the limit $\varepsilon\to 0$ the solution does not drift anywhere. It converges to the "well-prepared" space: fields with constant density and divergence-free velocity.
+
+$$
+\varrho^{(0)} = \text{const}, \qquad \nabla\cdot\mathbf{u}^{(0)} = 0
+$$
+
+This space is the kernel of the acoustic operator $L(U)=(a\nabla\cdot\mathbf{u},\,a\nabla\varrho)$. A good scheme should send its discrete solution to the same space. Dellacherie (2010) showed that schemes breaking this invariance lose accuracy at low Mach. Preserve the kernel and you are asymptotically accurate (AA); keep the stability limit independent of $\varepsilon$ and you are asymptotic preserving (AP).
+
+## Upwind viscosity grows in proportion to the sound speed
+
+The culprit is the numerical viscosity of the upwind scheme. Diagonalize the wave system into characteristic variables and it splits into two scalar advections traveling at speeds $\pm c$. Apply an upwind (Rusanov) scheme to each mode and you get a per-step amplification factor.
+
+$$
+|g|^2 = \big(1 - \nu(1-\cos\theta)\big)^2 + \nu^2\sin^2\theta, \qquad \nu = \frac{c\,\Delta t}{\Delta x},\ \ \theta = k\Delta x
+$$
+
+Here $\nu$ is the acoustic CFL number, $\theta$ is the phase per cell, and $k$ is the wavenumber.
+
+The key is accumulation. Reaching a fixed physical time $T$ takes $M = T/\Delta t = T c /(\nu\Delta x)$ acoustic steps. For small $\theta$ the decay per step is $\tfrac{1}{2}\nu(1-\nu)\theta^2$, and stacking $M$ of them gives a log-decay of:
+
+$$
+M\cdot\tfrac{1}{2}\nu(1-\nu)\theta^2 \;=\; \tfrac{1}{2}\,T\,c\,(1-\nu)\,k^2\Delta x \;\propto\; c \;\propto\; \frac{1}{\varepsilon}
+$$
+
+Every decade you drop the Mach number, the effective viscosity climbs a decade. Drag it yourself below.
+
+<NumericalDiffusionScaling />
+
+Slide $\varepsilon$ to the left and the upwind curve (red) shoots up with slope $-1$ while the AP curve (cyan) stays flat. At $\varepsilon=10^{-3}$ the ratio spreads to hundreds. This is the quantitative face of the low-Mach accuracy collapse.
+
+## Operator splitting — convection explicit, acoustics implicit
+
+The cure starts by splitting the equations by time scale. Rewrite them in evolution form and two operators appear.
+
+$$
+\partial_t U + H(U) + \frac{1}{\varepsilon}L(U) = 0
+$$
+
+Here $H$ is the convective operator with time scale $O(1)$, and $L/\varepsilon$ is the acoustic operator with time scale $O(\varepsilon)$. All the stiffness lives in $L/\varepsilon$. So solve only that part implicitly. Convection is cheap, so keep it explicit. This explicit-implicit mixture is IMEX (Implicit-Explicit).
+
+Treat the acoustics implicitly and central differencing becomes stable. The upwind viscosity disappears. The time step is set by the slow convective scale, not the fast acoustics. Even with small $\varepsilon$ you never have to shrink $\Delta t$.
+
+## IMEX-RK absorbs the stiffness
+
+The authors integrate in time with an IMEX Runge-Kutta (IMEX-RK) method. The explicit tableau $(\tilde A,\tilde b)$ handles $H$, the implicit tableau $(A,b)$ handles $L/\varepsilon$. At each stage the acoustic part condenses into an elliptic equation for the density (a pressure-Poisson lookalike).
+
+$$
+\varrho - \beta^2 \Delta t^2\, a^2 \nabla^2 \varrho = (\text{explicit terms})
+$$
+
+Here $\beta$ is the diagonal coefficient of the IMEX tableau and $\nabla^2$ is the Laplacian. Invertibility of this elliptic problem is guaranteed by the saddle-point theory of variational problems. At the discrete level the theory of circulant matrices gives the same result. Three things follow: existence of a unique solution, uniform stability independent of $\varepsilon$, and invariance of the well-prepared space.
+
+## Python — reproducing the amplitude decay of one mode
+
+The code below computes the upwind amplification factor of a single Fourier mode and prints the amplitude left after a fixed physical time $T$, by Mach number. The implicit scheme preserves the mode, so its amplitude stays at 1.
+
+```python
+import numpy as np
+
+a  = 1.0        # linearization sound speed
+k  = 2 * np.pi  # single Fourier mode on [0,1]
+T  = 1.0        # fixed physical end time
+nu = 0.5        # acoustic CFL number
+
+def upwind_amp_factor(eps, N):
+    """|g| of one characteristic mode under Rusanov on the wave system."""
+    c  = a / eps              # acoustic speed c = a/ε
+    dx = 1.0 / N
+    th = k * dx               # phase per cell θ = kΔx
+    re = 1.0 - nu * (1.0 - np.cos(th))
+    im = nu * np.sin(th)
+    return np.hypot(re, im)   # |g| <= 1
+
+def retained_amplitude(eps, N):
+    """Mode amplitude after physical time T (upwind vs implicit)."""
+    c  = a / eps
+    dx = 1.0 / N
+    dt = nu * dx / c          # acoustic CFL step
+    M  = T / dt               # number of explicit steps
+    explicit = upwind_amp_factor(eps, N) ** M
+    implicit = 1.0            # central-implicit preserves the mode
+    return M, explicit, implicit
+
+if __name__ == "__main__":
+    N = 64
+    print(f"{'eps':>8} {'steps M':>10} {'explicit':>12} {'AP':>6}")
+    for eps in [0.4, 0.2, 0.1, 0.05, 0.02, 0.01]:
+        M, ex, ap = retained_amplitude(eps, N)
+        print(f"{eps:8.3f} {M:10.0f} {ex:12.3e} {ap:6.2f}")
+```
+
+The output looks like this.
+
+```text
+     eps    steps M     explicit     AP
+   0.400        320    6.804e-01   1.00
+   0.200        640    4.629e-01   1.00
+   0.100       1280    2.143e-01   1.00
+   0.050       2560    4.591e-02   1.00
+   0.020       6400    4.430e-04   1.00
+   0.010      12800    1.980e-07   1.00
+```
+
+Every time $\varepsilon$ shrinks tenfold the step count doubles, and the upwind amplitude falls exponentially toward zero. At $\varepsilon=0.01$ the mode is essentially gone. On the same grid the implicit scheme keeps 100%.
+
+Try it directly in the simulation below. Drop the Mach $\varepsilon$ slider and the red curve (upwind) hits the floor before physical time has even elapsed.
+
+<LowMachWaveDecay1D />
+
+Push the CFL $\nu$ toward 1 and $\nu(1-\nu)$ shrinks, easing the decay for a moment. But drop $\varepsilon$ further and that gain is soon buried under the $1/\varepsilon$ accumulation. Increasing the grid $N$ helps only partially, because $\theta^2\propto N^{-2}$ and $\Delta x \propto N^{-1}$ cancel only in part — the root problem remains.
+
+## AP versus AA
+
+The two properties are easy to confuse. AP asks whether the $\varepsilon\to 0$ limit of the discrete scheme is a valid discretization of the limit equation, with a stability constraint independent of $\varepsilon$. AA goes one step further: on a finite grid, for small but nonzero $\varepsilon$, does the solution stay near the well-prepared space? The upwind scheme fails both. The IMEX-implicit scheme satisfies both. The deciding factor is the choice of time discretization, not the precision of the spatial differencing.
+
+## Three lines to remember
+
+- At low Mach, upwind viscosity grows as $1/\varepsilon$ in proportion to the sound speed $c=a/\varepsilon$, and accumulated over a fixed physical time it erases the wave.
+- Whether the well-prepared space (constant density, divergence-free velocity) is preserved is the fork in accuracy, and what governs it is the time discretization.
+- Handle only the acoustic operator $L/\varepsilon$ implicitly with IMEX and $\Delta t$ unbinds from the acoustic scale to the convective one, making the scheme stable and accurate independent of the Mach number (AP + AA).

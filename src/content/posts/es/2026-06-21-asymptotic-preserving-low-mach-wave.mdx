@@ -1,0 +1,155 @@
+---
+title: "[Reseña] Cómo no matar el sonido a bajo Mach — esquema IMEX-AP de ondas"
+date: 2026-06-21
+description: "Por qué la viscosidad upwind borra la solución a bajo Mach y la cura AP-IMEX"
+tags: ["CFD", "논문리뷰", "저마하", "점근보존", "IMEX"]
+draft: false
+---
+
+import { LowMachWaveDecay1D } from '@/components/post-viz/2026-06-21-asymptotic-preserving-low-mach-wave/LowMachWaveDecay1D'
+import { NumericalDiffusionScaling } from '@/components/post-viz/2026-06-21-asymptotic-preserving-low-mach-wave/NumericalDiffusionScaling'
+
+Al resolver un flujo a bajo Mach (low Mach) con un código compresible, la intuición dice que una velocidad del sonido mayor afinaría la respuesta. Ocurre lo contrario. Cuanto menor es el número de Mach, más borra un esquema upwind estándar una onda perfectamente buena de la malla. Esta entrada sigue a Arun, Das Gupta y Samantaray (2019), que usan el sistema lineal de la ecuación de ondas como modelo para diagnosticar ese colapso y construir un esquema asintóticamente preservante (AP) —estable con independencia del número de Mach— mediante integración temporal IMEX-RK. Al terminar podrás comprobar en código exactamente por qué el operador acústico debe resolverse de forma implícita para mantener la precisión a bajo Mach.
+
+## Cuando ε tiende a cero, la malla se come la onda
+
+Las ecuaciones de Euler isentrópicas escaladas llevan un parámetro pequeño: el número de Mach $\varepsilon$. El término de presión entra en la ecuación de momento como $\nabla p / \varepsilon^2$.
+
+$$
+\partial_t \rho + \nabla\cdot(\rho \mathbf{u}) = 0, \qquad
+\partial_t (\rho\mathbf{u}) + \nabla\cdot(\rho\mathbf{u}\otimes\mathbf{u}) + \frac{\nabla p}{\varepsilon^2} = 0
+$$
+
+Aquí $\rho$ es la densidad, $\mathbf{u}$ la velocidad, $p=\rho^\gamma$ la presión y $\varepsilon$ la razón entre velocidad de referencia y velocidad del sonido de referencia (el número de Mach).
+
+Cuando $\varepsilon \to 0$ la solución converge al límite incompresible. Matemáticamente es un problema de perturbación singular (singular perturbation). Para simplificar el análisis los autores usan el sistema lineal de la ecuación de ondas.
+
+$$
+\partial_t \varrho + (\mathbf{u}\cdot\nabla)\varrho + \frac{a}{\varepsilon}\nabla\cdot\mathbf{u} = 0, \qquad
+\partial_t \mathbf{u} + (\mathbf{u}\cdot\nabla)\mathbf{u} + \frac{a}{\varepsilon}\nabla\varrho = 0
+$$
+
+Aquí $\varrho$ es la perturbación de densidad linealizada y $a$ la velocidad del sonido del estado de linealización. La velocidad del sonido efectiva es $c = a/\varepsilon$. Al reducir el Mach, esa velocidad acústica explota.
+
+## El espacio well-prepared — las soluciones que deben sobrevivir
+
+En el límite $\varepsilon\to 0$ la solución no deriva a cualquier parte. Converge al espacio "bien preparado" (well-prepared): campos con densidad constante y velocidad de divergencia nula.
+
+$$
+\varrho^{(0)} = \text{const}, \qquad \nabla\cdot\mathbf{u}^{(0)} = 0
+$$
+
+Este espacio es el núcleo (kernel) del operador acústico $L(U)=(a\nabla\cdot\mathbf{u},\,a\nabla\varrho)$. Un buen esquema debería llevar su solución discreta al mismo espacio. Dellacherie (2010) mostró que los esquemas que rompen esta invariancia pierden precisión a bajo Mach. Preservar el núcleo da precisión asintótica (AA); mantener el límite de estabilidad independiente de $\varepsilon$ da preservación asintótica (AP).
+
+## La viscosidad upwind crece en proporción a la velocidad del sonido
+
+El culpable es la viscosidad numérica del esquema upwind. Al diagonalizar el sistema de ondas en variables características, se separa en dos advecciones escalares que viajan a velocidades $\pm c$. Aplicar un esquema upwind (Rusanov) a cada modo da un factor de amplificación por paso.
+
+$$
+|g|^2 = \big(1 - \nu(1-\cos\theta)\big)^2 + \nu^2\sin^2\theta, \qquad \nu = \frac{c\,\Delta t}{\Delta x},\ \ \theta = k\Delta x
+$$
+
+Aquí $\nu$ es el número de CFL acústico, $\theta$ la fase por celda y $k$ el número de onda.
+
+La clave es la acumulación. Alcanzar un tiempo físico fijo $T$ requiere $M = T/\Delta t = T c /(\nu\Delta x)$ pasos acústicos. Para $\theta$ pequeño, el decaimiento por paso es $\tfrac{1}{2}\nu(1-\nu)\theta^2$, y al apilar $M$ de ellos el decaimiento logarítmico queda así.
+
+$$
+M\cdot\tfrac{1}{2}\nu(1-\nu)\theta^2 \;=\; \tfrac{1}{2}\,T\,c\,(1-\nu)\,k^2\Delta x \;\propto\; c \;\propto\; \frac{1}{\varepsilon}
+$$
+
+Por cada década que baja el Mach, la viscosidad efectiva sube una década. Arrástralo tú mismo abajo.
+
+<NumericalDiffusionScaling />
+
+Mueve $\varepsilon$ hacia la izquierda y la curva upwind (rojo) se dispara con pendiente $-1$ mientras la curva AP (cian) permanece plana. En $\varepsilon=10^{-3}$ la razón se abre a cientos. Esta es la cara cuantitativa del colapso de precisión a bajo Mach.
+
+## División de operadores — convección explícita, acústica implícita
+
+La cura empieza por dividir las ecuaciones según la escala temporal. Reescritas en forma de evolución, aparecen dos operadores.
+
+$$
+\partial_t U + H(U) + \frac{1}{\varepsilon}L(U) = 0
+$$
+
+Aquí $H$ es el operador convectivo con escala temporal $O(1)$, y $L/\varepsilon$ el operador acústico con escala temporal $O(\varepsilon)$. Toda la rigidez (stiffness) vive en $L/\varepsilon$. Entonces basta resolver solo esa parte de forma implícita. La convección es barata, así que se deja explícita. Esta mezcla explícito-implícito es IMEX (Implicit-Explicit).
+
+Al tratar la acústica de forma implícita, incluso la diferenciación central se vuelve estable. La viscosidad upwind desaparece. El paso de tiempo lo fija la escala convectiva lenta, no la acústica rápida. Aun con $\varepsilon$ pequeño nunca hace falta reducir $\Delta t$.
+
+## IMEX-RK absorbe la rigidez
+
+Los autores integran en el tiempo con un Runge-Kutta IMEX (IMEX-RK). La tabla explícita $(\tilde A,\tilde b)$ gestiona $H$, y la tabla implícita $(A,b)$ gestiona $L/\varepsilon$. En cada etapa, la parte acústica se condensa en una ecuación elíptica para la densidad (parecida a una Poisson de presión).
+
+$$
+\varrho - \beta^2 \Delta t^2\, a^2 \nabla^2 \varrho = (\text{términos explícitos})
+$$
+
+Aquí $\beta$ es el coeficiente diagonal de la tabla IMEX y $\nabla^2$ el laplaciano. La invertibilidad de este problema elíptico la garantiza la teoría de punto de silla (saddle point) de los problemas variacionales. En el nivel discreto, la teoría de matrices circulantes (circulant matrix) da el mismo resultado. De ahí salen tres cosas: existencia de una solución única, estabilidad uniforme independiente de $\varepsilon$ e invariancia del espacio well-prepared.
+
+## Python — reproducir el decaimiento de amplitud de un modo
+
+El código siguiente calcula el factor de amplificación upwind de un único modo de Fourier e imprime la amplitud que queda tras un tiempo físico fijo $T$, por número de Mach. El esquema implícito preserva el modo, así que su amplitud se mantiene en 1.
+
+```python
+import numpy as np
+
+a  = 1.0        # velocidad del sonido linealizada
+k  = 2 * np.pi  # único modo de Fourier en [0,1]
+T  = 1.0        # tiempo físico final fijo
+nu = 0.5        # número de CFL acústico
+
+def upwind_amp_factor(eps, N):
+    """|g| de un modo característico bajo Rusanov en el sistema de ondas."""
+    c  = a / eps              # velocidad acústica c = a/ε
+    dx = 1.0 / N
+    th = k * dx               # fase por celda θ = kΔx
+    re = 1.0 - nu * (1.0 - np.cos(th))
+    im = nu * np.sin(th)
+    return np.hypot(re, im)   # |g| <= 1
+
+def retained_amplitude(eps, N):
+    """Amplitud del modo tras tiempo físico T (upwind vs implícito)."""
+    c  = a / eps
+    dx = 1.0 / N
+    dt = nu * dx / c          # paso de CFL acústico
+    M  = T / dt               # número de pasos explícitos
+    explicit = upwind_amp_factor(eps, N) ** M
+    implicit = 1.0            # central-implícito preserva el modo
+    return M, explicit, implicit
+
+if __name__ == "__main__":
+    N = 64
+    print(f"{'eps':>8} {'steps M':>10} {'explicit':>12} {'AP':>6}")
+    for eps in [0.4, 0.2, 0.1, 0.05, 0.02, 0.01]:
+        M, ex, ap = retained_amplitude(eps, N)
+        print(f"{eps:8.3f} {M:10.0f} {ex:12.3e} {ap:6.2f}")
+```
+
+La salida se ve así.
+
+```text
+     eps    steps M     explicit     AP
+   0.400        320    6.804e-01   1.00
+   0.200        640    4.629e-01   1.00
+   0.100       1280    2.143e-01   1.00
+   0.050       2560    4.591e-02   1.00
+   0.020       6400    4.430e-04   1.00
+   0.010      12800    1.980e-07   1.00
+```
+
+Cada vez que $\varepsilon$ se reduce diez veces, el número de pasos se duplica y la amplitud upwind cae exponencialmente hacia cero. En $\varepsilon=0.01$ el modo prácticamente desaparece. En la misma malla, el esquema implícito conserva el 100%.
+
+Pruébalo directamente en la simulación de abajo. Baja el control de Mach $\varepsilon$ y la curva roja (upwind) toca fondo antes incluso de que transcurra el tiempo físico.
+
+<LowMachWaveDecay1D />
+
+Empuja el CFL $\nu$ hacia 1 y $\nu(1-\nu)$ disminuye, suavizando el decaimiento por un momento. Pero baja más $\varepsilon$ y esa ganancia queda pronto sepultada bajo la acumulación $1/\varepsilon$. Aumentar la malla $N$ solo ayuda en parte, porque $\theta^2\propto N^{-2}$ y $\Delta x \propto N^{-1}$ se cancelan solo parcialmente: el problema de fondo permanece.
+
+## AP frente a AA
+
+Las dos propiedades se confunden con facilidad. AP pregunta si el límite $\varepsilon\to 0$ del esquema discreto es una discretización válida de la ecuación límite, con una restricción de estabilidad independiente de $\varepsilon$. AA va un paso más allá: en una malla finita, para $\varepsilon$ pequeño pero no nulo, ¿se mantiene la solución cerca del espacio well-prepared? El esquema upwind falla en ambas. El esquema IMEX-implícito cumple ambas. El factor decisivo es la elección de la discretización temporal, no la precisión de la diferenciación espacial.
+
+## Tres líneas para recordar
+
+- A bajo Mach la viscosidad upwind crece como $1/\varepsilon$ en proporción a la velocidad del sonido $c=a/\varepsilon$, y acumulada en un tiempo físico fijo borra la onda.
+- Que se preserve el espacio well-prepared (densidad constante, velocidad de divergencia nula) es la bifurcación de la precisión, y lo que la gobierna es la discretización temporal.
+- Tratar de forma implícita solo el operador acústico $L/\varepsilon$ con IMEX libera $\Delta t$ de la escala acústica a la convectiva, dejando el esquema estable y preciso con independencia del número de Mach (AP + AA).
