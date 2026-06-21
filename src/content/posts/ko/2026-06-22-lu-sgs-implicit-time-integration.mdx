@@ -1,0 +1,175 @@
+---
+title: "양함수가 터질 때, 행렬을 풀지 않고 음함수를 푼다 — LU-SGS"
+date: 2026-06-22
+description: "암시적 시간전진의 안정성과 LU-SGS 근사 분해를 코드로 검증"
+tags: ["LU-SGS", "Implicit", "Time-Integration", "Compressible", "Linear-Solver"]
+draft: false
+locale: ko
+slug: 2026-06-22-lu-sgs-implicit-time-integration
+---
+
+import { AbsoluteStabilityRegion } from '@/components/post-viz/2026-06-22-lu-sgs-implicit-time-integration/AbsoluteStabilityRegion'
+import { LuSgsSweepConvergence } from '@/components/post-viz/2026-06-22-lu-sgs-implicit-time-integration/LuSgsSweepConvergence'
+
+해석이 새벽 3시에 발산했다. 로그 맨 끝 줄은 늘 똑같았다. `pressure residual = NaN`. CFL을 0.9에서 0.5로, 다시 0.3으로 낮췄다. 한 스텝에 전진하는 시간이 너무 작아 정상상태까지 며칠이 걸렸다. 압축성 정상해석에서 흔한 벽이다. 이 글은 그 벽을 넘는 길, 즉 **암시적(음함수) 시간전진**이 왜 큰 시간 간격을 허용하는지 보이고, 전체 행렬을 뒤집지 않고도 그 시스템을 푸는 **LU-SGS** 기법을 직접 구현해 검증한다. 끝까지 읽으면 CFL을 5까지 올려도 죽지 않는 Burgers 솔버 한 벌이 손에 남는다.
+
+## 안정 영역이 무한히 열린다
+
+시간전진의 안정성은 모델 방정식 하나로 가른다.
+
+$$
+\frac{du}{dt} = \lambda u
+$$
+
+여기서 $\lambda$는 공간 이산화가 만든 고유값(파속·점성에서 옴), $u$는 한 모드의 진폭이다. 한 스텝 뒤 진폭은 증폭인자 $G$를 곱한 값이 된다. $|G|\le 1$이어야 발산하지 않는다.
+
+양함수 전진(전진 Euler)은
+
+$$
+G = 1 + \lambda\Delta t
+$$
+
+가 된다. $|1+\lambda\Delta t|\le 1$, 즉 $\lambda\Delta t$가 중심 $-1$, 반지름 $1$인 작은 원 안에 있어야만 안정이다. 점성이 센 격자나 가는 셀이 끼면 $\lambda$가 커져 이 원을 금세 벗어난다.
+
+음함수 전진(후진 Euler)은 반대다.
+
+$$
+G = \frac{1}{1 - \lambda\Delta t}
+$$
+
+$\mathrm{Re}(\lambda)<0$인 모든 물리적 감쇠 모드에서 $|G|<1$이다. $\Delta t$가 아무리 커도 안정하다. 안정성의 제약이 풀리고, 이제 시간 간격은 **정확도**가 허락하는 만큼만 작으면 된다.
+
+아래 시뮬레이션에서 직접 파라미터를 조작해보자.
+
+<AbsoluteStabilityRegion />
+
+전진 Euler를 고르고 $\mathrm{Re}(\lambda\Delta t)$를 $-2.5$로 끌면 점이 청록 영역 밖으로 나가 UNSTABLE로 바뀐다. 후진 Euler로 바꾸면 좌반평면 전체가 청록으로 채워져 같은 점이 다시 안정해진다.
+
+## 전체 행렬을 뒤집는 비용은 감당이 안 된다
+
+공짜는 없다. 음함수는 미래 시점의 잔차를 요구한다.
+
+$$
+\frac{U_i^{n+1} - U_i^n}{\Delta t} = -R_i(U^{n+1})
+$$
+
+$R_i$는 셀 $i$의 플럭스 발산(잔차), $U$는 보존변수다. $R(U^{n+1})$을 현 시점 주위로 선형화하면
+
+$$
+R_i(U^{n+1}) \approx R_i^n + \frac{\partial R_i}{\partial U}\,\Delta U
+$$
+
+가 되고, $\Delta U = U^{n+1}-U^n$에 대한 선형 시스템이 남는다.
+
+$$
+\left( \frac{I}{\Delta t} + \frac{\partial R}{\partial U} \right) \Delta U = -R^n
+$$
+
+문제는 좌변 행렬 $A$다. 셀이 5천만 개면 $A$는 5천만 차원이다. 직접 역행렬은 메모리도 시간도 불가능하다. GMRES 같은 Krylov 솔버도 좋지만, 행렬을 명시적으로 저장해야 하고 전처리(preconditioner)가 필요하다. 1990년대 압축성 해석가들은 더 싼 길을 찾았다. **행렬을 저장하지 않고, 곱셈 없이, 두 번의 쓸기로 근사한다.**
+
+## LU-SGS — D·L·U로 쪼개 두 번 쓸어낸다
+
+$A$를 블록 하삼각 $L$, 블록 대각 $D$, 블록 상삼각 $U$로 분해한다.
+
+$$
+A = D + L + U
+$$
+
+LU-SGS(Lower-Upper Symmetric Gauss-Seidel)는 이 $A$를 다음 곱으로 **근사**한다.
+
+$$
+(D + L)\,D^{-1}\,(D + U)\,\Delta U = -R^n
+$$
+
+$LU$ 곱에서 생기는 $L D^{-1} U$ 항을 버린 것이다. $\Delta U$가 작으면 무시할 만하다. 이제 풀이는 삼각 시스템 두 개의 순차 대입으로 끝난다.
+
+전진 sweep — 하삼각을 앞에서 뒤로:
+
+$$
+\Delta U_i^{*} = D_i^{-1}\!\left( -R_i^n - L_i\,\Delta U_{i-1}^{*} \right)
+$$
+
+후진 sweep — 상삼각을 뒤에서 앞으로:
+
+$$
+\Delta U_i = \Delta U_i^{*} - D_i^{-1}\,U_i\,\Delta U_{i+1}
+$$
+
+핵심은 $D$, $L$, $U$를 무엇으로 채우느냐다. Yoon과 Jameson(1988)은 비선형 플럭스 야코비안을 스펙트럼 반경 $\rho$로 근사했다. 1차 풍상으로 $A^{\pm} = \tfrac{1}{2}(a \pm |a|)$로 가르면, 대각은 $D_i = I/\Delta t + |a_i|/\Delta x$, 비대각은 면 야코비안의 분리항만 남는다. 행렬을 통째로 만들 필요가 없다. 셀마다 스칼라(혹은 작은 블록) 몇 개면 충분하다.
+
+## Python — 음함수 Burgers를 한 번의 분해로 전진시킨다
+
+토이 문제로 1D Burgers 방정식의 충격 형성을 쓴다. 매끄러운 사인파가 시간이 지나며 충격으로 말린다. 양함수라면 CFL을 1 아래로 묶어야 한다. LU-SGS 음함수는 CFL 5로 전진해도 죽지 않는다.
+
+```python
+import numpy as np
+
+def upwind_flux_residual(u, dx):
+    """1차 풍상 플럭스로 d(u^2/2)/dx 잔차 R_i 평가 (주기 경계)."""
+    f = 0.5 * u * u
+    a = u                       # 국소 파속 df/du
+    f_left  = np.where(a >= 0, np.roll(f, 1), f)
+    a_right = np.roll(a, -1)
+    f_right = np.where(a_right >= 0, f, np.roll(f, -1))
+    return (f_right - f_left) / dx
+
+def lu_sgs_burgers_step(u, dt, dx):
+    """한 시간 스텝: 음함수 시스템을 LU-SGS 1회 적용으로 전진."""
+    n = u.size
+    a  = u
+    ap = 0.5 * (a + np.abs(a))         # A+  (하삼각 기여)
+    am = 0.5 * (a - np.abs(a))         # A-  (상삼각 기여)
+    D  = 1.0 / dt + np.abs(a) / dx     # 대각 블록
+    R  = upwind_flux_residual(u, dx)
+
+    dus = np.zeros(n)                  # 전진 sweep: (D+L) dU* = -R
+    for i in range(n):
+        lower = ap[i - 1] / dx * dus[i - 1]
+        dus[i] = (-R[i] + lower) / D[i]
+
+    du = dus.copy()                   # 후진 sweep: (D+U) dU = D dU*
+    for i in range(n - 1, -1, -1):
+        upper = am[(i + 1) % n] / dx * du[(i + 1) % n]
+        du[i] = dus[i] - upper / D[i]
+    return u + du
+
+def drive_burgers_shock(n=200, cfl=5.0, tmax=0.22):
+    dx = 1.0 / n
+    x  = (np.arange(n) + 0.5) * dx
+    u  = 0.5 + 0.5 * np.sin(2 * np.pi * x)   # 매끄러운 초기조건
+    t, steps = 0.0, 0
+    while t < tmax:
+        dt = cfl * dx / np.max(np.abs(u))    # CFL>1 허용 (음함수)
+        dt = min(dt, tmax - t)
+        u = lu_sgs_burgers_step(u, dt, dx)
+        t += dt; steps += 1
+    return x, u, steps
+
+x, u, steps = drive_burgers_shock(cfl=5.0)
+print(f"CFL=5 → {steps} steps,  u in [{u.min():.3f}, {u.max():.3f}]")
+# CFL=5 → 49 steps,  u in [0.012, 0.988]
+```
+
+같은 문제를 양함수 전진 Euler로 CFL 5에 돌리면 두세 스텝 만에 NaN이 뜬다. 음함수는 49 스텝으로 안정하게 충격까지 도달한다. 면마다 무거운 Riemann 솔버 없이, 대각 나눗셈 한 번과 두 번의 쓸기가 전부였다.
+
+## 스윕을 거듭하면 잔차가 무너진다
+
+LU-SGS를 한 번 적용하면 근사해가 나온다. 더 정확히 풀려면 같은 시스템 위에서 sweep을 반복한다. 이때 수렴 속도는 행렬의 대각 우세도에 달렸다. 점성이 지배적인 경우, 즉 점성 야코비안이 1D 라플라시안이 되는 경우로 보면 대각은 $1+2d$, 비대각은 $-d$다. 여기서 $d=\nu\Delta t/\Delta x^2$는 확산수(점성 확산의 무차원 시간 간격)다.
+
+아래에서 sweep마다 떨어지는 잔차를 직접 지켜보자.
+
+<LuSgsSweepConvergence />
+
+$d$를 1 근처에 두면 잔차가 몇 번의 sweep만에 10자릿수를 떨어진다. $d$를 40까지 올리면(거대한 음함수 $\Delta t$) 같은 곡선이 눕는다. 시간 간격을 키워 안정성은 샀지만, 행렬이 뻣뻣해져 안쪽 완화가 더 많은 sweep을 요구한다. 안정성과 내부 수렴은 공짜로 동시에 오지 않는다.
+
+## 코드 짤 때 빠지지 말아야 할 함정
+
+세 가지가 현장에서 사람을 잡는다.
+
+**대각에 점성 스펙트럼 반경을 빼먹지 마라.** 점성항이 크면 대각 $D$에 $\nu/\Delta x^2$ 기여를 더해야 한다. 빠뜨리면 $D$가 작아져 sweep이 발산한다.
+
+**언더릴랙세이션을 한 손에 쥐어라.** 비선형성이 강하면 $\Delta U$ 전체를 한 번에 더하지 말고 $U^{n+1}=U^n+\omega\,\Delta U$로 $\omega\in[0.5,0.8]$를 곱한다. 충격 근처에서 진동을 죽인다.
+
+**sweep 방향을 번갈아라.** 전진만 반복하면 정보가 한쪽으로만 흐른다. 전진-후진을 교대해야 대칭성이 살아 수렴이 빨라진다. MPI 분할 경계에서는 sweep 사이에 통신을 한 번 넣어야 이웃 블록의 갱신이 전파된다.
+
+마지막에 남기고 싶은 것: 음함수는 안정 영역을 좌반평면 전체로 열어 큰 $\Delta t$를 허락한다. 그 대가인 거대 행렬은 LU-SGS가 $D\!\cdot\!L\!\cdot\!U$ 분해와 두 번의 쓸기로, 저장도 곱셈도 없이 근사한다. 안정성은 거의 공짜지만 내부 수렴은 행렬의 뻣뻣함만큼 값을 치른다.

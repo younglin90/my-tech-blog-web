@@ -12,6 +12,7 @@ function VizLoading() {
 }
 
 export const VIZ_COMPONENTS: Record<string, ComponentType> = {
+  "AbsoluteStabilityRegion": dynamic(() => import("@/components/post-viz/2026-06-22-lu-sgs-implicit-time-integration/AbsoluteStabilityRegion").then((m) => ({ default: m.AbsoluteStabilityRegion })), { ssr: false, loading: VizLoading }),
   "AcousticConvectiveScales": dynamic(() => import("@/components/post-viz/2026-06-06-weston-block-preconditioner-jfnk/AcousticConvectiveScales").then((m) => ({ default: m.AcousticConvectiveScales })), { ssr: false, loading: VizLoading }),
   "AcousticImpedanceTube1D": dynamic(() => import("@/components/post-viz/2026-06-14-acoustic-interface-transmission-snell/AcousticImpedanceTube1D").then((m) => ({ default: m.AcousticImpedanceTube1D })), { ssr: false, loading: VizLoading }),
   "AcousticTransportSplit1D": dynamic(() => import("@/components/post-viz/2026-05-30-peluchon-acoustic-transport-imex/AcousticTransportSplit1D").then((m) => ({ default: m.AcousticTransportSplit1D })), { ssr: false, loading: VizLoading }),
@@ -74,6 +75,7 @@ export const VIZ_COMPONENTS: Record<string, ComponentType> = {
   "LODICharacteristicWaves": dynamic(() => import("@/components/post-viz/2026-05-29-nscbc-nonreflecting-outflow-boundary/LODICharacteristicWaves").then((m) => ({ default: m.LODICharacteristicWaves })), { ssr: false, loading: VizLoading }),
   "LowMachAcousticDamping1D": dynamic(() => import("@/components/post-viz/2026-05-17-hope-collins-2022-lowmach-artificial-diffusion/LowMachAcousticDamping1D").then((m) => ({ default: m.LowMachAcousticDamping1D })), { ssr: false, loading: VizLoading }),
   "LowMachWaveDecay1D": dynamic(() => import("@/components/post-viz/2026-06-21-asymptotic-preserving-low-mach-wave/LowMachWaveDecay1D").then((m) => ({ default: m.LowMachWaveDecay1D })), { ssr: false, loading: VizLoading }),
+  "LuSgsSweepConvergence": dynamic(() => import("@/components/post-viz/2026-06-22-lu-sgs-implicit-time-integration/LuSgsSweepConvergence").then((m) => ({ default: m.LuSgsSweepConvergence })), { ssr: false, loading: VizLoading }),
   "MachArchitect": dynamic(() => import("@/components/MachArchitect").then((m) => ({ default: m.MachArchitect })), { ssr: false, loading: VizLoading }),
   "MachConeRadiator": dynamic(() => import("@/components/post-viz/2026-05-12-laval-nozzle-supersonic-paradox/MachConeRadiator").then((m) => ({ default: m.MachConeRadiator })), { ssr: false, loading: VizLoading }),
   "MachSplitFunctions": dynamic(() => import("@/components/post-viz/2026-06-19-ausm-flux-vector-splitting/MachSplitFunctions").then((m) => ({ default: m.MachSplitFunctions })), { ssr: false, loading: VizLoading }),

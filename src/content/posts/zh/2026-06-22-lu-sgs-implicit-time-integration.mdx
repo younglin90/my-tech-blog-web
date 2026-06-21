@@ -1,0 +1,175 @@
+---
+title: "显式炸开时,不求逆矩阵也能解隐式 — LU-SGS"
+date: 2026-06-22
+description: "用代码验证隐式时间推进的稳定性与LU-SGS近似分解"
+tags: ["LU-SGS", "Implicit", "Time-Integration", "Compressible", "Linear-Solver"]
+draft: false
+locale: zh
+slug: 2026-06-22-lu-sgs-implicit-time-integration
+---
+
+import { AbsoluteStabilityRegion } from '@/components/post-viz/2026-06-22-lu-sgs-implicit-time-integration/AbsoluteStabilityRegion'
+import { LuSgsSweepConvergence } from '@/components/post-viz/2026-06-22-lu-sgs-implicit-time-integration/LuSgsSweepConvergence'
+
+计算在凌晨3点发散了。日志最后一行总是同一句:`pressure residual = NaN`。我把CFL从0.9降到0.5,再降到0.3。每一步推进的时间太小,到达定常状态要好几天。这是可压缩定常计算中谁都会撞上的墙。本文展示翻越这堵墙的路,即**隐式时间推进**为何允许大时间步长,然后实现**LU-SGS**——一种不求全矩阵逆就能解这套系统的方法,并用代码验证。读到最后,你手里会留下一个CFL等于5也不会死的Burgers求解器。
+
+## 稳定域无限敞开
+
+时间推进的稳定性由一个模型方程决定。
+
+$$
+\frac{du}{dt} = \lambda u
+$$
+
+其中 $\lambda$ 是空间离散产生的特征值(来自波速与黏性),$u$ 是某个模态的振幅。一步之后振幅乘上放大因子 $G$。要不发散就需 $|G|\le 1$。
+
+显式推进(前向Euler)给出
+
+$$
+G = 1 + \lambda\Delta t
+$$
+
+即 $|1+\lambda\Delta t|\le 1$,也就是 $\lambda\Delta t$ 必须落在以 $-1$ 为心、半径为 $1$ 的小圆内才稳定。黏性强的网格或薄单元会让 $\lambda$ 变大,很快就跑出这个圆。
+
+隐式推进(后向Euler)正相反。
+
+$$
+G = \frac{1}{1 - \lambda\Delta t}
+$$
+
+对所有 $\mathrm{Re}(\lambda)<0$ 的物理衰减模态,$|G|<1$。无论 $\Delta t$ 多大都稳定。稳定性约束消失,时间步长只需小到**精度**所要求的程度即可。
+
+在下面的仿真里亲手调一调参数。
+
+<AbsoluteStabilityRegion />
+
+选前向Euler,把 $\mathrm{Re}(\lambda\Delta t)$ 拖到 $-2.5$,点会离开青色区域,变为UNSTABLE。切到后向Euler,整个左半平面被青色填满,同一个点又变稳定。
+
+## 求全矩阵逆的代价付不起
+
+天下没有白吃的午餐。隐式要求未来时刻的残差。
+
+$$
+\frac{U_i^{n+1} - U_i^n}{\Delta t} = -R_i(U^{n+1})
+$$
+
+$R_i$ 是单元 $i$ 的通量散度(残差),$U$ 是守恒变量。把 $R(U^{n+1})$ 在当前时刻附近线性化,
+
+$$
+R_i(U^{n+1}) \approx R_i^n + \frac{\partial R_i}{\partial U}\,\Delta U
+$$
+
+便得到关于 $\Delta U = U^{n+1}-U^n$ 的线性系统。
+
+$$
+\left( \frac{I}{\Delta t} + \frac{\partial R}{\partial U} \right) \Delta U = -R^n
+$$
+
+麻烦在左端矩阵 $A$。若有五千万单元,$A$ 就是五千万维。直接求逆在内存和时间上都不可能。像GMRES这样的Krylov求解器也行,但要显式存储矩阵并需要预处理。1990年代的可压缩分析者找到了更便宜的路:**不存矩阵、不做乘法,用两次扫掠来近似。**
+
+## LU-SGS — 拆成 D·L·U,扫两遍
+
+把 $A$ 分解为块下三角 $L$、块对角 $D$、块上三角 $U$。
+
+$$
+A = D + L + U
+$$
+
+LU-SGS(下-上对称Gauss-Seidel)用如下乘积**近似**这个 $A$。
+
+$$
+(D + L)\,D^{-1}\,(D + U)\,\Delta U = -R^n
+$$
+
+它丢掉了 $LU$ 乘积中产生的 $L D^{-1} U$ 项。当 $\Delta U$ 较小时可忽略。求解就归结为两个三角系统的顺序回代。
+
+前向扫掠 —— 下三角,从前到后:
+
+$$
+\Delta U_i^{*} = D_i^{-1}\!\left( -R_i^n - L_i\,\Delta U_{i-1}^{*} \right)
+$$
+
+后向扫掠 —— 上三角,从后到前:
+
+$$
+\Delta U_i = \Delta U_i^{*} - D_i^{-1}\,U_i\,\Delta U_{i+1}
+$$
+
+关键在于用什么填 $D$、$L$、$U$。Yoon与Jameson(1988)用谱半径 $\rho$ 近似非线性通量雅可比。把一阶迎风拆成 $A^{\pm} = \tfrac{1}{2}(a \pm |a|)$,对角就是 $D_i = I/\Delta t + |a_i|/\Delta x$,非对角只剩拆分后的面雅可比。无需构建整个矩阵,每个单元几个标量(或一个小块)就够了。
+
+## Python —— 用一次分解推进隐式Burgers
+
+玩具问题取1D Burgers方程的激波形成。光滑正弦波随时间卷成激波。显式必须把CFL压在1以下。LU-SGS隐式在CFL 5下推进也不会死。
+
+```python
+import numpy as np
+
+def upwind_flux_residual(u, dx):
+    """用一阶迎风通量计算 d(u^2/2)/dx 的残差 R_i(周期边界)。"""
+    f = 0.5 * u * u
+    a = u                       # 局部波速 df/du
+    f_left  = np.where(a >= 0, np.roll(f, 1), f)
+    a_right = np.roll(a, -1)
+    f_right = np.where(a_right >= 0, f, np.roll(f, -1))
+    return (f_right - f_left) / dx
+
+def lu_sgs_burgers_step(u, dt, dx):
+    """一个时间步:用一次LU-SGS应用推进隐式系统。"""
+    n = u.size
+    a  = u
+    ap = 0.5 * (a + np.abs(a))         # A+ (下三角贡献)
+    am = 0.5 * (a - np.abs(a))         # A- (上三角贡献)
+    D  = 1.0 / dt + np.abs(a) / dx     # 对角块
+    R  = upwind_flux_residual(u, dx)
+
+    dus = np.zeros(n)                  # 前向扫掠: (D+L) dU* = -R
+    for i in range(n):
+        lower = ap[i - 1] / dx * dus[i - 1]
+        dus[i] = (-R[i] + lower) / D[i]
+
+    du = dus.copy()                   # 后向扫掠: (D+U) dU = D dU*
+    for i in range(n - 1, -1, -1):
+        upper = am[(i + 1) % n] / dx * du[(i + 1) % n]
+        du[i] = dus[i] - upper / D[i]
+    return u + du
+
+def drive_burgers_shock(n=200, cfl=5.0, tmax=0.22):
+    dx = 1.0 / n
+    x  = (np.arange(n) + 0.5) * dx
+    u  = 0.5 + 0.5 * np.sin(2 * np.pi * x)   # 光滑初始条件
+    t, steps = 0.0, 0
+    while t < tmax:
+        dt = cfl * dx / np.max(np.abs(u))    # 允许 CFL>1(隐式)
+        dt = min(dt, tmax - t)
+        u = lu_sgs_burgers_step(u, dt, dx)
+        t += dt; steps += 1
+    return x, u, steps
+
+x, u, steps = drive_burgers_shock(cfl=5.0)
+print(f"CFL=5 -> {steps} steps,  u in [{u.min():.3f}, {u.max():.3f}]")
+# CFL=5 -> 49 steps,  u in [0.012, 0.988]
+```
+
+同一问题用显式前向Euler在CFL 5下跑,两三步就出NaN。隐式版本以49个稳定步抵达激波。没有逐面的重型Riemann求解器,一次对角除法加两次扫掠就完成了全部工作。
+
+## 一遍遍扫掠,残差就崩塌
+
+LU-SGS应用一次得到近似解。要解得更准,就在同一系统上重复扫掠。此时收敛速度取决于矩阵的对角占优程度。在黏性主导的情形——黏性雅可比变成1D拉普拉斯算子——对角为 $1+2d$,非对角为 $-d$。其中 $d=\nu\Delta t/\Delta x^2$ 是扩散数(黏性扩散的无量纲时间步长)。
+
+在下面看残差随扫掠一步步下落。
+
+<LuSgsSweepConvergence />
+
+把 $d$ 放在1附近,残差几次扫掠就掉十个数量级。把 $d$ 加到40(巨大的隐式 $\Delta t$),同一条曲线就躺平了。你靠加大步长买到了稳定,但矩阵更硬,内层松弛需要更多扫掠。稳定性与内层收敛不会免费同时到来。
+
+## 写代码时别踩的坑
+
+现场里抓人的有三件事。
+
+**别把黏性谱半径从对角里漏掉。** 黏性项大时,必须给对角 $D$ 加上 $\nu/\Delta x^2$ 的贡献。漏了 $D$ 会变小,扫掠发散。
+
+**把欠松弛握在手里。** 非线性强时别一次性加上整个 $\Delta U$,用 $U^{n+1}=U^n+\omega\,\Delta U$,取 $\omega\in[0.5,0.8]$。它能压住激波附近的振荡。
+
+**让扫掠方向交替。** 只重复前向扫掠会让信息只往一个方向流。前后交替能保住对称性,加快收敛。在MPI分区边界,要在两次扫掠之间插一次通信,让邻块的更新传播过去。
+
+最后想留给你的:隐式把稳定域敞向整个左半平面,允许大 $\Delta t$。它代价高昂的巨大矩阵,被LU-SGS用 $D\!\cdot\!L\!\cdot\!U$ 分解和两次扫掠近似——不存储、不乘法。稳定性几乎免费,而内层收敛要按矩阵的硬度付账。

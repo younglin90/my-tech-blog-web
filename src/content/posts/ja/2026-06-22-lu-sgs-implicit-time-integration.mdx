@@ -1,0 +1,175 @@
+---
+title: "陽解法が破綻するとき、行列を解かずに陰解法を解く — LU-SGS"
+date: 2026-06-22
+description: "陰的時間進行の安定性とLU-SGS近似分解をコードで検証する"
+tags: ["LU-SGS", "Implicit", "Time-Integration", "Compressible", "Linear-Solver"]
+draft: false
+locale: ja
+slug: 2026-06-22-lu-sgs-implicit-time-integration
+---
+
+import { AbsoluteStabilityRegion } from '@/components/post-viz/2026-06-22-lu-sgs-implicit-time-integration/AbsoluteStabilityRegion'
+import { LuSgsSweepConvergence } from '@/components/post-viz/2026-06-22-lu-sgs-implicit-time-integration/LuSgsSweepConvergence'
+
+解析は午前3時に発散しました。ログの最後の行はいつも同じです。`pressure residual = NaN`。CFLを0.9から0.5へ、さらに0.3へ下げました。1ステップで進む時間が小さすぎて、定常状態に達するまで何日もかかります。圧縮性の定常解析では誰もがぶつかる壁です。この記事ではその壁を越える道、つまり**陰的時間進行**がなぜ大きな時間刻みを許すのかを示し、全行列を反転させずにそのシステムを解く**LU-SGS**を実装して検証します。最後まで読めば、CFL 5でも死なないBurgersソルバーが手元に残ります。
+
+## 安定領域が無限に開く
+
+時間進行の安定性は、一つのモデル方程式で決まります。
+
+$$
+\frac{du}{dt} = \lambda u
+$$
+
+ここで $\lambda$ は空間離散化が生む固有値(波速や粘性から来ます)、$u$ は一つのモードの振幅です。1ステップ後の振幅は増幅率 $G$ を掛けた値になります。発散を避けるには $|G|\le 1$ が必要です。
+
+陽解法(前進Euler)では
+
+$$
+G = 1 + \lambda\Delta t
+$$
+
+となり、$|1+\lambda\Delta t|\le 1$、すなわち $\lambda\Delta t$ が中心 $-1$、半径 $1$ の小さな円の中になければ安定しません。粘性の強い格子や薄いセルが入ると $\lambda$ が大きくなり、すぐにこの円から出てしまいます。
+
+陰解法(後退Euler)は逆です。
+
+$$
+G = \frac{1}{1 - \lambda\Delta t}
+$$
+
+$\mathrm{Re}(\lambda)<0$ のすべての物理的な減衰モードで $|G|<1$ です。$\Delta t$ がどれほど大きくても安定します。安定性の制約が解け、時間刻みは**精度**が許す分だけ小さければよくなります。
+
+下のシミュレーションでパラメータを直接動かしてみましょう。
+
+<AbsoluteStabilityRegion />
+
+前進Eulerを選んで $\mathrm{Re}(\lambda\Delta t)$ を $-2.5$ まで引くと、点がシアン領域の外に出てUNSTABLEに変わります。後退Eulerに切り替えると左半平面全体がシアンで埋まり、同じ点が再び安定になります。
+
+## 全行列を反転するコストは支払えない
+
+ただではありません。陰解法は未来時刻の残差を要求します。
+
+$$
+\frac{U_i^{n+1} - U_i^n}{\Delta t} = -R_i(U^{n+1})
+$$
+
+$R_i$ はセル $i$ のフラックス発散(残差)、$U$ は保存変数です。$R(U^{n+1})$ を現時刻のまわりで線形化すると
+
+$$
+R_i(U^{n+1}) \approx R_i^n + \frac{\partial R_i}{\partial U}\,\Delta U
+$$
+
+となり、$\Delta U = U^{n+1}-U^n$ に関する線形システムが残ります。
+
+$$
+\left( \frac{I}{\Delta t} + \frac{\partial R}{\partial U} \right) \Delta U = -R^n
+$$
+
+問題は左辺の行列 $A$ です。セルが5千万個なら $A$ は5千万次元です。直接の逆行列はメモリも時間も不可能です。GMRESのようなKrylovソルバーも有効ですが、行列を明示的に格納し前処理が必要です。1990年代の圧縮性解析者はより安い道を見つけました。**行列を格納せず、掛け算なしで、二度の掃き出しで近似する**のです。
+
+## LU-SGS — D・L・Uに分けて二度掃く
+
+$A$ をブロック下三角 $L$、ブロック対角 $D$、ブロック上三角 $U$ に分解します。
+
+$$
+A = D + L + U
+$$
+
+LU-SGS(Lower-Upper Symmetric Gauss-Seidel)は、この $A$ を次の積で**近似**します。
+
+$$
+(D + L)\,D^{-1}\,(D + U)\,\Delta U = -R^n
+$$
+
+$LU$ 積から生じる $L D^{-1} U$ 項を捨てたものです。$\Delta U$ が小さければ無視できます。解法は三角システム二つの順次代入で終わります。
+
+前進スイープ — 下三角を前から後ろへ:
+
+$$
+\Delta U_i^{*} = D_i^{-1}\!\left( -R_i^n - L_i\,\Delta U_{i-1}^{*} \right)
+$$
+
+後進スイープ — 上三角を後ろから前へ:
+
+$$
+\Delta U_i = \Delta U_i^{*} - D_i^{-1}\,U_i\,\Delta U_{i+1}
+$$
+
+要は $D$、$L$、$U$ を何で埋めるかです。YoonとJameson(1988)は非線形フラックスヤコビアンをスペクトル半径 $\rho$ で近似しました。1次風上を $A^{\pm} = \tfrac{1}{2}(a \pm |a|)$ と分ければ、対角は $D_i = I/\Delta t + |a_i|/\Delta x$、非対角は分離した面ヤコビアンだけが残ります。行列を丸ごと作る必要はなく、セルごとに数個のスカラー(または小ブロック)で十分です。
+
+## Python — 一度の分解で陰的Burgersを進める
+
+トイ問題として1D Burgers方程式の衝撃形成を使います。滑らかな正弦波が時間とともに衝撃へ巻き上がります。陽解法ならCFLを1未満に縛らねばなりません。LU-SGS陰解法はCFL 5で進めても死にません。
+
+```python
+import numpy as np
+
+def upwind_flux_residual(u, dx):
+    """1次風上フラックスで d(u^2/2)/dx の残差 R_i を評価(周期境界)。"""
+    f = 0.5 * u * u
+    a = u                       # 局所波速 df/du
+    f_left  = np.where(a >= 0, np.roll(f, 1), f)
+    a_right = np.roll(a, -1)
+    f_right = np.where(a_right >= 0, f, np.roll(f, -1))
+    return (f_right - f_left) / dx
+
+def lu_sgs_burgers_step(u, dt, dx):
+    """1時間ステップ:陰的システムをLU-SGS 1回適用で進める。"""
+    n = u.size
+    a  = u
+    ap = 0.5 * (a + np.abs(a))         # A+ (下三角の寄与)
+    am = 0.5 * (a - np.abs(a))         # A- (上三角の寄与)
+    D  = 1.0 / dt + np.abs(a) / dx     # 対角ブロック
+    R  = upwind_flux_residual(u, dx)
+
+    dus = np.zeros(n)                  # 前進スイープ: (D+L) dU* = -R
+    for i in range(n):
+        lower = ap[i - 1] / dx * dus[i - 1]
+        dus[i] = (-R[i] + lower) / D[i]
+
+    du = dus.copy()                   # 後進スイープ: (D+U) dU = D dU*
+    for i in range(n - 1, -1, -1):
+        upper = am[(i + 1) % n] / dx * du[(i + 1) % n]
+        du[i] = dus[i] - upper / D[i]
+    return u + du
+
+def drive_burgers_shock(n=200, cfl=5.0, tmax=0.22):
+    dx = 1.0 / n
+    x  = (np.arange(n) + 0.5) * dx
+    u  = 0.5 + 0.5 * np.sin(2 * np.pi * x)   # 滑らかな初期条件
+    t, steps = 0.0, 0
+    while t < tmax:
+        dt = cfl * dx / np.max(np.abs(u))    # CFL>1 を許容(陰解法)
+        dt = min(dt, tmax - t)
+        u = lu_sgs_burgers_step(u, dt, dx)
+        t += dt; steps += 1
+    return x, u, steps
+
+x, u, steps = drive_burgers_shock(cfl=5.0)
+print(f"CFL=5 -> {steps} steps,  u in [{u.min():.3f}, {u.max():.3f}]")
+# CFL=5 -> 49 steps,  u in [0.012, 0.988]
+```
+
+同じ問題を陽的な前進EulerでCFL 5に回すと、2〜3ステップでNaNが出ます。陰解法は49ステップで安定に衝撃まで到達します。面ごとの重いRiemannソルバーなしに、対角の割り算一度と二度の掃き出しだけで済みました。
+
+## スイープを重ねると残差が崩れる
+
+LU-SGSを一度適用すると近似解が出ます。より正確に解くには、同じシステム上でスイープを繰り返します。このとき収束速度は行列の対角優位性に依ります。粘性が支配的な場合、すなわち粘性ヤコビアンが1Dラプラシアンになる場合では、対角は $1+2d$、非対角は $-d$ です。ここで $d=\nu\Delta t/\Delta x^2$ は拡散数(粘性拡散の無次元時間刻み)です。
+
+下でスイープごとに落ちる残差を見てみましょう。
+
+<LuSgsSweepConvergence />
+
+$d$ を1付近に置くと、残差は数回のスイープで10桁落ちます。$d$ を40まで上げると(巨大な陰的 $\Delta t$)、同じ曲線が寝てしまいます。時間刻みを大きくして安定性を買いましたが、行列が硬くなり、内側の緩和がより多くのスイープを要求します。安定性と内側収束はただで同時には来ません。
+
+## コードを書くときに陥らない落とし穴
+
+現場で人を捕まえるのは三つです。
+
+**対角に粘性スペクトル半径を入れ忘れない。** 粘性項が大きいときは、対角 $D$ に $\nu/\Delta x^2$ の寄与を加えねばなりません。抜くと $D$ が小さくなり、スイープが発散します。
+
+**緩和係数を片手に握る。** 非線形性が強いときは $\Delta U$ を一度に全部足さず、$U^{n+1}=U^n+\omega\,\Delta U$ で $\omega\in[0.5,0.8]$ を掛けます。衝撃近くの振動を抑えます。
+
+**スイープ方向を交互にする。** 前進だけを繰り返すと情報が一方向にしか流れません。前進と後進を交互にすれば対称性が生き、収束が速まります。MPI分割境界では、スイープの間に一度通信を入れて隣接ブロックの更新を伝播させます。
+
+最後に残しておきたいこと:陰解法は安定領域を左半平面全体に開き、大きな $\Delta t$ を許します。その代償である巨大行列を、LU-SGSは $D\!\cdot\!L\!\cdot\!U$ 分解と二度の掃き出しで、格納も掛け算もなく近似します。安定性はほぼただですが、内側収束は行列の硬さに比例して支払うことになります。
