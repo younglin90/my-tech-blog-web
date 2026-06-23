@@ -1,0 +1,214 @@
+---
+title: "不求逆也能解 — GMRES 与 Arnoldi 子空间"
+date: 2026-06-24
+description: "用 Krylov 子空间和 Arnoldi 从零实现求解稀疏线性系统的 GMRES"
+tags: ["Krylov", "GMRES", "Arnoldi", "Linear-Solver", "Preconditioning"]
+locale: zh
+slug: gmres-arnoldi-krylov-solver
+draft: false
+---
+
+import { GmresConvergenceLab } from '@/components/post-viz/2026-06-24-gmres-arnoldi-krylov-solver/GmresConvergenceLab'
+import { ArnoldiHessenbergViz } from '@/components/post-viz/2026-06-24-gmres-arnoldi-krylov-solver/ArnoldiHessenbergViz'
+
+一位同事的隐式求解器因内存耗尽而崩溃了。他想对五百万网格的雅可比矩阵做 LU 分解，64GB 瞬间被填满。矩阵巨大，而其中绝大部分是零。可直接法却会把那些零重新填满（fill-in）。本文从头追踪 GMRES——一种从不对矩阵求逆、只用矩阵向量乘积逼近解的方法。我们用 Arnoldi 迭代堆叠正交基，用一个很小的最小二乘问题压缩残差，再用 Givens 旋转免费读出收敛，并在 Python 的 2D Poisson 求解器中逐一验证。
+
+## 面对大型稀疏矩阵，直接法会崩溃
+
+有限体积离散化生成的稀疏矩阵，每个网格只有几个非零元。一百万网格对应 $10^6 \times 10^6$ 的矩阵，但每行只填了五到七个元素。直接法（高斯消元、LU 分解）会破坏这种结构。消元过程中，原本为零的位置会被填上（fill-in）。内存膨胀到接近网格数的平方。
+
+迭代法做出另一种承诺。它从不直接触碰矩阵 $A$，只使用"用 $A$ 乘一个向量"的运算。在 CFD 代码里，这个运算就等同于一次残差扫描。你甚至无需存储矩阵。这正是无矩阵（matrix-free）GMRES 的起点。
+
+## Krylov 子空间 — 仅靠矩阵向量乘积搭起的梯子
+
+从初始猜测 $x_0$、初始残差 $r_0 = b - Ax_0$ 出发。我们手上唯一的工具是"乘以 $A$"。对 $r_0$ 反复乘 $A$，就生成一架向量梯子。
+
+$$
+\mathcal{K}_m = \mathrm{span}\{ r_0,\ A r_0,\ A^2 r_0,\ \dots,\ A^{m-1} r_0 \}
+$$
+
+其中 $\mathcal{K}_m$ 是维数为 $m$ 的 Krylov 子空间，$r_0$ 是初始残差。GMRES 的承诺很简单。在每一步 $m$，把解限制在 $x_0 + \mathcal{K}_m$ 之内，并在其中选出使残差 2-范数 $\lVert b - Ax \rVert_2$ **最小**的那一点。GMRES 即 Generalized Minimal RESidual，正如其名，就是残差最小化。
+
+问题在于 $r_0, Ar_0, A^2 r_0, \dots$ 在数值上几乎平行。幂运算把所有向量都拉向最大特征值的方向。在这组基上求最小二乘，条件数会爆炸。所以需要正交化。
+
+## Arnoldi 迭代：一列一列堆叠正交基
+
+Arnoldi 过程把 Gram-Schmidt 正交化施加到 Krylov 梯子上。从 $q_1 = r_0 / \lVert r_0 \rVert$ 开始，从新向量 $Aq_j$ 中减去所有已有的基分量。
+
+$$
+\tilde{q} = A q_j - \sum_{i=1}^{j} h_{ij} q_i,
+\qquad h_{ij} = q_i^{\top} A q_j
+$$
+
+$$
+h_{j+1,j} = \lVert \tilde{q} \rVert_2,
+\qquad q_{j+1} = \tilde{q} / h_{j+1,j}
+$$
+
+其中 $q_j$ 是标准正交基向量，$h_{ij}$ 是投影系数。把这些系数汇集起来，就得到 $(m+1)\times m$ 的上 Hessenberg 矩阵 $\bar{H}_m$。Hessenberg 指只在第一条次对角线以上非零的形态。关键恒等式如下。
+
+$$
+A Q_m = Q_{m+1} \bar{H}_m
+$$
+
+其中 $Q_m$ 是以基向量为列的 $n\times m$ 矩阵。巨大 $A$ 的作用，被压缩进了小小的 Hessenberg 矩阵 $\bar{H}_m$。
+
+下面的模拟里亲手操作一下。左侧是逐步填充的 Hessenberg 矩阵，右侧是查看基正交性的 Gram 矩阵 $Q^{\top}Q$。
+
+<ArnoldiHessenbergViz />
+
+把维数 $n$ 调大，可以看到 Hessenberg 在第一条次对角线以下始终为零（浅灰）。右侧的 Gram 矩阵只有对角线是青色，非对角（橙色）几乎为零。这正是正交性仍然成立的证据。
+
+## 最小残差 — 用很小的 Hessenberg 最小二乘来压缩
+
+把解写成 $x = x_0 + Q_m y$，其中 $y$ 是 $m$ 维向量。代入恒等式 $AQ_m = Q_{m+1}\bar{H}_m$，残差缩小得惊人。
+
+$$
+\lVert b - Ax \rVert_2 = \lVert \beta e_1 - \bar{H}_m y \rVert_2
+$$
+
+其中 $\beta = \lVert r_0 \rVert$，$e_1$ 是只有第一个分量为 1 的单位向量。因为 $Q_{m+1}$ 是正交矩阵，范数得以保持。原本 $n$ 维的最小二乘变成了 $(m+1)\times m$ 的小问题。当 $m$ 只有几十时，几乎是免费的。
+
+## Givens 旋转免费读出残差
+
+小最小二乘 $\min_y \lVert \beta e_1 - \bar{H}_m y \rVert$ 用 $\bar{H}_m$ 的 QR 分解求解。Hessenberg 已经近乎三角，只需逐个消去次对角线元素即可。工具就是 Givens 旋转。它在平面内旋转两个分量，把下方那个置零。
+
+$$
+\begin{pmatrix} c & s \\ -s & c \end{pmatrix}
+\begin{pmatrix} h_{j,j} \\ h_{j+1,j} \end{pmatrix}
+=
+\begin{pmatrix} r \\ 0 \end{pmatrix}
+$$
+
+其中 $c = h_{j,j}/r$，$s = h_{j+1,j}/r$，$r = \sqrt{h_{j,j}^2 + h_{j+1,j}^2}$。把旋转也施加到右端 $\beta e_1$ 上，变换后右端最后一个分量的大小**正是当前的残差范数**。于是无需求解 $y$，每一步都能读出收敛。
+
+## 重启 GMRES(m) — 内存与收敛的权衡
+
+GMRES 越迭代越贵。第 $j$ 步要把新向量与已有的 $j$ 个全部正交化，并存储全部 $j$ 个基向量。内存是 $O(mn)$，正交化是 $O(m^2 n)$。迭代上百次就吃不消。
+
+办法是重启。迭代 $m$ 次后，把当前解 $x_m$ 作为新初值，丢弃子空间，从头再来。这就是 GMRES(m)。内存被 $m$ 限定住。代价是收敛变慢。丢弃子空间的那一刻，累积的信息消失，有时会陷入停滞（stagnation）。
+
+下面的模拟里亲手操作一下。青色是不重启的 full GMRES，橙色是 GMRES(m)。
+
+<GmresConvergenceLab />
+
+把重启长度 $m$ 从 60 降到 10，橙色曲线会折成台阶并变慢。把条件数 κ 升到 $10^6$，两条曲线都变平。但打开 "clustered eigenvalues"，特征值聚拢到 1 附近，同样的 κ 下收敛骤然加速。这就是预处理的核心直觉。
+
+## 预处理：把特征值聚拢就更快
+
+GMRES 的收敛速度由 $A$ 的特征值分布主导。特征值在复平面上散得越开越慢，聚到一点附近就快。预处理（preconditioning）乘上一个矩阵 $M^{-1}$，使 $M^{-1}A$ 的特征值聚拢。
+
+$$
+M^{-1} A x = M^{-1} b
+$$
+
+其中 $M$ 是一个既像 $A$、其逆又便宜的矩阵。最简单的选择是对角预处理（$M = \mathrm{diag}(A)$，Jacobi）。实务中不完全 LU 分解（ILU）是标准做法。它在限制 fill-in 的前提下近似 $A \approx \tilde{L}\tilde{U}$。预处理选得好，迭代次数能从几百降到几十。
+
+## Python — 从零用 GMRES 求解 2D Poisson
+
+求解用五点拉普拉斯算子离散的 2D Poisson 方程 $-\nabla^2 u = f$。不依赖外部库，直接实现 GMRES。
+
+```python
+import numpy as np
+
+def build_poisson_2d(nx, ny):
+    """五点格式拉普拉斯算子 (-Laplacian)，以无矩阵算子形式返回。"""
+    h2 = 1.0 / ((nx + 1) * (ny + 1))  # 单位正方形网格间距^2 的近似
+
+    def operator(vec):
+        u = vec.reshape(ny, nx)
+        out = 4.0 * u
+        out[:, 1:]  -= u[:, :-1]   # 左邻
+        out[:, :-1] -= u[:, 1:]    # 右邻
+        out[1:, :]  -= u[:-1, :]   # 下邻
+        out[:-1, :] -= u[1:, :]    # 上邻
+        return (out / h2).ravel()
+
+    return operator
+
+def apply_givens(h_col, cs, sn, j):
+    """对第 j 列施加之前的旋转，并计算新的旋转。"""
+    for i in range(j):
+        tmp = cs[i] * h_col[i] + sn[i] * h_col[i + 1]
+        h_col[i + 1] = -sn[i] * h_col[i] + cs[i] * h_col[i + 1]
+        h_col[i] = tmp
+    r = np.hypot(h_col[j], h_col[j + 1])
+    cj = 1.0 if r == 0 else h_col[j] / r
+    sj = 0.0 if r == 0 else h_col[j + 1] / r
+    h_col[j] = cj * h_col[j] + sj * h_col[j + 1]
+    h_col[j + 1] = 0.0
+    return cj, sj
+
+def arnoldi_gmres(matvec, b, m, tol=1e-10):
+    """不重启的 GMRES。返回 (解 x, 相对残差历史)。"""
+    n = b.size
+    x = np.zeros(n)
+    r = b - matvec(x)
+    beta = np.linalg.norm(r)
+    b_norm = max(np.linalg.norm(b), 1e-30)
+    hist = [beta / b_norm]
+
+    V = np.zeros((m + 1, n))
+    V[0] = r / beta
+    H = np.zeros((m + 1, m))
+    g = np.zeros(m + 1)
+    g[0] = beta
+    cs = np.zeros(m)
+    sn = np.zeros(m)
+
+    used = 0
+    for j in range(m):
+        w = matvec(V[j])                       # 一次矩阵向量乘积
+        for i in range(j + 1):                 # Gram-Schmidt 正交化
+            H[i, j] = np.dot(w, V[i])
+            w -= H[i, j] * V[i]
+        H[j + 1, j] = np.linalg.norm(w)
+        if H[j + 1, j] > 1e-14:
+            V[j + 1] = w / H[j + 1, j]
+
+        cs[j], sn[j] = apply_givens(H[:, j], cs, sn, j)
+        g[j + 1] = -sn[j] * g[j]               # 把旋转施加到右端
+        g[j] = cs[j] * g[j]
+        used = j + 1
+        hist.append(abs(g[j + 1]) / b_norm)    # 免费读出残差
+        if abs(g[j + 1]) / b_norm < tol:
+            break
+
+    y = np.zeros(used)                          # 回代
+    for i in range(used - 1, -1, -1):
+        y[i] = (g[i] - H[i, i + 1:used] @ y[i + 1:used]) / H[i, i]
+    x += V[:used].T @ y
+    return x, hist
+
+# --- 运行: 40x40 网格, 点源 ---
+nx = ny = 40
+matvec = build_poisson_2d(nx, ny)
+f = np.zeros(nx * ny)
+f[(ny // 2) * nx + nx // 2] = 1.0           # 中心点源
+
+x, hist = arnoldi_gmres(matvec, f, m=120, tol=1e-10)
+
+print(f"网格        : {nx} x {ny}  ({nx*ny} 未知数)")
+print(f"收敛迭代     : {len(hist) - 1}")
+print(f"最终残差     : {hist[-1]:.2e}")
+print(f"真实残差     : {np.linalg.norm(f - matvec(x)):.2e}")
+```
+
+输出示例：
+
+```text
+网格        : 40 x 40  (1600 未知数)
+收敛迭代     : 78
+最终残差     : 8.74e-11
+真实残差     : 9.02e-11
+```
+
+我们只用 78 次矩阵向量乘积，就解出了 1600 个未知数。Givens 估计的残差（`hist[-1]`）与真实残差一致——旋转没有撒谎。把网格扩大到 80×80，迭代次数会增加。这时加上预处理，又会减少。
+
+## 在工程现场动 GMRES 时
+
+把 GMRES 接入代码时，最常出问题的地方是正交化。经典 Gram-Schmidt 在迭代变长后会丢失正交性。用修正 Gram-Schmidt（modified GS）或再正交化（reorthogonalization）才安全。上面的代码就是每步即时减去的 modified GS 形式。
+
+- **看到残差停滞，先怀疑重启长度。** $m$ 太小时，GMRES(m) 会平掉。在内存允许的范围内调大 $m$，或加强预处理。
+- **没有预处理的 GMRES 是赌博。** 条件数大的真实问题（低马赫、刚性化学）不加预处理甚至无法收敛。仅加一个 ILU(0) 就能改变局面。
+- **残差范数是免费的。** Givens 每一步都给你残差，所以别再单独计算 $\lVert b-Ax\rVert$。那只是又浪费一次矩阵向量乘积。

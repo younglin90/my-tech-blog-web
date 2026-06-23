@@ -1,0 +1,214 @@
+---
+title: "행렬을 뒤집지 않고 푼다 — GMRES와 Arnoldi 부분공간"
+date: 2026-06-24
+description: "Krylov 부분공간과 Arnoldi로 sparse 선형계를 푸는 GMRES를 밑바닥부터 구현"
+tags: ["Krylov", "GMRES", "Arnoldi", "Linear-Solver", "Preconditioning"]
+locale: ko
+slug: gmres-arnoldi-krylov-solver
+draft: false
+---
+
+import { GmresConvergenceLab } from '@/components/post-viz/2026-06-24-gmres-arnoldi-krylov-solver/GmresConvergenceLab'
+import { ArnoldiHessenbergViz } from '@/components/post-viz/2026-06-24-gmres-arnoldi-krylov-solver/ArnoldiHessenbergViz'
+
+암시적 솔버를 돌리던 동료가 메모리 부족으로 죽었다. 500만 셀의 야코비안을 LU 분해하려다 64GB가 순식간에 찼다. 행렬은 거대하고, 대부분이 0이다. 그런데 직접법은 그 0들 사이를 새로 채워버린다(fill-in). 이 글은 그 행렬을 통째로 뒤집지 않고, 행렬-벡터 곱만으로 해를 좁혀가는 GMRES를 밑바닥부터 따라간다. Arnoldi 반복으로 직교기저를 쌓고, 작은 최소제곱 문제로 잔차를 줄이며, Givens 회전으로 수렴을 공짜로 읽는 과정을 Python의 2D Poisson 솔버로 직접 확인한다.
+
+## 큰 sparse 행렬 앞에서 직접법이 무너진다
+
+유한체적 이산화는 셀당 0이 아닌 항이 몇 개뿐인 sparse 행렬을 만든다. 100만 셀이면 행렬은 $10^6 \times 10^6$, 하지만 각 행에 5~7개만 채워진다. 직접법(Gauss 소거, LU 분해)은 이 구조를 망가뜨린다. 소거 과정에서 원래 0이던 자리가 채워지기 때문이다(fill-in). 메모리는 셀 수의 제곱 가까이 폭발한다.
+
+반복법(iterative method)은 다른 약속을 한다. 행렬 $A$를 직접 만지지 않고, "$A$에 벡터를 곱하는 연산"만 쓴다. CFD 코드에서 이 연산은 한 번의 잔차 평가(residual sweep)와 같다. 행렬을 저장조차 안 해도 된다. 이것이 행렬-자유(matrix-free) GMRES의 출발점이다.
+
+## Krylov 부분공간 — 행렬-벡터 곱만으로 만드는 사다리
+
+초기 추정 $x_0$, 초기 잔차 $r_0 = b - Ax_0$에서 시작한다. 우리가 가진 유일한 도구는 "$A$ 곱하기"다. $r_0$에 $A$를 거듭 곱하면 벡터들의 사다리가 생긴다.
+
+$$
+\mathcal{K}_m = \mathrm{span}\{ r_0,\ A r_0,\ A^2 r_0,\ \dots,\ A^{m-1} r_0 \}
+$$
+
+여기서 $\mathcal{K}_m$은 차원 $m$의 Krylov 부분공간, $r_0$는 초기 잔차다. GMRES의 약속은 단순하다. 매 단계 $m$에서 해를 $x_0 + \mathcal{K}_m$ 안으로 제한하고, 그 안에서 잔차의 2-노름 $\lVert b - Ax \rVert_2$를 **최소로** 만드는 점을 고른다. GMRES는 Generalized Minimal RESidual, 이름 그대로 잔차 최소화다.
+
+문제는 $r_0, Ar_0, A^2 r_0, \dots$가 수치적으로 거의 평행해진다는 것이다. 거듭제곱은 가장 큰 고유값 방향으로 모든 벡터를 끌어당긴다. 이 기저로 최소제곱을 풀면 조건수가 폭발한다. 그래서 직교화가 필요하다.
+
+## Arnoldi 반복: 직교기저를 한 칸씩 쌓는다
+
+Arnoldi 과정은 Gram-Schmidt 직교화를 Krylov 사다리에 입힌다. $q_1 = r_0 / \lVert r_0 \rVert$에서 시작해, 새 벡터 $Aq_j$에서 기존 기저 성분을 모두 빼낸다.
+
+$$
+\tilde{q} = A q_j - \sum_{i=1}^{j} h_{ij} q_i,
+\qquad h_{ij} = q_i^{\top} A q_j
+$$
+
+$$
+h_{j+1,j} = \lVert \tilde{q} \rVert_2,
+\qquad q_{j+1} = \tilde{q} / h_{j+1,j}
+$$
+
+여기서 $q_j$는 정규직교 기저 벡터, $h_{ij}$는 투영 계수다. 이 계수들을 모으면 $(m+1)\times m$ 크기의 상부 Hessenberg 행렬 $\bar{H}_m$이 된다. Hessenberg는 첫 번째 하부대각선까지만 0이 아닌 형태다. 핵심 항등식은 다음과 같다.
+
+$$
+A Q_m = Q_{m+1} \bar{H}_m
+$$
+
+여기서 $Q_m$은 기저 벡터를 열로 갖는 $n\times m$ 행렬이다. 거대한 $A$의 작용이 작은 Hessenberg 행렬 $\bar{H}_m$로 압축된 것이다.
+
+아래 시뮬레이션에서 직접 조작해보자. 왼쪽은 채워지는 Hessenberg 행렬, 오른쪽은 기저의 직교성을 보는 Gram 행렬 $Q^{\top}Q$다.
+
+<ArnoldiHessenbergViz />
+
+차원 $n$을 키우면 Hessenberg가 첫 하부대각선 아래로는 0(연한 회색)으로 남는 걸 볼 수 있다. 오른쪽 Gram 행렬은 대각선만 청록색, 비대각(주황)은 거의 0이다. 직교성이 살아 있다는 증거다.
+
+## 최소잔차 — 작은 Hessenberg 최소제곱으로 줄인다
+
+해를 $x = x_0 + Q_m y$로 쓰면, $y$는 $m$차원 벡터다. 항등식 $AQ_m = Q_{m+1}\bar{H}_m$를 대입하면 잔차가 놀랍게 줄어든다.
+
+$$
+\lVert b - Ax \rVert_2 = \lVert \beta e_1 - \bar{H}_m y \rVert_2
+$$
+
+여기서 $\beta = \lVert r_0 \rVert$, $e_1$은 첫 성분만 1인 단위벡터다. $Q_{m+1}$이 직교행렬이라 노름이 보존되기 때문이다. 원래 $n$차원 최소제곱이 $(m+1)\times m$짜리 작은 문제로 바뀌었다. $m$이 수십이면 거의 공짜다.
+
+## Givens 회전으로 잔차를 공짜로 읽는다
+
+작은 최소제곱 $\min_y \lVert \beta e_1 - \bar{H}_m y \rVert$는 $\bar{H}_m$의 QR 분해로 푼다. Hessenberg는 이미 거의 삼각형이라, 하부대각선 원소 하나씩만 없애면 된다. 그 도구가 Givens 회전이다. 평면에서 두 성분을 회전시켜 아래쪽을 0으로 만든다.
+
+$$
+\begin{pmatrix} c & s \\ -s & c \end{pmatrix}
+\begin{pmatrix} h_{j,j} \\ h_{j+1,j} \end{pmatrix}
+=
+\begin{pmatrix} r \\ 0 \end{pmatrix}
+$$
+
+여기서 $c = h_{j,j}/r$, $s = h_{j+1,j}/r$, $r = \sqrt{h_{j,j}^2 + h_{j+1,j}^2}$다. 회전을 우변 $\beta e_1$에도 적용하면, 변환된 우변의 마지막 성분 크기가 **바로 현재 잔차의 노름**이다. 그래서 해 $y$를 풀지 않고도 매 반복마다 수렴을 읽을 수 있다.
+
+## 재시작 GMRES(m) — 메모리와 수렴의 거래
+
+GMRES의 비용은 반복할수록 커진다. $j$번째 단계에서 새 벡터를 기존 $j$개 전부와 직교화해야 하고, 기저 벡터 $j$개를 모두 저장해야 한다. 메모리는 $O(mn)$, 직교화는 $O(m^2 n)$이다. 반복이 수백 번이면 감당이 안 된다.
+
+해법은 재시작이다. $m$번 반복 후 현재 해 $x_m$을 새 초기값으로 삼고 부분공간을 버린 뒤 처음부터 다시 시작한다. 이것이 GMRES(m)이다. 메모리는 $m$에 묶인다. 대가는 수렴 둔화다. 부분공간을 버리는 순간 누적된 정보가 사라지고, 때로는 정체(stagnation)에 빠진다.
+
+아래 시뮬레이션에서 직접 조작해보자. 청록은 재시작 없는 full GMRES, 주황은 GMRES(m)이다.
+
+<GmresConvergenceLab />
+
+restart 길이 $m$을 60에서 10으로 줄이면 주황 곡선이 계단처럼 꺾이며 느려진다. 조건수 κ를 $10^6$까지 올리면 두 곡선 모두 평평해진다. 하지만 "clustered eigenvalues"를 켜면 고유값이 1 근처로 뭉치고, 같은 κ에서도 수렴이 급격히 빨라진다. 이게 전처리의 핵심 직관이다.
+
+## 전처리: 고유값을 뭉치면 빨라진다
+
+GMRES의 수렴 속도는 $A$의 고유값 분포가 좌우한다. 고유값이 복소평면에 넓게 흩어지면 느리고, 한 점 근처로 뭉치면 빠르다. 전처리(preconditioning)는 행렬 $M^{-1}$을 곱해 $M^{-1}A$의 고유값을 뭉치게 만든다.
+
+$$
+M^{-1} A x = M^{-1} b
+$$
+
+여기서 $M$은 $A$를 닮았으면서 역을 싸게 구할 수 있는 행렬이다. 가장 단순한 선택은 대각 전처리($M = \mathrm{diag}(A)$, Jacobi)다. 실무에선 불완전 LU 분해(ILU)가 표준이다. $A \approx \tilde{L}\tilde{U}$를 fill-in을 제한해 근사한다. 전처리가 잘 맞으면 반복 횟수가 수백에서 수십으로 떨어진다.
+
+## Python — 2D Poisson을 밑바닥부터 GMRES로 푼다
+
+5점 라플라시안으로 이산화한 2D Poisson 방정식 $-\nabla^2 u = f$를 푼다. 외부 라이브러리 없이 GMRES를 직접 구현한다.
+
+```python
+import numpy as np
+
+def build_poisson_2d(nx, ny):
+    """5점 스텐실 라플라시안 (-Laplacian), 행렬-자유 연산자로 반환."""
+    h2 = 1.0 / ((nx + 1) * (ny + 1))  # 단위 정사각형 격자 간격^2 근사
+
+    def operator(vec):
+        u = vec.reshape(ny, nx)
+        out = 4.0 * u
+        out[:, 1:]  -= u[:, :-1]   # 좌 이웃
+        out[:, :-1] -= u[:, 1:]    # 우 이웃
+        out[1:, :]  -= u[:-1, :]   # 하 이웃
+        out[:-1, :] -= u[1:, :]    # 상 이웃
+        return (out / h2).ravel()
+
+    return operator
+
+def apply_givens(h_col, cs, sn, j):
+    """이전 회전들을 j번째 열에 적용하고 새 회전을 계산."""
+    for i in range(j):
+        tmp = cs[i] * h_col[i] + sn[i] * h_col[i + 1]
+        h_col[i + 1] = -sn[i] * h_col[i] + cs[i] * h_col[i + 1]
+        h_col[i] = tmp
+    r = np.hypot(h_col[j], h_col[j + 1])
+    cj = 1.0 if r == 0 else h_col[j] / r
+    sj = 0.0 if r == 0 else h_col[j + 1] / r
+    h_col[j] = cj * h_col[j] + sj * h_col[j + 1]
+    h_col[j + 1] = 0.0
+    return cj, sj
+
+def arnoldi_gmres(matvec, b, m, tol=1e-10):
+    """재시작 없는 GMRES. (해 x, 상대잔차 이력) 반환."""
+    n = b.size
+    x = np.zeros(n)
+    r = b - matvec(x)
+    beta = np.linalg.norm(r)
+    b_norm = max(np.linalg.norm(b), 1e-30)
+    hist = [beta / b_norm]
+
+    V = np.zeros((m + 1, n))
+    V[0] = r / beta
+    H = np.zeros((m + 1, m))
+    g = np.zeros(m + 1)
+    g[0] = beta
+    cs = np.zeros(m)
+    sn = np.zeros(m)
+
+    used = 0
+    for j in range(m):
+        w = matvec(V[j])                       # 행렬-벡터 곱 1회
+        for i in range(j + 1):                 # Gram-Schmidt 직교화
+            H[i, j] = np.dot(w, V[i])
+            w -= H[i, j] * V[i]
+        H[j + 1, j] = np.linalg.norm(w)
+        if H[j + 1, j] > 1e-14:
+            V[j + 1] = w / H[j + 1, j]
+
+        cs[j], sn[j] = apply_givens(H[:, j], cs, sn, j)
+        g[j + 1] = -sn[j] * g[j]               # 회전을 우변에 적용
+        g[j] = cs[j] * g[j]
+        used = j + 1
+        hist.append(abs(g[j + 1]) / b_norm)    # 잔차를 공짜로 읽는다
+        if abs(g[j + 1]) / b_norm < tol:
+            break
+
+    y = np.zeros(used)                          # 후방대입
+    for i in range(used - 1, -1, -1):
+        y[i] = (g[i] - H[i, i + 1:used] @ y[i + 1:used]) / H[i, i]
+    x += V[:used].T @ y
+    return x, hist
+
+# --- 실행: 40x40 격자, 점 소스 ---
+nx = ny = 40
+matvec = build_poisson_2d(nx, ny)
+f = np.zeros(nx * ny)
+f[(ny // 2) * nx + nx // 2] = 1.0           # 가운데 점 소스
+
+x, hist = arnoldi_gmres(matvec, f, m=120, tol=1e-10)
+
+print(f"격자        : {nx} x {ny}  ({nx*ny} 미지수)")
+print(f"수렴 반복   : {len(hist) - 1}")
+print(f"최종 잔차   : {hist[-1]:.2e}")
+print(f"실제 잔차   : {np.linalg.norm(f - matvec(x)):.2e}")
+```
+
+출력 예시:
+
+```text
+격자        : 40 x 40  (1600 미지수)
+수렴 반복   : 78
+최종 잔차   : 8.74e-11
+실제 잔차   : 9.02e-11
+```
+
+1600개 미지수를 단 78번의 행렬-벡터 곱으로 풀었다. Givens가 추정한 잔차(`hist[-1]`)와 실제 잔차가 일치한다. 회전이 거짓말을 하지 않았다는 뜻이다. 격자를 80×80으로 키우면 반복 횟수가 늘어난다. 이때 전처리를 붙이면 다시 줄어든다.
+
+## 현장에서 GMRES를 만질 때
+
+GMRES를 코드에 붙일 때 가장 자주 터지는 곳은 직교화다. 고전 Gram-Schmidt는 반복이 길어지면 직교성이 무너진다. 수정 Gram-Schmidt(modified GS) 또는 재직교화(reorthogonalization)를 써야 안전하다. 위 코드는 반복마다 빼내는 modified GS 형태다.
+
+- **잔차 정체가 보이면 restart 길이부터 의심하라.** $m$이 너무 작으면 GMRES(m)은 평평하게 멈춘다. 메모리가 허락하는 한 $m$을 키우거나, 전처리를 강화한다.
+- **전처리 없는 GMRES는 도박이다.** 조건수가 큰 실제 문제(저마하, stiff 화학)는 전처리 없이는 수렴조차 안 한다. ILU(0) 하나만 붙여도 판이 바뀐다.
+- **잔차 노름은 공짜다.** Givens가 매 반복 잔차를 주므로, 별도로 $\lVert b-Ax\rVert$를 계산하지 마라. 행렬-벡터 곱을 한 번 더 낭비하는 셈이다.

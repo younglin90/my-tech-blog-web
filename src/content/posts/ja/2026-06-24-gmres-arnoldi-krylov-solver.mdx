@@ -1,0 +1,214 @@
+---
+title: "行列を反転せずに解く — GMRES と Arnoldi 部分空間"
+date: 2026-06-24
+description: "Krylov 部分空間と Arnoldi で疎な線形系を解く GMRES をゼロから実装"
+tags: ["Krylov", "GMRES", "Arnoldi", "Linear-Solver", "Preconditioning"]
+locale: ja
+slug: gmres-arnoldi-krylov-solver
+draft: false
+---
+
+import { GmresConvergenceLab } from '@/components/post-viz/2026-06-24-gmres-arnoldi-krylov-solver/GmresConvergenceLab'
+import { ArnoldiHessenbergViz } from '@/components/post-viz/2026-06-24-gmres-arnoldi-krylov-solver/ArnoldiHessenbergViz'
+
+陰解法ソルバを回していた同僚が、メモリ不足で落ちました。500万セルのヤコビアンを LU 分解しようとして、64GB が一瞬で埋まったのです。行列は巨大で、その大半はゼロです。それなのに直接法はそのゼロの隙間を新たに埋めてしまいます（フィルイン）。この記事では、その行列を丸ごと反転せず、行列ベクトル積だけで解に迫る GMRES をゼロから追います。Arnoldi 反復で直交基底を積み上げ、小さな最小二乗問題で残差を縮め、Givens 回転で収束をタダで読み取る過程を、Python の 2D Poisson ソルバで確かめます。
+
+## 大きな疎行列の前で直接法は崩れる
+
+有限体積離散化は、セルあたり非ゼロ要素が数個しかない疎行列を生みます。100万セルなら行列は $10^6 \times 10^6$ ですが、各行に入るのは5〜7個だけです。直接法（ガウス消去、LU 分解）はこの構造を壊します。消去の過程で、もともとゼロだった位置が埋まるからです（フィルイン）。メモリはセル数の二乗近くまで膨れ上がります。
+
+反復法は別の約束をします。行列 $A$ を直接触らず、「$A$ にベクトルを掛ける」演算だけを使います。CFD コードでは、この演算は一度の残差スイープと同じです。行列を保存する必要すらありません。これが行列フリー（matrix-free）GMRES の出発点です。
+
+## Krylov 部分空間 — 行列ベクトル積だけで作る梯子
+
+初期推定 $x_0$、初期残差 $r_0 = b - Ax_0$ から始めます。手元にある唯一の道具は「$A$ を掛ける」ことです。$r_0$ に $A$ を繰り返し掛けると、ベクトルの梯子ができます。
+
+$$
+\mathcal{K}_m = \mathrm{span}\{ r_0,\ A r_0,\ A^2 r_0,\ \dots,\ A^{m-1} r_0 \}
+$$
+
+ここで $\mathcal{K}_m$ は次元 $m$ の Krylov 部分空間、$r_0$ は初期残差です。GMRES の約束は単純です。各段階 $m$ で解を $x_0 + \mathcal{K}_m$ の中に制限し、その中で残差の 2-ノルム $\lVert b - Ax \rVert_2$ を**最小**にする点を選びます。GMRES は Generalized Minimal RESidual、名前のとおり残差最小化です。
+
+問題は、$r_0, Ar_0, A^2 r_0, \dots$ が数値的にほぼ平行になることです。べき乗は最大固有値の方向にすべてのベクトルを引き寄せます。この基底で最小二乗を解くと条件数が爆発します。だから直交化が必要です。
+
+## Arnoldi 反復：直交基底を一列ずつ積む
+
+Arnoldi 過程は Gram-Schmidt 直交化を Krylov の梯子に施します。$q_1 = r_0 / \lVert r_0 \rVert$ から始め、新しいベクトル $Aq_j$ から既存の基底成分をすべて引き抜きます。
+
+$$
+\tilde{q} = A q_j - \sum_{i=1}^{j} h_{ij} q_i,
+\qquad h_{ij} = q_i^{\top} A q_j
+$$
+
+$$
+h_{j+1,j} = \lVert \tilde{q} \rVert_2,
+\qquad q_{j+1} = \tilde{q} / h_{j+1,j}
+$$
+
+ここで $q_j$ は正規直交基底ベクトル、$h_{ij}$ は射影係数です。これらの係数を集めると $(m+1)\times m$ の上ヘッセンベルク行列 $\bar{H}_m$ になります。ヘッセンベルクとは、第一次対角線まで非ゼロという形です。鍵となる恒等式は次のとおりです。
+
+$$
+A Q_m = Q_{m+1} \bar{H}_m
+$$
+
+ここで $Q_m$ は基底ベクトルを列に持つ $n\times m$ 行列です。巨大な $A$ の作用が、小さなヘッセンベルク行列 $\bar{H}_m$ に圧縮されたのです。
+
+下のシミュレーションで実際に操作してみましょう。左は埋まっていくヘッセンベルク行列、右は基底の直交性を見る Gram 行列 $Q^{\top}Q$ です。
+
+<ArnoldiHessenbergViz />
+
+次元 $n$ を上げると、ヘッセンベルクが第一次対角線の下ではゼロ（薄い灰色）のまま残るのが見えます。右の Gram 行列は対角だけがシアン、非対角（オレンジ）はほぼゼロです。直交性が保たれている証拠です。
+
+## 最小残差 — 小さなヘッセンベルク最小二乗で縮める
+
+解を $x = x_0 + Q_m y$ と書くと、$y$ は $m$ 次元ベクトルです。恒等式 $AQ_m = Q_{m+1}\bar{H}_m$ を代入すると、残差は驚くほど縮みます。
+
+$$
+\lVert b - Ax \rVert_2 = \lVert \beta e_1 - \bar{H}_m y \rVert_2
+$$
+
+ここで $\beta = \lVert r_0 \rVert$、$e_1$ は第一成分だけが 1 の単位ベクトルです。$Q_{m+1}$ が直交行列なのでノルムが保存されるからです。もとの $n$ 次元最小二乗が、$(m+1)\times m$ の小さな問題に変わりました。$m$ が数十なら、ほぼタダです。
+
+## Givens 回転で残差をタダで読む
+
+小さな最小二乗 $\min_y \lVert \beta e_1 - \bar{H}_m y \rVert$ は $\bar{H}_m$ の QR 分解で解きます。ヘッセンベルクはすでにほぼ三角なので、第一次対角線の要素を一つずつ消すだけで済みます。その道具が Givens 回転です。平面で二つの成分を回転させ、下側をゼロにします。
+
+$$
+\begin{pmatrix} c & s \\ -s & c \end{pmatrix}
+\begin{pmatrix} h_{j,j} \\ h_{j+1,j} \end{pmatrix}
+=
+\begin{pmatrix} r \\ 0 \end{pmatrix}
+$$
+
+ここで $c = h_{j,j}/r$、$s = h_{j+1,j}/r$、$r = \sqrt{h_{j,j}^2 + h_{j+1,j}^2}$ です。回転を右辺 $\beta e_1$ にも適用すると、変換後の右辺の最後の成分の大きさが**まさに現在の残差ノルム**です。だから解 $y$ を解かずとも、反復ごとに収束を読めます。
+
+## リスタート付き GMRES(m) — メモリと収束の取引
+
+GMRES は反復するほど高くつきます。$j$ 番目の段階では、新しいベクトルを既存の $j$ 個すべてと直交化し、基底ベクトル $j$ 個をすべて保存しなければなりません。メモリは $O(mn)$、直交化は $O(m^2 n)$ です。反復が数百回なら手に負えません。
+
+解決策はリスタートです。$m$ 回反復したら現在の解 $x_m$ を新しい初期値とし、部分空間を捨てて最初からやり直します。これが GMRES(m) です。メモリは $m$ に縛られます。代償は収束の鈍化です。部分空間を捨てた瞬間、蓄積された情報が失われ、ときに停滞（stagnation）に陥ります。
+
+下のシミュレーションで実際に操作してみましょう。シアンはリスタートなしの full GMRES、オレンジは GMRES(m) です。
+
+<GmresConvergenceLab />
+
+リスタート長 $m$ を 60 から 10 に下げると、オレンジの曲線が階段状に折れて遅くなります。条件数 κ を $10^6$ まで上げると、両方の曲線が平らになります。しかし「clustered eigenvalues」をオンにすると固有値が 1 付近に集まり、同じ κ でも収束が急に速くなります。これが前処理の核心となる直観です。
+
+## 前処理：固有値を集めると速くなる
+
+GMRES の収束速度は $A$ の固有値分布に左右されます。固有値が複素平面に広く散らばると遅く、一点付近に集まると速くなります。前処理（preconditioning）は行列 $M^{-1}$ を掛けて、$M^{-1}A$ の固有値を集めます。
+
+$$
+M^{-1} A x = M^{-1} b
+$$
+
+ここで $M$ は $A$ に似ていて、かつ逆を安く適用できる行列です。最も単純な選択は対角前処理（$M = \mathrm{diag}(A)$、Jacobi）です。実務では不完全 LU 分解（ILU）が標準です。$A \approx \tilde{L}\tilde{U}$ をフィルインを制限して近似します。前処理がよく合えば、反復回数は数百から数十へ落ちます。
+
+## Python — 2D Poisson をゼロから GMRES で解く
+
+5点ラプラシアンで離散化した 2D Poisson 方程式 $-\nabla^2 u = f$ を解きます。外部ライブラリなしで GMRES を直接実装します。
+
+```python
+import numpy as np
+
+def build_poisson_2d(nx, ny):
+    """5点ステンシルのラプラシアン (-Laplacian)、行列フリー演算子として返す。"""
+    h2 = 1.0 / ((nx + 1) * (ny + 1))  # 単位正方格子の格子間隔^2 の近似
+
+    def operator(vec):
+        u = vec.reshape(ny, nx)
+        out = 4.0 * u
+        out[:, 1:]  -= u[:, :-1]   # 左の隣
+        out[:, :-1] -= u[:, 1:]    # 右の隣
+        out[1:, :]  -= u[:-1, :]   # 下の隣
+        out[:-1, :] -= u[1:, :]    # 上の隣
+        return (out / h2).ravel()
+
+    return operator
+
+def apply_givens(h_col, cs, sn, j):
+    """以前の回転を j 列目に適用し、新しい回転を計算する。"""
+    for i in range(j):
+        tmp = cs[i] * h_col[i] + sn[i] * h_col[i + 1]
+        h_col[i + 1] = -sn[i] * h_col[i] + cs[i] * h_col[i + 1]
+        h_col[i] = tmp
+    r = np.hypot(h_col[j], h_col[j + 1])
+    cj = 1.0 if r == 0 else h_col[j] / r
+    sj = 0.0 if r == 0 else h_col[j + 1] / r
+    h_col[j] = cj * h_col[j] + sj * h_col[j + 1]
+    h_col[j + 1] = 0.0
+    return cj, sj
+
+def arnoldi_gmres(matvec, b, m, tol=1e-10):
+    """リスタートなしの GMRES。(解 x, 相対残差の履歴) を返す。"""
+    n = b.size
+    x = np.zeros(n)
+    r = b - matvec(x)
+    beta = np.linalg.norm(r)
+    b_norm = max(np.linalg.norm(b), 1e-30)
+    hist = [beta / b_norm]
+
+    V = np.zeros((m + 1, n))
+    V[0] = r / beta
+    H = np.zeros((m + 1, m))
+    g = np.zeros(m + 1)
+    g[0] = beta
+    cs = np.zeros(m)
+    sn = np.zeros(m)
+
+    used = 0
+    for j in range(m):
+        w = matvec(V[j])                       # 行列ベクトル積を1回
+        for i in range(j + 1):                 # Gram-Schmidt 直交化
+            H[i, j] = np.dot(w, V[i])
+            w -= H[i, j] * V[i]
+        H[j + 1, j] = np.linalg.norm(w)
+        if H[j + 1, j] > 1e-14:
+            V[j + 1] = w / H[j + 1, j]
+
+        cs[j], sn[j] = apply_givens(H[:, j], cs, sn, j)
+        g[j + 1] = -sn[j] * g[j]               # 回転を右辺に適用
+        g[j] = cs[j] * g[j]
+        used = j + 1
+        hist.append(abs(g[j + 1]) / b_norm)    # 残差をタダで読む
+        if abs(g[j + 1]) / b_norm < tol:
+            break
+
+    y = np.zeros(used)                          # 後退代入
+    for i in range(used - 1, -1, -1):
+        y[i] = (g[i] - H[i, i + 1:used] @ y[i + 1:used]) / H[i, i]
+    x += V[:used].T @ y
+    return x, hist
+
+# --- 実行: 40x40 格子、点ソース ---
+nx = ny = 40
+matvec = build_poisson_2d(nx, ny)
+f = np.zeros(nx * ny)
+f[(ny // 2) * nx + nx // 2] = 1.0           # 中央の点ソース
+
+x, hist = arnoldi_gmres(matvec, f, m=120, tol=1e-10)
+
+print(f"格子        : {nx} x {ny}  ({nx*ny} 未知数)")
+print(f"収束反復     : {len(hist) - 1}")
+print(f"最終残差     : {hist[-1]:.2e}")
+print(f"実残差       : {np.linalg.norm(f - matvec(x)):.2e}")
+```
+
+出力例：
+
+```text
+格子        : 40 x 40  (1600 未知数)
+収束反復     : 78
+最終残差     : 8.74e-11
+実残差       : 9.02e-11
+```
+
+1600 個の未知数を、たった 78 回の行列ベクトル積で解きました。Givens が推定した残差（`hist[-1]`）と実残差が一致します。回転が嘘をつかなかった、ということです。格子を 80×80 に拡げると反復回数が増えます。ここで前処理を付ければ、また減ります。
+
+## 現場で GMRES を触るとき
+
+GMRES をコードに組み込むとき、最もよく壊れるのは直交化です。古典的な Gram-Schmidt は反復が長くなると直交性を失います。修正 Gram-Schmidt（modified GS）または再直交化（reorthogonalization）を使えば安全です。上のコードは反復ごとに引き抜く modified GS の形です。
+
+- **残差の停滞が見えたら、まずリスタート長を疑いましょう。** $m$ が小さすぎると GMRES(m) は平らに止まります。メモリが許す限り $m$ を上げるか、前処理を強化します。
+- **前処理なしの GMRES は賭けです。** 条件数の大きい実問題（低マッハ、stiff な化学）は前処理なしでは収束すらしません。ILU(0) を一つ付けるだけで局面が変わります。
+- **残差ノルムはタダです。** Givens が毎反復で残差をくれるので、別途 $\lVert b-Ax\rVert$ を計算しないでください。行列ベクトル積をもう一度無駄にするだけです。

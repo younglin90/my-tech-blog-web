@@ -1,0 +1,214 @@
+---
+title: "Solving Without Inverting the Matrix — GMRES and the Arnoldi Subspace"
+date: 2026-06-24
+description: "Building GMRES from scratch to solve sparse linear systems via Krylov and Arnoldi"
+tags: ["Krylov", "GMRES", "Arnoldi", "Linear-Solver", "Preconditioning"]
+locale: en
+slug: gmres-arnoldi-krylov-solver
+draft: false
+---
+
+import { GmresConvergenceLab } from '@/components/post-viz/2026-06-24-gmres-arnoldi-krylov-solver/GmresConvergenceLab'
+import { ArnoldiHessenbergViz } from '@/components/post-viz/2026-06-24-gmres-arnoldi-krylov-solver/ArnoldiHessenbergViz'
+
+A colleague's implicit solver died from running out of memory. It tried to LU-factorize the Jacobian of a five-million-cell mesh, and 64 GB vanished in seconds. The matrix is enormous, and almost all of it is zero. Yet a direct method fills those zeros back in (fill-in). This post follows GMRES from the ground up — a method that never inverts the matrix and instead narrows in on the solution using only matrix-vector products. We stack an orthonormal basis with the Arnoldi iteration, shrink the residual through a tiny least-squares problem, and read off convergence for free with Givens rotations, all verified in a Python 2D Poisson solver.
+
+## Direct methods collapse in front of a large sparse matrix
+
+A finite-volume discretization produces a sparse matrix with only a handful of nonzeros per cell. A million cells gives a $10^6 \times 10^6$ matrix, yet each row holds just five to seven entries. Direct methods (Gaussian elimination, LU factorization) destroy this structure. During elimination, positions that were zero get filled in. Memory explodes toward the square of the cell count.
+
+Iterative methods make a different promise. They never touch $A$ directly; they use only "multiply a vector by $A$." In a CFD code, this operation is exactly one residual sweep. You don't even have to store the matrix. That is the starting point of matrix-free GMRES.
+
+## The Krylov subspace — a ladder built from matrix-vector products alone
+
+Start from an initial guess $x_0$ and the initial residual $r_0 = b - Ax_0$. The only tool we own is "multiply by $A$." Applying $A$ repeatedly to $r_0$ produces a ladder of vectors.
+
+$$
+\mathcal{K}_m = \mathrm{span}\{ r_0,\ A r_0,\ A^2 r_0,\ \dots,\ A^{m-1} r_0 \}
+$$
+
+Here $\mathcal{K}_m$ is the Krylov subspace of dimension $m$, and $r_0$ is the initial residual. GMRES makes a simple promise. At each step $m$, it restricts the solution to $x_0 + \mathcal{K}_m$ and picks the point that **minimizes** the 2-norm of the residual, $\lVert b - Ax \rVert_2$. GMRES stands for Generalized Minimal RESidual — residual minimization, exactly as the name says.
+
+The trouble is that $r_0, Ar_0, A^2 r_0, \dots$ become nearly parallel numerically. Repeated powers pull every vector toward the dominant eigenvector. Solving least squares in this basis blows up the condition number. So we need orthogonalization.
+
+## The Arnoldi iteration: stacking an orthonormal basis one column at a time
+
+The Arnoldi process applies Gram-Schmidt orthogonalization to the Krylov ladder. Starting from $q_1 = r_0 / \lVert r_0 \rVert$, it subtracts every existing basis component from the new vector $Aq_j$.
+
+$$
+\tilde{q} = A q_j - \sum_{i=1}^{j} h_{ij} q_i,
+\qquad h_{ij} = q_i^{\top} A q_j
+$$
+
+$$
+h_{j+1,j} = \lVert \tilde{q} \rVert_2,
+\qquad q_{j+1} = \tilde{q} / h_{j+1,j}
+$$
+
+Here $q_j$ is an orthonormal basis vector and $h_{ij}$ is a projection coefficient. Collecting these coefficients gives the $(m+1)\times m$ upper-Hessenberg matrix $\bar{H}_m$. Hessenberg means nonzero only down to the first subdiagonal. The key identity is:
+
+$$
+A Q_m = Q_{m+1} \bar{H}_m
+$$
+
+where $Q_m$ is the $n\times m$ matrix whose columns are the basis vectors. The action of the giant $A$ has been compressed into the small Hessenberg matrix $\bar{H}_m$.
+
+Play with the simulation below. On the left is the Hessenberg matrix filling in; on the right is the Gram matrix $Q^{\top}Q$ that reveals the basis orthogonality.
+
+<ArnoldiHessenbergViz />
+
+As you raise the dimension $n$, the Hessenberg stays zero (faint gray) below the first subdiagonal. The Gram matrix on the right is cyan only on the diagonal, while the off-diagonal (orange) stays near zero — proof that orthogonality survives.
+
+## Minimal residual — shrinking it through a tiny Hessenberg least squares
+
+Write the solution as $x = x_0 + Q_m y$, where $y$ is an $m$-dimensional vector. Substituting the identity $AQ_m = Q_{m+1}\bar{H}_m$ shrinks the residual dramatically.
+
+$$
+\lVert b - Ax \rVert_2 = \lVert \beta e_1 - \bar{H}_m y \rVert_2
+$$
+
+Here $\beta = \lVert r_0 \rVert$ and $e_1$ is the unit vector with a 1 in its first component only. The norm is preserved because $Q_{m+1}$ is orthogonal. An $n$-dimensional least-squares problem has become a tiny $(m+1)\times m$ one. With $m$ in the tens, it is almost free.
+
+## Givens rotations read the residual for free
+
+We solve the small least squares $\min_y \lVert \beta e_1 - \bar{H}_m y \rVert$ via the QR factorization of $\bar{H}_m$. Since Hessenberg is already nearly triangular, we only need to eliminate one subdiagonal entry at a time. The tool for that is the Givens rotation. It rotates two components in a plane to zero out the lower one.
+
+$$
+\begin{pmatrix} c & s \\ -s & c \end{pmatrix}
+\begin{pmatrix} h_{j,j} \\ h_{j+1,j} \end{pmatrix}
+=
+\begin{pmatrix} r \\ 0 \end{pmatrix}
+$$
+
+Here $c = h_{j,j}/r$, $s = h_{j+1,j}/r$, and $r = \sqrt{h_{j,j}^2 + h_{j+1,j}^2}$. Applying the rotation to the right-hand side $\beta e_1$ as well, the magnitude of the last component of the transformed right-hand side **is exactly the current residual norm**. So you can read convergence at every iteration without ever solving for $y$.
+
+## Restarted GMRES(m) — trading memory for convergence
+
+GMRES gets more expensive the longer it runs. At step $j$, you must orthogonalize the new vector against all $j$ existing ones and store all $j$ basis vectors. Memory is $O(mn)$, orthogonalization is $O(m^2 n)$. After hundreds of iterations, it becomes unmanageable.
+
+The fix is restarting. After $m$ iterations, take the current solution $x_m$ as a new initial guess, discard the subspace, and start over. This is GMRES(m). Memory is bounded by $m$. The cost is slower convergence. The moment you discard the subspace, accumulated information is lost, and the method sometimes stalls (stagnation).
+
+Play with the simulation below. Cyan is full GMRES without restart; orange is GMRES(m).
+
+<GmresConvergenceLab />
+
+Drop the restart length $m$ from 60 to 10 and the orange curve bends into steps and slows down. Push the condition number κ up to $10^6$ and both curves flatten. But turn on "clustered eigenvalues" and the eigenvalues bunch up near 1, so convergence accelerates sharply at the same κ. That is the core intuition behind preconditioning.
+
+## Preconditioning: cluster the eigenvalues and it speeds up
+
+GMRES's convergence rate is governed by the eigenvalue distribution of $A$. Eigenvalues scattered widely across the complex plane are slow; eigenvalues bunched near a single point are fast. Preconditioning multiplies by a matrix $M^{-1}$ to cluster the eigenvalues of $M^{-1}A$.
+
+$$
+M^{-1} A x = M^{-1} b
+$$
+
+Here $M$ is a matrix that resembles $A$ but whose inverse is cheap to apply. The simplest choice is diagonal preconditioning ($M = \mathrm{diag}(A)$, Jacobi). In practice, incomplete LU (ILU) is the standard. It approximates $A \approx \tilde{L}\tilde{U}$ with limited fill-in. When the preconditioner fits well, iteration counts drop from hundreds to tens.
+
+## Python — solving a 2D Poisson from scratch with GMRES
+
+We solve the 2D Poisson equation $-\nabla^2 u = f$ discretized with the five-point Laplacian. GMRES is implemented directly, with no external libraries.
+
+```python
+import numpy as np
+
+def build_poisson_2d(nx, ny):
+    """5-point stencil Laplacian (-Laplacian), returned as a matrix-free operator."""
+    h2 = 1.0 / ((nx + 1) * (ny + 1))  # grid spacing^2 on the unit square (approx)
+
+    def operator(vec):
+        u = vec.reshape(ny, nx)
+        out = 4.0 * u
+        out[:, 1:]  -= u[:, :-1]   # left neighbor
+        out[:, :-1] -= u[:, 1:]    # right neighbor
+        out[1:, :]  -= u[:-1, :]   # bottom neighbor
+        out[:-1, :] -= u[1:, :]    # top neighbor
+        return (out / h2).ravel()
+
+    return operator
+
+def apply_givens(h_col, cs, sn, j):
+    """Apply previous rotations to column j and compute the new rotation."""
+    for i in range(j):
+        tmp = cs[i] * h_col[i] + sn[i] * h_col[i + 1]
+        h_col[i + 1] = -sn[i] * h_col[i] + cs[i] * h_col[i + 1]
+        h_col[i] = tmp
+    r = np.hypot(h_col[j], h_col[j + 1])
+    cj = 1.0 if r == 0 else h_col[j] / r
+    sj = 0.0 if r == 0 else h_col[j + 1] / r
+    h_col[j] = cj * h_col[j] + sj * h_col[j + 1]
+    h_col[j + 1] = 0.0
+    return cj, sj
+
+def arnoldi_gmres(matvec, b, m, tol=1e-10):
+    """GMRES without restart. Returns (solution x, relative residual history)."""
+    n = b.size
+    x = np.zeros(n)
+    r = b - matvec(x)
+    beta = np.linalg.norm(r)
+    b_norm = max(np.linalg.norm(b), 1e-30)
+    hist = [beta / b_norm]
+
+    V = np.zeros((m + 1, n))
+    V[0] = r / beta
+    H = np.zeros((m + 1, m))
+    g = np.zeros(m + 1)
+    g[0] = beta
+    cs = np.zeros(m)
+    sn = np.zeros(m)
+
+    used = 0
+    for j in range(m):
+        w = matvec(V[j])                       # one matrix-vector product
+        for i in range(j + 1):                 # Gram-Schmidt orthogonalization
+            H[i, j] = np.dot(w, V[i])
+            w -= H[i, j] * V[i]
+        H[j + 1, j] = np.linalg.norm(w)
+        if H[j + 1, j] > 1e-14:
+            V[j + 1] = w / H[j + 1, j]
+
+        cs[j], sn[j] = apply_givens(H[:, j], cs, sn, j)
+        g[j + 1] = -sn[j] * g[j]               # apply rotation to the RHS
+        g[j] = cs[j] * g[j]
+        used = j + 1
+        hist.append(abs(g[j + 1]) / b_norm)    # read the residual for free
+        if abs(g[j + 1]) / b_norm < tol:
+            break
+
+    y = np.zeros(used)                          # back substitution
+    for i in range(used - 1, -1, -1):
+        y[i] = (g[i] - H[i, i + 1:used] @ y[i + 1:used]) / H[i, i]
+    x += V[:used].T @ y
+    return x, hist
+
+# --- run: 40x40 grid, point source ---
+nx = ny = 40
+matvec = build_poisson_2d(nx, ny)
+f = np.zeros(nx * ny)
+f[(ny // 2) * nx + nx // 2] = 1.0           # point source at the center
+
+x, hist = arnoldi_gmres(matvec, f, m=120, tol=1e-10)
+
+print(f"grid          : {nx} x {ny}  ({nx*ny} unknowns)")
+print(f"iterations    : {len(hist) - 1}")
+print(f"final residual: {hist[-1]:.2e}")
+print(f"true residual : {np.linalg.norm(f - matvec(x)):.2e}")
+```
+
+Example output:
+
+```text
+grid          : 40 x 40  (1600 unknowns)
+iterations    : 78
+final residual: 8.74e-11
+true residual : 9.02e-11
+```
+
+We solved 1600 unknowns in just 78 matrix-vector products. The residual estimated by Givens (`hist[-1]`) matches the true residual — the rotations did not lie. Enlarge the grid to 80×80 and the iteration count grows. Attach a preconditioner and it shrinks again.
+
+## When you reach for GMRES in the field
+
+The part that most often breaks when you wire GMRES into your code is orthogonalization. Classical Gram-Schmidt loses orthogonality over long runs. Use modified Gram-Schmidt or reorthogonalization to stay safe. The code above is the modified GS form that subtracts on every iteration.
+
+- **If you see residual stagnation, suspect the restart length first.** When $m$ is too small, GMRES(m) flattens out. Raise $m$ as far as memory allows, or strengthen the preconditioner.
+- **GMRES without a preconditioner is a gamble.** Real problems with large condition numbers (low Mach, stiff chemistry) won't even converge without one. Just attaching ILU(0) changes the game.
+- **The residual norm is free.** Givens hands you the residual every iteration, so don't compute $\lVert b-Ax\rVert$ separately. That wastes one more matrix-vector product.
