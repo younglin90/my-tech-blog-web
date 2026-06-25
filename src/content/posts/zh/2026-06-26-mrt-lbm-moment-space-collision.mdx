@@ -1,0 +1,199 @@
+---
+title: "在BGK发散的低粘性区域中存活 — MRT格子玻尔兹曼碰撞"
+date: 2026-06-26
+description: "用矩空间多重弛豫突破单弛豫时间BGK极限的MRT-LBM实现"
+tags: ["LBM", "MRT", "Lattice-Boltzmann", "Collision-Operator", "Taylor-Green"]
+locale: zh
+slug: mrt-lbm-moment-space-collision
+draft: false
+---
+
+import { MRTMomentRelaxationLab } from '@/components/post-viz/2026-06-26-mrt-lbm-moment-space-collision/MRTMomentRelaxationLab'
+import { MRTLatticeVortexCanvas } from '@/components/post-viz/2026-06-26-mrt-lbm-moment-space-collision/MRTLatticeVortexCanvas'
+
+在同一格子上向同一平衡分布弛豫，一种碰撞模型平滑旋转，另一种却碎成棋盘格。差别只有一处。BGK用**一个弛豫时间**把九个分布函数一起弛豫，而MRT(Multiple Relaxation Time，多重弛豫时间)把它们变换为矩，再以**各自不同的速率**弛豫。本文用D2Q9格子玻尔兹曼方法追踪这个选择为何决定稳定性。我们用变换矩阵 $M$ 把分布移入矩空间，单独收紧与粘性无关的自由度，并用Taylor–Green涡观察MRT如何守住BGK发散的低粘性区域。
+
+## 一拍弛豫所有量的BGK弱点
+
+格子玻尔兹曼方法(LBM)重复两个步骤:分布函数 $f_i$ 在格子上迁移(streaming),在每个点向平衡弛豫(collision)。最常见的BGK碰撞写作
+
+$$
+f_i(\mathbf{x}+\mathbf{c}_i,\, t+1) = f_i(\mathbf{x}, t) - \frac{1}{\tau}\bigl(f_i - f_i^{\text{eq}}\bigr)
+$$
+
+其中 $f_i$ 是沿速度 $\mathbf{c}_i$ 的分布函数,$\tau$ 是弛豫时间,$f_i^{\text{eq}}$ 是局部平衡分布。粘性仅由 $\tau$ 决定。
+
+$$
+\nu = c_s^2\left(\tau - \tfrac{1}{2}\right), \qquad c_s^2 = \tfrac{1}{3}
+$$
+
+问题从这里开始。要降低粘性(提高雷诺数),必须把 $\tau$ 逼近 $1/2$。可是当 $\tau \to 1/2$ 时,与粘性**毫无关系**的高阶模几乎不弛豫,在格子上四处游走。这些模在格子分辨率极限处放大幅度时,就出现棋盘振荡,计算发散。在BGK中,调粘性的旋钮和调稳定性的旋钮被绑在同一个手柄上。
+
+## 从矩空间审视碰撞
+
+核心思路很简单。不要直接弛豫九个分布函数,而是先把它们变换为**具有物理意义的矩**,再弛豫。矩是分布函数的线性组合。
+
+$$
+\mathbf{m} = M\,\mathbf{f}
+$$
+
+这里 $\mathbf{f} = (f_0,\dots,f_8)^\top$ 是分布函数向量,$M$ 是 $9\times 9$ 变换矩阵,$\mathbf{m}$ 是矩向量。碰撞在矩空间向平衡矩 $\mathbf{m}^{\text{eq}}$ 弛豫,再变换回速度空间。
+
+$$
+\mathbf{f}^{*} = \mathbf{f} - M^{-1}\,S\,\bigl(M\mathbf{f} - \mathbf{m}^{\text{eq}}\bigr)
+$$
+
+$S = \mathrm{diag}(s_0,\dots,s_8)$ 是装着各矩弛豫率的对角矩阵。若把所有 $s_i$ 设为同一值 $1/\tau$,此式就精确退回BGK。MRT所做的不过是把那些对角元**逐矩**单独求解。
+
+## D2Q9的九个矩与变换矩阵M
+
+在D2Q9格子(二维、九速度)上,矩有以下九个:密度 $\rho$、能量 $e$、能量平方 $\varepsilon$、动量 $j_x, j_y$、能量通量 $q_x, q_y$,以及对应应力的 $p_{xx}, p_{xy}$。
+
+其中 $\rho, j_x, j_y$ 是碰撞不改变的**守恒量**,因此其弛豫率固定为 $s=0$。其余六个是可调旋钮。Lallemand–Luo标准变换矩阵被设计成各行正交,因此逆矩阵就是按行范数缩放的转置。
+
+平衡矩仅由密度和动量闭合。
+
+$$
+\begin{aligned}
+e^{\text{eq}} &= -2\rho + 3(j_x^2 + j_y^2), &\quad \varepsilon^{\text{eq}} &= \rho - 3(j_x^2 + j_y^2) \\
+q_x^{\text{eq}} &= -j_x, &\quad q_y^{\text{eq}} &= -j_y \\
+p_{xx}^{\text{eq}} &= j_x^2 - j_y^2, &\quad p_{xy}^{\text{eq}} &= j_x j_y
+\end{aligned}
+$$
+
+这里 $j_x = \rho u_x$、$j_y = \rho u_y$ 是动量分量。应力矩 $p_{xx}, p_{xy}$ 的平衡与速度梯度耦合,因此它们的弛豫率决定粘性。
+
+## 每个矩不同的弛豫率 — 与粘性无关的自由度
+
+决定剪切粘性的是应力矩的弛豫率 $s_\nu$。
+
+$$
+\nu = c_s^2\left(\frac{1}{s_\nu} - \frac{1}{2}\right)
+$$
+
+要点在于,其余弛豫率 $s_e$(体积)、$s_\varepsilon$、$s_q$(能量通量)**对粘性毫无影响**。它们是自由参数。即便为了低粘性把 $s_\nu$ 逼近 $2$,高阶模的弛豫率也能单独保持在稳定区间 $1.5\sim1.8$。BGK绑在一起的两个旋钮分开了。
+
+在下面的柱状图中直接操作弛豫率吧。
+
+<MRTMomentRelaxationLab />
+
+把 $s_\nu$ 提到 $1.99$,粘性 $\nu$ 几乎降到 $0$,但此时仍能把 $s_e, s_q$ 保持在稳定区间。也请注意守恒矩($\rho, j_x, j_y$)的柱条始终钉在零。
+
+## 碰撞在矩空间,迁移在速度空间
+
+算法流程如下。
+
+1. 由 $f_i$ 计算宏观量 $\rho, u_x, u_y$
+2. 用 $\mathbf{m} = M\mathbf{f}$ 变换到矩
+3. 计算平衡矩 $\mathbf{m}^{\text{eq}}$(由密度与动量)
+4. 逐矩弛豫:$m_a \leftarrow m_a - s_a(m_a - m_a^{\text{eq}})$
+5. 用 $\mathbf{f}^{*} = M^{-1}\mathbf{m}$ 复原到速度空间
+6. 迁移:把 $f_i^{*}$ 移到沿 $\mathbf{c}_i$ 的邻居
+7. 施加边界条件后回到第1步
+
+只有碰撞在矩空间发生,迁移照常在速度空间进行。额外开销仅为每个单元两次 $9\times 9$ 矩阵乘法。
+
+## Python — 用Taylor–Green涡测量粘性衰减
+
+验证使用Taylor–Green涡。该流动的粘性衰减精确解已知,因此可以用数值核对实现是否正确。动能应按 $\exp(-4\nu k^2 t)$ 衰减($k$ 为涡的波数)。
+
+```python
+import numpy as np
+
+# D2Q9 格子
+cx = np.array([0, 1, 0, -1, 0, 1, -1, -1, 1])
+cy = np.array([0, 0, 1, 0, -1, 1, 1, -1, -1])
+w  = np.array([4/9, 1/9, 1/9, 1/9, 1/9, 1/36, 1/36, 1/36, 1/36])
+
+# Lallemand-Luo 变换矩阵 (行: rho,e,eps,jx,qx,jy,qy,pxx,pxy)
+M = np.array([
+    [ 1, 1, 1, 1, 1, 1, 1, 1, 1],
+    [-4,-1,-1,-1,-1, 2, 2, 2, 2],
+    [ 4,-2,-2,-2,-2, 1, 1, 1, 1],
+    [ 0, 1, 0,-1, 0, 1,-1,-1, 1],
+    [ 0,-2, 0, 2, 0, 1,-1,-1, 1],
+    [ 0, 0, 1, 0,-1, 1, 1,-1,-1],
+    [ 0, 0,-2, 0, 2, 1, 1,-1,-1],
+    [ 0, 1,-1, 1,-1, 0, 0, 0, 0],
+    [ 0, 0, 0, 0, 0, 1,-1, 1,-1],
+], dtype=float)
+Minv = np.linalg.inv(M)
+
+def d2q9_equilibrium(rho, ux, uy):
+    eq = np.zeros((9,) + rho.shape)
+    for i in range(9):
+        cu = cx[i] * ux + cy[i] * uy
+        eq[i] = w[i] * rho * (1 + 3*cu + 4.5*cu**2 - 1.5*(ux**2 + uy**2))
+    return eq
+
+def relaxation_rates(nu):
+    s_nu = 1.0 / (3*nu + 0.5)          # 决定粘性的弛豫率
+    # 守恒(rho,jx,jy)=0,高阶模为稳定区间的固定值
+    return np.array([0, 1.64, 1.54, 0, 1.7, 0, 1.7, s_nu, s_nu])
+
+def taylor_green_init(N, U0):
+    x = np.arange(N)
+    X, Y = np.meshgrid(x, x, indexing='ij')
+    k = 2*np.pi / N
+    ux = -U0 * np.cos(k*X) * np.sin(k*Y)
+    uy =  U0 * np.sin(k*X) * np.cos(k*Y)
+    rho = 1 - 0.75 * U0**2 * (np.cos(2*k*X) + np.cos(2*k*Y))
+    return d2q9_equilibrium(rho, ux, uy), k
+
+def macros(f):
+    rho = f.sum(axis=0)
+    ux = (cx[:, None, None] * f).sum(axis=0) / rho
+    uy = (cy[:, None, None] * f).sum(axis=0) / rho
+    return rho, ux, uy
+
+def mrt_collide(f, s):
+    rho, ux, uy = macros(f)
+    jx, jy = rho*ux, rho*uy
+    m = np.tensordot(M, f, axes=([1], [0]))        # 进入矩空间
+    meq = np.zeros_like(m)
+    meq[0] = rho
+    meq[1] = -2*rho + 3*(jx**2 + jy**2)
+    meq[2] = rho - 3*(jx**2 + jy**2)
+    meq[3], meq[4] = jx, -jx
+    meq[5], meq[6] = jy, -jy
+    meq[7] = jx**2 - jy**2
+    meq[8] = jx*jy
+    m -= s[:, None, None] * (m - meq)               # 逐矩弛豫
+    return np.tensordot(Minv, m, axes=([1], [0]))    # 复原到速度空间
+
+def stream(f):
+    for i in range(9):
+        f[i] = np.roll(f[i], (cx[i], cy[i]), axis=(0, 1))
+    return f
+
+def run_mrt_lbm(N=64, nu=0.004, U0=0.04, steps=2000):
+    f, k = taylor_green_init(N, U0)
+    s = relaxation_rates(nu)
+    e0 = None
+    for t in range(steps):
+        f = mrt_collide(f, s)
+        f = stream(f)
+        if t % 400 == 0:
+            _, ux, uy = macros(f)
+            E = np.mean(ux**2 + uy**2)
+            e0 = E if e0 is None else e0
+            print(f"t={t:5d}  KE/KE0={E/e0:.4f}  analytic={np.exp(-4*nu*k**2*t):.4f}")
+
+run_mrt_lbm()
+```
+
+输出显示数值衰减与解析曲线 $\exp(-4\nu k^2 t)$ 吻合到小数点后两位。用同一格子、同一 $\nu$ 跑BGK,会在更低的粘性下先行发散。
+
+## 在相同Re下并排比较BGK与MRT
+
+在下面的模拟中,降低粘性滑块,并用BGK/MRT按钮切换碰撞模型吧。
+
+<MRTLatticeVortexCanvas />
+
+把粘性降到 $0.002$ 附近并保持BGK,格子上会爬出粗糙花纹并显示"diverged"。在相同粘性下切换到MRT并reset,涡就平滑衰减。尽管两种模型瞄准相同的雷诺数,其稳定极限的差异一目了然。
+
+## 下次接触格子玻尔兹曼时
+
+MRT不是魔法。它只是把决定粘性的旋钮($s_\nu$)与决定稳定性的旋钮($s_e, s_q$)在**物理上分离**了。这种分离在低粘性、高雷诺数下拓宽了格子玻尔兹曼的工作范围。
+
+留下三点。第一,BGK在低粘性下发散,是因为与粘性无关的高阶模也随之变慢。第二,MRT只把碰撞移入矩空间以单独收紧那些模,代价是每单元两次矩阵乘法。第三,实现是否正确,总能用Taylor–Green涡的 $\exp(-4\nu k^2 t)$ 衰减来验证。

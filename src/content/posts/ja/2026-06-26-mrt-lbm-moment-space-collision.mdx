@@ -1,0 +1,199 @@
+---
+title: "BGKが発散する低粘性域を生き抜く方法 — MRT格子ボルツマンの衝突"
+date: 2026-06-26
+description: "単一緩和時間BGKの限界をモーメント空間の多重緩和で越えるMRT-LBM実装"
+tags: ["LBM", "MRT", "Lattice-Boltzmann", "Collision-Operator", "Taylor-Green"]
+locale: ja
+slug: mrt-lbm-moment-space-collision
+draft: false
+---
+
+import { MRTMomentRelaxationLab } from '@/components/post-viz/2026-06-26-mrt-lbm-moment-space-collision/MRTMomentRelaxationLab'
+import { MRTLatticeVortexCanvas } from '@/components/post-viz/2026-06-26-mrt-lbm-moment-space-collision/MRTLatticeVortexCanvas'
+
+同じ格子で同じ平衡分布へ緩和するのに、一方の衝突モデルは滑らかに回り、もう一方はチェッカーボード模様で破綻します。違いはたった一つです。BGKは9個の分布関数を**一つの緩和時間**でまとめて緩和させ、MRT(Multiple Relaxation Time、多重緩和時間)はそれらをモーメントに変換して**それぞれ別の速さ**で緩和させます。この記事では、その違いがなぜ安定性を分けるのかをD2Q9格子ボルツマンで追います。変換行列 $M$ で分布をモーメントに移し、粘性とは無関係な自由度を別に締め、低粘性でBGKが破綻する領域をMRTがどう持ちこたえるかをTaylor–Green渦で確かめます。
+
+## すべてを一拍で緩和させるBGKの弱点
+
+格子ボルツマン法(LBM)は、分布関数 $f_i$ が格子上を移動(streaming)し、各点で平衡へ緩和(collision)する2段階を繰り返します。最も一般的なBGK衝突はこう書けます。
+
+$$
+f_i(\mathbf{x}+\mathbf{c}_i,\, t+1) = f_i(\mathbf{x}, t) - \frac{1}{\tau}\bigl(f_i - f_i^{\text{eq}}\bigr)
+$$
+
+ここで $f_i$ は速度 $\mathbf{c}_i$ 方向の分布関数、$\tau$ は緩和時間、$f_i^{\text{eq}}$ は局所平衡分布です。粘性は $\tau$ 一つで決まります。
+
+$$
+\nu = c_s^2\left(\tau - \tfrac{1}{2}\right), \qquad c_s^2 = \tfrac{1}{3}
+$$
+
+問題はここから始まります。粘性を下げる(レイノルズ数を上げる)には $\tau$ を $1/2$ に近づける必要があります。ところが $\tau \to 1/2$ になると、粘性と**何の関係もない**高次モードまでほとんど緩和されずに格子を動き回ります。これらのモードが格子解像度の限界で振幅を増すと、チェッカーボード振動が生じ、解析は発散します。BGKでは粘性の調整と安定性の調整が一つのつまみに縛られています。
+
+## 衝突をモーメント空間で眺める
+
+核心となる考え方は単純です。9個の分布関数をそのまま緩和させるのではなく、まず**物理的な意味を持つモーメント**に変換してから緩和させます。モーメントは分布関数の線形結合です。
+
+$$
+\mathbf{m} = M\,\mathbf{f}
+$$
+
+$\mathbf{f} = (f_0,\dots,f_8)^\top$ は分布関数ベクトル、$M$ は $9\times 9$ の変換行列、$\mathbf{m}$ はモーメントベクトルです。衝突はモーメント空間で平衡モーメント $\mathbf{m}^{\text{eq}}$ へ緩和させ、再び速度空間へ戻します。
+
+$$
+\mathbf{f}^{*} = \mathbf{f} - M^{-1}\,S\,\bigl(M\mathbf{f} - \mathbf{m}^{\text{eq}}\bigr)
+$$
+
+$S = \mathrm{diag}(s_0,\dots,s_8)$ はモーメントごとの緩和率を並べた対角行列です。すべての $s_i$ を同じ値 $1/\tau$ にすれば、この式は正確にBGKへ戻ります。MRTはその対角成分を**モーメントごとに別々に**解くだけです。
+
+## D2Q9の9つのモーメントと変換行列M
+
+D2Q9格子(2次元、9速度)でのモーメントは次の9つです。密度 $\rho$、エネルギー $e$、エネルギー二乗 $\varepsilon$、運動量 $j_x, j_y$、エネルギーフラックス $q_x, q_y$、そして応力に対応する $p_{xx}, p_{xy}$ です。
+
+このうち $\rho, j_x, j_y$ は衝突で変化しない**保存量**なので、緩和率を $s=0$ に固定します。残りの6つが調整可能なつまみです。Lallemand–Luoの標準変換行列は各行が直交するように設計されており、逆行列はノルムで割った転置として簡単に得られます。
+
+平衡モーメントは密度と運動量だけで閉じます。
+
+$$
+\begin{aligned}
+e^{\text{eq}} &= -2\rho + 3(j_x^2 + j_y^2), &\quad \varepsilon^{\text{eq}} &= \rho - 3(j_x^2 + j_y^2) \\
+q_x^{\text{eq}} &= -j_x, &\quad q_y^{\text{eq}} &= -j_y \\
+p_{xx}^{\text{eq}} &= j_x^2 - j_y^2, &\quad p_{xy}^{\text{eq}} &= j_x j_y
+\end{aligned}
+$$
+
+$j_x = \rho u_x$、$j_y = \rho u_y$ は運動量成分です。応力モーメント $p_{xx}, p_{xy}$ の平衡が速度勾配と結びつくため、これらの緩和率が粘性を決めます。
+
+## モーメントごとに異なる緩和率 — 粘性と無関係な自由度
+
+せん断粘性を決めるのは応力モーメントの緩和率 $s_\nu$ です。
+
+$$
+\nu = c_s^2\left(\frac{1}{s_\nu} - \frac{1}{2}\right)
+$$
+
+要点は、残りの緩和率 $s_e$(体積)、$s_\varepsilon$、$s_q$(エネルギーフラックス)が**粘性にまったく影響しない**ことです。これらは自由パラメータです。低粘性のために $s_\nu$ を $2$ に近づけても、高次モードの緩和率は安定区間 $1.5\sim1.8$ に別に保てます。BGKが縛っていた2つのつまみが分離します。
+
+下のバーで緩和率を直接操作してみましょう。
+
+<MRTMomentRelaxationLab />
+
+$s_\nu$ を $1.99$ まで上げると粘性 $\nu$ がほぼ $0$ まで下がりますが、それでも $s_e, s_q$ は安定区間に保てることが分かります。保存モーメント($\rho, j_x, j_y$)のバーが常に0に固定されていることも確認しましょう。
+
+## 衝突はモーメント空間、ストリーミングは速度空間
+
+アルゴリズムの流れは次の通りです。
+
+1. 分布 $f_i$ から巨視量 $\rho, u_x, u_y$ を計算
+2. $\mathbf{m} = M\mathbf{f}$ でモーメントへ変換
+3. 平衡モーメント $\mathbf{m}^{\text{eq}}$ を計算(密度・運動量から)
+4. モーメントごとの緩和:$m_a \leftarrow m_a - s_a(m_a - m_a^{\text{eq}})$
+5. $\mathbf{f}^{*} = M^{-1}\mathbf{m}$ で速度空間へ復元
+6. ストリーミング:$f_i^{*}$ を $\mathbf{c}_i$ 方向の隣へ移動
+7. 境界条件を適用して1へ
+
+衝突だけがモーメント空間で起こり、ストリーミングはそのまま速度空間で進みます。追加コストはセルごとの $9\times 9$ 行列積2回だけです。
+
+## Python — Taylor–Green渦で粘性減衰を測る
+
+検証にはTaylor–Green渦を使います。この流れは粘性減衰の厳密解が知られているので、実装が正しいかを数値で確認できます。運動エネルギーは $\exp(-4\nu k^2 t)$ で減るはずです($k$ は渦の波数)。
+
+```python
+import numpy as np
+
+# D2Q9 格子
+cx = np.array([0, 1, 0, -1, 0, 1, -1, -1, 1])
+cy = np.array([0, 0, 1, 0, -1, 1, 1, -1, -1])
+w  = np.array([4/9, 1/9, 1/9, 1/9, 1/9, 1/36, 1/36, 1/36, 1/36])
+
+# Lallemand-Luo 変換行列 (行: rho,e,eps,jx,qx,jy,qy,pxx,pxy)
+M = np.array([
+    [ 1, 1, 1, 1, 1, 1, 1, 1, 1],
+    [-4,-1,-1,-1,-1, 2, 2, 2, 2],
+    [ 4,-2,-2,-2,-2, 1, 1, 1, 1],
+    [ 0, 1, 0,-1, 0, 1,-1,-1, 1],
+    [ 0,-2, 0, 2, 0, 1,-1,-1, 1],
+    [ 0, 0, 1, 0,-1, 1, 1,-1,-1],
+    [ 0, 0,-2, 0, 2, 1, 1,-1,-1],
+    [ 0, 1,-1, 1,-1, 0, 0, 0, 0],
+    [ 0, 0, 0, 0, 0, 1,-1, 1,-1],
+], dtype=float)
+Minv = np.linalg.inv(M)
+
+def d2q9_equilibrium(rho, ux, uy):
+    eq = np.zeros((9,) + rho.shape)
+    for i in range(9):
+        cu = cx[i] * ux + cy[i] * uy
+        eq[i] = w[i] * rho * (1 + 3*cu + 4.5*cu**2 - 1.5*(ux**2 + uy**2))
+    return eq
+
+def relaxation_rates(nu):
+    s_nu = 1.0 / (3*nu + 0.5)          # 粘性を決める緩和率
+    # 保存(rho,jx,jy)=0、高次モードは安定区間の固定値
+    return np.array([0, 1.64, 1.54, 0, 1.7, 0, 1.7, s_nu, s_nu])
+
+def taylor_green_init(N, U0):
+    x = np.arange(N)
+    X, Y = np.meshgrid(x, x, indexing='ij')
+    k = 2*np.pi / N
+    ux = -U0 * np.cos(k*X) * np.sin(k*Y)
+    uy =  U0 * np.sin(k*X) * np.cos(k*Y)
+    rho = 1 - 0.75 * U0**2 * (np.cos(2*k*X) + np.cos(2*k*Y))
+    return d2q9_equilibrium(rho, ux, uy), k
+
+def macros(f):
+    rho = f.sum(axis=0)
+    ux = (cx[:, None, None] * f).sum(axis=0) / rho
+    uy = (cy[:, None, None] * f).sum(axis=0) / rho
+    return rho, ux, uy
+
+def mrt_collide(f, s):
+    rho, ux, uy = macros(f)
+    jx, jy = rho*ux, rho*uy
+    m = np.tensordot(M, f, axes=([1], [0]))        # モーメント空間へ
+    meq = np.zeros_like(m)
+    meq[0] = rho
+    meq[1] = -2*rho + 3*(jx**2 + jy**2)
+    meq[2] = rho - 3*(jx**2 + jy**2)
+    meq[3], meq[4] = jx, -jx
+    meq[5], meq[6] = jy, -jy
+    meq[7] = jx**2 - jy**2
+    meq[8] = jx*jy
+    m -= s[:, None, None] * (m - meq)               # モーメントごとの緩和
+    return np.tensordot(Minv, m, axes=([1], [0]))    # 速度空間へ復元
+
+def stream(f):
+    for i in range(9):
+        f[i] = np.roll(f[i], (cx[i], cy[i]), axis=(0, 1))
+    return f
+
+def run_mrt_lbm(N=64, nu=0.004, U0=0.04, steps=2000):
+    f, k = taylor_green_init(N, U0)
+    s = relaxation_rates(nu)
+    e0 = None
+    for t in range(steps):
+        f = mrt_collide(f, s)
+        f = stream(f)
+        if t % 400 == 0:
+            _, ux, uy = macros(f)
+            E = np.mean(ux**2 + uy**2)
+            e0 = E if e0 is None else e0
+            print(f"t={t:5d}  KE/KE0={E/e0:.4f}  analytic={np.exp(-4*nu*k**2*t):.4f}")
+
+run_mrt_lbm()
+```
+
+出力は、数値減衰が厳密曲線 $\exp(-4\nu k^2 t)$ と小数点以下2桁まで一致することを示します。同じ格子・同じ $\nu$ でBGKを回すと、より低い粘性で先に発散します。
+
+## BGKとMRTを同じReで並べる
+
+下のシミュレーションで粘性スライダーを下げ、BGK/MRTボタンで衝突モデルを切り替えてみましょう。
+
+<MRTLatticeVortexCanvas />
+
+粘性を $0.002$ あたりまで下げてBGKのままにすると、格子に粗い模様が入り「diverged」が表示されます。同じ粘性でMRTに切り替えてresetすると、渦は滑らかに減衰します。両モデルが同じレイノルズ数を狙っているのに、安定限界が異なることが一目で分かります。
+
+## 次に格子ボルツマンを触るとき
+
+MRTは魔法ではありません。粘性を決めるつまみ($s_\nu$)と安定性を決めるつまみ($s_e, s_q$)を**物理的に分離**しただけです。その分離が、低粘性・高レイノルズで格子ボルツマンの動作範囲を広げます。
+
+3つだけ残します。第一に、BGKが低粘性で破綻するのは、粘性と無関係な高次モードも一緒に遅くなるからです。第二に、MRTは衝突だけをモーメント空間へ移してそのモードを別に締め、追加コストはセルあたり行列積2回です。第三に、実装が正しいかはTaylor–Green渦の $\exp(-4\nu k^2 t)$ 減衰でいつでも検証できます。
