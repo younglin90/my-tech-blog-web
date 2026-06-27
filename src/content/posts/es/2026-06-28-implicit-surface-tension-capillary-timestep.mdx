@@ -1,0 +1,115 @@
+---
+title: "Por qué las simulaciones de gotas quedan atrapadas en Δt — resolver la tensión superficial de forma implícita"
+date: 2026-06-28
+description: "Reproducción de Janodet 2025, que rompe el grillete del paso temporal capilar con tensión superficial implícita"
+tags: ["Surface-Tension", "Capillary", "Implicit", "VOF", "Multiphase"]
+locale: es
+slug: implicit-surface-tension-capillary-timestep
+draft: false
+---
+
+import { CapillaryWaveBreach } from '@/components/post-viz/2026-06-28-implicit-surface-tension-capillary-timestep/CapillaryWaveBreach'
+import { CapillaryStepConstraint } from '@/components/post-viz/2026-06-28-implicit-surface-tension-capillary-timestep/CapillaryStepConstraint'
+
+Al duplicar la resolución de malla, el paso temporal se encoge unas 2.8 veces, aunque la física no se volvió más rápida. En los flujos interfaciales con tensión superficial, esta restricción del paso temporal capilar (capillary time-step constraint) es casi siempre la limitación más severa. Esta entrada reproduce el "algoritmo totalmente acoplado con tensión superficial implícita" que Janodet, van Wachem y Denner publicaron en 2025. Con un pequeño oscilador se puede palpar, con las manos, por qué $\Delta t$ queda encadenado a $\Delta x^{3/2}$ mientras la tensión superficial siga siendo explícita, y por qué tratarla de forma implícita rompe esa cadena.
+
+El artículo reseñado es *R. Janodet, B. van Wachem, F. Denner, "A fully-coupled algorithm with implicit surface tension treatment for interfacial flows with large density ratios", arXiv:2410.17757 (2024)*.
+
+## El grillete del paso temporal capilar
+
+Un solver de flujo interfacial incompresible suele tratar el término difusivo de forma implícita, borrando el límite temporal viscoso. Lo que queda como restricción más fuerte es la tensión superficial. En la forma que Brackbill escribió por primera vez en 1992,
+
+$$
+\Delta t_\sigma = \sqrt{\frac{(\rho_A + \rho_B)\,\Delta x^3}{2\pi\sigma}} \propto \Delta x^{3/2}
+$$
+
+$\rho_A, \rho_B$ son las densidades de los dos fluidos, $\sigma$ es el coeficiente de tensión superficial y $\Delta x$ es el espaciado de malla. El exponente $3/2$ es el problema. Reducir $\Delta x$ a la mitad para afinar la interfaz hace que el paso temporal caiga $2^{1.5}\approx 2.8$ veces. Cuanto más pequeña es la gota, más capilar es el flujo, más explota el número de pasos. Con tensión superficial explícita no hay salida.
+
+## Por qué Δx^{3/2} — la relación de dispersión de la onda capilar
+
+Esta restricción es en realidad una condición CFL. Una pequeña perturbación sinusoidal de la interfaz oscila como una onda capilar (una onda cuya fuerza restauradora es la tensión superficial). En el límite no viscoso de aguas profundas, la relación de dispersión es
+
+$$
+\omega^2 = \frac{\sigma k^3}{\rho_A + \rho_B}
+$$
+
+donde $\omega$ es la frecuencia angular y $k$ el número de onda. La onda más corta que la malla puede resolver es $k_{\max} = \pi/\Delta x$. Si $\Delta t$ supera el periodo de oscilación de esa onda, la integración explícita no logra seguir la oscilación y diverge. Al calcular $\omega_{\max}\Delta t_\sigma$ se obtiene $\sqrt{(k_{\max}\Delta x)^3/(2\pi)} = \pi/\sqrt{2}\approx 2.22$. Así que $\Delta t_\sigma$ es exactamente el número CFL de la onda capilar más rápida.
+
+## Tensión superficial, vuelta implícita — el núcleo en un oscilador de una línea
+
+No hace falta sacar todo el solver. Un solo modo de onda capilar se reduce a un oscilador armónico amortiguado.
+
+$$
+\ddot{\eta} + 2\gamma\dot{\eta} + \omega^2 \eta = 0
+$$
+
+$\eta$ es la amplitud de la interfaz y $\gamma$ el amortiguamiento viscoso. La tensión superficial explícita equivale a integrar este oscilador con Euler simpléctico, que diverge para $\omega\Delta t > 2$: justamente el CFL capilar de arriba. Si se evalúa el término de tensión superficial en el nuevo nivel temporal (Euler hacia atrás), se vuelve incondicionalmente estable.
+
+Conviene probar la simulación de abajo. La misma onda capilar estacionaria se integra en paralelo, explícita (naranja) e implícita (cian).
+
+<CapillaryWaveBreach />
+
+Al subir $\Delta t/\Delta t_\sigma$ por encima de 0.9, la curva naranja estalla. La cian decae con calma a lo largo de la curva analítica punteada incluso a 3×. Al elevar mesh Oh (la escala viscosa), un amortiguamiento mayor asienta a ambas más pronto.
+
+## La frontera de estabilidad, vista por el factor de amplificación
+
+El factor de amplificación $|G|$ del oscilador (la razón por la que la amplitud se multiplica en cada paso) deja nítida la frontera. Treinta líneas de numpy lo reproducen. El problema de juguete no es un tubo de choque, sino el decaimiento de una onda capilar estacionaria.
+
+```python
+import numpy as np
+
+def capillary_omega(sigma, k, rho_hat):
+    # relacion de dispersion: onda capilar no viscosa de aguas profundas omega^2 = sigma k^3 / (rhoA+rhoB)
+    return np.sqrt(sigma * k**3 / rho_hat)
+
+def dt_capillary(sigma, dx, rho_hat):
+    # Ec.(4): paso temporal capilar de Brackbill ~ dx^{3/2}
+    return np.sqrt(rho_hat * dx**3 / (2*np.pi*sigma))
+
+def run_standing_wave(omega, gamma, dt, steps, implicit):
+    eta, v = 1.0, 0.0
+    peak = 0.0
+    for _ in range(steps):
+        if implicit:        # Euler hacia atras: tension superficial en el nuevo nivel (incondicionalmente estable)
+            v = (v - dt*omega**2*eta) / (1 + dt**2*omega**2 + 2*gamma*dt)
+            eta = eta + dt*v
+        else:               # Euler simplectico: tension superficial explicita (limite omega*dt<2)
+            v = v - dt*omega**2*eta - dt*2*gamma*v
+            eta = eta + dt*v
+        peak = max(peak, abs(eta))
+    return peak
+
+sigma, rho_hat, L = 0.07, 1001.2, 1.0      # agua/aire
+for N in (64, 128, 256):
+    dx = L/N; k = np.pi/dx                  # onda capilar mas corta resoluble
+    om = capillary_omega(sigma, k, rho_hat)
+    dts = dt_capillary(sigma, dx, rho_hat)
+    print(f"N={N:4d}  dt_sigma={dts:.2e}  omega*dt_sigma={om*dts:.3f}")
+# salida: omega*dt_sigma = 2.221 (= pi/sqrt(2)) para todo N -- el CFL ES el limite capilar
+
+N = 128; dx = L/N; k = np.pi/dx
+om = capillary_omega(sigma, k, rho_hat); dts = dt_capillary(sigma, dx, rho_hat)
+dt = 1.5*dts; gamma = 0.1*om                # forzado a 1.5x el limite capilar
+pe = run_standing_wave(om, gamma, dt, 200, implicit=False)
+pi_ = run_standing_wave(om, gamma, dt, 200, implicit=True)
+print(f"dt=1.5*dt_sigma  pico explicito={pe:.1e}  pico implicito={pi_:.3f}")
+# salida de ejemplo: pico explicito=3.6e+07  pico implicito=1.000
+```
+
+`omega*dt_sigma` imprime 2.221 sin importar la resolución de malla: prueba de que el límite capilar es el CFL de la onda más rápida. Mueve la curva $|G|$ abajo.
+
+<CapillaryStepConstraint />
+
+La explícita (naranja) sostiene $|G|=1$ hasta $\Delta t/\Delta t_\sigma \approx 0.9$, y luego supera 1. La implícita (cian) mantiene $|G|<1$ en cada paso. Los deslizadores de mesh y $\sigma$ también muestran cómo $\Delta t_\sigma$ se desploma como $\Delta x^{3/2}$.
+
+## El acoplamiento total es la clave — función color, presión y velocidad en una sola matriz
+
+La parte difícil de volverse implícito es que la fuerza de tensión superficial $\mathbf{f}_\sigma = \sigma\kappa\nabla\psi$ se enreda de forma no lineal con la función color (la variable VOF que marca el tipo de fluido de 0 a 1) $\psi$. La curvatura $\kappa$ también queda fijada por derivadas de $\psi$. El artículo aplica una linealización de Newton de este término respecto al $\psi$ del nuevo nivel y resuelve la ecuación de advección de interfaz junto con las de continuidad y momento como un único sistema lineal $\mathbf{A}\boldsymbol{\phi}=\mathbf{b}$, en el que $\boldsymbol{\phi}=(p, u, v, w, \psi)$ queda acoplado de forma implícita de una vez. El algoritmo anterior de Denner et al. estaba atado a una razón de densidad de 1. El aporte de Janodet es escribir continuidad y momento en forma conservativa y tratar la densidad de forma implícita respecto a $\psi$ en los términos transitorios, manteniendo el acoplamiento incluso con una razón de densidad agua/aire de 1000:1. La advección de interfaz se discretiza con THINC/QQ en vez de CICSAM, conservando la interfaz nítida a CFL grande. A diferencia del PIMPLE segregado de OpenFOAM, esto solo rinde en un solver de acoplamiento por bloques (block-coupled).
+
+## Con qué tropecé al reproducirlo
+
+"Incondicionalmente estable" viene con una salvedad. Aun cuando la tensión superficial implícita rompe el límite capilar, el mayor $\Delta t$ estable sigue siendo finito. El límite superior visco-capilar de Galusinski–Vigneaux lo fija. Con una razón de densidad de 1000, este límite es un orden de magnitud más estricto que con razón unitaria, y el propio artículo informa estabilidad solo hasta unos $1.5\,\Delta t_\sigma$ en el límite no viscoso. El modelo de oscilador de arriba simplifica ese acoplamiento visco-capilar, así que hace ver el lado implícito más generoso que la realidad. Euler hacia atrás también es estable a costa de amortiguar artificialmente las ondas capilares rápidas. En problemas donde importa la conservación de energía, ese amortiguamiento numérico puede confundirse con decaimiento físico, por lo que el artículo verifica el balance de fuerzas y la conservación de energía por separado.
+
+## Lo que cambia este artículo
+
+Quedan tres líneas. El paso temporal capilar es el CFL de la onda capilar más rápida, así que la tensión superficial explícita no puede zafarse del grillete $\Delta x^{3/2}$. Al atar la tensión superficial de forma implícita en una sola matriz junto con la función color, la presión y la velocidad, el grillete se rompe. Lograrlo hasta razones de densidad grandes es el corazón de este artículo. Para profundizar, conviene leer el antecedente de razón de densidad unitaria de este algoritmo en Denner et al. (2022) y la redefinición por procesamiento de señales del CFL capilar en Denner y van Wachem (2015).

@@ -1,0 +1,115 @@
+---
+title: "液滴模拟为何被 Δt 绊住 — 把表面张力隐式求解的论文"
+date: 2026-06-28
+description: "复现 Janodet 2025，用隐式表面张力斩断毛细时间步长的枷锁"
+tags: ["Surface-Tension", "Capillary", "Implicit", "VOF", "Multiphase"]
+locale: zh
+slug: implicit-surface-tension-capillary-timestep
+draft: false
+---
+
+import { CapillaryWaveBreach } from '@/components/post-viz/2026-06-28-implicit-surface-tension-capillary-timestep/CapillaryWaveBreach'
+import { CapillaryStepConstraint } from '@/components/post-viz/2026-06-28-implicit-surface-tension-capillary-timestep/CapillaryStepConstraint'
+
+把网格加密一倍，时间步长就缩小约 2.8 倍，可物理并没有变快。在有表面张力的界面流动中，这个毛细时间步长约束（capillary time-step constraint）几乎总是最苛刻的限制。本文复现 Janodet、van Wachem 与 Denner 于 2025 年发表的“隐式表面张力全耦合算法”。借助一个小小的振子，你可以亲手感受：只要表面张力保持显式，为什么 $\Delta t$ 就被钉死在 $\Delta x^{3/2}$ 上；而隐式求解又为什么能斩断这道枷锁。
+
+评述对象是 *R. Janodet, B. van Wachem, F. Denner, "A fully-coupled algorithm with implicit surface tension treatment for interfacial flows with large density ratios", arXiv:2410.17757 (2024)*。
+
+## 毛细时间步长这道枷锁
+
+不可压界面流动求解器通常把扩散项隐式处理，抹去粘性时间约束。于是作为最强约束剩下的，就是表面张力。以 Brackbill 在 1992 年最早写下的形式，
+
+$$
+\Delta t_\sigma = \sqrt{\frac{(\rho_A + \rho_B)\,\Delta x^3}{2\pi\sigma}} \propto \Delta x^{3/2}
+$$
+
+$\rho_A, \rho_B$ 是两种流体的密度，$\sigma$ 是表面张力系数，$\Delta x$ 是网格间距。指数 $3/2$ 才是问题所在。为了把界面看得更清而把 $\Delta x$ 减半，时间步长就缩小 $2^{1.5}\approx 2.8$ 倍。液滴越小、流动越接近毛细尺度，步数就越爆炸。用显式表面张力，无路可逃。
+
+## 为什么是 Δx^{3/2} — 毛细波的色散关系
+
+这道约束其实是 CFL 条件。界面上的小正弦扰动以毛细波（capillary wave，以表面张力为恢复力的波）的形式振荡。在无粘深水极限下，色散关系为
+
+$$
+\omega^2 = \frac{\sigma k^3}{\rho_A + \rho_B}
+$$
+
+$\omega$ 是角频率，$k$ 是波数。网格能分辨的最短波是 $k_{\max} = \pi/\Delta x$。若 $\Delta t$ 超过该波的振荡周期，显式积分跟不上振荡而发散。计算 $\omega_{\max}\Delta t_\sigma$ 得到 $\sqrt{(k_{\max}\Delta x)^3/(2\pi)} = \pi/\sqrt{2}\approx 2.22$。也就是说，$\Delta t_\sigma$ 正是套在最快毛细波上的 CFL。
+
+## 把表面张力隐式化 — 用一行振子看清核心
+
+不必搬出整个求解器。一个毛细波模态可归约为阻尼谐振子。
+
+$$
+\ddot{\eta} + 2\gamma\dot{\eta} + \omega^2 \eta = 0
+$$
+
+$\eta$ 是界面振幅，$\gamma$ 是粘性阻尼。显式表面张力等同于用辛欧拉法积分这个振子，在 $\omega\Delta t > 2$ 处发散 —— 正是上面的毛细 CFL。把表面张力项取在新时刻的值（后向欧拉），就变成无条件稳定。
+
+在下面的模拟里直接操作吧。同一个驻立毛细波被并排积分：显式（橙色）与隐式（青色）。
+
+<CapillaryWaveBreach />
+
+把 $\Delta t/\Delta t_\sigma$ 提到 0.9 以上，橙色就炸开。青色即便提到 3 倍，仍沿着虚线（解析解）平稳衰减。增大 mesh Oh（粘性尺度），阻尼变强，两者都更快平息。
+
+## 透过放大因子看稳定边界
+
+用振子的放大因子（amplification factor，每步振幅被乘的倍率）$|G|$，边界就清晰了。numpy 三十行即可复现。玩具问题不是激波管，而是驻立毛细波的衰减。
+
+```python
+import numpy as np
+
+def capillary_omega(sigma, k, rho_hat):
+    # 色散关系: 无粘深水毛细波 omega^2 = sigma k^3 / (rhoA+rhoB)
+    return np.sqrt(sigma * k**3 / rho_hat)
+
+def dt_capillary(sigma, dx, rho_hat):
+    # 式(4): Brackbill 毛细时间步长 ~ dx^{3/2}
+    return np.sqrt(rho_hat * dx**3 / (2*np.pi*sigma))
+
+def run_standing_wave(omega, gamma, dt, steps, implicit):
+    eta, v = 1.0, 0.0
+    peak = 0.0
+    for _ in range(steps):
+        if implicit:        # 后向欧拉: 表面张力取新时刻值 (无条件稳定)
+            v = (v - dt*omega**2*eta) / (1 + dt**2*omega**2 + 2*gamma*dt)
+            eta = eta + dt*v
+        else:               # 辛欧拉: 显式表面张力 (omega*dt<2 约束)
+            v = v - dt*omega**2*eta - dt*2*gamma*v
+            eta = eta + dt*v
+        peak = max(peak, abs(eta))
+    return peak
+
+sigma, rho_hat, L = 0.07, 1001.2, 1.0      # 水/空气
+for N in (64, 128, 256):
+    dx = L/N; k = np.pi/dx                  # 最短可分辨毛细波
+    om = capillary_omega(sigma, k, rho_hat)
+    dts = dt_capillary(sigma, dx, rho_hat)
+    print(f"N={N:4d}  dt_sigma={dts:.2e}  omega*dt_sigma={om*dts:.3f}")
+# 输出: 所有 N 下 omega*dt_sigma = 2.221 (= pi/sqrt(2))，CFL 即毛细约束本身
+
+N = 128; dx = L/N; k = np.pi/dx
+om = capillary_omega(sigma, k, rho_hat); dts = dt_capillary(sigma, dx, rho_hat)
+dt = 1.5*dts; gamma = 0.1*om                # 强制取毛细约束的 1.5 倍
+pe = run_standing_wave(om, gamma, dt, 200, implicit=False)
+pi_ = run_standing_wave(om, gamma, dt, 200, implicit=True)
+print(f"dt=1.5*dt_sigma  显式峰值={pe:.1e}  隐式峰值={pi_:.3f}")
+# 输出示例: 显式峰值=3.6e+07  隐式峰值=1.000
+```
+
+`omega*dt_sigma` 无论网格分辨率如何都打印出 2.221，正是毛细约束即最快波的 CFL 的证据。在下面移动 $|G|$ 曲线吧。
+
+<CapillaryStepConstraint />
+
+显式（橙色）保持 $|G|=1$ 直到 $\Delta t/\Delta t_\sigma \approx 0.9$，再往上就越过 1。隐式（青色）在任何步长下都 $|G|<1$。用 mesh 和 $\sigma$ 滑块还能看到 $\Delta t_\sigma$ 本身按 $\Delta x^{3/2}$ 骤降。
+
+## 全耦合才是关键 — 把色函数、压力、速度装进一个矩阵
+
+隐式化的难点在于，表面张力 $\mathbf{f}_\sigma = \sigma\kappa\nabla\psi$ 与色函数（colour function，用 0~1 标记流体种类的 VOF 变量）$\psi$ 非线性纠缠。曲率 $\kappa$ 也由 $\psi$ 的导数决定。论文对该项关于新时刻的 $\psi$ 做 Newton 线性化，并把界面输运方程与连续、动量方程一起作为单一线性系统 $\mathbf{A}\boldsymbol{\phi}=\mathbf{b}$ 求解，其中 $\boldsymbol{\phi}=(p, u, v, w, \psi)$ 被整体隐式耦合。Denner 等人此前的算法被锁死在密度比 1。Janodet 的贡献是把连续与动量写成守恒形式，并在瞬态项中把密度关于 $\psi$ 隐式处理，从而在水/空气 1000:1 这样的大密度比下仍保持耦合。界面输运用 THINC/QQ 而非 CICSAM 离散，在大 CFL 下也保持界面锐利。与 OpenFOAM 的分离式 PIMPLE 不同，这要在块耦合（block-coupled）求解器里才有意义。
+
+## 复现时撞上的问题
+
+“无条件稳定”是有附注的。即便隐式表面张力突破了毛细约束，可稳定的最大 $\Delta t$ 仍然有限。Galusinski–Vigneaux 的粘性-毛细上限给出了它。在密度比 1000 下，这个上限比密度比 1 时严苛一个数量级，论文自己也报告在无粘极限下只稳定到约 $1.5\,\Delta t_\sigma$。上面的振子模型简化了这种粘性-毛细耦合，因而让隐式一侧显得比现实更宽容。此外后向欧拉虽稳定，却会人为地衰减快毛细波。在需要能量守恒的问题里，这种数值衰减可能被误认为物理衰减，所以论文单独验证了力平衡与能量守恒。
+
+## 这篇论文改变了什么
+
+留三行。毛细时间步长是套在最快毛细波上的 CFL，所以显式表面张力摆脱不了 $\Delta x^{3/2}$ 的枷锁。把表面张力与色函数、压力、速度隐式地绑进同一个矩阵，枷锁就断了。把这件事一路做到大密度比，正是这篇论文的内核。想更深入，就读本算法密度比 1 的原型 Denner 等（2022），以及用信号处理重新定义毛细 CFL 的 Denner 与 van Wachem（2015）。

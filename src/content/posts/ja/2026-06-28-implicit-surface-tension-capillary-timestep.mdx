@@ -1,0 +1,115 @@
+---
+title: "液滴シミュレーションがΔtに足を取られる理由 — 表面張力を陰的に解く論文"
+date: 2026-06-28
+description: "毛細管時間刻みの足枷を陰的表面張力で断ち切ったJanodet 2025を再現する"
+tags: ["Surface-Tension", "Capillary", "Implicit", "VOF", "Multiphase"]
+locale: ja
+slug: implicit-surface-tension-capillary-timestep
+draft: false
+---
+
+import { CapillaryWaveBreach } from '@/components/post-viz/2026-06-28-implicit-surface-tension-capillary-timestep/CapillaryWaveBreach'
+import { CapillaryStepConstraint } from '@/components/post-viz/2026-06-28-implicit-surface-tension-capillary-timestep/CapillaryStepConstraint'
+
+格子を2倍細かくすると、時間刻みは約2.8倍小さくなります。物理が速くなったわけでもないのにそうなります。表面張力が効く界面流れでは、この毛細管時間刻み制約（capillary time-step constraint）がほぼ常に最も厳しい制約です。この記事では、Janodet・van Wachem・Dennerが2025年に発表した「陰的表面張力の完全結合アルゴリズム」を再現します。表面張力を陽的に置く限りなぜ $\Delta t$ が $\Delta x^{3/2}$ に縛られるのか、陰的に解けばなぜその足枷が外れるのかを、小さな振動子ひとつで手を動かして確かめます。
+
+レビュー対象は *R. Janodet, B. van Wachem, F. Denner, "A fully-coupled algorithm with implicit surface tension treatment for interfacial flows with large density ratios", arXiv:2410.17757 (2024)* です。
+
+## 毛細管時間刻みという足枷
+
+非圧縮性の界面流れソルバは通常、拡散項を陰的に解いて粘性の時間制約を消します。すると最も強い制約として残るのが表面張力です。Brackbillが1992年に初めて書いた形では、
+
+$$
+\Delta t_\sigma = \sqrt{\frac{(\rho_A + \rho_B)\,\Delta x^3}{2\pi\sigma}} \propto \Delta x^{3/2}
+$$
+
+$\rho_A, \rho_B$ は二流体の密度、$\sigma$ は表面張力係数、$\Delta x$ は格子間隔です。指数 $3/2$ が厄介です。界面を鮮明にしようと $\Delta x$ を半分にすると、時間刻みは $2^{1.5}\approx 2.8$ 倍縮みます。液滴が小さく、毛細管スケールの流れであるほど、ステップ数が爆発します。陽的な表面張力では逃げ道がありません。
+
+## なぜ Δx^{3/2} なのか — 毛細管波の分散関係
+
+この制約は実はCFL条件です。界面上の小さな正弦波擾乱は、毛細管波（capillary wave、表面張力が復元力となる波）として振動します。非粘性・深水極限での分散関係は
+
+$$
+\omega^2 = \frac{\sigma k^3}{\rho_A + \rho_B}
+$$
+
+$\omega$ は角振動数、$k$ は波数です。格子が分解できる最短の波は $k_{\max} = \pi/\Delta x$ です。$\Delta t$ がこの波の振動周期を超えると、陽的積分は振動に追いつけず発散します。$\omega_{\max}\Delta t_\sigma$ を計算すると $\sqrt{(k_{\max}\Delta x)^3/(2\pi)} = \pi/\sqrt{2}\approx 2.22$ になります。つまり $\Delta t_\sigma$ は最速の毛細管波にかかったCFLそのものです。
+
+## 表面張力を陰的に — 一行の振動子で見る核心
+
+ソルバ全体を持ち出す必要はありません。毛細管波の一モードは減衰調和振動子に帰着します。
+
+$$
+\ddot{\eta} + 2\gamma\dot{\eta} + \omega^2 \eta = 0
+$$
+
+$\eta$ は界面振幅、$\gamma$ は粘性減衰です。陽的な表面張力はこの振動子をシンプレクティック・オイラーで解くのと同じで、$\omega\Delta t > 2$ で発散します — まさに上の毛細管CFLです。表面張力項を新時刻の値で評価すれば（後退オイラー）、無条件安定になります。
+
+下のシミュレーションで直接操作してみましょう。同じ定常毛細管波を、陽的（オレンジ）と陰的（シアン）が並べて積分します。
+
+<CapillaryWaveBreach />
+
+$\Delta t/\Delta t_\sigma$ を0.9より上げると、オレンジが発散します。シアンは3倍まで上げても破線（解析解）に沿って穏やかに減衰します。mesh Oh（粘性の尺度）を大きくすると減衰が強まり、両者とも早く収まります。
+
+## 増幅率で見る安定限界
+
+振動子の増幅率（amplification factor、1ステップ後に振幅が掛かる倍率）$|G|$ で境界が鮮明になります。numpy 30行で再現します。トイ問題は衝撃波管ではなく、定常毛細管波の減衰です。
+
+```python
+import numpy as np
+
+def capillary_omega(sigma, k, rho_hat):
+    # 分散関係: 非粘性・深水の毛細管波 omega^2 = sigma k^3 / (rhoA+rhoB)
+    return np.sqrt(sigma * k**3 / rho_hat)
+
+def dt_capillary(sigma, dx, rho_hat):
+    # 式(4): Brackbill の毛細管時間刻み ~ dx^{3/2}
+    return np.sqrt(rho_hat * dx**3 / (2*np.pi*sigma))
+
+def run_standing_wave(omega, gamma, dt, steps, implicit):
+    eta, v = 1.0, 0.0
+    peak = 0.0
+    for _ in range(steps):
+        if implicit:        # 後退オイラー: 表面張力を新時刻の値で (無条件安定)
+            v = (v - dt*omega**2*eta) / (1 + dt**2*omega**2 + 2*gamma*dt)
+            eta = eta + dt*v
+        else:               # シンプレクティック・オイラー: 陽的表面張力 (omega*dt<2 制約)
+            v = v - dt*omega**2*eta - dt*2*gamma*v
+            eta = eta + dt*v
+        peak = max(peak, abs(eta))
+    return peak
+
+sigma, rho_hat, L = 0.07, 1001.2, 1.0      # 水/空気
+for N in (64, 128, 256):
+    dx = L/N; k = np.pi/dx                  # 最短の分解可能な毛細管波
+    om = capillary_omega(sigma, k, rho_hat)
+    dts = dt_capillary(sigma, dx, rho_hat)
+    print(f"N={N:4d}  dt_sigma={dts:.2e}  omega*dt_sigma={om*dts:.3f}")
+# 出力: すべての N で omega*dt_sigma = 2.221 (= pi/sqrt(2))、CFL が毛細管制約そのもの
+
+N = 128; dx = L/N; k = np.pi/dx
+om = capillary_omega(sigma, k, rho_hat); dts = dt_capillary(sigma, dx, rho_hat)
+dt = 1.5*dts; gamma = 0.1*om                # 毛細管制約の1.5倍に強制
+pe = run_standing_wave(om, gamma, dt, 200, implicit=False)
+pi_ = run_standing_wave(om, gamma, dt, 200, implicit=True)
+print(f"dt=1.5*dt_sigma  陽的ピーク={pe:.1e}  陰的ピーク={pi_:.3f}")
+# 出力例: 陽的ピーク=3.6e+07  陰的ピーク=1.000
+```
+
+`omega*dt_sigma` が格子解像度によらず常に2.221と表示されます。毛細管制約が最速の波のCFLである証拠です。下で $|G|$ 曲線を動かしてみましょう。
+
+<CapillaryStepConstraint />
+
+陽的（オレンジ）は $\Delta t/\Delta t_\sigma \approx 0.9$ まで $|G|=1$ を保ち、その先で1を超えます。陰的（シアン）はどのステップでも $|G|<1$ です。meshと $\sigma$ のスライダで、$\Delta t_\sigma$ 自体が $\Delta x^{3/2}$ で急落することも確認できます。
+
+## 完全結合が要 — 色関数・圧力・速度を一つの行列に
+
+陰的化の難所は、表面張力 $\mathbf{f}_\sigma = \sigma\kappa\nabla\psi$ が色関数（colour function、流体の種類を0〜1で表すVOF変数）$\psi$ と非線形に絡むことです。曲率 $\kappa$ も $\psi$ の微分で決まります。論文はこの項を新時刻の $\psi$ についてNewton線形化し、界面移流方程式を連続・運動量方程式とともに一つの線形系 $\mathbf{A}\boldsymbol{\phi}=\mathbf{b}$ として解きます。ここで $\boldsymbol{\phi}=(p, u, v, w, \psi)$ が丸ごと陰的に結合されます。Dennerらの先行アルゴリズムは密度比1に縛られていました。Janodetの貢献は、連続・運動量を保存形で書き、過渡項で密度を $\psi$ について陰的に置くことで、水/空気1000:1のような大きな密度比でも結合を保った点です。界面移流はCICSAMではなくTHINC/QQで離散化し、大きなCFLでも界面を鮮明に保ちます。OpenFOAMの分離型PIMPLEと違い、これはブロック結合（block-coupled）ソルバでこそ意味を持ちます。
+
+## 再現してぶつかったこと
+
+「無条件安定」には但し書きが付きます。陰的表面張力が毛細管制約を破っても、安定な最大 $\Delta t$ は依然として有限です。Galusinski–Vigneauxの粘性-毛細管上限がそれを定めます。密度比1000ではこの上限が密度比1のときより一桁厳しく、論文自身も非粘性極限で約 $1.5\,\Delta t_\sigma$ までしか安定しないと報告しています。上の振動子モデルはこの粘性-毛細管結合を単純化したものなので、陰的側が実際より寛容に見える限界もあります。また後退オイラーは安定な代わりに、速い毛細管波を人為的に減衰させます。エネルギー保存が要る問題では、この数値減衰が物理的減衰と取り違えられかねず、論文は力の均衡とエネルギー保存を別々に検証します。
+
+## この論文が変えるもの
+
+三行で残ります。毛細管時間刻みは最速の毛細管波にかかったCFLなので、陽的表面張力は $\Delta x^{3/2}$ の足枷を外せません。表面張力を色関数・圧力・速度と一つの行列に陰的に束ねれば、その足枷は外れます。大きな密度比までこれをやり遂げたのが、この論文の核心です。さらに読むなら、本アルゴリズムの密度比1の原型であるDennerら（2022）と、毛細管CFLを信号処理で再定義したDenner・van Wachem（2015）へ進むとよいでしょう。

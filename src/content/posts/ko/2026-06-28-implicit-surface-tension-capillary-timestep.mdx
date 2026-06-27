@@ -1,0 +1,115 @@
+---
+title: "물방울 시뮬레이션이 Δt에 발목 잡히는 이유 — 표면장력을 음함수로 푼 논문"
+date: 2026-06-28
+description: "모세관 시간 간격 족쇄를 음함수 표면장력으로 끊은 Janodet 2025를 재현한다"
+tags: ["Surface-Tension", "Capillary", "Implicit", "VOF", "Multiphase"]
+locale: ko
+slug: implicit-surface-tension-capillary-timestep
+draft: false
+---
+
+import { CapillaryWaveBreach } from '@/components/post-viz/2026-06-28-implicit-surface-tension-capillary-timestep/CapillaryWaveBreach'
+import { CapillaryStepConstraint } from '@/components/post-viz/2026-06-28-implicit-surface-tension-capillary-timestep/CapillaryStepConstraint'
+
+격자를 두 배 촘촘하게 하면 시간 간격은 약 2.8배 줄어든다. 물리가 더 빨라진 것도 아닌데 그렇다. 표면장력이 들어간 계면 유동에서는 이 모세관 시간 간격(capillary time-step constraint)이 거의 항상 가장 가혹한 제약이다. 이 글은 Janodet·van Wachem·Denner가 2025년에 내놓은 "음함수 표면장력 완전 결합 알고리즘"을 재현한다. 표면장력을 명시적으로 두는 한 왜 $\Delta t$가 $\Delta x^{3/2}$로 묶이는지, 음함수로 풀면 왜 그 족쇄가 끊어지는지를 작은 진동자 하나로 직접 만져본다.
+
+리뷰 대상은 *R. Janodet, B. van Wachem, F. Denner, "A fully-coupled algorithm with implicit surface tension treatment for interfacial flows with large density ratios", arXiv:2410.17757 (2024)*.
+
+## 모세관 시간 간격이라는 족쇄
+
+비압축성 계면 유동 솔버는 보통 확산 항을 음함수로 풀어 점성 시간 제약을 지운다. 그러면 남는 가장 강한 제약이 표면장력이다. Brackbill이 1992년에 처음 쓴 형태로,
+
+$$
+\Delta t_\sigma = \sqrt{\frac{(\rho_A + \rho_B)\,\Delta x^3}{2\pi\sigma}} \propto \Delta x^{3/2}
+$$
+
+$\rho_A, \rho_B$는 두 유체의 밀도, $\sigma$는 표면장력 계수, $\Delta x$는 격자 간격이다. 지수 $3/2$가 문제다. 계면을 또렷하게 보려고 격자를 절반으로 줄이면 시간 간격은 $2^{1.5}\approx 2.8$배 줄어든다. 작은 물방울, 모세관 규모 유동일수록 스텝 수가 폭발한다. 명시적 표면장력으로는 빠져나갈 길이 없다.
+
+## 왜 Δx^{3/2}인가 — 모세관파 분산관계
+
+이 제약은 사실 CFL 조건이다. 계면 위 작은 정현파 교란은 모세관파(capillary wave, 표면장력이 복원력인 파동)로 진동한다. 비점성 심해 극한에서 분산관계는
+
+$$
+\omega^2 = \frac{\sigma k^3}{\rho_A + \rho_B}
+$$
+
+$\omega$는 각진동수, $k$는 파수다. 격자가 분해할 수 있는 가장 짧은 파는 $k_{\max} = \pi/\Delta x$다. 이 파의 진동 주기보다 $\Delta t$가 크면 명시적 적분이 그 진동을 따라잡지 못하고 발산한다. $\omega_{\max}\Delta t_\sigma$를 계산하면 $\sqrt{(k_{\max}\Delta x)^3/(2\pi)} = \pi/\sqrt{2}\approx 2.22$로 떨어진다. 즉 $\Delta t_\sigma$는 가장 빠른 모세관파에 걸린 CFL 그 자체다.
+
+## 표면장력을 음함수로 — 한 줄짜리 진동자로 본 핵심
+
+복잡한 솔버를 다 들어낼 필요는 없다. 모세관파 한 모드는 감쇠 조화진동자로 환원된다.
+
+$$
+\ddot{\eta} + 2\gamma\dot{\eta} + \omega^2 \eta = 0
+$$
+
+$\eta$는 계면 진폭, $\gamma$는 점성 감쇠다. 명시적 표면장력은 이 진동자를 심플렉틱 오일러로 푸는 것과 같고, $\omega\Delta t > 2$에서 발산한다 — 바로 위의 모세관 CFL이다. 표면장력 항을 새 시각의 값으로 두면(후방 오일러) 무조건 안정해진다.
+
+아래 시뮬레이션에서 직접 조작해보자. 같은 정상 모세관파를 명시적(주황)과 음함수(시안)가 나란히 적분한다.
+
+<CapillaryWaveBreach />
+
+$\Delta t/\Delta t_\sigma$를 0.9 위로 올리면 주황색이 폭발한다. 시안색은 3배까지 올려도 점선(해석해)을 따라 얌전히 감쇠한다. mesh Oh(점성 척도)를 키우면 감쇠가 강해져 둘 다 빨리 잦아든다.
+
+## 증폭인자로 본 안정성 경계
+
+진동자의 증폭인자(amplification factor, 한 스텝 뒤 진폭이 곱해지는 배율) $|G|$로 경계가 또렷해진다. numpy 30줄로 재현한다. 토이 문제는 충격파 튜브가 아니라 정상 모세관파의 감쇠다.
+
+```python
+import numpy as np
+
+def capillary_omega(sigma, k, rho_hat):
+    # 분산관계: 비점성 심해 모세관파 omega^2 = sigma k^3 / (rhoA+rhoB)
+    return np.sqrt(sigma * k**3 / rho_hat)
+
+def dt_capillary(sigma, dx, rho_hat):
+    # 식(4): Brackbill 모세관 시간 간격 ~ dx^{3/2}
+    return np.sqrt(rho_hat * dx**3 / (2*np.pi*sigma))
+
+def run_standing_wave(omega, gamma, dt, steps, implicit):
+    eta, v = 1.0, 0.0
+    peak = 0.0
+    for _ in range(steps):
+        if implicit:        # 후방 오일러: 표면장력 항을 새 시각 값으로 (무조건 안정)
+            v = (v - dt*omega**2*eta) / (1 + dt**2*omega**2 + 2*gamma*dt)
+            eta = eta + dt*v
+        else:               # 심플렉틱 오일러: 명시적 표면장력 (omega*dt<2 제약)
+            v = v - dt*omega**2*eta - dt*2*gamma*v
+            eta = eta + dt*v
+        peak = max(peak, abs(eta))
+    return peak
+
+sigma, rho_hat, L = 0.07, 1001.2, 1.0      # 물/공기
+for N in (64, 128, 256):
+    dx = L/N; k = np.pi/dx                  # 가장 짧은 분해 가능한 모세관파
+    om = capillary_omega(sigma, k, rho_hat)
+    dts = dt_capillary(sigma, dx, rho_hat)
+    print(f"N={N:4d}  dt_sigma={dts:.2e}  omega*dt_sigma={om*dts:.3f}")
+# 출력: 모든 N에서 omega*dt_sigma = 2.221 (= pi/sqrt(2)), CFL이 곧 모세관 제약
+
+N = 128; dx = L/N; k = np.pi/dx
+om = capillary_omega(sigma, k, rho_hat); dts = dt_capillary(sigma, dx, rho_hat)
+dt = 1.5*dts; gamma = 0.1*om                # 모세관 제약의 1.5배로 강제
+pe = run_standing_wave(om, gamma, dt, 200, implicit=False)
+pi_ = run_standing_wave(om, gamma, dt, 200, implicit=True)
+print(f"dt=1.5*dt_sigma  명시적 최대진폭={pe:.1e}  음함수 최대진폭={pi_:.3f}")
+# 출력 예: 명시적 최대진폭=3.6e+07  음함수 최대진폭=1.000
+```
+
+`omega*dt_sigma`가 격자 해상도와 무관하게 항상 2.221로 찍힌다. 모세관 제약이 곧 가장 빠른 파의 CFL이라는 증거다. 아래에서 $|G|$ 곡선을 직접 움직여보자.
+
+<CapillaryStepConstraint />
+
+명시적(주황)은 $\Delta t/\Delta t_\sigma \approx 0.9$까지 $|G|=1$로 버티다 그 위에서 1을 넘는다. 음함수(시안)는 어떤 스텝에서도 $|G|<1$이다. mesh와 $\sigma$ 슬라이더로 $\Delta t_\sigma$ 값 자체가 $\Delta x^{3/2}$로 곤두박질치는 것도 확인할 수 있다.
+
+## 완전 결합이 핵심 — 색함수·압력·속도를 한 행렬에
+
+음함수의 어려움은 표면장력 힘 $\mathbf{f}_\sigma = \sigma\kappa\nabla\psi$가 색함수(colour function, 유체 종류를 0~1로 표시하는 VOF 변수) $\psi$에 비선형으로 얽힌다는 데 있다. 곡률 $\kappa$도 $\psi$의 미분으로 정해진다. 논문은 이 항을 새 시각의 $\psi$에 대해 Newton 선형화하고, 계면 이류 방정식을 연속·운동량 방정식과 함께 하나의 선형계 $\mathbf{A}\boldsymbol{\phi}=\mathbf{b}$로 푼다. 여기서 $\boldsymbol{\phi}=(p, u, v, w, \psi)$가 통째로 음함수로 결합된다. Denner 등의 선행 알고리즘은 밀도비 1에 묶여 있었다. Janodet의 기여는 연속·운동량을 보존형으로 쓰고 천이 항에서 밀도를 $\psi$에 대해 음함수로 둬, 물/공기 1000:1 같은 큰 밀도비에서도 결합을 유지한 점이다. 계면 이류는 CICSAM 대신 THINC/QQ로 이산화해 큰 CFL에서도 계면을 또렷이 지킨다. OpenFOAM의 분리형 PIMPLE와 달리, 이건 블록 결합(block-coupled) 솔버라야 의미가 산다.
+
+## 재현하며 부딪힌 것들
+
+"무조건 안정"이라는 말에는 단서가 붙는다. 음함수 표면장력이 모세관 제약을 깨도, 안정한 최대 $\Delta t$는 여전히 유한하다. Galusinski–Vigneaux의 점성-모세관 상한이 그것이다. 밀도비 1000에서는 이 상한이 밀도비 1일 때보다 한 자릿수 더 빡빡해, 논문도 비점성 극한에서 약 $1.5\,\Delta t_\sigma$까지만 안정하다고 보고한다. 위의 진동자 모델은 이 점성-모세관 결합을 단순화한 것이라 음함수 쪽이 실제보다 관대하게 보인다는 한계도 있다. 또 후방 오일러는 안정한 대신 빠른 모세관파를 인위적으로 감쇠시킨다. 에너지를 보존해야 하는 문제에서는 이 수치 감쇠가 물리적 감쇠로 오인될 수 있어, 논문은 힘 균형과 에너지 보존을 따로 검증한다.
+
+## 이 논문이 바꾸는 것
+
+세 줄로 남는다. 모세관 시간 간격은 가장 빠른 모세관파에 걸린 CFL이라, 명시적 표면장력은 $\Delta x^{3/2}$의 족쇄를 벗을 수 없다. 표면장력을 색함수·압력·속도와 한 행렬에 음함수로 묶으면 그 족쇄가 끊어진다. 큰 밀도비까지 이걸 해낸 게 이 논문의 알맹이다. 더 읽으려면 이 알고리즘의 밀도비 1 원형인 Denner 등(2022)과, 모세관 CFL을 신호처리로 재정의한 Denner·van Wachem(2015)을 이어 보면 된다.

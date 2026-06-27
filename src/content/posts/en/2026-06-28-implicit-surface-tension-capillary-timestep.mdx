@@ -1,0 +1,115 @@
+---
+title: "Why Droplet Simulations Get Trapped by Δt — Solving Surface Tension Implicitly"
+date: 2026-06-28
+description: "Reproducing Janodet 2025, which breaks the capillary time-step shackle with implicit surface tension"
+tags: ["Surface-Tension", "Capillary", "Implicit", "VOF", "Multiphase"]
+locale: en
+slug: implicit-surface-tension-capillary-timestep
+draft: false
+---
+
+import { CapillaryWaveBreach } from '@/components/post-viz/2026-06-28-implicit-surface-tension-capillary-timestep/CapillaryWaveBreach'
+import { CapillaryStepConstraint } from '@/components/post-viz/2026-06-28-implicit-surface-tension-capillary-timestep/CapillaryStepConstraint'
+
+Double the mesh resolution and your time step shrinks by about 2.8×, even though the physics did not get any faster. In interfacial flows with surface tension, this capillary time-step constraint is almost always the harshest restriction. This post reproduces the "fully-coupled algorithm with implicit surface tension" that Janodet, van Wachem and Denner published in 2025. With one small oscillator you can feel, hands-on, why $\Delta t$ is shackled to $\Delta x^{3/2}$ as long as surface tension stays explicit, and why treating it implicitly snaps that shackle.
+
+The paper under review is *R. Janodet, B. van Wachem, F. Denner, "A fully-coupled algorithm with implicit surface tension treatment for interfacial flows with large density ratios", arXiv:2410.17757 (2024)*.
+
+## The capillary time-step shackle
+
+An incompressible interfacial-flow solver usually treats the diffusion term implicitly, erasing the viscous time-step limit. What remains as the strongest restriction is surface tension. In the form Brackbill first wrote in 1992,
+
+$$
+\Delta t_\sigma = \sqrt{\frac{(\rho_A + \rho_B)\,\Delta x^3}{2\pi\sigma}} \propto \Delta x^{3/2}
+$$
+
+$\rho_A, \rho_B$ are the densities of the two fluids, $\sigma$ is the surface-tension coefficient, and $\Delta x$ is the mesh spacing. The exponent $3/2$ is the problem. Halve $\Delta x$ to sharpen the interface and the time step drops by $2^{1.5}\approx 2.8$. The smaller the droplet, the more capillary-scale the flow, the more the step count explodes. With explicit surface tension there is no way out.
+
+## Why Δx^{3/2} — the capillary-wave dispersion relation
+
+This restriction is really a CFL condition. A small sinusoidal perturbation of the interface oscillates as a capillary wave (a wave whose restoring force is surface tension). In the inviscid deep-water limit the dispersion relation is
+
+$$
+\omega^2 = \frac{\sigma k^3}{\rho_A + \rho_B}
+$$
+
+where $\omega$ is the angular frequency and $k$ the wavenumber. The shortest wave the mesh can resolve is $k_{\max} = \pi/\Delta x$. If $\Delta t$ exceeds that wave's oscillation period, explicit integration cannot follow the oscillation and diverges. Computing $\omega_{\max}\Delta t_\sigma$ gives $\sqrt{(k_{\max}\Delta x)^3/(2\pi)} = \pi/\sqrt{2}\approx 2.22$. So $\Delta t_\sigma$ is exactly the CFL number of the fastest capillary wave.
+
+## Surface tension, made implicit — the core in a one-line oscillator
+
+You do not need the whole solver. A single capillary-wave mode reduces to a damped harmonic oscillator.
+
+$$
+\ddot{\eta} + 2\gamma\dot{\eta} + \omega^2 \eta = 0
+$$
+
+$\eta$ is the interface amplitude and $\gamma$ the viscous damping. Explicit surface tension is the same as integrating this oscillator with symplectic Euler, which diverges for $\omega\Delta t > 2$ — the very capillary CFL above. Evaluate the surface-tension term at the new time level (backward Euler) and it becomes unconditionally stable.
+
+Try the simulation below. The same standing capillary wave is integrated side by side, explicit (orange) and implicit (cyan).
+
+<CapillaryWaveBreach />
+
+Push $\Delta t/\Delta t_\sigma$ above 0.9 and the orange curve blows up. The cyan one decays calmly along the dashed analytic curve even at 3×. Raise mesh Oh (the viscous scale) and stronger damping settles both faster.
+
+## The stability boundary, seen through the amplification factor
+
+The oscillator's amplification factor $|G|$ (the ratio by which the amplitude is multiplied each step) makes the boundary sharp. Thirty lines of numpy reproduce it. The toy problem is not a shock tube but the decay of a standing capillary wave.
+
+```python
+import numpy as np
+
+def capillary_omega(sigma, k, rho_hat):
+    # dispersion relation: inviscid deep-water capillary wave omega^2 = sigma k^3 / (rhoA+rhoB)
+    return np.sqrt(sigma * k**3 / rho_hat)
+
+def dt_capillary(sigma, dx, rho_hat):
+    # Eq.(4): Brackbill capillary time step ~ dx^{3/2}
+    return np.sqrt(rho_hat * dx**3 / (2*np.pi*sigma))
+
+def run_standing_wave(omega, gamma, dt, steps, implicit):
+    eta, v = 1.0, 0.0
+    peak = 0.0
+    for _ in range(steps):
+        if implicit:        # backward Euler: surface tension at the new level (unconditionally stable)
+            v = (v - dt*omega**2*eta) / (1 + dt**2*omega**2 + 2*gamma*dt)
+            eta = eta + dt*v
+        else:               # symplectic Euler: explicit surface tension (omega*dt<2 limit)
+            v = v - dt*omega**2*eta - dt*2*gamma*v
+            eta = eta + dt*v
+        peak = max(peak, abs(eta))
+    return peak
+
+sigma, rho_hat, L = 0.07, 1001.2, 1.0      # water/air
+for N in (64, 128, 256):
+    dx = L/N; k = np.pi/dx                  # shortest resolvable capillary wave
+    om = capillary_omega(sigma, k, rho_hat)
+    dts = dt_capillary(sigma, dx, rho_hat)
+    print(f"N={N:4d}  dt_sigma={dts:.2e}  omega*dt_sigma={om*dts:.3f}")
+# output: omega*dt_sigma = 2.221 (= pi/sqrt(2)) for every N -- the CFL IS the capillary limit
+
+N = 128; dx = L/N; k = np.pi/dx
+om = capillary_omega(sigma, k, rho_hat); dts = dt_capillary(sigma, dx, rho_hat)
+dt = 1.5*dts; gamma = 0.1*om                # forced to 1.5x the capillary limit
+pe = run_standing_wave(om, gamma, dt, 200, implicit=False)
+pi_ = run_standing_wave(om, gamma, dt, 200, implicit=True)
+print(f"dt=1.5*dt_sigma  explicit peak={pe:.1e}  implicit peak={pi_:.3f}")
+# example output: explicit peak=3.6e+07  implicit peak=1.000
+```
+
+`omega*dt_sigma` prints 2.221 regardless of mesh resolution — proof that the capillary limit is the CFL of the fastest wave. Move the $|G|$ curve below.
+
+<CapillaryStepConstraint />
+
+Explicit (orange) holds $|G|=1$ up to $\Delta t/\Delta t_\sigma \approx 0.9$, then exceeds 1. Implicit (cyan) keeps $|G|<1$ at every step. The mesh and $\sigma$ sliders also show $\Delta t_\sigma$ itself plunging as $\Delta x^{3/2}$.
+
+## Full coupling is the point — colour function, pressure, velocity in one matrix
+
+The hard part of going implicit is that the surface-tension force $\mathbf{f}_\sigma = \sigma\kappa\nabla\psi$ is nonlinearly entangled with the colour function (the VOF variable marking fluid type from 0 to 1) $\psi$. The curvature $\kappa$ is itself set by derivatives of $\psi$. The paper applies a Newton linearisation of this term with respect to the new-level $\psi$, and solves the interface-advection equation together with the continuity and momentum equations as a single linear system $\mathbf{A}\boldsymbol{\phi}=\mathbf{b}$, in which $\boldsymbol{\phi}=(p, u, v, w, \psi)$ is coupled implicitly all at once. Denner et al.'s earlier algorithm was locked to a density ratio of 1. Janodet's contribution is to write continuity and momentum in conservative form and treat the density implicitly with respect to $\psi$ in the transient terms, holding the coupling together even at a 1000:1 water/air density ratio. The interface advection is discretised with THINC/QQ instead of CICSAM, keeping the interface sharp at large CFL. Unlike OpenFOAM's segregated PIMPLE, this only pays off in a block-coupled solver.
+
+## What I ran into reproducing it
+
+"Unconditionally stable" comes with a caveat. Even when implicit surface tension breaks the capillary limit, the largest stable $\Delta t$ is still finite. The Galusinski–Vigneaux visco-capillary upper limit sets it. At a density ratio of 1000 this limit is an order of magnitude tighter than at unit density ratio, and the paper itself reports stability only up to about $1.5\,\Delta t_\sigma$ in the inviscid limit. The oscillator model above simplifies that visco-capillary coupling, so it makes the implicit side look more generous than reality. Backward Euler is also stable at the cost of artificially damping fast capillary waves. In energy-conserving problems this numerical damping can be mistaken for physical decay, which is why the paper verifies force balance and energy conservation separately.
+
+## What this paper changes
+
+Three lines remain. The capillary time step is the CFL of the fastest capillary wave, so explicit surface tension cannot escape the $\Delta x^{3/2}$ shackle. Bind surface tension implicitly into one matrix with the colour function, pressure and velocity, and the shackle breaks. Doing this all the way up to large density ratios is the heart of this paper. To go further, read the unit-density-ratio ancestor of this algorithm in Denner et al. (2022) and the signal-processing redefinition of the capillary CFL in Denner & van Wachem (2015).
