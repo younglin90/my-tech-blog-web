@@ -1,0 +1,164 @@
+---
+title: "CFL取1要一万步，取100会爆炸 — Switched Evolution Relaxation"
+date: 2026-06-29
+description: "用从残差提升CFL数的SER加速定常解的收敛"
+tags: ["CFD", "SER", "Pseudo-Transient", "Convergence-Acceleration", "Implicit"]
+locale: zh
+slug: ser-cfl-ramping-pseudo-transient
+draft: false
+---
+
+import { SerConvergenceRaceLab } from '@/components/post-viz/2026-06-29-ser-cfl-ramping-pseudo-transient/SerConvergenceRaceLab'
+import { CflRampScheduleViz } from '@/components/post-viz/2026-06-29-ser-cfl-ramping-pseudo-transient/CflRampScheduleViz'
+
+在定常计算中把CFL数设为1，残差转上一万次也降不下来。提到100，解在第一步就炸了。这两种都是常见的画面。本文要讲的是在这两个极端之间自动游走的方法——SER(Switched Evolution Relaxation)。它随着残差下降自己把CFL调大，前期稳妥、末期像Newton一样快速着陆。我们用一个小小的定常Burgers求解器亲手感受一下。
+
+这里讲的CFL数(用网格尺度和波速把时间步长无量纲化后的量),在定常求解器里已经不再关乎精度,而是同时握着**收敛速度与稳定性的一个旋钮**。
+
+## 定常解要用假的时间去追
+
+定常方程只有一行:$R(U) = 0$。其中 $R$ 把对流、扩散、源项汇成空间残差。直接求解它就要解一个非线性代数系统。于是大多数CFD程序会加上一个假的时间项。
+
+$$
+\frac{\partial U}{\partial \tau} + R(U) = 0
+$$
+
+这里 $\tau$ 是没有物理意义的伪时间(pseudo-time)。当 $\tau \to \infty$ 时 $\partial U / \partial \tau \to 0$,于是 $R(U)=0$,正是我们想要的定常解。舍弃时间精度,只盯定常解。这叫伪瞬态延拓(pseudo-transient continuation)。
+
+把假的时间用隐式(backward Euler)推进并对残差线性化,每次迭代就变成这样:
+
+$$
+\left( \frac{I}{\Delta\tau} + \frac{\partial R}{\partial U} \right) \Delta U = -R(U^n)
+$$
+
+其中 $\partial R/\partial U$ 是通量Jacobian,$\Delta U = U^{n+1}-U^n$。每次迭代解一次左端的矩阵,得到 $\Delta U$。
+
+## 小处起步,落在Newton上
+
+这一行里装着SER的全部直觉。把 $\Delta\tau$ 推向两个极端看看。
+
+当 $\Delta\tau \to 0$,$I/\Delta\tau$ 压过矩阵,于是 $\Delta U \approx -\Delta\tau\, R$。这跟显式推进完全一样。非常稳,但慢如乌龟。
+
+当 $\Delta\tau \to \infty$,$I/\Delta\tau$ 消失,只剩 $(\partial R/\partial U)\,\Delta U = -R$。这正是Newton法,在解附近具有二阶收敛(误差按平方缩小)。但初值太差就会发散。
+
+所以理想策略很清楚。**前期把 $\Delta\tau$ 留小以承受非线性,等残差下降、接近解时再把 $\Delta\tau$ 调大,把Newton的二阶收敛吸收过来。** 难点在"何时、调多大"。SER把这个判断交给残差。
+
+## SER — 用残差的倒数放大CFL
+
+Mulder与van Leer在1985年提出的规则简单得惊人。用初始残差与当前残差之比放大当前CFL。
+
+$$
+\mathrm{CFL}_n = \min\!\left( \mathrm{CFL}_0 \left( \frac{\lVert R_0 \rVert}{\lVert R_n \rVert} \right)^{\!p},\ \mathrm{CFL}_{\max} \right)
+$$
+
+$\mathrm{CFL}_0$ 是起始CFL,$\lVert R_n \rVert$ 是第 $n$ 次残差的L2范数,$p$ 是通常约为1的指数,$\mathrm{CFL}_{\max}$ 用来封顶防止失控。残差降十倍(当 $p=1$ 时)CFL也涨十倍。伪时间步长由这个CFL和局部波速换算。
+
+$$
+\Delta\tau_i = \mathrm{CFL}_n \cdot \frac{\Delta x}{|u_i| + 2\nu/\Delta x}
+$$
+
+分母是对流波速 $|u_i|$ 与扩散波速 $2\nu/\Delta x$ 之和。每个单元可以不同,因此与局部时间推进(local time-stepping)自然结合。
+
+在下面的模拟里动手调一调参数。这是把固定CFL和SER在同一个定常Burgers问题上并排运行的残差历史。
+
+<SerConvergenceRaceLab />
+
+把fixed CFL降到1,琥珀色曲线很难触底。提到20就跳成发散(diverged)。相比之下SER(青色)从 $\mathrm{CFL}_0=1$ 稳妥起步,却在后期急转直下。把指数 $p$ 从1提到1.5会更激进更快,但提得太高连SER也会在前期晃动。
+
+## Python — 用两种策略解定常Burgers
+
+求解粘性Burgers的定常解 $u u_x = \nu u_{xx}$。边界条件 $u(0)=1$、$u(1)=-1$ 在中间形成一道静止激波层。一步伪时间隐式推进用Thomas算法解三对角矩阵。
+
+```python
+import numpy as np
+
+def steady_residual(u, nu, dx):
+    """R(u) = u u_x - nu u_xx, 边界 u(0)=1, u(1)=-1."""
+    um = np.concatenate(([1.0], u[:-1]))   # 左邻
+    up = np.concatenate((u[1:], [-1.0]))   # 右邻
+    conv = u * (up - um) / (2 * dx)
+    diff = nu * (up - 2 * u + um) / dx**2
+    return conv - diff
+
+def thomas_solve(a, b, c, d):
+    """解三对角系 (下/主/上对角 a,b,c, 右端 d)."""
+    n = len(d)
+    b, d = b.copy(), d.copy()
+    for i in range(1, n):
+        m = a[i] / b[i - 1]
+        b[i] -= m * c[i - 1]
+        d[i] -= m * d[i - 1]
+    x = np.empty(n)
+    x[-1] = d[-1] / b[-1]
+    for i in range(n - 2, -1, -1):
+        x[i] = (d[i] - c[i] * x[i + 1]) / b[i]
+    return x
+
+def ptc_update(u, nu, dx, dt):
+    """一步伪时间隐式推进: (I/dt + dR/du) du = -R."""
+    n = len(u)
+    um = np.concatenate(([1.0], u[:-1]))
+    up = np.concatenate((u[1:], [-1.0]))
+    a = -u / (2 * dx) - nu / dx**2                       # 下对角
+    b = (up - um) / (2 * dx) + 2 * nu / dx**2 + 1.0 / dt  # 主对角
+    c = u / (2 * dx) - nu / dx**2                        # 上对角
+    du = thomas_solve(a, b, c, -steady_residual(u, nu, dx))
+    return u + du
+
+def ser_schedule(r0, rn, cfl0, p, cfl_max):
+    return min(cfl0 * (r0 / rn) ** p, cfl_max)
+
+def converge(nu=0.02, ser=True, cfl0=1.0, p=1.0, cfl_max=1e5,
+             N=80, tol=1e-9, max_iter=600):
+    dx = 1.0 / (N + 1)
+    x = np.linspace(dx, 1 - dx, N)
+    u = 1 - 2 * x                          # 线性初值
+    r0 = np.linalg.norm(steady_residual(u, nu, dx)) / np.sqrt(N)
+    rn = r0
+    for it in range(1, max_iter + 1):
+        cfl = ser_schedule(r0, rn, cfl0, p, cfl_max) if ser else cfl0
+        dt = cfl * dx / (np.abs(u).max() + 2 * nu / dx)
+        u = ptc_update(u, nu, dx, dt)
+        rn = np.linalg.norm(steady_residual(u, nu, dx)) / np.sqrt(N)
+        if rn / r0 < tol:
+            return u, it
+    return u, max_iter
+
+for tag, kw in [("fixed CFL=3", dict(ser=False, cfl0=3.0)),
+                ("SER  p=1.0", dict(ser=True, cfl0=1.0, p=1.0))]:
+    _, iters = converge(**kw)
+    print(f"{tag:14s} -> {iters:4d} iters")
+```
+
+输出如下。
+
+```text
+fixed CFL=3    ->  588 iters
+SER  p=1.0     ->   34 iters
+```
+
+要达到同样精度的定常解,固定CFL需要几百次,SER只要几十次。差距在末期拉开。因为SER把CFL拉到上千,实际上变成了Newton迭代。
+
+## 把固定CFL和SER并排放
+
+来看看调度本身——SER是怎么把CFL拉上去的。在下面动手调一调。青色是CFL调度,粉色是残差。
+
+<CflRampScheduleViz />
+
+前期残差平坦的区间里,CFL也几乎停在 $\mathrm{CFL}_0$。残差一开始崩塌的瞬间,CFL几乎垂直地窜上去。这就是SER的本质:**解越好,允许的步子越大。** 把cap降到20,CFL撞到天花板,失去末期的Newton加速,迭代次数又涨回去。
+
+## 现场打开SER时的陷阱
+
+第一,$\mathrm{CFL}_{\max}$ 一定要设。留成无穷大,残差一瞬跳动就让CFL失控,把解吹飞。
+
+第二,当残差非单调(non-monotone)地晃动时,$R_0/R_n$ 会小于1,使CFL反而下降。这不是bug,而是安全阀。残差再度变差时,缩小步子才是对的。
+
+第三,$p$ 不是免费的加速。$p>1$ 会在残差只降一点时就把CFL放大很多,放大风险。稳妥的起步是 $p=1$、$\mathrm{CFL}_0 \approx 1$。
+
+第四,如果Jacobian不精确(近似Jacobian,或无矩阵),大CFL下Newton的二阶收敛会掉到一阶。这时降低 $\mathrm{CFL}_{\max}$ 换取稳定性更划算。
+
+## 要记住的
+
+- 在定常求解器里CFL是**收敛速度与稳定性的旋钮**,不是精度。小则乌龟,大则爆炸。
+- SER是 $\mathrm{CFL}_n = \min(\mathrm{CFL}_0 (\lVert R_0\rVert/\lVert R_n\rVert)^p,\ \mathrm{CFL}_{\max})$,残差下降就自动放大步子。
+- 伪时间隐式迭代在 $\Delta\tau\to\infty$ 时变成Newton法。SER就是把你平滑带到那个极限的调度。

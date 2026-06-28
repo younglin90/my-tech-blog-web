@@ -1,0 +1,164 @@
+---
+title: "CFL = 1 tarda diez mil pasos, CFL = 100 explota — Switched Evolution Relaxation"
+date: 2026-06-29
+description: "SER eleva el número de CFL desde el residual para acelerar la convergencia estacionaria"
+tags: ["CFD", "SER", "Pseudo-Transient", "Convergence-Acceleration", "Implicit"]
+locale: es
+slug: ser-cfl-ramping-pseudo-transient
+draft: false
+---
+
+import { SerConvergenceRaceLab } from '@/components/post-viz/2026-06-29-ser-cfl-ramping-pseudo-transient/SerConvergenceRaceLab'
+import { CflRampScheduleViz } from '@/components/post-viz/2026-06-29-ser-cfl-ramping-pseudo-transient/CflRampScheduleViz'
+
+Con el número de CFL en 1 en una corrida estacionaria, el residual no baja ni tras diez mil iteraciones. Subido a 100, la solución explota en el primer paso. Ambas escenas son habituales. Este artículo trata sobre SER (Switched Evolution Relaxation), un truco que camina entre esos dos extremos de forma automática. Hace crecer el CFL a medida que cae el residual —seguro al principio, tan rápido como Newton al final— y lo palparemos en un pequeño solver de Burgers estacionario.
+
+En un solver estacionario el número de CFL (el paso de tiempo adimensionalizado por el tamaño de malla y la velocidad de onda) ya no trata de precisión. Es una sola perilla que sostiene **a la vez la velocidad de convergencia y la estabilidad**.
+
+## El estado estacionario se persigue con tiempo falso
+
+La ecuación estacionaria es una línea: $R(U) = 0$. Aquí $R$ reúne convección, difusión y fuentes en un residual espacial. Resolverla directo implica romper un sistema algebraico no lineal. En su lugar, casi todos los códigos de CFD añaden un término de tiempo falso.
+
+$$
+\frac{\partial U}{\partial \tau} + R(U) = 0
+$$
+
+Aquí $\tau$ es seudotiempo (pseudo-time) sin significado físico. Cuando $\tau \to \infty$, $\partial U / \partial \tau \to 0$, así que $R(U)=0$: justo la solución estacionaria buscada. Se descarta la precisión temporal y solo se apunta al estado estacionario. Esto es la continuación seudotransitoria (pseudo-transient continuation).
+
+Al avanzar el tiempo falso de forma implícita (backward Euler) y linealizar el residual, cada iteración queda así:
+
+$$
+\left( \frac{I}{\Delta\tau} + \frac{\partial R}{\partial U} \right) \Delta U = -R(U^n)
+$$
+
+Aquí $\partial R/\partial U$ es el Jacobiano de flujo y $\Delta U = U^{n+1}-U^n$. Cada iteración resuelve una vez la matriz del lado izquierdo para obtener $\Delta U$.
+
+## Empezar pequeño, aterrizar en Newton
+
+Esa única línea contiene toda la intuición de SER. Llevemos $\Delta\tau$ a ambos extremos.
+
+Cuando $\Delta\tau \to 0$, el término $I/\Delta\tau$ domina la matriz y $\Delta U \approx -\Delta\tau\, R$. Eso es avance explícito puro. Robustísimo pero lento como una tortuga.
+
+Cuando $\Delta\tau \to \infty$, el término $I/\Delta\tau$ desaparece y solo queda $(\partial R/\partial U)\,\Delta U = -R$. Eso es exactamente el método de Newton, con convergencia cuadrática (el error se encoge por su cuadrado) cerca de la solución. Pero una mala estimación inicial lo hace divergir.
+
+Así que la estrategia ideal es clara. **Mantener $\Delta\tau$ pequeño al principio para sobrevivir a la no linealidad y luego agrandarlo cuando el residual cae y se está cerca de la solución, para absorber la convergencia cuadrática de Newton.** El detalle es "cuándo y cuánto". SER cede ese juicio al residual.
+
+## SER — agrandar el CFL con el inverso del residual
+
+La regla que Mulder y van Leer propusieron en 1985 es asombrosamente simple. Agrandar el CFL actual por la razón entre el residual inicial y el actual.
+
+$$
+\mathrm{CFL}_n = \min\!\left( \mathrm{CFL}_0 \left( \frac{\lVert R_0 \rVert}{\lVert R_n \rVert} \right)^{\!p},\ \mathrm{CFL}_{\max} \right)
+$$
+
+$\mathrm{CFL}_0$ es el CFL inicial, $\lVert R_n \rVert$ es la norma L2 del $n$-ésimo residual, $p$ es un exponente normalmente cercano a 1 y $\mathrm{CFL}_{\max}$ pone tope al desbocamiento. Si el residual cae diez veces (con $p=1$), el CFL crece diez veces. El paso de seudotiempo se convierte a partir de este CFL y la velocidad de onda local.
+
+$$
+\Delta\tau_i = \mathrm{CFL}_n \cdot \frac{\Delta x}{|u_i| + 2\nu/\Delta x}
+$$
+
+El denominador suma la velocidad de onda convectiva $|u_i|$ y la difusiva $2\nu/\Delta x$. Puede diferir por celda, así que se combina de modo natural con el avance temporal local (local time-stepping).
+
+Manipula los parámetros en la simulación de abajo. Es el historial de residual de CFL fijo y de SER corriendo lado a lado sobre el mismo problema de Burgers estacionario.
+
+<SerConvergenceRaceLab />
+
+Baja el fixed CFL a 1 y la curva ámbar apenas toca el fondo. Súbelo a 20 y salta a "diverged". SER (cian), en cambio, arranca seguro en $\mathrm{CFL}_0=1$ y aun así se quiebra bruscamente hacia abajo al final. Subir el exponente $p$ de 1 a 1.5 lo vuelve más agresivo y rápido, pero si se sube demasiado hasta SER tiembla al principio.
+
+## Python — resolver Burgers estacionario de dos maneras
+
+Resolvemos la ecuación de Burgers viscosa estacionaria $u u_x = \nu u_{xx}$. Las condiciones de borde $u(0)=1$, $u(1)=-1$ crean una capa de choque estacionaria en el centro. Un paso implícito de seudotiempo resuelve una matriz tridiagonal con el algoritmo de Thomas.
+
+```python
+import numpy as np
+
+def steady_residual(u, nu, dx):
+    """R(u) = u u_x - nu u_xx, bordes u(0)=1, u(1)=-1."""
+    um = np.concatenate(([1.0], u[:-1]))   # vecino izquierdo
+    up = np.concatenate((u[1:], [-1.0]))   # vecino derecho
+    conv = u * (up - um) / (2 * dx)
+    diff = nu * (up - 2 * u + um) / dx**2
+    return conv - diff
+
+def thomas_solve(a, b, c, d):
+    """Resuelve un sistema tridiagonal (sub/main/super diag a,b,c, rhs d)."""
+    n = len(d)
+    b, d = b.copy(), d.copy()
+    for i in range(1, n):
+        m = a[i] / b[i - 1]
+        b[i] -= m * c[i - 1]
+        d[i] -= m * d[i - 1]
+    x = np.empty(n)
+    x[-1] = d[-1] / b[-1]
+    for i in range(n - 2, -1, -1):
+        x[i] = (d[i] - c[i] * x[i + 1]) / b[i]
+    return x
+
+def ptc_update(u, nu, dx, dt):
+    """Un paso implícito de seudotiempo: (I/dt + dR/du) du = -R."""
+    n = len(u)
+    um = np.concatenate(([1.0], u[:-1]))
+    up = np.concatenate((u[1:], [-1.0]))
+    a = -u / (2 * dx) - nu / dx**2                       # subdiagonal
+    b = (up - um) / (2 * dx) + 2 * nu / dx**2 + 1.0 / dt  # diagonal principal
+    c = u / (2 * dx) - nu / dx**2                        # superdiagonal
+    du = thomas_solve(a, b, c, -steady_residual(u, nu, dx))
+    return u + du
+
+def ser_schedule(r0, rn, cfl0, p, cfl_max):
+    return min(cfl0 * (r0 / rn) ** p, cfl_max)
+
+def converge(nu=0.02, ser=True, cfl0=1.0, p=1.0, cfl_max=1e5,
+             N=80, tol=1e-9, max_iter=600):
+    dx = 1.0 / (N + 1)
+    x = np.linspace(dx, 1 - dx, N)
+    u = 1 - 2 * x                          # estimacion inicial lineal
+    r0 = np.linalg.norm(steady_residual(u, nu, dx)) / np.sqrt(N)
+    rn = r0
+    for it in range(1, max_iter + 1):
+        cfl = ser_schedule(r0, rn, cfl0, p, cfl_max) if ser else cfl0
+        dt = cfl * dx / (np.abs(u).max() + 2 * nu / dx)
+        u = ptc_update(u, nu, dx, dt)
+        rn = np.linalg.norm(steady_residual(u, nu, dx)) / np.sqrt(N)
+        if rn / r0 < tol:
+            return u, it
+    return u, max_iter
+
+for tag, kw in [("fixed CFL=3", dict(ser=False, cfl0=3.0)),
+                ("SER  p=1.0", dict(ser=True, cfl0=1.0, p=1.0))]:
+    _, iters = converge(**kw)
+    print(f"{tag:14s} -> {iters:4d} iters")
+```
+
+La salida se ve así.
+
+```text
+fixed CFL=3    ->  588 iters
+SER  p=1.0     ->   34 iters
+```
+
+Para alcanzar una solución estacionaria de la misma precisión, el CFL fijo necesita cientos de iteraciones y SER apenas decenas. La brecha se abre en la fase final, porque SER lleva el CFL a los miles y de hecho se transforma en el método de Newton.
+
+## CFL fijo y SER, lado a lado
+
+Veamos el cronograma mismo: cómo SER tira del CFL hacia arriba. Manipúlalo abajo. Cian es el cronograma de CFL, rosa es el residual.
+
+<CflRampScheduleViz />
+
+Mientras el residual está plano al inicio, el CFL se queda cerca de $\mathrm{CFL}_0$. En el instante en que el residual empieza a colapsar, el CFL se dispara casi en vertical. Esa es la esencia de SER: **cuanto mejor se vuelve la solución, mayor es el paso que permite.** Baja el cap a 20 y el CFL choca con el techo, pierde la aceleración tipo Newton del final y el conteo de iteraciones vuelve a subir.
+
+## Trampas al encender SER en producción
+
+Primero, fija siempre $\mathrm{CFL}_{\max}$. Si se deja en infinito, un solo pico del residual desboca el CFL y mata la solución.
+
+Segundo, cuando el residual oscila de forma no monótona (non-monotone), $R_0/R_n$ puede caer por debajo de 1 y encoger el CFL. No es un error: es una válvula de seguridad. Si el residual vuelve a empeorar, acortar el paso es lo correcto.
+
+Tercero, $p$ no es aceleración gratis. Un $p>1$ agranda el CFL enormemente ante una caída pequeña del residual, elevando el riesgo. Un arranque robusto es $p=1$, $\mathrm{CFL}_0 \approx 1$.
+
+Cuarto, si el Jacobiano es inexacto (Jacobiano aproximado o sin matriz), la convergencia cuadrática de Newton cae a primer orden con CFL grande. Entonces conviene bajar $\mathrm{CFL}_{\max}$ y comprar estabilidad.
+
+## Para recordar
+
+- En un solver estacionario el CFL es una perilla de **velocidad de convergencia y estabilidad**, no de precisión. Pequeño es tortuga, grande es explosión.
+- SER es $\mathrm{CFL}_n = \min(\mathrm{CFL}_0 (\lVert R_0\rVert/\lVert R_n\rVert)^p,\ \mathrm{CFL}_{\max})$, que agranda el paso automáticamente a medida que cae el residual.
+- La iteración implícita de seudotiempo se vuelve el método de Newton cuando $\Delta\tau\to\infty$. SER es el cronograma que te lleva con suavidad a ese límite.
