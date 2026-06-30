@@ -1,0 +1,119 @@
+---
+title: "格子が歪むとラプラシアンが漏れる — 非直交拡散フラックス補正"
+date: 2026-07-01
+description: "非構造格子の拡散項を直交＋補正に分ける三つの方法"
+tags: ["CFD", "FVM", "Unstructured-Grid", "Diffusion", "Non-Orthogonal-Correction"]
+locale: ja
+slug: non-orthogonal-diffusion-correction
+draft: false
+---
+
+import { NonOrthogonalFaceDecomposition } from '@/components/post-viz/2026-07-01-non-orthogonal-diffusion-correction/NonOrthogonalFaceDecomposition'
+import { DeferredCorrectionContraction } from '@/components/post-viz/2026-07-01-non-orthogonal-diffusion-correction/DeferredCorrectionContraction'
+
+立方体格子でよく動いていた拡散ソルバーを、歪んだ三角形格子へそのまま移すと、答えがじわりとずれます。同じ方程式、同じコードなのに温度場がぼやけ、収束が遅くなります。犯人は境界条件でも物性でもありません。**面の上で勾配をどう測るか**です。この記事では、非構造格子で拡散フラックスをどう離散化するか、そして面積ベクトルを二つに割る非直交補正がなぜ要るのかを、小さなソルバーを触りながら整理します。最後まで読めば、OpenFOAM の設定でいつも見かける `nNonOrthogonalCorrectors` が何を数える値かが分かります。
+
+## 面の勾配が厄介者
+
+有限体積法（FVM、保存量をセルごとに積分する方法）では、拡散項はセル面を通るフラックスの和です。面 $f$ を一つ通る拡散フラックスはこう書けます。
+
+$$
+F_f = \Gamma_f \, \nabla\phi_f \cdot \mathbf{S}_f
+$$
+
+ここで $\Gamma_f$ は面での拡散係数、$\nabla\phi_f$ は面の勾配、$\mathbf{S}_f$ は外向きの面積ベクトル（面の面積 × 法線）です。
+
+問題は $\nabla\phi_f \cdot \mathbf{S}_f$ をどうセル値へ落とすかです。構造直交格子なら簡単です。二つのセル中心を結ぶ線 $\mathbf{d}$ が面法線と平行だからです。単純な中心差分 $(\phi_N - \phi_P)/|\mathbf{d}|$ がそのまま法線方向の勾配になります。
+
+非構造格子ではこの仮定が崩れます。セル中心を結ぶ $\mathbf{d}$ と面積ベクトル $\mathbf{S}_f$ がずれます。このずれの角を**非直交角** $\theta$ と呼びます。$(\phi_N - \phi_P)/|\mathbf{d}|$ はもう法線勾配ではなく、$\mathbf{d}$ 方向の勾配です。両者は違います。差を無視すると拡散が「漏れて」、ぼやけた解になります。
+
+## S_f を二つに割る
+
+解決策は面積ベクトルを二成分に分解することです。一方は $\mathbf{d}$ 方向、もう一方は残りです。
+
+$$
+\mathbf{S}_f = \mathbf{E}_f + \mathbf{T}_f
+$$
+
+$\mathbf{E}_f$ は $\mathbf{d}$ に平行な成分、$\mathbf{T}_f$ はその残り（接線成分）です。これをフラックスへ入れると項が二つに割れます。
+
+$$
+F_f = \Gamma_f |\mathbf{E}_f| \frac{\phi_N - \phi_P}{|\mathbf{d}|} + \Gamma_f \, \overline{\nabla\phi}_f \cdot \mathbf{T}_f
+$$
+
+前の項は $\phi_N - \phi_P$ だけを使うので、**陰的**に行列へ入れます。セル中心の二点しか関わらず、すっきりします。後の項は面平均勾配 $\overline{\nabla\phi}_f$ が要ります。これは隣接セルの勾配を平均して得ます。行列係数に入れにくいので、**陽的な補正**として右辺へ投げます。
+
+要点はこれです。直交成分 $\mathbf{E}_f$ は頑健に陰的で解き、歪みが生んだ余計な $\mathbf{T}_f$ は別の補正として扱う。$\theta = 0$ なら $\mathbf{T}_f = 0$ で、昔の中心差分に正確に戻ります。
+
+## 最小・直交・過緩和：三つの分解
+
+$\mathbf{E}_f$ を $\mathbf{d}$ 方向に取る取り方は一つではありません。長さをいくつにするかで、三つの標準的な選択があります。$\hat{\mathbf{d}} = \mathbf{d}/|\mathbf{d}|$、$\cos\theta = \hat{\mathbf{d}}\cdot\mathbf{S}_f / |\mathbf{S}_f|$ とすると：
+
+- **最小補正（minimum）**：$\mathbf{E}_f = (\hat{\mathbf{d}}\cdot\mathbf{S}_f)\,\hat{\mathbf{d}}$、すなわち $|\mathbf{E}_f| = |\mathbf{S}_f|\cos\theta$。$\mathbf{T}_f$ が最も短い。
+- **直交補正（orthogonal）**：$\mathbf{E}_f = |\mathbf{S}_f|\,\hat{\mathbf{d}}$。陰的成分の大きさを面積のまま保つ。
+- **過緩和（over-relaxed）**：$\mathbf{E}_f = \dfrac{|\mathbf{S}_f|^2}{\hat{\mathbf{d}}\cdot\mathbf{S}_f}\,\hat{\mathbf{d}}$、すなわち $|\mathbf{E}_f| = |\mathbf{S}_f|/\cos\theta$。非直交が増すほど陰的成分を**さらに大きく**します。
+
+三つの幾何は式だけでは思い描きにくいです。下のシミュレーションで直接動かしてみましょう。非直交角のスライダーを引き、三方式を切り替えて、$\mathbf{E}_f$（シアン、陰的）と $\mathbf{T}_f$（ピンク、補正）がどう変わるか見てください。
+
+<NonOrthogonalFaceDecomposition />
+
+$\theta$ を 60° まで上げると、過緩和の $\mathbf{E}_f$ が面積ベクトルより長くなります。陰的対角が大きくなり、より安定だという合図です。最小補正は逆で、$\mathbf{E}_f$ が縮み補正 $\mathbf{T}_f$ が急に伸びます。キャンバス下の ρ 値が 1 を超える（赤）と、その方式は危険です。
+
+## コード：遅延補正ラプラスソルバー
+
+陽的補正項は直前の反復の勾配を使います。だから一度解いて終わりではなく、補正を更新しながら何度か掃く**遅延補正（deferred correction）**ループになります。面積ベクトルの分解とその収束挙動を、小さなコードで確認します。
+
+```python
+import numpy as np
+
+def decompose_face(S_f, d, scheme="over"):
+    """面積ベクトル S_f = E_f（陰的、d 方向） + T_f（陽的補正）。"""
+    d_hat = d / np.linalg.norm(d)
+    Smag = np.linalg.norm(S_f)
+    dS = d_hat @ S_f                      # = |S_f| cos(非直交角)
+    if scheme == "min":                   # 最小補正
+        E = dS * d_hat
+    elif scheme == "orth":                # 直交補正
+        E = Smag * d_hat
+    else:                                 # 過緩和 (over-relaxed)
+        E = (Smag**2 / dS) * d_hat
+    return E, S_f - E                     # E_f, T_f
+
+def sweep_residual(S_f, d, scheme, sweeps=25):
+    """E_f は陰的、T_f は遅延。残差は rho = |T|/|E| の比で縮む。"""
+    E, T = decompose_face(S_f, d, scheme)
+    rho = np.linalg.norm(T) / np.linalg.norm(E)
+    r, hist = 1.0, [1.0]
+    for _ in range(sweeps):
+        r *= rho                          # 遅延補正 1 回 = 残差 x rho
+        hist.append(r)
+    return rho, hist
+
+S_f = np.array([1.0, 0.0])                # 面法線 (面積ベクトル, |S|=1)
+for ang in (20, 45, 65):
+    d = np.array([np.cos(np.radians(ang)), np.sin(np.radians(ang))])
+    for s in ("min", "orth", "over"):
+        rho, hist = sweep_residual(S_f, d, s)
+        tag = "収束" if rho < 1 else "発散"
+        print(f"theta={ang:2d}  {s:5s}  rho={rho:.3f}  {tag}  (25回後 {hist[-1]:.1e})")
+```
+
+出力は、非直交角が増すほど三方式が分かれることを示します。20° では三つとも無難です。65° では最小補正が $\rho = \tan 65° \approx 2.14$ で発散し、過緩和は $\rho = \sin 65° \approx 0.91$ でなお収束します。同じ格子、同じ方程式なのに、分解の選び方一つが収束と発散を分けます。
+
+なぜ $\rho = |\mathbf{T}_f|/|\mathbf{E}_f|$ なのか。遅延補正は陰的係数 $\propto |\mathbf{E}_f|$ で解き、掃くたびに $\propto |\mathbf{T}_f|$ の誤差を陽的に戻します。一掃きごとに残差がその比で増減します。この比が 1 未満でないとループは閉じません。
+
+## 非直交が増すと何が起こるか
+
+三方式の運命を一画面に重ねます。下のシミュレーションで直接動かしてみましょう。格子の非直交角を引き上げ、各方式の残差が何回の掃きで落ちるか比べてください。
+
+<DeferredCorrectionContraction />
+
+30° 以下なら三つとも同じくらいよく落ちます。45° を超えると最小補正が先に崩れます（$\rho \ge 1$）。70° まで押すと直交補正も危うく、過緩和だけが残ります。その $\rho = \sin\theta$ はどの角でも 1 を超えないからです。これが商用・オープンソースのコードが過緩和を既定にする理由です。
+
+代償はあります。過緩和は陰的成分を大きくする分、陽的補正も大きく、同じ残差に届くには補正掃きを何度も回す必要があります。`nNonOrthogonalCorrectors` がまさにその掃き回数です。良い格子なら 0〜1 で十分、ひどく歪んだ格子では 2〜3 まで上げます。むやみに上げると一時間ステップが高くつくので、まず格子品質を直す方がほぼ常に良策です。
+
+## 覚えておくこと
+
+- 非構造格子の拡散項は $\mathbf{S}_f = \mathbf{E}_f + \mathbf{T}_f$ に割り、$\mathbf{E}_f$ を陰的に行列へ、$\mathbf{T}_f$ を遅延補正として右辺へ投げます。
+- 分解は最小・直交・過緩和の三つで、収束は $\rho = |\mathbf{T}_f|/|\mathbf{E}_f|$ が握ります。過緩和の $\rho=\sin\theta$ は常に 1 未満で、最も頑健です。
+- 補正掃き回数（`nNonOrthogonalCorrectors`）を上げる前に、非直交角そのものを減らす格子改善を優先しましょう。

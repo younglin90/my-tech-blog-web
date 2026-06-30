@@ -1,0 +1,119 @@
+---
+title: "网格一歪，拉普拉斯算子就漏 — 非正交扩散通量修正"
+date: 2026-07-01
+description: "把非结构扩散项拆成正交加修正的三种方法"
+tags: ["CFD", "FVM", "Unstructured-Grid", "Diffusion", "Non-Orthogonal-Correction"]
+locale: zh
+slug: non-orthogonal-diffusion-correction
+draft: false
+---
+
+import { NonOrthogonalFaceDecomposition } from '@/components/post-viz/2026-07-01-non-orthogonal-diffusion-correction/NonOrthogonalFaceDecomposition'
+import { DeferredCorrectionContraction } from '@/components/post-viz/2026-07-01-non-orthogonal-diffusion-correction/DeferredCorrectionContraction'
+
+把在立方体网格上运行良好的扩散求解器照搬到一张歪斜的三角形网格上，答案会悄悄偏移。方程相同、代码相同，温度场却变糊，收敛也变慢。罪魁既不是边界条件，也不是物性，而是**如何在面上测量梯度**。本文用一个小求解器，逐步讲清非结构网格上扩散通量怎样离散，以及把面积矢量拆成两块的非正交修正为何重要。读到最后，你会明白 OpenFOAM 算例里常见的那行 `nNonOrthogonalCorrectors` 究竟在数什么。
+
+## 面上的梯度才是麻烦
+
+在有限体积法（FVM，逐单元积分守恒量的方法）中，扩散项是穿过单元面的通量之和。穿过一个面 $f$ 的扩散通量写作：
+
+$$
+F_f = \Gamma_f \, \nabla\phi_f \cdot \mathbf{S}_f
+$$
+
+其中 $\Gamma_f$ 是面上的扩散系数，$\nabla\phi_f$ 是面梯度，$\mathbf{S}_f$ 是外向的面积矢量（面积乘法向）。
+
+难点在于把 $\nabla\phi_f \cdot \mathbf{S}_f$ 化为单元值。在结构正交网格上这很容易。连接两单元中心的矢量 $\mathbf{d}$ 与面法向平行。于是简单的中心差分 $(\phi_N - \phi_P)/|\mathbf{d}|$ 恰好就是法向梯度。
+
+在非结构网格上这一假设失效。中心到中心的 $\mathbf{d}$ 不再与面积矢量 $\mathbf{S}_f$ 对齐。这一错开的角称为**非正交角** $\theta$。此时 $(\phi_N - \phi_P)/|\mathbf{d}|$ 是沿 $\mathbf{d}$ 的梯度，而非法向梯度。两者不同。忽略这个差，扩散就会“漏出”，得到一个抹糊的解。
+
+## 把 S_f 拆成两块
+
+办法是把面积矢量分解为两个分量。一个沿 $\mathbf{d}$，另一个承担余量。
+
+$$
+\mathbf{S}_f = \mathbf{E}_f + \mathbf{T}_f
+$$
+
+$\mathbf{E}_f$ 是平行于 $\mathbf{d}$ 的部分，$\mathbf{T}_f$ 是剩下的（切向）部分。代入通量，该项就一分为二。
+
+$$
+F_f = \Gamma_f |\mathbf{E}_f| \frac{\phi_N - \phi_P}{|\mathbf{d}|} + \Gamma_f \, \overline{\nabla\phi}_f \cdot \mathbf{T}_f
+$$
+
+第一项只用 $\phi_N - \phi_P$，因此作为**隐式**贡献进入矩阵。只牵涉两个单元中心，干净利落。第二项需要面平均梯度 $\overline{\nabla\phi}_f$，由邻单元梯度平均得到。它难以写入矩阵系数，于是作为**显式修正**抛到右端。
+
+要点正是如此：把正交部分 $\mathbf{E}_f$ 稳健地隐式求解，把歪斜带来的多余量 $\mathbf{T}_f$ 当作单独的修正处理。当 $\theta = 0$ 时 $\mathbf{T}_f = 0$，正好退回原来的中心差分。
+
+## 最小、正交、过松弛：三种分解
+
+让 $\mathbf{E}_f$ 沿 $\mathbf{d}$ 的取法不止一种。长度取多少，有三种标准选择。记 $\hat{\mathbf{d}} = \mathbf{d}/|\mathbf{d}|$，$\cos\theta = \hat{\mathbf{d}}\cdot\mathbf{S}_f / |\mathbf{S}_f|$：
+
+- **最小修正（minimum）**：$\mathbf{E}_f = (\hat{\mathbf{d}}\cdot\mathbf{S}_f)\,\hat{\mathbf{d}}$，即 $|\mathbf{E}_f| = |\mathbf{S}_f|\cos\theta$。$\mathbf{T}_f$ 最短。
+- **正交修正（orthogonal）**：$\mathbf{E}_f = |\mathbf{S}_f|\,\hat{\mathbf{d}}$。把隐式分量的大小保持为面积。
+- **过松弛（over-relaxed）**：$\mathbf{E}_f = \dfrac{|\mathbf{S}_f|^2}{\hat{\mathbf{d}}\cdot\mathbf{S}_f}\,\hat{\mathbf{d}}$，即 $|\mathbf{E}_f| = |\mathbf{S}_f|/\cos\theta$。非正交越大，隐式分量**反而越大**。
+
+三者的几何仅凭公式难以想象。在下面的模拟中亲手操作吧。拖动非正交角滑块，切换三种方式，看 $\mathbf{E}_f$（青色，隐式）与 $\mathbf{T}_f$（粉色，修正）如何变化。
+
+<NonOrthogonalFaceDecomposition />
+
+把 $\theta$ 升到 60°，过松弛的 $\mathbf{E}_f$ 会比面积矢量更长。这是隐式对角变大、更稳定的信号。最小修正则相反：$\mathbf{E}_f$ 缩短，修正 $\mathbf{T}_f$ 迅速拉长。当画布下方的 ρ 值越过 1（红色），那种方式就危险了。
+
+## 代码：延迟修正拉普拉斯求解器
+
+显式修正项使用上一次迭代的梯度。所以不是一解了之，而是边更新修正边扫掠数次的**延迟修正（deferred correction）**循环。下面这段短代码检验面积矢量的分解及其收敛行为。
+
+```python
+import numpy as np
+
+def decompose_face(S_f, d, scheme="over"):
+    """面积矢量 S_f = E_f（隐式，沿 d） + T_f（显式修正）。"""
+    d_hat = d / np.linalg.norm(d)
+    Smag = np.linalg.norm(S_f)
+    dS = d_hat @ S_f                      # = |S_f| cos(非正交角)
+    if scheme == "min":                   # 最小修正
+        E = dS * d_hat
+    elif scheme == "orth":                # 正交修正
+        E = Smag * d_hat
+    else:                                 # 过松弛 (over-relaxed)
+        E = (Smag**2 / dS) * d_hat
+    return E, S_f - E                     # E_f, T_f
+
+def sweep_residual(S_f, d, scheme, sweeps=25):
+    """E_f 隐式，T_f 延迟。残差以 rho = |T|/|E| 的比率收缩。"""
+    E, T = decompose_face(S_f, d, scheme)
+    rho = np.linalg.norm(T) / np.linalg.norm(E)
+    r, hist = 1.0, [1.0]
+    for _ in range(sweeps):
+        r *= rho                          # 一次延迟修正 = 残差 x rho
+        hist.append(r)
+    return rho, hist
+
+S_f = np.array([1.0, 0.0])                # 面法向 (面积矢量, |S|=1)
+for ang in (20, 45, 65):
+    d = np.array([np.cos(np.radians(ang)), np.sin(np.radians(ang))])
+    for s in ("min", "orth", "over"):
+        rho, hist = sweep_residual(S_f, d, s)
+        tag = "收敛" if rho < 1 else "发散"
+        print(f"theta={ang:2d}  {s:5s}  rho={rho:.3f}  {tag}  (25 次后 {hist[-1]:.1e})")
+```
+
+输出显示：非正交角越大，三种方式越分化。20° 时三者都无碍。65° 时最小修正达到 $\rho = \tan 65° \approx 2.14$ 而发散，过松弛仍以 $\rho = \sin 65° \approx 0.91$ 收敛。同样的网格、同样的方程，分解方式这一项就决定了收敛还是爆掉。
+
+为何 $\rho = |\mathbf{T}_f|/|\mathbf{E}_f|$？延迟修正以隐式系数 $\propto |\mathbf{E}_f|$ 求解，每扫一次又显式反馈一份 $\propto |\mathbf{T}_f|$ 的误差。每扫一次，残差按该比率增减。该比率须小于 1，循环才能闭合。
+
+## 非正交变大时会怎样
+
+把三种方式的命运叠在一屏。在下面的模拟中亲手操作吧。把网格非正交角拉高，比较各方式要扫几次才能压下残差。
+
+<DeferredCorrectionContraction />
+
+低于 30°，三者以相近速率下降。超过 45°，最小修正最先崩溃（$\rho \ge 1$）。推到 70°，正交修正也摇摇欲坠，只剩过松弛屹立。因为它的 $\rho = \sin\theta$ 在任何角度都不超过 1。这正是商用与开源代码把过松弛设为默认的原因。
+
+代价是有的。过松弛把隐式分量做大，显式修正也随之变大，要够到同样的残差就得多扫几遍修正。`nNonOrthogonalCorrectors` 数的正是这个扫掠次数。网格好时 0–1 即可；歪斜严重时升到 2–3。盲目加大会让单个时间步变贵，所以先改善网格质量几乎总是更明智。
+
+## 要点回顾
+
+- 非结构扩散项按 $\mathbf{S}_f = \mathbf{E}_f + \mathbf{T}_f$ 拆分：把 $\mathbf{E}_f$ 隐式放入矩阵，把 $\mathbf{T}_f$ 作为延迟修正抛到右端。
+- 分解有最小、正交、过松弛三种，收敛由 $\rho = |\mathbf{T}_f|/|\mathbf{E}_f|$ 掌控。过松弛的 $\rho=\sin\theta$ 始终小于 1，因此最稳健。
+- 在调高修正扫掠次数（`nNonOrthogonalCorrectors`）之前，优先做能减小非正交角本身的网格改进。

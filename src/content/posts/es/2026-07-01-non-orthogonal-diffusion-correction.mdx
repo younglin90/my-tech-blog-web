@@ -1,0 +1,119 @@
+---
+title: "Cuando la malla se sesga, el laplaciano se fuga — corrección de flujo difusivo no ortogonal"
+date: 2026-07-01
+description: "Dividir el término difusivo no estructurado en ortogonal más corrección, de tres formas"
+tags: ["CFD", "FVM", "Unstructured-Grid", "Diffusion", "Non-Orthogonal-Correction"]
+locale: es
+slug: non-orthogonal-diffusion-correction
+draft: false
+---
+
+import { NonOrthogonalFaceDecomposition } from '@/components/post-viz/2026-07-01-non-orthogonal-diffusion-correction/NonOrthogonalFaceDecomposition'
+import { DeferredCorrectionContraction } from '@/components/post-viz/2026-07-01-non-orthogonal-diffusion-correction/DeferredCorrectionContraction'
+
+Un solver de difusión que corre limpio en una malla de cubos, trasladado tal cual a una malla triangular sesgada, da una respuesta que se desvía sin avisar. Misma ecuación, mismo código, y aun así el campo de temperatura se emborrona y la convergencia se arrastra. El culpable no son las condiciones de contorno ni las propiedades del material. Es **cómo se mide el gradiente sobre una cara**. Este artículo recorre cómo discretizar el flujo difusivo en una malla no estructurada, y por qué importa partir el vector de área de la cara en dos piezas: la corrección no ortogonal. Se construye con un pequeño solver. Al final sabrás qué cuenta de verdad esa línea `nNonOrthogonalCorrectors` de tu caso de OpenFOAM.
+
+## El gradiente en la cara es el problema
+
+En el método de volúmenes finitos (FVM, que integra cantidades conservadas celda a celda), el término difusivo es una suma de flujos a través de las caras. El flujo difusivo por una cara $f$ se escribe:
+
+$$
+F_f = \Gamma_f \, \nabla\phi_f \cdot \mathbf{S}_f
+$$
+
+Aquí $\Gamma_f$ es el coeficiente de difusión en la cara, $\nabla\phi_f$ el gradiente de cara y $\mathbf{S}_f$ el vector de área saliente (área de la cara por la normal).
+
+La dificultad es reducir $\nabla\phi_f \cdot \mathbf{S}_f$ a valores de celda. En una malla estructurada ortogonal es fácil. La línea $\mathbf{d}$ que une los dos centros de celda es paralela a la normal de la cara. Así, la simple diferencia central $(\phi_N - \phi_P)/|\mathbf{d}|$ es justo el gradiente normal.
+
+En una malla no estructurada esa hipótesis se rompe. El vector centro a centro $\mathbf{d}$ ya no se alinea con el vector de área $\mathbf{S}_f$. A ese ángulo de desalineación lo llamamos **no ortogonalidad** $\theta$. Ahora $(\phi_N - \phi_P)/|\mathbf{d}|$ es el gradiente a lo largo de $\mathbf{d}$, no a lo largo de la normal. Son distintos. Ignorar la brecha hace que la difusión se "fugue", con una solución difuminada.
+
+## Partir S_f en dos piezas
+
+La cura es descomponer el vector de área en dos componentes. Una apunta a lo largo de $\mathbf{d}$, la otra carga con el resto.
+
+$$
+\mathbf{S}_f = \mathbf{E}_f + \mathbf{T}_f
+$$
+
+$\mathbf{E}_f$ es la parte paralela a $\mathbf{d}$; $\mathbf{T}_f$ es lo que sobra (la parte tangencial). Sustituyendo en el flujo, el término se parte en dos.
+
+$$
+F_f = \Gamma_f |\mathbf{E}_f| \frac{\phi_N - \phi_P}{|\mathbf{d}|} + \Gamma_f \, \overline{\nabla\phi}_f \cdot \mathbf{T}_f
+$$
+
+El primer término solo usa $\phi_N - \phi_P$, así que entra en la matriz como contribución **implícita**. Solo intervienen los dos centros de celda: limpio. El segundo término necesita el gradiente promedio de cara $\overline{\nabla\phi}_f$, obtenido promediando los gradientes de las celdas vecinas. Eso es incómodo de meter en coeficientes de matriz, así que se lanza al lado derecho como **corrección explícita**.
+
+La idea es exactamente esta. Resolver la parte ortogonal $\mathbf{E}_f$ de forma robusta e implícita, y tratar el desorden $\mathbf{T}_f$ que crea el sesgo como una corrección aparte. Cuando $\theta = 0$, $\mathbf{T}_f = 0$ y se recupera exactamente la antigua diferencia central.
+
+## Mínima, ortogonal, sobrerrelajada: tres particiones
+
+Hay más de una forma de orientar $\mathbf{E}_f$ a lo largo de $\mathbf{d}$. Según la longitud que le des, existen tres opciones estándar. Con $\hat{\mathbf{d}} = \mathbf{d}/|\mathbf{d}|$ y $\cos\theta = \hat{\mathbf{d}}\cdot\mathbf{S}_f / |\mathbf{S}_f|$:
+
+- **Corrección mínima (minimum)**: $\mathbf{E}_f = (\hat{\mathbf{d}}\cdot\mathbf{S}_f)\,\hat{\mathbf{d}}$, es decir $|\mathbf{E}_f| = |\mathbf{S}_f|\cos\theta$. El $\mathbf{T}_f$ más corto.
+- **Corrección ortogonal (orthogonal)**: $\mathbf{E}_f = |\mathbf{S}_f|\,\hat{\mathbf{d}}$. Mantiene la magnitud implícita en el área de la cara.
+- **Sobrerrelajada (over-relaxed)**: $\mathbf{E}_f = \dfrac{|\mathbf{S}_f|^2}{\hat{\mathbf{d}}\cdot\mathbf{S}_f}\,\hat{\mathbf{d}}$, es decir $|\mathbf{E}_f| = |\mathbf{S}_f|/\cos\theta$. **Hace crecer** la parte implícita a medida que sube la no ortogonalidad.
+
+La geometría de las tres cuesta imaginarla desde las fórmulas. Manipula la simulación de abajo. Arrastra el deslizador de no ortogonalidad y alterna los tres esquemas para ver cómo cambian $\mathbf{E}_f$ (cian, implícita) y $\mathbf{T}_f$ (rosa, corrección).
+
+<NonOrthogonalFaceDecomposition />
+
+Sube $\theta$ a 60° y el $\mathbf{E}_f$ sobrerrelajado se hace más largo que el vector de área. Esa es la señal de una diagonal implícita mayor: más estabilidad. La corrección mínima hace lo contrario: $\mathbf{E}_f$ se encoge y la corrección $\mathbf{T}_f$ se estira rápido. Cuando el valor ρ bajo el lienzo cruza 1 (en rojo), ese esquema está en peligro.
+
+## Código: un solver de Laplace con corrección diferida
+
+El término de corrección explícita usa el gradiente de la iteración anterior. Así que no se resuelve de una vez; se vuelve un bucle de **corrección diferida (deferred correction)** que actualiza la corrección a lo largo de varias barridas. El breve código de abajo comprueba la partición del vector de área y su comportamiento de convergencia.
+
+```python
+import numpy as np
+
+def decompose_face(S_f, d, scheme="over"):
+    """Vector de area S_f = E_f (implicito, segun d) + T_f (correccion explicita)."""
+    d_hat = d / np.linalg.norm(d)
+    Smag = np.linalg.norm(S_f)
+    dS = d_hat @ S_f                      # = |S_f| cos(no ortogonalidad)
+    if scheme == "min":                   # correccion minima
+        E = dS * d_hat
+    elif scheme == "orth":                # correccion ortogonal
+        E = Smag * d_hat
+    else:                                 # sobrerrelajada (over-relaxed)
+        E = (Smag**2 / dS) * d_hat
+    return E, S_f - E                     # E_f, T_f
+
+def sweep_residual(S_f, d, scheme, sweeps=25):
+    """E_f implicito, T_f diferido. El residual se contrae a razon rho = |T|/|E|."""
+    E, T = decompose_face(S_f, d, scheme)
+    rho = np.linalg.norm(T) / np.linalg.norm(E)
+    r, hist = 1.0, [1.0]
+    for _ in range(sweeps):
+        r *= rho                          # una barrida de correccion diferida = residual x rho
+        hist.append(r)
+    return rho, hist
+
+S_f = np.array([1.0, 0.0])                # normal de cara (vector de area, |S|=1)
+for ang in (20, 45, 65):
+    d = np.array([np.cos(np.radians(ang)), np.sin(np.radians(ang))])
+    for s in ("min", "orth", "over"):
+        rho, hist = sweep_residual(S_f, d, s)
+        tag = "converge" if rho < 1 else "diverge"
+        print(f"theta={ang:2d}  {s:5s}  rho={rho:.3f}  {tag}  (tras 25: {hist[-1]:.1e})")
+```
+
+La salida muestra cómo divergen los tres esquemas al crecer la no ortogonalidad. A 20° los tres van bien. A 65° la corrección mínima llega a $\rho = \tan 65° \approx 2.14$ y diverge, mientras que la sobrerrelajada se queda en $\rho = \sin 65° \approx 0.91$ y aún converge. Misma malla, misma ecuación, y aun así la elección de la partición decide entre converger y reventar.
+
+¿Por qué $\rho = |\mathbf{T}_f|/|\mathbf{E}_f|$? La corrección diferida resuelve con un coeficiente implícito $\propto |\mathbf{E}_f|$ y realimenta un error $\propto |\mathbf{T}_f|$ de forma explícita en cada barrida. Cada barrida escala el residual por esa razón. La razón debe ser menor que 1 para que el bucle cierre.
+
+## Qué pasa cuando crece la no ortogonalidad
+
+Superpón los destinos de los tres esquemas en una pantalla. Manipula la simulación de abajo. Sube la no ortogonalidad de la malla y compara cuántas barridas necesita cada esquema para bajar su residual.
+
+<DeferredCorrectionContraction />
+
+Por debajo de 30°, los tres caen a un ritmo parecido. Pasados los 45°, la corrección mínima se desmorona primero ($\rho \ge 1$). Lleva a 70° y la corrección ortogonal también tambalea, dejando en pie solo a la sobrerrelajada. Su $\rho = \sin\theta$ nunca supera 1 en ningún ángulo. Por eso los códigos comerciales y de código abierto usan la sobrerrelajada por defecto.
+
+Hay un precio. La sobrerrelajada agranda la parte implícita, pero la corrección explícita crece con ella, así que alcanzar el mismo residual exige varias barridas de corrección. `nNonOrthogonalCorrectors` es justo esa cuenta de barridas. En una malla buena, 0–1 basta; en una malla muy sesgada, súbela a 2–3. Aumentarla a ciegas encarece cada paso de tiempo, así que arreglar primero la calidad de la malla casi siempre es la mejor jugada.
+
+## Para recordar
+
+- Parte el término difusivo no estructurado como $\mathbf{S}_f = \mathbf{E}_f + \mathbf{T}_f$: mete $\mathbf{E}_f$ en la matriz de forma implícita y lanza $\mathbf{T}_f$ al lado derecho como corrección diferida.
+- La partición viene en tres formas — mínima, ortogonal, sobrerrelajada — y la convergencia la gobierna $\rho = |\mathbf{T}_f|/|\mathbf{E}_f|$. El $\rho = \sin\theta$ de la sobrerrelajada se mantiene siempre bajo 1, por eso es la más robusta.
+- Antes de subir la cuenta de barridas de corrección (`nNonOrthogonalCorrectors`), prefiere una mejora de malla que reduzca la propia no ortogonalidad.

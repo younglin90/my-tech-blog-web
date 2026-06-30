@@ -1,0 +1,119 @@
+---
+title: "When the Mesh Skews, the Laplacian Leaks — Non-Orthogonal Diffusion Correction"
+date: 2026-07-01
+description: "Splitting the unstructured diffusion term into orthogonal plus correction, three ways"
+tags: ["CFD", "FVM", "Unstructured-Grid", "Diffusion", "Non-Orthogonal-Correction"]
+locale: en
+slug: non-orthogonal-diffusion-correction
+draft: false
+---
+
+import { NonOrthogonalFaceDecomposition } from '@/components/post-viz/2026-07-01-non-orthogonal-diffusion-correction/NonOrthogonalFaceDecomposition'
+import { DeferredCorrectionContraction } from '@/components/post-viz/2026-07-01-non-orthogonal-diffusion-correction/DeferredCorrectionContraction'
+
+Take a diffusion solver that runs cleanly on a cube mesh and drop it onto a skewed triangular mesh. The answer quietly drifts. Same equation, same code, yet the temperature field blurs and convergence slows. The culprit is neither the boundary conditions nor the material properties. It is **how you measure the gradient on a face**. This post walks through how to discretize the diffusion flux on an unstructured mesh, and why splitting the face-area vector into two pieces — the non-orthogonal correction — matters. You build it up with a small solver. By the end you will know what that `nNonOrthogonalCorrectors` line in your OpenFOAM case is actually counting.
+
+## The face gradient is the troublemaker
+
+In the finite volume method (FVM, which integrates conserved quantities cell by cell), the diffusion term is a sum of fluxes through cell faces. The diffusion flux through one face $f$ reads:
+
+$$
+F_f = \Gamma_f \, \nabla\phi_f \cdot \mathbf{S}_f
+$$
+
+Here $\Gamma_f$ is the diffusion coefficient at the face, $\nabla\phi_f$ the face gradient, and $\mathbf{S}_f$ the outward area vector (face area times normal).
+
+The trouble is reducing $\nabla\phi_f \cdot \mathbf{S}_f$ to cell values. On a structured orthogonal mesh it is easy. The line $\mathbf{d}$ joining the two cell centers is parallel to the face normal. So the plain central difference $(\phi_N - \phi_P)/|\mathbf{d}|$ is exactly the normal gradient.
+
+On an unstructured mesh that assumption breaks. The center-to-center vector $\mathbf{d}$ no longer lines up with the area vector $\mathbf{S}_f$. We call the misalignment angle the **non-orthogonality** $\theta$. Now $(\phi_N - \phi_P)/|\mathbf{d}|$ is the gradient along $\mathbf{d}$, not along the normal. The two differ. Ignore the gap and diffusion "leaks," giving a smeared solution.
+
+## Split S_f into two pieces
+
+The fix is to decompose the area vector into two components. One points along $\mathbf{d}$, the other carries the remainder.
+
+$$
+\mathbf{S}_f = \mathbf{E}_f + \mathbf{T}_f
+$$
+
+$\mathbf{E}_f$ is the part parallel to $\mathbf{d}$; $\mathbf{T}_f$ is the leftover (tangential) part. Substitute into the flux and the term cleaves in two.
+
+$$
+F_f = \Gamma_f |\mathbf{E}_f| \frac{\phi_N - \phi_P}{|\mathbf{d}|} + \Gamma_f \, \overline{\nabla\phi}_f \cdot \mathbf{T}_f
+$$
+
+The first term uses only $\phi_N - \phi_P$, so it goes into the matrix as an **implicit** contribution. Only the two cell centers are involved — clean. The second term needs the face-average gradient $\overline{\nabla\phi}_f$, obtained by averaging neighbor-cell gradients. That is awkward to put into matrix coefficients, so it is thrown to the right-hand side as an **explicit correction**.
+
+The idea is exactly this. Solve the orthogonal part $\mathbf{E}_f$ robustly and implicitly, and handle the clutter $\mathbf{T}_f$ created by skewness as a separate correction. When $\theta = 0$, $\mathbf{T}_f = 0$ and you recover the old central difference exactly.
+
+## Minimum, orthogonal, over-relaxed: three splits
+
+There is more than one way to point $\mathbf{E}_f$ along $\mathbf{d}$. Depending on how long you make it, there are three standard choices. With $\hat{\mathbf{d}} = \mathbf{d}/|\mathbf{d}|$ and $\cos\theta = \hat{\mathbf{d}}\cdot\mathbf{S}_f / |\mathbf{S}_f|$:
+
+- **Minimum correction**: $\mathbf{E}_f = (\hat{\mathbf{d}}\cdot\mathbf{S}_f)\,\hat{\mathbf{d}}$, so $|\mathbf{E}_f| = |\mathbf{S}_f|\cos\theta$. The shortest $\mathbf{T}_f$.
+- **Orthogonal correction**: $\mathbf{E}_f = |\mathbf{S}_f|\,\hat{\mathbf{d}}$. Keeps the implicit magnitude at the face area.
+- **Over-relaxed**: $\mathbf{E}_f = \dfrac{|\mathbf{S}_f|^2}{\hat{\mathbf{d}}\cdot\mathbf{S}_f}\,\hat{\mathbf{d}}$, so $|\mathbf{E}_f| = |\mathbf{S}_f|/\cos\theta$. It **grows** the implicit part as non-orthogonality rises.
+
+The geometry of the three is hard to picture from formulas. Play with the simulation below. Drag the non-orthogonality slider and toggle the three schemes to see how $\mathbf{E}_f$ (cyan, implicit) and $\mathbf{T}_f$ (pink, correction) change.
+
+<NonOrthogonalFaceDecomposition />
+
+Push $\theta$ to 60° and the over-relaxed $\mathbf{E}_f$ grows longer than the area vector. That is the signal of a larger implicit diagonal — more stability. The minimum correction does the opposite: $\mathbf{E}_f$ shrinks and the correction $\mathbf{T}_f$ stretches fast. When the ρ value below the canvas crosses 1 (red), that scheme is in danger.
+
+## Code: a deferred-correction Laplace solver
+
+The explicit correction uses the gradient from the previous iteration. So it is not solve-once-and-done; it becomes a **deferred-correction** loop that updates the correction over several sweeps. The short code below checks the area-vector split and its convergence behavior.
+
+```python
+import numpy as np
+
+def decompose_face(S_f, d, scheme="over"):
+    """Area vector S_f = E_f (implicit, along d) + T_f (explicit correction)."""
+    d_hat = d / np.linalg.norm(d)
+    Smag = np.linalg.norm(S_f)
+    dS = d_hat @ S_f                      # = |S_f| cos(non-orthogonality)
+    if scheme == "min":                   # minimum correction
+        E = dS * d_hat
+    elif scheme == "orth":                # orthogonal correction
+        E = Smag * d_hat
+    else:                                 # over-relaxed
+        E = (Smag**2 / dS) * d_hat
+    return E, S_f - E                     # E_f, T_f
+
+def sweep_residual(S_f, d, scheme, sweeps=25):
+    """E_f implicit, T_f lagged. Residual contracts at rho = |T|/|E|."""
+    E, T = decompose_face(S_f, d, scheme)
+    rho = np.linalg.norm(T) / np.linalg.norm(E)
+    r, hist = 1.0, [1.0]
+    for _ in range(sweeps):
+        r *= rho                          # one deferred-correction sweep = residual x rho
+        hist.append(r)
+    return rho, hist
+
+S_f = np.array([1.0, 0.0])                # face normal (area vector, |S|=1)
+for ang in (20, 45, 65):
+    d = np.array([np.cos(np.radians(ang)), np.sin(np.radians(ang))])
+    for s in ("min", "orth", "over"):
+        rho, hist = sweep_residual(S_f, d, s)
+        tag = "converges" if rho < 1 else "diverges"
+        print(f"theta={ang:2d}  {s:5s}  rho={rho:.3f}  {tag}  (after 25: {hist[-1]:.1e})")
+```
+
+The output shows the three schemes diverging as the non-orthogonality grows. At 20° all three are fine. At 65° minimum correction goes to $\rho = \tan 65° \approx 2.14$ and diverges, while over-relaxed stays at $\rho = \sin 65° \approx 0.91$ and still converges. Same mesh, same equation, yet one choice of split decides convergence versus blow-up.
+
+Why is $\rho = |\mathbf{T}_f|/|\mathbf{E}_f|$? Deferred correction solves with an implicit coefficient $\propto |\mathbf{E}_f|$ and feeds back an error $\propto |\mathbf{T}_f|$ explicitly each sweep. Every sweep scales the residual by that ratio. The ratio must be below 1 for the loop to close.
+
+## What happens as non-orthogonality grows
+
+Overlay the fates of the three schemes on one screen. Play with the simulation below. Drag the mesh non-orthogonality up and compare how many sweeps each scheme needs to drop its residual.
+
+<DeferredCorrectionContraction />
+
+Below 30°, all three fall off at a similar rate. Past 45°, minimum correction collapses first ($\rho \ge 1$). Push to 70° and orthogonal correction wobbles too, leaving only over-relaxed standing. Its $\rho = \sin\theta$ never exceeds 1 at any angle. That is why commercial and open-source codes use over-relaxed as the default.
+
+There is a price. Over-relaxed grows the implicit part, but the explicit correction grows with it, so reaching the same residual takes several correction sweeps. `nNonOrthogonalCorrectors` is exactly that sweep count. On a good mesh, 0–1 is enough; on a badly skewed mesh, push it to 2–3. Cranking it blindly makes each time step expensive, so fixing mesh quality first is almost always the better move.
+
+## Key takeaways
+
+- Split the unstructured diffusion term as $\mathbf{S}_f = \mathbf{E}_f + \mathbf{T}_f$: put $\mathbf{E}_f$ into the matrix implicitly and throw $\mathbf{T}_f$ to the right-hand side as a deferred correction.
+- The split comes in three forms — minimum, orthogonal, over-relaxed — and convergence is governed by $\rho = |\mathbf{T}_f|/|\mathbf{E}_f|$. The over-relaxed $\rho = \sin\theta$ stays under 1 always, so it is the most robust.
+- Before raising the correction-sweep count (`nNonOrthogonalCorrectors`), prefer mesh improvement that shrinks the non-orthogonality itself.
