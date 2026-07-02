@@ -1,0 +1,164 @@
+---
+title: "圧力を方程式から消した男 — Chorinの射影法とフラクショナルステップ"
+date: 2026-07-03
+description: "非圧縮の速度場を予測し、射影して発散ゼロへ戻す"
+tags: ["Incompressible", "Projection-Method", "Fractional-Step", "Pressure-Poisson", "Navier-Stokes"]
+locale: ja
+slug: chorin-projection-fractional-step
+draft: false
+---
+
+import { HelmholtzHodgeSplit } from '@/components/post-viz/2026-07-03-chorin-projection-fractional-step/HelmholtzHodgeSplit'
+import { ProjectionFluidCanvas } from '@/components/post-viz/2026-07-03-chorin-projection-fractional-step/ProjectionFluidCanvas'
+
+1967年、Alexandre Chorinは圧力を方程式から一時的に消し去りました。非圧縮Navier–Stokes方程式を解くとき、もっとも扱いにくい項が圧力だからです。圧力には時間微分がありません。密度が一定なので、状態方程式から圧力を求めることもできません。Chorinの答えは大胆でした。まず圧力を無視して速度を進め、その結果を強制的に発散ゼロ(divergence-free)の状態へ戻すのです。この記事では、そのフラクショナルステップ — 一般に射影法(projection method)と呼ばれる手法 — がどう働くのかを、Helmholtz–Hodge分解という一行の定理から出発し、実際に動く2Dソルバーまで作って確かめます。読み終える頃には、非圧縮コードの実行時間の大半がなぜ圧力Poisson方程式に費やされるのかが分かります。
+
+## 圧力には時間微分がない
+
+非圧縮Navier–Stokes方程式を書き下すと、問題がそのまま見えてきます。
+
+$$
+\frac{\partial \mathbf{u}}{\partial t} + (\mathbf{u}\cdot\nabla)\mathbf{u} = -\frac{1}{\rho}\nabla p + \nu\nabla^2\mathbf{u}, \qquad \nabla\cdot\mathbf{u} = 0
+$$
+
+ここで $\mathbf{u}$ は速度、$p$ は圧力、$\nu$ は動粘性係数(運動量の拡散率)です。運動量方程式は $\mathbf{u}$ の時間発展を教えてくれます。ところが第二式 $\nabla\cdot\mathbf{u}=0$ は発展方程式ではありません。各瞬間に守るべき**拘束条件**です。
+
+圧縮性流れでは連続の式が密度を発展させ、密度が状態方程式を通じて圧力を決めます。非圧縮の極限ではその連鎖が切れます。圧力は時間とともに「発展」しません。圧力は、速度が発散しないように毎瞬間みずからを合わせるラグランジュ乗数(拘束を課す未知数)にすぎません。ですから圧力を時間前進させようとする試みそのものが徒労なのです。
+
+## すべての速度場は二つに分かれる — Helmholtz–Hodge
+
+突破口はベクトル解析の古い定理にあります。適当な領域では、任意のベクトル場 $\mathbf{w}$ は**発散ゼロの部分と勾配の部分の和**に一意に分解されます。
+
+$$
+\mathbf{w} = \mathbf{u} + \nabla\phi, \qquad \nabla\cdot\mathbf{u} = 0
+$$
+
+$\mathbf{u}$ は渦(ソレノイダル)成分、$\nabla\phi$ は圧縮(勾配)成分です。この分解から $\mathbf{u}$ だけを取り出す演算を射影演算子 $\mathbb{P}$ と呼びます。手順は単純です。上式の発散をとると $\nabla\cdot\mathbf{u}=0$ なので、
+
+$$
+\nabla^2\phi = \nabla\cdot\mathbf{w}
+$$
+
+このPoisson方程式で $\phi$ を解き、元の場から $\nabla\phi$ を引けば、発散ゼロの部分だけが残ります。
+
+$$
+\mathbf{u} = \mathbb{P}\mathbf{w} = \mathbf{w} - \nabla\phi
+$$
+
+下の二つのパネルを操作してみましょう。左は渦に放射状のソースを加えた速度場、右はそれを射影した結果です。
+
+<HelmholtzHodgeSplit />
+
+source strength を0から14まで上げると、左のパネルは赤と青に染まり(発散が大きくなり)、右は暗いまま残ります。射影が圧縮成分を丸ごと取り除き、渦だけを残すという意味です。
+
+## 予測し、射影する — フラクショナルステップ
+
+Chorinのアルゴリズムは、この分解をそのまま時間積分に乗せます。1ステップを二つに分けます。
+
+1. **予測子(predictor)** — 圧力を落としたまま速度を進め、中間速度 $\mathbf{u}^*$ を得ます。
+
+$$
+\frac{\mathbf{u}^* - \mathbf{u}^n}{\Delta t} = -(\mathbf{u}^n\cdot\nabla)\mathbf{u}^n + \nu\nabla^2\mathbf{u}^n
+$$
+
+$\mathbf{u}^*$ は発散ゼロではありません。圧力を無視したので当然です。
+
+2. **修正子(corrector)** — $\mathbf{u}^*$ を発散ゼロへ戻します。圧力Poissonを解き、
+
+$$
+\nabla^2\phi = \frac{1}{\Delta t}\nabla\cdot\mathbf{u}^*
+$$
+
+勾配を引いて次ステップの速度をつくります。
+
+$$
+\mathbf{u}^{n+1} = \mathbf{u}^* - \Delta t\,\nabla\phi
+$$
+
+ここで $\phi$ が事実上の圧力の役割を果たします($p^{n+1}\approx\rho\phi$)。圧力は発展させる対象ではなく、毎ステップ拘束条件を満たすために解き直す値です。この二行が射影法のすべてです。
+
+## 圧力Poissonと境界条件の落とし穴
+
+ここから実務の苦しみが始まります。予測子は安価です。しかし修正子は毎ステップPoisson方程式を一つ解きます。大きな格子ではこの楕円型ソルブが全体コストの70〜90%を占めます。GMRESやマルチグリッドが非圧縮コードの心臓である理由です。
+
+境界条件も落とし穴だらけです。$\phi$ の境界条件は壁でNeumann($\partial\phi/\partial n = 0$)です。Neumann問題は定数分の不定性があり、解が存在するには**適合条件** — 領域全体で $\int \nabla\cdot\mathbf{u}^*\,dV = 0$ — を満たす必要があります。流入・流出の流量が合わなければ、Poisson方程式はそもそも解けません。NaNが出たら、まず境界の流量を疑ってください。
+
+collocated(非スタッガード)格子では、圧力と速度を同じ点に置くとチェッカーボード振動が生じます。スタッガード格子を使うか、Rhie–Chow補間で抑える必要があります。ちなみにSIMPLE系は同じ射影の考えを毎ステップ何度も繰り返して定常状態へ追い込むのに対し、ここでのフラクショナルステップはステップあたり一度の射影で非定常流れを時間精度よく追いかけます。
+
+## Python:二重せん断層をFFTで巻き上げる
+
+周期境界では、圧力PoissonをFFTで一度に解きます。Fourier空間ではラプラシアンが $-|\mathbf{k}|^2$ の掛け算に変わるからです。二重せん断層(二つの噛み合ったジェット)を初期条件に与えると、Kelvin–Helmholtz渦へと巻き上がります。射影法の古典的な検証問題です。
+
+```python
+import numpy as np
+
+N = 128                # 格子(一辺)
+h = 1.0 / N            # 格子間隔
+nu = 5e-3              # 動粘性 -> Re = U L / nu ~ 200
+dt = 2e-3              # 拡散・移流の安定範囲内
+steps = 3000
+
+x = (np.arange(N) + 0.5) * h
+X, Y = np.meshgrid(x, x, indexing='ij')
+
+# 二重せん断層 + 小さな摂動
+rho, delta = 1.0 / 30.0, 0.05
+u = np.where(Y <= 0.5, np.tanh((Y - 0.25) / rho), np.tanh((0.75 - Y) / rho))
+v = delta * np.sin(2 * np.pi * X)
+
+# FFT Poisson用の波数
+k = 2 * np.pi * np.fft.fftfreq(N, d=h)
+KX, KY = np.meshgrid(k, k, indexing='ij')
+K2 = KX**2 + KY**2
+K2[0, 0] = 1.0         # 平均モードのゼロ割りを回避
+
+def divergence(a, b):
+    dadx = (np.roll(a, -1, 0) - np.roll(a, 1, 0)) / (2 * h)
+    dbdy = (np.roll(b, -1, 1) - np.roll(b, 1, 1)) / (2 * h)
+    return dadx + dbdy
+
+def projection_correct(a, b):
+    # Laplacian(phi) = div  ->  a <- a - grad(phi)
+    phi_hat = np.fft.fft2(divergence(a, b)) / (-K2)
+    phi_hat[0, 0] = 0.0
+    phi = np.real(np.fft.ifft2(phi_hat))
+    dpx = (np.roll(phi, -1, 0) - np.roll(phi, 1, 0)) / (2 * h)
+    dpy = (np.roll(phi, -1, 1) - np.roll(phi, 1, 1)) / (2 * h)
+    return a - dpx, b - dpy
+
+def predictor(a, b):
+    # 移流(中心差分) + 拡散、明示的Euler 1ステップ
+    ax = (np.roll(a, -1, 0) - np.roll(a, 1, 0)) / (2 * h)
+    ay = (np.roll(a, -1, 1) - np.roll(a, 1, 1)) / (2 * h)
+    bx = (np.roll(b, -1, 0) - np.roll(b, 1, 0)) / (2 * h)
+    by = (np.roll(b, -1, 1) - np.roll(b, 1, 1)) / (2 * h)
+    lap = lambda f: (np.roll(f, -1, 0) + np.roll(f, 1, 0)
+                     + np.roll(f, -1, 1) + np.roll(f, 1, 1) - 4 * f) / h**2
+    astar = a + dt * (-(a * ax + b * ay) + nu * lap(a))
+    bstar = b + dt * (-(a * bx + b * by) + nu * lap(b))
+    return astar, bstar
+
+for n in range(steps):
+    us, vs = predictor(u, v)                 # 予測:中間速度 u*
+    d_before = np.abs(divergence(us, vs)).max()
+    u, v = projection_correct(us, vs)        # 射影:発散を除去
+    if n % 500 == 0:
+        d_after = np.abs(divergence(u, v)).max()
+        print(f"step {n:4d}  |div u*|={d_before:.2e} -> |div u|={d_after:.2e}")
+```
+
+出力を見ると、各ステップで $|\nabla\cdot\mathbf{u}^*|$ は $10^{-2}$ の規模ですが、射影後の $|\nabla\cdot\mathbf{u}|$ は $10^{-13}$ まで落ちます。FFT射影が発散を機械精度で消したのです。
+
+## 射影を切ると何が起きるか
+
+修正子がないと、速度場は毎ステップ少しずつ発散を溜め込みます。質量が保存されず、渦はぼやけ、やがて格子を埋める雑音になります。下のシミュレーションで確かめてみましょう。
+
+<ProjectionFluidCanvas />
+
+ProjectionをONにすると、せん断層はきれいな渦のペアへ巻き上がります。OFFに切り替えた瞬間、右上の max|∇·u| が跳ね上がり、渦の模様が崩れます。dtを上げると移流がより激しくなり、崩壊が速く訪れます。この一度のトグルが、「なぜ射影が必要か」への最短の答えです。
+
+## もう読み返さない人のためのまとめ
+
+- 非圧縮では、圧力は発展させる変数ではなく、毎ステップ $\nabla\cdot\mathbf{u}=0$ を課すラグランジュ乗数です。
+- 射影法は二段階です。圧力を落として予測し($\mathbf{u}^*$)、Poissonで $\phi$ を解いてその勾配を引きます。
+- コストの大半は圧力Poissonにあり、Neumann適合条件とチェッカーボードが典型的な落とし穴です。

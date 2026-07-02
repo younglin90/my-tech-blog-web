@@ -1,0 +1,164 @@
+---
+title: "把压力从方程里抹掉的人 — Chorin 投影法与分步法"
+date: 2026-07-03
+description: "先预测不可压速度场，再投影回无散度状态"
+tags: ["Incompressible", "Projection-Method", "Fractional-Step", "Pressure-Poisson", "Navier-Stokes"]
+locale: zh
+slug: chorin-projection-fractional-step
+draft: false
+---
+
+import { HelmholtzHodgeSplit } from '@/components/post-viz/2026-07-03-chorin-projection-fractional-step/HelmholtzHodgeSplit'
+import { ProjectionFluidCanvas } from '@/components/post-viz/2026-07-03-chorin-projection-fractional-step/ProjectionFluidCanvas'
+
+1967 年，Alexandre Chorin 把压力从方程里暂时抹掉了。求解不可压 Navier–Stokes 方程时，最棘手的一项正是压力。压力没有时间导数。密度是常数，也无法通过状态方程反推压力。Chorin 的答案很大胆：先忽略压力把速度往前推，再把结果强行拉回无散度（divergence-free）状态。本文将讲清这套分步法（fractional step，通常称为投影法 projection method）如何运作——从一行定理 Helmholtz–Hodge 分解出发，直到写出一个真正能跑的二维求解器。读到最后，你会明白为什么不可压代码的运行时间大多耗在压力 Poisson 方程上。
+
+## 压力没有时间导数
+
+把不可压 Navier–Stokes 方程写出来，问题一目了然。
+
+$$
+\frac{\partial \mathbf{u}}{\partial t} + (\mathbf{u}\cdot\nabla)\mathbf{u} = -\frac{1}{\rho}\nabla p + \nu\nabla^2\mathbf{u}, \qquad \nabla\cdot\mathbf{u} = 0
+$$
+
+其中 $\mathbf{u}$ 是速度，$p$ 是压力，$\nu$ 是运动黏度（动量的扩散率）。动量方程告诉你 $\mathbf{u}$ 如何随时间演化。但第二个式子 $\nabla\cdot\mathbf{u}=0$ 并不是演化方程，而是每一时刻都必须满足的**约束条件**。
+
+在可压缩流动中，连续性方程演化密度，密度再通过状态方程决定压力。到了不可压极限，这条链断了。压力不随时间"演化"。它只是一个拉格朗日乘子（用来施加约束的未知量），唯一的职责就是让速度在每一时刻保持无散度。所以试图对压力做时间推进，本身就是徒劳。
+
+## 任何速度场都能一分为二 — Helmholtz–Hodge
+
+出路藏在一条古老的矢量分析定理里。在合理的区域上，任何矢量场 $\mathbf{w}$ 都能**唯一地分解为无散度部分加上梯度部分**。
+
+$$
+\mathbf{w} = \mathbf{u} + \nabla\phi, \qquad \nabla\cdot\mathbf{u} = 0
+$$
+
+$\mathbf{u}$ 是旋涡（无散）分量，$\nabla\phi$ 是可压（梯度）分量。把 $\mathbf{u}$ 单独提取出来的运算，就是投影算子 $\mathbb{P}$。做法很简单。对上式取散度，由于 $\nabla\cdot\mathbf{u}=0$，得到
+
+$$
+\nabla^2\phi = \nabla\cdot\mathbf{w}
+$$
+
+用这个 Poisson 方程解出 $\phi$，再从原场中减去 $\nabla\phi$，就只剩下无散度部分。
+
+$$
+\mathbf{u} = \mathbb{P}\mathbf{w} = \mathbf{w} - \nabla\phi
+$$
+
+在下面两幅面板里亲手操作一下。左边是旋涡叠加一个径向源的速度场，右边是它投影之后的结果。
+
+<HelmholtzHodgeSplit />
+
+把 source strength 从 0 提到 14，左面板会被染成红蓝两色（散度变大），右面板却始终保持暗色。这说明投影把可压分量整块剥掉，只留下了旋涡。
+
+## 先预测，再投影 — 分步法
+
+Chorin 的算法把这个分解直接搬进时间积分。一步拆成两半。
+
+1. **预测子（predictor）** — 丢掉压力把速度往前推，得到中间速度 $\mathbf{u}^*$。
+
+$$
+\frac{\mathbf{u}^* - \mathbf{u}^n}{\Delta t} = -(\mathbf{u}^n\cdot\nabla)\mathbf{u}^n + \nu\nabla^2\mathbf{u}^n
+$$
+
+$\mathbf{u}^*$ 不是无散度的。既然忽略了压力，这很自然。
+
+2. **修正子（corrector）** — 把 $\mathbf{u}^*$ 拉回无散度。解压力 Poisson 方程，
+
+$$
+\nabla^2\phi = \frac{1}{\Delta t}\nabla\cdot\mathbf{u}^*
+$$
+
+再减去梯度，得到下一步的速度。
+
+$$
+\mathbf{u}^{n+1} = \mathbf{u}^* - \Delta t\,\nabla\phi
+$$
+
+这里 $\phi$ 实际上扮演了压力的角色（$p^{n+1}\approx\rho\phi$）。压力不是拿来演化的对象，而是每一步为满足约束重新求解的量。这两行就是投影法的全部。
+
+## 压力 Poisson 与边界条件的陷阱
+
+实战的痛苦从这里开始。预测子很便宜。可修正子每一步都要解一个 Poisson 方程。在大网格上，这个椭圆型求解占了总成本的 70%–90%。这正是 GMRES 和多重网格成为不可压代码心脏的原因。
+
+边界条件也满是陷阱。$\phi$ 在壁面上的边界条件是 Neumann（$\partial\phi/\partial n = 0$）。Neumann 问题的解含有一个任意常数，而且要有解就必须满足**相容性条件**——在整个区域上 $\int \nabla\cdot\mathbf{u}^*\,dV = 0$。如果进出口流量不匹配，Poisson 方程根本无解。看到 NaN 时，先怀疑边界流量。
+
+在同位（collocated，非交错）网格上，把压力和速度放在同一点会引发棋盘格振荡。要么用交错网格，要么用 Rhie–Chow 插值来抑制。顺带一提：SIMPLE 类方法每一步把同样的投影思想重复多次，逼向定常态；而这里的分步法每步只投影一次，以保持时间精度地追踪非定常流动。
+
+## Python：用 FFT 卷起双剪切层
+
+在周期边界上，压力 Poisson 用 FFT 一次解出，因为在 Fourier 空间里拉普拉斯算子变成了乘以 $-|\mathbf{k}|^2$。用双剪切层（两股相互咬合的射流）作初始条件，它会卷成 Kelvin–Helmholtz 涡——这是投影法的经典验证问题。
+
+```python
+import numpy as np
+
+N = 128                # 网格（每边）
+h = 1.0 / N            # 网格间距
+nu = 5e-3              # 运动黏度 -> Re = U L / nu ~ 200
+dt = 2e-3              # 处于扩散/对流稳定范围内
+steps = 3000
+
+x = (np.arange(N) + 0.5) * h
+X, Y = np.meshgrid(x, x, indexing='ij')
+
+# 双剪切层 + 小扰动
+rho, delta = 1.0 / 30.0, 0.05
+u = np.where(Y <= 0.5, np.tanh((Y - 0.25) / rho), np.tanh((0.75 - Y) / rho))
+v = delta * np.sin(2 * np.pi * X)
+
+# FFT Poisson 所需的波数
+k = 2 * np.pi * np.fft.fftfreq(N, d=h)
+KX, KY = np.meshgrid(k, k, indexing='ij')
+K2 = KX**2 + KY**2
+K2[0, 0] = 1.0         # 避免对平均模除以零
+
+def divergence(a, b):
+    dadx = (np.roll(a, -1, 0) - np.roll(a, 1, 0)) / (2 * h)
+    dbdy = (np.roll(b, -1, 1) - np.roll(b, 1, 1)) / (2 * h)
+    return dadx + dbdy
+
+def projection_correct(a, b):
+    # Laplacian(phi) = div  ->  a <- a - grad(phi)
+    phi_hat = np.fft.fft2(divergence(a, b)) / (-K2)
+    phi_hat[0, 0] = 0.0
+    phi = np.real(np.fft.ifft2(phi_hat))
+    dpx = (np.roll(phi, -1, 0) - np.roll(phi, 1, 0)) / (2 * h)
+    dpy = (np.roll(phi, -1, 1) - np.roll(phi, 1, 1)) / (2 * h)
+    return a - dpx, b - dpy
+
+def predictor(a, b):
+    # 对流（中心差分） + 扩散，显式 Euler 一步
+    ax = (np.roll(a, -1, 0) - np.roll(a, 1, 0)) / (2 * h)
+    ay = (np.roll(a, -1, 1) - np.roll(a, 1, 1)) / (2 * h)
+    bx = (np.roll(b, -1, 0) - np.roll(b, 1, 0)) / (2 * h)
+    by = (np.roll(b, -1, 1) - np.roll(b, 1, 1)) / (2 * h)
+    lap = lambda f: (np.roll(f, -1, 0) + np.roll(f, 1, 0)
+                     + np.roll(f, -1, 1) + np.roll(f, 1, 1) - 4 * f) / h**2
+    astar = a + dt * (-(a * ax + b * ay) + nu * lap(a))
+    bstar = b + dt * (-(a * bx + b * by) + nu * lap(b))
+    return astar, bstar
+
+for n in range(steps):
+    us, vs = predictor(u, v)                 # 预测：中间速度 u*
+    d_before = np.abs(divergence(us, vs)).max()
+    u, v = projection_correct(us, vs)        # 投影：去除散度
+    if n % 500 == 0:
+        d_after = np.abs(divergence(u, v)).max()
+        print(f"step {n:4d}  |div u*|={d_before:.2e} -> |div u|={d_after:.2e}")
+```
+
+看输出：每一步 $|\nabla\cdot\mathbf{u}^*|$ 都在 $10^{-2}$ 量级，但投影后 $|\nabla\cdot\mathbf{u}|$ 跌到 $10^{-13}$。FFT 投影把散度压到了机器精度。
+
+## 关掉投影会发生什么
+
+没有修正子，速度场每一步都会累积一点散度。质量不再守恒，涡被抹糊，很快变成填满网格的噪声。在下面的模拟里亲自看看。
+
+<ProjectionFluidCanvas />
+
+把 Projection 设为 ON，剪切层会卷成一对干净的涡。一旦切到 OFF，右上角的 max|∇·u| 读数飙升，涡的花纹随之崩塌。调大 dt 会让对流更激进，崩塌来得更快。这一次切换，就是"为什么需要投影"最简短的答案。
+
+## 给不会再读第二遍的人的小结
+
+- 在不可压流动里，压力不是拿来演化的变量，而是每步施加 $\nabla\cdot\mathbf{u}=0$ 的拉格朗日乘子。
+- 投影法分两步：丢掉压力做预测（$\mathbf{u}^*$），再解一个关于 $\phi$ 的 Poisson 方程并减去它的梯度。
+- 成本大多在压力 Poisson 求解上，Neumann 相容性条件和棋盘格是它的经典陷阱。

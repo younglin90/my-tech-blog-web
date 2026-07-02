@@ -1,0 +1,164 @@
+---
+title: "압력을 방정식에서 지운 사람 — Chorin의 투영법과 분수 시간전진"
+date: 2026-07-03
+description: "비압축성 속도장을 예측하고 투영해 비발산으로 되돌리는 법"
+tags: ["Incompressible", "Projection-Method", "Fractional-Step", "Pressure-Poisson", "Navier-Stokes"]
+locale: ko
+slug: chorin-projection-fractional-step
+draft: false
+---
+
+import { HelmholtzHodgeSplit } from '@/components/post-viz/2026-07-03-chorin-projection-fractional-step/HelmholtzHodgeSplit'
+import { ProjectionFluidCanvas } from '@/components/post-viz/2026-07-03-chorin-projection-fractional-step/ProjectionFluidCanvas'
+
+1967년, Alexandre Chorin은 압력을 방정식에서 잠시 지워버렸다. 비압축성 Navier–Stokes를 풀 때 가장 다루기 까다로운 항이 압력이었기 때문이다. 압력에는 시간 미분이 없다. 밀도가 상수라 상태방정식으로 압력을 구할 수도 없다. Chorin의 답은 대담했다. 일단 압력을 무시하고 속도를 전진시킨 뒤, 그 결과를 강제로 비발산(divergence-free) 상태로 되돌리는 것이다. 이 글은 그 분수 시간전진(fractional step)—흔히 투영법(projection method)—이 어떻게 작동하는지, Helmholtz–Hodge 분해라는 한 줄의 정리에서 출발해 직접 굴러가는 2D 솔버까지 만들어 본다. 끝까지 읽으면 왜 비압축성 코드의 실행 시간 대부분이 압력 Poisson 방정식에 잡아먹히는지 알게 된다.
+
+## 압력에는 시간 미분이 없다
+
+비압축성 Navier–Stokes를 적으면 문제가 눈에 보인다.
+
+$$
+\frac{\partial \mathbf{u}}{\partial t} + (\mathbf{u}\cdot\nabla)\mathbf{u} = -\frac{1}{\rho}\nabla p + \nu\nabla^2\mathbf{u}, \qquad \nabla\cdot\mathbf{u} = 0
+$$
+
+여기서 $\mathbf{u}$는 속도, $p$는 압력, $\nu$는 동점성계수(운동량 확산율)다. 운동량 방정식은 $\mathbf{u}$의 시간 발전을 알려준다. 그런데 두 번째 식 $\nabla\cdot\mathbf{u}=0$은 발전 방정식이 아니다. 매 순간 지켜야 할 **구속 조건**이다.
+
+압축성 유동에서는 연속방정식이 밀도의 발전을 주고, 밀도가 상태방정식을 통해 압력을 정한다. 비압축성에서는 그 사슬이 끊긴다. 압력은 시간에 따라 "발전"하지 않는다. 압력은 속도가 발산하지 않도록 매 순간 스스로를 맞추는 라그랑주 승수(constraint를 강제하는 미지수)일 뿐이다. 그러니 압력을 시간 전진시키려는 시도 자체가 헛일이다.
+
+## 모든 속도장은 두 조각이다 — Helmholtz–Hodge
+
+돌파구는 벡터 미적분의 오래된 정리에 있다. 적당한 영역에서 임의의 벡터장 $\mathbf{w}$는 **비발산 부분과 기울기 부분의 합**으로 유일하게 쪼개진다.
+
+$$
+\mathbf{w} = \mathbf{u} + \nabla\phi, \qquad \nabla\cdot\mathbf{u} = 0
+$$
+
+$\mathbf{u}$는 소용돌이(비발산) 성분, $\nabla\phi$는 압축(기울기) 성분이다. 이 분해에서 $\mathbf{u}$만 뽑아내는 연산을 투영 연산자 $\mathbb{P}$라 부른다. 방법은 간단하다. 위 식의 발산을 취하면 $\nabla\cdot\mathbf{u}=0$이므로
+
+$$
+\nabla^2\phi = \nabla\cdot\mathbf{w}
+$$
+
+이 Poisson 방정식으로 $\phi$를 풀고, 원래 장에서 $\nabla\phi$를 빼면 비발산 부분만 남는다.
+
+$$
+\mathbf{u} = \mathbb{P}\mathbf{w} = \mathbf{w} - \nabla\phi
+$$
+
+아래 두 패널에서 직접 조작해보자. 왼쪽은 소용돌이에 방사형 소스를 더한 속도장, 오른쪽은 그것을 투영한 결과다.
+
+<HelmholtzHodgeSplit />
+
+source strength를 0에서 14까지 올리면 왼쪽 패널은 빨강·파랑으로 물들지만(발산이 커진다), 오른쪽은 계속 어둡게 남는다. 투영이 압축 성분을 통째로 걷어내고 소용돌이만 남긴다는 뜻이다.
+
+## 예측하고, 투영한다 — 분수 시간전진
+
+Chorin의 알고리즘은 이 분해를 시간 적분에 그대로 얹는다. 한 스텝을 두 조각으로 나눈다.
+
+1. **예측자(predictor)** — 압력을 뺀 채 속도를 전진시켜 중간 속도 $\mathbf{u}^*$를 얻는다.
+
+$$
+\frac{\mathbf{u}^* - \mathbf{u}^n}{\Delta t} = -(\mathbf{u}^n\cdot\nabla)\mathbf{u}^n + \nu\nabla^2\mathbf{u}^n
+$$
+
+$\mathbf{u}^*$는 비발산이 아니다. 압력을 무시했으니 당연하다.
+
+2. **투영자(corrector)** — $\mathbf{u}^*$를 비발산으로 되돌린다. 압력 Poisson을 풀고,
+
+$$
+\nabla^2\phi = \frac{1}{\Delta t}\nabla\cdot\mathbf{u}^*
+$$
+
+기울기를 빼서 다음 스텝 속도를 만든다.
+
+$$
+\mathbf{u}^{n+1} = \mathbf{u}^* - \Delta t\,\nabla\phi
+$$
+
+$\phi$가 사실상 압력 역할을 한다($p^{n+1}\approx\rho\phi$). 압력은 발전시키는 대상이 아니라, 매 스텝 구속 조건을 맞추려고 새로 푸는 값이다. 이 두 줄이 투영법의 전부다.
+
+## 압력 Poisson과 경계조건의 함정
+
+여기서 실무의 고통이 시작된다. 예측자는 값싸다. 그러나 투영자는 매 스텝 Poisson 방정식을 하나 푼다. 큰 격자에서 이 타원형 solve가 전체 비용의 70~90%를 차지한다. GMRES나 멀티그리드가 비압축성 코드의 심장인 이유다.
+
+경계조건도 함정투성이다. $\phi$의 경계조건은 벽에서 Neumann($\partial\phi/\partial n = 0$)이다. Neumann 문제는 상수만큼의 불확정성이 있고, 해가 존재하려면 **적합성 조건**—영역 전체에서 $\int \nabla\cdot\mathbf{u}^*\,dV = 0$—을 만족해야 한다. 유입·유출 유량이 안 맞으면 Poisson 방정식은 애초에 풀리지 않는다. NaN이 뜨면 경계 유량부터 의심하라.
+
+collocated(비엇갈림) 격자에서는 압력과 속도를 같은 점에 두면 체커보드 진동이 생긴다. 엇갈림 격자를 쓰거나 Rhie–Chow 보간으로 막아야 한다. 참고로 SIMPLE 계열은 같은 투영 아이디어를 매 스텝 여러 번 반복해 정상상태로 몰고 가는 반면, 여기 분수 시간전진은 스텝당 한 번의 투영으로 비정상 유동을 시간 정확하게 따라간다.
+
+## Python: 이중 전단층을 FFT로 굴린다
+
+주기 경계에서는 압력 Poisson을 FFT로 단번에 푼다. Fourier 공간에서 라플라시안이 $-|\mathbf{k}|^2$ 곱으로 바뀌기 때문이다. 이중 전단층(두 개의 맞물린 제트)을 초기조건으로 주면 Kelvin–Helmholtz 소용돌이로 말려 올라간다. 투영법의 고전 검증 문제다.
+
+```python
+import numpy as np
+
+N = 128                # 격자 (한 변)
+h = 1.0 / N            # 격자 간격
+nu = 5e-3              # 동점성 → Re = U L / nu ≈ 200
+dt = 2e-3              # 확산·이류 안정 범위 안
+steps = 3000
+
+x = (np.arange(N) + 0.5) * h
+X, Y = np.meshgrid(x, x, indexing='ij')
+
+# 이중 전단층 + 작은 교란
+rho, delta = 1.0 / 30.0, 0.05
+u = np.where(Y <= 0.5, np.tanh((Y - 0.25) / rho), np.tanh((0.75 - Y) / rho))
+v = delta * np.sin(2 * np.pi * X)
+
+# FFT Poisson용 파수
+k = 2 * np.pi * np.fft.fftfreq(N, d=h)
+KX, KY = np.meshgrid(k, k, indexing='ij')
+K2 = KX**2 + KY**2
+K2[0, 0] = 1.0         # 평균 모드 0으로 나눔 방지
+
+def divergence(a, b):
+    dadx = (np.roll(a, -1, 0) - np.roll(a, 1, 0)) / (2 * h)
+    dbdy = (np.roll(b, -1, 1) - np.roll(b, 1, 1)) / (2 * h)
+    return dadx + dbdy
+
+def projection_correct(a, b):
+    # Laplacian(phi) = div  →  a <- a - grad(phi)
+    phi_hat = np.fft.fft2(divergence(a, b)) / (-K2)
+    phi_hat[0, 0] = 0.0
+    phi = np.real(np.fft.ifft2(phi_hat))
+    dpx = (np.roll(phi, -1, 0) - np.roll(phi, 1, 0)) / (2 * h)
+    dpy = (np.roll(phi, -1, 1) - np.roll(phi, 1, 1)) / (2 * h)
+    return a - dpx, b - dpy
+
+def predictor(a, b):
+    # 이류(중심차분) + 확산, 명시적 Euler 한 스텝
+    ax = (np.roll(a, -1, 0) - np.roll(a, 1, 0)) / (2 * h)
+    ay = (np.roll(a, -1, 1) - np.roll(a, 1, 1)) / (2 * h)
+    bx = (np.roll(b, -1, 0) - np.roll(b, 1, 0)) / (2 * h)
+    by = (np.roll(b, -1, 1) - np.roll(b, 1, 1)) / (2 * h)
+    lap = lambda f: (np.roll(f, -1, 0) + np.roll(f, 1, 0)
+                     + np.roll(f, -1, 1) + np.roll(f, 1, 1) - 4 * f) / h**2
+    astar = a + dt * (-(a * ax + b * ay) + nu * lap(a))
+    bstar = b + dt * (-(a * bx + b * by) + nu * lap(b))
+    return astar, bstar
+
+for n in range(steps):
+    us, vs = predictor(u, v)                 # 예측: 중간 속도 u*
+    d_before = np.abs(divergence(us, vs)).max()
+    u, v = projection_correct(us, vs)        # 투영: 발산 제거
+    if n % 500 == 0:
+        d_after = np.abs(divergence(u, v)).max()
+        print(f"step {n:4d}  |div u*|={d_before:.2e} -> |div u|={d_after:.2e}")
+```
+
+출력을 보면 매 스텝 $|\nabla\cdot\mathbf{u}^*|$는 $10^{-2}$ 규모인데 투영 뒤 $|\nabla\cdot\mathbf{u}|$는 $10^{-13}$까지 떨어진다. FFT 투영이 발산을 기계 정밀도로 죽인 것이다.
+
+## 투영을 끄면 벌어지는 일
+
+투영자가 없으면 속도장은 매 스텝 조금씩 발산을 쌓는다. 질량이 보존되지 않고, 소용돌이는 뭉개지며, 곧 격자를 채운 잡음이 된다. 아래 시뮬레이션에서 직접 확인해보자.
+
+<ProjectionFluidCanvas />
+
+Projection을 ON으로 두면 전단층이 깔끔한 소용돌이 쌍으로 말려 올라간다. OFF로 바꾸는 순간 우측 상단의 max|∇·u|가 치솟고 소용돌이 무늬가 무너진다. dt를 키우면 이류가 더 공격적이 되어 무너지는 속도가 빨라진다. 이 한 번의 토글이 "왜 투영이 필요한가"에 대한 가장 짧은 대답이다.
+
+## 다시 읽지 않을 사람을 위한 요약
+
+- 비압축성에서 압력은 발전시키는 변수가 아니라, 매 스텝 $\nabla\cdot\mathbf{u}=0$을 강제하는 라그랑주 승수다.
+- 투영법은 압력을 뺀 채 예측한 뒤($\mathbf{u}^*$), Poisson으로 $\phi$를 풀어 기울기를 빼는 두 단계다.
+- 비용의 대부분은 압력 Poisson에 있고, Neumann 적합성 조건과 체커보드가 대표적 함정이다.

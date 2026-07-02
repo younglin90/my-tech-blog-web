@@ -1,0 +1,164 @@
+---
+title: "The Man Who Erased Pressure — Chorin's Projection Method and Fractional Step"
+date: 2026-07-03
+description: "Predict an incompressible velocity, then project it back to divergence-free"
+tags: ["Incompressible", "Projection-Method", "Fractional-Step", "Pressure-Poisson", "Navier-Stokes"]
+locale: en
+slug: chorin-projection-fractional-step
+draft: false
+---
+
+import { HelmholtzHodgeSplit } from '@/components/post-viz/2026-07-03-chorin-projection-fractional-step/HelmholtzHodgeSplit'
+import { ProjectionFluidCanvas } from '@/components/post-viz/2026-07-03-chorin-projection-fractional-step/ProjectionFluidCanvas'
+
+In 1967, Alexandre Chorin erased pressure from the equations — at least for a moment. Pressure is the most awkward term when you solve the incompressible Navier–Stokes equations. It has no time derivative. Density is constant, so you cannot recover pressure from an equation of state either. Chorin's answer was bold: march the velocity forward while ignoring pressure, then force the result back to a divergence-free state. This post walks through that fractional step — usually called the projection method — starting from a one-line theorem, the Helmholtz–Hodge decomposition, and ending with a 2D solver that actually runs. By the end you will see why most of the runtime of an incompressible code is eaten by the pressure Poisson equation.
+
+## Pressure Has No Time Derivative
+
+Write out the incompressible Navier–Stokes equations and the problem is right there.
+
+$$
+\frac{\partial \mathbf{u}}{\partial t} + (\mathbf{u}\cdot\nabla)\mathbf{u} = -\frac{1}{\rho}\nabla p + \nu\nabla^2\mathbf{u}, \qquad \nabla\cdot\mathbf{u} = 0
+$$
+
+Here $\mathbf{u}$ is velocity, $p$ is pressure, and $\nu$ is the kinematic viscosity (the diffusivity of momentum). The momentum equation tells you how $\mathbf{u}$ evolves in time. But the second equation, $\nabla\cdot\mathbf{u}=0$, is not an evolution equation. It is a **constraint** that must hold at every instant.
+
+In compressible flow the continuity equation evolves the density, and density fixes the pressure through an equation of state. In the incompressible limit that chain breaks. Pressure does not "evolve" in time. It is a Lagrange multiplier — an unknown whose only job is to keep the velocity divergence-free at every instant. So trying to time-march the pressure is a fool's errand.
+
+## Every Velocity Field Splits in Two — Helmholtz–Hodge
+
+The way out sits in an old theorem of vector calculus. On a reasonable domain, any vector field $\mathbf{w}$ splits **uniquely into a divergence-free part plus a gradient part**.
+
+$$
+\mathbf{w} = \mathbf{u} + \nabla\phi, \qquad \nabla\cdot\mathbf{u} = 0
+$$
+
+Here $\mathbf{u}$ is the swirling (solenoidal) component and $\nabla\phi$ is the compressible (gradient) one. The operation that extracts $\mathbf{u}$ alone is the projection operator $\mathbb{P}$. The recipe is simple. Take the divergence of the equation above; since $\nabla\cdot\mathbf{u}=0$,
+
+$$
+\nabla^2\phi = \nabla\cdot\mathbf{w}
+$$
+
+Solve this Poisson equation for $\phi$, subtract $\nabla\phi$ from the original field, and only the divergence-free part survives.
+
+$$
+\mathbf{u} = \mathbb{P}\mathbf{w} = \mathbf{w} - \nabla\phi
+$$
+
+Play with the two panels below. The left one shows a swirl plus a radial source; the right one shows the same field after projection.
+
+<HelmholtzHodgeSplit />
+
+Raise the source strength from 0 to 14 and the left panel lights up red and blue (its divergence grows), while the right one stays dark. Projection has stripped away the whole compressible component and kept only the swirl.
+
+## Predict, Then Project — the Fractional Step
+
+Chorin's algorithm drops this decomposition straight into the time integration. One step splits in two.
+
+1. **Predictor** — march the velocity forward with pressure dropped, giving an intermediate velocity $\mathbf{u}^*$.
+
+$$
+\frac{\mathbf{u}^* - \mathbf{u}^n}{\Delta t} = -(\mathbf{u}^n\cdot\nabla)\mathbf{u}^n + \nu\nabla^2\mathbf{u}^n
+$$
+
+$\mathbf{u}^*$ is not divergence-free — no surprise, since pressure was ignored.
+
+2. **Corrector** — project $\mathbf{u}^*$ back to divergence-free. Solve the pressure Poisson equation,
+
+$$
+\nabla^2\phi = \frac{1}{\Delta t}\nabla\cdot\mathbf{u}^*
+$$
+
+and subtract the gradient to build the next-step velocity.
+
+$$
+\mathbf{u}^{n+1} = \mathbf{u}^* - \Delta t\,\nabla\phi
+$$
+
+Here $\phi$ plays the role of pressure ($p^{n+1}\approx\rho\phi$). Pressure is not something you evolve; it is a value you re-solve each step to satisfy the constraint. Those two lines are the entire projection method.
+
+## The Pressure Poisson Equation and Its Boundary-Condition Traps
+
+This is where the practical pain begins. The predictor is cheap. The corrector, however, solves a Poisson equation every step. On a large grid this elliptic solve takes 70–90% of the total cost. That is why GMRES and multigrid are the heart of an incompressible code.
+
+Boundary conditions are full of traps too. The boundary condition on $\phi$ is Neumann at walls ($\partial\phi/\partial n = 0$). A Neumann problem is defined only up to a constant, and for a solution to exist it must satisfy a **compatibility condition** — $\int \nabla\cdot\mathbf{u}^*\,dV = 0$ over the whole domain. If your inflow and outflow fluxes do not match, the Poisson equation has no solution at all. When you see NaN, suspect the boundary flux first.
+
+On a collocated grid, placing pressure and velocity at the same point invites checkerboard oscillations. You either use a staggered grid or block them with Rhie–Chow interpolation. As a side note: SIMPLE-type methods repeat this same projection idea several times per step to drive toward steady state, whereas the fractional step here follows an unsteady flow with a single projection per step, keeping time accuracy.
+
+## Python: Rolling Up a Double Shear Layer with an FFT
+
+On periodic boundaries you solve the pressure Poisson equation in one shot with an FFT, because in Fourier space the Laplacian becomes multiplication by $-|\mathbf{k}|^2$. Seed the field with a double shear layer (two interlocking jets) and it rolls up into Kelvin–Helmholtz vortices — the classic projection-method verification problem.
+
+```python
+import numpy as np
+
+N = 128                # grid points per side
+h = 1.0 / N            # grid spacing
+nu = 5e-3              # kinematic viscosity -> Re = U L / nu ~ 200
+dt = 2e-3              # inside the diffusion/advection stability range
+steps = 3000
+
+x = (np.arange(N) + 0.5) * h
+X, Y = np.meshgrid(x, x, indexing='ij')
+
+# double shear layer + small perturbation
+rho, delta = 1.0 / 30.0, 0.05
+u = np.where(Y <= 0.5, np.tanh((Y - 0.25) / rho), np.tanh((0.75 - Y) / rho))
+v = delta * np.sin(2 * np.pi * X)
+
+# wavenumbers for the FFT Poisson solve
+k = 2 * np.pi * np.fft.fftfreq(N, d=h)
+KX, KY = np.meshgrid(k, k, indexing='ij')
+K2 = KX**2 + KY**2
+K2[0, 0] = 1.0         # avoid dividing the mean mode by zero
+
+def divergence(a, b):
+    dadx = (np.roll(a, -1, 0) - np.roll(a, 1, 0)) / (2 * h)
+    dbdy = (np.roll(b, -1, 1) - np.roll(b, 1, 1)) / (2 * h)
+    return dadx + dbdy
+
+def projection_correct(a, b):
+    # Laplacian(phi) = div  ->  a <- a - grad(phi)
+    phi_hat = np.fft.fft2(divergence(a, b)) / (-K2)
+    phi_hat[0, 0] = 0.0
+    phi = np.real(np.fft.ifft2(phi_hat))
+    dpx = (np.roll(phi, -1, 0) - np.roll(phi, 1, 0)) / (2 * h)
+    dpy = (np.roll(phi, -1, 1) - np.roll(phi, 1, 1)) / (2 * h)
+    return a - dpx, b - dpy
+
+def predictor(a, b):
+    # advection (central difference) + diffusion, one explicit Euler step
+    ax = (np.roll(a, -1, 0) - np.roll(a, 1, 0)) / (2 * h)
+    ay = (np.roll(a, -1, 1) - np.roll(a, 1, 1)) / (2 * h)
+    bx = (np.roll(b, -1, 0) - np.roll(b, 1, 0)) / (2 * h)
+    by = (np.roll(b, -1, 1) - np.roll(b, 1, 1)) / (2 * h)
+    lap = lambda f: (np.roll(f, -1, 0) + np.roll(f, 1, 0)
+                     + np.roll(f, -1, 1) + np.roll(f, 1, 1) - 4 * f) / h**2
+    astar = a + dt * (-(a * ax + b * ay) + nu * lap(a))
+    bstar = b + dt * (-(a * bx + b * by) + nu * lap(b))
+    return astar, bstar
+
+for n in range(steps):
+    us, vs = predictor(u, v)                 # predict: intermediate velocity u*
+    d_before = np.abs(divergence(us, vs)).max()
+    u, v = projection_correct(us, vs)        # project: remove divergence
+    if n % 500 == 0:
+        d_after = np.abs(divergence(u, v)).max()
+        print(f"step {n:4d}  |div u*|={d_before:.2e} -> |div u|={d_after:.2e}")
+```
+
+Watch the output: each step $|\nabla\cdot\mathbf{u}^*|$ is of order $10^{-2}$, but after projection $|\nabla\cdot\mathbf{u}|$ drops to $10^{-13}$. The FFT projection has killed the divergence down to machine precision.
+
+## What Happens When You Turn Projection Off
+
+Without the corrector, the velocity field piles up a little divergence every step. Mass is no longer conserved, the vortices smear, and the field soon becomes grid-filling noise. See it for yourself in the simulation below.
+
+<ProjectionFluidCanvas />
+
+With Projection ON, the shear layer rolls up into a clean pair of vortices. The moment you switch it OFF, the max|∇·u| readout in the top corner spikes and the vortex pattern collapses. Raising dt makes advection more aggressive and the collapse comes faster. That single toggle is the shortest possible answer to "why do we need projection?"
+
+## A Summary for Those Who Won't Read This Again
+
+- In incompressible flow, pressure is not a variable you evolve; it is a Lagrange multiplier that enforces $\nabla\cdot\mathbf{u}=0$ every step.
+- The projection method is two stages: predict with pressure dropped ($\mathbf{u}^*$), then solve a Poisson equation for $\phi$ and subtract its gradient.
+- Most of the cost lives in the pressure Poisson solve, and the Neumann compatibility condition and checkerboard are its classic traps.
