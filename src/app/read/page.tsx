@@ -10,17 +10,23 @@ import Link from 'next/link'
 import { format } from 'date-fns'
 import { getDynamicPost, type DynamicPost } from '@/lib/dynamic-posts'
 import { ReadingProgress } from '@/components/ReadingProgress'
+import { DEFAULT_LOCALE, type Locale } from '@/lib/i18n'
 
 function ReadContent() {
   const searchParams = useSearchParams()
   const [post, setPost] = useState<DynamicPost | null>(null)
   const [loading, setLoading] = useState(true)
+  // /read는 locale 세그먼트 밖이라 쿠키로 locale을 판별해 내부 링크에 prefix를 붙인다.
+  // /tags/... 같은 locale 없는 경로는 실제 라우트가 없어 404가 난다.
+  const [locale, setLocale] = useState<Locale>(DEFAULT_LOCALE)
 
   useEffect(() => {
     const id = searchParams.get('id')
     if (id) {
       setPost(getDynamicPost(id))
     }
+    const cookieLocale = document.cookie.match(/(?:^|;\s*)locale=(ko|en|ja|zh|es)/)?.[1]
+    if (cookieLocale) setLocale(cookieLocale as Locale)
     setLoading(false)
   }, [searchParams])
 
@@ -48,7 +54,7 @@ function ReadContent() {
           This post may have been deleted or is only available on the device where it was created.
         </p>
         <Link
-          href="/"
+          href={`/${locale}`}
           className="mt-8 inline-block rounded-md px-5 py-2.5 text-sm font-medium transition-opacity hover:opacity-75"
           style={{ background: 'var(--accent)', color: 'var(--on-accent)' }}
         >
@@ -62,7 +68,7 @@ function ReadContent() {
     <article className="py-6">
       <ReadingProgress />
       <div className="mb-8">
-        <Link href="/" className="link-hover-text-accent text-xs">
+        <Link href={`/${locale}`} className="link-hover-text-accent text-xs">
           ← All posts
         </Link>
       </div>
@@ -81,7 +87,7 @@ function ReadContent() {
             {post.tags.map((tag) => (
               <Link
                 key={tag}
-                href={`/tags/${encodeURIComponent(tag)}`}
+                href={`/${locale}/tags/${encodeURIComponent(tag)}`}
                 className="tag-pill"
               >
                 {tag}

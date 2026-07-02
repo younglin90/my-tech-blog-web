@@ -191,6 +191,16 @@ export function PostList({
 
   const totalCount = Math.max(initialTotalCount ?? 0, all.length)
 
+  // NOTE 번호는 필터·정렬과 무관한 절대 번호 (가장 오래된 글 = #001).
+  // 아카이브 로드 전에는 최신 N개만 있으므로 (전체 수 - 보유 수) 만큼 offset.
+  const noteNumbers = useMemo(() => {
+    const asc = [...all].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+    const offset = Math.max(0, totalCount - asc.length)
+    const map = new Map<string, number>()
+    asc.forEach((p, i) => map.set(p.id, offset + i + 1))
+    return map
+  }, [all, totalCount])
+
   if (all.length === 0) {
     return (
       <div className="py-24 text-center">
@@ -299,11 +309,12 @@ export function PostList({
       <div>
         {visible.map((post, idx) => {
           const href = post.isDynamic ? `/read?id=${post.id}` : post.url
-          const isNew = !post.isDynamic && Date.now() - new Date(post.date).getTime() < 7 * 24 * 60 * 60 * 1000
+          // mounted 가드: 정적 HTML은 빌드 시각으로 굳으므로 클라이언트에서만 판정 (hydration mismatch 방지)
+          const isNew = mounted && !post.isDynamic && Date.now() - new Date(post.date).getTime() < 7 * 24 * 60 * 60 * 1000
           const isRead = mounted && readPosts.has(post.id)
           const isBookmarked = mounted && bookmarks.has(post.id)
           const day = dayMeta(post.date)
-          const no = totalCount - (sortMode === 'newest' ? idx : totalCount - 1 - idx)
+          const no = noteNumbers.get(post.id) ?? idx + 1
 
           if (compact) {
             return (
@@ -328,7 +339,7 @@ export function PostList({
                     {day.short}
                   </span>
                   <span className="mono tabular" style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-                    {format(post.isDynamic ? new Date(post.date) : parseISO(post.date), 'yyyy.MM.dd')}
+                    {format(parseISO(post.date), 'yyyy.MM.dd')}
                   </span>
                   <span
                     className="truncate"
@@ -396,7 +407,7 @@ export function PostList({
                     {day.short}
                   </div>
                   <div className="mono tabular" style={{ marginTop: 4, fontSize: 11, color: 'var(--text-muted)' }}>
-                    {format(post.isDynamic ? new Date(post.date) : parseISO(post.date), 'yyyy.MM.dd')}
+                    {format(parseISO(post.date), 'yyyy.MM.dd')}
                   </div>
                 </div>
                 <div className="min-w-0">

@@ -129,6 +129,12 @@ export function Search() {
     return dedupePostsForLocale(indexItems, locale)
   }, [indexItems, locale])
 
+  // ko fallback 항목의 url은 /ko/... 이므로 현재 locale 경로로 재작성 (locale 전환 방지)
+  const postHref = React.useCallback(
+    (post: PostIndexItem) => (post.locale === locale ? post.url : `/${locale}/posts/${post.slug}`),
+    [locale]
+  )
+
   // Compute top tags for suggestion chips when search is empty
   const topTags = React.useMemo(() => {
     const counts: Record<string, number> = {}
@@ -211,7 +217,7 @@ export function Search() {
       e.preventDefault()
       setActiveIdx((i) => (i - 1 + filteredPosts.length) % filteredPosts.length)
     } else if (e.key === 'Enter' && filteredPosts[activeIdx]) {
-      onSelect(filteredPosts[activeIdx].url)
+      onSelect(postHref(filteredPosts[activeIdx]))
     } else if (e.key === 'Escape') {
       setOpen(false)
     }
@@ -384,7 +390,7 @@ export function Search() {
                   filteredPosts.map((post, i) => (
                     <button
                       key={post.slug}
-                      onClick={() => onSelect(post.url)}
+                      onClick={() => onSelect(postHref(post))}
                       onMouseEnter={() => setActiveIdx(i)}
                       className="flex w-full flex-col rounded-lg px-4 py-3 text-left transition-colors duration-75"
                       style={{

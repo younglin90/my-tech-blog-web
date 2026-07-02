@@ -22,7 +22,10 @@ function toggleBookmark(id: string): boolean {
   } else {
     bookmarks.add(id)
   }
-  localStorage.setItem(BOOKMARKS_KEY, JSON.stringify([...bookmarks]))
+  // Safari 프라이빗 모드·쿼터 초과 시 setItem이 throw — 클릭 핸들러가 죽지 않게 가드
+  try {
+    localStorage.setItem(BOOKMARKS_KEY, JSON.stringify([...bookmarks]))
+  } catch {}
   return bookmarks.has(id)
 }
 

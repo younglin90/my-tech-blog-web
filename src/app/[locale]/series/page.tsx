@@ -1,7 +1,7 @@
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
 import type { Metadata } from 'next'
-import { LOCALES, isLocale, type Locale } from '@/lib/i18n'
+import { LOCALES, isLocale, t, type Locale } from '@/lib/i18n'
 import { listAllSeries } from '@/lib/series'
 import { SITE_URL } from '@/lib/site'
 
@@ -39,15 +39,15 @@ export default async function SeriesIndex({ params }: Props) {
         className="display mb-2"
         style={{ fontSize: 32, fontWeight: 700, letterSpacing: '-0.02em', color: 'var(--text)' }}
       >
-        Series
+        {t(locale, 'series.title')}
       </h1>
       <p className="mb-8 text-sm" style={{ color: 'var(--text-muted)' }}>
-        {series.length} series · multi-part deep dives.
+        {t(locale, 'series.summary', { count: String(series.length) })}
       </p>
 
       {series.length === 0 ? (
         <p className="text-sm" style={{ color: 'var(--text-faint)' }}>
-          No series yet. Add <code>series: &quot;name&quot;</code> + <code>seriesOrder: N</code> to post frontmatter.
+          {t(locale, 'series.empty')}
         </p>
       ) : (
         <div className="space-y-4">
@@ -66,7 +66,7 @@ export default async function SeriesIndex({ params }: Props) {
                   {s.slug}
                 </h2>
                 <span className="mono text-xs tabular-nums" style={{ color: 'var(--text-faint)' }}>
-                  {s.count} parts
+                  {t(locale, 'series.parts', { count: String(s.count) })}
                 </span>
               </div>
               <ol className="mt-3 space-y-1.5 text-sm" style={{ color: 'var(--text-muted)' }}>
@@ -80,7 +80,7 @@ export default async function SeriesIndex({ params }: Props) {
                 ))}
                 {s.posts.length > 4 && (
                   <li className="text-xs" style={{ color: 'var(--text-faint)' }}>
-                    + {s.posts.length - 4} more
+                    {t(locale, 'series.moreParts', { count: String(s.posts.length - 4) })}
                   </li>
                 )}
               </ol>

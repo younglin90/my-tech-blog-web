@@ -56,7 +56,8 @@ export function KeyboardShortcuts() {
         setOpen(false)
         return
       }
-      if (e.key === 't' && !e.ctrlKey && !e.metaKey) {
+      // 't'는 단독으로는 테마 토글이지만, 직전에 'g'를 눌렀다면 g+t 코드의 일부다.
+      if (e.key === 't' && !e.ctrlKey && !e.metaKey && buffer !== 'G') {
         setTheme(themeRef.current === 'dark' ? 'light' : 'dark')
         return
       }

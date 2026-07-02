@@ -1,7 +1,7 @@
 'use client'
 
 import { useMDXComponent } from 'next-contentlayer2/hooks'
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, isValidElement } from 'react'
 import dynamic from 'next/dynamic'
 import Link from 'next/link'
 import Image from 'next/image'
@@ -137,12 +137,18 @@ function Callout({ type = 'note', title, children }: { type?: 'note' | 'tip' | '
   )
 }
 
+// 헤딩이 인라인 코드(`...`)만으로 구성돼도 id가 비지 않도록
+// React element 내부까지 재귀적으로 텍스트를 추출한다.
+function extractText(node: React.ReactNode): string {
+  if (node == null || typeof node === 'boolean') return ''
+  if (typeof node === 'string' || typeof node === 'number') return String(node)
+  if (Array.isArray(node)) return node.map(extractText).join('')
+  if (isValidElement(node)) return extractText((node.props as { children?: React.ReactNode }).children)
+  return ''
+}
+
 function slugify(children: React.ReactNode): string {
-  const text = [children]
-    .flat(Infinity as 1)
-    .filter((c): c is string => typeof c === 'string')
-    .join('')
-  return text
+  return extractText(children)
     .toLowerCase()
     .replace(/[^\w\uAC00-\uD7A3\s-]/g, '')
     .trim()
@@ -167,6 +173,9 @@ function AnchorLink({ id }: { id: string }) {
     setCopied(true)
     setTimeout(() => setCopied(false), 1500)
   }, [id])
+
+  // 텍스트를 추출하지 못한 헤딩(id 없음)에는 앵커를 붙이지 않는다 — href="#"는 페이지 최상단으로 튄다.
+  if (!id) return null
 
   return (
     <span className="relative inline-block">

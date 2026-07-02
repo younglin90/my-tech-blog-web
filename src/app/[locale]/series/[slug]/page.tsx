@@ -2,7 +2,7 @@ import Link from 'next/link'
 import { notFound } from 'next/navigation'
 import { format, parseISO } from 'date-fns'
 import type { Metadata } from 'next'
-import { LOCALES, isLocale, type Locale } from '@/lib/i18n'
+import { LOCALES, isLocale, t, type Locale } from '@/lib/i18n'
 import { listAllSeries, getSeries } from '@/lib/series'
 import { SITE_URL } from '@/lib/site'
 
@@ -57,7 +57,7 @@ export default async function SeriesPage({ params }: Props) {
         {slug}
       </h1>
       <p className="mb-8 text-sm" style={{ color: 'var(--text-muted)' }}>
-        {series.count} parts · sequential reading recommended
+        {t(locale, 'series.sequential', { count: String(series.count) })}
       </p>
 
       <ol className="space-y-3">

@@ -50,6 +50,9 @@ function saveStore(store: Store) {
 export function ReadingPosition({ postId }: { postId: string }) {
   const pathname = usePathname() ?? '/'
   const { locale } = localePathPrefix(pathname)
+  // locale별로 레이아웃(글 길이·픽셀 오프셋)이 다르므로 저장 키에 locale을 포함한다.
+  // 같은 slug의 다른 언어 페이지에서 "이어서 읽기"가 잘못 뜨는 것을 방지.
+  const storeKey = `${locale}:${postId}`
   const [resume, setResume] = useState<SavedPosition | null>(null)
   const [dismissed, setDismissed] = useState(false)
   const lastSaveRef = useRef(0)
@@ -58,11 +61,11 @@ export function ReadingPosition({ postId }: { postId: string }) {
   // 마운트 시 저장된 위치 확인 → 복원 제안
   useEffect(() => {
     const store = loadStore()
-    const saved = store[postId]
+    const saved = store[storeKey]
     if (saved && saved.y > RESTORE_THRESHOLD_PX) {
       setResume(saved)
     }
-  }, [postId])
+  }, [storeKey])
 
   // 스크롤 위치 throttled 저장 + 완독 시 삭제
   useEffect(() => {
@@ -83,18 +86,18 @@ export function ReadingPosition({ postId }: { postId: string }) {
       const store = loadStore()
       if (pct >= COMPLETE_THRESHOLD) {
         // 완독 → 위치 삭제
-        if (store[postId]) {
-          delete store[postId]
+        if (store[storeKey]) {
+          delete store[storeKey]
           saveStore(store)
         }
       } else if (window.scrollY > RESTORE_THRESHOLD_PX) {
-        store[postId] = { y: window.scrollY, pct, ts: now }
+        store[storeKey] = { y: window.scrollY, pct, ts: now }
         saveStore(store)
       }
     }
     window.addEventListener('scroll', onScroll, { passive: true })
     return () => window.removeEventListener('scroll', onScroll)
-  }, [postId])
+  }, [storeKey])
 
   if (!resume || dismissed) return null
 
@@ -121,7 +124,10 @@ export function ReadingPosition({ postId }: { postId: string }) {
       <button
         onClick={() => {
           interactedRef.current = true
-          window.scrollTo({ top: resume.y, behavior: 'smooth' })
+          // 저장 이후 폰트 크기 변경 등으로 픽셀 오프셋이 어긋날 수 있어 비율(pct)로 복원
+          const docHeight = document.documentElement.scrollHeight - window.innerHeight
+          const top = docHeight > 0 ? resume.pct * docHeight : resume.y
+          window.scrollTo({ top, behavior: 'smooth' })
           setResume(null)
         }}
         className="flex-1 text-left text-sm"

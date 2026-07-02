@@ -24,12 +24,16 @@ export async function generateMetadata({ params }: TagPageProps): Promise<Metada
 }
 
 export async function generateStaticParams() {
+  // 태그는 모든 locale 공통이 원칙이지만, 과거 포스트가 locale별로 다른 태그를
+  // 가졌던 사례가 있어 전체 locale을 union — 정적 export에서 hard 404 방지.
+  // 주의: raw 태그를 반환해야 한다. 미리 encodeURIComponent하면 Next가 한 번 더
+  // 인코딩해 params.tag가 이중 인코딩으로 들어오고, 한글 태그 페이지가 전부 404가 된다.
   const tags = new Set<string>()
   allPosts
-    .filter((post) => !post.draft && post.locale === 'ko')
+    .filter((post) => !post.draft)
     .forEach((post) => post.tags?.forEach((tag) => tags.add(tag)))
   return LOCALES.flatMap((locale) =>
-    Array.from(tags).map((tag) => ({ locale, tag: encodeURIComponent(tag) }))
+    Array.from(tags).map((tag) => ({ locale, tag }))
   )
 }
 
