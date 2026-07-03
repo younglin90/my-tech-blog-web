@@ -1,0 +1,148 @@
+---
+title: "[Paper Review] Fooling a Nonlinear Flux Into Behaving Linearly — Jin–Xin & Suliciu Relaxation"
+date: 2026-07-04
+description: "Thomann (2019) review: linearizing the Riemann problem with a relaxation system and buying stability with the sub-characteristic condition"
+tags: ["Relaxation-Scheme", "Suliciu", "Jin-Xin", "Riemann-Solver", "All-Speed"]
+locale: en
+slug: jin-xin-suliciu-relaxation-scheme
+draft: false
+---
+
+import { JinXinRelaxationLab } from '@/components/post-viz/2026-07-04-jin-xin-suliciu-relaxation-scheme/JinXinRelaxationLab'
+import { SubcharacteristicSpeedChart } from '@/components/post-viz/2026-07-04-jin-xin-suliciu-relaxation-scheme/SubcharacteristicSpeedChart'
+
+Write an exact Riemann solver (the device that resolves the wave structure at a cell interface) for long enough and the equation of state eventually trips you up. You have to diagonalize the Jacobian of the nonlinear flux $f(u)$ at every step, and for a complicated equation of state that eigenstructure has no closed form. In 1995, Shi Jin and Zhouping Xin flipped the whole idea around. Instead of solving the nonlinear equation directly, they **promoted the flux itself to a new unknown**, built a linear system around it, and let that system relax back to the original equation. This post follows the relaxation idea from the ground up, then looks at how Thomann et al. (2019) stretched it into an all-speed Euler solver. By the end you'll see why detouring through a linear system is actually faster and more robust — and what it costs.
+
+**Paper** — Andrea Thomann, Markus Zenk, Gabriella Puppo, Christian Klingenberg, *An all speed second order IMEX relaxation scheme for the Euler equations*, arXiv:1907.08398 (2019).
+
+## Why a nonlinear flux makes the Riemann problem hard
+
+Take a scalar conservation law $u_t + f(u)_x = 0$. Here $u$ is the conserved quantity and $f(u)$ is the flux. A Godunov-type scheme solves a Riemann problem at every interface, which means it needs the wave speed $f'(u)$.
+
+The trouble is real flow. In the compressible Euler equations the flux carries pressure, and pressure is a nonlinear function of density and internal energy. Add a real-gas equation of state and the eigenvalues and eigenvectors no longer come out analytically. Diagonalizing the Jacobian numerically every step is expensive. In the low-Mach regime the acoustic waves scale like $1/M$, so an explicit time step suffocates.
+
+Hence the question: can we defer the nonlinearity instead of facing it head-on every step?
+
+## The Jin–Xin promotion — lifting the flux into an unknown
+
+Their answer: instead of computing the flux $f(u)$ as a value, introduce a **new variable $v$** to hold it, and attach a source that slowly drags $v$ toward $f(u)$.
+
+$$
+\begin{aligned}
+u_t + v_x &= 0, \\
+v_t + a^2 u_x &= \frac{1}{\varepsilon}\bigl(f(u) - v\bigr).
+\end{aligned}
+$$
+
+Here $u$ is the original conserved quantity, $v$ is the relaxation variable standing in for the flux, $a$ is a constant relaxation speed, and $\varepsilon$ is the relaxation time. The key is that the left-hand side is **completely linear**. The coefficient matrix has fixed eigenvalues $\pm a$ — the nonlinear diagonalization is gone.
+
+As $\varepsilon \to 0$ the right-hand source forces $v = f(u)$, and the first equation collapses back to the original conservation law. So this $2\times 2$ linear system is a **viscous approximation** of the nonlinear equation. Because its wave speeds are the constants $\pm a$, the Riemann problem can be solved once, by hand.
+
+Play with the simulation below. It solves Burgers' equation ($f(u)=u^2/2$) through the relaxation system above.
+
+<JinXinRelaxationLab />
+
+With the `shock` initial condition, drop the relaxation speed `a` below 1.0 and the profile oscillates and blows up. Push `a` high enough and it captures a clean shock. The next section explains why.
+
+## The sub-characteristic condition — small a, exploding system
+
+You can't pick the relaxation speed $a$ freely. For a stable approximation it must obey the **sub-characteristic condition** (Whitham's condition):
+
+$$
+a \ge \max_u |f'(u)|.
+$$
+
+Here $f'(u)$ is the true wave speed of the original equation. The condition says the frozen speeds $\pm a$ carried by the relaxation system must **always bracket** that true speed. For Burgers, $f'(u)=u$, so $a \ge \max|u|$ is enough.
+
+In the chart below, vary the relaxation speed $a$ and the solution range $\max|u|$. The instant the orange curve $f'(u)$ leaves the $\pm a$ band is the threshold of instability.
+
+<SubcharacteristicSpeedChart />
+
+Drop $a$ below the largest wave speed of the solution and the curve punches through the band. There the relaxation approximation produces **negative diffusion** instead of physical diffusion. Information flows the wrong way and the system explodes. The next section pins down exactly why.
+
+## The hidden diffusion, via Chapman–Enskog
+
+What happens when $\varepsilon$ is small but not zero? Expand $v = f(u) + \varepsilon v_1 + \cdots$ (a Chapman–Enskog expansion) and substitute into the relaxation system. An effective equation drops out:
+
+$$
+u_t + f(u)_x = \varepsilon\,\partial_x\Bigl[\bigl(a^2 - f'(u)^2\bigr)\,u_x\Bigr] + O(\varepsilon^2).
+$$
+
+The right-hand side is the diffusion the relaxation quietly injects. Its coefficient is $a^2 - f'(u)^2$. For that to stay non-negative you need exactly $a \ge |f'(u)|$. So the sub-characteristic condition was really **the condition that the relaxation's artificial viscosity never goes negative**.
+
+The trade-off is now visible. A large $a$ gives comfortable stability but a big $a^2 - f'^2$ that smears the solution. Pinning $a$ right at the sub-characteristic limit is sharp but risky. And $\varepsilon$ sets the overall magnitude of the diffusion — which is why raising $\varepsilon$ in the earlier simulation thickens the shock.
+
+## Suliciu — relax only the pressure, not the whole flux
+
+Jin–Xin relaxes **every component** of the flux. Elegant, but the diffusion is excessive. What practitioners reach for more often is Suliciu-type relaxation. In the Euler equations the only genuine nonlinearity is the pressure, so you relax **only the pressure** into a new variable $\pi$.
+
+$$
+(\rho\pi)_t + \nabla\!\cdot(\rho\pi\,u) + a^2\,\nabla\!\cdot u = \frac{\rho}{\varepsilon}\,(p - \pi).
+$$
+
+Here $\rho$ is density, $u$ velocity, $p$ the actual pressure, and $\pi$ the relaxed pressure. The sub-characteristic condition becomes $a > \rho\sqrt{\partial_\rho p}$, bracketing the sound speed. The relaxed system's eigenvalues are $u,\ u\pm a/\rho$, all **linearly degenerate** — only contact-like waves remain, which are easy to handle.
+
+This is where Thomann et al. (2019) begin. Aiming at the low-Mach regime, they split the pressure into a slow part and a fast acoustic part. The slow part is treated explicitly; the fast acoustic part is solved implicitly on top of the relaxation system. They add a new velocity variable $\hat u$ to secure Mach-number-independent diffusion, and the result is an asymptotic-preserving, second-order IMEX scheme that converges to incompressible Euler in the low-Mach limit. Thanks to the linearly degenerate structure, all of this runs without a single nonlinear diagonalization.
+
+## Python — solving Burgers through the relaxation system
+
+Let's reproduce the skeleton of the relaxation idea in numpy: Burgers' equation through the Jin–Xin system. Splitting into characteristic variables $r,s$ turns the left side into two simple advections.
+
+```python
+import numpy as np
+
+def burgers_flux(u):
+    return 0.5 * u * u                     # f(u) = u^2 / 2
+
+def relaxed_step(u, v, a, dx, dt, eps):
+    # characteristic split: r moves at +a, s moves at -a
+    r = 0.5 * (u + v / a)
+    s = 0.5 * (u - v / a)
+    nu = a * dt / dx                       # CFL number a*dt/dx
+    # first-order upwind (periodic, via np.roll)
+    r_new = r - nu * (r - np.roll(r, 1))   # right-moving wave
+    s_new = s + nu * (np.roll(s, -1) - s)  # left-moving wave
+    u_new = r_new + s_new
+    v_new = a * (r_new - s_new)
+    # relaxation source: pull v toward f(u) (exponential integrator)
+    kappa = 1.0 - np.exp(-dt / eps)
+    v_new += (burgers_flux(u_new) - v_new) * kappa
+    return u_new, v_new
+
+def run_relaxation(u0, a, eps, cfl=0.9, t_end=0.3):
+    n = u0.size
+    dx = 2.0 / n
+    u = u0.copy()
+    v = burgers_flux(u)                    # start on the equilibrium manifold
+    dt = cfl * dx / a                      # sub-characteristic sets the CFL
+    t = 0.0
+    while t < t_end:
+        u, v = relaxed_step(u, v, a, dx, dt, eps)
+        t += dt
+    return u
+
+# Riemann initial data: left 1.0, right -0.4 (a shock)
+n = 400
+x = np.linspace(-1, 1, n, endpoint=False) + 1.0 / n
+u0 = np.where(x < 0.0, 1.0, -0.4)
+
+u_ok = run_relaxation(u0, a=1.3, eps=1e-4)   # a >= max|u|=1.0  -> stable
+u_bad = run_relaxation(u0, a=0.8, eps=1e-4)  # a <  max|u|      -> violated
+
+print("a=1.3  peak |u| =", round(float(np.max(np.abs(u_ok))), 3))   # ~1.0
+print("a=0.8  peak |u| =", round(float(np.max(np.abs(u_bad))), 3))  # blows up
+```
+
+The output testifies directly to the sub-characteristic condition. At $a=1.3$ the peak amplitude stays near the initial value and a clean shock forms. At $a=0.8$ the amplitude jumps several-fold. Notice that we never diagonalized a nonlinear Jacobian even once — only repeated linear advection at the constant speeds $\pm a$.
+
+## A critical look
+
+Relaxation isn't free. Artificial diffusion $\varepsilon(a^2-f'^2)$ always tags along, and the safer (larger) you make $a$, the more the solution smears. Enforcing the sub-characteristic condition needs a global bound on $\max|f'(u)|$, and near strong shocks or vacuum a conservative bound overshoots the diffusion. The logic that was clean for scalars demands, for real-gas Euler, a local estimate of $\rho\sqrt{\partial_\rho p}$ plus extra machinery to keep pressure and density positive. Thomann et al.'s IMEX coupling has to solve an elliptic equation for the acoustic part, so there's a crossover where the low-Mach gain is offset by the linear-solver cost. Reproducing it, the joint tuning of $\varepsilon$ and $a$ turns out to be touchier than expected.
+
+OpenFOAM and Fluent's density-based solvers don't ship this relaxation Riemann solver directly, but the HLLC and AUSM families of approximate Riemann solvers share the same philosophy — simplify the wave structure to avoid diagonalization. The Suliciu solver is implemented in open-source codes like SU2 as an option that captures contact discontinuities exactly.
+
+## What this approach changed
+
+- **It reversed the direction of linearization.** Instead of approximating a nonlinear equation to make it linear, build an exact linear system and relax it toward the original. The diagonalization disappears.
+- **Stability is bought with a single inequality.** $a \ge |f'(u)|$ — the sub-characteristic condition is precisely what keeps the artificial viscosity from going negative.
+- **The linearly degenerate structure opens up practice.** Suliciu-type relaxation extends to low-Mach, real-gas, and multiphase flows, with Thomann et al.'s all-speed IMEX scheme as a flagship example.

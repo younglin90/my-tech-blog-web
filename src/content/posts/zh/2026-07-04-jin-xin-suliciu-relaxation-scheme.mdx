@@ -1,0 +1,148 @@
+---
+title: "[论文评述] 让非线性通量假装成线性 — Jin–Xin 与 Suliciu 松弛法"
+date: 2026-07-04
+description: "用松弛系统线性化 Riemann 问题、以亚特征条件换取稳定性的 Thomann(2019)评述"
+tags: ["Relaxation-Scheme", "Suliciu", "Jin-Xin", "Riemann-Solver", "All-Speed"]
+locale: zh
+slug: jin-xin-suliciu-relaxation-scheme
+draft: false
+---
+
+import { JinXinRelaxationLab } from '@/components/post-viz/2026-07-04-jin-xin-suliciu-relaxation-scheme/JinXinRelaxationLab'
+import { SubcharacteristicSpeedChart } from '@/components/post-viz/2026-07-04-jin-xin-suliciu-relaxation-scheme/SubcharacteristicSpeedChart'
+
+编写精确的 Riemann 求解器(在网格界面上求解波结构的装置)久了,状态方程迟早会绊住你。你得在每一步对非线性通量 $f(u)$ 的雅可比矩阵做对角化,而复杂状态方程的特征结构没有闭式解。1995 年,Shi Jin 与 Zhouping Xin 把思路整个翻转过来。不再直接求解非线性方程,而是**把通量本身提升为新的未知量**,围绕它构造一个线性系统,再让这个系统松弛回原方程。本文从头追踪这个松弛(relaxation)思想,并看 Thomann 等人(2019)如何把它扩展为全速度(all-speed)Euler 求解器。读到最后,你会明白为什么绕道线性系统反而更快更稳健,以及它的代价是什么。
+
+**论文信息** — Andrea Thomann, Markus Zenk, Gabriella Puppo, Christian Klingenberg, *An all speed second order IMEX relaxation scheme for the Euler equations*, arXiv:1907.08398 (2019)。
+
+## 非线性通量为何让 Riemann 问题变难
+
+考虑标量守恒律 $u_t + f(u)_x = 0$。其中 $u$ 是守恒量,$f(u)$ 是通量。Godunov 类方法在每个界面求解 Riemann 问题,因此需要波速 $f'(u)$。
+
+麻烦在于真实流动。可压缩 Euler 中通量含有压力,而压力是密度、内能的非线性函数。一旦掺入真实气体(real gas)状态方程,特征值与特征向量就无法解析求出。每步数值对角化雅可比矩阵的代价很重。在低马赫区,声波以 $1/M$ 增大,显式时间步被卡死。
+
+于是有了这个问题:能否不在每一步正面迎战非线性,而是把它推迟?
+
+## Jin–Xin 的提升 — 把通量抬成未知量
+
+Jin–Xin 的答案是:不再把通量 $f(u)$ 当作数值来算,而是引入**新变量 $v$** 来承载它,并附加一个源项,让 $v$ 缓慢被拉向 $f(u)$。
+
+$$
+\begin{aligned}
+u_t + v_x &= 0, \\
+v_t + a^2 u_x &= \frac{1}{\varepsilon}\bigl(f(u) - v\bigr).
+\end{aligned}
+$$
+
+这里 $u$ 是原守恒量,$v$ 是代替通量的松弛变量,$a$ 是常数松弛速度(relaxation speed),$\varepsilon$ 是松弛时间。关键在于左端**完全线性**。系数矩阵的特征值固定为 $\pm a$——非线性对角化消失了。
+
+当 $\varepsilon \to 0$ 时,右端源强制 $v = f(u)$,第一式退回原守恒律。也就是说,这个 $2\times 2$ 线性系统是非线性方程的**黏性近似**。因为波速是常数 $\pm a$,Riemann 问题只需手算一次。
+
+在下面的模拟里直接操作参数。它用上述松弛系统求解 Burgers 方程($f(u)=u^2/2$)。
+
+<JinXinRelaxationLab />
+
+在 `shock` 初始条件下,把松弛速度 `a` 降到 1.0 以下,剖面就会振荡并发散。把 `a` 抬得足够高,则能捕捉到干净的激波。原因见下一节。
+
+## 亚特征条件 — a 太小,系统爆炸
+
+松弛速度 $a$ 不能随意选。要成为稳定的近似,它必须满足**亚特征条件**(sub-characteristic condition,Whitham 条件):
+
+$$
+a \ge \max_u |f'(u)|.
+$$
+
+$f'(u)$ 是原方程的真实波速。该条件表示松弛系统携带的冻结速度 $\pm a$ 必须**始终夹住**这个真实速度。对 Burgers 而言 $f'(u)=u$,所以 $a \ge \max|u|$ 就够了。
+
+在下图中改变松弛速度 $a$ 与解的范围 $\max|u|$。橙色曲线 $f'(u)$ 离开 $\pm a$ 带的那一刻就是失稳的门槛。
+
+<SubcharacteristicSpeedChart />
+
+把 $a$ 降到解的最大波速以下,曲线就冲出带外。此时松弛近似产生的不是物理扩散,而是**负扩散**。信息朝错误方向流动,系统爆炸。原因在下一节的展开中精确显现。
+
+## 用 Chapman–Enskog 看隐藏的扩散
+
+当 $\varepsilon$ 很小但不为零时会发生什么?把 $v = f(u) + \varepsilon v_1 + \cdots$ 展开(Chapman–Enskog)并代入松弛系统,就得到一个有效方程:
+
+$$
+u_t + f(u)_x = \varepsilon\,\partial_x\Bigl[\bigl(a^2 - f'(u)^2\bigr)\,u_x\Bigr] + O(\varepsilon^2).
+$$
+
+右端就是松弛悄悄注入的扩散项。其系数为 $a^2 - f'(u)^2$。要它保持非负,恰好需要 $a \ge |f'(u)|$。原来亚特征条件的本质是**"松弛所生成的人工黏性不为负的条件"**。
+
+权衡由此显现。$a$ 取大,稳定性宽裕,但 $a^2-f'^2$ 变大而抹平解。把 $a$ 贴近亚特征极限则锐利但危险。$\varepsilon$ 调节扩散的整体量——这正是前面模拟中调大 $\varepsilon$ 会使激波变厚的原因。
+
+## Suliciu — 只松弛压力,而非整个通量
+
+Jin–Xin 松弛通量的**全部分量**。优雅,但扩散过量。实践中更常用的是 Suliciu 型松弛。Euler 方程中真正非线性的只有压力,所以**只把压力**松弛为新变量 $\pi$。
+
+$$
+(\rho\pi)_t + \nabla\!\cdot(\rho\pi\,u) + a^2\,\nabla\!\cdot u = \frac{\rho}{\varepsilon}\,(p - \pi).
+$$
+
+这里 $\rho$ 是密度,$u$ 是速度,$p$ 是实际压力,$\pi$ 是松弛压力。亚特征条件变为 $a > \rho\sqrt{\partial_\rho p}$,即夹住声速。松弛系统的特征值是 $u,\ u\pm a/\rho$,全部线性退化(linearly degenerate)——只剩下像接触间断那样易于处理的波。
+
+Thomann 等人(2019)的贡献从这里开始。瞄准低马赫区,他们把压力分成慢分量与快声学分量。慢部分显式处理,快声学部分在松弛系统之上隐式(implicit)求解。他们加入新速度变量 $\hat u$ 以确保与马赫数无关的扩散,最终得到一个在低马赫极限收敛到不可压 Euler 的渐近保持(asymptotic-preserving)二阶 IMEX 格式。得益于线性退化结构,这一切都无需一次非线性对角化。
+
+## Python — 用松弛系统求解 Burgers
+
+用 numpy 重现松弛思想的骨架:用 Jin–Xin 系统求解 Burgers 方程。分解为特征变量 $r,s$ 后,左端变成两个简单的对流。
+
+```python
+import numpy as np
+
+def burgers_flux(u):
+    return 0.5 * u * u                     # f(u) = u^2 / 2
+
+def relaxed_step(u, v, a, dx, dt, eps):
+    # 特征变量分解:r 以 +a 移动,s 以 -a 移动
+    r = 0.5 * (u + v / a)
+    s = 0.5 * (u - v / a)
+    nu = a * dt / dx                       # CFL 数 a*dt/dx
+    # 一阶迎风(周期边界,np.roll)
+    r_new = r - nu * (r - np.roll(r, 1))   # 右行波
+    s_new = s + nu * (np.roll(s, -1) - s)  # 左行波
+    u_new = r_new + s_new
+    v_new = a * (r_new - s_new)
+    # 松弛源:把 v 拉向 f(u)(指数积分)
+    kappa = 1.0 - np.exp(-dt / eps)
+    v_new += (burgers_flux(u_new) - v_new) * kappa
+    return u_new, v_new
+
+def run_relaxation(u0, a, eps, cfl=0.9, t_end=0.3):
+    n = u0.size
+    dx = 2.0 / n
+    u = u0.copy()
+    v = burgers_flux(u)                    # 从平衡流形出发
+    dt = cfl * dx / a                      # 亚特征条件决定 CFL
+    t = 0.0
+    while t < t_end:
+        u, v = relaxed_step(u, v, a, dx, dt, eps)
+        t += dt
+    return u
+
+# Riemann 初始条件:左 1.0,右 -0.4(激波)
+n = 400
+x = np.linspace(-1, 1, n, endpoint=False) + 1.0 / n
+u0 = np.where(x < 0.0, 1.0, -0.4)
+
+u_ok = run_relaxation(u0, a=1.3, eps=1e-4)   # a >= max|u|=1.0  -> 稳定
+u_bad = run_relaxation(u0, a=0.8, eps=1e-4)  # a <  max|u|      -> 违反
+
+print("a=1.3  peak |u| =", round(float(np.max(np.abs(u_ok))), 3))   # ~1.0
+print("a=0.8  peak |u| =", round(float(np.max(np.abs(u_bad))), 3))  # 发散
+```
+
+输出直接印证亚特征条件。$a=1.3$ 时最大振幅停留在初值附近,形成干净的激波。$a=0.8$ 时振幅跳升数倍。请注意:我们一次也没有对非线性雅可比做对角化——只是以常数速度 $\pm a$ 反复做线性对流。
+
+## 批判性审视
+
+松弛并非免费。人工扩散 $\varepsilon(a^2-f'^2)$ 必然如影随形,$a$ 取得越安全(越大),解就抹得越平。要满足亚特征条件需要 $\max|f'(u)|$ 的全局上界,而在强激波或真空附近保守地取这个上界会使扩散过量。标量中干净的逻辑,到了真实气体 Euler 就要求对 $\rho\sqrt{\partial_\rho p}$ 做局部估计,外加保证压力、密度为正的额外机制。Thomann 等人的 IMEX 耦合要在声学部分求解椭圆型方程,因此存在一个交叉点,低马赫的收益被线性求解器的代价抵消。复现下来会发现,$\varepsilon$ 与 $a$ 的联合调参比预期更敏感。
+
+OpenFOAM 与 Fluent 的密度基求解器并未直接内置这个松弛 Riemann 求解器,但 HLLC、AUSM 系列的近似 Riemann 求解器共享同一哲学——简化波结构以避免对角化。Suliciu 求解器在 SU2 等开源代码中作为精确捕捉接触间断的选项被实现。
+
+## 这一方法改变了什么
+
+- **它逆转了线性化的方向。** 不是近似非线性方程使其线性,而是构造精确的线性系统,再把它松弛回原方程。对角化消失。
+- **稳定性用一个不等式买来。** $a \ge |f'(u)|$——亚特征条件正是让人工黏性不为负的条件。
+- **线性退化结构打开了实践。** Suliciu 型松弛可扩展到低马赫、真实气体与多相流,Thomann 等人的全速度 IMEX 格式便是其旗舰范例。

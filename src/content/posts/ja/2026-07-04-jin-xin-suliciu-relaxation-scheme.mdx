@@ -1,0 +1,148 @@
+---
+title: "[論文レビュー] 非線形フラックスを線形に見せかける — Jin–Xin・Suliciu緩和法"
+date: 2026-07-04
+description: "緩和系でRiemann問題を線形化し、部分特性条件で安定性を買うThomann(2019)のレビュー"
+tags: ["Relaxation-Scheme", "Suliciu", "Jin-Xin", "Riemann-Solver", "All-Speed"]
+locale: ja
+slug: jin-xin-suliciu-relaxation-scheme
+draft: false
+---
+
+import { JinXinRelaxationLab } from '@/components/post-viz/2026-07-04-jin-xin-suliciu-relaxation-scheme/JinXinRelaxationLab'
+import { SubcharacteristicSpeedChart } from '@/components/post-viz/2026-07-04-jin-xin-suliciu-relaxation-scheme/SubcharacteristicSpeedChart'
+
+厳密なRiemann解法器(セル境界で波の構造を解く仕組み)を書き続けると、いつか状態方程式に足をすくわれます。非線形フラックス$f(u)$のヤコビアンを毎ステップ対角化する必要があり、複雑な状態方程式ではその固有構造が閉じた形で得られません。1995年、Shi JinとZhouping Xinは発想を裏返しました。非線形方程式をそのまま解くのではなく、**フラックス自体を新しい未知数に昇格**させて線形系を作り、それを元の方程式へ緩和させるのです。本稿ではこの緩和(relaxation)のアイデアを基礎から追い、Thomannら(2019)がこれを全速度(all-speed)Euler解法へ拡張した方法まで見ていきます。読み終える頃には、なぜ線形系へ迂回する方が実際に速く頑健なのか、そしてその代償が何かが分かります。
+
+**論文情報** — Andrea Thomann, Markus Zenk, Gabriella Puppo, Christian Klingenberg, *An all speed second order IMEX relaxation scheme for the Euler equations*, arXiv:1907.08398 (2019)。
+
+## 非線形フラックスがRiemann問題を難しくする
+
+スカラー保存則$u_t + f(u)_x = 0$を考えます。$u$は保存量、$f(u)$はフラックスです。Godunov系の手法はセル境界ごとにRiemann問題を解き、波速$f'(u)$を知る必要があります。
+
+問題は実際の流れです。圧縮性Eulerではフラックスが圧力を含み、圧力は密度・内部エネルギーの非線形関数です。実在気体(real gas)の状態方程式が絡むと、固有値・固有ベクトルが解析的に求まりません。毎ステップ数値的にヤコビアンを対角化する費用は重くなります。低Mach領域では音波が$1/M$で増大し、陽的時間ステップが窒息します。
+
+そこで問いが立ちます。非線形性を毎ステップ正面から相手にせず、先送りできないでしょうか。
+
+## Jin–Xinの昇格 — フラックスを未知数へ持ち上げる
+
+Jin–Xinの答えはこうです。フラックス$f(u)$を値として計算する代わりに、それを保持する**新変数$v$**を導入します。そして$v$がゆっくり$f(u)$へ引き寄せられるようソース項を付けます。
+
+$$
+\begin{aligned}
+u_t + v_x &= 0, \\
+v_t + a^2 u_x &= \frac{1}{\varepsilon}\bigl(f(u) - v\bigr).
+\end{aligned}
+$$
+
+ここで$u$は元の保存量、$v$はフラックスを代替する緩和変数、$a$は定数の緩和速度(relaxation speed)、$\varepsilon$は緩和時間です。要点は左辺が**完全に線形**であることです。係数行列の固有値は$\pm a$に固定され、非線形の対角化が消えます。
+
+$\varepsilon \to 0$では右辺のソースが$v = f(u)$を強制し、第一式は元の保存則へ戻ります。つまりこの$2\times 2$線形系は非線形方程式の**粘性近似**です。波速が定数$\pm a$なので、Riemann問題は一度だけ手で解けます。
+
+下のシミュレーションでパラメータを直接操作してみましょう。Burgers方程式($f(u)=u^2/2$)を上の緩和系で解いた結果です。
+
+<JinXinRelaxationLab />
+
+`shock`初期条件で緩和速度`a`を1.0未満へ下げると、プロファイルが振動して発散します。`a`を十分大きくすると滑らかな衝撃波が捉えられます。その理由が次節です。
+
+## 部分特性条件 — aが小さいと系が爆発する
+
+緩和速度$a$は自由に選べません。安定な近似になるには**部分特性条件**(sub-characteristic condition、Whitham条件)を守る必要があります。
+
+$$
+a \ge \max_u |f'(u)|.
+$$
+
+$f'(u)$は元の方程式の真の波速です。緩和系が持ち歩く凍結速度$\pm a$が、その真の速度を**常に挟み込む**という意味です。Burgersなら$f'(u)=u$なので$a \ge \max|u|$で十分です。
+
+下の図で緩和速度$a$と解の範囲$\max|u|$を変えてみましょう。橙色の曲線$f'(u)$が$\pm a$の帯を出る瞬間が不安定の閾値です。
+
+<SubcharacteristicSpeedChart />
+
+$a$を解の最大波速より下げると、曲線が帯を突き破ります。このとき緩和近似は物理的拡散ではなく**負の拡散**を生みます。情報が誤った方向へ流れ、系は爆発します。その理由は次節の展開で正確に見えてきます。
+
+## Chapman–Enskogで見る隠れた拡散
+
+$\varepsilon$が小さいが0でないとき何が起きるでしょうか。$v = f(u) + \varepsilon v_1 + \cdots$と展開(Chapman–Enskog)して緩和系へ代入すると、有効方程式が現れます。
+
+$$
+u_t + f(u)_x = \varepsilon\,\partial_x\Bigl[\bigl(a^2 - f'(u)^2\bigr)\,u_x\Bigr] + O(\varepsilon^2).
+$$
+
+右辺が緩和がひそかに注入する拡散項です。拡散係数は$a^2 - f'(u)^2$。これが非負であるためには、まさに$a \ge |f'(u)|$が必要です。部分特性条件の正体は**「緩和が生む人工粘性が負にならない条件」**だったのです。
+
+ここでトレードオフが見えます。$a$を大きく取れば安定性は余裕ですが、$a^2-f'^2$が大きくなり解がなまります。$a$を部分特性の限界ぎりぎりに寄せると鋭いが危険です。$\varepsilon$は拡散の全体量を調節します。先のシミュレーションで$\varepsilon$を上げると衝撃波が厚くなるのはこのためです。
+
+## Suliciu — フラックス全部でなく圧力だけを緩和する
+
+Jin–Xinはフラックスの**全成分**を緩和します。優雅ですが拡散が過剰です。実務でより好まれるのはSuliciu型緩和です。Euler方程式で真に非線形なのは圧力だけなので、**圧力だけ**を新変数$\pi$へ緩和します。
+
+$$
+(\rho\pi)_t + \nabla\!\cdot(\rho\pi\,u) + a^2\,\nabla\!\cdot u = \frac{\rho}{\varepsilon}\,(p - \pi).
+$$
+
+$\rho$は密度、$u$は速度、$p$は実際の圧力、$\pi$は緩和圧力です。部分特性条件は$a > \rho\sqrt{\partial_\rho p}$となり、音速を挟む形になります。緩和系の固有値は$u,\ u\pm a/\rho$で、すべて線形退化(linearly degenerate)——接触不連続のように扱いやすい波だけが残ります。
+
+Thomannら(2019)の貢献はここから始まります。低Mach領域を狙い、圧力を遅い成分と速い音響成分へ分けます。遅い部分は陽的に、速い音響部分は緩和系の上で陰的(implicit)に解きます。新しい速度変数$\hat u$を加えてMach数に依らない拡散を確保し、その結果、低Mach極限で非圧縮Eulerへ収束する漸近保存(asymptotic-preserving)の2次IMEX法を得ます。線形退化構造のおかげで、これらすべてが非線形の対角化なしに回ります。
+
+## Python — Burgersを緩和系で解く
+
+緩和アイデアの骨格だけをnumpyで再現しましょう。Burgers方程式をJin–Xin緩和系で解きます。特性変数$r,s$へ分解すると左辺は二つの単純な移流になります。
+
+```python
+import numpy as np
+
+def burgers_flux(u):
+    return 0.5 * u * u                     # f(u) = u^2 / 2
+
+def relaxed_step(u, v, a, dx, dt, eps):
+    # 特性変数分解: r は +a、s は -a の速度で移動
+    r = 0.5 * (u + v / a)
+    s = 0.5 * (u - v / a)
+    nu = a * dt / dx                       # CFL 数 a*dt/dx
+    # 1次風上 (周期境界、np.roll)
+    r_new = r - nu * (r - np.roll(r, 1))   # 右進行波
+    s_new = s + nu * (np.roll(s, -1) - s)  # 左進行波
+    u_new = r_new + s_new
+    v_new = a * (r_new - s_new)
+    # 緩和ソース: v を f(u) へ引き寄せる (指数積分)
+    kappa = 1.0 - np.exp(-dt / eps)
+    v_new += (burgers_flux(u_new) - v_new) * kappa
+    return u_new, v_new
+
+def run_relaxation(u0, a, eps, cfl=0.9, t_end=0.3):
+    n = u0.size
+    dx = 2.0 / n
+    u = u0.copy()
+    v = burgers_flux(u)                    # 平衡多様体から出発
+    dt = cfl * dx / a                      # 部分特性が CFL を決める
+    t = 0.0
+    while t < t_end:
+        u, v = relaxed_step(u, v, a, dx, dt, eps)
+        t += dt
+    return u
+
+# Riemann 初期条件: 左 1.0、右 -0.4 (衝撃波)
+n = 400
+x = np.linspace(-1, 1, n, endpoint=False) + 1.0 / n
+u0 = np.where(x < 0.0, 1.0, -0.4)
+
+u_ok = run_relaxation(u0, a=1.3, eps=1e-4)   # a >= max|u|=1.0  -> 安定
+u_bad = run_relaxation(u0, a=0.8, eps=1e-4)  # a <  max|u|      -> 違反
+
+print("a=1.3  peak |u| =", round(float(np.max(np.abs(u_ok))), 3))   # ~1.0
+print("a=0.8  peak |u| =", round(float(np.max(np.abs(u_bad))), 3))  # 発散
+```
+
+出力は部分特性条件をそのまま証言します。$a=1.3$では最大振幅が初期値付近に留まり、滑らかな衝撃波が形成されます。$a=0.8$では振幅が数倍に跳ね上がります。非線形ヤコビアンを一度も対角化していないことに注目してください——定数速度$\pm a$の線形移流を繰り返しただけです。
+
+## 批判的に見ると
+
+緩和はただではありません。人工拡散$\varepsilon(a^2-f'^2)$が必ず付きまとい、$a$を安全に大きく取るほど解がなまります。部分特性条件を守るには$\max|f'(u)|$の大域的上限が必要で、強い衝撃や真空近傍でこの上限を保守的に取ると拡散が過剰になります。スカラーでは綺麗だった論理が、実在気体Eulerでは$\rho\sqrt{\partial_\rho p}$の局所推定と、圧力・密度の正値保存のための追加装置を要求します。Thomannらのimplicit-explicit結合は音響部で楕円型方程式を解くため、低Machの利得が線形ソルバの費用と相殺される点も存在します。再現してみると、$\varepsilon$と$a$の同時調整は思ったより敏感です。
+
+OpenFOAMやFluentの密度ベースソルバにこの緩和Riemann解法器が直接入っているわけではありませんが、HLLC・AUSM系の近似Riemann解法器が同じ哲学——波構造を単純化して対角化を避ける——を共有します。Suliciu解法器はSU2のようなオープンソースコードに、接触不連続を厳密に捉える選択肢として実装されています。
+
+## この手法が変えたこと
+
+- **線形化の向きを変えた。** 非線形方程式を近似して線形にするのではなく、厳密な線形系を作り、それを元の方程式へ緩和させる。対角化が消える。
+- **安定性は一つの不等式で買う。** $a \ge |f'(u)|$——部分特性条件こそが、人工粘性を負にしない条件である。
+- **線形退化構造が実務を開く。** Suliciu型緩和は低Mach・実在気体・多相まで拡張され、Thomannらの全速度IMEX法がその代表例である。
