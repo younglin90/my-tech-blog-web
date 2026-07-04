@@ -1,0 +1,174 @@
+---
+title: "[论文评述] 手推雅可比矩阵推到心累？——算子重载自动微分（ADOO）"
+date: 2026-07-05
+description: "Fraysse（2019）：用ADOO为隐式CFD求得精确通量雅可比，零手工推导"
+tags: ["Automatic-Differentiation", "Implicit-Solver", "Jacobian", "Newton-Krylov", "Compressible"]
+locale: zh
+slug: adoo-automatic-differentiation-jacobian
+draft: false
+---
+
+import { DualNumberDerivativeLab } from '@/components/post-viz/2026-07-05-adoo-automatic-differentiation-jacobian/DualNumberDerivativeLab'
+import { NewtonJacobianConvergenceLab } from '@/components/post-viz/2026-07-05-adoo-automatic-differentiation-jacobian/NewtonJacobianConvergenceLab'
+
+我开始动手推导HLLC通量的雅可比矩阵。用掉三张纸，漏了一项乘积法则，代码悄无声息地发散了。出错的不是通量，而是它的**导数**。隐式（implicit）CFD有一半的工作，就是把这个导数——空间离散的雅可比矩阵——做到精确。本文从最朴素的对偶数（dual number）出发，走一遍Fraysse等人（2019）提出的ADOO（基于算子重载的自动微分）。读到最后，你会看到即使是像Godunov精确黎曼求解器那样内含求根迭代的格式，也能在不写一行手推公式的情况下得到精确雅可比。而这份精确，究竟为Newton收敛速度换来多少好处，也一并揭晓。
+
+## 论文信息
+
+- **标题**: Automatic Differentiation using Operator Overloading (ADOO) for implicit resolution of hyperbolic single phase and two-phase flow models
+- **作者**: G. Fraysse 等
+- **年份**: 2019
+- **关键词**: automatic differentiation, implicit, two-phase, finite volume, unstructured meshes
+
+一句话总结：**通量计算的代码保持不动，只换数据类型，就取出精确的雅可比。**
+
+## 雅可比为什么是个麻烦
+
+隐式时间推进在每一步用Newton迭代求解非线性残差 $\mathbf{R}(\mathbf{Q}) = 0$。
+
+$$
+\mathbf{J}\,\delta\mathbf{Q} = -\mathbf{R}(\mathbf{Q}^{(k)}), \qquad
+\mathbf{J} = \frac{\partial \mathbf{R}}{\partial \mathbf{Q}}
+$$
+
+这里 $\mathbf{J}$ 是残差的雅可比（对各守恒变量偏导构成的矩阵），$\delta\mathbf{Q}$ 是更新量。要让Newton二次收敛，$\mathbf{J}$ 必须**精确**。
+
+有三条路，每条都有软肋。手推（analytic）精确，但格式一改就得重推。遇到AUSM+这类分支繁多、或Godunov这类含迭代的通量，推导本身就是噩梦。有限差分（finite difference）能复用代码，但步长 $h$ 得在舍入误差和截断误差之间进退两难。
+
+Newton-Krylov-matrix-free只对雅可比-向量乘积做有限差分，因此从不组装矩阵。但要构造好的预处理（preconditioner），终究还是需要矩阵的真实元素。ADOO用**计算导数而非近似导数**斩断这个两难。
+
+## 对偶数：给数值挂上导数
+
+想法很朴素。把实数 $x$ 换成一个含两个分量 $(v, dv)$ 的对象：$v$ 是值，$dv$ 是它在该点的导数。这就是对偶数。
+
+算术规则不过是乘积法则和链式法则的照搬。
+
+$$
+(a + b)' = a' + b', \qquad (ab)' = a'b + ab', \qquad (\sin a)' = (\cos a)\,a'
+$$
+
+每条规则左边是值，右边更新导数分量。以 $f(x) = \sin(x^2) + x^2$ 为例。手推得 $f'(x) = \cos(x^2)\cdot 2x + 2x$。用对偶数，把 $x$ 的导数分量设为 $1$（因为 $dx/dx = 1$），照常运行代码，最后那个对象的 $dv$ 就是 $f'(x)$。
+
+```python
+from dataclasses import dataclass
+import math
+
+@dataclass
+class Dual:
+    v: float   # 值
+    d: float   # 导数分量
+
+    # 算子重载 —— 每条规则即乘积法则/链式法则（论文 III.2）
+    def __add__(self, o):
+        o = o if isinstance(o, Dual) else Dual(o, 0.0)
+        return Dual(self.v + o.v, self.d + o.d)
+
+    def __mul__(self, o):
+        o = o if isinstance(o, Dual) else Dual(o, 0.0)
+        return Dual(self.v * o.v, self.v * o.d + self.d * o.v)
+
+    def __truediv__(self, o):
+        o = o if isinstance(o, Dual) else Dual(o, 0.0)
+        return Dual(self.v / o.v, (self.d * o.v - self.v * o.d) / (o.v * o.v))
+
+def sin_d(a: Dual) -> Dual:
+    return Dual(math.sin(a.v), math.cos(a.v) * a.d)
+
+# 在 x=1.3 处对 f(x) = sin(x^2) + x^2 求导
+x = Dual(1.3, 1.0)          # 种子: dx/dx = 1
+f = sin_d(x * x) + x * x    # 原式原封不动
+print(f.v, f.d)             # 值, f'(1.3)
+print(math.cos(1.3**2) * 2 * 1.3 + 2 * 1.3)  # 与手推对照
+```
+
+输出的 `f.d` 与手推导数吻合到舍入量级。这里手推的公式只是**校验用**，从未进入实际计算——这正是关键。
+
+## 为什么不能信任有限差分
+
+ADOO的真正价值，要和有限差分并排才看得清。中心差分 $[f(x+h)-f(x-h)]/2h$ 的误差是两股力的角力。$h$ 大时截断误差（Taylor展开余项）主导；$h$ 太小时舍入误差（两个相近数相减丢失有效位）爆炸。于是误差对 $h$ 画出一条U形。最优点大致在 $h \sim \sqrt{\epsilon} \approx 10^{-8}$ 附近，可即便如此也因问题而异。
+
+在下面的模拟里亲手调一调。
+
+<DualNumberDerivativeLab />
+
+看橙色曲线（FD）：$h$ 缩小时先下降，随后再度飙升。青色虚线（AD）无论你把 $x$ 拖到哪里，都平贴在机器精度的底线。AD根本没有步长，也就没有选步长的烦恼。
+
+## Euler通量雅可比：手推 vs AD
+
+现在离开标量。一维可压缩Euler有守恒变量 $\mathbf{Q} = [\rho, \rho u, \rho E]^\top$ 和通量 $\mathbf{F}(\mathbf{Q})$。理想气体下通量雅可比 $\partial\mathbf{F}/\partial\mathbf{Q}$ 是那个著名的 $3\times3$ 矩阵，但手推时 $\gamma$ 与动能项纠缠不清。把对偶数扩成向量（让每个 $dv$ 变成三分量数组），一次运行就把整个矩阵填满。
+
+```python
+import numpy as np
+
+class DualVec:
+    """值 + 对3个自变量的梯度（种子向量）。"""
+    def __init__(self, v, grad):
+        self.v = v
+        self.g = np.asarray(grad, float)  # ∂(this)/∂Q, 长度3
+    def __add__(s, o):  return DualVec(s.v + o.v, s.g + o.g)
+    def __sub__(s, o):  return DualVec(s.v - o.v, s.g - o.g)
+    def __mul__(s, o):
+        if isinstance(o, DualVec):
+            return DualVec(s.v * o.v, s.v * o.g + s.g * o.v)  # 乘积法则
+        return DualVec(s.v * o, s.g * o)
+    def __truediv__(s, o):
+        return DualVec(s.v / o.v, (s.g * o.v - s.v * o.g) / (o.v * o.v))
+
+def euler_flux_jacobian(Q, gamma=1.4):
+    # 为每个守恒变量种子: rho -> (Q0, e0), 等
+    rho  = DualVec(Q[0], [1, 0, 0])
+    rhou = DualVec(Q[1], [0, 1, 0])
+    rhoE = DualVec(Q[2], [0, 0, 1])
+
+    u = rhou / rho                                  # 速度
+    kinetic = rhou * u * 0.5                         # ½ρu²
+    p = (rhoE - kinetic) * (gamma - 1.0)             # 压力（理想气体）
+
+    F0 = rhou                                        # ρu
+    F1 = rhou * u + p                                # ρu² + p
+    F2 = (rhoE + p) * u                              # (ρE + p)u
+
+    # 每个F分量的 .g 就是该行的雅可比（对应论文 式9~10）
+    return np.array([F0.g, F1.g, F2.g])
+
+Q = np.array([1.2, 0.6, 3.0])   # ρ, ρu, ρE
+J_ad = euler_flux_jacobian(Q)
+
+# 与手推精确雅可比对照
+rho, mom, E = Q
+u = mom / rho; g = 1.4
+J_ref = np.array([
+    [0, 1, 0],
+    [0.5*(g-3)*u*u, (3-g)*u, g-1],
+    [((g-1)*u**3 - g*u*E/rho), (g*E/rho - 1.5*(g-1)*u*u), g*u],
+])
+print("最大误差:", np.abs(J_ad - J_ref).max())   # ~1e-15
+```
+
+`euler_flux_jacobian` 走的是黎曼求解器实际用的通量代码里**同一套算术**。我们从没推过雅可比，精度却是机器精度。想换成AUSM+？只替换通量函数，雅可比自动跟上。
+
+## Newton收敛：精确带来的回报
+
+精确雅可比为何重要，收敛曲线自会说话。近似雅可比把Newton从二次收敛拉低到一次。迭代次数攀升，大CFL下干脆发散。论文报告，凭借精确雅可比，即便CFL 20也能在不到10次迭代内把残差压到 $10^{-6}$——这是二次收敛的签名。
+
+在下面把Jacobian误差滑块从0往上推。
+
+<NewtonJacobianConvergenceLab />
+
+误差为0%（AD精确雅可比）时，残差每迭代一次位数近乎翻倍下跌，直线俯冲——二次收敛的签名。只给20%误差，曲线就躺成一条平缓直线（一次），达到同样精度要多得多的迭代。把Krylov迭代也算进去，这个差距就是墙钟时间。
+
+## 批判性思考：ADOO的阴影
+
+ADOO并非免费。算子重载为每个标量创建对象、乘数组。Fraysse的论文也承认，前向模式的开销与自变量数目成正比——在块很大的多相（multiphase）系统里，这些数组会变重。这正是源码变换（ADSCT，如Tapenade）可借编译期优化更快的原因。
+
+复现时我还撞到一个实务问题。微分Godunov这类含求根迭代的格式时，**不仅值要收敛，导数分量也要收敛**。导数通常比值收敛得慢，若停止条件只看值，雅可比就会被污染。论文指出的这一句，替我省下好几天。
+
+从OpenFOAM的角度看，这套方法并不陌生。有人试过用对偶标量类型组装 `blockLduMatrix`，SU2也早已用源码变换AD构造伴随（adjoint）。要点一致——由人手推雅可比的时代正在落幕。
+
+## 可复现性评分
+
+这个想法用一张纸和30行 `Dual` 类（见上）就能复现到标量例子。Euler雅可比对照花了半天，完整的隐式两相求解器则是另一个项目。复现难度低，概念可移植性高。
+
+- **需要精确雅可比时，别手推，去种子对偶数。** 代码不动，只换类型。
+- **有限差分的步长两难，对AD根本不存在。** 那条误差U形曲线整条消失。
+- **精确雅可比 = Newton二次收敛。** 近似躺成一次，大CFL下代价陡增。

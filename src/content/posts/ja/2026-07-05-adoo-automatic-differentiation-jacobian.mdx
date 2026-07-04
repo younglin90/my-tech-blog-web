@@ -1,0 +1,174 @@
+---
+title: "[論文レビュー] ヤコビアンを手で微分するのに疲れたら — 演算子オーバーロード自動微分（ADOO）"
+date: 2026-07-05
+description: "Fraysse（2019）のADOOで、陰的CFDの流束ヤコビアンを手計算ゼロで厳密に求める"
+tags: ["Automatic-Differentiation", "Implicit-Solver", "Jacobian", "Newton-Krylov", "Compressible"]
+locale: ja
+slug: adoo-automatic-differentiation-jacobian
+draft: false
+---
+
+import { DualNumberDerivativeLab } from '@/components/post-viz/2026-07-05-adoo-automatic-differentiation-jacobian/DualNumberDerivativeLab'
+import { NewtonJacobianConvergenceLab } from '@/components/post-viz/2026-07-05-adoo-automatic-differentiation-jacobian/NewtonJacobianConvergenceLab'
+
+HLLC流束のヤコビアンを手で微分し始めました。紙を三枚使い、積の微分の項をひとつ落とし、コードは静かに発散しました。間違っていたのは流束ではなく、その**微分**だったのです。陰的（implicit）CFDの半分は、この微分——空間離散化のヤコビアン行列——を正確に作る作業です。この記事では、Fraysseら（2019）が提案したADOO（演算子オーバーロードによる自動微分）を、素朴なdual numberから追いかけます。最後まで読めば、Godunovの厳密リーマン解法のように根探し反復を含むスキームでさえ、手計算なしで厳密なヤコビアンが得られる仕組みが分かります。そしてその厳密さがNewton収束速度で実際にどれだけ得をするのかも。
+
+## 論文情報
+
+- **タイトル**: Automatic Differentiation using Operator Overloading (ADOO) for implicit resolution of hyperbolic single phase and two-phase flow models
+- **著者**: G. Fraysse ほか
+- **年**: 2019
+- **キーワード**: automatic differentiation, implicit, two-phase, finite volume, unstructured meshes
+
+一行要約: **流束を計算するコードはそのままに、データ型だけ替えて厳密なヤコビアンを取り出す。**
+
+## なぜヤコビアンが厄介なのか
+
+陰的時間前進は、各ステップで非線形残差 $\mathbf{R}(\mathbf{Q}) = 0$ をNewton反復で解きます。
+
+$$
+\mathbf{J}\,\delta\mathbf{Q} = -\mathbf{R}(\mathbf{Q}^{(k)}), \qquad
+\mathbf{J} = \frac{\partial \mathbf{R}}{\partial \mathbf{Q}}
+$$
+
+ここで $\mathbf{J}$ は残差のヤコビアン（各保存変数に対する偏微分の行列）、$\delta\mathbf{Q}$ は更新量です。Newtonが2次で収束するには、$\mathbf{J}$ が**厳密**でなければなりません。
+
+道は三つあり、それぞれに難点があります。手計算（analytic）は厳密ですが、スキームを少しでも変えるたびに導出し直しです。AUSM+のように分岐が多い、あるいはGodunovのように反復を含む流束では、導出そのものが地獄です。有限差分（finite difference）はコードを再利用できますが、ステップ $h$ を丸め誤差と打ち切り誤差のはざまで選ぶ羽目になります。
+
+Newton-Krylov-matrix-freeはヤコビアン・ベクトル積だけを有限差分で近似し、行列を作りません。しかし良い前処理（preconditioner）を作るには結局、行列の実際の成分が要ります。ADOOは**微分を近似せず計算する**ことでこのジレンマを断ち切ります。
+
+## Dual number：値に微分を載せる
+
+考え方は単純です。実数 $x$ を、二成分 $(v, dv)$ を持つオブジェクトに置き換えます。$v$ は値、$dv$ はその点での導関数です。これをdual numberと呼びます。
+
+算術規則は積の微分・連鎖律をそのまま写したものです。
+
+$$
+(a + b)' = a' + b', \qquad (ab)' = a'b + ab', \qquad (\sin a)' = (\cos a)\,a'
+$$
+
+各規則の左辺は値、右辺は導関数成分の更新です。$f(x) = \sin(x^2) + x^2$ を例にとります。手で微分すると $f'(x) = \cos(x^2)\cdot 2x + 2x$ です。dual numberでは、$x$ の微分成分を $1$ とし（$dx/dx = 1$）、コードをそのまま実行すれば、最後のオブジェクトの $dv$ がそのまま $f'(x)$ になります。
+
+```python
+from dataclasses import dataclass
+import math
+
+@dataclass
+class Dual:
+    v: float   # 値
+    d: float   # 導関数成分
+
+    # 演算子オーバーロード — 各規則は積の微分／連鎖律（論文 III.2）
+    def __add__(self, o):
+        o = o if isinstance(o, Dual) else Dual(o, 0.0)
+        return Dual(self.v + o.v, self.d + o.d)
+
+    def __mul__(self, o):
+        o = o if isinstance(o, Dual) else Dual(o, 0.0)
+        return Dual(self.v * o.v, self.v * o.d + self.d * o.v)
+
+    def __truediv__(self, o):
+        o = o if isinstance(o, Dual) else Dual(o, 0.0)
+        return Dual(self.v / o.v, (self.d * o.v - self.v * o.d) / (o.v * o.v))
+
+def sin_d(a: Dual) -> Dual:
+    return Dual(math.sin(a.v), math.cos(a.v) * a.d)
+
+# f(x) = sin(x^2) + x^2 を x=1.3 で微分
+x = Dual(1.3, 1.0)          # seed: dx/dx = 1
+f = sin_d(x * x) + x * x    # 元の式そのまま
+print(f.v, f.d)             # 値, f'(1.3)
+print(math.cos(1.3**2) * 2 * 1.3 + 2 * 1.3)  # 手計算との照合
+```
+
+出力の `f.d` は手計算の微分と丸め誤差の水準まで一致します。ここで手で導いた式は**検証用**にすぎず、実際の計算には使われていない——これが肝です。
+
+## 有限差分はなぜ信用できないか
+
+ADOOの本当の価値は、有限差分と並べたときに現れます。中心差分 $[f(x+h)-f(x-h)]/2h$ の誤差は二つの力がせめぎ合います。$h$ が大きいと打ち切り誤差（Taylor展開の剰余）が支配し、$h$ が小さすぎると丸め誤差（近い二数の差で有効桁が失われる）が爆発します。だから誤差は $h$ に対してU字を描きます。最適点はおおむね $h \sim \sqrt{\epsilon} \approx 10^{-8}$ 付近ですが、それすら問題ごとにずれます。
+
+下のシミュレーションで直接操作してみましょう。
+
+<DualNumberDerivativeLab />
+
+オレンジの曲線（FD）は $h$ を小さくすると一度下がってから再び跳ね上がります。シアンの破線（AD）は $x$ をどこへ動かしても機械精度の底に平らに張りついています。ADにはそもそもステップがないので、ステップを選ぶ悩み自体がありません。
+
+## Euler流束ヤコビアン：手計算 vs AD
+
+さてスカラーを離れます。1次元圧縮性Eulerは保存変数 $\mathbf{Q} = [\rho, \rho u, \rho E]^\top$ と流束 $\mathbf{F}(\mathbf{Q})$ を持ちます。理想気体では流束ヤコビアン $\partial\mathbf{F}/\partial\mathbf{Q}$ はよく知られた $3\times3$ 行列ですが、手で導くと $\gamma$ と運動エネルギー項が絡み合います。dual numberをベクトルに拡張すれば（各 $dv$ を3成分の配列にする）、この行列全体をコード実行一回で埋められます。
+
+```python
+import numpy as np
+
+class DualVec:
+    """値 + 3つの独立変数に対する勾配（seedベクトル）。"""
+    def __init__(self, v, grad):
+        self.v = v
+        self.g = np.asarray(grad, float)  # ∂(this)/∂Q, 長さ3
+    def __add__(s, o):  return DualVec(s.v + o.v, s.g + o.g)
+    def __sub__(s, o):  return DualVec(s.v - o.v, s.g - o.g)
+    def __mul__(s, o):
+        if isinstance(o, DualVec):
+            return DualVec(s.v * o.v, s.v * o.g + s.g * o.v)  # 積の微分
+        return DualVec(s.v * o, s.g * o)
+    def __truediv__(s, o):
+        return DualVec(s.v / o.v, (s.g * o.v - s.v * o.g) / (o.v * o.v))
+
+def euler_flux_jacobian(Q, gamma=1.4):
+    # 各保存変数をseed: rho -> (Q0, e0), など
+    rho  = DualVec(Q[0], [1, 0, 0])
+    rhou = DualVec(Q[1], [0, 1, 0])
+    rhoE = DualVec(Q[2], [0, 0, 1])
+
+    u = rhou / rho                                  # 速度
+    kinetic = rhou * u * 0.5                         # ½ρu²
+    p = (rhoE - kinetic) * (gamma - 1.0)             # 圧力（理想気体）
+
+    F0 = rhou                                        # ρu
+    F1 = rhou * u + p                                # ρu² + p
+    F2 = (rhoE + p) * u                              # (ρE + p)u
+
+    # 各F成分の .g がそのままその行のヤコビアン（論文 式9〜10に対応）
+    return np.array([F0.g, F1.g, F2.g])
+
+Q = np.array([1.2, 0.6, 3.0])   # ρ, ρu, ρE
+J_ad = euler_flux_jacobian(Q)
+
+# 手で導いた厳密ヤコビアンと照合
+rho, mom, E = Q
+u = mom / rho; g = 1.4
+J_ref = np.array([
+    [0, 1, 0],
+    [0.5*(g-3)*u*u, (3-g)*u, g-1],
+    [((g-1)*u**3 - g*u*E/rho), (g*E/rho - 1.5*(g-1)*u*u), g*u],
+])
+print("最大誤差:", np.abs(J_ad - J_ref).max())   # ~1e-15
+```
+
+`euler_flux_jacobian` は、リーマン解法が実際に使う流束コードと**同じ算術**をたどります。ヤコビアンを別途導いていないのに、精度は機械精度です。スキームをAUSM+に替えるなら、流束関数だけ差し替えればヤコビアンは自動でついてきます。
+
+## Newton収束：厳密なヤコビアンの値打ち
+
+厳密なヤコビアンがなぜ重要かは、収束曲線が語ります。近似ヤコビアンはNewtonの2次収束を1次へと落とします。反復回数が増え、大きなCFLでは発散します。論文は、厳密ヤコビアンのおかげでCFL 20でも10回未満の反復で $10^{-6}$ 残差に到達する2次収束を報告しています。
+
+下でJacobian誤差スライダーを0から上げてみましょう。
+
+<NewtonJacobianConvergenceLab />
+
+誤差0%（AD厳密ヤコビアン）のとき、残差は反復ごとに桁が倍に減って急降下します——2次収束の署名です。誤差を20%与えるだけで曲線はゆるやかな直線（1次）に寝て、同じ精度に達するのにずっと多くの反復を要します。Krylov反復まで数えれば、この差はそのまま実時間になります。
+
+## 批判的考察：ADOOの影
+
+ADOOはただではありません。演算子オーバーロードはスカラーごとにオブジェクトを作り、配列を掛けます。Fraysseの論文も、forwardモードのコストが独立変数の数に比例することを認めています——ブロックの大きい多相（multiphase）系ではこの配列が重くなります。ソースコード変換（ADSCT、例：Tapenade）がコンパイル時最適化でより速くなり得るのはそのためです。
+
+再現しながら見つけた実務的な問題もあります。Godunovのように根探し反復を含むスキームを微分するときは、**値だけでなく導関数成分も収束**させなければなりません。導関数はたいてい値より遅く収束するので、反復の停止条件を値だけに置くとヤコビアンが汚染されます。論文が指摘したこの一文がなければ、私はまた数日を失っていたでしょう。
+
+OpenFOAMの視点からは、この手法は目新しくありません。dual スカラー型で `blockLduMatrix` を組み立てる実験がありましたし、SU2はすでにコード変換型ADでadjointを作っています。要点は同じ——人間がヤコビアンを導く時代は暮れつつあります。
+
+## 再現可能性スコア
+
+このアイデアは、紙一枚と30行の `Dual` クラス（上記）でスカラー例まで再現できます。Euler ヤコビアンの照合まで半日、完全な陰的二相ソルバーは別プロジェクトです。再現の難度は低く、概念の移植性は高いです。
+
+- **厳密なヤコビアンが要るなら、手計算ではなくdual numberをseedせよ。** コードはそのまま、型だけ替える。
+- **有限差分のステップのジレンマはADには存在しない。** 誤差のU字曲線が丸ごと消える。
+- **厳密ヤコビアン＝Newtonの2次収束。** 近似は1次に寝て、大きなCFLで代償が膨らむ。

@@ -1,0 +1,174 @@
+---
+title: "[Paper Review] Tired of Differentiating Jacobians by Hand? — Operator-Overloading Automatic Differentiation (ADOO)"
+date: 2026-07-05
+description: "Fraysse (2019): getting the exact flux Jacobian for implicit CFD with zero hand differentiation"
+tags: ["Automatic-Differentiation", "Implicit-Solver", "Jacobian", "Newton-Krylov", "Compressible"]
+locale: en
+slug: adoo-automatic-differentiation-jacobian
+draft: false
+---
+
+import { DualNumberDerivativeLab } from '@/components/post-viz/2026-07-05-adoo-automatic-differentiation-jacobian/DualNumberDerivativeLab'
+import { NewtonJacobianConvergenceLab } from '@/components/post-viz/2026-07-05-adoo-automatic-differentiation-jacobian/NewtonJacobianConvergenceLab'
+
+I started differentiating the HLLC flux Jacobian by hand. Three sheets of paper in, I dropped one product-rule term, and the code diverged in silence. The flux wasn't wrong — its **derivative** was. Half of implicit CFD is getting that derivative — the Jacobian matrix of the spatial discretization — exactly right. This post walks through ADOO (operator-overloading automatic differentiation) from Fraysse et al. (2019), starting from a bare dual number. By the end you'll see how even a scheme with a root-finding loop inside it, like a Godunov exact Riemann solver, yields an exact Jacobian without a single hand-derived formula. And how much that exactness buys you in Newton convergence speed.
+
+## Paper Information
+
+- **Title**: Automatic Differentiation using Operator Overloading (ADOO) for implicit resolution of hyperbolic single phase and two-phase flow models
+- **Authors**: G. Fraysse et al.
+- **Year**: 2019
+- **Keywords**: automatic differentiation, implicit, two-phase, finite volume, unstructured meshes
+
+One-line summary: **leave the flux code untouched, swap the data type, and read off the exact Jacobian.**
+
+## Why the Jacobian Is a Headache
+
+Implicit time stepping solves a nonlinear residual $\mathbf{R}(\mathbf{Q}) = 0$ at each step with Newton iterations.
+
+$$
+\mathbf{J}\,\delta\mathbf{Q} = -\mathbf{R}(\mathbf{Q}^{(k)}), \qquad
+\mathbf{J} = \frac{\partial \mathbf{R}}{\partial \mathbf{Q}}
+$$
+
+Here $\mathbf{J}$ is the residual Jacobian (the matrix of partials with respect to each conserved variable) and $\delta\mathbf{Q}$ is the update. For Newton to converge quadratically, $\mathbf{J}$ has to be **exact**.
+
+There are three routes, and each has a catch. Hand differentiation (analytic) is exact but has to be re-derived whenever you touch the scheme. For a branch-heavy flux like AUSM+ or an iterative one like Godunov, the derivation is a nightmare. Finite differences reuse the code but leave you stuck choosing a step $h$ between round-off and truncation error.
+
+Newton-Krylov-matrix-free only finite-differences the Jacobian-vector product, so it never builds the matrix. But a good preconditioner still wants the actual matrix entries. ADOO cuts the knot by **computing the derivative instead of approximating it.**
+
+## Dual Numbers: Carrying a Derivative Alongside the Value
+
+The idea is plain. Replace a real number $x$ with an object of two components $(v, dv)$: $v$ is the value, $dv$ is its derivative at that point. That is a dual number.
+
+The arithmetic rules are just the product and chain rules, transcribed.
+
+$$
+(a + b)' = a' + b', \qquad (ab)' = a'b + ab', \qquad (\sin a)' = (\cos a)\,a'
+$$
+
+The left of each rule is the value; the right updates the derivative component. Take $f(x) = \sin(x^2) + x^2$. By hand, $f'(x) = \cos(x^2)\cdot 2x + 2x$. With a dual number, set $x$'s derivative component to $1$ (since $dx/dx = 1$), run the code, and the final object's $dv$ *is* $f'(x)$.
+
+```python
+from dataclasses import dataclass
+import math
+
+@dataclass
+class Dual:
+    v: float   # value
+    d: float   # derivative component
+
+    # operator overloading — each rule is product / chain rule (paper III.2)
+    def __add__(self, o):
+        o = o if isinstance(o, Dual) else Dual(o, 0.0)
+        return Dual(self.v + o.v, self.d + o.d)
+
+    def __mul__(self, o):
+        o = o if isinstance(o, Dual) else Dual(o, 0.0)
+        return Dual(self.v * o.v, self.v * o.d + self.d * o.v)
+
+    def __truediv__(self, o):
+        o = o if isinstance(o, Dual) else Dual(o, 0.0)
+        return Dual(self.v / o.v, (self.d * o.v - self.v * o.d) / (o.v * o.v))
+
+def sin_d(a: Dual) -> Dual:
+    return Dual(math.sin(a.v), math.cos(a.v) * a.d)
+
+# differentiate f(x) = sin(x^2) + x^2 at x = 1.3
+x = Dual(1.3, 1.0)          # seed: dx/dx = 1
+f = sin_d(x * x) + x * x    # the original expression, unchanged
+print(f.v, f.d)             # value, f'(1.3)
+print(math.cos(1.3**2) * 2 * 1.3 + 2 * 1.3)  # cross-check vs hand derivative
+```
+
+`f.d` matches the hand derivative down to round-off. The hand-derived formula here is only a **check** — it never entered the actual computation. That's the whole point.
+
+## Why You Can't Trust Finite Differences
+
+The real value of ADOO shows up next to finite differences. The error of a central difference $[f(x+h)-f(x-h)]/2h$ is a tug of war. Large $h$ lets truncation error (the Taylor remainder) dominate; too-small $h$ makes round-off (loss of significant digits when subtracting two nearby numbers) explode. So the error traces a U shape in $h$. The sweet spot sits near $h \sim \sqrt{\epsilon} \approx 10^{-8}$, but even that shifts from problem to problem.
+
+Play with the simulation below.
+
+<DualNumberDerivativeLab />
+
+Watch the amber curve (FD) dip as you shrink $h$ and then shoot back up. The cyan dashed line (AD) stays pinned flat at machine precision no matter where you drag $x$. AD has no step at all, so there's simply no step to tune.
+
+## The Euler Flux Jacobian: By Hand vs AD
+
+Now leave the scalar behind. The 1D compressible Euler system has conserved variables $\mathbf{Q} = [\rho, \rho u, \rho E]^\top$ and flux $\mathbf{F}(\mathbf{Q})$. For an ideal gas the flux Jacobian $\partial\mathbf{F}/\partial\mathbf{Q}$ is the well-known $3\times3$ matrix, but hand-deriving it tangles $\gamma$ with kinetic-energy terms. Extend the dual number to a vector (make each $dv$ a 3-component array) and one run of the code fills the whole matrix.
+
+```python
+import numpy as np
+
+class DualVec:
+    """value + gradient (seed vector) w.r.t. 3 independent variables."""
+    def __init__(self, v, grad):
+        self.v = v
+        self.g = np.asarray(grad, float)  # d(this)/dQ, length 3
+    def __add__(s, o):  return DualVec(s.v + o.v, s.g + o.g)
+    def __sub__(s, o):  return DualVec(s.v - o.v, s.g - o.g)
+    def __mul__(s, o):
+        if isinstance(o, DualVec):
+            return DualVec(s.v * o.v, s.v * o.g + s.g * o.v)  # product rule
+        return DualVec(s.v * o, s.g * o)
+    def __truediv__(s, o):
+        return DualVec(s.v / o.v, (s.g * o.v - s.v * o.g) / (o.v * o.v))
+
+def euler_flux_jacobian(Q, gamma=1.4):
+    # seed each conserved variable: rho -> (Q0, e0), etc.
+    rho  = DualVec(Q[0], [1, 0, 0])
+    rhou = DualVec(Q[1], [0, 1, 0])
+    rhoE = DualVec(Q[2], [0, 0, 1])
+
+    u = rhou / rho                                  # velocity
+    kinetic = rhou * u * 0.5                         # ½ρu²
+    p = (rhoE - kinetic) * (gamma - 1.0)             # pressure (ideal gas)
+
+    F0 = rhou                                        # ρu
+    F1 = rhou * u + p                                # ρu² + p
+    F2 = (rhoE + p) * u                              # (ρE + p)u
+
+    # the .g of each flux component IS that row of the Jacobian (paper eqs 9–10)
+    return np.array([F0.g, F1.g, F2.g])
+
+Q = np.array([1.2, 0.6, 3.0])   # ρ, ρu, ρE
+J_ad = euler_flux_jacobian(Q)
+
+# cross-check against the hand-derived exact Jacobian
+rho, mom, E = Q
+u = mom / rho; g = 1.4
+J_ref = np.array([
+    [0, 1, 0],
+    [0.5*(g-3)*u*u, (3-g)*u, g-1],
+    [((g-1)*u**3 - g*u*E/rho), (g*E/rho - 1.5*(g-1)*u*u), g*u],
+])
+print("max error:", np.abs(J_ad - J_ref).max())   # ~1e-15
+```
+
+`euler_flux_jacobian` follows the **same arithmetic** the Riemann solver's flux code actually uses. We never derived the Jacobian, yet its accuracy is machine precision. Swap the scheme for AUSM+? Replace only the flux function and the Jacobian follows for free.
+
+## Newton Convergence: What Exactness Buys
+
+Why the exact Jacobian matters is written in the convergence curve. An approximate Jacobian drops Newton from quadratic to linear convergence. Iteration counts climb, and at large CFL it just diverges. The paper reports that with an exact Jacobian it reaches a $10^{-6}$ residual in fewer than 10 iterations even at CFL 20 — the signature of quadratic convergence.
+
+Below, push the Jacobian-error slider up from zero.
+
+<NewtonJacobianConvergenceLab />
+
+At 0% error (the AD-exact Jacobian) the residual roughly doubles its digits per iteration and plunges — the signature of quadratic convergence. Add just 20% error and the curve flattens into a gentle straight line (first order), taking many more iterations to reach the same precision. Factor in the Krylov iterations and that gap becomes wall-clock time.
+
+## A Critical Look: The Shadow Side of ADOO
+
+ADOO isn't free. Operator overloading builds an object per scalar and multiplies arrays. Fraysse's paper admits that forward-mode cost scales with the number of independent variables — for a large-block multiphase system those arrays get heavy. That's exactly why source-code transformation (ADSCT, e.g. Tapenade) can be faster through compile-time optimization.
+
+I hit a practical issue while reproducing this. When you differentiate a scheme with a root-finding loop, like Godunov, you have to converge **not just the value but the derivative component too**. The derivative usually converges slower than the value, so a stopping criterion based on the value alone leaves the Jacobian contaminated. That one sentence in the paper saved me days.
+
+From an OpenFOAM standpoint this isn't alien. There have been experiments assembling `blockLduMatrix` with a dual scalar type, and SU2 already builds its adjoint with code-transformation AD. The message is the same — the era of humans deriving Jacobians is fading.
+
+## Reproducibility Score
+
+The idea reproduces down to the scalar example with a sheet of paper and a 30-line `Dual` class (above). The Euler-Jacobian cross-check took half a day; a full implicit two-phase solver is a separate project. Low reproduction difficulty, high portability of the concept.
+
+- **When you need an exact Jacobian, seed dual numbers instead of hand-differentiating.** Same code, different type.
+- **The finite-difference step dilemma does not exist for AD.** The whole error U-curve disappears.
+- **Exact Jacobian = quadratic Newton convergence.** Approximate flattens to first order, and the cost grows at large CFL.

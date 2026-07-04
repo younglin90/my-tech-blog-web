@@ -1,0 +1,174 @@
+---
+title: "[Reseña] ¿Cansado de derivar jacobianos a mano? — Diferenciación automática por sobrecarga de operadores (ADOO)"
+date: 2026-07-05
+description: "Fraysse (2019): obtener el jacobiano de flujo exacto para CFD implícito sin una sola derivación manual"
+tags: ["Automatic-Differentiation", "Implicit-Solver", "Jacobian", "Newton-Krylov", "Compressible"]
+locale: es
+slug: adoo-automatic-differentiation-jacobian
+draft: false
+---
+
+import { DualNumberDerivativeLab } from '@/components/post-viz/2026-07-05-adoo-automatic-differentiation-jacobian/DualNumberDerivativeLab'
+import { NewtonJacobianConvergenceLab } from '@/components/post-viz/2026-07-05-adoo-automatic-differentiation-jacobian/NewtonJacobianConvergenceLab'
+
+Empezó la derivación a mano del jacobiano del flujo HLLC. Tres hojas de papel después, se cayó un término de la regla del producto, y el código divergió en silencio. Lo que estaba mal no era el flujo, sino su **derivada**. La mitad del CFD implícito consiste en construir esa derivada —la matriz jacobiana de la discretización espacial— con exactitud. Este artículo recorre ADOO (diferenciación automática por sobrecarga de operadores) de Fraysse et al. (2019), partiendo del número dual más simple. Al final se verá cómo hasta un esquema con un bucle de búsqueda de raíces en su interior, como un solucionador de Riemann exacto de Godunov, produce un jacobiano exacto sin una sola fórmula derivada a mano. Y cuánto ahorra esa exactitud en velocidad de convergencia de Newton.
+
+## Información del artículo
+
+- **Título**: Automatic Differentiation using Operator Overloading (ADOO) for implicit resolution of hyperbolic single phase and two-phase flow models
+- **Autores**: G. Fraysse et al.
+- **Año**: 2019
+- **Palabras clave**: automatic differentiation, implicit, two-phase, finite volume, unstructured meshes
+
+Resumen en una línea: **dejar intacto el código del flujo, cambiar solo el tipo de dato y leer el jacobiano exacto.**
+
+## Por qué el jacobiano es un dolor de cabeza
+
+El avance temporal implícito resuelve un residuo no lineal $\mathbf{R}(\mathbf{Q}) = 0$ en cada paso con iteraciones de Newton.
+
+$$
+\mathbf{J}\,\delta\mathbf{Q} = -\mathbf{R}(\mathbf{Q}^{(k)}), \qquad
+\mathbf{J} = \frac{\partial \mathbf{R}}{\partial \mathbf{Q}}
+$$
+
+Aquí $\mathbf{J}$ es el jacobiano del residuo (la matriz de derivadas parciales respecto a cada variable conservada) y $\delta\mathbf{Q}$ es la actualización. Para que Newton converja de forma cuadrática, $\mathbf{J}$ tiene que ser **exacto**.
+
+Hay tres caminos, y cada uno tiene su trampa. La derivación a mano (analítica) es exacta, pero hay que rederivarla cada vez que se toca el esquema. Para un flujo lleno de bifurcaciones como AUSM+ o uno iterativo como Godunov, la derivación misma es una pesadilla. Las diferencias finitas reutilizan el código, pero obligan a elegir un paso $h$ entre el error de redondeo y el de truncamiento.
+
+Newton-Krylov-matrix-free solo aproxima por diferencias finitas el producto jacobiano-vector, así que nunca arma la matriz. Pero un buen precondicionador todavía necesita las entradas reales de la matriz. ADOO corta el nudo **calculando la derivada en lugar de aproximarla.**
+
+## Números duales: llevar la derivada junto al valor
+
+La idea es sencilla. Se reemplaza un número real $x$ por un objeto de dos componentes $(v, dv)$: $v$ es el valor, $dv$ es su derivada en ese punto. Eso es un número dual.
+
+Las reglas aritméticas son simplemente la regla del producto y la de la cadena, transcritas.
+
+$$
+(a + b)' = a' + b', \qquad (ab)' = a'b + ab', \qquad (\sin a)' = (\cos a)\,a'
+$$
+
+El lado izquierdo de cada regla es el valor; el derecho actualiza la componente de la derivada. Tomemos $f(x) = \sin(x^2) + x^2$. A mano, $f'(x) = \cos(x^2)\cdot 2x + 2x$. Con un número dual, se fija la componente de derivada de $x$ en $1$ (ya que $dx/dx = 1$), se ejecuta el código, y el $dv$ del objeto final *es* $f'(x)$.
+
+```python
+from dataclasses import dataclass
+import math
+
+@dataclass
+class Dual:
+    v: float   # valor
+    d: float   # componente de derivada
+
+    # sobrecarga de operadores — cada regla es la del producto / cadena (artículo III.2)
+    def __add__(self, o):
+        o = o if isinstance(o, Dual) else Dual(o, 0.0)
+        return Dual(self.v + o.v, self.d + o.d)
+
+    def __mul__(self, o):
+        o = o if isinstance(o, Dual) else Dual(o, 0.0)
+        return Dual(self.v * o.v, self.v * o.d + self.d * o.v)
+
+    def __truediv__(self, o):
+        o = o if isinstance(o, Dual) else Dual(o, 0.0)
+        return Dual(self.v / o.v, (self.d * o.v - self.v * o.d) / (o.v * o.v))
+
+def sin_d(a: Dual) -> Dual:
+    return Dual(math.sin(a.v), math.cos(a.v) * a.d)
+
+# derivar f(x) = sin(x^2) + x^2 en x = 1.3
+x = Dual(1.3, 1.0)          # semilla: dx/dx = 1
+f = sin_d(x * x) + x * x    # la expresión original, sin tocar
+print(f.v, f.d)             # valor, f'(1.3)
+print(math.cos(1.3**2) * 2 * 1.3 + 2 * 1.3)  # contraste con la derivada a mano
+```
+
+El `f.d` de la salida coincide con la derivada a mano hasta el nivel del redondeo. La fórmula derivada a mano aquí es solo una **comprobación**: nunca entró en el cálculo real. Ese es todo el punto.
+
+## Por qué no se puede confiar en las diferencias finitas
+
+El verdadero valor de ADOO aparece junto a las diferencias finitas. El error de una diferencia central $[f(x+h)-f(x-h)]/2h$ es un tira y afloja. Un $h$ grande deja que domine el error de truncamiento (el resto de Taylor); un $h$ demasiado pequeño hace estallar el redondeo (pérdida de dígitos significativos al restar dos números cercanos). Así, el error dibuja una U en $h$. El punto óptimo está cerca de $h \sim \sqrt{\epsilon} \approx 10^{-8}$, pero hasta eso se corre según el problema.
+
+Experimenta con la simulación de abajo.
+
+<DualNumberDerivativeLab />
+
+Observa cómo la curva ámbar (FD) baja al reducir $h$ y luego se dispara de nuevo. La línea punteada cian (AD) permanece plana en la precisión de máquina sin importar a dónde se arrastre $x$. AD no tiene paso alguno, así que no hay ningún paso que ajustar.
+
+## El jacobiano del flujo de Euler: a mano vs AD
+
+Ahora dejemos el escalar. El Euler compresible 1D tiene variables conservadas $\mathbf{Q} = [\rho, \rho u, \rho E]^\top$ y flujo $\mathbf{F}(\mathbf{Q})$. Para un gas ideal, el jacobiano del flujo $\partial\mathbf{F}/\partial\mathbf{Q}$ es la conocida matriz $3\times3$, pero derivarla a mano enreda $\gamma$ con los términos de energía cinética. Al extender el número dual a un vector (haciendo que cada $dv$ sea un arreglo de 3 componentes), una sola ejecución del código llena la matriz entera.
+
+```python
+import numpy as np
+
+class DualVec:
+    """valor + gradiente (vector semilla) respecto a 3 variables independientes."""
+    def __init__(self, v, grad):
+        self.v = v
+        self.g = np.asarray(grad, float)  # ∂(this)/∂Q, longitud 3
+    def __add__(s, o):  return DualVec(s.v + o.v, s.g + o.g)
+    def __sub__(s, o):  return DualVec(s.v - o.v, s.g - o.g)
+    def __mul__(s, o):
+        if isinstance(o, DualVec):
+            return DualVec(s.v * o.v, s.v * o.g + s.g * o.v)  # regla del producto
+        return DualVec(s.v * o, s.g * o)
+    def __truediv__(s, o):
+        return DualVec(s.v / o.v, (s.g * o.v - s.v * o.g) / (o.v * o.v))
+
+def euler_flux_jacobian(Q, gamma=1.4):
+    # sembrar cada variable conservada: rho -> (Q0, e0), etc.
+    rho  = DualVec(Q[0], [1, 0, 0])
+    rhou = DualVec(Q[1], [0, 1, 0])
+    rhoE = DualVec(Q[2], [0, 0, 1])
+
+    u = rhou / rho                                  # velocidad
+    kinetic = rhou * u * 0.5                         # ½ρu²
+    p = (rhoE - kinetic) * (gamma - 1.0)             # presión (gas ideal)
+
+    F0 = rhou                                        # ρu
+    F1 = rhou * u + p                                # ρu² + p
+    F2 = (rhoE + p) * u                              # (ρE + p)u
+
+    # el .g de cada componente de F ES esa fila del jacobiano (ecs. 9–10 del artículo)
+    return np.array([F0.g, F1.g, F2.g])
+
+Q = np.array([1.2, 0.6, 3.0])   # ρ, ρu, ρE
+J_ad = euler_flux_jacobian(Q)
+
+# contraste con el jacobiano exacto derivado a mano
+rho, mom, E = Q
+u = mom / rho; g = 1.4
+J_ref = np.array([
+    [0, 1, 0],
+    [0.5*(g-3)*u*u, (3-g)*u, g-1],
+    [((g-1)*u**3 - g*u*E/rho), (g*E/rho - 1.5*(g-1)*u*u), g*u],
+])
+print("error máximo:", np.abs(J_ad - J_ref).max())   # ~1e-15
+```
+
+`euler_flux_jacobian` sigue la **misma aritmética** que el código de flujo que el solucionador de Riemann usa de verdad. Nunca derivamos el jacobiano, y aun así su exactitud es de precisión de máquina. ¿Cambiar el esquema por AUSM+? Basta reemplazar la función de flujo y el jacobiano viene solo.
+
+## Convergencia de Newton: lo que compra la exactitud
+
+Por qué importa el jacobiano exacto lo dice la curva de convergencia. Un jacobiano aproximado baja Newton de convergencia cuadrática a lineal. El número de iteraciones sube, y con CFL grande simplemente diverge. El artículo reporta que, gracias al jacobiano exacto, alcanza un residuo de $10^{-6}$ en menos de 10 iteraciones incluso a CFL 20: la firma de la convergencia cuadrática.
+
+Abajo, sube el deslizador de error del jacobiano desde cero.
+
+<NewtonJacobianConvergenceLab />
+
+Con 0% de error (el jacobiano exacto de AD), el residuo duplica más o menos sus dígitos por iteración y se desploma: la firma de la convergencia cuadrática. Con solo 20% de error, la curva se acuesta en una recta suave (primer orden) y hacen falta muchas más iteraciones para la misma precisión. Si se cuentan las iteraciones de Krylov, esa brecha se vuelve tiempo de reloj.
+
+## Una mirada crítica: la sombra de ADOO
+
+ADOO no es gratis. La sobrecarga de operadores crea un objeto por escalar y multiplica arreglos. El artículo de Fraysse admite que el costo del modo directo (forward) crece con el número de variables independientes: en un sistema multifásico de bloques grandes esos arreglos pesan. Por eso la transformación de código fuente (ADSCT, p. ej. Tapenade) puede ser más rápida gracias a la optimización en tiempo de compilación.
+
+Al reproducirlo surgió un problema práctico. Al diferenciar un esquema con un bucle de búsqueda de raíces, como Godunov, hay que converger **no solo el valor sino también la componente de la derivada**. La derivada suele converger más lento que el valor, así que un criterio de parada basado solo en el valor deja el jacobiano contaminado. Esa frase del artículo me ahorró días.
+
+Desde la óptica de OpenFOAM esto no es ajeno. Hubo experimentos ensamblando `blockLduMatrix` con un tipo escalar dual, y SU2 ya construye su adjunto con AD por transformación de código. El mensaje es el mismo: la era de los jacobianos derivados por humanos se apaga.
+
+## Puntaje de reproducibilidad
+
+La idea se reproduce hasta el ejemplo escalar con una hoja de papel y una clase `Dual` de 30 líneas (arriba). El contraste del jacobiano de Euler tomó media jornada; un solucionador implícito bifásico completo es otro proyecto. Baja dificultad de reproducción, alta portabilidad del concepto.
+
+- **Cuando se necesita un jacobiano exacto, sembrar números duales en vez de derivar a mano.** Mismo código, otro tipo.
+- **El dilema del paso de las diferencias finitas no existe para AD.** La curva U del error desaparece por completo.
+- **Jacobiano exacto = convergencia cuadrática de Newton.** El aproximado se acuesta en primer orden, y el costo crece con CFL grande.

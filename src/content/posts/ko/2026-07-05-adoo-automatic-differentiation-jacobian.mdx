@@ -1,0 +1,174 @@
+---
+title: "[논문 리뷰] 손으로 야코비안을 미분하다 지쳤다면 — 연산자 오버로딩 자동미분(ADOO)"
+date: 2026-07-05
+description: "Fraysse(2019)의 ADOO로 음함수 CFD의 플럭스 야코비안을 손 미분 없이 정확히 얻는 법"
+tags: ["Automatic-Differentiation", "Implicit-Solver", "Jacobian", "Newton-Krylov", "Compressible"]
+locale: ko
+slug: adoo-automatic-differentiation-jacobian
+draft: false
+---
+
+import { DualNumberDerivativeLab } from '@/components/post-viz/2026-07-05-adoo-automatic-differentiation-jacobian/DualNumberDerivativeLab'
+import { NewtonJacobianConvergenceLab } from '@/components/post-viz/2026-07-05-adoo-automatic-differentiation-jacobian/NewtonJacobianConvergenceLab'
+
+HLLC 플럭스의 야코비안을 손으로 미분하기 시작했다. 종이 세 장을 쓰고, 곱셈 규칙 한 줄을 빠뜨렸고, 코드는 조용히 발산했다. 문제는 플럭스가 틀린 게 아니라 그 **미분**이 틀렸다는 것이었다. 음함수(implicit) CFD의 절반은 이 미분 — 공간 이산화의 야코비안 행렬 — 을 정확히 만드는 일이다. 이 글은 Fraysse 외(2019)가 제안한 ADOO(연산자 오버로딩 기반 자동미분)를 밑바닥 dual number부터 따라간다. 끝까지 읽으면, Godunov 정확 리만 해법기처럼 근-찾기 반복이 들어간 스킴조차 손 미분 없이 정확한 야코비안을 얻는 원리를 알게 된다. 그리고 그 정확성이 Newton 수렴 속도에서 실제로 얼마를 벌어주는지도.
+
+## 논문 정보
+
+- **제목**: Automatic Differentiation using Operator Overloading (ADOO) for implicit resolution of hyperbolic single phase and two-phase flow models
+- **저자**: G. Fraysse 외
+- **연도**: 2019
+- **핵심어**: automatic differentiation, implicit, two-phase, finite volume, unstructured meshes
+
+한 줄 요약: **플럭스를 짜는 코드를 그대로 두고, 데이터 타입만 바꿔 정확한 야코비안을 뽑는다.**
+
+## 왜 야코비안이 골칫거리인가
+
+음함수 시간전진은 각 스텝에서 비선형 잔차 $\mathbf{R}(\mathbf{Q}) = 0$를 Newton 반복으로 푼다.
+
+$$
+\mathbf{J}\,\delta\mathbf{Q} = -\mathbf{R}(\mathbf{Q}^{(k)}), \qquad
+\mathbf{J} = \frac{\partial \mathbf{R}}{\partial \mathbf{Q}}
+$$
+
+여기서 $\mathbf{J}$는 잔차의 야코비안(각 보존변수에 대한 편미분 행렬), $\delta\mathbf{Q}$는 갱신량이다. Newton이 2차로 수렴하려면 $\mathbf{J}$가 **정확**해야 한다.
+
+문제는 세 갈래다. 손으로 미분하면(analytic) 정확하지만 스킴을 조금만 바꿔도 다시 유도해야 한다. AUSM+처럼 분기(branch)가 많거나 Godunov처럼 반복 알고리즘이 들어가면 유도 자체가 지옥이다. 유한차분(finite difference)으로 근사하면 코드는 재사용되지만 스텝 $h$ 선택이 라운드오프와 절단오차 사이에서 진퇴양난이다.
+
+Newton-Krylov-matrix-free는 야코비안-벡터 곱만 유한차분으로 근사해 행렬을 안 만든다. 하지만 전처리기(preconditioner)를 잘 만들려면 결국 행렬의 실제 성분이 필요하다. ADOO는 이 딜레마를 **미분을 근사하지 않고 계산해서** 끊는다.
+
+## Dual number: 값에 미분을 얹는다
+
+핵심 아이디어는 단순하다. 실수 $x$를 두 성분 $(v, dv)$의 객체로 바꾼다. $v$는 값, $dv$는 그 지점에서의 도함수다. 이것을 dual number라 부른다.
+
+산술 규칙은 곱미분·연쇄법칙을 그대로 옮긴다.
+
+$$
+(a + b)' = a' + b', \qquad (ab)' = a'b + ab', \qquad (\sin a)' = (\cos a)\,a'
+$$
+
+각 규칙 좌변은 값, 우변은 도함수 성분의 갱신이다. 함수 $f(x) = \sin(x^2) + x^2$를 예로 들자. 손으로 미분하면 $f'(x) = \cos(x^2)\cdot 2x + 2x$다. dual number로는 $x$의 미분 성분을 $1$로 두고($dx/dx = 1$) 그냥 코드를 실행하면, 마지막 객체의 $dv$가 곧 $f'(x)$가 된다.
+
+```python
+from dataclasses import dataclass
+import math
+
+@dataclass
+class Dual:
+    v: float   # 값
+    d: float   # 도함수 성분
+
+    # 연산자 오버로딩 — 각 규칙은 곱미분/연쇄법칙 (논문 III.2)
+    def __add__(self, o):
+        o = o if isinstance(o, Dual) else Dual(o, 0.0)
+        return Dual(self.v + o.v, self.d + o.d)
+
+    def __mul__(self, o):
+        o = o if isinstance(o, Dual) else Dual(o, 0.0)
+        return Dual(self.v * o.v, self.v * o.d + self.d * o.v)
+
+    def __truediv__(self, o):
+        o = o if isinstance(o, Dual) else Dual(o, 0.0)
+        return Dual(self.v / o.v, (self.d * o.v - self.v * o.d) / (o.v * o.v))
+
+def sin_d(a: Dual) -> Dual:
+    return Dual(math.sin(a.v), math.cos(a.v) * a.d)
+
+# f(x) = sin(x^2) + x^2 를 x=1.3에서 미분
+x = Dual(1.3, 1.0)          # seed: dx/dx = 1
+f = sin_d(x * x) + x * x    # 원래 수식 그대로
+print(f.v, f.d)             # 값, f'(1.3)
+print(math.cos(1.3**2) * 2 * 1.3 + 2 * 1.3)  # 손 미분과 대조
+```
+
+출력의 `f.d`와 손 미분 값이 라운드오프 수준까지 일치한다. 여기서 손으로 미분한 공식은 **검증용**일 뿐, 실제 계산엔 안 쓰였다는 점이 핵심이다.
+
+## 유한차분은 왜 못 믿나
+
+ADOO의 진짜 가치는 유한차분과 나란히 놓을 때 드러난다. 중심차분 $[f(x+h)-f(x-h)]/2h$의 오차는 두 힘이 싸운다. $h$가 크면 절단오차(Taylor 전개 잔여항)가 지배하고, $h$가 너무 작으면 라운드오프(가까운 두 수의 뺄셈에서 유효자릿수 소실)가 폭발한다. 그래서 오차는 $h$에 대해 U자를 그린다. 최적점은 대략 $h \sim \sqrt{\epsilon} \approx 10^{-8}$ 근처지만, 그마저 문제마다 다르다.
+
+아래 시뮬레이션에서 직접 조작해보자.
+
+<DualNumberDerivativeLab />
+
+주황 곡선(FD)이 $h$를 줄이면 잠깐 내려가다 다시 치솟는 걸 볼 수 있다. 시안 점선(AD)은 $x$를 어디로 옮겨도 기계정밀도 바닥에 평평하게 붙어 있다. AD는 애초에 스텝이 없으니 스텝을 고를 고민 자체가 없다.
+
+## Euler 플럭스 야코비안: 손 미분 vs AD
+
+이제 스칼라를 벗어나자. 1D 압축성 Euler는 보존변수 $\mathbf{Q} = [\rho, \rho u, \rho E]^\top$와 플럭스 $\mathbf{F}(\mathbf{Q})$를 갖는다. 이상기체에서 플럭스 야코비안 $\partial\mathbf{F}/\partial\mathbf{Q}$는 잘 알려진 $3\times3$ 행렬이지만, 손으로 유도하면 $\gamma$와 운동에너지 항이 뒤엉킨다. dual number를 벡터로 확장하면(각 $dv$를 3성분 배열로) 이 행렬 전체를 코드 실행 한 번으로 채운다.
+
+```python
+import numpy as np
+
+class DualVec:
+    """값 + 3개 독립변수에 대한 기울기(seed 벡터)."""
+    def __init__(self, v, grad):
+        self.v = v
+        self.g = np.asarray(grad, float)  # ∂(this)/∂Q, 길이 3
+    def __add__(s, o):  return DualVec(s.v + o.v, s.g + o.g)
+    def __sub__(s, o):  return DualVec(s.v - o.v, s.g - o.g)
+    def __mul__(s, o):
+        if isinstance(o, DualVec):
+            return DualVec(s.v * o.v, s.v * o.g + s.g * o.v)  # 곱미분
+        return DualVec(s.v * o, s.g * o)
+    def __truediv__(s, o):
+        return DualVec(s.v / o.v, (s.g * o.v - s.v * o.g) / (o.v * o.v))
+
+def euler_flux_jacobian(Q, gamma=1.4):
+    # 각 보존변수를 seed: rho -> (Q0, e0), 등
+    rho  = DualVec(Q[0], [1, 0, 0])
+    rhou = DualVec(Q[1], [0, 1, 0])
+    rhoE = DualVec(Q[2], [0, 0, 1])
+
+    u = rhou / rho                                  # 속도
+    kinetic = rhou * u * 0.5                         # ½ρu²
+    p = (rhoE - kinetic) * (gamma - 1.0)             # 압력 (이상기체)
+
+    F0 = rhou                                        # ρu
+    F1 = rhou * u + p                                # ρu² + p
+    F2 = (rhoE + p) * u                              # (ρE + p)u
+
+    # 각 F성분의 .g 가 곧 그 행의 야코비안 (논문 식 9~10에 대응)
+    return np.array([F0.g, F1.g, F2.g])
+
+Q = np.array([1.2, 0.6, 3.0])   # ρ, ρu, ρE
+J_ad = euler_flux_jacobian(Q)
+
+# 손 유도한 정확 야코비안과 대조
+rho, mom, E = Q
+u = mom / rho; g = 1.4
+J_ref = np.array([
+    [0, 1, 0],
+    [0.5*(g-3)*u*u, (3-g)*u, g-1],
+    [((g-1)*u**3 - g*u*E/rho), (g*E/rho - 1.5*(g-1)*u*u), g*u],
+])
+print("최대 오차:", np.abs(J_ad - J_ref).max())   # ~1e-15
+```
+
+`euler_flux_jacobian`은 리만 해법기가 실제로 쓰는 플럭스 코드와 **동일한 산술**을 따른다. 야코비안을 따로 유도하지 않았는데 정확도는 기계정밀도다. 스킴을 AUSM+로 바꾸면? 플럭스 함수만 갈아끼우면 야코비안은 자동으로 따라온다.
+
+## Newton 수렴: 정확한 야코비안의 값어치
+
+정확한 야코비안이 왜 중요한지는 수렴 곡선이 말해준다. 근사 야코비안은 Newton의 2차 수렴을 1차로 떨어뜨린다. 반복 횟수가 늘고, 큰 CFL에서는 아예 발산한다. 논문은 정확 야코비안 덕에 CFL 20에서도 10회 이내 반복으로 $10^{-6}$ 잔차에 도달하는 2차 수렴을 보고한다.
+
+아래에서 Jacobian 오차 슬라이더를 0에서 올려보자.
+
+<NewtonJacobianConvergenceLab />
+
+오차 0%(AD 정확 야코비안)일 때 잔차는 반복마다 자릿수가 배로 줄며 급강하한다 — 2차 수렴의 서명이다. 오차를 20%만 줘도 곡선은 완만한 직선(1차)으로 눕고, 같은 정밀도에 도달하는 데 훨씬 많은 반복이 든다. Krylov 반복까지 감안하면 이 차이는 곧 벽시계 시간이다.
+
+## 비판적 고찰: ADOO의 그늘
+
+ADOO는 공짜가 아니다. 연산자 오버로딩은 스칼라마다 객체를 만들고 배열을 곱한다. Fraysse 논문도 forward mode의 비용이 독립변수 수에 비례함을 인정한다 — 블록 크기가 큰 다상(multiphase) 시스템에서는 이 배열이 무겁다. 소스코드 변환(ADSCT, 예: Tapenade)이 컴파일 타임 최적화로 더 빠를 수 있는 이유다.
+
+재현하며 발견한 실무 이슈도 있다. Godunov처럼 근-찾기 반복이 든 스킴을 미분할 때는 **함수값뿐 아니라 도함수 성분도 수렴**시켜야 한다. 도함수는 대개 값보다 늦게 수렴하므로, 반복 종료 조건을 값 기준으로만 두면 야코비안이 오염된다. 논문이 짚은 이 한 줄이 없었다면 나는 또 며칠을 날렸을 것이다.
+
+OpenFOAM 관점에서는 이 접근이 낯설지 않다. `foam::autoPtr` 대신 dual 스칼라 타입을 쓰는 `blockLduMatrix` 조립 실험들이 있었고, SU2는 코드 변환 기반 AD로 이미 adjoint를 만든다. 요점은 같다 — 야코비안을 사람이 유도하는 시대는 저물고 있다.
+
+## 재현 가능성 점수
+
+이 논문의 아이디어는 종이와 `Dual` 클래스 30줄이면 스칼라 예제까지 재현된다(위 코드). Euler 야코비안 대조까지 반나절, 완전한 음함수 2상 솔버는 별개의 프로젝트다. 재현 난이도는 낮고, 개념의 이식성은 높다.
+
+- **정확한 야코비안이 필요하면 손 미분 대신 dual number를 seed하라.** 코드는 그대로, 타입만 바꾼다.
+- **유한차분의 스텝 딜레마는 AD에 존재하지 않는다.** 오차 U자 곡선이 통째로 사라진다.
+- **정확 야코비안 = Newton 2차 수렴.** 근사는 1차로 눕고, 큰 CFL에서 대가가 커진다.
