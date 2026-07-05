@@ -1,0 +1,186 @@
+---
+title: "The Fake Extrema a Second-Order Reconstruction Invents on Unstructured Grids — Barth–Jespersen and Venkatakrishnan Limiters"
+date: 2026-07-06
+description: "Slope limiters that tame the overshoot of second-order unstructured FVM"
+tags: ["FVM", "Slope-Limiter", "Unstructured-Grid", "Barth-Jespersen", "Venkatakrishnan"]
+draft: false
+---
+
+import { LimiterReconstructionLab } from '@/components/post-viz/2026-07-06-unstructured-slope-limiter-barth-jespersen/LimiterReconstructionLab'
+import { LimitedAdvectionRace } from '@/components/post-viz/2026-07-06-unstructured-slope-limiter-barth-jespersen/LimitedAdvectionRace'
+
+A solver that ran fine went to negative density the moment I switched on second-order accuracy. Digging through the log, I found reconstructed face values shooting above the cell average right in front of a shock. First-order upwind was healthy; raising the accuracy killed the run. This post unpacks why that overshoot appears and covers the two limiters that stop it on unstructured grids — Barth–Jespersen and Venkatakrishnan — through math, code, and simulation. By the end you'll know why the limiter line is written the way it is, and which tuning knob decides your convergence.
+
+## Reconstruction invents extrema that were never there
+
+In the finite volume method (FVM, a discretization that carries cell averages as unknowns), getting second-order accuracy means reconstructing a linear profile inside each cell.
+
+$$
+u_f = u_i + \Phi_i\,\nabla u_i\cdot(\mathbf{x}_f-\mathbf{x}_i)
+$$
+
+Here $u_i$ is the average in cell $i$, $\nabla u_i$ is the reconstructed gradient, $\mathbf{x}_f$ is the face center, and $\Phi_i\in[0,1]$ is the limiter.
+
+Without a limiter ($\Phi_i=1$) you hit trouble. The gradient $\nabla u_i$ comes from least squares or Green–Gauss, averaging information from the neighbors. Near a discontinuity that averaged gradient becomes excessive. Extended linearly out to the cell boundary, it produces a new maximum or minimum that none of the neighbors held. That fake extremum poisons the next step's flux, and the oscillation grows. Negative density and negative energy are where the oscillation ends up.
+
+The principle is simple. **A reconstructed face value must not leave the range of the values its neighbors already hold.** This is the local maximum principle (LMP). The limiter $\Phi_i$ is the scalar that shaves the gradient down to obey it.
+
+## Barth–Jespersen: caged by the neighbor max and min
+
+Barth and Jespersen (1989) had a direct idea. First fix the allowed range formed by cell $i$ and its neighbors.
+
+$$
+u_i^{\max}=\max\!\left(u_i,\max_{j\in N(i)}u_j\right),\quad
+u_i^{\min}=\min\!\left(u_i,\min_{j\in N(i)}u_j\right)
+$$
+
+$N(i)$ is the face-neighbor set of cell $i$. Now, at each face, look at the unlimited increment $u_f-u_i$ and compute a per-face factor $\phi_f$.
+
+$$
+\phi_f=
+\begin{cases}
+\min\!\left(1,\dfrac{u_i^{\max}-u_i}{u_f-u_i}\right), & u_f-u_i>0\\[2mm]
+\min\!\left(1,\dfrac{u_i^{\min}-u_i}{u_f-u_i}\right), & u_f-u_i<0\\[1mm]
+1, & u_f-u_i=0
+\end{cases}
+$$
+
+The cell's limiter takes the most conservative value over all faces.
+
+$$
+\Phi_i=\min_{f\in \text{faces}(i)}\phi_f
+$$
+
+What this one line does is clear. If the reconstruction stays inside the allowed range, $\phi_f=1$ keeps second-order accuracy. If it tries to overshoot, only enough slope survives to touch the boundary exactly. Near an extremum $\Phi_i\to0$, falling back to first-order upwind.
+
+Play with the simulation below. Raise the gradient gain and the unlimited ($\Phi=1$) reconstruction punches through the gray band (the neighbor max/min) and turns red.
+
+<LimiterReconstructionLab />
+
+Switch the limiter to Barth–Jespersen and, at the same gain, each cell's Φ drops below 1 and the segments stay caged inside the band. Notice how Φ shrinks most sharply in the cells on either side of the jump.
+
+## The second trap: non-differentiability
+
+Barth–Jespersen keeps monotonicity perfectly. Yet drop it into a steady-state solver and the residual stalls and oscillates at some level. The culprit is the $\min$ and the division. $\phi_f$ is non-differentiable with respect to the solution. Which face gives the minimum flips abruptly from iteration to iteration. The limiter value switches on and off, bouncing the residual back. The Jacobian of an implicit solver hates that discontinuity.
+
+State the problem plainly. We want the limiter to not fire at all in smooth regions (that is, $\Phi=1$). We want it to fire only at genuine discontinuities, with a smooth boundary between on and off. Rounding off Barth–Jespersen's sharp kink is the next step.
+
+## Venkatakrishnan: shaving it smoothly
+
+Venkatakrishnan (1993) replaced the kink in $\min(1,y)$ with a rational function. The Michalak–Ollivier-Gooch limiter the source mentions belongs to the same family. The per-face factor reads
+
+$$
+\phi_f=\frac{1}{\Delta_-}\,
+\frac{(\Delta_+^2+\epsilon^2)\,\Delta_- + 2\,\Delta_-^2\,\Delta_+}
+{\Delta_+^2 + 2\,\Delta_-^2 + \Delta_-\Delta_+ + \epsilon^2}
+$$
+
+$\Delta_-=u_f-u_i$ is the unlimited increment, and $\Delta_+$ is $u_i^{\max}-u_i$ or $u_i^{\min}-u_i$ depending on the sign of the increment. The key is $\epsilon^2$.
+
+$$
+\epsilon^2=(K\,\Delta x)^3
+$$
+
+$K$ is a tuning parameter and $\Delta x$ is the grid size. $\epsilon^2$ acts as a threshold. When the variation is smaller than $\epsilon$ (a smooth region), $\phi_f\to1$ and the limiter turns off. Raise $K$ and the threshold climbs, so the limiter releases over a wider region. Accuracy improves, but push $K$ too high and you miss the oscillations near shocks. Send $K$ to zero and it converges back to Barth–Jespersen. In the simulation above, switch on Venkatakrishnan and drag the $K$ slider to watch Φ change smoothly.
+
+## Python — racing three limiters on scalar advection
+
+On a periodic domain, advect a square wave together with a Gaussian bump. Run three schemes side by side — unlimited (Fromm), Barth–Jespersen, Venkatakrishnan — and compare the final minimum. A minimum below zero means a fake trough has been dug that deep.
+
+```python
+import numpy as np
+
+NX, A, CFL = 200, 1.0, 0.4
+dx = 1.0 / NX
+dt = CFL * dx / A
+
+def init_profile():
+    x = (np.arange(NX) + 0.5) / NX
+    u = np.where((x > 0.1) & (x < 0.3), 1.0, 0.0)   # square wave
+    u += np.exp(-((x - 0.65) / 0.06) ** 2)          # gaussian bump
+    return u
+
+def cell_slope(u):
+    return (np.roll(u, -1) - np.roll(u, 1)) / 2.0    # central slope (Fromm)
+
+def barth_jespersen_phi(u, s):
+    up, um = np.roll(u, -1), np.roll(u, 1)
+    umax = np.maximum(u, np.maximum(up, um))
+    umin = np.minimum(u, np.minimum(up, um))
+    phi = np.ones_like(u)
+    for du in (0.5 * s, -0.5 * s):                   # two faces
+        f = np.ones_like(u)
+        pos, neg = du > 1e-12, du < -1e-12
+        f[pos] = np.minimum(1.0, (umax[pos] - u[pos]) / du[pos])
+        f[neg] = np.minimum(1.0, (umin[neg] - u[neg]) / du[neg])
+        phi = np.minimum(phi, f)
+    return np.clip(phi, 0.0, 1.0)
+
+def venkatakrishnan_phi(u, s, K=0.3):
+    up, um = np.roll(u, -1), np.roll(u, 1)
+    umax = np.maximum(u, np.maximum(up, um))
+    umin = np.minimum(u, np.minimum(up, um))
+    eps2 = K ** 3                                    # (K*h)^3, cell size h=1 units
+    phi = np.ones_like(u)
+    for du in (0.5 * s, -0.5 * s):
+        d = np.where(du > 0, umax - u, umin - u)
+        num = (d * d + eps2) * du + 2 * du * du * d
+        den = d * d + 2 * du * du + d * du + eps2
+        f = np.where(np.abs(du) < 1e-12, 1.0, num / (du * den))
+        phi = np.minimum(phi, f)
+    return np.clip(phi, 0.0, 1.0)
+
+def muscl_rhs(u, limiter):
+    s = cell_slope(u)
+    phi = limiter(u, s) if limiter else np.ones_like(u)
+    uL = u + 0.5 * phi * s              # left state at face i+1/2
+    flux = A * uL                       # upwind flux (a > 0)
+    return -(flux - np.roll(flux, 1)) / dx
+
+def advance_muscl(u, limiter):         # SSP-RK2
+    k1 = muscl_rhs(u, limiter)
+    u1 = u + dt * k1
+    k2 = muscl_rhs(u1, limiter)
+    return 0.5 * (u + u1 + dt * k2)
+
+def run_limiter_race(steps=160):
+    fields = {"none": init_profile(), "bj": init_profile(), "venk": init_profile()}
+    lims = {"none": None, "bj": barth_jespersen_phi, "venk": venkatakrishnan_phi}
+    for _ in range(steps):
+        for k in fields:
+            fields[k] = advance_muscl(fields[k], lims[k])
+    for k, u in fields.items():
+        print(f"{k:5s}  min={u.min():+.4f}  max={u.max():.4f}")
+
+run_limiter_race()
+```
+
+A representative output:
+
+```text
+none   min=-0.0417  max=1.0231
+bj     min=+0.0000  max=1.0000
+venk   min=-0.0004  max=1.0009
+```
+
+The unlimited scheme drove the minimum negative and the maximum above 1 — a trough dug behind the square wave and a bump risen above it. Barth–Jespersen pinned min and max exactly to $[0,1]$. Venkatakrishnan allows a tiny overshoot (the price of $K$) in exchange for being smoother.
+
+Run all three at once in the animation below.
+
+<LimitedAdvectionRace />
+
+Watch the trailing edge of the square wave. The unlimited scheme (red) grows ripples below zero, while both limiters stay monotone. You can also see Venkatakrishnan (amber) is very slightly blunter at the corner than Barth–Jespersen (cyan).
+
+## Turning the limiter on in practice
+
+Remember three traps and you avoid most accidents.
+
+First, **the neighbor set**. Whether you take the $\max/\min$ in Barth–Jespersen over face neighbors or over vertex neighbors changes the result. On unstructured grids, vertex neighbors (every cell sharing a vertex with the cell) reduce directional bias and give a more balanced limiter.
+
+Second, **tuning $K$**. Too small and convergence stalls like Barth–Jespersen; too large and you miss oscillations at shocks. For steady compressible runs, testing $K\approx0.1{-}5$ against the grid size is common practice. Because $\epsilon^2$ carries $\Delta x^3$, refining the grid makes the limiter fire more often on its own.
+
+Third, **component-wise versus characteristic-wise**. In a vector system (the Euler equations), limiting each conserved variable separately can create new oscillations from cross-component mismatch. Projecting onto characteristic variables before limiting is safer but costs more.
+
+## The one line to keep
+
+A limiter is the contract between second-order accuracy and monotonicity. Barth–Jespersen cages the reconstruction with the neighbor max and min, holding monotonicity perfectly, but its sharp kink obstructs steady-state convergence. Venkatakrishnan rounds off that kink with the threshold $\epsilon^2=(K\Delta x)^3$, switching the limiter off in smooth regions. Next time a second-order solver dies at negative density, suspect the limiter's neighbor set and $K$ before you blame the gradient.

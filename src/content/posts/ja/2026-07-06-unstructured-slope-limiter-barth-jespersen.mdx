@@ -1,0 +1,186 @@
+---
+title: "非構造格子で2次再構成が生む偽の極値 — Barth–Jespersen と Venkatakrishnan リミッター"
+date: 2026-07-06
+description: "2次非構造FVMの行き過ぎを抑えるスロープリミッター"
+tags: ["FVM", "Slope-Limiter", "Unstructured-Grid", "Barth-Jespersen", "Venkatakrishnan"]
+draft: false
+---
+
+import { LimiterReconstructionLab } from '@/components/post-viz/2026-07-06-unstructured-slope-limiter-barth-jespersen/LimiterReconstructionLab'
+import { LimitedAdvectionRace } from '@/components/post-viz/2026-07-06-unstructured-slope-limiter-barth-jespersen/LimitedAdvectionRace'
+
+うまく回っていたソルバーが、2次精度をオンにした途端に密度が負へ落ちました。ログをたどると、衝撃波の手前で再構成された面の値がセル平均より上に跳ね上がっていました。1次風上は問題なかったのに、精度を上げたら計算が死んだのです。この記事では、その行き過ぎ（overshoot）がなぜ起きるのか、そして非構造格子でそれを防ぐ2つのリミッター — Barth–Jespersen と Venkatakrishnan — を、数式・コード・シミュレーションで解きほぐします。読み終える頃には、リミッターの一行がなぜそう書かれるのか、どのチューニングパラメータが収束を左右するのかが分かります。
+
+## 再構成がなかったはずの極値をつくる
+
+有限体積法（FVM、セル平均を未知数とする離散化）で2次精度を得るには、セル内で値を線形に再構成します。
+
+$$
+u_f = u_i + \Phi_i\,\nabla u_i\cdot(\mathbf{x}_f-\mathbf{x}_i)
+$$
+
+ここで $u_i$ はセル $i$ の平均、$\nabla u_i$ は再構成された勾配、$\mathbf{x}_f$ は面の中心、$\Phi_i\in[0,1]$ はリミッターです。
+
+リミッターがない（$\Phi_i=1$）と問題が起きます。勾配 $\nabla u_i$ は最小二乗や Green–Gauss で、隣接値の情報を平均して作られます。不連続の近くではこの平均勾配が過大になります。セル境界まで線形に伸ばすと、どの隣接セルにも無かった新しい最大・最小が生まれます。その偽の極値が次のステップのフラックスを汚染し、振動が育ちます。負の密度・負のエネルギーはその振動の終着点です。
+
+原則は単純です。**再構成された面の値は、隣接セルがすでに持つ値の範囲を出てはならない。** これが局所最大最小原理（LMP）です。リミッター $\Phi_i$ は、これを守るために勾配を削るスカラーです。
+
+## Barth–Jespersen：隣接の最大・最小で閉じ込める
+
+Barth と Jespersen（1989）の発想は直接的です。まずセル $i$ とその隣接がつくる許容範囲を決めます。
+
+$$
+u_i^{\max}=\max\!\left(u_i,\max_{j\in N(i)}u_j\right),\quad
+u_i^{\min}=\min\!\left(u_i,\min_{j\in N(i)}u_j\right)
+$$
+
+$N(i)$ はセル $i$ の面隣接集合です。次に各面で、リミッターがない場合の増分 $u_f-u_i$ を見て、面ごとの係数 $\phi_f$ を求めます。
+
+$$
+\phi_f=
+\begin{cases}
+\min\!\left(1,\dfrac{u_i^{\max}-u_i}{u_f-u_i}\right), & u_f-u_i>0\\[2mm]
+\min\!\left(1,\dfrac{u_i^{\min}-u_i}{u_f-u_i}\right), & u_f-u_i<0\\[1mm]
+1, & u_f-u_i=0
+\end{cases}
+$$
+
+セルのリミッターは、すべての面のうち最も保守的な値を取ります。
+
+$$
+\Phi_i=\min_{f\in \text{faces}(i)}\phi_f
+$$
+
+この一行がすることは明確です。再構成が許容範囲内なら $\phi_f=1$ として2次精度を保ちます。行き過ぎようとすると、境界にちょうど触れる分だけ勾配を残します。極値の近くでは $\Phi_i\to0$ となり、1次風上へ後退します。
+
+下のシミュレーションで直接操作してみましょう。勾配 gain を上げると、無制限（$\Phi=1$）の再構成が灰色の帯（隣接の最大・最小）を突き破り、赤く変わります。
+
+<LimiterReconstructionLab />
+
+リミッターを Barth–Jespersen に変えると、同じ gain でも各セルの Φ が1より小さくなり、線分が帯の中に閉じ込められます。ジャンプの両側のセルで Φ が特に小さくなる様子を見てください。
+
+## 微分不可能という第二の罠
+
+Barth–Jespersen は単調性を完璧に守ります。ところが定常ソルバーに入れると、残差がある水準から下がらず振動します。原因は $\min$ と割り算にあります。$\phi_f$ は解に対して微分不可能な関数です。どの面が最小を与えるかが、反復ごとにぱっと切り替わります。リミッター値がついたり消えたりして残差を跳ね返します。陰的（implicit）ソルバーのヤコビアンはこの不連続を嫌います。
+
+問題を整理するとこうです。私たちは、滑らかな領域ではリミッターがまったく作動しない（すなわち $\Phi=1$）ことを望みます。本当の不連続でのみオンになり、オンとオフの境界が滑らかであってほしいのです。Barth–Jespersen の鋭い折れ目を丸めるのが次の段階です。
+
+## Venkatakrishnan：滑らかに削る
+
+Venkatakrishnan（1993）は $\min(1,y)$ の折れ目を有理関数で置き換えました。ソースが挙げる Michalak–Ollivier-Gooch リミッターも同じ系統です。面ごとの係数はこう書けます。
+
+$$
+\phi_f=\frac{1}{\Delta_-}\,
+\frac{(\Delta_+^2+\epsilon^2)\,\Delta_- + 2\,\Delta_-^2\,\Delta_+}
+{\Delta_+^2 + 2\,\Delta_-^2 + \Delta_-\Delta_+ + \epsilon^2}
+$$
+
+$\Delta_-=u_f-u_i$ はリミッターなしの増分、$\Delta_+$ は増分の符号に応じて $u_i^{\max}-u_i$ または $u_i^{\min}-u_i$ です。鍵は $\epsilon^2$ です。
+
+$$
+\epsilon^2=(K\,\Delta x)^3
+$$
+
+$K$ はチューニングパラメータ、$\Delta x$ は格子サイズです。$\epsilon^2$ は閾値の役割をします。値の変動が $\epsilon$ より小さければ（滑らかな領域）$\phi_f\to1$ となりリミッターがオフになります。$K$ を上げると閾値が高くなり、より広い領域でリミッターが緩みます。精度は良くなりますが、上げすぎると衝撃波近くの振動を見逃します。$K$ を0に送ると Barth–Jespersen に収束します。上のシミュレーションで Venkatakrishnan をオンにして $K$ スライダーを動かすと、Φ が滑らかに変わるのを確認できます。
+
+## Python — スカラー移流で3つのリミッターを競わせる
+
+周期境界で、矩形波とガウス山を一緒に移流（advection）させます。3つのスキーム — 無制限（Fromm）、Barth–Jespersen、Venkatakrishnan — を並べて回し、最終の最小値を比べます。最小値が0を下回れば、その分だけ偽の谷が掘られたことになります。
+
+```python
+import numpy as np
+
+NX, A, CFL = 200, 1.0, 0.4
+dx = 1.0 / NX
+dt = CFL * dx / A
+
+def init_profile():
+    x = (np.arange(NX) + 0.5) / NX
+    u = np.where((x > 0.1) & (x < 0.3), 1.0, 0.0)   # 矩形波
+    u += np.exp(-((x - 0.65) / 0.06) ** 2)          # ガウス山
+    return u
+
+def cell_slope(u):
+    return (np.roll(u, -1) - np.roll(u, 1)) / 2.0    # 中心勾配（Fromm）
+
+def barth_jespersen_phi(u, s):
+    up, um = np.roll(u, -1), np.roll(u, 1)
+    umax = np.maximum(u, np.maximum(up, um))
+    umin = np.minimum(u, np.minimum(up, um))
+    phi = np.ones_like(u)
+    for du in (0.5 * s, -0.5 * s):                   # 2つの面
+        f = np.ones_like(u)
+        pos, neg = du > 1e-12, du < -1e-12
+        f[pos] = np.minimum(1.0, (umax[pos] - u[pos]) / du[pos])
+        f[neg] = np.minimum(1.0, (umin[neg] - u[neg]) / du[neg])
+        phi = np.minimum(phi, f)
+    return np.clip(phi, 0.0, 1.0)
+
+def venkatakrishnan_phi(u, s, K=0.3):
+    up, um = np.roll(u, -1), np.roll(u, 1)
+    umax = np.maximum(u, np.maximum(up, um))
+    umin = np.minimum(u, np.minimum(up, um))
+    eps2 = K ** 3                                    # (K*h)^3、セルサイズ h=1 単位
+    phi = np.ones_like(u)
+    for du in (0.5 * s, -0.5 * s):
+        d = np.where(du > 0, umax - u, umin - u)
+        num = (d * d + eps2) * du + 2 * du * du * d
+        den = d * d + 2 * du * du + d * du + eps2
+        f = np.where(np.abs(du) < 1e-12, 1.0, num / (du * den))
+        phi = np.minimum(phi, f)
+    return np.clip(phi, 0.0, 1.0)
+
+def muscl_rhs(u, limiter):
+    s = cell_slope(u)
+    phi = limiter(u, s) if limiter else np.ones_like(u)
+    uL = u + 0.5 * phi * s              # 面 i+1/2 左側の状態
+    flux = A * uL                       # 風上フラックス (a > 0)
+    return -(flux - np.roll(flux, 1)) / dx
+
+def advance_muscl(u, limiter):         # SSP-RK2
+    k1 = muscl_rhs(u, limiter)
+    u1 = u + dt * k1
+    k2 = muscl_rhs(u1, limiter)
+    return 0.5 * (u + u1 + dt * k2)
+
+def run_limiter_race(steps=160):
+    fields = {"none": init_profile(), "bj": init_profile(), "venk": init_profile()}
+    lims = {"none": None, "bj": barth_jespersen_phi, "venk": venkatakrishnan_phi}
+    for _ in range(steps):
+        for k in fields:
+            fields[k] = advance_muscl(fields[k], lims[k])
+    for k, u in fields.items():
+        print(f"{k:5s}  min={u.min():+.4f}  max={u.max():.4f}")
+
+run_limiter_race()
+```
+
+代表的な出力は次の通りです。
+
+```text
+none   min=-0.0417  max=1.0231
+bj     min=+0.0000  max=1.0000
+venk   min=-0.0004  max=1.0009
+```
+
+無制限スキームは最小値が負に、最大値が1を超えました。矩形波の後ろに谷が掘られ、山がせり上がったということです。Barth–Jespersen は最小・最大を正確に $[0,1]$ に留めました。Venkatakrishnan は微小な超過を許す代わりに（$K$ の代償）、より滑らかです。
+
+下のアニメーションで3つのスキームを同時に回してみましょう。
+
+<LimitedAdvectionRace />
+
+矩形波の後ろの角に注目してください。無制限（赤）は0の下にさざ波が育ちますが、2つのリミッターは単調性を守ります。Venkatakrishnan（黄）が Barth–Jespersen（シアン）よりも角でごくわずかに鈍い様子も見えます。
+
+## 現場でリミッターをオンにするとき
+
+3つの罠だけ覚えておけば、事故の大半を避けられます。
+
+第一に、**隣接集合の定義**です。Barth–Jespersen の $\max/\min$ を面隣接で取るか、頂点（vertex）隣接で取るかで結果が変わります。非構造格子で頂点隣接（そのセルの頂点を共有するすべてのセル）を使うと方向の偏りが減り、より均衡が取れます。
+
+第二に、**$K$ のチューニング**です。$K$ が小さすぎると Barth–Jespersen のように収束が停滞し、大きすぎると衝撃波で振動を見逃します。定常圧縮性解析では、$K\approx0.1{-}5$ の範囲を格子サイズに合わせて試すのが慣例です。$\epsilon^2$ に $\Delta x^3$ が入るので、格子を細分化するとリミッターが自動的により頻繁にオンになります。
+
+第三に、**成分ごと vs 特性ごと**の適用です。ベクトル系（Euler 方程式）で保存変数それぞれに別々にリミッターをかけると、成分間の不一致から新しい振動が生じることがあります。特性変数（characteristic variable）に射影してからリミッターをかける方が安全ですが、コストがかかります。
+
+## 一行で残すこと
+
+リミッターは2次精度と単調性のあいだの契約書です。Barth–Jespersen は隣接の最大・最小で再構成を閉じ込め、単調性を完璧に守りますが、その鋭い折れ目が定常収束を妨げます。Venkatakrishnan は $\epsilon^2=(K\Delta x)^3$ の閾値でその折れ目を丸め、滑らかな領域でリミッターをオフにします。次に2次ソルバーが負の密度で死んだら、勾配ではなくリミッターの隣接集合と $K$ をまず疑ってください。

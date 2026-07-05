@@ -1,0 +1,186 @@
+---
+title: "非结构网格上二阶重构制造的虚假极值 — Barth–Jespersen 与 Venkatakrishnan 限制器"
+date: 2026-07-06
+description: "抑制二阶非结构FVM过冲的斜率限制器"
+tags: ["FVM", "Slope-Limiter", "Unstructured-Grid", "Barth-Jespersen", "Venkatakrishnan"]
+draft: false
+---
+
+import { LimiterReconstructionLab } from '@/components/post-viz/2026-07-06-unstructured-slope-limiter-barth-jespersen/LimiterReconstructionLab'
+import { LimitedAdvectionRace } from '@/components/post-viz/2026-07-06-unstructured-slope-limiter-barth-jespersen/LimitedAdvectionRace'
+
+一个原本运行良好的求解器，在打开二阶精度的那一刻密度就跌成了负值。翻查日志，发现激波正前方重构出的面值窜到了单元平均之上。一阶迎风原本很健康，提高精度反而让计算崩溃了。这篇文章将拆解这种过冲（overshoot）为何出现，并通过公式、代码和仿真讲清在非结构网格上阻止它的两种限制器 — Barth–Jespersen 和 Venkatakrishnan。读完你会明白限制器那一行为什么这样写，以及哪个调参决定了收敛。
+
+## 重构制造出本不存在的极值
+
+在有限体积法（FVM，以单元平均为未知量的离散化）中，要获得二阶精度就要在单元内对值做线性重构。
+
+$$
+u_f = u_i + \Phi_i\,\nabla u_i\cdot(\mathbf{x}_f-\mathbf{x}_i)
+$$
+
+其中 $u_i$ 是单元 $i$ 的平均，$\nabla u_i$ 是重构梯度，$\mathbf{x}_f$ 是面中心，$\Phi_i\in[0,1]$ 是限制器。
+
+没有限制器（$\Phi_i=1$）就会出问题。梯度 $\nabla u_i$ 由最小二乘或 Green–Gauss 得到，它平均了邻居的信息。在不连续附近，这个平均梯度变得过大。线性延伸到单元边界时，就产生了任何邻居都不曾持有的新最大或最小值。这个虚假极值污染下一步的通量，振荡随之增长。负密度、负能量就是这种振荡的终点。
+
+原则很简单。**重构出的面值不得超出其邻居已经持有的取值范围。** 这就是局部极值原理（LMP）。限制器 $\Phi_i$ 就是为遵守它而削减梯度的标量。
+
+## Barth–Jespersen：用邻居的最大最小关起来
+
+Barth 和 Jespersen（1989）的想法很直接。先确定由单元 $i$ 及其邻居构成的允许范围。
+
+$$
+u_i^{\max}=\max\!\left(u_i,\max_{j\in N(i)}u_j\right),\quad
+u_i^{\min}=\min\!\left(u_i,\min_{j\in N(i)}u_j\right)
+$$
+
+$N(i)$ 是单元 $i$ 的面邻居集合。然后在每个面上，看无限制时的增量 $u_f-u_i$，求出每个面的系数 $\phi_f$。
+
+$$
+\phi_f=
+\begin{cases}
+\min\!\left(1,\dfrac{u_i^{\max}-u_i}{u_f-u_i}\right), & u_f-u_i>0\\[2mm]
+\min\!\left(1,\dfrac{u_i^{\min}-u_i}{u_f-u_i}\right), & u_f-u_i<0\\[1mm]
+1, & u_f-u_i=0
+\end{cases}
+$$
+
+单元的限制器取所有面中最保守的值。
+
+$$
+\Phi_i=\min_{f\in \text{faces}(i)}\phi_f
+$$
+
+这一行做的事很清楚。若重构落在允许范围内，$\phi_f=1$ 保持二阶精度。若它想过冲，就只保留恰好触及边界的那部分梯度。在极值附近 $\Phi_i\to0$，退回一阶迎风。
+
+在下面的仿真中亲手操作一下。调高梯度 gain，无限制（$\Phi=1$）的重构就会冲破灰色带（邻居最大最小）并变红。
+
+<LimiterReconstructionLab />
+
+把限制器切换为 Barth–Jespersen，在相同 gain 下每个单元的 Φ 就降到1以下，线段被关进带内。注意跳变两侧的单元 Φ 收缩得尤其厉害。
+
+## 第二个陷阱：不可微
+
+Barth–Jespersen 完美地保持单调性。可是把它放进定常求解器，残差就会卡在某个水平不再下降而振荡。祸首是 $\min$ 和除法。$\phi_f$ 是关于解不可微的函数。哪个面给出最小值，会在迭代之间突然翻转。限制器值时开时关，把残差弹回去。隐式（implicit）求解器的雅可比矩阵讨厌这种不连续。
+
+把问题说清楚：我们希望限制器在光滑区完全不启动（即 $\Phi=1$）。只在真正的不连续处启动，且开与关之间的边界是光滑的。把 Barth–Jespersen 尖锐的折点磨圆，就是下一步。
+
+## Venkatakrishnan：平滑地削减
+
+Venkatakrishnan（1993）用一个有理函数替换了 $\min(1,y)$ 的折点。源文档提到的 Michalak–Ollivier-Gooch 限制器也属于同一族。每个面的系数写作
+
+$$
+\phi_f=\frac{1}{\Delta_-}\,
+\frac{(\Delta_+^2+\epsilon^2)\,\Delta_- + 2\,\Delta_-^2\,\Delta_+}
+{\Delta_+^2 + 2\,\Delta_-^2 + \Delta_-\Delta_+ + \epsilon^2}
+$$
+
+$\Delta_-=u_f-u_i$ 是无限制增量，$\Delta_+$ 依增量符号取 $u_i^{\max}-u_i$ 或 $u_i^{\min}-u_i$。关键是 $\epsilon^2$。
+
+$$
+\epsilon^2=(K\,\Delta x)^3
+$$
+
+$K$ 是调参，$\Delta x$ 是网格尺度。$\epsilon^2$ 起阈值作用。当变化小于 $\epsilon$（光滑区）时，$\phi_f\to1$，限制器关闭。调高 $K$，阈值升高，限制器在更大区域松开。精度提高，但 $K$ 过大就会漏掉激波附近的振荡。把 $K$ 送到零，它就收敛回 Barth–Jespersen。在上面的仿真里打开 Venkatakrishnan 并拖动 $K$ 滑块，就能看到 Φ 平滑变化。
+
+## Python — 用标量对流让三种限制器赛跑
+
+在周期域上，把方波和高斯峰一起对流（advection）。三种格式 — 无限制（Fromm）、Barth–Jespersen、Venkatakrishnan — 并排运行，比较最终的最小值。最小值低于零，就说明挖出了那么深的虚假波谷。
+
+```python
+import numpy as np
+
+NX, A, CFL = 200, 1.0, 0.4
+dx = 1.0 / NX
+dt = CFL * dx / A
+
+def init_profile():
+    x = (np.arange(NX) + 0.5) / NX
+    u = np.where((x > 0.1) & (x < 0.3), 1.0, 0.0)   # 方波
+    u += np.exp(-((x - 0.65) / 0.06) ** 2)          # 高斯峰
+    return u
+
+def cell_slope(u):
+    return (np.roll(u, -1) - np.roll(u, 1)) / 2.0    # 中心斜率（Fromm）
+
+def barth_jespersen_phi(u, s):
+    up, um = np.roll(u, -1), np.roll(u, 1)
+    umax = np.maximum(u, np.maximum(up, um))
+    umin = np.minimum(u, np.minimum(up, um))
+    phi = np.ones_like(u)
+    for du in (0.5 * s, -0.5 * s):                   # 两个面
+        f = np.ones_like(u)
+        pos, neg = du > 1e-12, du < -1e-12
+        f[pos] = np.minimum(1.0, (umax[pos] - u[pos]) / du[pos])
+        f[neg] = np.minimum(1.0, (umin[neg] - u[neg]) / du[neg])
+        phi = np.minimum(phi, f)
+    return np.clip(phi, 0.0, 1.0)
+
+def venkatakrishnan_phi(u, s, K=0.3):
+    up, um = np.roll(u, -1), np.roll(u, 1)
+    umax = np.maximum(u, np.maximum(up, um))
+    umin = np.minimum(u, np.minimum(up, um))
+    eps2 = K ** 3                                    # (K*h)^3，单元尺寸 h=1 单位
+    phi = np.ones_like(u)
+    for du in (0.5 * s, -0.5 * s):
+        d = np.where(du > 0, umax - u, umin - u)
+        num = (d * d + eps2) * du + 2 * du * du * d
+        den = d * d + 2 * du * du + d * du + eps2
+        f = np.where(np.abs(du) < 1e-12, 1.0, num / (du * den))
+        phi = np.minimum(phi, f)
+    return np.clip(phi, 0.0, 1.0)
+
+def muscl_rhs(u, limiter):
+    s = cell_slope(u)
+    phi = limiter(u, s) if limiter else np.ones_like(u)
+    uL = u + 0.5 * phi * s              # 面 i+1/2 左状态
+    flux = A * uL                       # 迎风通量 (a > 0)
+    return -(flux - np.roll(flux, 1)) / dx
+
+def advance_muscl(u, limiter):         # SSP-RK2
+    k1 = muscl_rhs(u, limiter)
+    u1 = u + dt * k1
+    k2 = muscl_rhs(u1, limiter)
+    return 0.5 * (u + u1 + dt * k2)
+
+def run_limiter_race(steps=160):
+    fields = {"none": init_profile(), "bj": init_profile(), "venk": init_profile()}
+    lims = {"none": None, "bj": barth_jespersen_phi, "venk": venkatakrishnan_phi}
+    for _ in range(steps):
+        for k in fields:
+            fields[k] = advance_muscl(fields[k], lims[k])
+    for k, u in fields.items():
+        print(f"{k:5s}  min={u.min():+.4f}  max={u.max():.4f}")
+
+run_limiter_race()
+```
+
+一个有代表性的输出：
+
+```text
+none   min=-0.0417  max=1.0231
+bj     min=+0.0000  max=1.0000
+venk   min=-0.0004  max=1.0009
+```
+
+无限制格式把最小值推成负、最大值超过1 — 方波后面挖出波谷、上面隆起小包。Barth–Jespersen 把最小最大精确钉在 $[0,1]$。Venkatakrishnan 允许极小的过冲（$K$ 的代价），换来更平滑。
+
+在下面的动画里同时运行三种格式。
+
+<LimitedAdvectionRace />
+
+盯住方波的后沿。无限制格式（红）在零以下长出涟漪，而两种限制器都保持单调。你还能看到 Venkatakrishnan（黄）在拐角处比 Barth–Jespersen（青）略钝一点点。
+
+## 现场打开限制器时
+
+记住三个陷阱，就能避开大多数事故。
+
+第一，**邻居集合的定义**。Barth–Jespersen 的 $\max/\min$ 取面邻居还是取顶点（vertex）邻居，结果会不同。在非结构网格上用顶点邻居（与该单元共享顶点的所有单元）能减少方向偏置，给出更均衡的限制器。
+
+第二，**调 $K$**。$K$ 太小会像 Barth–Jespersen 一样收敛停滞；太大就会在激波处漏掉振荡。在定常可压缩计算中，按网格尺度试验 $K\approx0.1{-}5$ 是常规做法。由于 $\epsilon^2$ 带着 $\Delta x^3$，加密网格会让限制器自动更频繁地启动。
+
+第三，**逐分量 vs 逐特征**的施加。在向量系统（Euler 方程）中，对每个守恒变量分别限制，可能因分量间不一致而产生新振荡。先投影到特征变量（characteristic variable）再限制更安全，但代价更高。
+
+## 留下的一行
+
+限制器是二阶精度与单调性之间的合同。Barth–Jespersen 用邻居最大最小把重构关起来，完美守住单调性，但它尖锐的折点阻碍定常收敛。Venkatakrishnan 用阈值 $\epsilon^2=(K\Delta x)^3$ 把折点磨圆，在光滑区关掉限制器。下次二阶求解器死在负密度上，先怀疑限制器的邻居集合和 $K$，而不是梯度。

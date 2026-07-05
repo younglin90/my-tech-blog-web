@@ -1,0 +1,186 @@
+---
+title: "Los extremos falsos que una reconstrucción de segundo orden inventa en mallas no estructuradas — Limitadores Barth–Jespersen y Venkatakrishnan"
+date: 2026-07-06
+description: "Limitadores de pendiente que doman el sobreimpulso del FVM no estructurado de segundo orden"
+tags: ["FVM", "Slope-Limiter", "Unstructured-Grid", "Barth-Jespersen", "Venkatakrishnan"]
+draft: false
+---
+
+import { LimiterReconstructionLab } from '@/components/post-viz/2026-07-06-unstructured-slope-limiter-barth-jespersen/LimiterReconstructionLab'
+import { LimitedAdvectionRace } from '@/components/post-viz/2026-07-06-unstructured-slope-limiter-barth-jespersen/LimitedAdvectionRace'
+
+Un solver que corría sin problemas cayó a densidad negativa en el instante en que activé el segundo orden. Al revisar el log, los valores de cara reconstruidos saltaban por encima del promedio de celda justo delante de una onda de choque. El upwind de primer orden estaba sano; subir la precisión mató la corrida. Este artículo desmenuza por qué aparece ese sobreimpulso (overshoot) y cubre los dos limitadores que lo detienen en mallas no estructuradas — Barth–Jespersen y Venkatakrishnan — con matemática, código y simulación. Al terminar sabrás por qué la línea del limitador se escribe así, y qué perilla de ajuste decide tu convergencia.
+
+## La reconstrucción inventa extremos que nunca estuvieron ahí
+
+En el método de volúmenes finitos (FVM, una discretización que lleva promedios de celda como incógnitas), obtener segundo orden significa reconstruir un perfil lineal dentro de cada celda.
+
+$$
+u_f = u_i + \Phi_i\,\nabla u_i\cdot(\mathbf{x}_f-\mathbf{x}_i)
+$$
+
+Aquí $u_i$ es el promedio en la celda $i$, $\nabla u_i$ es el gradiente reconstruido, $\mathbf{x}_f$ es el centro de la cara y $\Phi_i\in[0,1]$ es el limitador.
+
+Sin limitador ($\Phi_i=1$) llega el problema. El gradiente $\nabla u_i$ sale de mínimos cuadrados o Green–Gauss, promediando información de los vecinos. Cerca de una discontinuidad ese gradiente promediado se vuelve excesivo. Extendido linealmente hasta el borde de la celda, produce un nuevo máximo o mínimo que ningún vecino tenía. Ese extremo falso envenena el flujo del siguiente paso, y la oscilación crece. Densidad negativa y energía negativa son el destino de esa oscilación.
+
+El principio es simple. **Un valor de cara reconstruido no debe salir del rango de los valores que sus vecinos ya tienen.** Este es el principio de máximo local (LMP). El limitador $\Phi_i$ es el escalar que recorta el gradiente para obedecerlo.
+
+## Barth–Jespersen: enjaulado por el máximo y el mínimo de los vecinos
+
+Barth y Jespersen (1989) tuvieron una idea directa. Primero se fija el rango permitido que forman la celda $i$ y sus vecinos.
+
+$$
+u_i^{\max}=\max\!\left(u_i,\max_{j\in N(i)}u_j\right),\quad
+u_i^{\min}=\min\!\left(u_i,\min_{j\in N(i)}u_j\right)
+$$
+
+$N(i)$ es el conjunto de vecinos por cara de la celda $i$. Ahora, en cada cara, se mira el incremento sin limitar $u_f-u_i$ y se calcula un factor por cara $\phi_f$.
+
+$$
+\phi_f=
+\begin{cases}
+\min\!\left(1,\dfrac{u_i^{\max}-u_i}{u_f-u_i}\right), & u_f-u_i>0\\[2mm]
+\min\!\left(1,\dfrac{u_i^{\min}-u_i}{u_f-u_i}\right), & u_f-u_i<0\\[1mm]
+1, & u_f-u_i=0
+\end{cases}
+$$
+
+El limitador de la celda toma el valor más conservador sobre todas las caras.
+
+$$
+\Phi_i=\min_{f\in \text{faces}(i)}\phi_f
+$$
+
+Lo que hace esta única línea es claro. Si la reconstrucción se mantiene dentro del rango permitido, $\phi_f=1$ conserva el segundo orden. Si intenta sobrepasarse, solo sobrevive la pendiente justa para tocar el borde exactamente. Cerca de un extremo $\Phi_i\to0$, retrocediendo al upwind de primer orden.
+
+Juega con la simulación de abajo. Sube la ganancia del gradiente y la reconstrucción sin limitar ($\Phi=1$) perfora la banda gris (el máximo/mínimo de vecinos) y se vuelve roja.
+
+<LimiterReconstructionLab />
+
+Cambia el limitador a Barth–Jespersen y, con la misma ganancia, la Φ de cada celda baja de 1 y los segmentos quedan enjaulados dentro de la banda. Observa cómo Φ se encoge más bruscamente en las celdas a ambos lados del salto.
+
+## La segunda trampa: la no diferenciabilidad
+
+Barth–Jespersen conserva la monotonía a la perfección. Sin embargo, al meterlo en un solver estacionario, el residuo se estanca y oscila en cierto nivel. El culpable es el $\min$ y la división. $\phi_f$ es una función no diferenciable respecto a la solución. Qué cara da el mínimo cambia bruscamente de una iteración a otra. El valor del limitador se enciende y se apaga, rebotando el residuo. El jacobiano de un solver implícito detesta esa discontinuidad.
+
+Planteemos el problema con claridad. Queremos que el limitador no se dispare en absoluto en regiones suaves (es decir, $\Phi=1$). Que se dispare solo en discontinuidades genuinas, con una frontera suave entre encendido y apagado. Redondear el quiebre agudo de Barth–Jespersen es el siguiente paso.
+
+## Venkatakrishnan: recortando suavemente
+
+Venkatakrishnan (1993) reemplazó el quiebre de $\min(1,y)$ por una función racional. El limitador Michalak–Ollivier-Gooch que menciona la fuente pertenece a la misma familia. El factor por cara se escribe
+
+$$
+\phi_f=\frac{1}{\Delta_-}\,
+\frac{(\Delta_+^2+\epsilon^2)\,\Delta_- + 2\,\Delta_-^2\,\Delta_+}
+{\Delta_+^2 + 2\,\Delta_-^2 + \Delta_-\Delta_+ + \epsilon^2}
+$$
+
+$\Delta_-=u_f-u_i$ es el incremento sin limitar, y $\Delta_+$ es $u_i^{\max}-u_i$ o $u_i^{\min}-u_i$ según el signo del incremento. La clave es $\epsilon^2$.
+
+$$
+\epsilon^2=(K\,\Delta x)^3
+$$
+
+$K$ es un parámetro de ajuste y $\Delta x$ es el tamaño de malla. $\epsilon^2$ actúa como umbral. Cuando la variación es menor que $\epsilon$ (una región suave), $\phi_f\to1$ y el limitador se apaga. Sube $K$ y el umbral trepa, así que el limitador se suelta sobre una región más amplia. La precisión mejora, pero un $K$ demasiado alto pierde las oscilaciones cerca de los choques. Lleva $K$ a cero y converge de vuelta a Barth–Jespersen. En la simulación de arriba, activa Venkatakrishnan y arrastra el deslizador $K$ para ver cómo Φ cambia suavemente.
+
+## Python — carrera de tres limitadores en advección escalar
+
+En un dominio periódico, transporta (advección) una onda cuadrada junto con una campana gaussiana. Corre tres esquemas lado a lado — sin limitar (Fromm), Barth–Jespersen, Venkatakrishnan — y compara el mínimo final. Un mínimo por debajo de cero significa que se cavó un valle falso de esa profundidad.
+
+```python
+import numpy as np
+
+NX, A, CFL = 200, 1.0, 0.4
+dx = 1.0 / NX
+dt = CFL * dx / A
+
+def init_profile():
+    x = (np.arange(NX) + 0.5) / NX
+    u = np.where((x > 0.1) & (x < 0.3), 1.0, 0.0)   # onda cuadrada
+    u += np.exp(-((x - 0.65) / 0.06) ** 2)          # campana gaussiana
+    return u
+
+def cell_slope(u):
+    return (np.roll(u, -1) - np.roll(u, 1)) / 2.0    # pendiente central (Fromm)
+
+def barth_jespersen_phi(u, s):
+    up, um = np.roll(u, -1), np.roll(u, 1)
+    umax = np.maximum(u, np.maximum(up, um))
+    umin = np.minimum(u, np.minimum(up, um))
+    phi = np.ones_like(u)
+    for du in (0.5 * s, -0.5 * s):                   # dos caras
+        f = np.ones_like(u)
+        pos, neg = du > 1e-12, du < -1e-12
+        f[pos] = np.minimum(1.0, (umax[pos] - u[pos]) / du[pos])
+        f[neg] = np.minimum(1.0, (umin[neg] - u[neg]) / du[neg])
+        phi = np.minimum(phi, f)
+    return np.clip(phi, 0.0, 1.0)
+
+def venkatakrishnan_phi(u, s, K=0.3):
+    up, um = np.roll(u, -1), np.roll(u, 1)
+    umax = np.maximum(u, np.maximum(up, um))
+    umin = np.minimum(u, np.minimum(up, um))
+    eps2 = K ** 3                                    # (K*h)^3, tamaño de celda h=1
+    phi = np.ones_like(u)
+    for du in (0.5 * s, -0.5 * s):
+        d = np.where(du > 0, umax - u, umin - u)
+        num = (d * d + eps2) * du + 2 * du * du * d
+        den = d * d + 2 * du * du + d * du + eps2
+        f = np.where(np.abs(du) < 1e-12, 1.0, num / (du * den))
+        phi = np.minimum(phi, f)
+    return np.clip(phi, 0.0, 1.0)
+
+def muscl_rhs(u, limiter):
+    s = cell_slope(u)
+    phi = limiter(u, s) if limiter else np.ones_like(u)
+    uL = u + 0.5 * phi * s              # estado izquierdo en la cara i+1/2
+    flux = A * uL                       # flujo upwind (a > 0)
+    return -(flux - np.roll(flux, 1)) / dx
+
+def advance_muscl(u, limiter):         # SSP-RK2
+    k1 = muscl_rhs(u, limiter)
+    u1 = u + dt * k1
+    k2 = muscl_rhs(u1, limiter)
+    return 0.5 * (u + u1 + dt * k2)
+
+def run_limiter_race(steps=160):
+    fields = {"none": init_profile(), "bj": init_profile(), "venk": init_profile()}
+    lims = {"none": None, "bj": barth_jespersen_phi, "venk": venkatakrishnan_phi}
+    for _ in range(steps):
+        for k in fields:
+            fields[k] = advance_muscl(fields[k], lims[k])
+    for k, u in fields.items():
+        print(f"{k:5s}  min={u.min():+.4f}  max={u.max():.4f}")
+
+run_limiter_race()
+```
+
+Una salida representativa:
+
+```text
+none   min=-0.0417  max=1.0231
+bj     min=+0.0000  max=1.0000
+venk   min=-0.0004  max=1.0009
+```
+
+El esquema sin limitar empujó el mínimo a negativo y el máximo por encima de 1 — un valle cavado detrás de la onda cuadrada y una joroba levantada sobre ella. Barth–Jespersen clavó mínimo y máximo exactamente en $[0,1]$. Venkatakrishnan permite un sobreimpulso diminuto (el precio de $K$) a cambio de ser más suave.
+
+Corre los tres a la vez en la animación de abajo.
+
+<LimitedAdvectionRace />
+
+Mira el borde de salida de la onda cuadrada. El esquema sin limitar (rojo) hace crecer rizos por debajo de cero, mientras ambos limitadores se mantienen monótonos. También se ve que Venkatakrishnan (ámbar) es apenas un poco más romo en la esquina que Barth–Jespersen (cian).
+
+## Al encender el limitador en la práctica
+
+Recuerda tres trampas y evitarás casi todos los accidentes.
+
+Primero, **el conjunto de vecinos**. Tomar el $\max/\min$ de Barth–Jespersen sobre vecinos por cara o sobre vecinos por vértice cambia el resultado. En mallas no estructuradas, los vecinos por vértice (toda celda que comparte un vértice con la celda) reducen el sesgo direccional y dan un limitador más equilibrado.
+
+Segundo, **ajustar $K$**. Demasiado pequeño y la convergencia se estanca como Barth–Jespersen; demasiado grande y pierdes oscilaciones en los choques. Para corridas compresibles estacionarias, probar $K\approx0.1{-}5$ contra el tamaño de malla es práctica común. Como $\epsilon^2$ lleva $\Delta x^3$, refinar la malla hace que el limitador se dispare más seguido por sí solo.
+
+Tercero, **por componente frente a por característica**. En un sistema vectorial (las ecuaciones de Euler), limitar cada variable conservada por separado puede crear nuevas oscilaciones por desajuste entre componentes. Proyectar a variables características (characteristic variable) antes de limitar es más seguro pero cuesta más.
+
+## La línea que conviene guardar
+
+Un limitador es el contrato entre segundo orden y monotonía. Barth–Jespersen enjaula la reconstrucción con el máximo y el mínimo de los vecinos, sosteniendo la monotonía a la perfección, pero su quiebre agudo obstruye la convergencia estacionaria. Venkatakrishnan redondea ese quiebre con el umbral $\epsilon^2=(K\Delta x)^3$, apagando el limitador en regiones suaves. La próxima vez que un solver de segundo orden muera en densidad negativa, sospecha del conjunto de vecinos del limitador y de $K$ antes de culpar al gradiente.

@@ -1,0 +1,186 @@
+---
+title: "비정렬 격자에서 2차 재구성이 만든 가짜 극값 — Barth–Jespersen·Venkatakrishnan 리미터"
+date: 2026-07-06
+description: "비정렬 FVM 2차 재구성의 과도한 진동을 잡는 슬로프 리미터"
+tags: ["FVM", "Slope-Limiter", "Unstructured-Grid", "Barth-Jespersen", "Venkatakrishnan"]
+draft: false
+---
+
+import { LimiterReconstructionLab } from '@/components/post-viz/2026-07-06-unstructured-slope-limiter-barth-jespersen/LimiterReconstructionLab'
+import { LimitedAdvectionRace } from '@/components/post-viz/2026-07-06-unstructured-slope-limiter-barth-jespersen/LimitedAdvectionRace'
+
+잘 돌던 해석기에 2차 정확도를 켰더니 밀도가 음수로 내려갔다. 로그를 뒤지니 충격파 앞에서 재구성된 면 값이 셀 평균보다 위로 튀어 올랐다. 1차 업윈드는 멀쩡했는데, 정확도를 올리자 오히려 계산이 죽은 것이다. 이 글은 그 튐(overshoot)이 왜 생기는지, 그리고 비정렬 격자에서 이를 막는 두 리미터 — Barth–Jespersen과 Venkatakrishnan — 을 수식·코드·시뮬레이션으로 풀어낸다. 다 읽으면 리미터 한 줄을 왜 그렇게 쓰는지, 어떤 튜닝 파라미터가 수렴성을 좌우하는지 알게 된다.
+
+## 재구성이 없던 극값을 만든다
+
+유한체적법(FVM, 셀 평균을 미지수로 두는 이산화)에서 2차 정확도를 얻으려면 셀 안에서 값을 선형으로 재구성한다.
+
+$$
+u_f = u_i + \Phi_i\,\nabla u_i\cdot(\mathbf{x}_f-\mathbf{x}_i)
+$$
+
+여기서 $u_i$는 셀 $i$의 평균, $\nabla u_i$는 재구성된 기울기, $\mathbf{x}_f$는 면 중심, $\Phi_i\in[0,1]$은 리미터다.
+
+리미터가 없으면($\Phi_i=1$) 문제가 생긴다. 기울기 $\nabla u_i$는 최소제곱이나 Green–Gauss로 구하는데, 이웃 값들의 정보를 평균해 만든다. 불연속 근처에서는 이 평균 기울기가 과도해진다. 셀 경계까지 선형으로 뻗으면 이웃 어디에도 없던 새 최대·최소가 생긴다. 그 가짜 극값이 다음 스텝의 플럭스를 오염시키고, 진동이 자란다. 음의 밀도·음의 에너지는 그 진동의 종착역이다.
+
+원칙은 단순하다. **재구성된 면 값은 이웃 셀들이 이미 가진 값의 범위를 벗어나면 안 된다.** 이것이 국소 최대·최소 원리(LMP)다. 리미터 $\Phi_i$는 이 원리를 지키도록 기울기를 깎는 스칼라다.
+
+## Barth–Jespersen: 이웃의 최대·최소로 가둔다
+
+Barth와 Jespersen(1989)의 아이디어는 직접적이다. 셀 $i$와 그 이웃들이 만드는 허용 범위를 먼저 정한다.
+
+$$
+u_i^{\max}=\max\!\left(u_i,\max_{j\in N(i)}u_j\right),\quad
+u_i^{\min}=\min\!\left(u_i,\min_{j\in N(i)}u_j\right)
+$$
+
+$N(i)$는 셀 $i$의 면 이웃 집합이다. 이제 각 면에서 리미터가 없을 때의 값 증분 $u_f-u_i$를 보고, 면마다 허용 계수 $\phi_f$를 구한다.
+
+$$
+\phi_f=
+\begin{cases}
+\min\!\left(1,\dfrac{u_i^{\max}-u_i}{u_f-u_i}\right), & u_f-u_i>0\\[2mm]
+\min\!\left(1,\dfrac{u_i^{\min}-u_i}{u_f-u_i}\right), & u_f-u_i<0\\[1mm]
+1, & u_f-u_i=0
+\end{cases}
+$$
+
+셀 하나의 리미터는 모든 면 중 가장 보수적인 값을 취한다.
+
+$$
+\Phi_i=\min_{f\in \text{faces}(i)}\phi_f
+$$
+
+이 한 줄이 하는 일은 명확하다. 재구성이 허용 범위 안에 있으면 $\phi_f=1$로 두어 2차 정확도를 유지한다. 범위를 넘으려 하면 딱 경계에 닿는 만큼만 기울기를 남긴다. 극값 근처에서는 $\Phi_i\to0$이 되어 1차 업윈드로 후퇴한다.
+
+아래 시뮬레이션에서 직접 조작해보자. 기울기 gain을 키우면 unlimited(Φ=1) 재구성이 회색 밴드(이웃 최대·최소)를 뚫고 빨갛게 변한다.
+
+<LimiterReconstructionLab />
+
+리미터를 Barth–Jespersen으로 바꾸면 같은 gain에서도 각 셀의 Φ가 1보다 작아지며 선분이 밴드 안에 갇힌다. 점프 양쪽 셀의 Φ가 특히 작아지는 것을 보라.
+
+## 미분 불가능이라는 두 번째 함정
+
+Barth–Jespersen은 단조성을 완벽히 지킨다. 그런데 정상상태 해석기에 넣으면 잔차가 어느 수준에서 더 내려가지 않고 진동한다. 원인은 $\min$과 나눗셈에 있다. $\phi_f$는 해에 대해 미분 불가능한 함수다. 매 반복마다 어떤 면이 최소를 주느냐가 홱홱 바뀐다. 리미터 값이 켜졌다 꺼졌다 하며 잔차를 튕겨낸다. 암시적(implicit) 솔버의 야코비안은 이 불연속을 싫어한다.
+
+문제를 정리하면 이렇다. 우리는 매끄러운 영역에서는 리미터가 아예 작동하지 않길(즉 $\Phi=1$) 바란다. 진짜 불연속에서만 켜지고, 켜지고 꺼지는 경계가 부드럽길 바란다. Barth–Jespersen의 날카로운 꺾임을 둥글리는 것이 다음 단계다.
+
+## Venkatakrishnan: 부드럽게 깎는다
+
+Venkatakrishnan(1993)은 $\min(1,y)$의 꺾임을 유리함수로 대체했다. 소스가 언급한 Michalak–Ollivier-Gooch 리미터도 같은 계열이다. 면마다의 계수는 이렇게 쓴다.
+
+$$
+\phi_f=\frac{1}{\Delta_-}\,
+\frac{(\Delta_+^2+\epsilon^2)\,\Delta_- + 2\,\Delta_-^2\,\Delta_+}
+{\Delta_+^2 + 2\,\Delta_-^2 + \Delta_-\Delta_+ + \epsilon^2}
+$$
+
+$\Delta_-=u_f-u_i$는 리미터 없는 증분, $\Delta_+$는 증분 방향에 맞춰 $u_i^{\max}-u_i$ 또는 $u_i^{\min}-u_i$다. 핵심은 $\epsilon^2$다.
+
+$$
+\epsilon^2=(K\,\Delta x)^3
+$$
+
+$K$는 튜닝 파라미터, $\Delta x$는 격자 크기다. $\epsilon^2$은 문턱 역할을 한다. 값의 변동이 $\epsilon$보다 작으면(매끄러운 영역) $\phi_f\to1$이 되어 리미터가 꺼진다. $K$를 키우면 문턱이 높아져 더 넓은 영역에서 리미터가 풀린다. 정확도는 좋아지지만 너무 키우면 충격파 근처 진동을 놓친다. $K$를 0으로 보내면 Barth–Jespersen에 수렴한다. 위 시뮬레이션에서 Venkatakrishnan을 켜고 $K$ 슬라이더를 움직이면 Φ가 부드럽게 변하는 것을 확인할 수 있다.
+
+## Python — 스칼라 이류로 세 리미터를 겨룬다
+
+주기 경계에서 사각파와 가우스 봉우리를 함께 이류(advection)시킨다. 세 스킴 — 무제한(Fromm), Barth–Jespersen, Venkatakrishnan — 을 나란히 돌리고 최종 최솟값을 비교한다. 최솟값이 0 아래로 내려가면 그만큼 가짜 골짜기가 팬 것이다.
+
+```python
+import numpy as np
+
+NX, A, CFL = 200, 1.0, 0.4
+dx = 1.0 / NX
+dt = CFL * dx / A
+
+def init_profile():
+    x = (np.arange(NX) + 0.5) / NX
+    u = np.where((x > 0.1) & (x < 0.3), 1.0, 0.0)   # 사각파
+    u += np.exp(-((x - 0.65) / 0.06) ** 2)          # 가우스 봉우리
+    return u
+
+def cell_slope(u):
+    return (np.roll(u, -1) - np.roll(u, 1)) / 2.0    # 중심 기울기(Fromm)
+
+def barth_jespersen_phi(u, s):
+    up, um = np.roll(u, -1), np.roll(u, 1)
+    umax = np.maximum(u, np.maximum(up, um))
+    umin = np.minimum(u, np.minimum(up, um))
+    phi = np.ones_like(u)
+    for du in (0.5 * s, -0.5 * s):                   # 두 면
+        f = np.ones_like(u)
+        pos, neg = du > 1e-12, du < -1e-12
+        f[pos] = np.minimum(1.0, (umax[pos] - u[pos]) / du[pos])
+        f[neg] = np.minimum(1.0, (umin[neg] - u[neg]) / du[neg])
+        phi = np.minimum(phi, f)
+    return np.clip(phi, 0.0, 1.0)
+
+def venkatakrishnan_phi(u, s, K=0.3):
+    up, um = np.roll(u, -1), np.roll(u, 1)
+    umax = np.maximum(u, np.maximum(up, um))
+    umin = np.minimum(u, np.minimum(up, um))
+    eps2 = K ** 3                                    # (K*h)^3, 셀 크기 h=1 단위
+    phi = np.ones_like(u)
+    for du in (0.5 * s, -0.5 * s):
+        d = np.where(du > 0, umax - u, umin - u)
+        num = (d * d + eps2) * du + 2 * du * du * d
+        den = d * d + 2 * du * du + d * du + eps2
+        f = np.where(np.abs(du) < 1e-12, 1.0, num / (du * den))
+        phi = np.minimum(phi, f)
+    return np.clip(phi, 0.0, 1.0)
+
+def muscl_rhs(u, limiter):
+    s = cell_slope(u)
+    phi = limiter(u, s) if limiter else np.ones_like(u)
+    uL = u + 0.5 * phi * s              # 면 i+1/2 좌측 상태
+    flux = A * uL                       # 업윈드 플럭스 (a > 0)
+    return -(flux - np.roll(flux, 1)) / dx
+
+def advance_muscl(u, limiter):         # SSP-RK2
+    k1 = muscl_rhs(u, limiter)
+    u1 = u + dt * k1
+    k2 = muscl_rhs(u1, limiter)
+    return 0.5 * (u + u1 + dt * k2)
+
+def run_limiter_race(steps=160):
+    fields = {"none": init_profile(), "bj": init_profile(), "venk": init_profile()}
+    lims = {"none": None, "bj": barth_jespersen_phi, "venk": venkatakrishnan_phi}
+    for _ in range(steps):
+        for k in fields:
+            fields[k] = advance_muscl(fields[k], lims[k])
+    for k, u in fields.items():
+        print(f"{k:5s}  min={u.min():+.4f}  max={u.max():.4f}")
+
+run_limiter_race()
+```
+
+대표적인 출력은 다음과 같다.
+
+```text
+none   min=-0.0417  max=1.0231
+bj     min=+0.0000  max=1.0000
+venk   min=-0.0004  max=1.0009
+```
+
+무제한 스킴은 최솟값이 음수로, 최댓값이 1을 넘었다. 사각파 뒤에 골짜기가 파이고 봉우리가 솟았다는 뜻이다. Barth–Jespersen은 최소·최대를 정확히 $[0,1]$에 묶었다. Venkatakrishnan은 미세한 초과를 허용하는 대신($K$의 대가) 더 매끄럽다.
+
+아래 애니메이션에서 세 스킴을 동시에 굴려보자.
+
+<LimitedAdvectionRace />
+
+사각파의 뒤쪽 모서리를 주목하라. 무제한(빨강)은 0 아래로 잔물결이 자라지만, 두 리미터는 단조성을 지킨다. Venkatakrishnan(노랑)이 Barth–Jespersen(시안)보다 모서리에서 아주 약간 더 뭉툭한 것도 보인다.
+
+## 현장에서 리미터를 켤 때
+
+세 가지 함정만 기억하면 대부분의 사고를 피한다.
+
+첫째, **이웃 집합의 정의**다. Barth–Jespersen의 $\max/\min$을 면 이웃으로 잡느냐, 정점(vertex) 이웃으로 잡느냐에 따라 결과가 달라진다. 비정렬 격자에서 정점 이웃(그 셀의 꼭짓점을 공유하는 모든 셀)을 쓰면 방향 편향이 줄어 더 균형 잡힌다.
+
+둘째, **$K$ 튜닝**이다. $K$가 너무 작으면 Barth–Jespersen처럼 수렴이 정체되고, 너무 크면 충격파에서 진동을 놓친다. 정상상태 압축성 해석에서는 $K\approx0.1{-}5$ 범위를 격자 크기에 맞춰 시험하는 것이 관행이다. $\epsilon^2$에 $\Delta x^3$이 들어가므로 격자를 세분화하면 리미터가 자동으로 더 자주 켜진다.
+
+셋째, **성분별 vs 특성별 적용**이다. 벡터계(Euler 방정식)에서 보존 변수 각각에 리미터를 따로 걸면 성분 간 불일치로 새 진동이 생길 수 있다. 특성 변수(characteristic variable)로 사영한 뒤 리미터를 거는 편이 안전하지만 비용이 든다.
+
+## 한 줄 정리
+
+리미터는 2차 정확도와 단조성 사이의 계약서다. Barth–Jespersen은 이웃의 최대·최소로 재구성을 가둬 단조성을 완벽히 지키지만, 그 날카로운 꺾임이 정상상태 수렴을 방해한다. Venkatakrishnan은 $\epsilon^2=(K\Delta x)^3$의 문턱으로 그 꺾임을 둥글려 매끄러운 영역에서 리미터를 꺼버린다. 다음에 2차 해석기가 음의 밀도로 죽거든, 기울기가 아니라 리미터의 이웃 집합과 $K$를 먼저 의심하라.
