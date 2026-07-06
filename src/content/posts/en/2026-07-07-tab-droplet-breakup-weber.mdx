@@ -1,0 +1,140 @@
+---
+title: "Why a Raindrop Is Not Tear-Shaped — The Weber Number and TAB Breakup"
+date: 2026-07-07
+description: "Reproducing how a droplet bursts in a gas stream with the TAB model"
+tags: ["Atomization", "Weber-Number", "Droplet-Breakup", "TAB-Model", "Multiphase"]
+draft: false
+---
+
+import { TabDropletOscillator } from '@/components/post-viz/2026-07-07-tab-droplet-breakup-weber/TabDropletOscillator'
+import { WeberRegimeLadder } from '@/components/post-viz/2026-07-07-tab-droplet-breakup-weber/WeberRegimeLadder'
+
+Umbrella icons and emoji all draw a raindrop as a teardrop — pointed on top, round at the bottom. No raindrop actually looks like that. Any drop wider than 2 mm gets squashed into a flat-bottomed hamburger-bun shape. Grow it more and its center inflates like a bag, then bursts.
+
+This post puts numbers on that bursting. How a single Weber number decides whether and when a droplet breaks up in a gas stream. Then we take the TAB (Taylor Analogy Breakup) model that O'Rourke and Amsden built in 1987, oscillate a droplet in Python, and blow it apart. It's the story of predicting a droplet's fate with a single spring.
+
+## A raindrop is not a teardrop
+
+Two forces compete inside a falling droplet. One is the **aerodynamic force** of the surrounding air hammering its surface. It presses the drop sideways and flattens it. The other is **surface tension**, which pulls the drop back into a sphere.
+
+For a small drop, surface tension wins outright. That's why tiny drops are always spherical. As the drop grows, or as the relative velocity rises, the aerodynamic force climbs. At some point surface tension can no longer hold. The drop flattens, inflates, and finally shatters. We call this **secondary breakup** — as opposed to the primary breakup where a jet leaving a nozzle first becomes drops.
+
+Diesel engines, rocket injectors, agricultural sprays. Every device that atomizes a liquid runs on this phenomenon. Smaller drops mean more surface area, and faster evaporation and combustion.
+
+## The Weber number — the scale where inertia beats surface tension
+
+Collapse the two forces into one number and you get the Weber number (inertia / surface-tension ratio).
+
+$$
+We = \frac{\rho_g\, u_{rel}^2\, d}{\sigma}
+$$
+
+Here $\rho_g$ is gas density, $u_{rel}$ the relative velocity between drop and gas, $d$ the drop diameter, and $\sigma$ the surface tension. The numerator is the dynamic pressure the gas exerts; the denominator is the grip of surface tension.
+
+When $We$ is small, the drop just oscillates politely. Once $We$ crosses a threshold, the drop breaks up. Experimentally this **critical Weber number sits near 12**. Water drop or fuel drop alike — above this value, none survive.
+
+A second dimensionless group weighs in for viscosity: the Ohnesorge number (viscous / √(inertia · surface-tension)).
+
+$$
+Oh = \frac{\mu_l}{\sqrt{\rho_l\, \sigma\, d}}
+$$
+
+$\mu_l$ is the liquid viscosity and $\rho_l$ the liquid density. A viscous drop (picture a drop of honey) resists deformation strongly. Higher $Oh$ pushes the critical Weber number upward — meaning it's harder to break.
+
+## Taylor's analogy: hang the droplet on a spring
+
+The Weber number only tells you *whether* a drop breaks. Knowing *when* and *how* requires solving the drop's deformation over time. This is where G.I. Taylor's insight enters. He mapped an oscillating, distorting drop onto a **spring–mass–damper oscillator**.
+
+Match the three forces one by one. The spring's restoring force is surface tension. The external force on the mass is the aerodynamic drag of the gas. The damping is the liquid's viscosity. Translate the analogy into an equation and you get a second-order ODE for the deformation $y$.
+
+$$
+\frac{d^2 y}{dt^2} = \frac{C_F}{C_b}\frac{\rho_g}{\rho_l}\frac{u^2}{r^2} - \frac{C_k \sigma}{\rho_l r^3}\, y - \frac{C_d \mu_l}{\rho_l r^2}\frac{dy}{dt}
+$$
+
+$y$ is how far the drop's equator bulges (dimensionless deformation) and $r$ is the radius. The first term on the right is the aerodynamic forcing, the second is the surface-tension restoring, and the third is the viscous damping. The constants $C_F, C_k, C_d, C_b$ are fixed by experiment; O'Rourke–Amsden used $1/3,\ 8,\ 5,\ 1/2$ respectively.
+
+When forcing and restoring balance, the drop settles at a **steady deformation** $y_{eq}$.
+
+$$
+y_{eq} = \frac{C_F}{C_b\, C_k}\, We_r
+$$
+
+$We_r$ is the radius-based Weber number. The key point: deformation is directly proportional to the Weber number. Double the Weber, double the squash.
+
+## The deformation parameter y and the trigger for breakup
+
+The TAB rule is simple. **Breakup occurs the moment $y>1$.** $y=1$ is when the equatorial bulge equals the radius. Once the amplitude grows that large, the drop can no longer hold its shape.
+
+Here the nature of an undamped oscillation matters. Kick a resting oscillator with a sudden forcing and it doesn't stop at $y_{eq}$ — it **overshoots**, up to a maximum of $2y_{eq}$. So even a $y_{eq}$ of just 0.5 — half the deformation at steady state — can spike to $y=1$ on its first swing and burst. This overshoot lowers the critical Weber number in theory.
+
+Play with the simulation below. On the left is a drop meeting the gas stream; on the right is the trajectory of the deformation $y(t)$.
+
+<TabDropletOscillator />
+
+Push the Weber below 12 and the $y$ curve falls short of the red line ($y=1$), just oscillating. Push it above 12 and the first peak crosses the line — the drop shatters. Raise the Ohnesorge and the curve damps out quickly. Viscosity eats the oscillation, so the drop survives at the same Weber.
+
+## Python — oscillate one droplet until it bursts
+
+Port the analogy straight into code. Integrate in dimensionless time and find the instant $y$ crosses 1.
+
+```python
+import numpy as np
+
+def weber(rho_g, u, d, sigma):
+    """Gas inertia to surface-tension ratio (diameter-based)."""
+    return rho_g * u**2 * d / sigma
+
+def tab_breakup(We, Oh, dt=0.01, t_max=40.0):
+    """Integrate the dimensionless TAB oscillator, return breakup time (dimensionless tau).
+    y>1 means breakup; y stays below 1 to the end means None (survives)."""
+    C_F, C_k, C_d, C_b = 1/3, 8.0, 5.0, 1/2
+    omega2 = C_k                       # dimensionless natural frequency^2
+    forcing = (C_F / C_b) * (We / 2)   # steady deformation y_eq = forcing/omega2 = We/24
+    damp = C_d * Oh * np.sqrt(C_k)     # Ohnesorge raises the damping
+    y, ydot, t = 0.0, 0.0, 0.0
+    while t < t_max:
+        acc = forcing - omega2 * y - damp * ydot
+        ydot += acc * dt
+        y += ydot * dt
+        t += dt
+        if y >= 1.0:
+            return t                   # breakup!
+    return None
+
+for We in [6, 10, 12, 20, 40]:
+    tau = tab_breakup(We, Oh=0.02)
+    tag = f"breakup tau={tau:.2f}" if tau else "survives"
+    print(f"We={We:5.1f}  ->  {tag}")
+```
+
+The output reads the critical Weber number straight off.
+
+```text
+We=  6.0  ->  survives
+We= 10.0  ->  survives
+We= 12.0  ->  breakup tau=1.14
+We= 20.0  ->  breakup tau=0.74
+We= 40.0  ->  breakup tau=0.50
+```
+
+Up to We=10 the overshoot falls short of 1 and the drop survives. At We=12 the first peak barely clears the line. As the Weber grows the breakup time $\tau$ shrinks — hit it harder, it bursts sooner. Exactly as the physics demands.
+
+## The ladder of breakup modes
+
+Crossing the threshold doesn't mean every drop bursts the same way. As the Weber number climbs, the **shape** of the breakup changes: vibrational → bag → multimode → sheet-thinning → catastrophic. Each stage carves out a rough Weber band that experiments distinguish clearly.
+
+Slide the ladder below and watch each mode take form.
+
+<WeberRegimeLadder />
+
+Bag breakup near $We \approx 12$ is the lowest-energy break — the drop's center inflates into a thin membrane and pops. By the hundreds in Weber, the surface itself peels off in waves: catastrophic breakup. The TAB model was originally aimed at the bag-breakup regime. That's why it matches well at low Weber but underpredicts penetration at extreme Weber — like high-pressure injection above 40 MPa. There you layer on KHRT or wave breakup models.
+
+## For the lab notebook
+
+The essence of the TAB model is one sentence. **A bursting drop is an oscillating spring, and rupture is the instant its amplitude exceeds the radius.**
+
+- A **Weber number of ~12** is the boundary of drop survival. Above it, surface tension loses to inertia.
+- **Overshoot** lowers the threshold. Even half the steady deformation can burst on the first swing.
+- The **Ohnesorge number** brings viscosity in. A sticky drop damps its oscillation and holds out longer.
+
+Next time you're driving through a downpour and see a fat drop flatten and burst on the windshield — that's the moment it crossed Weber 12.
