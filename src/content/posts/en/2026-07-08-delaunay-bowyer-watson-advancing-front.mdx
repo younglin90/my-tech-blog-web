@@ -1,0 +1,179 @@
+---
+title: "Two Philosophies for Triangulating a Point Cloud — Bowyer–Watson and Advancing Front"
+date: 2026-07-08
+description: "Reproducing the two pillars of unstructured mesh generation, Delaunay and AFT, in code"
+tags: ["CFD", "Mesh-Generation", "Delaunay", "Advancing-Front", "Unstructured-Grid"]
+draft: false
+---
+
+import { BowyerWatsonDelaunay } from '@/components/post-viz/2026-07-08-delaunay-bowyer-watson-advancing-front/BowyerWatsonDelaunay'
+import { DelaunayEdgeFlip } from '@/components/post-viz/2026-07-08-delaunay-bowyer-watson-advancing-front/DelaunayEdgeFlip'
+
+In 1934 the Soviet mathematician Boris Delaunay pulled a dual out of a diagram named after his teacher Georgy Voronoi. Connect scattered points into triangles so that no triangle's circumscribed circle contains any other point. Ninety years later, that single rule sits at the heart of nearly every CFD mesh generator.
+
+This post walks through two philosophies for building unstructured triangular meshes. One inserts points one at a time — the **Bowyer–Watson** incremental Delaunay algorithm. The other stacks elements greedily inward from the boundary — the **Advancing Front Technique (AFT)**. We code the circumcircle test in pure Python, watch the mesh grow, and settle when to reach for each method.
+
+## Two philosophies for covering a point cloud
+
+There are countless ways to connect the same set of points into triangles. The real question is which triangulation is good. In CFD a good mesh is one with few thin, sliver triangles. Flat slivers inflate the error of numerical derivatives and wreck the conditioning of the linear system.
+
+Delaunay triangulation answers that demand head-on. Among all possible triangulations, it **maximizes the minimum angle** — it makes the sharpest triangle in the mesh as blunt as it can be. The bonus: given only the point positions, the answer is unique.
+
+The advancing front comes at it from the opposite direction. It does not scatter points first. It starts from the boundary and glues triangles one at a time inward, creating new points on the fly. It is local greed — pick the best possible element at every step.
+
+## The empty circumcircle — the property that defines Delaunay
+
+A single sentence pins down a Delaunay triangulation. **No triangle's circumscribed circle contains another vertex in its interior.** This is the empty-circumcircle condition.
+
+The test collapses to one determinant. To check whether a point $d$ lies inside the circumcircle of triangle $abc$, order $abc$ counter-clockwise and compute:
+
+$$
+\begin{vmatrix}
+a_x-d_x & a_y-d_y & (a_x-d_x)^2+(a_y-d_y)^2 \\
+b_x-d_x & b_y-d_y & (b_x-d_x)^2+(b_y-d_y)^2 \\
+c_x-d_x & c_y-d_y & (c_x-d_x)^2+(c_y-d_y)^2
+\end{vmatrix} > 0
+$$
+
+Here $a,b,c$ are the triangle's three vertices and $d$ is the point under test. A positive determinant means $d$ is inside the circle, negative means outside, and zero means exactly on it. No division, no square root. Only the sign matters, so it is relatively robust against floating-point error.
+
+When four points form a quadrilateral, which way you draw the diagonal comes down to this one test. Drag the top vertex up and down below. The moment it crosses the shared edge, the diagonal flips.
+
+<DelaunayEdgeFlip />
+
+Push vertex T into the circumcircle of the lower triangle and the diagonal switches from LR to BT. That single flip is a Lawson flip — the minimal operation that restores the empty-circumcircle condition locally.
+
+## Bowyer–Watson: dig a cavity, then refill it
+
+You can build a Delaunay mesh by repeating Lawson flips. But there is a more elegant path — the incremental insertion that Adrian Bowyer and David Watson published side by side in the same journal in 1981.
+
+The idea is simple. When you insert a new point $p$ into a mesh that is already Delaunay, every triangle whose circumcircle contains $p$ becomes invalid. Delete those bad triangles and you carve out a polygonal hole — a **cavity**. Now connect each boundary edge of the cavity to $p$, and you are done.
+
+The procedure boils down to three steps.
+
+1. Find all triangles (the bad triangles) whose circumcircle contains the new point $p$.
+2. Extract the boundary edges of the cavity they form. A boundary edge belongs to exactly one bad triangle.
+3. Delete the bad triangles and, for each boundary edge, form a new triangle with $p$.
+
+You start from one giant **super-triangle** that encloses every input point. After inserting all points, strip out any triangle still touching a super-triangle vertex, and only the final Delaunay mesh remains.
+
+Click the canvas below to drop points one at a time. Every insertion rebuilds the mesh via Bowyer–Watson.
+
+<BowyerWatsonDelaunay />
+
+Turn on the circumcircles and none of them holds another vertex. No matter how densely you place points, that property never breaks. That is what Delaunay means.
+
+## Python — building incremental Delaunay from scratch
+
+From the circumcircle test to the insertion kernel, let us port it to pure Python with no libraries.
+
+```python
+import numpy as np
+
+def circumcircle(a, b, c):
+    """Return the circumcircle center and squared radius. None if collinear."""
+    ax, ay = a; bx, by = b; cx, cy = c
+    d = 2 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by))
+    if abs(d) < 1e-12:
+        return None
+    a2, b2, c2 = ax * ax + ay * ay, bx * bx + by * by, cx * cx + cy * cy
+    ux = (a2 * (by - cy) + b2 * (cy - ay) + c2 * (ay - by)) / d
+    uy = (a2 * (cx - bx) + b2 * (ax - cx) + c2 * (bx - ax)) / d
+    return (ux, uy), (ax - ux) ** 2 + (ay - uy) ** 2
+
+def in_circumcircle(p, tri, pts):
+    """True if point p lies inside the circumcircle of triangle tri."""
+    cc = circumcircle(pts[tri[0]], pts[tri[1]], pts[tri[2]])
+    if cc is None:
+        return False
+    (ux, uy), r2 = cc
+    return (p[0] - ux) ** 2 + (p[1] - uy) ** 2 < r2 - 1e-12
+
+def bowyer_watson(points):
+    """Build a Delaunay triangulation by incremental insertion."""
+    pts = list(points)
+    xs = [p[0] for p in pts]; ys = [p[1] for p in pts]
+    dmax = 20 * max(max(xs) - min(xs), max(ys) - min(ys))
+    cx, cy = (min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2
+    base = len(pts)                                    # first super-triangle vertex index
+    pts += [(cx - dmax, cy - dmax), (cx + dmax, cy - dmax), (cx, cy + dmax)]
+    tris = [(base, base + 1, base + 2)]
+
+    for pi in range(base):                             # insert points one by one
+        p = pts[pi]
+        bad = [t for t in tris if in_circumcircle(p, t, pts)]
+        edge_count = {}                                # cavity boundary = edges seen once
+        for t in bad:
+            for e in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])]:
+                key = tuple(sorted(e))
+                edge_count[key] = edge_count.get(key, 0) + 1
+        boundary = [e for e, n in edge_count.items() if n == 1]
+        tris = [t for t in tris if t not in bad]
+        tris += [(a, b, pi) for a, b in boundary]      # connect p to each boundary edge
+
+    return [t for t in tris if all(i < base for i in t)]  # drop the super-triangle
+
+if __name__ == "__main__":
+    rng = np.random.default_rng(3)
+    P = [tuple(xy) for xy in rng.random((12, 2))]
+    T = bowyer_watson(P)
+    print(f"{len(P)} points -> {len(T)} triangles")
+    print("first triangle vertex indices:", T[0])
+```
+
+Run it and you get something like `12 points -> 17 triangles`. The count of triangles inside the convex hull is roughly $2n - 2 - h$ ($n$ is the number of points, $h$ the number of hull points). The pure insertion kernel fits in about 60 lines.
+
+## How do you honor the boundary — constraints and the pipe
+
+So far all we needed were points. Real CFD geometries are different. An airfoil surface or a cylinder wall carries **boundary lines that must exist as mesh edges**. Yet pure Delaunay is free to slice right across those edges.
+
+The fix is the constrained Delaunay triangulation. The procedure the source describes goes like this. To recover a lost boundary line $AB$, first find the band of triangles that $AB$ crosses — the so-called **pipe**. Start from a triangle attached to point $A$, walk through each neighbor that $AB$ punches through, and stop when you reach $B$: the pipe is complete.
+
+Once the pipe is fixed, re-triangulate its interior to restore $AB$ as an edge, handled by swapping of diagonals or divide-and-conquer. The boundary survives, but the triangles near it may no longer be perfectly Delaunay. You trade geometric fidelity for mesh quality.
+
+## The advancing front — stacking elements by greed
+
+The advancing front technique (AFT) inverts the boundary problem entirely. The boundary is the starting line.
+
+Pick one reference segment $AB$ from the list of boundary segments. Find the point $C$ that forms the best triangle with $AB$. There are two kinds of candidate: reuse a point already on the front, or create a new interior point $I$. Take whichever gives higher quality, form the triangle, and update the front. New edges are added to the front; edges already on the front are considered closed and removed.
+
+Quality is measured as a product of two factors.
+
+$$
+\lambda = \alpha \cdot \delta
+$$
+
+Here $\alpha$ is the triangle's shape factor (1 for equilateral, toward 0 as it flattens) and $\delta$ is how well the actual edge length matches the requested element size (1 when they agree). The larger $\lambda$, the better the element.
+
+The shape factor codes up like this.
+
+```python
+import math
+
+def shape_quality(a, b, c):
+    """Shape factor alpha: 1 for equilateral, toward 0 for slivers."""
+    l1 = math.dist(a, b); l2 = math.dist(b, c); l3 = math.dist(c, a)
+    area = abs((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])) / 2
+    denom = l1 * l1 + l2 * l2 + l3 * l3
+    return 4 * math.sqrt(3) * area / denom if denom > 0 else 0.0
+```
+
+When the front empties — the closed boundary collapses fully inward — the mesh is finished. Because every step picks a local optimum, an AFT initial mesh is usually higher quality than a Delaunay one. Its edge is sharpest when building strongly directional, anisotropic meshes such as boundary layers.
+
+The price is speed. Every new element must be checked against every other front edge for intersection. Coded naively, that is $O(n)$ per element and $O(n^2)$ overall. As the source stresses, localizing that check with a background grid or a quadtree spatial-search structure is the real key in practice.
+
+## When to choose which
+
+The two methods are less rivals than a division of labor.
+
+Delaunay gives a unique, fast answer once a point distribution is fixed. It shines at filling a convex hull, interpolating scattered data, and post-hoc mesh improvement. Its weakness: it cannot honor a boundary on its own and needs a separate constraint pass.
+
+AFT excels at boundary fidelity and initial element quality, and extends easily to anisotropy. In exchange it is harder to implement and its performance hinges on the data structures.
+
+So modern mesh generators blend them. A representative recipe is the front-Delaunay approach: AFT decides the order in which elements are placed, while the Delaunay criterion decides how points connect. It takes only the strengths of both philosophies.
+
+## Takeaways
+
+- The **empty-circumcircle condition** is all there is to Delaunay. The test is one sign-only determinant, and Bowyer–Watson implements it as a 60-line kernel that digs a cavity and refills it.
+- **AFT** greedily stacks the element that maximizes $\lambda = \alpha\delta$ inward from the boundary. It is strong on boundary fidelity and anisotropy, but intersection checks are the bottleneck.
+- Production meshers combine the two as **front-Delaunay** — AFT for the order, Delaunay for the connectivity.

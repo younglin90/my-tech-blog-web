@@ -1,0 +1,179 @@
+---
+title: "用三角形覆盖点云的两种哲学 — Bowyer–Watson与推进阵面"
+date: 2026-07-08
+description: "用代码复现非结构网格生成的两大支柱：Delaunay与AFT"
+tags: ["CFD", "Mesh-Generation", "Delaunay", "Advancing-Front", "Unstructured-Grid"]
+draft: false
+---
+
+import { BowyerWatsonDelaunay } from '@/components/post-viz/2026-07-08-delaunay-bowyer-watson-advancing-front/BowyerWatsonDelaunay'
+import { DelaunayEdgeFlip } from '@/components/post-viz/2026-07-08-delaunay-bowyer-watson-advancing-front/DelaunayEdgeFlip'
+
+1934年，苏联数学家鲍里斯·德劳内从以他的老师格奥尔基·沃罗诺伊命名的图中，抽出了一个对偶。把平面上散布的点连成三角形，使得任何一个三角形的外接圆内都不含其他点。九十年后，这条规则原封不动地嵌在几乎每一个CFD网格生成器的核心里。
+
+本文追踪构建非结构三角网格的两种哲学。一种把点逐个插入——**Bowyer–Watson** 增量Delaunay算法。另一种从边界向内贪婪地堆叠单元——**推进阵面技术(AFT)**。我们用纯Python写出外接圆判定，直接观察网格生长，并厘清何时该选用哪种方法。
+
+## 用三角形覆盖点云的两种哲学
+
+把同一组点连成三角形的方式无穷无尽。真正的问题是哪种三角剖分更好。在CFD里，好的网格是细长尖锐三角形较少的网格。扁平的三角形会放大数值微分的误差，破坏线性系统的条件数。
+
+Delaunay三角剖分正面回应了这个需求。在所有可能的剖分中，它**最大化最小内角**——把网格里最尖的三角形的角度尽量做大。额外的好处是：只给出点的位置，答案就唯一确定。
+
+推进阵面则从相反的方向切入。它不先撒点。它以边界线为起点，向内逐个粘贴三角形，随时创建新点。这是局部贪婪——每一步都选出可能的最佳单元。
+
+## 空外接圆 — 定义Delaunay的性质
+
+一句话就锁定了Delaunay三角剖分。**任何三角形的外接圆内部都不含其他顶点。** 这就是空外接圆条件(empty circumcircle)。
+
+判定归结为一个行列式。要检验点 $d$ 是否落在三角形 $abc$ 的外接圆内，把 $abc$ 按逆时针排列，计算：
+
+$$
+\begin{vmatrix}
+a_x-d_x & a_y-d_y & (a_x-d_x)^2+(a_y-d_y)^2 \\
+b_x-d_x & b_y-d_y & (b_x-d_x)^2+(b_y-d_y)^2 \\
+c_x-d_x & c_y-d_y & (c_x-d_x)^2+(c_y-d_y)^2
+\end{vmatrix} > 0
+$$
+
+其中 $a,b,c$ 是三角形的三个顶点，$d$ 是待检验的点。行列式为正表示 $d$ 在圆内，为负表示在圆外，为零表示恰好落在圆周上。没有除法，没有平方根。只看符号，因此对浮点误差相对稳健。
+
+当四个点构成一个四边形时，对角线朝哪个方向画，全由这一个判定决定。在下面把顶部的顶点上下拖动。一越过共享边，对角线就翻转。
+
+<DelaunayEdgeFlip />
+
+把顶点 T 推入下方三角形的外接圆内，对角线就从 LR 切换为 BT。这一次翻转正是劳森翻转(Lawson flip)——局部恢复空外接圆条件的最小操作。
+
+## Bowyer–Watson：挖出空腔，再填回去
+
+重复劳森翻转也能构建Delaunay网格。但还有一条更优雅的路——阿德里安·鲍耶与戴维·沃森于1981年在同一份期刊上并排发表的增量插入法。
+
+想法很简单。当你把新点 $p$ 插入一个已经是Delaunay的网格时，凡是外接圆包含 $p$ 的三角形都会失效。删掉这些坏三角形，就挖出一个多边形的空洞，即**空腔(cavity)**。然后把空腔的每条边界边与 $p$ 相连来填充，就完成了。
+
+流程归纳为三步。
+
+1. 找出所有外接圆包含新点 $p$ 的三角形（坏三角形）。
+2. 取出它们构成的空腔的边界边。边界边只属于一个坏三角形。
+3. 删除坏三角形，对每条边界边用 $p$ 生成新三角形。
+
+开始时，从一个包住所有输入点的巨大**超级三角形**出发。插完所有点后，剔除仍触及超级三角形顶点的三角形，就只剩下最终的Delaunay网格。
+
+点击下方画布，逐个落点。每次插入都用Bowyer–Watson重建网格。
+
+<BowyerWatsonDelaunay />
+
+打开外接圆显示，没有一个圆包含其他顶点。无论点落得多密，这条性质都不会破。这就是Delaunay。
+
+## Python — 从零写出增量Delaunay
+
+从外接圆判定到插入内核，我们用不依赖任何库的纯Python移植它。
+
+```python
+import numpy as np
+
+def circumcircle(a, b, c):
+    """返回三点外接圆的圆心和半径平方。共线则返回None。"""
+    ax, ay = a; bx, by = b; cx, cy = c
+    d = 2 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by))
+    if abs(d) < 1e-12:
+        return None
+    a2, b2, c2 = ax * ax + ay * ay, bx * bx + by * by, cx * cx + cy * cy
+    ux = (a2 * (by - cy) + b2 * (cy - ay) + c2 * (ay - by)) / d
+    uy = (a2 * (cx - bx) + b2 * (ax - cx) + c2 * (bx - ax)) / d
+    return (ux, uy), (ax - ux) ** 2 + (ay - uy) ** 2
+
+def in_circumcircle(p, tri, pts):
+    """点p在三角形tri的外接圆内部则返回True。"""
+    cc = circumcircle(pts[tri[0]], pts[tri[1]], pts[tri[2]])
+    if cc is None:
+        return False
+    (ux, uy), r2 = cc
+    return (p[0] - ux) ** 2 + (p[1] - uy) ** 2 < r2 - 1e-12
+
+def bowyer_watson(points):
+    """用增量插入构建Delaunay三角剖分。"""
+    pts = list(points)
+    xs = [p[0] for p in pts]; ys = [p[1] for p in pts]
+    dmax = 20 * max(max(xs) - min(xs), max(ys) - min(ys))
+    cx, cy = (min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2
+    base = len(pts)                                    # 超级三角形顶点起始索引
+    pts += [(cx - dmax, cy - dmax), (cx + dmax, cy - dmax), (cx, cy + dmax)]
+    tris = [(base, base + 1, base + 2)]
+
+    for pi in range(base):                             # 逐个插入点
+        p = pts[pi]
+        bad = [t for t in tris if in_circumcircle(p, t, pts)]
+        edge_count = {}                                # 空腔边界 = 只出现一次的边
+        for t in bad:
+            for e in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])]:
+                key = tuple(sorted(e))
+                edge_count[key] = edge_count.get(key, 0) + 1
+        boundary = [e for e, n in edge_count.items() if n == 1]
+        tris = [t for t in tris if t not in bad]
+        tris += [(a, b, pi) for a, b in boundary]      # 把p连到每条边界边
+
+    return [t for t in tris if all(i < base for i in t)]  # 移除超级三角形
+
+if __name__ == "__main__":
+    rng = np.random.default_rng(3)
+    P = [tuple(xy) for xy in rng.random((12, 2))]
+    T = bowyer_watson(P)
+    print(f"{len(P)} 个点 -> {len(T)} 个三角形")
+    print("第一个三角形的顶点索引:", T[0])
+```
+
+运行后会得到类似 `12 个点 -> 17 个三角形` 的结果。凸包内的三角形数量大约是 $2n - 2 - h$ 个（$n$ 是点数，$h$ 是凸包上的点数）。纯插入内核大约60行。
+
+## 如何守住边界 — 约束与管道
+
+到此为止只需要点。真实的CFD几何不同。翼型表面、圆柱壁面这样的地方，带有**必须作为网格边存在的边界线**。可纯Delaunay却可以随意穿过这些边。
+
+解法是约束Delaunay三角剖分(constrained DT)。原文描述的流程如下。要恢复丢失的边界线 $AB$，先找出 $AB$ 穿过的那条三角形带，即所谓的**管道(pipe)**。从连着点 $A$ 的三角形出发，沿着被 $AB$ 穿透的相邻三角形前进，抵达 $B$ 时管道就完成了。
+
+管道确定后，对其内部重新三角化以把 $AB$ 恢复为边，用对角线交换(swapping of diagonals)或分治处理。边界复活了，但它附近的三角形可能不再是完美的Delaunay。你是在用几何保真度换取网格质量。
+
+## 推进阵面 — 用贪婪堆叠单元
+
+推进阵面技术(AFT)把这个边界问题彻底反过来求解。边界本身就是起跑线。
+
+从边界段的列表中选一个基准段 $AB$。找出与 $AB$ 构成最佳三角形的点 $C$。候选有两种：复用阵面上已有的点，或创建一个新的内部点 $I$。取质量更高的一方，构成三角形，更新阵面。新生成的边加入阵面；已在阵面上的边视为闭合并移除。
+
+质量用两个因子的乘积来度量。
+
+$$
+\lambda = \alpha \cdot \delta
+$$
+
+其中 $\alpha$ 是三角形的形状因子（等边为1，越扁平越接近0），$\delta$ 是要求单元尺寸与实际边长的吻合度（两者相等时为1）。$\lambda$ 越大，单元越好。
+
+形状因子可以这样写。
+
+```python
+import math
+
+def shape_quality(a, b, c):
+    """形状因子alpha：等边为1，越扁平越接近0。"""
+    l1 = math.dist(a, b); l2 = math.dist(b, c); l3 = math.dist(c, a)
+    area = abs((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])) / 2
+    denom = l1 * l1 + l2 * l2 + l3 * l3
+    return 4 * math.sqrt(3) * area / denom if denom > 0 else 0.0
+```
+
+当阵面清空（闭合边界全部向内汇聚）时，网格就完成了。因为每一步都选局部最优，AFT的初始网格质量通常高于Delaunay。在构建边界层这类方向性强的各向异性网格时，它的优势尤为明显。
+
+代价是速度。每个新单元都要与阵面上其他每条边做相交检验。朴素实现下，单个单元是 $O(n)$，整体膨胀到 $O(n^2)$。正如原文强调的，用背景网格或四叉树(quadtree)这类空间搜索结构把该检验局部化，才是实战的关键。
+
+## 何时选用哪种
+
+这两种方法与其说是竞争，不如说是分工。
+
+Delaunay在点分布给定后返回唯一而快速的答案。它擅长填充凸包、散乱数据插值以及事后的网格改善。它的弱点是无法自行守住边界，需要单独的约束步骤。
+
+AFT在边界保真度和初始单元质量上出色，并易于向各向异性扩展。代价是实现更难，性能高度依赖数据结构。
+
+于是现代网格生成器把两者融合。一个代表性配方是阵面–Delaunay方法：AFT决定单元放置的顺序，而Delaunay准则决定点如何连接。它只取两种哲学的长处。
+
+## 要点
+
+- **空外接圆条件** 就是Delaunay的全部。判定是一个只看符号的行列式，Bowyer–Watson把它实现为一个挖空腔再填回的60行内核。
+- **AFT** 从边界向内贪婪地堆叠使 $\lambda = \alpha\delta$ 最大的单元。它在边界保真度和各向异性上很强，但相交检验的开销是瓶颈。
+- 生产级网格生成器把两者结合为**阵面–Delaunay**——顺序交给AFT，连接交给Delaunay。

@@ -1,0 +1,179 @@
+---
+title: "Dos filosofías para triangular una nube de puntos — Bowyer–Watson y frente de avance"
+date: 2026-07-08
+description: "Reproducir en código los dos pilares de la malla no estructurada: Delaunay y AFT"
+tags: ["CFD", "Mesh-Generation", "Delaunay", "Advancing-Front", "Unstructured-Grid"]
+draft: false
+---
+
+import { BowyerWatsonDelaunay } from '@/components/post-viz/2026-07-08-delaunay-bowyer-watson-advancing-front/BowyerWatsonDelaunay'
+import { DelaunayEdgeFlip } from '@/components/post-viz/2026-07-08-delaunay-bowyer-watson-advancing-front/DelaunayEdgeFlip'
+
+En 1934, el matemático soviético Borís Delaunay extrajo un dual de un diagrama que llevaba el nombre de su maestro Georgy Voronói. Conectar puntos dispersos del plano en triángulos de modo que ningún círculo circunscrito de un triángulo contenga a otro punto. Noventa años después, esa única regla sigue incrustada en el corazón de casi todos los generadores de malla de CFD.
+
+Este artículo recorre dos filosofías para construir mallas triangulares no estructuradas. Una inserta los puntos de uno en uno: el algoritmo incremental de Delaunay **Bowyer–Watson**. La otra apila elementos con avidez desde la frontera hacia adentro: la **técnica de frente de avance (AFT)**. Codificamos la prueba del círculo circunscrito en Python puro, observamos crecer la malla y aclaramos cuándo conviene cada método.
+
+## Dos filosofías para cubrir una nube de puntos
+
+Hay incontables maneras de conectar el mismo conjunto de puntos en triángulos. La verdadera pregunta es cuál triangulación es buena. En CFD, una buena malla tiene pocos triángulos finos y afilados. Los triángulos aplanados amplifican el error de las derivadas numéricas y arruinan el número de condición del sistema lineal.
+
+La triangulación de Delaunay responde de frente a esa exigencia. Entre todas las triangulaciones posibles, **maximiza el ángulo mínimo**: hace que el triángulo más afilado de la malla sea lo menos afilado posible. La ventaja añadida: dadas solo las posiciones de los puntos, la respuesta es única.
+
+El frente de avance lo aborda desde la dirección opuesta. No dispersa puntos primero. Parte de la línea de frontera y pega triángulos de uno en uno hacia adentro, creando puntos nuevos sobre la marcha. Es avidez local: elegir el mejor elemento posible en cada paso.
+
+## El círculo circunscrito vacío — la propiedad que define a Delaunay
+
+Una sola frase fija una triangulación de Delaunay. **Ningún círculo circunscrito de un triángulo contiene a otro vértice en su interior.** Es la condición del círculo circunscrito vacío (empty circumcircle).
+
+La prueba se reduce a un determinante. Para comprobar si un punto $d$ cae dentro del círculo circunscrito del triángulo $abc$, se ordena $abc$ en sentido antihorario y se calcula:
+
+$$
+\begin{vmatrix}
+a_x-d_x & a_y-d_y & (a_x-d_x)^2+(a_y-d_y)^2 \\
+b_x-d_x & b_y-d_y & (b_x-d_x)^2+(b_y-d_y)^2 \\
+c_x-d_x & c_y-d_y & (c_x-d_x)^2+(c_y-d_y)^2
+\end{vmatrix} > 0
+$$
+
+Aquí $a,b,c$ son los tres vértices del triángulo y $d$ es el punto a examinar. Un determinante positivo significa que $d$ está dentro del círculo, negativo fuera, y cero justo sobre la circunferencia. Sin división ni raíz cuadrada. Solo importa el signo, así que es relativamente robusto frente al error de punto flotante.
+
+Cuando cuatro puntos forman un cuadrilátero, hacia qué lado se traza la diagonal depende de esta única prueba. Abajo, arrastra el vértice superior hacia arriba y hacia abajo. En cuanto cruza la arista compartida, la diagonal se invierte.
+
+<DelaunayEdgeFlip />
+
+Empuja el vértice T dentro del círculo circunscrito del triángulo inferior y la diagonal cambia de LR a BT. Ese único giro es un giro de Lawson (Lawson flip): la operación mínima que restaura localmente la condición del círculo circunscrito vacío.
+
+## Bowyer–Watson: cavar una cavidad y volver a rellenarla
+
+También se puede construir una malla de Delaunay repitiendo giros de Lawson. Pero existe un camino más elegante: la inserción incremental que Adrian Bowyer y David Watson publicaron uno junto al otro en la misma revista en 1981.
+
+La idea es sencilla. Al insertar un punto nuevo $p$ en una malla que ya es Delaunay, todo triángulo cuyo círculo circunscrito contenga a $p$ queda invalidado. Al borrar esos triángulos malos se abre un hueco poligonal: una **cavidad**. Ahora basta con conectar cada arista de frontera de la cavidad con $p$ para rellenarla.
+
+El procedimiento se resume en tres pasos.
+
+1. Encontrar todos los triángulos (los triángulos malos) cuyo círculo circunscrito contiene al nuevo punto $p$.
+2. Extraer las aristas de frontera de la cavidad que forman. Una arista de frontera pertenece a un solo triángulo malo.
+3. Borrar los triángulos malos y, por cada arista de frontera, formar un triángulo nuevo con $p$.
+
+Se arranca desde un enorme **supertriángulo** que encierra a todos los puntos de entrada. Tras insertar todos los puntos, se retira cualquier triángulo que aún toque un vértice del supertriángulo y solo queda la malla de Delaunay final.
+
+Haz clic en el lienzo de abajo para ir soltando puntos. Cada inserción reconstruye la malla con Bowyer–Watson.
+
+<BowyerWatsonDelaunay />
+
+Al activar los círculos circunscritos, ninguno contiene a otro vértice. Por muy densos que caigan los puntos, esa propiedad nunca se rompe. Eso es Delaunay.
+
+## Python — construir Delaunay incremental desde cero
+
+Desde la prueba del círculo circunscrito hasta el núcleo de inserción, lo portamos a Python puro sin librerías.
+
+```python
+import numpy as np
+
+def circumcircle(a, b, c):
+    """Devuelve el centro y el radio al cuadrado del circuncírculo. None si colineal."""
+    ax, ay = a; bx, by = b; cx, cy = c
+    d = 2 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by))
+    if abs(d) < 1e-12:
+        return None
+    a2, b2, c2 = ax * ax + ay * ay, bx * bx + by * by, cx * cx + cy * cy
+    ux = (a2 * (by - cy) + b2 * (cy - ay) + c2 * (ay - by)) / d
+    uy = (a2 * (cx - bx) + b2 * (ax - cx) + c2 * (bx - ax)) / d
+    return (ux, uy), (ax - ux) ** 2 + (ay - uy) ** 2
+
+def in_circumcircle(p, tri, pts):
+    """True si el punto p está dentro del circuncírculo del triángulo tri."""
+    cc = circumcircle(pts[tri[0]], pts[tri[1]], pts[tri[2]])
+    if cc is None:
+        return False
+    (ux, uy), r2 = cc
+    return (p[0] - ux) ** 2 + (p[1] - uy) ** 2 < r2 - 1e-12
+
+def bowyer_watson(points):
+    """Construye una triangulacion de Delaunay por insercion incremental."""
+    pts = list(points)
+    xs = [p[0] for p in pts]; ys = [p[1] for p in pts]
+    dmax = 20 * max(max(xs) - min(xs), max(ys) - min(ys))
+    cx, cy = (min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2
+    base = len(pts)                                    # indice inicial de vertices del supertriangulo
+    pts += [(cx - dmax, cy - dmax), (cx + dmax, cy - dmax), (cx, cy + dmax)]
+    tris = [(base, base + 1, base + 2)]
+
+    for pi in range(base):                             # insertar puntos de uno en uno
+        p = pts[pi]
+        bad = [t for t in tris if in_circumcircle(p, t, pts)]
+        edge_count = {}                                # frontera de la cavidad = aristas vistas una vez
+        for t in bad:
+            for e in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])]:
+                key = tuple(sorted(e))
+                edge_count[key] = edge_count.get(key, 0) + 1
+        boundary = [e for e, n in edge_count.items() if n == 1]
+        tris = [t for t in tris if t not in bad]
+        tris += [(a, b, pi) for a, b in boundary]      # conectar p a cada arista de frontera
+
+    return [t for t in tris if all(i < base for i in t)]  # quitar el supertriangulo
+
+if __name__ == "__main__":
+    rng = np.random.default_rng(3)
+    P = [tuple(xy) for xy in rng.random((12, 2))]
+    T = bowyer_watson(P)
+    print(f"{len(P)} puntos -> {len(T)} triangulos")
+    print("indices de vertices del primer triangulo:", T[0])
+```
+
+Al ejecutarlo se obtiene algo como `12 puntos -> 17 triangulos`. El número de triángulos dentro de la envolvente convexa es aproximadamente $2n - 2 - h$ ($n$ es el número de puntos, $h$ el número de puntos en la envolvente). El núcleo de inserción puro cabe en unas 60 líneas.
+
+## Cómo respetar la frontera — restricciones y la tubería
+
+Hasta aquí solo hacían falta puntos. Las geometrías reales de CFD son distintas. La superficie de un perfil o la pared de un cilindro portan **líneas de frontera que deben existir como aristas de la malla**. Sin embargo, el Delaunay puro es libre de cortar esas aristas a su antojo.
+
+La solución es la triangulación de Delaunay con restricciones (constrained DT). El procedimiento que describe la fuente es así. Para recuperar una línea de frontera perdida $AB$, primero se localiza la banda de triángulos que $AB$ atraviesa: la llamada **tubería (pipe)**. Se parte de un triángulo pegado al punto $A$, se camina por cada triángulo vecino que $AB$ perfora y, al llegar a $B$, la tubería queda completa.
+
+Fijada la tubería, se retriangula su interior para restaurar $AB$ como arista, mediante intercambio de diagonales (swapping of diagonals) o divide y vencerás. La frontera revive, pero los triángulos cercanos quizá ya no sean perfectamente Delaunay. Se cambia fidelidad geométrica por calidad de malla.
+
+## El frente de avance — apilar elementos con avidez
+
+La técnica de frente de avance (AFT) le da la vuelta por completo al problema de la frontera. La frontera es la línea de salida.
+
+Se elige un segmento de referencia $AB$ de la lista de segmentos de frontera. Se busca el punto $C$ que forma el mejor triángulo con $AB$. Hay dos tipos de candidato: reutilizar un punto ya presente en el frente, o crear un punto interior nuevo $I$. Se toma el de mayor calidad, se forma el triángulo y se actualiza el frente. Las aristas nuevas se añaden al frente; las que ya estaban se consideran cerradas y se retiran.
+
+La calidad se mide como el producto de dos factores.
+
+$$
+\lambda = \alpha \cdot \delta
+$$
+
+Aquí $\alpha$ es el factor de forma del triángulo (1 para el equilátero, hacia 0 cuanto más se aplana) y $\delta$ es qué tan bien coincide la longitud real de la arista con el tamaño de elemento pedido (1 cuando concuerdan). Cuanto mayor $\lambda$, mejor el elemento.
+
+El factor de forma se codifica así.
+
+```python
+import math
+
+def shape_quality(a, b, c):
+    """Factor de forma alpha: 1 para equilatero, hacia 0 para triangulos aplanados."""
+    l1 = math.dist(a, b); l2 = math.dist(b, c); l3 = math.dist(c, a)
+    area = abs((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])) / 2
+    denom = l1 * l1 + l2 * l2 + l3 * l3
+    return 4 * math.sqrt(3) * area / denom if denom > 0 else 0.0
+```
+
+Cuando el frente se vacía (la frontera cerrada converge del todo hacia adentro), la malla queda terminada. Como cada paso elige un óptimo local, la malla inicial de AFT suele ser de mayor calidad que una de Delaunay. Su ventaja es más marcada al construir mallas anisótropas y muy direccionales, como las capas límite.
+
+El precio es la velocidad. Cada elemento nuevo debe comprobarse contra todas las demás aristas del frente por intersección. Codificado de forma ingenua, eso es $O(n)$ por elemento y $O(n^2)$ en total. Como recalca la fuente, localizar esa comprobación con una malla de fondo o un quadtree (estructura de búsqueda espacial) es la clave en la práctica.
+
+## Cuándo elegir cada uno
+
+Los dos métodos son menos rivales que un reparto de tareas.
+
+Delaunay da una respuesta única y rápida una vez fijada la distribución de puntos. Brilla al rellenar una envolvente convexa, interpolar datos dispersos y mejorar la malla a posteriori. Su debilidad: no puede respetar una frontera por sí solo y necesita una etapa de restricción aparte.
+
+AFT destaca en fidelidad de frontera y calidad inicial de los elementos, y se extiende con facilidad a la anisotropía. A cambio, es más difícil de implementar y su rendimiento depende mucho de las estructuras de datos.
+
+Por eso los generadores de malla modernos los combinan. Una receta representativa es el enfoque frente-Delaunay: AFT decide el orden en que se colocan los elementos, mientras que el criterio de Delaunay decide cómo se conectan los puntos. Toma solo las fortalezas de ambas filosofías.
+
+## Para recordar
+
+- La **condición del círculo circunscrito vacío** es todo Delaunay. La prueba es un único determinante de solo signo, y Bowyer–Watson la implementa como un núcleo de 60 líneas que cava una cavidad y la rellena.
+- **AFT** apila con avidez, desde la frontera hacia adentro, el elemento que maximiza $\lambda = \alpha\delta$. Es fuerte en fidelidad de frontera y anisotropía, pero las comprobaciones de intersección son el cuello de botella.
+- Los generadores de producción combinan ambos como **frente-Delaunay**: AFT para el orden, Delaunay para la conectividad.
