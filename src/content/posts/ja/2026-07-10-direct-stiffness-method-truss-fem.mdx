@@ -1,0 +1,148 @@
+---
+title: "橋はなぜあんなにたわむのか — トラス有限要素の直接剛性法"
+date: 2026-07-10
+description: "棒要素の剛性行列を組み立ててトラスの変位を解くFEM直接剛性法"
+tags: ["FEM", "Direct-Stiffness-Method", "Truss", "Structural-Analysis", "Linear-System"]
+locale: ja
+slug: direct-stiffness-method-truss-fem
+draft: false
+---
+
+import { BarElementStiffnessMatrix } from '@/components/post-viz/2026-07-10-direct-stiffness-method-truss-fem/BarElementStiffnessMatrix'
+import { TrussDeflectionSolver } from '@/components/post-viz/2026-07-10-direct-stiffness-method-truss-fem/TrussDeflectionSolver'
+
+# 橋はなぜあんなにたわむのか — トラス有限要素の直接剛性法
+
+1956年、ボーイングの技術者M. J. Turnerは後退翼の応力を手計算していて行き詰まりました。数百本もの部材を持つ構造を、つり合い式で一本ずつ解くことはできません。彼と同僚が発表した答えが直接剛性法（direct stiffness method）です。一つの要素の剛性行列を作り、共有する自由度で足し合わせて大きな行列に組み立てる。そして $Ku = f$ を一度だけ解きます。
+
+この記事では2次元トラスを例に、棒要素の剛性行列の導出 → 局所座標から全体座標への回転 → 全体行列への組み立て → 境界条件を入れて変位を解く、という一連の流れをPythonで書き下します。有限要素法の骨格が実は線形代数の一行だと分かれば、FSIソルバーの構造部分も商用FEAの組み立てコードも同じ目で読めるようになります。
+
+## 剛性は一本のばねから始まる
+
+棒（bar）要素は軸方向にのみ力を受けるばねです。長さ $L$、断面積 $A$、弾性係数 $E$ の棒の軸剛性は $k = EA/L$（伸び単位あたりに必要な力）です。両端節点の軸変位を $u_1, u_2$ とすると、節点力は次のようになります。
+
+$$
+\begin{pmatrix} f_1 \\ f_2 \end{pmatrix}
+= \frac{EA}{L}
+\begin{pmatrix} 1 & -1 \\ -1 & 1 \end{pmatrix}
+\begin{pmatrix} u_1 \\ u_2 \end{pmatrix}
+$$
+
+$f_1, f_2$ は両端の節点力、括弧の中が局所剛性行列 $k_e$ です。各行の和がゼロなのは、剛体運動（両節点が一緒に動く）には力がいらないという意味です。この特異性が、後で境界条件が必須になる理由そのものです。
+
+## 局所から全体へ — 回転変換
+
+トラス部材はあらゆる方向に傾いています。組み立てるには局所の軸変位を全体の $x, y$ 成分に変える必要があります。部材が $x$ 軸となす角を $\theta$、$c = \cos\theta$、$s = \sin\theta$ とします。軸変位は全体変位の射影です：$u_{\text{axial}} = c\,u_x + s\,u_y$。この変換を剛性行列の両側に掛けると、4×4の全体要素剛性が得られます。
+
+$$
+k_e = \frac{EA}{L}
+\begin{pmatrix}
+c^2 & cs & -c^2 & -cs \\
+cs & s^2 & -cs & -s^2 \\
+-c^2 & -cs & c^2 & cs \\
+-cs & -s^2 & cs & s^2
+\end{pmatrix}
+$$
+
+各項は節点1の $x, y$ と節点2の $x, y$ の自由度をつなぐ剛性です。下のシミュレーションで角度を回してみましょう。
+
+<BarElementStiffnessMatrix />
+
+$\theta = 0$ なら $s = 0$ なので、鉛直自由度の行と列が丸ごとゼロになります。棒は自分の軸方向にのみ硬いのです。各2×2ブロックのランクが1なのはこのためです。
+
+## 重なる自由度を足す — 全体組み立て
+
+組み立て（assembly）は名前こそ大げさですが、共有する自由度で剛性を足すだけです。節点 $i$ の自由度は全体インデックス $2i, 2i+1$（その $x, y$）に置きます。要素の4つの局所自由度をこの全体インデックスへ写像（scatter）し、その位置に要素剛性を累積します。
+
+$$
+K = \sum_{e} \mathbf{L}_e^\top \, k_e \, \mathbf{L}_e
+$$
+
+$\mathbf{L}_e$ は要素自由度を全体自由度へ送る選択行列、$K$ は全体剛性行列です。実際のコードでは選択行列を掛けず、インデックス配列で直接足します。一つの節点に複数の部材が集まると、その対角ブロックに複数要素の寄与が積み重なります。
+
+## 境界条件：支点を消す
+
+組み立てただけの $K$ は特異行列（singular）です。構造がまだ空間に浮いていて、剛体運動が自由だからです。支点（support）で変位をゼロに固定して初めて解けます。最もきれいな方法は、自由度を自由（free）集合 $f$ と拘束（constrained）集合 $c$ に分けることです。
+
+$$
+\begin{pmatrix} K_{ff} & K_{fc} \\ K_{cf} & K_{cc} \end{pmatrix}
+\begin{pmatrix} u_f \\ u_c \end{pmatrix}
+= \begin{pmatrix} F_f \\ R_c \end{pmatrix}
+$$
+
+$u_c = 0$（固定）なので、上の行だけ取り出すと $K_{ff}\,u_f = F_f$。この縮約系は非特異なので解けます。反力 $R_c$ は後から $R_c = K_{cf}\,u_f$ で回収します。下のトラスで荷重と剛性を変えてみましょう。
+
+<TrussDeflectionSolver />
+
+EAを大きくすると、同じ荷重でもたわみが急減します。剛性行列こそが荷重→変位の写像そのものだからです。
+
+## Python — 12部材のトラスを解く
+
+壁に固定された3パネルの片持ちトラス（節点8個、部材12本）をnumpyで組み立てて解きます。入力は節点座標・部材接続・荷重、出力は節点変位と部材軸力です。
+
+```python
+import numpy as np
+
+nodes = np.array([[0,0],[0,1],[1,0],[1,1],[2,0],[2,1],[3,0],[3,1]], float)
+members = [(0,2),(2,4),(4,6),(1,3),(3,5),(5,7),
+           (2,3),(4,5),(6,7),(1,2),(3,4),(5,6)]
+EA = 8.0e6           # 軸剛性 EA [N]
+fixed = [0, 1]       # 壁に固定された節点
+
+def bar_stiffness(p1, p2, EA):
+    d = p2 - p1
+    L = np.hypot(*d)
+    c, s = d / L
+    k = EA / L * np.array([[ c*c,  c*s, -c*c, -c*s],
+                           [ c*s,  s*s, -c*s, -s*s],
+                           [-c*c, -c*s,  c*c,  c*s],
+                           [-c*s, -s*s,  c*s,  s*s]])
+    return k, L, (c, s)
+
+ndof = nodes.shape[0] * 2
+K = np.zeros((ndof, ndof))
+geom = []
+for a, b in members:                       # 全体剛性を組み立てる
+    k, L, cs = bar_stiffness(nodes[a], nodes[b], EA)
+    dof = [2*a, 2*a+1, 2*b, 2*b+1]
+    K[np.ix_(dof, dof)] += k
+    geom.append((L, cs))
+
+F = np.zeros(ndof)                          # 自由端（節点6,7）に24 kNの荷重
+for n in (6, 7):
+    F[2*n+1] -= 12.0e3
+
+fixed_dof = [d for n in fixed for d in (2*n, 2*n+1)]
+free_dof = [d for d in range(ndof) if d not in fixed_dof]
+
+u = np.zeros(ndof)                          # 縮約系 K_ff u_f = F_f
+u[free_dof] = np.linalg.solve(K[np.ix_(free_dof, free_dof)],
+                              F[free_dof])
+
+for m, (a, b) in enumerate(members):        # 部材軸力 N = (EA/L)[-c,-s,c,s]·u
+    L, (c, s) = geom[m]
+    dof = [2*a, 2*a+1, 2*b, 2*b+1]
+    N = EA / L * np.array([-c, -s, c, s]) @ u[dof]
+    print(f"member {a}-{b}: N = {N/1e3:+7.2f} kN "
+          f"({'tension' if N > 0 else 'compression'})")
+
+print(f"free-end drop = {u[2*6+1]*1e3:.3f} mm")
+```
+
+`np.ix_` でインデックスの格子を作り、要素剛性を正しい全体位置に足します。この20行は商用FEAソルバーの心臓部と構造的に同一です。
+
+## 剛性行列が特異になるとき
+
+現場で最も多い失敗は「行列が特異」というエラーです。原因はたいてい次の三つのどれかです。
+
+一つ目、境界条件の欠落。剛体運動を止める支点が足りないと、$K_{ff}$ は依然として特異です。2Dでは最低3個、3Dでは6個の自由度を拘束する必要があります。
+
+二つ目、機構（mechanism）。三角形化されていない四角形パネルは部材が足りず、ふにゃふにゃします。トラスは必ず三角形で埋めましょう。
+
+三つ目、ゼロ長さ・重複節点。二つの節点が同じ座標だと $L = 0$ で割り算が破綻します。メッシュを併合する前に座標の重複を除きましょう。
+
+## この記事のまとめ
+
+- 有限要素法の骨格は「要素剛性を作る → 全体に回転 → 共有自由度で足す → 境界条件を入れて $Ku = f$ を解く」です。
+- 拘束を入れる前の $K$ は常に特異です。剛体運動を止める支点が、逆行列を持てる状態を作ります。
+- 棒要素の2×2ブロックはランク1 — 軸方向にのみ硬いのです。角度変換がそれを全体座標へばらまきます。

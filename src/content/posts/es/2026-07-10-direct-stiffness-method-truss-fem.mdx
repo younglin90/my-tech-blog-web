@@ -1,0 +1,148 @@
+---
+title: "¿Por qué se comba así el puente? El método de rigidez directa para cerchas"
+date: 2026-07-10
+description: "Ensamblar matrices de rigidez de barras para resolver desplazamientos de cerchas con FEM"
+tags: ["FEM", "Direct-Stiffness-Method", "Truss", "Structural-Analysis", "Linear-System"]
+locale: es
+slug: direct-stiffness-method-truss-fem
+draft: false
+---
+
+import { BarElementStiffnessMatrix } from '@/components/post-viz/2026-07-10-direct-stiffness-method-truss-fem/BarElementStiffnessMatrix'
+import { TrussDeflectionSolver } from '@/components/post-viz/2026-07-10-direct-stiffness-method-truss-fem/TrussDeflectionSolver'
+
+# ¿Por qué se comba así el puente? El método de rigidez directa para cerchas
+
+En 1956, el ingeniero de Boeing M. J. Turner se topó con un muro al calcular a mano las tensiones de un ala en flecha. No se puede perseguir el equilibrio a través de una estructura de cientos de barras ecuación por ecuación. La respuesta que él y sus colegas publicaron fue el método de rigidez directa (direct stiffness method). Se construye la matriz de rigidez de un solo elemento, se suman las contribuciones en los grados de libertad compartidos hasta formar una gran matriz, y se resuelve $Ku = f$ una sola vez.
+
+Este artículo toma una cercha en 2D y programa toda la cadena en Python: derivar la matriz de rigidez de una barra, rotarla de coordenadas locales a globales, ensamblar la matriz global, imponer las condiciones de contorno y resolver los desplazamientos. Una vez que se ve que el esqueleto del método de elementos finitos es en realidad una línea de álgebra lineal, la parte estructural de un solucionador FSI y el bucle de ensamblaje de un código FEA comercial se leen igual.
+
+## La rigidez empieza con un solo resorte
+
+Una barra (bar) es un resorte que solo soporta fuerza a lo largo de su eje. Para una barra de longitud $L$, sección $A$ y módulo $E$, la rigidez axial es $k = EA/L$ (fuerza por unidad de alargamiento). Con los desplazamientos axiales de los nodos extremos $u_1, u_2$, las fuerzas nodales son:
+
+$$
+\begin{pmatrix} f_1 \\ f_2 \end{pmatrix}
+= \frac{EA}{L}
+\begin{pmatrix} 1 & -1 \\ -1 & 1 \end{pmatrix}
+\begin{pmatrix} u_1 \\ u_2 \end{pmatrix}
+$$
+
+Aquí $f_1, f_2$ son las fuerzas extremas y el corchete es la matriz de rigidez local $k_e$. Cada fila suma cero, lo que significa que un movimiento de cuerpo rígido (ambos nodos deslizándose juntos) no cuesta ninguna fuerza. Esa singularidad es precisamente la razón por la que las condiciones de contorno se vuelven obligatorias más adelante.
+
+## De lo local a lo global: la rotación
+
+Las barras de una cercha apuntan en todas direcciones. Para ensamblarlas, el desplazamiento axial local tiene que convertirse en componentes globales $x, y$. Sea $\theta$ el ángulo que forma la barra con el eje $x$, con $c = \cos\theta$ y $s = \sin\theta$. El desplazamiento axial es una proyección del global: $u_{\text{axial}} = c\,u_x + s\,u_y$. Al multiplicar esta transformación a ambos lados de la matriz de rigidez se obtiene la rigidez global del elemento, de 4×4.
+
+$$
+k_e = \frac{EA}{L}
+\begin{pmatrix}
+c^2 & cs & -c^2 & -cs \\
+cs & s^2 & -cs & -s^2 \\
+-c^2 & -cs & c^2 & cs \\
+-cs & -s^2 & cs & s^2
+\end{pmatrix}
+$$
+
+Cada término es la rigidez que enlaza los grados de libertad $x, y$ del nodo 1 con los del nodo 2. Gira la barra por tu cuenta en la simulación de abajo.
+
+<BarElementStiffnessMatrix />
+
+En $\theta = 0$ se tiene $s = 0$, así que las filas y columnas del GDL vertical se anulan por completo. La barra solo es rígida a lo largo de su propio eje. Por eso cada bloque de 2×2 tiene rango uno.
+
+## Sumar los GDL solapados: ensamblaje global
+
+El ensamblaje (assembly) suena grandioso, pero solo consiste en sumar rigidez en los grados de libertad compartidos. Los GDL del nodo $i$ viven en los índices globales $2i, 2i+1$ (sus $x, y$). Se distribuyen (scatter) los cuatro GDL locales del elemento a estos índices globales y allí se acumula la rigidez del elemento.
+
+$$
+K = \sum_{e} \mathbf{L}_e^\top \, k_e \, \mathbf{L}_e
+$$
+
+$\mathbf{L}_e$ es la matriz de selección que envía los GDL del elemento a los GDL globales, y $K$ es la matriz de rigidez global. El código real nunca forma $\mathbf{L}_e$; suma directamente mediante un arreglo de índices. Donde varias barras concurren en un nodo, sus contribuciones se apilan en ese bloque diagonal.
+
+## Condiciones de contorno: borrar los apoyos
+
+La $K$ recién ensamblada es singular. La estructura aún flota libremente en el espacio, así que el movimiento de cuerpo rígido no está restringido. Hay que fijar los desplazamientos a cero en los apoyos antes de poder resolverla. La forma más limpia es dividir los GDL en un conjunto libre $f$ y un conjunto restringido $c$.
+
+$$
+\begin{pmatrix} K_{ff} & K_{fc} \\ K_{cf} & K_{cc} \end{pmatrix}
+\begin{pmatrix} u_f \\ u_c \end{pmatrix}
+= \begin{pmatrix} F_f \\ R_c \end{pmatrix}
+$$
+
+Como $u_c = 0$ (fijo), conservar solo la fila superior da $K_{ff}\,u_f = F_f$. Este sistema reducido es no singular y se resuelve. Las reacciones $R_c$ se recuperan después como $R_c = K_{cf}\,u_f$. Cambia la carga y la rigidez en la cercha de abajo.
+
+<TrussDeflectionSolver />
+
+Al subir EA, la misma carga flexiona mucho menos la cercha. La matriz de rigidez *es* el mapeo de carga a desplazamiento.
+
+## Python: resolver una cercha de 12 barras
+
+Ensamblemos y resolvamos una cercha en voladizo de tres paneles anclada al muro (8 nodos, 12 barras) con numpy. Las entradas son coordenadas de nodos, conectividad de barras y cargas; las salidas son los desplazamientos nodales y las fuerzas axiales de las barras.
+
+```python
+import numpy as np
+
+nodes = np.array([[0,0],[0,1],[1,0],[1,1],[2,0],[2,1],[3,0],[3,1]], float)
+members = [(0,2),(2,4),(4,6),(1,3),(3,5),(5,7),
+           (2,3),(4,5),(6,7),(1,2),(3,4),(5,6)]
+EA = 8.0e6           # rigidez axial EA [N]
+fixed = [0, 1]       # nodos anclados al muro
+
+def bar_stiffness(p1, p2, EA):
+    d = p2 - p1
+    L = np.hypot(*d)
+    c, s = d / L
+    k = EA / L * np.array([[ c*c,  c*s, -c*c, -c*s],
+                           [ c*s,  s*s, -c*s, -s*s],
+                           [-c*c, -c*s,  c*c,  c*s],
+                           [-c*s, -s*s,  c*s,  s*s]])
+    return k, L, (c, s)
+
+ndof = nodes.shape[0] * 2
+K = np.zeros((ndof, ndof))
+geom = []
+for a, b in members:                       # ensamblar la rigidez global
+    k, L, cs = bar_stiffness(nodes[a], nodes[b], EA)
+    dof = [2*a, 2*a+1, 2*b, 2*b+1]
+    K[np.ix_(dof, dof)] += k
+    geom.append((L, cs))
+
+F = np.zeros(ndof)                          # carga de 24 kN en el extremo libre (nodos 6,7)
+for n in (6, 7):
+    F[2*n+1] -= 12.0e3
+
+fixed_dof = [d for n in fixed for d in (2*n, 2*n+1)]
+free_dof = [d for d in range(ndof) if d not in fixed_dof]
+
+u = np.zeros(ndof)                          # sistema reducido K_ff u_f = F_f
+u[free_dof] = np.linalg.solve(K[np.ix_(free_dof, free_dof)],
+                              F[free_dof])
+
+for m, (a, b) in enumerate(members):        # fuerza axial N = (EA/L)[-c,-s,c,s]·u
+    L, (c, s) = geom[m]
+    dof = [2*a, 2*a+1, 2*b, 2*b+1]
+    N = EA / L * np.array([-c, -s, c, s]) @ u[dof]
+    print(f"member {a}-{b}: N = {N/1e3:+7.2f} kN "
+          f"({'tension' if N > 0 else 'compression'})")
+
+print(f"free-end drop = {u[2*6+1]*1e3:.3f} mm")
+```
+
+`np.ix_` construye la malla de índices que suma cada rigidez de elemento en los lugares globales correctos. Estas veinte líneas son estructuralmente idénticas al corazón de un solucionador FEA comercial.
+
+## Cuando la matriz de rigidez se vuelve singular
+
+El fallo más común en la práctica es un error de "matriz singular". La causa suele ser una de tres cosas.
+
+Primero, condiciones de contorno ausentes. Con muy pocos apoyos para bloquear el movimiento de cuerpo rígido, $K_{ff}$ sigue siendo singular. En 2D hay que restringir al menos 3 GDL; en 3D, al menos 6.
+
+Segundo, un mecanismo (mechanism). Un panel cuadrilátero que nunca se trianguló tiene muy pocas barras y se derrumba. Hay que rellenar siempre una cercha con triángulos.
+
+Tercero, nodos de longitud cero o duplicados. Dos nodos en la misma coordenada hacen que $L = 0$ reviente la división. Conviene filtrar coordenadas coincidentes antes de fusionar una malla.
+
+## Para quien no vuelva a leer esto
+
+- El esqueleto del método de elementos finitos es: construir la rigidez del elemento, rotarla a global, sumar en los GDL compartidos, imponer condiciones de contorno y resolver $Ku = f$.
+- Antes del ensamblaje con restricciones, $K$ siempre es singular. Los apoyos que bloquean el movimiento de cuerpo rígido son los que la hacen invertible.
+- El bloque de 2×2 de una barra tiene rango uno: solo es rígido a lo largo de su eje. La transformación de ángulo dispersa esa rigidez en las coordenadas globales.

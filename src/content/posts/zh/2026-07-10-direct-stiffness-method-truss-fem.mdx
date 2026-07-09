@@ -1,0 +1,148 @@
+---
+title: "桥为什么会那样下垂 — 桁架有限元的直接刚度法"
+date: 2026-07-10
+description: "组装杆单元刚度矩阵求解桁架位移的有限元直接刚度法"
+tags: ["FEM", "Direct-Stiffness-Method", "Truss", "Structural-Analysis", "Linear-System"]
+locale: zh
+slug: direct-stiffness-method-truss-fem
+draft: false
+---
+
+import { BarElementStiffnessMatrix } from '@/components/post-viz/2026-07-10-direct-stiffness-method-truss-fem/BarElementStiffnessMatrix'
+import { TrussDeflectionSolver } from '@/components/post-viz/2026-07-10-direct-stiffness-method-truss-fem/TrussDeflectionSolver'
+
+# 桥为什么会那样下垂 — 桁架有限元的直接刚度法
+
+1956年，波音工程师M. J. Turner在手算后掠翼应力时碰了壁。面对成百上千根杆件的结构，靠平衡方程一根一根去解是行不通的。他和同事发表的答案就是直接刚度法（direct stiffness method）：先构造单个单元的刚度矩阵，再在共享自由度上相加，组装成一个大矩阵，然后只解一次 $Ku = f$。
+
+本文以二维桁架为例，用Python把整条链路写出来：推导一个杆单元的刚度矩阵 → 把局部坐标旋转到整体坐标 → 组装整体矩阵 → 施加边界条件求解位移。一旦看清有限元法的骨架其实就是一行线性代数，FSI求解器的结构部分和商用FEA的组装代码也就能用同一双眼睛读懂了。
+
+## 刚度从一根弹簧说起
+
+杆（bar）单元是只沿轴向承力的弹簧。长度 $L$、截面积 $A$、弹性模量 $E$ 的杆，其轴向刚度为 $k = EA/L$（单位伸长所需的力）。设两端节点的轴向位移为 $u_1, u_2$，则节点力为：
+
+$$
+\begin{pmatrix} f_1 \\ f_2 \end{pmatrix}
+= \frac{EA}{L}
+\begin{pmatrix} 1 & -1 \\ -1 & 1 \end{pmatrix}
+\begin{pmatrix} u_1 \\ u_2 \end{pmatrix}
+$$
+
+其中 $f_1, f_2$ 是两端节点力，方括号内是局部刚度矩阵 $k_e$。每行之和为零，意味着刚体运动（两节点一起平移）不需要任何力。正是这个奇异性，解释了为何之后必须施加边界条件。
+
+## 从局部到整体 — 旋转变换
+
+桁架杆件朝向各异。要组装它们，就得把局部轴向位移换成整体的 $x, y$ 分量。设杆件与 $x$ 轴夹角为 $\theta$，$c = \cos\theta$，$s = \sin\theta$。轴向位移是整体位移的投影：$u_{\text{axial}} = c\,u_x + s\,u_y$。把这个变换乘到刚度矩阵两侧，就得到4×4的整体单元刚度。
+
+$$
+k_e = \frac{EA}{L}
+\begin{pmatrix}
+c^2 & cs & -c^2 & -cs \\
+cs & s^2 & -cs & -s^2 \\
+-c^2 & -cs & c^2 & cs \\
+-cs & -s^2 & cs & s^2
+\end{pmatrix}
+$$
+
+每一项都是连接节点1的 $x, y$ 与节点2的 $x, y$ 自由度的刚度。在下面的模拟中亲手转动角度看看。
+
+<BarElementStiffnessMatrix />
+
+当 $\theta = 0$ 时 $s = 0$，竖直自由度的行和列整体归零。杆只在自己的轴向方向上刚硬。这就是每个2×2块秩为1的原因。
+
+## 把重叠的自由度相加 — 整体组装
+
+组装（assembly）听着唬人，其实就是在共享自由度上把刚度加起来。节点 $i$ 的自由度放在整体索引 $2i, 2i+1$（即它的 $x, y$）。把单元的4个局部自由度映射（scatter）到这些整体索引，再在对应位置累加单元刚度。
+
+$$
+K = \sum_{e} \mathbf{L}_e^\top \, k_e \, \mathbf{L}_e
+$$
+
+$\mathbf{L}_e$ 是把单元自由度送到整体自由度的选择矩阵，$K$ 是整体刚度矩阵。实际代码从不构造 $\mathbf{L}_e$，而是通过索引数组直接相加。当多根杆件汇聚于一个节点，它们的贡献就叠加在那个对角块上。
+
+## 边界条件：抹去支座
+
+刚组装好的 $K$ 是奇异矩阵（singular）。结构还悬浮在空间中，刚体运动不受约束。必须在支座处把位移钉为零，才能求解。最干净的做法是把自由度分成自由（free）集 $f$ 与约束（constrained）集 $c$。
+
+$$
+\begin{pmatrix} K_{ff} & K_{fc} \\ K_{cf} & K_{cc} \end{pmatrix}
+\begin{pmatrix} u_f \\ u_c \end{pmatrix}
+= \begin{pmatrix} F_f \\ R_c \end{pmatrix}
+$$
+
+因为 $u_c = 0$（固定），只取上面一行即得 $K_{ff}\,u_f = F_f$。这个缩减系统非奇异，可以求解。支反力 $R_c$ 事后由 $R_c = K_{cf}\,u_f$ 回收。在下面的桁架里改改荷载和刚度吧。
+
+<TrussDeflectionSolver />
+
+把EA调大，同样的荷载下挠度骤减。因为刚度矩阵本身就是荷载→位移的映射。
+
+## Python — 求解12杆桁架
+
+用numpy组装并求解一个固定在墙上的三跨悬臂桁架（8个节点、12根杆）。输入是节点坐标、杆件连接和荷载，输出是节点位移与杆件轴力。
+
+```python
+import numpy as np
+
+nodes = np.array([[0,0],[0,1],[1,0],[1,1],[2,0],[2,1],[3,0],[3,1]], float)
+members = [(0,2),(2,4),(4,6),(1,3),(3,5),(5,7),
+           (2,3),(4,5),(6,7),(1,2),(3,4),(5,6)]
+EA = 8.0e6           # 轴向刚度 EA [N]
+fixed = [0, 1]       # 固定在墙上的节点
+
+def bar_stiffness(p1, p2, EA):
+    d = p2 - p1
+    L = np.hypot(*d)
+    c, s = d / L
+    k = EA / L * np.array([[ c*c,  c*s, -c*c, -c*s],
+                           [ c*s,  s*s, -c*s, -s*s],
+                           [-c*c, -c*s,  c*c,  c*s],
+                           [-c*s, -s*s,  c*s,  s*s]])
+    return k, L, (c, s)
+
+ndof = nodes.shape[0] * 2
+K = np.zeros((ndof, ndof))
+geom = []
+for a, b in members:                       # 组装整体刚度
+    k, L, cs = bar_stiffness(nodes[a], nodes[b], EA)
+    dof = [2*a, 2*a+1, 2*b, 2*b+1]
+    K[np.ix_(dof, dof)] += k
+    geom.append((L, cs))
+
+F = np.zeros(ndof)                          # 自由端（节点6,7）施加24 kN荷载
+for n in (6, 7):
+    F[2*n+1] -= 12.0e3
+
+fixed_dof = [d for n in fixed for d in (2*n, 2*n+1)]
+free_dof = [d for d in range(ndof) if d not in fixed_dof]
+
+u = np.zeros(ndof)                          # 缩减系统 K_ff u_f = F_f
+u[free_dof] = np.linalg.solve(K[np.ix_(free_dof, free_dof)],
+                              F[free_dof])
+
+for m, (a, b) in enumerate(members):        # 杆件轴力 N = (EA/L)[-c,-s,c,s]·u
+    L, (c, s) = geom[m]
+    dof = [2*a, 2*a+1, 2*b, 2*b+1]
+    N = EA / L * np.array([-c, -s, c, s]) @ u[dof]
+    print(f"member {a}-{b}: N = {N/1e3:+7.2f} kN "
+          f"({'tension' if N > 0 else 'compression'})")
+
+print(f"free-end drop = {u[2*6+1]*1e3:.3f} mm")
+```
+
+`np.ix_` 构造索引网格，把单元刚度加到正确的整体位置。这20行在结构上与商用FEA求解器的核心完全一致。
+
+## 当刚度矩阵变奇异时
+
+现场最常见的失败就是「矩阵奇异」报错。原因通常是以下三者之一。
+
+第一，缺少边界条件。若阻止刚体运动的支座不足，$K_{ff}$ 仍然奇异。二维至少要约束3个自由度，三维至少6个。
+
+第二，机构（mechanism）。未三角化的四边形面板杆件不足，会软塌塌的。桁架务必用三角形填满。
+
+第三，零长度或重复节点。两个节点坐标相同会让 $L = 0$ 处的除法崩溃。合并网格前先剔除重合坐标。
+
+## 一句话总结
+
+- 有限元法的骨架是：构造单元刚度 → 旋转到整体 → 在共享自由度上相加 → 施加边界条件求解 $Ku = f$。
+- 施加约束之前，$K$ 永远是奇异的。正是阻止刚体运动的支座让它变得可逆。
+- 杆单元的2×2块秩为1 — 只在轴向刚硬。角度变换把这份刚度撒到整体坐标里。
