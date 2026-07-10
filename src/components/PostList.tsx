@@ -422,7 +422,9 @@ export function PostList({
                       color: 'var(--text)',
                     }}
                   >
-                    <span className="flex-1">
+                    {/* min-w-0: flex item 기본 min-width:auto가 긴 라틴 토큰(예: Barth–Jespersen·Venkatakrishnan)의
+                        min-content 폭을 강제해 모바일에서 가로 오버플로 발생 → break-words로 토큰 내 줄바꿈 허용 */}
+                    <span className="flex-1 min-w-0 break-words">
                       {post.title}
                       {isNew && (
                         <span
