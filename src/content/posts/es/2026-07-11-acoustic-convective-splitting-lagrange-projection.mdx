@@ -1,0 +1,174 @@
+---
+title: "Dejar que el sonido y la materia fluyan por separado — División acústico-convectiva (Lagrange–Projection)"
+date: 2026-07-11
+description: "Implementación del esquema Lagrange–Projection que sortea la rigidez de bajo Mach separando la acústica de la convección"
+tags: ["Lagrange-Projection", "Operator-Splitting", "Low-Mach", "Compressible", "PaperReview"]
+locale: es
+slug: acoustic-convective-splitting-lagrange-projection
+draft: false
+---
+
+import { AcousticConvectiveSplitDemo } from '@/components/post-viz/2026-07-11-acoustic-convective-splitting-lagrange-projection/AcousticConvectiveSplitDemo'
+import { WaveSpeedSplitChart } from '@/components/post-viz/2026-07-11-acoustic-convective-splitting-lagrange-projection/WaveSpeedSplitChart'
+
+# Dejar que el sonido y la materia fluyan por separado — División acústico-convectiva (Lagrange–Projection)
+
+El sonido viaja a 340 metros por segundo. El aire junto a alguien que camina a 5 kilómetros por hora sigue transmitiendo el sonido a esos mismos 340 metros por segundo. Un solver compresible debe manejar ambas velocidades dentro de un solo paso de tiempo. El problema es la razón entre ellas. En un flujo muy lento, las ondas acústicas corren cientos de veces más rápido que la materia. Un esquema Godunov directo queda con su paso de tiempo encadenado a esas ondas veloces. Mientras tanto, la convección lenta que de verdad interesa se difumina por difusión numérica.
+
+ten Eikelder et al. (2017) separan ambas por completo. Dividen las ecuaciones de gobierno en una parte acústica y una parte convectiva, y resuelven cada una con su propio esquema, una tras otra. Este artículo implementa esa división acústico-convectiva estilo Lagrange–Projection para las ecuaciones de Euler monofásicas (single-phase). Luego lo verifica con un "pulso acústico en un flujo lento".
+
+> **Artículo**: M.F.P. ten Eikelder, F. Daude, B. Koren, A.S. Tijsseling, *"An acoustic-convective splitting-based approach for the Kapila two-phase flow model"*, Journal of Computational Physics 331 (2017) 188–208. DOI: 10.1016/j.jcp.2016.11.031
+
+## El jacobiano se parte en dos
+
+Al escribir las ecuaciones de Euler 1D en variables primitivas $\mathbf{W}=(\rho,u,p)^T$, toman forma cuasilineal.
+
+$$
+\partial_t \mathbf{W} + \mathbf{B}(\mathbf{W})\,\partial_x \mathbf{W} = \mathbf{0}
+$$
+
+Aquí $\rho$ es la densidad, $u$ la velocidad y $p$ la presión. La observación clave es que la matriz de coeficientes $\mathbf{B}$ se parte limpiamente en dos piezas.
+
+$$
+\mathbf{B}(\mathbf{W}) = \underbrace{\mathbf{A}(\mathbf{W})}_{\text{acústica}} + \underbrace{\mathbf{C}(\mathbf{W})}_{\text{convectiva}},
+\qquad \mathbf{C}(\mathbf{W}) = u\,\mathbf{I}
+$$
+
+$\mathbf{A}$ contiene todos los términos de presión: la parte acústica (acoustic). $\mathbf{C}=u\mathbf{I}$ simplemente arrastra la materia: la parte convectiva (convective). En realidad, la división equivale a arrancar el término $u\partial_x$ de la derivada lagrangiana $\mathrm{D}/\mathrm{D}t = \partial_t + u\partial_x$.
+
+## La descomposición aditiva de los autovalores
+
+Por qué esta división es tan potente se ve al mirar los autovalores. Las velocidades de onda del sistema completo son $u-c,\ u,\ u+c$. Se suman exactamente a partir de una contribución acústica y una convectiva.
+
+$$
+\lambda_{1,2,3} = \underbrace{(-c,\ 0,\ +c)}_{\lambda^a\ \text{acústica}} + \underbrace{(u,\ u,\ u)}_{\lambda^c\ \text{convectiva}}
+$$
+
+$c=\sqrt{\gamma p/\rho}$ es la velocidad del sonido. Las velocidades acústicas son $\pm c$, independientes de la velocidad del flujo. La velocidad convectiva es $u$ en todos los casos. En el límite de bajo Mach $M=u/c\to 0$, la banda acústica conserva su ancho $2c$ mientras la velocidad convectiva se encoge a cero. Esa brecha es el origen de la rigidez (stiffness).
+
+Manipúlelo directamente en la simulación de abajo.
+
+<AcousticConvectiveSplitDemo />
+
+Al bajar el número de Mach a 0.02, el pulso de presión (amber) se parte en dos ondas acústicas que escapan veloces hacia los lados, mientras la anomalía de entropía (teal) cabalga sobre el contacto y casi no se mueve. Las tres marcas triangulares, a velocidades $u\!-\!c,\ u,\ u\!+\!c$, son exactamente la descomposición aditiva de arriba.
+
+## Paso acústico — HLLC en coordenadas lagrangianas
+
+La parte acústica es la expansión y compresión que impulsa la presión. El artículo la lleva a coordenadas de masa (lagrangianas) y la resuelve con un solver de Riemann tipo HLLC. El estado con asterisco en la cara $j+1/2$ se reduce a dos fórmulas.
+
+$$
+u^*_{j+1/2} = \frac{u_j+u_{j+1}}{2} + \frac{p_j-p_{j+1}}{2\,a_{j+1/2}},
+\qquad
+p^*_{j+1/2} = \frac{p_j+p_{j+1}}{2} + \frac{a_{j+1/2}}{2}\,(u_j-u_{j+1})
+$$
+
+$a_{j+1/2}=\max(\rho_j c_j,\ \rho_{j+1}c_{j+1})$ es la impedancia acústica (densidad por velocidad del sonido). Solo con esas velocidades y presiones con asterisco se realiza la actualización de las variables eulerianas. La tasa de expansión de cada celda se comprime en un único coeficiente.
+
+$$
+R_j = 1 + \frac{\Delta t}{\Delta x}\big(u^*_{j+1/2}-u^*_{j-1/2}\big)
+$$
+
+$R_j$ indica cuánto estiró o comprimió el paso acústico el volumen de la celda. La densidad sale de inmediato como $\rho^{n+1-}_j = \rho^n_j / R_j$.
+
+## Paso convectivo — proyección upwind
+
+Ahora la velocidad con asterisco $u^*$ del paso acústico arrastra la materia. Se actualizan las cantidades conservadas $\varphi\in\{\rho,\rho u,\rho E\}$ con un simple esquema upwind.
+
+$$
+\varphi^{n+1}_j = R_j\,\varphi^{n+1-}_j - \frac{\Delta t}{\Delta x}\big(u^*_{j+1/2}\varphi^{\text{up}}_{j+1/2} - u^*_{j-1/2}\varphi^{\text{up}}_{j-1/2}\big)
+$$
+
+$\varphi^{\text{up}}_{j+1/2}$ es $\varphi_j$ cuando $u^*\!\ge\!0$, y $\varphi_{j+1}$ en caso contrario. El $R_j$ del paso anterior regresa aquí, y la masa, el momento y la energía se conservan de forma exacta. Al recorrer los dos pasos en orden, un paso de tiempo queda completo.
+
+## Python — pulso acústico en un flujo lento
+
+Aquí está toda la tubería en numpy: fronteras periódicas, un gas ideal, tres cantidades conservadas por celda. La condición inicial coloca un pequeño pulso de presión y una anomalía de densidad sobre un flujo de fondo $u_0=Mc_0$.
+
+```python
+import numpy as np
+
+GAMMA = 1.4  # razon de calores especificos del gas ideal
+
+def primitives(rho, mom, Ene):
+    """Conservadas -> variables primitivas (velocidad, presion, velocidad del sonido)."""
+    u = mom / rho
+    e = Ene / rho - 0.5 * u * u            # energia interna especifica
+    p = (GAMMA - 1.0) * rho * e
+    c = np.sqrt(GAMMA * p / rho)
+    return u, p, c
+
+def acoustic_faces(rho, u, p, c):
+    """Estado acustico HLLC u*, p* en la cara j+1/2 (ec. 34 del articulo)."""
+    rp, up, pp, cp = (np.roll(a, -1) for a in (rho, u, p, c))
+    a = np.maximum(rho * c, rp * cp)       # impedancia acustica a = max(rho*c) (ec. 32)
+    ustar = 0.5 * (u + up) + (p - pp) / (2 * a)
+    pstar = 0.5 * (p + pp) + 0.5 * a * (u - up)
+    return ustar, pstar
+
+def lagrange_projection_step(rho, mom, Ene, dx, dt):
+    """Paso acustico -> paso convectivo (ec. 38, 40 del articulo)."""
+    u, p, c = primitives(rho, mom, Ene)
+    uf, pf = acoustic_faces(rho, u, p, c)          # j+1/2
+    uf_m, pf_m = np.roll(uf, 1), np.roll(pf, 1)    # j-1/2
+    lam = dt / dx
+    # 1) paso acustico: expansion/compresion impulsada por la presion
+    R = 1.0 + lam * (uf - uf_m)                     # ec. (39)
+    rho1 = rho / R
+    mom1 = (mom - lam * (pf - pf_m)) / R
+    Ene1 = (Ene - lam * (pf * uf - pf_m * uf_m)) / R
+    # 2) paso convectivo: arrastrar la materia a u* (proyeccion upwind)
+    def project(phi1):
+        phi_f = np.where(uf >= 0, phi1, np.roll(phi1, -1))
+        phi_f_m = np.roll(phi_f, 1)
+        return R * phi1 - lam * (uf * phi_f - uf_m * phi_f_m)
+    return project(rho1), project(mom1), project(Ene1)
+
+def run_acoustic_pulse(mach, n=400, cfl=0.8, tmax=0.25):
+    x = (np.arange(n) + 0.5) / n
+    dx = 1.0 / n
+    c0, rho0 = 1.0, 1.0
+    p0 = rho0 * c0**2 / GAMMA
+    u0 = mach * c0
+    dp = 1e-3 * np.exp(-((x - 0.5) / 0.03)**2)     # pulso de presion acustico
+    ds = 5e-2 * np.exp(-((x - 0.25) / 0.03)**2)    # anomalia de entropia (densidad) -> onda de contacto
+    rho = rho0 + dp / c0**2 + ds
+    u = np.full(n, u0)
+    p = p0 + dp
+    mom = rho * u
+    Ene = p / (GAMMA - 1) + 0.5 * rho * u * u
+    t, m0 = 0.0, mom.sum()
+    while t < tmax:
+        _, _, c = primitives(rho, mom, Ene)
+        dt = min(cfl * dx / np.max(np.abs(mom / rho) + c), tmax - t)
+        rho, mom, Ene = lagrange_projection_step(rho, mom, Ene, dx, dt)
+        t += dt
+    return rho, mom, m0, mom.sum()
+
+for M in (0.02, 0.2):
+    rho, mom, m0, m1 = run_acoustic_pulse(M)
+    print(f"M={M}: error de momento={abs(m1-m0)/abs(m0):.1e}, rho_max={rho.max():.4f}")
+# M=0.02: error de momento=2.2e-16, rho_max=1.0497
+# M=0.2:  error de momento=0.0e+00, rho_max=1.0452
+```
+
+El momento se conserva a precisión de máquina. La presión se mantiene acotada y la densidad permanece positiva. La división no rompe la conservación porque el paso convectivo reintroduce el $R_j$.
+
+## Lo que de verdad se separa a bajo Mach
+
+Donde la división rinde es a bajo Mach. El paso de tiempo estable de un método directo siempre queda encadenado a $|u|+c$, incluso cuando la física de interés vive sobre $u$. Veamos esa razón de velocidades como gráfica.
+
+<WaveSpeedSplitChart />
+
+El ancho de la banda acústica (amber) es siempre $2c$, independiente de $M$. Solo la velocidad convectiva $u$ (teal) converge a cero. En $M=0.05$ la razón $(u+c)/u$ ya es 21. El esquema dividido puede avanzar el paso convectivo con un paso de tiempo distinto del acústico, de modo que la física lenta no queda rehén de las ondas rápidas. También evita la difusión numérica excesiva que un esquema Godunov directo sufre a bajo Mach.
+
+## Una mirada crítica
+
+Tres cosas inquietan. Primero, la división empleada aquí es de primer orden en el tiempo. Alcanzar segundo orden implica envolverla en una división de Strang —acústico, convectivo, acústico— y pagar la pasada extra. Segundo, el escenario real del artículo es el modelo bifásico de cinco ecuaciones de Kapila. El término no conservativo $K\partial_x u$ de la ecuación de fracción volumétrica y la garantía de positividad son los obstáculos genuinos, y esta reducción monofásica los salta por completo. Tercero, la impedancia $a=\max(\rho c)$ es robusta pero disipativa. En choques fuertes esa disipación puede difuminar el contacto, por lo que el artículo compara aparte la precisión y la eficiencia frente al enfoque directo.
+
+Desde un ángulo práctico, la idea no es exótica. El `rhoPimpleFoam` basado en presión de OpenFOAM y la familia de solvers all-Mach tratan acústica y convección de forma implícita y explícita con la misma raíz. Lagrange–Projection es la versión que escribe esa división con claridad en el lenguaje de los solvers de Riemann.
+
+## Lo que cambió este artículo
+
+- **Justificar la división**: las velocidades de onda $u\pm c,\ u$ se suman exactamente a partir de lo acústico $(\pm c,0)$ y lo convectivo $(u,u,u)$. Esa suma es el fundamento de toda la división.
+- **Una receta de bajo Mach**: la banda acústica queda fija en $2c$ mientras la convección se encoge a cero. Avanzarlas por separado sortea la rigidez.
+- **La conservación no es gratis**: el $R_j$ del paso acústico debe reintroducirse en el paso convectivo para que la masa, el momento y la energía sobrevivan.

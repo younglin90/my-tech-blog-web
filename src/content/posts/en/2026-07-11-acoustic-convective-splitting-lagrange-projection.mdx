@@ -1,0 +1,174 @@
+---
+title: "Letting Sound and Matter Flow Separately — Acoustic-Convective Splitting (Lagrange-Projection)"
+date: 2026-07-11
+description: "Implementing the Lagrange-Projection scheme that sidesteps low-Mach stiffness by splitting acoustics from convection"
+tags: ["Lagrange-Projection", "Operator-Splitting", "Low-Mach", "Compressible", "PaperReview"]
+locale: en
+slug: acoustic-convective-splitting-lagrange-projection
+draft: false
+---
+
+import { AcousticConvectiveSplitDemo } from '@/components/post-viz/2026-07-11-acoustic-convective-splitting-lagrange-projection/AcousticConvectiveSplitDemo'
+import { WaveSpeedSplitChart } from '@/components/post-viz/2026-07-11-acoustic-convective-splitting-lagrange-projection/WaveSpeedSplitChart'
+
+# Letting Sound and Matter Flow Separately — Acoustic-Convective Splitting (Lagrange-Projection)
+
+Sound travels at 340 meters per second. The air next to someone strolling at 5 kilometers per hour still carries sound at that same 340 meters per second. A compressible solver has to handle both speeds inside a single time step. The trouble is the ratio between them. In a very slow flow, acoustic waves race hundreds of times faster than the matter itself. A direct Godunov-type scheme gets its time step chained to those fast waves. Meanwhile the slow convection you actually care about gets smeared by numerical diffusion.
+
+ten Eikelder et al. (2017) pull the two apart entirely. They split the governing equations into an acoustic part and a convective part, then solve each with its own scheme, one after the other. This post implements that Lagrange-Projection-style acoustic-convective splitting for the single-phase Euler equations. Then it checks the result on an "acoustic pulse in a slow-moving flow."
+
+> **Paper**: M.F.P. ten Eikelder, F. Daude, B. Koren, A.S. Tijsseling, *"An acoustic-convective splitting-based approach for the Kapila two-phase flow model"*, Journal of Computational Physics 331 (2017) 188–208. DOI: 10.1016/j.jcp.2016.11.031
+
+## The Jacobian Splits in Two
+
+Write the 1D Euler equations in primitive variables $\mathbf{W}=(\rho,u,p)^T$ and they take a quasi-linear form.
+
+$$
+\partial_t \mathbf{W} + \mathbf{B}(\mathbf{W})\,\partial_x \mathbf{W} = \mathbf{0}
+$$
+
+Here $\rho$ is density, $u$ is velocity, $p$ is pressure. The key observation is that the coefficient matrix $\mathbf{B}$ splits cleanly into two pieces.
+
+$$
+\mathbf{B}(\mathbf{W}) = \underbrace{\mathbf{A}(\mathbf{W})}_{\text{acoustic}} + \underbrace{\mathbf{C}(\mathbf{W})}_{\text{convective}},
+\qquad \mathbf{C}(\mathbf{W}) = u\,\mathbf{I}
+$$
+
+$\mathbf{A}$ holds every pressure term — the acoustic part. $\mathbf{C}=u\mathbf{I}$ simply carries matter along — the convective part. The split really amounts to peeling the $u\partial_x$ term out of the Lagrangian derivative $\mathrm{D}/\mathrm{D}t = \partial_t + u\partial_x$.
+
+## The Additive Split of the Eigenvalues
+
+Why this split is powerful becomes clear once you look at the eigenvalues. The wave speeds of the full system are $u-c,\ u,\ u+c$. They add up exactly from an acoustic and a convective contribution.
+
+$$
+\lambda_{1,2,3} = \underbrace{(-c,\ 0,\ +c)}_{\lambda^a\ \text{acoustic}} + \underbrace{(u,\ u,\ u)}_{\lambda^c\ \text{convective}}
+$$
+
+$c=\sqrt{\gamma p/\rho}$ is the speed of sound. The acoustic speeds are $\pm c$, independent of the flow velocity. The convective speed is $u$ across the board. In the low-Mach limit $M=u/c\to 0$, the acoustic band keeps its width $2c$ while the convective speed shrinks to zero. That gap is the source of the stiffness.
+
+Try it directly in the simulation below.
+
+<AcousticConvectiveSplitDemo />
+
+Drop the Mach number to 0.02 and the pressure pulse (amber) splits into two acoustic waves that dash outward, while the entropy anomaly (teal) rides the contact and barely moves. The three triangular markers, at speeds $u\!-\!c,\ u,\ u\!+\!c$, are exactly the additive split above.
+
+## Acoustic Step — HLLC in Lagrangian Coordinates
+
+The acoustic part is the expansion and compression that pressure drives. The paper moves it into mass (Lagrangian) coordinates and solves it with an HLLC-type Riemann solver. The starred state at face $j+1/2$ comes down to two formulas.
+
+$$
+u^*_{j+1/2} = \frac{u_j+u_{j+1}}{2} + \frac{p_j-p_{j+1}}{2\,a_{j+1/2}},
+\qquad
+p^*_{j+1/2} = \frac{p_j+p_{j+1}}{2} + \frac{a_{j+1/2}}{2}\,(u_j-u_{j+1})
+$$
+
+$a_{j+1/2}=\max(\rho_j c_j,\ \rho_{j+1}c_{j+1})$ is the acoustic impedance (density times sound speed). Those starred velocities and pressures alone drive the update of the Eulerian variables. Each cell's expansion rate compresses into a single coefficient.
+
+$$
+R_j = 1 + \frac{\Delta t}{\Delta x}\big(u^*_{j+1/2}-u^*_{j-1/2}\big)
+$$
+
+$R_j$ tells you how much the acoustic step stretched or squeezed the cell volume. Density follows immediately as $\rho^{n+1-}_j = \rho^n_j / R_j$.
+
+## Convective Step — Upwind Projection
+
+Now the starred velocity $u^*$ from the acoustic step carries the matter. Update the conserved quantities $\varphi\in\{\rho,\rho u,\rho E\}$ with a plain upwind scheme.
+
+$$
+\varphi^{n+1}_j = R_j\,\varphi^{n+1-}_j - \frac{\Delta t}{\Delta x}\big(u^*_{j+1/2}\varphi^{\text{up}}_{j+1/2} - u^*_{j-1/2}\varphi^{\text{up}}_{j-1/2}\big)
+$$
+
+$\varphi^{\text{up}}_{j+1/2}$ is $\varphi_j$ when $u^*\!\ge\!0$, else $\varphi_{j+1}$. The $R_j$ from the previous step comes back here, and mass, momentum, and energy are conserved exactly. Walk through the two steps in order and one time step is done.
+
+## Python — Acoustic Pulse in a Slow-Moving Flow
+
+Here is the whole pipeline in numpy: periodic boundaries, an ideal gas, three conserved quantities per cell. The initial condition lays a small pressure pulse and a density anomaly on top of a background flow $u_0=Mc_0$.
+
+```python
+import numpy as np
+
+GAMMA = 1.4  # ideal-gas heat capacity ratio
+
+def primitives(rho, mom, Ene):
+    """Conserved -> primitive variables (velocity, pressure, sound speed)."""
+    u = mom / rho
+    e = Ene / rho - 0.5 * u * u            # specific internal energy
+    p = (GAMMA - 1.0) * rho * e
+    c = np.sqrt(GAMMA * p / rho)
+    return u, p, c
+
+def acoustic_faces(rho, u, p, c):
+    """HLLC acoustic state u*, p* at face j+1/2 (paper eq. 34)."""
+    rp, up, pp, cp = (np.roll(a, -1) for a in (rho, u, p, c))
+    a = np.maximum(rho * c, rp * cp)       # acoustic impedance a = max(rho*c) (eq. 32)
+    ustar = 0.5 * (u + up) + (p - pp) / (2 * a)
+    pstar = 0.5 * (p + pp) + 0.5 * a * (u - up)
+    return ustar, pstar
+
+def lagrange_projection_step(rho, mom, Ene, dx, dt):
+    """Acoustic step -> convective step (paper eq. 38, 40)."""
+    u, p, c = primitives(rho, mom, Ene)
+    uf, pf = acoustic_faces(rho, u, p, c)          # j+1/2
+    uf_m, pf_m = np.roll(uf, 1), np.roll(pf, 1)    # j-1/2
+    lam = dt / dx
+    # 1) acoustic step: expansion/compression driven by pressure
+    R = 1.0 + lam * (uf - uf_m)                     # eq. (39)
+    rho1 = rho / R
+    mom1 = (mom - lam * (pf - pf_m)) / R
+    Ene1 = (Ene - lam * (pf * uf - pf_m * uf_m)) / R
+    # 2) convective step: carry matter at u* (upwind projection)
+    def project(phi1):
+        phi_f = np.where(uf >= 0, phi1, np.roll(phi1, -1))
+        phi_f_m = np.roll(phi_f, 1)
+        return R * phi1 - lam * (uf * phi_f - uf_m * phi_f_m)
+    return project(rho1), project(mom1), project(Ene1)
+
+def run_acoustic_pulse(mach, n=400, cfl=0.8, tmax=0.25):
+    x = (np.arange(n) + 0.5) / n
+    dx = 1.0 / n
+    c0, rho0 = 1.0, 1.0
+    p0 = rho0 * c0**2 / GAMMA
+    u0 = mach * c0
+    dp = 1e-3 * np.exp(-((x - 0.5) / 0.03)**2)     # acoustic pressure pulse
+    ds = 5e-2 * np.exp(-((x - 0.25) / 0.03)**2)    # entropy (density) anomaly -> contact wave
+    rho = rho0 + dp / c0**2 + ds
+    u = np.full(n, u0)
+    p = p0 + dp
+    mom = rho * u
+    Ene = p / (GAMMA - 1) + 0.5 * rho * u * u
+    t, m0 = 0.0, mom.sum()
+    while t < tmax:
+        _, _, c = primitives(rho, mom, Ene)
+        dt = min(cfl * dx / np.max(np.abs(mom / rho) + c), tmax - t)
+        rho, mom, Ene = lagrange_projection_step(rho, mom, Ene, dx, dt)
+        t += dt
+    return rho, mom, m0, mom.sum()
+
+for M in (0.02, 0.2):
+    rho, mom, m0, m1 = run_acoustic_pulse(M)
+    print(f"M={M}: momentum error={abs(m1-m0)/abs(m0):.1e}, rho_max={rho.max():.4f}")
+# M=0.02: momentum error=2.2e-16, rho_max=1.0497
+# M=0.2:  momentum error=0.0e+00, rho_max=1.0452
+```
+
+Momentum is conserved to machine precision. Pressure stays bounded and density stays positive. Splitting does not break conservation because the convective step feeds the $R_j$ back in.
+
+## What Actually Diverges at Low Mach
+
+Where the split earns its keep is low Mach. A direct scheme's stable time step is always chained to $|u|+c$, even when the physics of interest lives on $u$. Look at that speed ratio as a graph.
+
+<WaveSpeedSplitChart />
+
+The width of the acoustic band (amber) is always $2c$, independent of $M$. Only the convective speed $u$ (teal) converges to zero. At $M=0.05$ the ratio $(u+c)/u$ is already 21. The split scheme can advance the convective step on a different time step from the acoustic step, so the slow physics is not held hostage by the fast waves. It also avoids the excessive numerical diffusion a direct Godunov scheme suffers at low Mach.
+
+## A Critical Look
+
+Three things nag. First, the split used here is first-order in time. Getting second order means wrapping it in Strang splitting — acoustic, convective, acoustic — and paying for the extra pass. Second, the paper's real stage is the Kapila five-equation two-phase model. The non-conservative term $K\partial_x u$ in the volume-fraction equation and the positivity guarantee are the genuine hurdles, and this single-phase reduction skips right past them. Third, the impedance $a=\max(\rho c)$ is robust but diffusive. On strong shocks that diffusion can smear the contact, which is why the paper benchmarks its accuracy and efficiency against the direct approach separately.
+
+From a practical angle the idea is not exotic. OpenFOAM's pressure-based `rhoPimpleFoam` and the all-Mach family of solvers handle acoustics and convection implicitly and explicitly with the same roots. Lagrange-Projection is the version that writes that split cleanly in the language of Riemann solvers.
+
+## What This Paper Changed
+
+- **Justifying the split**: the wave speeds $u\pm c,\ u$ add up exactly from acoustic $(\pm c,0)$ and convective $(u,u,u)$. That addition is the ground for the entire splitting.
+- **A low-Mach prescription**: the acoustic band is fixed at $2c$ while convection shrinks to zero. Advancing them separately sidesteps the stiffness.
+- **Conservation is not free**: the $R_j$ from the acoustic step must be fed back into the convective step for mass, momentum, and energy to survive.

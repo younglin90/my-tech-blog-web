@@ -1,0 +1,174 @@
+---
+title: "음파와 물질을 따로 흘려보낸다 — 음향·대류 분리(Lagrange–Projection)"
+date: 2026-07-11
+description: "저마하 강성을 음향·대류 분리로 우회하는 Lagrange–Projection 기법 직접 구현"
+tags: ["Lagrange-Projection", "Operator-Splitting", "Low-Mach", "Compressible", "논문리뷰"]
+locale: ko
+slug: acoustic-convective-splitting-lagrange-projection
+draft: false
+---
+
+import { AcousticConvectiveSplitDemo } from '@/components/post-viz/2026-07-11-acoustic-convective-splitting-lagrange-projection/AcousticConvectiveSplitDemo'
+import { WaveSpeedSplitChart } from '@/components/post-viz/2026-07-11-acoustic-convective-splitting-lagrange-projection/WaveSpeedSplitChart'
+
+# 음파와 물질을 따로 흘려보낸다 — 음향·대류 분리(Lagrange–Projection)
+
+음속은 초당 340미터다. 시속 5킬로미터로 걷는 사람 곁의 공기도 소리는 여전히 340미터로 전한다. 압축성 솔버는 이 두 속도를 한 번의 시간전진 안에서 함께 다뤄야 한다. 문제는 둘의 비율이다. 아주 느린 흐름에서 음파는 물질보다 수백 배 빠르게 달린다. 직접 Godunov 계열 기법은 이 빠른 음파에 시간刻(time step)이 묶인다. 정작 관심 있는 느린 대류는 수치확산에 뭉개진다.
+
+ten Eikelder 등(2017)은 이 둘을 아예 떼어 놓는다. 지배방정식을 음향 부분과 대류 부분으로 쪼개, 각각 다른 솔버로 번갈아 푼다. 이 글은 그 Lagrange–Projection식 음향·대류 분리를 단상(single-phase) Euler 방정식에 맞게 직접 구현한다. 그리고 "느린 흐름 속 음향 펄스"로 검증한다.
+
+> **논문**: M.F.P. ten Eikelder, F. Daude, B. Koren, A.S. Tijsseling, *"An acoustic-convective splitting-based approach for the Kapila two-phase flow model"*, Journal of Computational Physics 331 (2017) 188–208. DOI: 10.1016/j.jcp.2016.11.031
+
+## 야코비안이 둘로 쪼개진다
+
+1차원 Euler 방정식을 원시변수 $\mathbf{W}=(\rho,u,p)^T$로 쓰면 준선형 형태가 된다.
+
+$$
+\partial_t \mathbf{W} + \mathbf{B}(\mathbf{W})\,\partial_x \mathbf{W} = \mathbf{0}
+$$
+
+$\rho$는 밀도, $u$는 속도, $p$는 압력이다. 핵심 관찰은 계수행렬 $\mathbf{B}$가 두 조각으로 정확히 갈라진다는 것이다.
+
+$$
+\mathbf{B}(\mathbf{W}) = \underbrace{\mathbf{A}(\mathbf{W})}_{\text{음향}} + \underbrace{\mathbf{C}(\mathbf{W})}_{\text{대류}},
+\qquad \mathbf{C}(\mathbf{W}) = u\,\mathbf{I}
+$$
+
+$\mathbf{A}$는 압력 항을 모두 담는 음향(acoustic) 부분이다. $\mathbf{C}=u\mathbf{I}$는 물질을 그대로 실어 나르는 대류(convective) 부분이다. 분리는 사실상 라그랑주 미분 $\mathrm{D}/\mathrm{D}t = \partial_t + u\partial_x$에서 $u\partial_x$ 항을 떼어내는 일이다.
+
+## 고유값의 덧셈 분해
+
+이 분리가 왜 강력한지는 고유값을 보면 드러난다. 전체 계의 파속은 $u-c,\ u,\ u+c$다. 이것이 음향과 대류로 정확히 더해진다.
+
+$$
+\lambda_{1,2,3} = \underbrace{(-c,\ 0,\ +c)}_{\lambda^a\ \text{음향}} + \underbrace{(u,\ u,\ u)}_{\lambda^c\ \text{대류}}
+$$
+
+$c=\sqrt{\gamma p/\rho}$는 음속이다. 음향 파속은 $\pm c$로 흐름 속도와 무관하다. 대류 파속은 통째로 $u$다. 저마하 극한 $M=u/c\to 0$에서 음향 밴드는 폭 $2c$로 그대로인데 대류 속도만 0으로 줄어든다. 이 격차가 강성(stiffness)의 정체다.
+
+아래 시뮬레이션에서 직접 조작해보자.
+
+<AcousticConvectiveSplitDemo />
+
+Mach를 0.02까지 내리면 압력 펄스(amber)가 두 음향파로 갈라져 양쪽으로 빠르게 달아나고, 엔트로피 이상(teal)은 접촉파를 타고 거의 제자리에 머문다. 세 삼각형 마커의 속도 $u\!-\!c,\ u,\ u\!+\!c$가 바로 위 덧셈 분해다.
+
+## 음향 단계 — 라그랑주 좌표의 HLLC
+
+음향 부분은 압력이 만드는 팽창·압축이다. 논문은 이를 질량 좌표(라그랑주)로 옮겨 HLLC형 리만 솔버로 푼다. 면 $j+1/2$의 별표 상태는 두 식으로 끝난다.
+
+$$
+u^*_{j+1/2} = \frac{u_j+u_{j+1}}{2} + \frac{p_j-p_{j+1}}{2\,a_{j+1/2}},
+\qquad
+p^*_{j+1/2} = \frac{p_j+p_{j+1}}{2} + \frac{a_{j+1/2}}{2}\,(u_j-u_{j+1})
+$$
+
+$a_{j+1/2}=\max(\rho_j c_j,\ \rho_{j+1}c_{j+1})$는 음향 임피던스(impedance, 밀도×음속)다. 이 별표 속도·압력만으로 오일러 변수 갱신이 이뤄진다. 각 셀의 팽창률은 하나의 계수로 압축된다.
+
+$$
+R_j = 1 + \frac{\Delta t}{\Delta x}\big(u^*_{j+1/2}-u^*_{j-1/2}\big)
+$$
+
+$R_j$는 음향 단계가 셀 부피를 얼마나 늘리거나 줄였는지를 나타낸다. 밀도는 $\rho^{n+1-}_j = \rho^n_j / R_j$로 바로 나온다.
+
+## 대류 단계 — 업윈드 투영
+
+음향 단계가 만든 별표 속도 $u^*$로 이제 물질을 실어 나른다. 보존량 $\varphi\in\{\rho,\rho u,\rho E\}$를 단순 업윈드로 갱신한다.
+
+$$
+\varphi^{n+1}_j = R_j\,\varphi^{n+1-}_j - \frac{\Delta t}{\Delta x}\big(u^*_{j+1/2}\varphi^{\text{up}}_{j+1/2} - u^*_{j-1/2}\varphi^{\text{up}}_{j-1/2}\big)
+$$
+
+$\varphi^{\text{up}}_{j+1/2}$는 $u^*\!\ge\!0$이면 $\varphi_j$, 아니면 $\varphi_{j+1}$이다. 앞 단계의 $R_j$가 여기서 되돌아오며 질량·운동량·에너지가 정확히 보존된다. 두 단계를 순서대로 밟으면 한 시간전진이 끝난다.
+
+## Python — 느린 흐름 속 음향 펄스
+
+전체 파이프라인을 numpy로 짠다. 주기 경계, 이상기체, 셀당 세 보존량이다. 초기조건은 배경 흐름 $u_0=Mc_0$ 위에 작은 압력 펄스와 밀도 이상을 얹는다.
+
+```python
+import numpy as np
+
+GAMMA = 1.4  # 이상기체 비열비
+
+def primitives(rho, mom, Ene):
+    """보존량 -> 원시변수 (속도, 압력, 음속)."""
+    u = mom / rho
+    e = Ene / rho - 0.5 * u * u            # 내부 비에너지
+    p = (GAMMA - 1.0) * rho * e
+    c = np.sqrt(GAMMA * p / rho)
+    return u, p, c
+
+def acoustic_faces(rho, u, p, c):
+    """면 j+1/2의 HLLC 음향 상태 u*, p* (논문 식 34)."""
+    rp, up, pp, cp = (np.roll(a, -1) for a in (rho, u, p, c))
+    a = np.maximum(rho * c, rp * cp)       # 음향 임피던스 a = max(rho*c) (식 32)
+    ustar = 0.5 * (u + up) + (p - pp) / (2 * a)
+    pstar = 0.5 * (p + pp) + 0.5 * a * (u - up)
+    return ustar, pstar
+
+def lagrange_projection_step(rho, mom, Ene, dx, dt):
+    """음향 단계 -> 대류 단계 (논문 식 38, 40)."""
+    u, p, c = primitives(rho, mom, Ene)
+    uf, pf = acoustic_faces(rho, u, p, c)          # j+1/2
+    uf_m, pf_m = np.roll(uf, 1), np.roll(pf, 1)    # j-1/2
+    lam = dt / dx
+    # 1) 음향 단계: 압력이 만드는 팽창/압축
+    R = 1.0 + lam * (uf - uf_m)                     # 식 (39)
+    rho1 = rho / R
+    mom1 = (mom - lam * (pf - pf_m)) / R
+    Ene1 = (Ene - lam * (pf * uf - pf_m * uf_m)) / R
+    # 2) 대류 단계: 물질을 u*로 실어 나른다 (업윈드 투영)
+    def project(phi1):
+        phi_f = np.where(uf >= 0, phi1, np.roll(phi1, -1))
+        phi_f_m = np.roll(phi_f, 1)
+        return R * phi1 - lam * (uf * phi_f - uf_m * phi_f_m)
+    return project(rho1), project(mom1), project(Ene1)
+
+def run_acoustic_pulse(mach, n=400, cfl=0.8, tmax=0.25):
+    x = (np.arange(n) + 0.5) / n
+    dx = 1.0 / n
+    c0, rho0 = 1.0, 1.0
+    p0 = rho0 * c0**2 / GAMMA
+    u0 = mach * c0
+    dp = 1e-3 * np.exp(-((x - 0.5) / 0.03)**2)     # 음향 압력 펄스
+    ds = 5e-2 * np.exp(-((x - 0.25) / 0.03)**2)    # 엔트로피(밀도) 이상 -> 접촉파
+    rho = rho0 + dp / c0**2 + ds
+    u = np.full(n, u0)
+    p = p0 + dp
+    mom = rho * u
+    Ene = p / (GAMMA - 1) + 0.5 * rho * u * u
+    t, m0 = 0.0, mom.sum()
+    while t < tmax:
+        _, _, c = primitives(rho, mom, Ene)
+        dt = min(cfl * dx / np.max(np.abs(mom / rho) + c), tmax - t)
+        rho, mom, Ene = lagrange_projection_step(rho, mom, Ene, dx, dt)
+        t += dt
+    return rho, mom, m0, mom.sum()
+
+for M in (0.02, 0.2):
+    rho, mom, m0, m1 = run_acoustic_pulse(M)
+    print(f"M={M}: 운동량 보존오차={abs(m1-m0)/abs(m0):.1e}, rho_max={rho.max():.4f}")
+# M=0.02: 운동량 보존오차=2.2e-16, rho_max=1.0497
+# M=0.2:  운동량 보존오차=0.0e+00, rho_max=1.0452
+```
+
+운동량이 기계정밀도로 보존된다. 압력은 유계, 밀도는 양수로 남는다. 분리했는데도 보존이 깨지지 않는 이유는 대류 단계에 $R_j$를 되돌려 넣었기 때문이다.
+
+## 저마하에서 갈리는 것
+
+분리가 사는 곳은 저마하다. 직접법의 안정 시간刻은 항상 $|u|+c$에 묶인다. 관심 물리가 $u$ 위에 있어도 그렇다. 이 속도비를 그래프로 보자.
+
+<WaveSpeedSplitChart />
+
+음향 밴드의 폭(amber)은 $M$과 무관하게 항상 $2c$다. 대류 속도 $u$(teal)만 0으로 수렴한다. $M=0.05$에서 속도비 $(u+c)/u$는 이미 21배다. 분리 기법은 대류 단계를 음향 단계와 다른 시간刻으로 밟을 수 있어, 느린 물리가 빠른 음파에 인질로 잡히지 않는다. 저마하에서 직접 Godunov가 겪는 과도한 수치확산도 이 분리로 피할 수 있다.
+
+## 비판적으로 보면
+
+세 가지가 걸린다. 첫째, 여기 쓴 분리는 시간 1차다. 2차를 얻으려면 Strang 분리로 음향–대류–음향 순서를 감싸야 하고, 그만큼 비용이 는다. 둘째, 원 논문의 진짜 무대는 Kapila 5방정식 이상류다. 부피분율 방정식의 비보존 항 $K\partial_x u$와 양수성 보장이 실제 난관인데, 이 글의 단상 축약은 그 어려움을 건너뛴다. 셋째, 임피던스 $a=\max(\rho c)$는 견고하지만 소산적이다. 강한 충격에서는 이 소산이 접촉면을 뭉갤 수 있어, 논문도 직접법 대비 정확도·효율을 별도로 견준다.
+
+실무 관점에서 이 아이디어는 낯설지 않다. OpenFOAM의 압력기반 `rhoPimpleFoam`이나 all-Mach 계열 솔버가 음향과 대류를 암시적·명시적으로 나눠 다루는 것과 같은 뿌리다. Lagrange–Projection은 그 분리를 리만 솔버 언어로 명료하게 적은 판본이다.
+
+## 이 논문이 바꾼 것
+
+- **분리의 정당성**: 파속 $u\pm c,\ u$는 음향 $(\pm c,0)$과 대류 $(u,u,u)$로 정확히 더해진다. 이 덧셈이 분리 전체의 근거다.
+- **저마하 처방**: 음향 밴드는 $2c$로 고정, 대류는 0으로 줄어든다. 둘을 따로 밟아 강성을 우회한다.
+- **보존은 공짜가 아니다**: 음향 단계의 $R_j$를 대류 단계에 되돌려야 질량·운동량·에너지가 살아남는다.

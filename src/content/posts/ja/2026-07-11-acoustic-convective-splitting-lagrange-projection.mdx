@@ -1,0 +1,174 @@
+---
+title: "音波と物質を別々に流す — 音響・対流分離（Lagrange–Projection）"
+date: 2026-07-11
+description: "低マッハの剛性を音響・対流分離で回避するLagrange–Projection法を自作実装する"
+tags: ["Lagrange-Projection", "Operator-Splitting", "Low-Mach", "Compressible", "PaperReview"]
+locale: ja
+slug: acoustic-convective-splitting-lagrange-projection
+draft: false
+---
+
+import { AcousticConvectiveSplitDemo } from '@/components/post-viz/2026-07-11-acoustic-convective-splitting-lagrange-projection/AcousticConvectiveSplitDemo'
+import { WaveSpeedSplitChart } from '@/components/post-viz/2026-07-11-acoustic-convective-splitting-lagrange-projection/WaveSpeedSplitChart'
+
+# 音波と物質を別々に流す — 音響・対流分離（Lagrange–Projection）
+
+音速は秒速340メートルです。時速5キロで歩く人のそばの空気も、音は同じ340メートルで伝えます。圧縮性ソルバーは、この二つの速度を一つの時間ステップの中で同時に扱わねばなりません。厄介なのはその比です。とても遅い流れでは、音波は物質より数百倍も速く走ります。直接的なGodunov系の手法は、その速い音波に時間ステップを縛られます。肝心の遅い対流は数値拡散でぼやけてしまいます。
+
+ten Eikelderら（2017）は、この二つをまるごと引き離します。支配方程式を音響部分と対流部分に分け、それぞれ別のソルバーで交互に解きます。本稿では、そのLagrange–Projection式の音響・対流分離を単相（single-phase）Euler方程式向けに自作実装します。そして「遅い流れの中の音響パルス」で検証します。
+
+> **論文**: M.F.P. ten Eikelder, F. Daude, B. Koren, A.S. Tijsseling, *"An acoustic-convective splitting-based approach for the Kapila two-phase flow model"*, Journal of Computational Physics 331 (2017) 188–208. DOI: 10.1016/j.jcp.2016.11.031
+
+## ヤコビアンが二つに割れる
+
+1次元Euler方程式を原始変数 $\mathbf{W}=(\rho,u,p)^T$ で書くと、準線形の形になります。
+
+$$
+\partial_t \mathbf{W} + \mathbf{B}(\mathbf{W})\,\partial_x \mathbf{W} = \mathbf{0}
+$$
+
+ここで $\rho$ は密度、$u$ は速度、$p$ は圧力です。要となる観察は、係数行列 $\mathbf{B}$ がきれいに二つに割れることです。
+
+$$
+\mathbf{B}(\mathbf{W}) = \underbrace{\mathbf{A}(\mathbf{W})}_{\text{音響}} + \underbrace{\mathbf{C}(\mathbf{W})}_{\text{対流}},
+\qquad \mathbf{C}(\mathbf{W}) = u\,\mathbf{I}
+$$
+
+$\mathbf{A}$ は圧力項をすべて含む音響（acoustic）部分です。$\mathbf{C}=u\mathbf{I}$ は物質をそのまま運ぶ対流（convective）部分です。この分離は実のところ、ラグランジュ微分 $\mathrm{D}/\mathrm{D}t = \partial_t + u\partial_x$ から $u\partial_x$ 項を剥がす作業に他なりません。
+
+## 固有値の加法的分解
+
+この分離がなぜ強力かは、固有値を見ると分かります。全系の波速は $u-c,\ u,\ u+c$ です。これが音響と対流にちょうど足し合わさります。
+
+$$
+\lambda_{1,2,3} = \underbrace{(-c,\ 0,\ +c)}_{\lambda^a\ \text{音響}} + \underbrace{(u,\ u,\ u)}_{\lambda^c\ \text{対流}}
+$$
+
+$c=\sqrt{\gamma p/\rho}$ は音速です。音響の波速は $\pm c$ で、流速には依りません。対流の波速はすべて $u$ です。低マッハ極限 $M=u/c\to 0$ では、音響帯は幅 $2c$ のまま、対流速度だけがゼロへ縮みます。この差が剛性（stiffness）の正体です。
+
+下のシミュレーションで直接操作してみましょう。
+
+<AcousticConvectiveSplitDemo />
+
+マッハ数を0.02まで下げると、圧力パルス（amber）が二つの音響波に割れて両側へ速く走り去り、エントロピー異常（teal）は接触波に乗ってほとんど動きません。三つの三角マーカーの速度 $u\!-\!c,\ u,\ u\!+\!c$ が、まさに上の加法的分解です。
+
+## 音響ステップ — ラグランジュ座標のHLLC
+
+音響部分は、圧力が生む膨張・圧縮です。論文はこれを質量（ラグランジュ）座標へ移し、HLLC型リーマンソルバーで解きます。面 $j+1/2$ のスター状態は二つの式で済みます。
+
+$$
+u^*_{j+1/2} = \frac{u_j+u_{j+1}}{2} + \frac{p_j-p_{j+1}}{2\,a_{j+1/2}},
+\qquad
+p^*_{j+1/2} = \frac{p_j+p_{j+1}}{2} + \frac{a_{j+1/2}}{2}\,(u_j-u_{j+1})
+$$
+
+$a_{j+1/2}=\max(\rho_j c_j,\ \rho_{j+1}c_{j+1})$ は音響インピーダンス（密度×音速）です。このスター速度・圧力だけでEuler変数の更新が行われます。各セルの膨張率は一つの係数に圧縮されます。
+
+$$
+R_j = 1 + \frac{\Delta t}{\Delta x}\big(u^*_{j+1/2}-u^*_{j-1/2}\big)
+$$
+
+$R_j$ は、音響ステップがセル体積をどれだけ伸ばしたり縮めたりしたかを表します。密度はただちに $\rho^{n+1-}_j = \rho^n_j / R_j$ として得られます。
+
+## 対流ステップ — 風上投影
+
+音響ステップが生んだスター速度 $u^*$ で、今度は物質を運びます。保存量 $\varphi\in\{\rho,\rho u,\rho E\}$ を単純な風上法で更新します。
+
+$$
+\varphi^{n+1}_j = R_j\,\varphi^{n+1-}_j - \frac{\Delta t}{\Delta x}\big(u^*_{j+1/2}\varphi^{\text{up}}_{j+1/2} - u^*_{j-1/2}\varphi^{\text{up}}_{j-1/2}\big)
+$$
+
+$\varphi^{\text{up}}_{j+1/2}$ は $u^*\!\ge\!0$ なら $\varphi_j$、そうでなければ $\varphi_{j+1}$ です。前ステップの $R_j$ がここで戻ってきて、質量・運動量・エネルギーが厳密に保存されます。二つのステップを順に踏めば、一つの時間ステップが完了します。
+
+## Python — 遅い流れの中の音響パルス
+
+パイプライン全体をnumpyで組みます。周期境界、理想気体、セルあたり三つの保存量です。初期条件は、背景流 $u_0=Mc_0$ の上に小さな圧力パルスと密度異常を載せます。
+
+```python
+import numpy as np
+
+GAMMA = 1.4  # 理想気体の比熱比
+
+def primitives(rho, mom, Ene):
+    """保存量 -> 原始変数（速度、圧力、音速）。"""
+    u = mom / rho
+    e = Ene / rho - 0.5 * u * u            # 比内部エネルギー
+    p = (GAMMA - 1.0) * rho * e
+    c = np.sqrt(GAMMA * p / rho)
+    return u, p, c
+
+def acoustic_faces(rho, u, p, c):
+    """面 j+1/2 のHLLC音響状態 u*, p*（論文 式34）。"""
+    rp, up, pp, cp = (np.roll(a, -1) for a in (rho, u, p, c))
+    a = np.maximum(rho * c, rp * cp)       # 音響インピーダンス a = max(rho*c)（式32）
+    ustar = 0.5 * (u + up) + (p - pp) / (2 * a)
+    pstar = 0.5 * (p + pp) + 0.5 * a * (u - up)
+    return ustar, pstar
+
+def lagrange_projection_step(rho, mom, Ene, dx, dt):
+    """音響ステップ -> 対流ステップ（論文 式38, 40）。"""
+    u, p, c = primitives(rho, mom, Ene)
+    uf, pf = acoustic_faces(rho, u, p, c)          # j+1/2
+    uf_m, pf_m = np.roll(uf, 1), np.roll(pf, 1)    # j-1/2
+    lam = dt / dx
+    # 1) 音響ステップ: 圧力が生む膨張/圧縮
+    R = 1.0 + lam * (uf - uf_m)                     # 式 (39)
+    rho1 = rho / R
+    mom1 = (mom - lam * (pf - pf_m)) / R
+    Ene1 = (Ene - lam * (pf * uf - pf_m * uf_m)) / R
+    # 2) 対流ステップ: 物質を u* で運ぶ（風上投影）
+    def project(phi1):
+        phi_f = np.where(uf >= 0, phi1, np.roll(phi1, -1))
+        phi_f_m = np.roll(phi_f, 1)
+        return R * phi1 - lam * (uf * phi_f - uf_m * phi_f_m)
+    return project(rho1), project(mom1), project(Ene1)
+
+def run_acoustic_pulse(mach, n=400, cfl=0.8, tmax=0.25):
+    x = (np.arange(n) + 0.5) / n
+    dx = 1.0 / n
+    c0, rho0 = 1.0, 1.0
+    p0 = rho0 * c0**2 / GAMMA
+    u0 = mach * c0
+    dp = 1e-3 * np.exp(-((x - 0.5) / 0.03)**2)     # 音響圧力パルス
+    ds = 5e-2 * np.exp(-((x - 0.25) / 0.03)**2)    # エントロピー(密度)異常 -> 接触波
+    rho = rho0 + dp / c0**2 + ds
+    u = np.full(n, u0)
+    p = p0 + dp
+    mom = rho * u
+    Ene = p / (GAMMA - 1) + 0.5 * rho * u * u
+    t, m0 = 0.0, mom.sum()
+    while t < tmax:
+        _, _, c = primitives(rho, mom, Ene)
+        dt = min(cfl * dx / np.max(np.abs(mom / rho) + c), tmax - t)
+        rho, mom, Ene = lagrange_projection_step(rho, mom, Ene, dx, dt)
+        t += dt
+    return rho, mom, m0, mom.sum()
+
+for M in (0.02, 0.2):
+    rho, mom, m0, m1 = run_acoustic_pulse(M)
+    print(f"M={M}: 運動量誤差={abs(m1-m0)/abs(m0):.1e}, rho_max={rho.max():.4f}")
+# M=0.02: 運動量誤差=2.2e-16, rho_max=1.0497
+# M=0.2:  運動量誤差=0.0e+00, rho_max=1.0452
+```
+
+運動量は機械精度で保存されます。圧力は有界に、密度は正のままです。分離しても保存が崩れないのは、対流ステップに $R_j$ を戻し入れているからです。
+
+## 低マッハで分かれるもの
+
+分離が生きる場所は低マッハです。直接法の安定な時間ステップは、常に $|u|+c$ に縛られます。着目する物理が $u$ の上にあってもです。この速度比をグラフで見ましょう。
+
+<WaveSpeedSplitChart />
+
+音響帯の幅（amber）は $M$ に依らず常に $2c$ です。対流速度 $u$（teal）だけがゼロへ収束します。$M=0.05$ で比 $(u+c)/u$ はすでに21です。分離法は対流ステップを音響ステップと別の時間ステップで進められるので、遅い物理が速い波に人質に取られません。低マッハで直接Godunovが被る過剰な数値拡散も、この分離で避けられます。
+
+## 批判的に見ると
+
+三つ引っかかります。第一に、ここで使った分離は時間1次です。2次を得るにはStrang分離で音響–対流–音響の順に包む必要があり、その分コストが増します。第二に、原論文の本当の舞台はKapila5方程式二相流です。体積分率方程式の非保存項 $K\partial_x u$ と正値性の保証こそ真の難関で、本稿の単相への縮約はそこを飛び越えています。第三に、インピーダンス $a=\max(\rho c)$ は頑健ですが散逸的です。強い衝撃波では、この散逸が接触面をぼかしかねず、論文も直接法に対して精度・効率を別途比較しています。
+
+実務の観点では、この発想は目新しくありません。OpenFOAMの圧力ベース `rhoPimpleFoam` やall-Mach系ソルバーが、音響と対流を陰的・陽的に分けて扱うのと同じ根を持ちます。Lagrange–Projectionは、その分離をリーマンソルバーの言葉で明快に書いた版です。
+
+## この論文が変えたこと
+
+- **分離の正当性**: 波速 $u\pm c,\ u$ は音響 $(\pm c,0)$ と対流 $(u,u,u)$ にちょうど足し合わさります。この加法が分離全体の根拠です。
+- **低マッハの処方**: 音響帯は $2c$ に固定、対流はゼロへ縮みます。両者を別々に進めて剛性を回避します。
+- **保存はただではない**: 音響ステップの $R_j$ を対流ステップに戻さないと、質量・運動量・エネルギーは生き残りません。
