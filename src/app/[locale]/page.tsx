@@ -69,7 +69,7 @@ export default async function Home({ params }: HomeProps) {
       <QuoteHero />
 
       <div
-        className="mb-5 flex flex-wrap items-center gap-x-5 gap-y-2 px-4 py-3 rounded-lg"
+        className="reveal reveal-1 mb-5 flex flex-wrap items-center gap-x-5 gap-y-2 px-4 py-3 rounded-lg"
         style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
       >
         <span
@@ -95,14 +95,18 @@ export default async function Home({ params }: HomeProps) {
         })}
       </div>
 
-      <ContinueReading
-        posts={posts.map((p) => ({
-          slug: p.id, title: p.title, url: p.url,
-          series: p.series, seriesOrder: p.seriesOrder,
-        }))}
-      />
+      <div className="reveal reveal-2">
+        <ContinueReading
+          posts={posts.map((p) => ({
+            slug: p.id, title: p.title, url: p.url,
+            series: p.series, seriesOrder: p.seriesOrder,
+          }))}
+        />
+      </div>
 
-      <TopPosts locale={loc} heading={t(loc, 'about.topPosts')} limit={5} days={7} />
+      <div className="reveal reveal-3">
+        <TopPosts locale={loc} heading={t(loc, 'about.topPosts')} limit={5} days={7} />
+      </div>
 
       <PostList
         staticPosts={initialPosts}

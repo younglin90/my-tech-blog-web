@@ -306,7 +306,7 @@ export function PostList({
       )}
 
       {/* Post list */}
-      <div>
+      <div className="reveal-rows">
         {visible.map((post, idx) => {
           const href = post.isDynamic ? `/read?id=${post.id}` : post.url
           // mounted 가드: 정적 HTML은 빌드 시각으로 굳으므로 클라이언트에서만 판정 (hydration mismatch 방지)

@@ -38,7 +38,7 @@ export function QuoteHero() {
 
   return (
     <div
-      className="mb-10"
+      className="mb-10 reveal"
       style={{ borderLeft: '2px solid var(--accent)', paddingLeft: 18, position: 'relative' }}
     >
       <div className="flex items-center justify-between gap-3 mb-1.5">
@@ -93,7 +93,13 @@ export function QuoteHero() {
       >
         — {item.a}
       </div>
-      <p style={{ marginTop: 18, fontSize: 15, color: 'var(--text-muted)', lineHeight: 1.65, maxWidth: 580 }}>
+      {/* 흐름장 유선 언더라인 — accent→cyan 그라디언트가 천천히 드리프트 (CSS-only) */}
+      <div
+        className="hero-streamline"
+        style={{ marginTop: 16, maxWidth: 220 }}
+        aria-hidden="true"
+      />
+      <p style={{ marginTop: 16, fontSize: 15, color: 'var(--text-muted)', lineHeight: 1.65, maxWidth: 580 }}>
         {t(locale, 'home.subtitle')}
       </p>
     </div>

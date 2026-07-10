@@ -12,11 +12,13 @@ paths:
 - Display font: **Fraunces** (variable serif)
 - Body font: **Geist**
 - Code font: **JetBrains Mono**
-- Dark background `#08111f` / accent `#22d3ee`
-- Light background `#fafaf9` / accent `#0e7490`
+- Dark background `#08111f` / accent `#fbbf24` (amber — "HPC Terminal")
+- Light background `#fafaf9` / accent `#b45309` (orange)
 - Default theme: dark
 
-`DESIGN.md` is the source of truth — read it before any UI decision.
+`src/styles/globals.css` holds the live token values; `DESIGN.md` is the
+written source of truth and is kept in sync with it. Read `DESIGN.md` before
+any UI decision. (The accent is amber, not the old cyan `#22d3ee`.)
 
 ### Viz component catalog
 
