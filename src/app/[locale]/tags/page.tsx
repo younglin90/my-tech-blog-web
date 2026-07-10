@@ -15,12 +15,30 @@ export async function generateStaticParams() {
 
 export async function generateMetadata({ params }: TagsPageProps): Promise<Metadata> {
   const { locale } = await params
+  const title = 'Tags'
+  const description = 'All tags on the blog — browse posts by topic.'
+  const url = `${SITE_URL}/${locale}/tags`
   return {
-    title: 'Tags',
-    description: 'All tags on the blog — browse posts by topic.',
+    title,
+    description,
     alternates: {
-      canonical: `${SITE_URL}/${locale}/tags`,
-      languages: Object.fromEntries(LOCALES.map((l) => [l, `${SITE_URL}/${l}/tags`])),
+      canonical: url,
+      languages: {
+        ...Object.fromEntries(LOCALES.map((l) => [l, `${SITE_URL}/${l}/tags`])),
+        'x-default': `${SITE_URL}/en/tags`,
+      },
+    },
+    openGraph: {
+      title,
+      description,
+      url,
+      siteName: "Younglin's CFD Blog",
+      type: 'website',
+    },
+    twitter: {
+      card: 'summary_large_image',
+      title,
+      description,
     },
   }
 }

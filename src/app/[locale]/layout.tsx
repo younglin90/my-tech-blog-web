@@ -41,7 +41,10 @@ export async function generateMetadata({ params }: LocaleLayoutProps): Promise<M
     description,
     alternates: {
       canonical: url,
-      languages: Object.fromEntries(LOCALES.map((l) => [HREFLANG[l], `${SITE_URL}/${l}`])),
+      languages: {
+        ...Object.fromEntries(LOCALES.map((l) => [HREFLANG[l], `${SITE_URL}/${l}`])),
+        'x-default': `${SITE_URL}/en`,
+      },
     },
     openGraph: {
       title: siteName,

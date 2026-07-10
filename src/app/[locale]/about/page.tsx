@@ -18,12 +18,31 @@ export async function generateStaticParams() {
 
 export async function generateMetadata({ params }: AboutProps): Promise<Metadata> {
   const { locale } = await params
+  const loc = isLocale(locale) ? locale : 'en'
+  const title = 'About'
+  const description = t(loc, 'about.intro')
+  const url = `${SITE_URL}/${locale}/about`
   return {
-    title: 'About',
-    description: 'Field notes from a CFD researcher — compressible multiphase flow, numerical methods, OpenFOAM.',
+    title,
+    description,
     alternates: {
-      canonical: `${SITE_URL}/${locale}/about`,
-      languages: Object.fromEntries(LOCALES.map((l) => [l, `${SITE_URL}/${l}/about`])),
+      canonical: url,
+      languages: {
+        ...Object.fromEntries(LOCALES.map((l) => [l, `${SITE_URL}/${l}/about`])),
+        'x-default': `${SITE_URL}/en/about`,
+      },
+    },
+    openGraph: {
+      title,
+      description,
+      url,
+      siteName: "Younglin's CFD Blog",
+      type: 'website',
+    },
+    twitter: {
+      card: 'summary_large_image',
+      title,
+      description,
     },
   }
 }

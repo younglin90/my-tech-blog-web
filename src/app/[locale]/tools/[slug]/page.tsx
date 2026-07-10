@@ -22,12 +22,30 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const c = CALCULATORS.find((x) => x.slug === slug)
   if (!c) return {}
   const loc = isLocale(locale) ? locale : 'en'
+  const title = c.title[loc] ?? c.title.en
+  const description = c.desc[loc] ?? c.desc.en
+  const url = `${SITE_URL}/${locale}/tools/${slug}`
   return {
-    title: c.title[loc] ?? c.title.en,
-    description: c.desc[loc] ?? c.desc.en,
+    title,
+    description,
     alternates: {
-      canonical: `${SITE_URL}/${locale}/tools/${slug}`,
-      languages: Object.fromEntries(LOCALES.map((l) => [l, `${SITE_URL}/${l}/tools/${slug}`])),
+      canonical: url,
+      languages: {
+        ...Object.fromEntries(LOCALES.map((l) => [l, `${SITE_URL}/${l}/tools/${slug}`])),
+        'x-default': `${SITE_URL}/en/tools/${slug}`,
+      },
+    },
+    openGraph: {
+      title,
+      description,
+      url,
+      siteName: "Younglin's CFD Blog",
+      type: 'website',
+    },
+    twitter: {
+      card: 'summary_large_image',
+      title,
+      description,
     },
   }
 }

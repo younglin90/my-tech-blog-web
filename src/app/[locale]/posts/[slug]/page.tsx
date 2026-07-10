@@ -83,7 +83,10 @@ export async function generateMetadata({ params }: PostProps): Promise<Metadata>
     keywords: post.tags ?? [],
     alternates: {
       canonical: `${SITE_URL}/${locale}/posts/${slug}`,
-      languages: Object.fromEntries(LOCALES.map((l) => [l, `${SITE_URL}/${l}/posts/${slug}`])),
+      languages: {
+        ...Object.fromEntries(LOCALES.map((l) => [l, `${SITE_URL}/${l}/posts/${slug}`])),
+        'x-default': `${SITE_URL}/en/posts/${slug}`,
+      },
     },
     openGraph: {
       title: post.title,
@@ -91,6 +94,7 @@ export async function generateMetadata({ params }: PostProps): Promise<Metadata>
       type: 'article',
       publishedTime: post.date,
       url: `${SITE_URL}/${locale}/posts/${slug}`,
+      authors: [`${SITE_URL}/${locale}/about`],
       tags: post.tags,
       locale: locale,
     },
@@ -130,6 +134,8 @@ export default async function PostPage({ params }: PostProps) {
     author: { '@type': 'Person', name: "Younglin's CFD Blog", url: `${SITE_URL}/${loc}/about` },
     publisher: { '@type': 'Organization', name: "Younglin's CFD Blog", url: `${SITE_URL}/${loc}` },
     url: `${SITE_URL}/${loc}/posts/${slug}`,
+    mainEntityOfPage: { '@type': 'WebPage', '@id': `${SITE_URL}/${loc}/posts/${slug}` },
+    image: [`${SITE_URL}/${loc}/posts/${slug}/opengraph-image`],
   }
 
   const breadcrumbJsonLd = {

@@ -20,10 +20,28 @@ export async function generateStaticParams() {
 
 export async function generateMetadata({ params }: HomeProps): Promise<Metadata> {
   const { locale } = await params
+  const subtitle = t(locale, 'home.subtitle')
+  const homeTitle = `Younglin's CFD Blog — ${subtitle}`
   return {
+    title: { absolute: homeTitle },
+    description: subtitle,
     alternates: {
       canonical: `${SITE_URL}/${locale}`,
-      languages: Object.fromEntries(LOCALES.map((l) => [l, `${SITE_URL}/${l}`])),
+      languages: {
+        ...Object.fromEntries(LOCALES.map((l) => [l, `${SITE_URL}/${l}`])),
+        'x-default': `${SITE_URL}/en`,
+      },
+    },
+    openGraph: {
+      type: 'website',
+      url: `${SITE_URL}/${locale}`,
+      title: homeTitle,
+      description: subtitle,
+    },
+    twitter: {
+      card: 'summary_large_image',
+      title: homeTitle,
+      description: subtitle,
     },
   }
 }

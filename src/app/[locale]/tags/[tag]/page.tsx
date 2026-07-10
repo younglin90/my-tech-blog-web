@@ -13,12 +13,30 @@ interface TagPageProps {
 export async function generateMetadata({ params }: TagPageProps): Promise<Metadata> {
   const { locale, tag } = await params
   const decoded = decodeURIComponent(tag)
+  const title = `#${decoded}`
+  const description = `Posts tagged "${decoded}"`
+  const url = `${SITE_URL}/${locale}/tags/${tag}`
   return {
-    title: `#${decoded}`,
-    description: `Posts tagged "${decoded}"`,
+    title,
+    description,
     alternates: {
-      canonical: `${SITE_URL}/${locale}/tags/${tag}`,
-      languages: Object.fromEntries(LOCALES.map((l) => [l, `${SITE_URL}/${l}/tags/${tag}`])),
+      canonical: url,
+      languages: {
+        ...Object.fromEntries(LOCALES.map((l) => [l, `${SITE_URL}/${l}/tags/${tag}`])),
+        'x-default': `${SITE_URL}/en/tags/${tag}`,
+      },
+    },
+    openGraph: {
+      title,
+      description,
+      url,
+      siteName: "Younglin's CFD Blog",
+      type: 'website',
+    },
+    twitter: {
+      card: 'summary_large_image',
+      title,
+      description,
     },
   }
 }
