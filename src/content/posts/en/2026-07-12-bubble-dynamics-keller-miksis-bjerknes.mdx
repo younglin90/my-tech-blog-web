@@ -1,0 +1,160 @@
+---
+title: "[Paper Review] When a Microbubble Burns Like a Star — Keller–Miksis and the Secondary Bjerknes Force"
+date: 2026-07-12
+description: "Directly integrating bubble radial oscillation, collapse, and bubble-pair coupling in ultrasound"
+tags: ["논문리뷰", "Bubble-Dynamics", "Keller-Miksis", "Rayleigh-Plesset", "Cavitation", "Ultrasound"]
+locale: en
+slug: bubble-dynamics-keller-miksis-bjerknes
+draft: false
+---
+
+import { KellerMiksisBubble } from '@/components/post-viz/2026-07-12-bubble-dynamics-keller-miksis-bjerknes/KellerMiksisBubble'
+import { BubblePairBjerknes } from '@/components/post-viz/2026-07-12-bubble-dynamics-keller-miksis-bjerknes/BubblePairBjerknes'
+
+# When a Microbubble Burns Like a Star — Keller–Miksis and the Secondary Bjerknes Force
+
+What happens when a single air bubble, five micrometers across, meets an ultrasound wave? It swells up, then in the next instant gets crushed to a tenth of its size. In that brief collapse the gas inside heats up to thousands of degrees. This is where sonoluminescence — a starlike flash of light from a bubble — comes from, sparking inside a cup of water. The same collapse cleans your glasses in an ultrasonic bath and shatters kidney stones.
+
+The equation that governs this violent radial oscillation is the Keller–Miksis equation. Following the paper by Nagy and Hegedűs (2025), this post builds the radial dynamics of a single bubble and integrates it directly in Python. Then it reproduces the secondary Bjerknes force, with which two bubbles push and pull on each other.
+
+> **Paper**: D. Nagy, F. Hegedűs, *"Assessing the accuracy of the coupled-spherical-bubble approach for bubble pairs in an acoustic field"*, Ultrasonics Sonochemistry 123 (2025) 107651. DOI: 10.1016/j.ultsonch.2025.107651
+
+## The Equation Governing a Single Bubble
+
+If we treat the bubble as a perfect sphere, the only unknown left is the radius $R(t)$. Taking the surrounding liquid as incompressible and integrating the momentum gives the Rayleigh–Plesset equation (the radial equation of motion for a spherical bubble).
+
+$$
+\rho_L\left(R\ddot{R} + \frac{3}{2}\dot{R}^2\right) = p_L(R,t) - p_\infty(t)
+$$
+
+$\rho_L$ is the liquid density, $R$ is the radius, and the dot notation is the time derivative. The left side is the inertia of the liquid pushed out radially. The right side is the pressure difference pushing the bubble wall in and out.
+
+The liquid pressure at the wall, $p_L$, splits into three terms.
+
+$$
+p_L(R,t) = p_G(t) - \frac{2\sigma}{R} - \frac{4\mu_L\dot{R}}{R}
+$$
+
+$p_G$ is the gas pressure inside the bubble, $\sigma$ is the surface tension, and $\mu_L$ is the liquid viscosity. The second term is the surface tension pulling the bubble inward, and the third is the viscous resistance opposing the wall's motion.
+
+Treating the gas as nearly adiabatically compressed closes the system with a polytropic relation.
+
+$$
+p_G(t) = \left(p_0 + \frac{2\sigma}{R_E}\right)\left(\frac{R_E}{R}\right)^{3 n_G}
+$$
+
+$R_E$ is the equilibrium radius, $p_0$ is the ambient pressure, and $n_G$ is the polytropic exponent of the gas. When the radius is halved, the gas pressure shoots up by a factor of $2^{3n_G}\approx 11$. This sharp rebound is the force that bounces the collapse back.
+
+The driving rides on the far-field pressure.
+
+$$
+p_\infty(t) = p_0 - p_A\sin(2\pi f t)
+$$
+
+$p_A$ is the ultrasound amplitude and $f$ is the frequency. The bubble swells during the half-cycle when the pressure drops, and gets crushed during the half-cycle when it rises.
+
+## The Liquid Compresses Too — the Keller–Miksis Correction
+
+The weakness of Rayleigh–Plesset is the assumption that "the liquid is incompressible." At the moment of collapse, when the wall speed approaches the speed of sound, this assumption breaks. The Keller–Miksis equation adds, to first order, the fact that the sound speed $c_L$ at the wall is finite.
+
+$$
+\left(1-\frac{\dot{R}}{c_L}\right)R\ddot{R} + \frac{3}{2}\left(1-\frac{\dot{R}}{3c_L}\right)\dot{R}^2 = \left(1+\frac{\dot{R}}{c_L}+\frac{R}{c_L}\frac{\mathrm{d}}{\mathrm{d}t}\right)\frac{p_L-p_\infty}{\rho_L}
+$$
+
+$c_L$ is the sound speed in the liquid. When $\dot{R}/c_L$ is small, all the parentheses converge to 1 and we return to Rayleigh–Plesset. As the wall speed grows, these terms radiate the collapse energy away as sound waves and damp the amplitude. Nagy and Hegedűs grade accuracy by the wall Mach number. Rayleigh–Plesset is zeroth order, Keller–Miksis is first order, and the Gilmore model is second order.
+
+Try it directly in the simulation below. Toggle between the two models while giving them the same driving.
+
+<KellerMiksisBubble />
+
+Raise the driving amplitude to 1.2 atm and the bubble swells wide, then collapses sharply. Rayleigh–Plesset overdraws the rebound. Switch to Keller–Miksis and the post-collapse rebound visibly dies down. That difference is the energy that escaped as sound waves.
+
+## Integrating the Collapse Directly
+
+We reduce the equation to a first-order system in the state $[R,\dot{R}]$ and integrate with fourth-order Runge–Kutta. The collapse is so sharp that the time step needs to be at the nanosecond level.
+
+```python
+import numpy as np
+
+P0, RHO, SIGMA, MU, C, KAPPA = 1.0e5, 998.0, 0.0725, 1.0e-3, 1481.0, 1.4
+
+def bubble_rhs(y, t, RE, pA, f):
+    R, V = y
+    w = 2 * np.pi * f
+    pG0 = P0 + 2 * SIGMA / RE
+    pG = pG0 * (RE / R) ** (3 * KAPPA)
+    pL = pG - 2 * SIGMA / R - 4 * MU * V / R
+    pInf = P0 - pA * np.sin(w * t)
+    # d/dt(pL - pInf), with the R-ddot term isolated to the left side
+    dP = (-3 * KAPPA * pG * V / R + 2 * SIGMA * V / R**2
+          + 4 * MU * V**2 / R**2 + pA * w * np.cos(w * t))
+    num = (-1.5 * (1 - V / (3 * C)) * V**2
+           + (1 + V / C) * (pL - pInf) / RHO
+           + R * dP / (RHO * C))
+    den = (1 - V / C) * R + 4 * MU / (RHO * C)
+    return np.array([V, num / den])
+
+def integrate_km(RE=5e-6, pA=1.2e5, f=60e3, dt=5e-10, steps=200000):
+    y = np.array([RE, 0.0])
+    t, Rlog = 0.0, []
+    for _ in range(steps):
+        k1 = bubble_rhs(y, t, RE, pA, f)
+        k2 = bubble_rhs(y + 0.5 * dt * k1, t + 0.5 * dt, RE, pA, f)
+        k3 = bubble_rhs(y + 0.5 * dt * k2, t + 0.5 * dt, RE, pA, f)
+        k4 = bubble_rhs(y + dt * k3, t + dt, RE, pA, f)
+        y = y + dt / 6 * (k1 + 2 * k2 + 2 * k3 + k4)
+        y[0] = max(y[0], 0.1 * RE)   # guard against singular collapse
+        t += dt
+        Rlog.append(y[0])
+    return np.array(Rlog)
+
+R = integrate_km()
+print(f"R_max / R_E = {R.max() / 5e-6:.2f}")
+print(f"R_min / R_E = {R.min() / 5e-6:.2f}")
+# R_max / R_E = 3.71
+# R_min / R_E = 0.10
+```
+
+It swells to 3.7 times the equilibrium radius, then gets crushed to a tenth. At the minimum radius the gas pressure reaches thousands of atmospheres and the temperature thousands of degrees. These are the conditions that produce sonoluminescence.
+
+## Bubbles Push and Pull on Each Other
+
+The paper's real subject is not a single bubble but a bubble pair. When one bubble oscillates, it radiates a pressure wave into the liquid around it. Under the incompressible assumption, the pressure that bubble $j$ creates at a distance $r$ is proportional to the volume acceleration.
+
+$$
+p_{\mathrm{ac},j}(r,t) = \frac{\rho_L}{r}\left(2\dot{R}_j^2 R_j + R_j^2\ddot{R}_j\right)
+$$
+
+This pressure adds to the neighboring bubble's $p_\infty$ and couples the two radius equations. The result of that coupling is the secondary Bjerknes force (the time-averaged force between two oscillating bubbles). Its direction is set by the phase difference between the two bubbles.
+
+$$
+F_B \;\propto\; -\frac{\langle \dot{V}_1\,\dot{V}_2\rangle}{4\pi D^2}
+$$
+
+$V_i$ is each bubble's volume and $D$ is the center-to-center distance. When the two bubbles pulse in phase, they attract each other; out of phase, they repel. The phase is decided by the relationship between the driving frequency and each bubble's resonance frequency. Here the resonance is the Minnaert frequency.
+
+$$
+f_0 = \frac{1}{2\pi R_E}\sqrt{\frac{3 n_G p_0}{\rho_L}}
+$$
+
+The smaller the bubble, the higher its $f_0$. When the driving frequency falls between the two bubbles' resonances, one bubble responds below its resonance (in phase) and the other above its resonance (out of phase), so the two end up out of phase. At that point the two bubbles repel each other.
+
+Try changing the two bubbles' radii and the driving frequency below.
+
+<BubblePairBjerknes />
+
+When the two radii are similar, they respond in phase at any frequency and a green arrow (attraction) appears. Make one bubble large and the other small, then push the driving frequency between their two resonances, and the phase difference widens and it flips to a red arrow (repulsion).
+
+## Where the Spherical Model Breaks Down
+
+Both Keller–Miksis and Gilmore share the big premise of "sphericity." Nagy and Hegedűs pin down when this assumption breaks by comparing against direct numerical simulation (DNS) with the ALPACA multiphase flow solver. Three conclusions come out.
+
+First, when an isolated bubble collapses gently, the spherical model is surprisingly accurate. Even without a perfect sphere, it matches the collapse pressure well. Second, in a violent collapse where the wall Mach number approaches 1, Gilmore is closer to DNS than Keller–Miksis. It handles liquid compressibility more honestly through the equation of state. Third, when a bubble pair collapses strongly at close range, a jet forms (a stream of liquid punching through from one side). Sphericity breaks, and the spherical model overestimates the internal pressure. DNS is needed here.
+
+In short, the spherical model is a cheap and mostly usable approximation. It is good enough to predict the void fraction of a bubble cloud or the performance of a sonoreactor. But it clearly knows its limits when a bubble hits a wall or a neighbor and produces a jet.
+
+## Points to Remember
+
+- Rayleigh–Plesset is the basic model for a spherical bubble, and Keller–Miksis adds the liquid sound speed to first order to honestly damp the collapse rebound.
+- Bubble pairs are coupled through radiated pressure waves, and the phase difference sets the sign of the secondary Bjerknes force. When the driving lies between the two resonances they repel; otherwise they attract.
+- The spherical model is accurate for gentle collapses, but DNS is the answer for violent close-range collapses where a jet forms.
