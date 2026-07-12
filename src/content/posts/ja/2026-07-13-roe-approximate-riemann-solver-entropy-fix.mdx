@@ -1,0 +1,172 @@
+---
+title: "厳密なリーマン解を捨てて得たもの — Roe 近似リーマンソルバとエントロピー修正"
+date: 2026-07-13
+description: "√ρ 平均からエントロピー違反まで、Roe・HLL・HLLC を手で実装する"
+tags: ["Riemann", "Roe-Scheme", "Approximate-Riemann-Solver", "Entropy-Fix", "HLLC"]
+locale: ja
+slug: roe-approximate-riemann-solver-entropy-fix
+draft: false
+---
+
+import { RoeWaveFanExplorer } from '@/components/post-viz/2026-07-13-roe-approximate-riemann-solver-entropy-fix/RoeWaveFanExplorer'
+import { BurgersEntropyGlitch } from '@/components/post-viz/2026-07-13-roe-approximate-riemann-solver-entropy-fix/BurgersEntropyGlitch'
+
+# 厳密なリーマン解を捨てて得たもの — Roe 近似リーマンソルバとエントロピー修正
+
+一次元 Euler 方程式のリーマン問題には厳密解が存在します。中心圧力についての非線形方程式を Newton 反復で一度解けば、それで終わりです。ところが、実務で使われる圧縮性コードを見渡しても、その厳密解をすべての面（face）で使っているものはほとんどありません。厳密な答えを手にしていながら、なぜそれを手放すのでしょうか。
+
+理由はコストと頑健性です。この記事では、その代替となる Roe 近似リーマンソルバを一から追いかけます。√ρ で重み付けした平均がどこから来るのかを明らかにし、Roe フラックスを Euler 方程式にそのまま実装します。さらに、このソルバが静かに物理を破る瞬間 — エントロピー違反 — と、その処方を実際のシミュレーションで確かめます。
+
+## 厳密解はなぜ現場から姿を消したのか
+
+厳密リーマンソルバ（Godunov）は、面ごとに非線形方程式の根を探します。セルが数百万個あれば、その根探索ループは毎ステップ数百万回まわります。さらに厄介なことに、厳密解は理想気体の状態方程式に縛られています。実在気体や二相混合物に進むと、厳密解そのものが存在しなくなります。
+
+近似リーマンソルバはこの問題を回避します。非線形なリーマン問題を局所的に線形化するのです。反復なしに、一組の代数式でフラックスが得られます。その代わり、厳密性をわずかに手放します。
+
+## ヤコビアンを一つの平均に畳み込む
+
+Roe のアイデアはシンプルです。面を挟んだ二つの状態 $q_L$, $q_R$ にかかるフラックス差を、定数行列 $\hat{A}$ 一つで近似します。
+
+$$
+\hat{A}\,(q_R - q_L) = f(q_R) - f(q_L)
+$$
+
+ここで $q$ は保存量ベクトル、$f$ は物理フラックスです。この条件は決定的です。もし二つの状態が単一の波（衝撃波あるいは接触不連続）で結ばれているなら、$\hat{A}$ は有限振幅であってもその波を厳密に伝播させます。つまり近似ソルバでありながら、純粋な衝撃波・接触面の前では厳密なのです。
+
+問題は $\hat{A}$ をどう選ぶかです。いい加減な平均を使えば、上の条件は破れてしまいます。
+
+## √ρ 平均はどこから来るのか
+
+Roe の答えは、密度の平方根で重み付けした平均です。
+
+$$
+\hat{u} = \frac{\sqrt{\rho_L}\,u_L + \sqrt{\rho_R}\,u_R}{\sqrt{\rho_L}+\sqrt{\rho_R}},
+\qquad
+\hat{H} = \frac{\sqrt{\rho_L}\,H_L + \sqrt{\rho_R}\,H_R}{\sqrt{\rho_L}+\sqrt{\rho_R}}
+$$
+
+ここで $u$ は速度、$H$ は全比エンタルピー、キャレットは面平均値を表します。Roe 音速はこれに続いて $\hat{c}=\sqrt{(\gamma-1)(\hat{H}-\hat{u}^2/2)}$ で得られます。
+
+なぜよりによって $\sqrt{\rho}$ なのでしょうか。状態ベクトル $q$ とフラックス $f$ を、パラメータベクトル $W=\sqrt{\rho}\,(H,u,1)^T$ の成分で書き下すと、どちらも完全な二次式になります。二次式であれば $q$ と $f$ の $W$ に関する微分が線形になり、$\hat{A}$ を組み立てる経路積分がぴったり評価できます。そこから落ちてくるのが、まさにこの √ρ 重み付き平均なのです。
+
+下では左右の状態を直接変えてみましょう。√ρ の重みと三つの波速 $\hat{u}-\hat{c}$, $\hat{u}$, $\hat{u}+\hat{c}$ がリアルタイムで更新されます。
+
+<RoeWaveFanExplorer />
+
+$\hat{u}-\hat{c}<0<\hat{u}+\hat{c}$ のとき、波の扇形は面をまたいでいます（亜音速）。左右の速度をどちらか一方へ大きく押し込むと、三つの波がすべて同じ向きに傾き、超音速状態になります。
+
+## 波に分解して、また足し合わせる
+
+フラックスの組み立ては三段階です。まず状態のジャンプ $\Delta q = q_R - q_L$ を、三つの固有ベクトル $\hat{K}_k$ の和に分解します。各成分の大きさが波の強度 $\alpha_k$ です。次に、それぞれの波を固有値 $\hat{\lambda}_k$ の符号に従って風上方向へ流します。
+
+$$
+F_{i+1/2} = \tfrac{1}{2}\bigl(f_L + f_R\bigr)
+- \tfrac{1}{2}\sum_{k}|\hat{\lambda}_k|\,\alpha_k\,\hat{K}_k
+$$
+
+前の項は中心平均、後ろの項は固有値の大きさで重み付けした風上散逸です。この構造はそのままコードへ移せます。検証には Shu–Osher 問題を使います。マッハ 3 の衝撃波が正弦波状の密度場へ突入し、衝撃波の後方に高周波の密度構造を残す問題です。Roe の低い数値散逸が真価を発揮する、まさにうってつけの試験です。
+
+```python
+import numpy as np
+
+gamma = 1.4
+
+def phys_flux(U):                       # 保存量 U=(ρ, ρu, E) → 物理フラックス
+    rho = U[0]; u = U[1] / rho; E = U[2]
+    p = (gamma - 1) * (E - 0.5 * rho * u * u)
+    return np.array([rho * u, rho * u * u + p, u * (E + p)])
+
+def roe_flux(UL, UR, delta):            # Roe 近似リーマンフラックス (+ Harten エントロピー修正)
+    rhoL, rhoR = UL[0], UR[0]
+    uL, uR = UL[1] / rhoL, UR[1] / rhoR
+    pL = (gamma - 1) * (UL[2] - 0.5 * rhoL * uL * uL)
+    pR = (gamma - 1) * (UR[2] - 0.5 * rhoR * uR * uR)
+    HL = (UL[2] + pL) / rhoL; HR = (UR[2] + pR) / rhoR
+    sL, sR = np.sqrt(rhoL), np.sqrt(rhoR)      # √ρ 重み
+    u = (sL * uL + sR * uR) / (sL + sR)        # Roe 平均速度
+    H = (sL * HL + sR * HR) / (sL + sR)        # Roe 平均エンタルピー
+    c = np.sqrt((gamma - 1) * (H - 0.5 * u * u))   # Roe 平均音速
+    rr = sL * sR
+    drho, dp, du = rhoR - rhoL, pR - pL, uR - uL
+    alpha = np.array([(dp - rr * c * du) / (2 * c * c),   # 波の強度 α_k
+                      drho - dp / (c * c),
+                      (dp + rr * c * du) / (2 * c * c)])
+    lam = np.array([u - c, u, u + c])          # 固有値 (波速)
+    K = np.array([[1, u - c, H - u * c],       # 右固有ベクトル
+                  [1, u,     0.5 * u * u],
+                  [1, u + c, H + u * c]])
+    al = np.abs(lam)
+    small = al < delta                         # エントロピー修正: |λ| の下限値
+    al[small] = (lam[small] ** 2 + delta ** 2) / (2 * delta)
+    diss = (al * alpha) @ K
+    return 0.5 * (phys_flux(UL) + phys_flux(UR)) - 0.5 * diss
+
+def run_shu_osher(N=400, tmax=1.8, cfl=0.4, delta=0.1):
+    x = np.linspace(0, 10, N); dx = x[1] - x[0]
+    rho = np.where(x < 1, 3.857143, 1 + 0.2 * np.sin(5 * x))   # 衝撃波 + 正弦波密度
+    u   = np.where(x < 1, 2.629369, 0.0)
+    p   = np.where(x < 1, 10.33333, 1.0)
+    U = np.array([rho, rho * u, p / (gamma - 1) + 0.5 * rho * u * u])
+    t = 0.0
+    while t < tmax:
+        r = U[0]; v = U[1] / r; pp = (gamma - 1) * (U[2] - 0.5 * r * v * v)
+        dt = cfl * dx / np.max(np.abs(v) + np.sqrt(gamma * pp / r))
+        dt = min(dt, tmax - t)
+        F = np.zeros((3, N + 1))
+        for i in range(1, N):
+            F[:, i] = roe_flux(U[:, i - 1], U[:, i], delta)
+        F[:, 0] = phys_flux(U[:, 0]); F[:, N] = phys_flux(U[:, N - 1])
+        U[:, 1:N - 1] -= dt / dx * (F[:, 2:N] - F[:, 1:N - 1])
+        t += dt
+    return x, U[0]
+
+x, rho = run_shu_osher()
+print(f"t=1.8  min rho={rho.min():.3f}  max rho={rho.max():.3f}")   # -> min~0.81  max~4.08
+```
+
+わずか 40 行あまりで、完結した圧縮性ソルバができあがります。Newton 反復も、厳密リーマン解もありません。`delta` が、この後で扱うエントロピー修正パラメータです。
+
+## Roe はエントロピーを破る
+
+Roe ソルバは、すべての波をジャンプとして扱います。膨張波（rarefaction）でさえ、小さな衝撃波の連なりとして近似します。たいていはそれで問題ありません。ところが、膨張波が音速点（sonic point）を含むと事情が変わります。その点で固有値 $\hat{\lambda}_k$ が符号を変え、$0$ を通過するのです。
+
+$|\hat{\lambda}_k|\to 0$ になると、その波の風上散逸が消えてしまいます。数値スキームは、なめらかな扇形を開く代わりに、静止した膨張衝撃波（expansion shock）をそのまま固定してしまいます。これは Rankine–Hugoniot 条件は満たすものの、エントロピー条件を破った非物理的な解です。
+
+処方箋は Harten のエントロピー修正です。$0$ の近くで固有値の大きさに下限を敷きます。
+
+$$
+|\hat{\lambda}_k| \;\to\; \frac{\hat{\lambda}_k^{2} + \delta^{2}}{2\,\delta},
+\qquad |\hat{\lambda}_k| < \delta
+$$
+
+ここで $\delta$ は下限の幅です。下のデモは、この現象をスカラー Burgers 方程式 $u_t+(u^2/2)_x=0$ で再現します。初期状態は遷音速の膨張で、左 $u_L=-0.5$、右 $u_R=1.0$、音速点はちょうど中央にあります。スライダーで $\delta$ を直接動かしてみてください。
+
+<BurgersEntropyGlitch />
+
+$\delta=0$ のときは、$x=0$ に青い折れ — 静止した膨張衝撃波 — がそのまま残ります。$\delta$ を上げると、数値解が琥珀色の厳密膨張扇形の上へすべり降りてきます。実務のヒント：$\delta$ を局所的な $(|\hat{u}|+\hat{c})$ の 5〜10% に取ると、たいてい安全です。大きく取りすぎると、接触面がつぶれてしまいます。
+
+## もっと安く：HLL と HLLC
+
+Roe が重いと感じるなら、波の数を減らせばよいのです。HLL（Harten–Lax–van Leer）は、左右の音波の二つだけを残します。中央の接触波は捨てます。
+
+$$
+F^{\text{HLL}} = \frac{S_R f_L - S_L f_R + S_L S_R\,(q_R - q_L)}{S_R - S_L}
+$$
+
+ここで $S_L$, $S_R$ は左右の最外側の波速の推定値です。HLL は頑健で、密度の正値性をよく保ちます。その代わり、接触面を鋭くとらえることはできません。中央波がないからです。
+
+HLLC の C は中央波（Contact）を表します。HLL が捨てた波を復活させるのです。波は三つ、定常状態の領域は四つになります。結局この三つは、波の数という一つのスペクトル上に並びます。
+
+| ソルバ | 波の数 | 接触面 | 頑健性 | コスト |
+|--------|:------:|:------:|:------:|:----:|
+| HLL | 2 | つぶれる | 高い | 最低 |
+| HLLC | 3 | 鋭い | 高い | 中程度 |
+| Roe | 完全（3次元で 5） | 鋭い | 修正が必要 | 高い |
+
+現場の既定値は、たいてい HLLC です。接触面を生かしつつ、密度・圧力の正値性を守りやすいからです。Roe は分解能に優れますが、エントロピー修正が必須で、格子に平行な強い衝撃波ではカーバンクル（carbuncle）現象に注意しなければなりません。
+
+## 最後に残しておきたいこと
+
+- Roe 平均の √ρ 重みは、恣意的な選択ではありません。$q$ と $f$ を二次式にする唯一のパラメータ化から導かれます。
+- 近似リーマンソルバの代償は、エントロピー違反です。音速点で $|\lambda|\to 0$ を Harten の修正で止めなければ、膨張衝撃波が固まってしまいます。
+- HLL・HLLC・Roe は「波をいくつ残すか」というスペクトルを成します。頑健性・分解能・コストのバランス点を、問題に合わせて選びましょう。

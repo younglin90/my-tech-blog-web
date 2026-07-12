@@ -1,0 +1,172 @@
+---
+title: "Lo que se sacrifica al renunciar a la solución exacta de Riemann — el solver de Roe y el arreglo de entropía"
+date: 2026-07-13
+description: "Del promedio con sqrt(rho) hasta la violación de entropía, implementando Roe, HLL y HLLC a mano"
+tags: ["Riemann", "Roe-Scheme", "Approximate-Riemann-Solver", "Entropy-Fix", "HLLC"]
+locale: es
+slug: roe-approximate-riemann-solver-entropy-fix
+draft: false
+---
+
+import { RoeWaveFanExplorer } from '@/components/post-viz/2026-07-13-roe-approximate-riemann-solver-entropy-fix/RoeWaveFanExplorer'
+import { BurgersEntropyGlitch } from '@/components/post-viz/2026-07-13-roe-approximate-riemann-solver-entropy-fix/BurgersEntropyGlitch'
+
+# Lo que se sacrifica al renunciar a la solución exacta de Riemann — el solver de Roe y el arreglo de entropía
+
+El problema de Riemann para las ecuaciones de Euler 1-D tiene solución exacta. Basta con resolver una ecuación no lineal para la presión de la región estrella mediante una iteración de Newton y el asunto queda cerrado. Aun así, casi ningún código compresible de producción usa esa solución exacta en cada cara. ¿Por qué tener la respuesta exacta en la mano y descartarla?
+
+La respuesta es costo y robustez. Este artículo recorre la alternativa —el solver aproximado de Riemann de Roe— desde cero. Muestra de dónde sale el promedio ponderado por sqrt(rho) e implementa el flujo de Roe directamente para las ecuaciones de Euler. Después atrapa al solver rompiendo la física en silencio —una violación de entropía— y confirma el remedio con una simulación en vivo.
+
+## Por qué la solución exacta desapareció de la práctica
+
+Un solver exacto de Riemann (Godunov) encuentra la raíz de una ecuación no lineal en cada cara. Con millones de celdas, ese bucle de búsqueda de raíces corre millones de veces por paso. Peor aún, la solución exacta queda atada a la ecuación de estado del gas ideal. Al pasar a un gas real o a una mezcla bifásica, la solución exacta deja de existir.
+
+Los solvers aproximados de Riemann esquivan este problema. Linealizan localmente el problema de Riemann no lineal. Un solo conjunto de fórmulas algebraicas entrega el flujo sin ninguna iteración. El precio es una pequeña pérdida de exactitud.
+
+## Condensar el jacobiano en un único promedio
+
+La idea de Roe es simple. Se aproxima la diferencia de flujo a través de una cara mediante una única matriz constante $\hat{A}$ que actúa sobre los dos estados $q_L$, $q_R$.
+
+$$
+\hat{A}\,(q_R - q_L) = f(q_R) - f(q_L)
+$$
+
+Aquí $q$ es el vector de variables conservadas y $f$ es el flujo físico. Esta condición es decisiva. Si los dos estados están conectados por una sola onda (un choque o una discontinuidad de contacto), entonces $\hat{A}$ propaga esa onda de forma exacta, incluso con amplitud finita. Así, el solver es aproximado, pero exacto frente a un choque o un contacto puros.
+
+El detalle está en cómo elegir $\hat{A}$. Un promedio descuidado rompe la condición anterior.
+
+## De dónde viene el promedio con sqrt(rho)
+
+La respuesta de Roe es un promedio ponderado por la raíz cuadrada de la densidad.
+
+$$
+\hat{u} = \frac{\sqrt{\rho_L}\,u_L + \sqrt{\rho_R}\,u_R}{\sqrt{\rho_L}+\sqrt{\rho_R}},
+\qquad
+\hat{H} = \frac{\sqrt{\rho_L}\,H_L + \sqrt{\rho_R}\,H_R}{\sqrt{\rho_L}+\sqrt{\rho_R}}
+$$
+
+Aquí $u$ es la velocidad, $H$ es la entalpía específica total, y los circunflejos marcan los valores promediados en la cara. La velocidad del sonido de Roe se obtiene como $\hat{c}=\sqrt{(\gamma-1)(\hat{H}-\hat{u}^2/2)}$.
+
+¿Por qué la raíz cuadrada de la densidad? Si se escriben el estado $q$ y el flujo $f$ en las componentes del vector de parámetros $W=\sqrt{\rho}\,(H,u,1)^T$, ambos resultan perfectamente cuadráticos. Al ser cuadráticos, las derivadas de $q$ y $f$ respecto a $W$ son lineales, y la integral de trayectoria que construye $\hat{A}$ se evalúa de forma exacta. Lo que emerge es precisamente este promedio ponderado por sqrt(rho).
+
+A continuación conviene modificar los estados izquierdo y derecho. Los pesos sqrt(rho) y las tres velocidades de onda $\hat{u}-\hat{c}$, $\hat{u}$, $\hat{u}+\hat{c}$ se actualizan en tiempo real.
+
+<RoeWaveFanExplorer />
+
+Cuando $\hat{u}-\hat{c}<0<\hat{u}+\hat{c}$, el abanico de ondas queda a horcajadas sobre la cara (subsónico). Al empujar con fuerza ambas velocidades hacia un mismo lado, las tres ondas se inclinan en la misma dirección y el estado se vuelve supersónico.
+
+## Descomponer en ondas y volver a sumarlas
+
+Ensamblar el flujo lleva tres pasos. Primero se descompone el salto $\Delta q = q_R - q_L$ en una suma de los tres autovectores $\hat{K}_k$; el tamaño de cada componente es la intensidad de onda $\alpha_k$. Luego se transporta cada onda contra la corriente según el signo de su autovalor $\hat{\lambda}_k$.
+
+$$
+F_{i+1/2} = \tfrac{1}{2}\bigl(f_L + f_R\bigr)
+- \tfrac{1}{2}\sum_{k}|\hat{\lambda}_k|\,\alpha_k\,\hat{K}_k
+$$
+
+El primer término es un promedio centrado; el segundo es la disipación upwind ponderada por las magnitudes de los autovalores. Esa estructura se traduce directamente a código. La prueba es el problema de Shu–Osher: un choque a Mach 3 se lanza contra un campo de densidad sinusoidal y deja tras de sí estructura de alta frecuencia. Es justo donde la baja disipación numérica de Roe rinde sus frutos.
+
+```python
+import numpy as np
+
+gamma = 1.4
+
+def phys_flux(U):                       # conservadas U=(rho, rho*u, E) -> flujo físico
+    rho = U[0]; u = U[1] / rho; E = U[2]
+    p = (gamma - 1) * (E - 0.5 * rho * u * u)
+    return np.array([rho * u, rho * u * u + p, u * (E + p)])
+
+def roe_flux(UL, UR, delta):            # flujo aproximado de Roe (+ arreglo de entropía de Harten)
+    rhoL, rhoR = UL[0], UR[0]
+    uL, uR = UL[1] / rhoL, UR[1] / rhoR
+    pL = (gamma - 1) * (UL[2] - 0.5 * rhoL * uL * uL)
+    pR = (gamma - 1) * (UR[2] - 0.5 * rhoR * uR * uR)
+    HL = (UL[2] + pL) / rhoL; HR = (UR[2] + pR) / rhoR
+    sL, sR = np.sqrt(rhoL), np.sqrt(rhoR)      # pesos sqrt(rho)
+    u = (sL * uL + sR * uR) / (sL + sR)        # velocidad promediada de Roe
+    H = (sL * HL + sR * HR) / (sL + sR)        # entalpía promediada de Roe
+    c = np.sqrt((gamma - 1) * (H - 0.5 * u * u))   # velocidad del sonido promediada de Roe
+    rr = sL * sR
+    drho, dp, du = rhoR - rhoL, pR - pL, uR - uL
+    alpha = np.array([(dp - rr * c * du) / (2 * c * c),   # intensidades de onda alpha_k
+                      drho - dp / (c * c),
+                      (dp + rr * c * du) / (2 * c * c)])
+    lam = np.array([u - c, u, u + c])          # autovalores (velocidades de onda)
+    K = np.array([[1, u - c, H - u * c],       # autovectores derechos
+                  [1, u,     0.5 * u * u],
+                  [1, u + c, H + u * c]])
+    al = np.abs(lam)
+    small = al < delta                         # arreglo de entropía: piso sobre |lambda|
+    al[small] = (lam[small] ** 2 + delta ** 2) / (2 * delta)
+    diss = (al * alpha) @ K
+    return 0.5 * (phys_flux(UL) + phys_flux(UR)) - 0.5 * diss
+
+def run_shu_osher(N=400, tmax=1.8, cfl=0.4, delta=0.1):
+    x = np.linspace(0, 10, N); dx = x[1] - x[0]
+    rho = np.where(x < 1, 3.857143, 1 + 0.2 * np.sin(5 * x))   # choque + densidad sinusoidal
+    u   = np.where(x < 1, 2.629369, 0.0)
+    p   = np.where(x < 1, 10.33333, 1.0)
+    U = np.array([rho, rho * u, p / (gamma - 1) + 0.5 * rho * u * u])
+    t = 0.0
+    while t < tmax:
+        r = U[0]; v = U[1] / r; pp = (gamma - 1) * (U[2] - 0.5 * r * v * v)
+        dt = cfl * dx / np.max(np.abs(v) + np.sqrt(gamma * pp / r))
+        dt = min(dt, tmax - t)
+        F = np.zeros((3, N + 1))
+        for i in range(1, N):
+            F[:, i] = roe_flux(U[:, i - 1], U[:, i], delta)
+        F[:, 0] = phys_flux(U[:, 0]); F[:, N] = phys_flux(U[:, N - 1])
+        U[:, 1:N - 1] -= dt / dx * (F[:, 2:N] - F[:, 1:N - 1])
+        t += dt
+    return x, U[0]
+
+x, rho = run_shu_osher()
+print(f"t=1.8  min rho={rho.min():.3f}  max rho={rho.max():.3f}")   # -> min~0.81  max~4.08
+```
+
+Unas cuarenta líneas bastan para un solver compresible completo. Sin iteración de Newton, sin solución exacta de Riemann. `delta` es el parámetro del arreglo de entropía que se trata a continuación.
+
+## Roe rompe la condición de entropía
+
+El solver de Roe trata cada onda como un salto. Incluso una rarefacción se aproxima como un tren de pequeños choques. Por lo general eso es inofensivo. Pero cuando una rarefacción contiene un punto sónico, la situación cambia. En ese punto un autovalor $\hat{\lambda}_k$ cambia de signo y pasa por $0$.
+
+Cuando $|\hat{\lambda}_k|\to 0$, la disipación upwind de esa onda desaparece. El esquema fija un choque de expansión estacionario en lugar de abrir un abanico suave. Satisface la condición de Rankine–Hugoniot pero viola la condición de entropía: una solución no física.
+
+El remedio es el arreglo de entropía de Harten. Coloca un piso bajo la magnitud del autovalor cerca de $0$.
+
+$$
+|\hat{\lambda}_k| \;\to\; \frac{\hat{\lambda}_k^{2} + \delta^{2}}{2\,\delta},
+\qquad |\hat{\lambda}_k| < \delta
+$$
+
+Aquí $\delta$ es el ancho del piso. La demostración de abajo reproduce el efecto en la ecuación escalar de Burgers $u_t+(u^2/2)_x=0$. El estado inicial es una expansión transónica, izquierda $u_L=-0.5$, derecha $u_R=1.0$, con el punto sónico justo en el centro. Basta con arrastrar el deslizador de $\delta$.
+
+<BurgersEntropyGlitch />
+
+Con $\delta=0$ aparece un quiebre azul —el choque de expansión estacionario— fijo en $x=0$. Al subir $\delta$, la curva numérica se desliza hasta el abanico de rarefacción exacto en ámbar. Consejo práctico: fijar $\delta$ en un 5–10 % del $(|\hat{u}|+\hat{c})$ local suele ser seguro. Si se elige demasiado grande, los contactos se difuminan.
+
+## Más barato: HLL y HLLC
+
+Si Roe resulta pesado, conviene conservar menos ondas. HLL (Harten–Lax–van Leer) mantiene solo las dos ondas acústicas. Descarta la onda de contacto central.
+
+$$
+F^{\text{HLL}} = \frac{S_R f_L - S_L f_R + S_L S_R\,(q_R - q_L)}{S_R - S_L}
+$$
+
+Aquí $S_L$, $S_R$ son estimaciones de las velocidades de onda más externas, izquierda y derecha. HLL es robusto y preserva bien la densidad positiva. Pero no logra mantener nítidos los contactos: no hay onda central.
+
+La C de HLLC corresponde a la onda de Contacto central. Restaura la onda que HLL descartó: tres ondas, cuatro regiones de estado constante. Los tres solvers se sitúan sobre un espectro según el número de ondas.
+
+| Solver | Ondas | Contacto | Robustez | Costo |
+|--------|:-----:|:--------:|:--------:|:-----:|
+| HLL | 2 | difuso | alta | mínimo |
+| HLLC | 3 | nítido | alta | medio |
+| Roe | completo (5 en 3-D) | nítido | requiere arreglo | alto |
+
+El valor por defecto en producción suele ser HLLC. Mantiene vivos los contactos y a la vez facilita imponer la positividad de densidad y presión. Roe tiene una resolución excelente, pero el arreglo de entropía es obligatorio y hay que vigilar el fenómeno del carbúnculo en choques fuertes alineados con la malla.
+
+## Lo que conviene retener
+
+- La ponderación con sqrt(rho) en el promedio de Roe no es arbitraria. Surge de la única parametrización que vuelve cuadráticos a $q$ y $f$.
+- El precio de un solver aproximado de Riemann es una violación de entropía. Si el arreglo de Harten no detiene $|\lambda|\to 0$ en el punto sónico, un choque de expansión queda congelado en su sitio.
+- HLL, HLLC y Roe forman un espectro de "cuántas ondas conservar". Se elige el equilibrio entre robustez, resolución y costo según el problema.

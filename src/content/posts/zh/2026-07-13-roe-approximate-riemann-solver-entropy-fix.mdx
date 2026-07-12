@@ -1,0 +1,172 @@
+---
+title: "放弃精确黎曼解换来了什么 —— Roe 近似黎曼求解器与熵修正"
+date: 2026-07-13
+description: "从 √ρ 平均到熵违反，动手实现 Roe、HLL 与 HLLC"
+tags: ["Riemann", "Roe-Scheme", "Approximate-Riemann-Solver", "Entropy-Fix", "HLLC"]
+locale: zh
+slug: roe-approximate-riemann-solver-entropy-fix
+draft: false
+---
+
+import { RoeWaveFanExplorer } from '@/components/post-viz/2026-07-13-roe-approximate-riemann-solver-entropy-fix/RoeWaveFanExplorer'
+import { BurgersEntropyGlitch } from '@/components/post-viz/2026-07-13-roe-approximate-riemann-solver-entropy-fix/BurgersEntropyGlitch'
+
+# 放弃精确黎曼解换来了什么 —— Roe 近似黎曼求解器与熵修正
+
+一维 Euler 方程的黎曼问题存在精确解。用 Newton 迭代求解关于星区压力的一个非线性方程即可收工。然而几乎没有一款生产级可压缩代码会在每个界面（face）上都动用这个精确解。明明精确答案已经握在手里，为什么要扔掉它？
+
+原因是成本和鲁棒性。本文将从头梳理它的替代方案 —— Roe 近似黎曼求解器。我们会讲清 √ρ 加权平均究竟从何而来，并把 Roe 通量直接实现到 Euler 方程上。随后我们会抓住求解器悄悄违背物理的那一刻 —— 熵违反 —— 并用一个实时仿真验证它的解药。
+
+## 精确解为何从工程现场消失
+
+精确黎曼求解器（Godunov）会在每个界面上求解一个非线性方程的根。当网格有数百万个单元时，这个求根循环每步就要跑数百万次。更糟的是，精确解被绑死在理想气体状态方程上。一旦换成真实气体或两相混合物，精确解本身就不复存在。
+
+近似黎曼求解器绕开了这个难题。它在局部把非线性黎曼问题线性化。一组代数公式即可给出通量，无需任何迭代。代价是牺牲一点精确性。
+
+## 把雅可比矩阵压缩成一个平均
+
+Roe 的想法很简单。用一个常数矩阵 $\hat{A}$ 作用于界面两侧的两个状态 $q_L$、$q_R$，来近似界面上的通量差。
+
+$$
+\hat{A}\,(q_R - q_L) = f(q_R) - f(q_L)
+$$
+
+其中 $q$ 是守恒量向量，$f$ 是物理通量。这个条件具有决定性意义。若两个状态由单一波动（激波或接触间断）相连，那么 $\hat{A}$ 会精确传播这个波动，即便在有限幅度下也成立。也就是说，尽管它是近似求解器，但在纯激波或接触间断面前却是精确的。
+
+难点在于如何选取 $\hat{A}$。随便取个平均就会破坏上面的条件。
+
+## √ρ 平均从何而来
+
+Roe 的答案是以密度的平方根加权的平均。
+
+$$
+\hat{u} = \frac{\sqrt{\rho_L}\,u_L + \sqrt{\rho_R}\,u_R}{\sqrt{\rho_L}+\sqrt{\rho_R}},
+\qquad
+\hat{H} = \frac{\sqrt{\rho_L}\,H_L + \sqrt{\rho_R}\,H_R}{\sqrt{\rho_L}+\sqrt{\rho_R}}
+$$
+
+其中 $u$ 是速度，$H$ 是总比焓，尖帽符号表示界面平均值。Roe 声速随之为 $\hat{c}=\sqrt{(\gamma-1)(\hat{H}-\hat{u}^2/2)}$。
+
+为什么偏偏是 $\sqrt{\rho}$？把状态 $q$ 和通量 $f$ 写成参数向量 $W=\sqrt{\rho}\,(H,u,1)^T$ 各分量的函数，二者都会变成完美的二次式。既然是二次式，$q$ 和 $f$ 对 $W$ 的导数就是线性的，构造 $\hat{A}$ 的路径积分也就能精确算出。掉出来的正好就是这个 √ρ 加权平均。
+
+在下面直接改动左右两侧状态。√ρ 权重和三个波速 $\hat{u}-\hat{c}$、$\hat{u}$、$\hat{u}+\hat{c}$ 会实时更新。
+
+<RoeWaveFanExplorer />
+
+当 $\hat{u}-\hat{c}<0<\hat{u}+\hat{c}$ 时，波扇跨越界面（亚声速）。把两侧速度都往一边狠推，三个波就会朝同一方向倾斜 —— 状态进入超声速。
+
+## 拆成波，再加回来
+
+组装通量分三步。首先把状态跳跃 $\Delta q = q_R - q_L$ 分解为三个特征向量 $\hat{K}_k$ 之和；每个分量的大小就是波强 $\alpha_k$。然后根据每个波特征值 $\hat{\lambda}_k$ 的符号，把它们沿迎风方向输运。
+
+$$
+F_{i+1/2} = \tfrac{1}{2}\bigl(f_L + f_R\bigr)
+- \tfrac{1}{2}\sum_{k}|\hat{\lambda}_k|\,\alpha_k\,\hat{K}_k
+$$
+
+前一项是中心平均，后一项是以特征值大小加权的迎风耗散。这套结构可以直接搬进代码。测试算例选用 Shu–Osher 问题：一道马赫 3 激波冲入正弦密度场，在其身后留下高频结构。这正是 Roe 低数值耗散大显身手的场合。
+
+```python
+import numpy as np
+
+gamma = 1.4
+
+def phys_flux(U):                       # 守恒量 U=(rho, rho*u, E) -> 物理通量
+    rho = U[0]; u = U[1] / rho; E = U[2]
+    p = (gamma - 1) * (E - 0.5 * rho * u * u)
+    return np.array([rho * u, rho * u * u + p, u * (E + p)])
+
+def roe_flux(UL, UR, delta):            # Roe 近似黎曼通量 (+ Harten 熵修正)
+    rhoL, rhoR = UL[0], UR[0]
+    uL, uR = UL[1] / rhoL, UR[1] / rhoR
+    pL = (gamma - 1) * (UL[2] - 0.5 * rhoL * uL * uL)
+    pR = (gamma - 1) * (UR[2] - 0.5 * rhoR * uR * uR)
+    HL = (UL[2] + pL) / rhoL; HR = (UR[2] + pR) / rhoR
+    sL, sR = np.sqrt(rhoL), np.sqrt(rhoR)      # sqrt(rho) 权重
+    u = (sL * uL + sR * uR) / (sL + sR)        # Roe 平均速度
+    H = (sL * HL + sR * HR) / (sL + sR)        # Roe 平均焓
+    c = np.sqrt((gamma - 1) * (H - 0.5 * u * u))   # Roe 平均声速
+    rr = sL * sR
+    drho, dp, du = rhoR - rhoL, pR - pL, uR - uL
+    alpha = np.array([(dp - rr * c * du) / (2 * c * c),   # 波强 alpha_k
+                      drho - dp / (c * c),
+                      (dp + rr * c * du) / (2 * c * c)])
+    lam = np.array([u - c, u, u + c])          # 特征值 (波速)
+    K = np.array([[1, u - c, H - u * c],       # 右特征向量
+                  [1, u,     0.5 * u * u],
+                  [1, u + c, H + u * c]])
+    al = np.abs(lam)
+    small = al < delta                         # 熵修正: |lambda| 下限
+    al[small] = (lam[small] ** 2 + delta ** 2) / (2 * delta)
+    diss = (al * alpha) @ K
+    return 0.5 * (phys_flux(UL) + phys_flux(UR)) - 0.5 * diss
+
+def run_shu_osher(N=400, tmax=1.8, cfl=0.4, delta=0.1):
+    x = np.linspace(0, 10, N); dx = x[1] - x[0]
+    rho = np.where(x < 1, 3.857143, 1 + 0.2 * np.sin(5 * x))   # 激波 + 正弦密度
+    u   = np.where(x < 1, 2.629369, 0.0)
+    p   = np.where(x < 1, 10.33333, 1.0)
+    U = np.array([rho, rho * u, p / (gamma - 1) + 0.5 * rho * u * u])
+    t = 0.0
+    while t < tmax:
+        r = U[0]; v = U[1] / r; pp = (gamma - 1) * (U[2] - 0.5 * r * v * v)
+        dt = cfl * dx / np.max(np.abs(v) + np.sqrt(gamma * pp / r))
+        dt = min(dt, tmax - t)
+        F = np.zeros((3, N + 1))
+        for i in range(1, N):
+            F[:, i] = roe_flux(U[:, i - 1], U[:, i], delta)
+        F[:, 0] = phys_flux(U[:, 0]); F[:, N] = phys_flux(U[:, N - 1])
+        U[:, 1:N - 1] -= dt / dx * (F[:, 2:N] - F[:, 1:N - 1])
+        t += dt
+    return x, U[0]
+
+x, rho = run_shu_osher()
+print(f"t=1.8  min rho={rho.min():.3f}  max rho={rho.max():.3f}")   # -> min~0.81  max~4.08
+```
+
+大约四十行代码就构成了一个完整的可压缩求解器。没有 Newton 迭代，也没有精确黎曼求解。`delta` 就是接下来要讲的熵修正参数。
+
+## Roe 违背了熵条件
+
+Roe 求解器把每个波都当作跳跃来处理。连膨胀波（rarefaction）也被近似为一串小激波。多数情况下这没有问题。但当膨胀波中包含一个声速点（sonic point）时，情况就变了。在那一点上，某个特征值 $\hat{\lambda}_k$ 会变号，穿过 $0$。
+
+当 $|\hat{\lambda}_k|\to 0$ 时，该波对应的迎风耗散消失了。数值格式不再展开成一道光滑的膨胀扇，而是锁死了一道静止的膨胀激波（expansion shock）。它满足 Rankine–Hugoniot 条件，却违背了熵条件 —— 这是一个非物理解。
+
+解药是 Harten 的熵修正。它在 $0$ 附近给特征值大小铺一个下限。
+
+$$
+|\hat{\lambda}_k| \;\to\; \frac{\hat{\lambda}_k^{2} + \delta^{2}}{2\,\delta},
+\qquad |\hat{\lambda}_k| < \delta
+$$
+
+其中 $\delta$ 是这个下限的宽度。下面的演示在标量 Burgers 方程 $u_t+(u^2/2)_x=0$ 上重现这一现象。初始状态是一个跨声速膨胀：左 $u_L=-0.5$、右 $u_R=1.0$，声速点恰好位于正中央。亲手拖动 $\delta$ 滑块试试看。
+
+<BurgersEntropyGlitch />
+
+当 $\delta=0$ 时，$x=0$ 处会留下一道蓝色折点 —— 即静止的膨胀激波。把 $\delta$ 调大，数值曲线就会滑落到琥珀色的精确膨胀扇之上。实用建议：把 $\delta$ 取为局部 $(|\hat{u}|+\hat{c})$ 的 5%~10% 通常是安全的。取得太大，接触间断就会被抹糊。
+
+## 更省：HLL 与 HLLC
+
+如果觉得 Roe 太重，那就少留几个波。HLL（Harten–Lax–van Leer）只保留左右两个声波，丢掉中间的接触波。
+
+$$
+F^{\text{HLL}} = \frac{S_R f_L - S_L f_R + S_L S_R\,(q_R - q_L)}{S_R - S_L}
+$$
+
+其中 $S_L$、$S_R$ 是左右最外侧波速的估计值。HLL 鲁棒，能很好地保持密度为正。代价是它无法把接触间断抓得锐利 —— 因为没有中间波。
+
+HLLC 中的 C 代表中央接触波（Contact）。它把被丢掉的接触波重新找了回来：三个波，四个常状态区。归根结底，这三者落在同一条"保留几个波"的谱线上。
+
+| 求解器 | 波数 | 接触间断 | 鲁棒性 | 成本 |
+|--------|:----:|:--------:|:------:|:----:|
+| HLL | 2 | 抹糊 | 高 | 最低 |
+| HLLC | 3 | 锐利 | 高 | 中等 |
+| Roe | 完整（三维为 5） | 锐利 | 需修正 | 高 |
+
+工程现场的默认选择通常是 HLLC。它既保住了接触间断，又易于强制密度和压力的正性。Roe 分辨率出色，但熵修正是必需的，而且在与网格平行的强激波上还得提防"红斑"（carbuncle）现象。
+
+## 最后想留给你的
+
+- Roe 平均中的 √ρ 加权并非随意选择。它出自那个唯一能让 $q$ 和 $f$ 变成二次式的参数化。
+- 近似黎曼求解器的代价是熵违反。若不用 Harten 修正在声速点拦住 $|\lambda|\to 0$，膨胀激波就会凝固不动。
+- HLL、HLLC、Roe 构成了一条"保留几个波"的谱线。要按问题在鲁棒性、分辨率和成本之间选好平衡点。

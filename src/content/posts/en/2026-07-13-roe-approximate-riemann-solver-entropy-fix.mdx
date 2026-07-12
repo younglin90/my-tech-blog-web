@@ -1,0 +1,172 @@
+---
+title: "What You Give Up the Exact Riemann Solution For — the Roe Solver and the Entropy Fix"
+date: 2026-07-13
+description: "From the sqrt(rho) average to the entropy glitch, implementing Roe, HLL, and HLLC by hand"
+tags: ["Riemann", "Roe-Scheme", "Approximate-Riemann-Solver", "Entropy-Fix", "HLLC"]
+locale: en
+slug: roe-approximate-riemann-solver-entropy-fix
+draft: false
+---
+
+import { RoeWaveFanExplorer } from '@/components/post-viz/2026-07-13-roe-approximate-riemann-solver-entropy-fix/RoeWaveFanExplorer'
+import { BurgersEntropyGlitch } from '@/components/post-viz/2026-07-13-roe-approximate-riemann-solver-entropy-fix/BurgersEntropyGlitch'
+
+# What You Give Up the Exact Riemann Solution For — the Roe Solver and the Entropy Fix
+
+The 1-D Euler Riemann problem has an exact solution. Solve one nonlinear equation for the star pressure with a Newton iteration and you are done. Yet almost no production compressible code uses that exact solution at every face. Why hold the exact answer in your hand and throw it away?
+
+The answer is cost and robustness. This post walks through the alternative — the Roe approximate Riemann solver — from the ground up. It shows where the sqrt(rho)-weighted average comes from and implements the Roe flux directly for the Euler equations. Then it catches the solver quietly breaking physics — an entropy violation — and confirms the cure with a live simulation.
+
+## Why the Exact Solution Vanished From Practice
+
+An exact Riemann solver (Godunov) finds the root of a nonlinear equation at every face. With millions of cells, that root-finding loop runs millions of times per step. Worse, the exact solution is bound to the ideal-gas equation of state. Move to a real gas or a two-phase mixture and the exact solution no longer exists.
+
+Approximate Riemann solvers sidestep this. They linearize the nonlinear Riemann problem locally. One set of algebraic formulas gives the flux with no iteration. The trade is a small loss of exactness.
+
+## Collapsing the Jacobian Into a Single Average
+
+Roe's idea is simple. Approximate the flux difference across a face by a single constant matrix $\hat{A}$ acting on the two states $q_L$, $q_R$.
+
+$$
+\hat{A}\,(q_R - q_L) = f(q_R) - f(q_L)
+$$
+
+Here $q$ is the conserved-variable vector and $f$ is the physical flux. This condition is decisive. If the two states are connected by a single wave (a shock or a contact), then $\hat{A}$ propagates that wave exactly, even at finite amplitude. So the solver is approximate, yet exact in front of a pure shock or contact.
+
+The catch is how to choose $\hat{A}$. A careless average breaks the condition above.
+
+## Where the sqrt(rho) Average Comes From
+
+Roe's answer is an average weighted by the square root of density.
+
+$$
+\hat{u} = \frac{\sqrt{\rho_L}\,u_L + \sqrt{\rho_R}\,u_R}{\sqrt{\rho_L}+\sqrt{\rho_R}},
+\qquad
+\hat{H} = \frac{\sqrt{\rho_L}\,H_L + \sqrt{\rho_R}\,H_R}{\sqrt{\rho_L}+\sqrt{\rho_R}}
+$$
+
+Here $u$ is velocity, $H$ is total specific enthalpy, and the carets mark face-averaged values. The Roe sound speed follows as $\hat{c}=\sqrt{(\gamma-1)(\hat{H}-\hat{u}^2/2)}$.
+
+Why the square root of density? Write the state $q$ and flux $f$ in the components of the parameter vector $W=\sqrt{\rho}\,(H,u,1)^T$ and both become perfectly quadratic. Being quadratic, the derivatives of $q$ and $f$ with respect to $W$ are linear, and the path integral that builds $\hat{A}$ evaluates exactly. What falls out is precisely this sqrt(rho)-weighted average.
+
+Change the left and right states below. The sqrt(rho) weights and the three wave speeds $\hat{u}-\hat{c}$, $\hat{u}$, $\hat{u}+\hat{c}$ update in real time.
+
+<RoeWaveFanExplorer />
+
+When $\hat{u}-\hat{c}<0<\hat{u}+\hat{c}$, the wave fan straddles the face (subsonic). Push both velocities hard to one side and all three waves tilt the same way — the state goes supersonic.
+
+## Split Into Waves, Then Add Them Back
+
+Assembling the flux takes three steps. First decompose the jump $\Delta q = q_R - q_L$ into a sum of the three eigenvectors $\hat{K}_k$; the size of each component is the wave strength $\alpha_k$. Then advect each wave upwind according to the sign of its eigenvalue $\hat{\lambda}_k$.
+
+$$
+F_{i+1/2} = \tfrac{1}{2}\bigl(f_L + f_R\bigr)
+- \tfrac{1}{2}\sum_{k}|\hat{\lambda}_k|\,\alpha_k\,\hat{K}_k
+$$
+
+The first term is a centered average; the second is upwind dissipation weighted by the eigenvalue magnitudes. That structure ports straight to code. The test is the Shu–Osher problem: a Mach 3 shock races into a sinusoidal density field and leaves high-frequency structure behind it. It is exactly where Roe's low numerical dissipation earns its keep.
+
+```python
+import numpy as np
+
+gamma = 1.4
+
+def phys_flux(U):                       # conserved U=(rho, rho*u, E) -> physical flux
+    rho = U[0]; u = U[1] / rho; E = U[2]
+    p = (gamma - 1) * (E - 0.5 * rho * u * u)
+    return np.array([rho * u, rho * u * u + p, u * (E + p)])
+
+def roe_flux(UL, UR, delta):            # Roe approximate Riemann flux (+ Harten entropy fix)
+    rhoL, rhoR = UL[0], UR[0]
+    uL, uR = UL[1] / rhoL, UR[1] / rhoR
+    pL = (gamma - 1) * (UL[2] - 0.5 * rhoL * uL * uL)
+    pR = (gamma - 1) * (UR[2] - 0.5 * rhoR * uR * uR)
+    HL = (UL[2] + pL) / rhoL; HR = (UR[2] + pR) / rhoR
+    sL, sR = np.sqrt(rhoL), np.sqrt(rhoR)      # sqrt(rho) weights
+    u = (sL * uL + sR * uR) / (sL + sR)        # Roe-averaged velocity
+    H = (sL * HL + sR * HR) / (sL + sR)        # Roe-averaged enthalpy
+    c = np.sqrt((gamma - 1) * (H - 0.5 * u * u))   # Roe-averaged sound speed
+    rr = sL * sR
+    drho, dp, du = rhoR - rhoL, pR - pL, uR - uL
+    alpha = np.array([(dp - rr * c * du) / (2 * c * c),   # wave strengths alpha_k
+                      drho - dp / (c * c),
+                      (dp + rr * c * du) / (2 * c * c)])
+    lam = np.array([u - c, u, u + c])          # eigenvalues (wave speeds)
+    K = np.array([[1, u - c, H - u * c],       # right eigenvectors
+                  [1, u,     0.5 * u * u],
+                  [1, u + c, H + u * c]])
+    al = np.abs(lam)
+    small = al < delta                         # entropy fix: floor on |lambda|
+    al[small] = (lam[small] ** 2 + delta ** 2) / (2 * delta)
+    diss = (al * alpha) @ K
+    return 0.5 * (phys_flux(UL) + phys_flux(UR)) - 0.5 * diss
+
+def run_shu_osher(N=400, tmax=1.8, cfl=0.4, delta=0.1):
+    x = np.linspace(0, 10, N); dx = x[1] - x[0]
+    rho = np.where(x < 1, 3.857143, 1 + 0.2 * np.sin(5 * x))   # shock + sinusoidal density
+    u   = np.where(x < 1, 2.629369, 0.0)
+    p   = np.where(x < 1, 10.33333, 1.0)
+    U = np.array([rho, rho * u, p / (gamma - 1) + 0.5 * rho * u * u])
+    t = 0.0
+    while t < tmax:
+        r = U[0]; v = U[1] / r; pp = (gamma - 1) * (U[2] - 0.5 * r * v * v)
+        dt = cfl * dx / np.max(np.abs(v) + np.sqrt(gamma * pp / r))
+        dt = min(dt, tmax - t)
+        F = np.zeros((3, N + 1))
+        for i in range(1, N):
+            F[:, i] = roe_flux(U[:, i - 1], U[:, i], delta)
+        F[:, 0] = phys_flux(U[:, 0]); F[:, N] = phys_flux(U[:, N - 1])
+        U[:, 1:N - 1] -= dt / dx * (F[:, 2:N] - F[:, 1:N - 1])
+        t += dt
+    return x, U[0]
+
+x, rho = run_shu_osher()
+print(f"t=1.8  min rho={rho.min():.3f}  max rho={rho.max():.3f}")   # -> min~0.81  max~4.08
+```
+
+Roughly forty lines make a complete compressible solver. No Newton iteration, no exact Riemann solve. `delta` is the entropy-fix parameter covered next.
+
+## Roe Breaks the Entropy Condition
+
+The Roe solver treats every wave as a jump. Even a rarefaction is approximated as a train of small shocks. Usually that is harmless. But when a rarefaction contains a sonic point, things change. At that point an eigenvalue $\hat{\lambda}_k$ changes sign, passing through $0$.
+
+When $|\hat{\lambda}_k|\to 0$, the upwind dissipation for that wave disappears. The scheme locks in a stationary expansion shock instead of opening a smooth fan. It satisfies the Rankine–Hugoniot condition but violates the entropy condition — an unphysical solution.
+
+The cure is Harten's entropy fix. It puts a floor under the eigenvalue magnitude near $0$.
+
+$$
+|\hat{\lambda}_k| \;\to\; \frac{\hat{\lambda}_k^{2} + \delta^{2}}{2\,\delta},
+\qquad |\hat{\lambda}_k| < \delta
+$$
+
+Here $\delta$ is the width of the floor. The demo below reproduces the effect on the scalar Burgers equation $u_t+(u^2/2)_x=0$. The initial state is a transonic expansion, left $u_L=-0.5$, right $u_R=1.0$, with the sonic point dead center. Drag the $\delta$ slider yourself.
+
+<BurgersEntropyGlitch />
+
+At $\delta=0$ a blue kink — the stationary expansion shock — sits at $x=0$. Raise $\delta$ and the numerical curve slides down onto the amber exact rarefaction fan. Practical tip: setting $\delta$ to 5–10% of the local $(|\hat{u}|+\hat{c})$ is usually safe. Set it too large and contacts smear out.
+
+## Cheaper: HLL and HLLC
+
+If Roe feels heavy, keep fewer waves. HLL (Harten–Lax–van Leer) keeps only the two acoustic waves. It drops the middle contact wave.
+
+$$
+F^{\text{HLL}} = \frac{S_R f_L - S_L f_R + S_L S_R\,(q_R - q_L)}{S_R - S_L}
+$$
+
+Here $S_L$, $S_R$ are estimates of the outermost left and right wave speeds. HLL is robust and preserves positive density well. But it cannot keep contacts sharp — there is no middle wave.
+
+The C in HLLC stands for the central Contact wave. It restores the wave HLL discarded: three waves, four constant-state regions. The three solvers sit on a spectrum of wave count.
+
+| Solver | Waves | Contact | Robustness | Cost |
+|--------|:-----:|:-------:|:----------:|:----:|
+| HLL | 2 | smeared | high | lowest |
+| HLLC | 3 | sharp | high | medium |
+| Roe | full (5 in 3-D) | sharp | needs fix | high |
+
+The production default is usually HLLC. It keeps contacts alive while making density and pressure positivity easy to enforce. Roe has excellent resolution, but the entropy fix is mandatory, and you must watch for the carbuncle phenomenon on strong grid-aligned shocks.
+
+## What I Want to Leave You With
+
+- The sqrt(rho) weighting in the Roe average is not arbitrary. It falls out of the unique parameterization that makes $q$ and $f$ quadratic.
+- The price of an approximate Riemann solver is an entropy violation. Unless Harten's fix stops $|\lambda|\to 0$ at the sonic point, an expansion shock freezes in place.
+- HLL, HLLC, and Roe form a spectrum of "how many waves to keep." Pick the balance of robustness, resolution, and cost to fit the problem.

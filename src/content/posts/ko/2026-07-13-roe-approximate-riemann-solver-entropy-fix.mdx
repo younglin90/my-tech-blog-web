@@ -1,0 +1,172 @@
+---
+title: "정확한 리만 해를 버리고 얻은 것 — Roe 근사 리만 솔버와 엔트로피 픽스"
+date: 2026-07-13
+description: "√ρ 평균부터 엔트로피 위반까지, Roe·HLL·HLLC를 직접 구현한다"
+tags: ["Riemann", "Roe-Scheme", "Approximate-Riemann-Solver", "Entropy-Fix", "HLLC"]
+locale: ko
+slug: roe-approximate-riemann-solver-entropy-fix
+draft: false
+---
+
+import { RoeWaveFanExplorer } from '@/components/post-viz/2026-07-13-roe-approximate-riemann-solver-entropy-fix/RoeWaveFanExplorer'
+import { BurgersEntropyGlitch } from '@/components/post-viz/2026-07-13-roe-approximate-riemann-solver-entropy-fix/BurgersEntropyGlitch'
+
+# 정확한 리만 해를 버리고 얻은 것 — Roe 근사 리만 솔버와 엔트로피 픽스
+
+1차원 Euler 방정식의 리만 문제에는 정확해가 있다. 압력 하나에 대한 비선형 방정식을 Newton 반복으로 풀면 끝난다. 그런데 상용 압축성 코드 어디를 봐도 그 정확해를 매 면(face)마다 쓰지는 않는다. 정확한 답을 손에 쥐고도 왜 버릴까?
+
+답은 비용과 견고함이다. 이 글은 그 대안인 Roe 근사 리만 솔버를 밑바닥부터 따라간다. √ρ 가중 평균이 어디서 오는지 밝히고, Roe 플럭스를 Euler 방정식에 그대로 구현한다. 그리고 이 솔버가 조용히 물리를 어기는 순간 — 엔트로피 위반 — 과 그 처방을 직접 시뮬레이션으로 확인한다.
+
+## 정확한 해는 왜 현장에서 사라졌나
+
+정확한 리만 해법기(Godunov)는 면마다 비선형 방정식의 근을 찾는다. 셀이 수백만 개면 반복 근-찾기가 매 스텝 수백만 번 돈다. 게다가 정확해는 이상기체 상태방정식에 묶여 있다. 실제 기체나 다상 혼합물로 가면 정확해 자체가 없다.
+
+근사 리만 솔버는 이 문제를 우회한다. 비선형 리만 문제를 국소적으로 선형화한다. 반복 없이 대수식 한 벌로 플럭스를 얻는다. 대신 정확성을 약간 내준다.
+
+## 야코비안을 하나의 평균으로
+
+Roe의 아이디어는 간단하다. 면을 사이에 둔 두 상태 $q_L$, $q_R$의 플럭스 차이를 상수 행렬 $\hat{A}$ 하나로 근사한다.
+
+$$
+\hat{A}\,(q_R - q_L) = f(q_R) - f(q_L)
+$$
+
+$q$는 보존량 벡터, $f$는 물리 플럭스다. 이 조건은 결정적이다. 만약 두 상태가 단 하나의 파동(충격파 또는 접촉면)으로 이어져 있다면, $\hat{A}$는 그 파동을 유한한 크기에서도 정확히 전파한다. 즉 근사 솔버이지만 순수한 충격파·접촉면 앞에서는 정확하다.
+
+문제는 $\hat{A}$를 어떻게 고르느냐다. 아무 평균이나 쓰면 위 조건이 깨진다.
+
+## √ρ 평균은 어디서 오는가
+
+Roe의 해답은 밀도의 제곱근으로 가중한 평균이다.
+
+$$
+\hat{u} = \frac{\sqrt{\rho_L}\,u_L + \sqrt{\rho_R}\,u_R}{\sqrt{\rho_L}+\sqrt{\rho_R}},
+\qquad
+\hat{H} = \frac{\sqrt{\rho_L}\,H_L + \sqrt{\rho_R}\,H_R}{\sqrt{\rho_L}+\sqrt{\rho_R}}
+$$
+
+$u$는 속도, $H$는 총 비엔탈피, 캐럿은 면 평균값을 뜻한다. Roe 음속은 $\hat{c}=\sqrt{(\gamma-1)(\hat{H}-\hat{u}^2/2)}$로 따라온다.
+
+왜 하필 $\sqrt{\rho}$인가? 상태벡터 $q$와 플럭스 $f$를 파라미터 벡터 $W=\sqrt{\rho}\,(H,u,1)^T$의 성분으로 쓰면 둘 다 완벽한 2차식이 된다. 2차식이면 $q$와 $f$의 $W$에 대한 미분이 선형이고, $\hat A$를 만드는 경로 적분이 정확히 떨어진다. 그 결과가 바로 이 √ρ 가중 평균이다.
+
+아래에서 좌·우 상태를 직접 바꿔보자. √ρ 가중치와 세 파속 $\hat{u}-\hat{c}$, $\hat{u}$, $\hat{u}+\hat{c}$가 실시간으로 갱신된다.
+
+<RoeWaveFanExplorer />
+
+$\hat{u}-\hat{c}<0<\hat{u}+\hat{c}$이면 파동 부채꼴이 면 위로 걸쳐 있다(아음속). 좌·우 속도를 크게 한쪽으로 밀면 세 파동이 모두 한 방향으로 기울며 초음속 상태가 된다.
+
+## 파동으로 쪼개고 다시 더한다
+
+플럭스 조립은 세 단계다. 먼저 상태 점프 $\Delta q = q_R - q_L$를 세 고유벡터 $\hat{K}_k$의 합으로 분해한다. 각 성분의 크기가 파동 강도 $\alpha_k$다. 그 다음 각 파동을 고유값 $\hat{\lambda}_k$의 부호에 따라 상류 방향으로 흘려보낸다.
+
+$$
+F_{i+1/2} = \tfrac{1}{2}\bigl(f_L + f_R\bigr)
+- \tfrac{1}{2}\sum_{k}|\hat{\lambda}_k|\,\alpha_k\,\hat{K}_k
+$$
+
+앞 항은 중심 평균, 뒤 항은 고유값 크기로 가중한 상류 확산이다. 이 구조를 그대로 코드로 옮긴다. 검증 문제는 Shu–Osher 문제로 고른다. 마하 3 충격파가 정현파 밀도장을 향해 돌진하며, 충격파 뒤로 고주파 밀도 구조가 남는다. Roe의 낮은 수치확산이 빛나는 시험이다.
+
+```python
+import numpy as np
+
+gamma = 1.4
+
+def phys_flux(U):                       # 보존량 U=(ρ, ρu, E) → 물리 플럭스
+    rho = U[0]; u = U[1] / rho; E = U[2]
+    p = (gamma - 1) * (E - 0.5 * rho * u * u)
+    return np.array([rho * u, rho * u * u + p, u * (E + p)])
+
+def roe_flux(UL, UR, delta):            # Roe 근사 리만 플럭스 (+ Harten 엔트로피 픽스)
+    rhoL, rhoR = UL[0], UR[0]
+    uL, uR = UL[1] / rhoL, UR[1] / rhoR
+    pL = (gamma - 1) * (UL[2] - 0.5 * rhoL * uL * uL)
+    pR = (gamma - 1) * (UR[2] - 0.5 * rhoR * uR * uR)
+    HL = (UL[2] + pL) / rhoL; HR = (UR[2] + pR) / rhoR
+    sL, sR = np.sqrt(rhoL), np.sqrt(rhoR)      # √ρ 가중
+    u = (sL * uL + sR * uR) / (sL + sR)        # Roe 평균 속도
+    H = (sL * HL + sR * HR) / (sL + sR)        # Roe 평균 엔탈피
+    c = np.sqrt((gamma - 1) * (H - 0.5 * u * u))   # Roe 평균 음속
+    rr = sL * sR
+    drho, dp, du = rhoR - rhoL, pR - pL, uR - uL
+    alpha = np.array([(dp - rr * c * du) / (2 * c * c),   # 파동 강도 α_k
+                      drho - dp / (c * c),
+                      (dp + rr * c * du) / (2 * c * c)])
+    lam = np.array([u - c, u, u + c])          # 고유값 (파속)
+    K = np.array([[1, u - c, H - u * c],       # 우고유벡터
+                  [1, u,     0.5 * u * u],
+                  [1, u + c, H + u * c]])
+    al = np.abs(lam)
+    small = al < delta                         # 엔트로피 픽스: |λ| 바닥값
+    al[small] = (lam[small] ** 2 + delta ** 2) / (2 * delta)
+    diss = (al * alpha) @ K
+    return 0.5 * (phys_flux(UL) + phys_flux(UR)) - 0.5 * diss
+
+def run_shu_osher(N=400, tmax=1.8, cfl=0.4, delta=0.1):
+    x = np.linspace(0, 10, N); dx = x[1] - x[0]
+    rho = np.where(x < 1, 3.857143, 1 + 0.2 * np.sin(5 * x))   # 충격파 + 정현파 밀도
+    u   = np.where(x < 1, 2.629369, 0.0)
+    p   = np.where(x < 1, 10.33333, 1.0)
+    U = np.array([rho, rho * u, p / (gamma - 1) + 0.5 * rho * u * u])
+    t = 0.0
+    while t < tmax:
+        r = U[0]; v = U[1] / r; pp = (gamma - 1) * (U[2] - 0.5 * r * v * v)
+        dt = cfl * dx / np.max(np.abs(v) + np.sqrt(gamma * pp / r))
+        dt = min(dt, tmax - t)
+        F = np.zeros((3, N + 1))
+        for i in range(1, N):
+            F[:, i] = roe_flux(U[:, i - 1], U[:, i], delta)
+        F[:, 0] = phys_flux(U[:, 0]); F[:, N] = phys_flux(U[:, N - 1])
+        U[:, 1:N - 1] -= dt / dx * (F[:, 2:N] - F[:, 1:N - 1])
+        t += dt
+    return x, U[0]
+
+x, rho = run_shu_osher()
+print(f"t=1.8  min ρ={rho.min():.3f}  max ρ={rho.max():.3f}")   # → min≈0.81  max≈4.08
+```
+
+단 40여 줄이 완결된 압축성 솔버다. Newton 반복도, 정확 리만 해도 없다. `delta`가 뒤에서 다룰 엔트로피 픽스 파라미터다.
+
+## Roe가 엔트로피를 어긴다
+
+Roe 솔버는 모든 파동을 점프로 취급한다. 팽창파(rarefaction)조차 작은 충격파들의 연속으로 근사한다. 대개는 문제가 없다. 그런데 팽창파가 음속점(sonic point)을 품으면 사정이 달라진다. 그 점에서 고유값 $\hat{\lambda}_k$가 부호를 바꾸며 $0$을 지난다.
+
+$|\hat{\lambda}_k|\to 0$이면 그 파동의 상류 확산이 사라진다. 수치기법은 매끈한 팽창파 대신 정지한 팽창 충격파(expansion shock)를 그대로 붙잡는다. Rankine–Hugoniot 조건은 만족하지만 엔트로피 조건을 어긴 비물리 해다.
+
+처방은 Harten의 엔트로피 픽스다. $0$ 근처에서 고유값 크기에 바닥을 깔아준다.
+
+$$
+|\hat{\lambda}_k| \;\to\; \frac{\hat{\lambda}_k^{2} + \delta^{2}}{2\,\delta},
+\qquad |\hat{\lambda}_k| < \delta
+$$
+
+$\delta$는 바닥의 폭이다. 아래는 이 현상을 스칼라 Burgers 방정식 $u_t+(u^2/2)_x=0$에서 재현한다. 좌 $u_L=-0.5$, 우 $u_R=1.0$의 초음속 팽창(음속점이 정중앙)이다. 슬라이더로 $\delta$를 직접 조작해보자.
+
+<BurgersEntropyGlitch />
+
+$\delta=0$이면 $x=0$에 파란 꺾임 — 정지 팽창 충격파 — 이 그대로 남는다. $\delta$를 올리면 수치해가 호박색 정확 팽창 부채꼴 위로 미끄러져 내려온다. 실무 팁: $\delta$를 국소 $(|\hat{u}|+\hat{c})$의 5~10%로 잡으면 대개 안전하다. 너무 크게 잡으면 접촉면이 뭉개진다.
+
+## 더 싸게: HLL과 HLLC
+
+Roe가 부담스러우면 파동 수를 줄이면 된다. HLL(Harten–Lax–van Leer)은 좌·우 음파 두 개만 남긴다. 중간 접촉파는 버린다.
+
+$$
+F^{\text{HLL}} = \frac{S_R f_L - S_L f_R + S_L S_R\,(q_R - q_L)}{S_R - S_L}
+$$
+
+$S_L$, $S_R$는 좌·우 최외곽 파속 추정치다. HLL은 견고하고 밀도 양수성을 잘 지킨다. 대신 접촉면을 날카롭게 잡지 못한다. 중간파가 없기 때문이다.
+
+HLLC의 C는 중앙파(Contact)다. 버려졌던 접촉파를 되살린다. 파동 3개, 상태 영역 4개다. 결국 셋은 파동 수의 스펙트럼 위에 놓인다.
+
+| 솔버 | 파동 수 | 접촉면 | 견고함 | 비용 |
+|------|:------:|:------:|:------:|:----:|
+| HLL | 2 | 뭉갬 | 높음 | 최저 |
+| HLLC | 3 | 날카로움 | 높음 | 중간 |
+| Roe | 완전(3D 5) | 날카로움 | 픽스 필요 | 높음 |
+
+현장 기본값은 대개 HLLC다. 접촉면을 살리면서도 밀도·압력 양수성을 지키기 쉽다. Roe는 분해능이 뛰어나지만 엔트로피 픽스가 필수고, 격자에 평행한 강한 충격파에서 카번클(carbuncle) 현상을 조심해야 한다.
+
+## 마지막에 남기고 싶은 것
+
+- Roe 평균의 √ρ 가중은 임의의 선택이 아니다. $q$와 $f$를 2차식으로 만드는 유일한 파라미터화에서 나온다.
+- 근사 리만 솔버의 대가는 엔트로피 위반이다. 음속점에서 $|\lambda|\to 0$을 Harten 픽스로 막지 않으면 팽창 충격파가 굳는다.
+- HLL·HLLC·Roe는 "파동을 몇 개 남길 것인가"의 스펙트럼이다. 견고함과 분해능, 비용의 균형점을 문제에 맞춰 고른다.
