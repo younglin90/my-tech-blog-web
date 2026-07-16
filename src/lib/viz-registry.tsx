@@ -158,6 +158,7 @@ export const VIZ_COMPONENTS: Record<string, ComponentType> = {
   "SpeedOfSoundMix": dynamic(() => import("@/components/post-viz/compressible-multiphase-intro/SpeedOfSoundMix").then((m) => ({ default: m.SpeedOfSoundMix })), { ssr: false, loading: VizLoading }),
   "SPHKernelShapeExplorer": dynamic(() => import("@/components/post-viz/2026-04-29-sph-meshfree-particle-hydrodynamics/SPHKernelShapeExplorer").then((m) => ({ default: m.SPHKernelShapeExplorer })), { ssr: false, loading: VizLoading }),
   "SPHParticleDrop2D": dynamic(() => import("@/components/post-viz/2026-04-29-sph-meshfree-particle-hydrodynamics/SPHParticleDrop2D").then((m) => ({ default: m.SPHParticleDrop2D })), { ssr: false, loading: VizLoading }),
+  "SpinningBallTrajectory": dynamic(() => import("@/components/post-viz/2026-07-16-magnus-effect-spinning-ball-lift/SpinningBallTrajectory").then((m) => ({ default: m.SpinningBallTrajectory })), { ssr: false, loading: VizLoading }),
   "StartingVortexShedding": dynamic(() => import("@/components/post-viz/2026-05-07-circulation-lift-kutta-joukowski/StartingVortexShedding").then((m) => ({ default: m.StartingVortexShedding })), { ssr: false, loading: VizLoading }),
   "StencilCompare": dynamic(() => import("@/components/post-viz/fdm-fem-fvm/StencilCompare").then((m) => ({ default: m.StencilCompare })), { ssr: false, loading: VizLoading }),
   "StreamLine": dynamic(() => import("@/components/viz/StreamLine").then((m) => ({ default: m.StreamLine })), { ssr: false, loading: VizLoading }),
