@@ -1,0 +1,149 @@
+---
+title: "비뚤어진 격자에서 기울기가 틀어질 때 — Green–Gauss와 가중 최소제곱 재구성"
+date: 2026-07-17
+description: "비정렬 격자 셀 기울기를 구하는 두 방법과 왜곡에 강한 쪽"
+tags: ["FVM", "Gradient-Reconstruction", "Least-Squares", "Unstructured", "OpenFOAM"]
+locale: ko
+slug: least-squares-gradient-reconstruction-unstructured
+draft: false
+---
+
+import { LeastSquaresGradientLab } from '@/components/post-viz/2026-07-17-least-squares-gradient-reconstruction-unstructured/LeastSquaresGradientLab'
+import { StencilConditioningExplorer } from '@/components/post-viz/2026-07-17-least-squares-gradient-reconstruction-unstructured/StencilConditioningExplorer'
+
+잔차가 이상하게 눕더니 발산했다. 로그를 뒤지니 벽 근처 한 셀에서 온도 기울기가 실제와 거의 직각으로 틀어져 있었다. 격자를 보니 그 셀만 유독 납작했다. 값은 멀쩡했다. 기울기를 만드는 방법이 격자 모양에 걸려 넘어진 것이다.
+
+유한체적법(FVM)에서 셀 기울기는 확산 플럭스, 2차 재구성, 리미터의 입력이다. 셀 중심값만으로는 부족하다. 이웃 정보를 모아 $\nabla\phi_C$를 추정해야 한다. 이 글은 그 추정을 하는 두 방법 — Green–Gauss와 최소제곱 — 을 비교한다. 왜 왜곡 격자에서 한쪽이 무너지는지, 그리고 거리 가중이 무엇을 고치는지를 코드와 함께 본다.
+
+## Green–Gauss: 면으로 둘러싸 평균한다
+
+발산정리를 셀에 그대로 적용한다. 부피 적분을 면 적분으로 바꾼다.
+
+$$
+\nabla \phi_C = \frac{1}{V_C} \sum_{f} \phi_f \, \mathbf{n}_f \, A_f
+$$
+
+$V_C$는 셀 부피, $\mathbf{n}_f$는 면 바깥 법선, $A_f$는 면 넓이, $\phi_f$는 면 위 값이다.
+
+면 값 $\phi_f$는 직접 알 수 없다. 셀 중심값에서 보간한다. 가장 흔한 선형 보간은 이렇다.
+
+$$
+\phi_f = g_f\, \phi_C + (1 - g_f)\, \phi_N
+$$
+
+$g_f$는 면에서 이웃 중심 $N$까지의 거리 비로 정한 가중치다. 계산이 싸고 직관적이다. 구조 격자에서는 2차 정확도가 나온다.
+
+## 왜곡 격자가 Green–Gauss를 흔든다
+
+문제는 $g_f$에 숨어 있다. 선형 보간은 면 중심과 두 셀 중심이 한 직선 위에 있다고 가정한다. 비정렬 격자에서는 이 가정이 거의 항상 깨진다.
+
+면 중심이 두 셀 중심을 잇는 선에서 벗어나 있으면($\text{skewness}$), 보간된 $\phi_f$가 편향된다. 셀이 납작하거나 이웃 크기가 크게 다르면 편향은 더 커진다. 이 오차는 반복하며 쌓인다. 결국 기울기가 엉뚱한 방향을 가리킨다.
+
+보정 항을 붙이면 완화된다. 하지만 보정에는 다시 기울기가 필요하다. 순환이 생긴다. 반복 보정은 비싸고, 왜곡이 심하면 수렴이 느려진다.
+
+## 최소제곱: 이웃에 평면을 맞춘다
+
+발상을 바꾼다. 면을 거치지 않는다. 셀 $C$ 주변 값 분포에 곧바로 평면 하나를 맞춘다.
+
+이웃 $k$가 오프셋 $\mathbf{d}_k = \mathbf{x}_k - \mathbf{x}_C$에 있다면, 선형 근사는 $\phi_k \approx \phi_C + \nabla\phi_C \cdot \mathbf{d}_k$다. 모든 이웃에 대해 이 오차의 제곱합을 최소화한다.
+
+$$
+\min_{\nabla\phi_C} \sum_k w_k \left( \phi_k - \phi_C - \nabla\phi_C \cdot \mathbf{d}_k \right)^2
+$$
+
+$w_k$는 이웃별 가중치다. 미분해서 0으로 놓으면 정규방정식이 나온다.
+
+$$
+\left( \sum_k w_k\, \mathbf{d}_k \mathbf{d}_k^{\mathsf T} \right) \nabla\phi_C = \sum_k w_k \left( \phi_k - \phi_C \right) \mathbf{d}_k
+$$
+
+2차원이면 $2\times2$ 시스템이다. 풀어 쓰면 이렇다.
+
+$$
+\begin{pmatrix} \sum w\, d_x^2 & \sum w\, d_x d_y \\[2pt] \sum w\, d_x d_y & \sum w\, d_y^2 \end{pmatrix}
+\begin{pmatrix} \partial_x\phi \\[2pt] \partial_y\phi \end{pmatrix}
+=
+\begin{pmatrix} \sum w\, \Delta\phi\, d_x \\[2pt] \sum w\, \Delta\phi\, d_y \end{pmatrix}
+$$
+
+$\Delta\phi = \phi_k - \phi_C$다. 왼쪽 행렬은 이웃 배치만으로 정해진다. 셀마다 한 번 계산해 저장할 수 있다. 장점이 크다. 면 보간 가정이 없다. 왜곡에 둔감하다. 이웃이 3개 이상이면 항상 풀린다.
+
+## 거리로 가중한다
+
+가중치 $w_k$가 정확도를 좌우한다. 흔한 선택은 거리 역수다.
+
+$$
+w_k = \frac{1}{\lvert \mathbf{d}_k \rvert^{\,n}}
+$$
+
+$n=0$이면 모든 이웃을 똑같이 본다. 멀리 있는 이웃은 값 차이가 크고, 그만큼 곡률 오차도 크다. 그 이웃이 평면 맞춤을 잡아당긴다. $n$을 1로 올리면 먼 이웃의 발언권이 줄어든다. 국소 선형 가정이 잘 맞는 가까운 이웃에 무게가 실린다. 비점성 문제에서는 보통 $n=1$을 쓴다.
+
+아래 시뮬레이션에서 직접 파라미터를 조작해보자.
+
+<LeastSquaresGradientLab />
+
+anisotropy를 0.2 근처로 낮춰 스텐실을 납작하게 만들고 curvature κ를 올리면 주황색 재구성 기울기가 초록색 참값에서 벌어진다. 여기서 weight exponent n을 0에서 1로 올려보라. 주황색 화살표가 다시 참값 쪽으로 돌아온다. 먼 이웃을 눌러 곡률 오차를 줄인 결과다.
+
+## Python — 선형장은 정확히, 곡면은 가중으로
+
+최소제곱의 힘을 두 번에 나눠 확인한다. 먼저 선형장 $\phi = 1.3x - 0.7y + 2$의 기울기를 아무렇게나 흩뿌린 스텐실에서 재구성한다. 이론상 오차가 0이어야 한다. 다음으로 곡면 $\phi = e^{0.7x}\cos(0.9y)$에서 가중 없는 쪽과 $n=1$ 가중을 겨룬다.
+
+```python
+import numpy as np
+
+def weighted_lsq_gradient(offsets, dphi, n):
+    # offsets: (K,2) neighbor offsets d_k; dphi: (K,) diffs phi_k - phi_C
+    w = 1.0 / np.maximum(np.linalg.norm(offsets, axis=1), 1e-12) ** n
+    M = (offsets[:, :, None] * offsets[:, None, :] * w[:, None, None]).sum(axis=0)
+    b = (offsets * (dphi * w)[:, None]).sum(axis=0)
+    return np.linalg.solve(M, b)
+
+xc = np.array([0.4, -0.2])
+
+# (A) 선형장 — 어떤 스텐실이든 최소제곱은 정확하다
+lin = lambda x, y: 1.30 * x - 0.70 * y + 2.0
+scatter = np.array([[0.45, 0.30], [-0.40, 0.12], [0.05, -0.48], [-0.33, -0.29],
+                    [0.90, 0.15], [-0.11, 0.44], [0.28, -0.09]])   # 불규칙 스텐실
+dlin = np.array([lin(*(xc + d)) - lin(*xc) for d in scatter])
+gA = weighted_lsq_gradient(scatter, dlin, 1.0)
+print(f"linear field   LSQ = ({gA[0]:+.6f}, {gA[1]:+.6f})   exact = (+1.300000, -0.700000)")
+
+# (B) 곡면 — 거리 가중이 재구성 오차를 깎는다
+phi  = lambda x, y: np.exp(0.7*x) * np.cos(0.9*y)
+grad = lambda x, y: np.array([0.7*np.exp(0.7*x)*np.cos(0.9*y),
+                             -0.9*np.exp(0.7*x)*np.sin(0.9*y)])
+near = np.array([[0.10, 0.05], [-0.08, 0.09], [0.06, -0.10], [-0.09, -0.06], [0.11, 0.10]])
+offs = np.vstack([near, [0.90, 0.70]])          # 멀리 떨어진 이웃 하나
+dphi = np.array([phi(*(xc + d)) - phi(*xc) for d in offs])
+gt   = grad(*xc)
+for n in (0.0, 1.0):
+    g = weighted_lsq_gradient(offs, dphi, n)
+    err = np.linalg.norm(g - gt)
+    print(f"curved field   n={n:.0f}  LSQ = ({g[0]:+.3f}, {g[1]:+.3f})   |error| = {err:.4f}")
+print(f"curved field   true = ({gt[0]:+.3f}, {gt[1]:+.3f})")
+```
+
+출력은 이렇게 나온다.
+
+```text
+linear field   LSQ = (+1.300000, -0.700000)   exact = (+1.300000, -0.700000)
+curved field   n=0  LSQ = (+0.885, +0.200)   |error| = 0.0293
+curved field   n=1  LSQ = (+0.891, +0.205)   |error| = 0.0222
+curved field   true = (+0.911, +0.213)
+```
+
+선형장에서는 스텐실이 아무리 뒤틀려도 소수점 여섯 자리까지 정확하다. 이것이 최소제곱의 핵심 성질이다. 곡면에서는 멀리 떨어진 이웃 하나가 오차를 키운다. $n=1$ 거리 가중이 그 이웃을 눌러 오차를 4분의 1가량 줄인다.
+
+## 코드 짤 때 빠지지 말아야 할 함정
+
+최소제곱이 왜곡에 강하다고 만능은 아니다. 왼쪽 행렬 $M = \sum w_k \mathbf{d}_k \mathbf{d}_k^{\mathsf T}$가 병들 수 있다. 이웃이 한 직선 위에 늘어서면 $M$이 특이에 가까워진다. 스텐실 방향으로는 기울기가 잘 정해지지만, 가로 방향으로는 거의 자유롭다. 조건수가 폭발한다.
+
+아래 시뮬레이션에서 직접 조작해보자.
+
+<StencilConditioningExplorer />
+
+Collinearity를 0.9 근처까지 올리면 이웃이 한 줄로 모이고 cond(M)이 수십에서 무한대로 치솟는다. 타원이 길고 얇게 늘어나는 방향이 바로 기울기가 부정확해지는 방향이다. 벽에 딱 붙은 경계층 셀에서 흔히 벌어지는 상황이다.
+
+현장에서 챙길 세 가지. 첫째, 경계 셀에서는 이웃이 한쪽으로 쏠린다. 벽 반대편 이웃이나 면 중심을 스텐실에 추가해 조건수를 낮춘다. 둘째, $M$을 매 스텝 다시 세우지 말고 격자가 고정이면 역행렬(또는 QR 분해)을 미리 저장한다. 셋째, 거리 가중 $n$은 문제에 맞춰 조정한다. 점성 항이 지배적이면 $n=2$가 나을 때도 있다.
+
+한 줄로 남긴다. Green–Gauss는 싸지만 왜곡에 약하고, 가중 최소제곱은 왜곡에 강하지만 스텐실이 한 줄로 서면 병든다 — 격자를 먼저 보고 방법을 고르라.

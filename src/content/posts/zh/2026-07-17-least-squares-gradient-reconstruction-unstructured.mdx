@@ -1,0 +1,149 @@
+---
+title: "网格歪斜时梯度也跟着偏 —— Green–Gauss 与加权最小二乘重构"
+date: 2026-07-17
+description: "求非结构网格单元梯度的两种方法，以及谁更抗畸变"
+tags: ["FVM", "Gradient-Reconstruction", "Least-Squares", "Unstructured", "OpenFOAM"]
+locale: zh
+slug: least-squares-gradient-reconstruction-unstructured
+draft: false
+---
+
+import { LeastSquaresGradientLab } from '@/components/post-viz/2026-07-17-least-squares-gradient-reconstruction-unstructured/LeastSquaresGradientLab'
+import { StencilConditioningExplorer } from '@/components/post-viz/2026-07-17-least-squares-gradient-reconstruction-unstructured/StencilConditioningExplorer'
+
+残差先是诡异地趴平，随后发散了。翻日志才发现，靠近壁面的一个单元里，温度梯度和真实方向几乎成了直角。再看网格，就那个单元格外扁。数值本身没问题。是构造梯度的方法被网格形状绊倒了。
+
+在有限体积法（FVM）里，单元梯度是扩散通量、二阶重构和限制器的输入。仅靠单元中心值不够。要汇集邻居信息才能估计 $\nabla\phi_C$。本文比较做这一估计的两种方法 —— Green–Gauss 与最小二乘。我们结合代码看：为什么在畸变网格上一方会崩掉，以及距离加权到底修好了什么。
+
+## Green–Gauss：用包围的面来平均
+
+把散度定理直接用到单元上。将体积分换成面积分。
+
+$$
+\nabla \phi_C = \frac{1}{V_C} \sum_{f} \phi_f \, \mathbf{n}_f \, A_f
+$$
+
+$V_C$ 是单元体积，$\mathbf{n}_f$ 是面外法线，$A_f$ 是面积，$\phi_f$ 是面上的值。
+
+面值 $\phi_f$ 无法直接得到。要从单元中心值插值。最常见的线性插值是这样：
+
+$$
+\phi_f = g_f\, \phi_C + (1 - g_f)\, \phi_N
+$$
+
+$g_f$ 是按面到邻居中心 $N$ 的距离比确定的权重。计算便宜且直观。在结构网格上能达到二阶精度。
+
+## 畸变网格动摇了 Green–Gauss
+
+问题藏在 $g_f$ 里。线性插值假设面中心和两个单元中心在同一条直线上。在非结构网格里，这个假设几乎总是被打破。
+
+如果面中心偏离连接两个单元中心的连线（$\text{skewness}$，歪斜），插值得到的 $\phi_f$ 就有偏差。单元越扁、邻居尺寸差别越大，偏差越大。这个误差在迭代中累积。最终梯度指向错误的方向。
+
+加上修正项能缓解。但修正又需要梯度。于是出现循环。迭代修正代价高，畸变严重时收敛变慢。
+
+## 最小二乘：给邻居拟合一个平面
+
+换个思路。不经过面。直接对单元 $C$ 周围的值分布拟合一个平面。
+
+若邻居 $k$ 位于偏移量 $\mathbf{d}_k = \mathbf{x}_k - \mathbf{x}_C$ 处，线性近似为 $\phi_k \approx \phi_C + \nabla\phi_C \cdot \mathbf{d}_k$。对所有邻居，最小化这个误差的平方和。
+
+$$
+\min_{\nabla\phi_C} \sum_k w_k \left( \phi_k - \phi_C - \nabla\phi_C \cdot \mathbf{d}_k \right)^2
+$$
+
+$w_k$ 是各邻居的权重。求导令其为零，得到正规方程。
+
+$$
+\left( \sum_k w_k\, \mathbf{d}_k \mathbf{d}_k^{\mathsf T} \right) \nabla\phi_C = \sum_k w_k \left( \phi_k - \phi_C \right) \mathbf{d}_k
+$$
+
+二维时是一个 $2\times2$ 系统。展开写出来是这样：
+
+$$
+\begin{pmatrix} \sum w\, d_x^2 & \sum w\, d_x d_y \\[2pt] \sum w\, d_x d_y & \sum w\, d_y^2 \end{pmatrix}
+\begin{pmatrix} \partial_x\phi \\[2pt] \partial_y\phi \end{pmatrix}
+=
+\begin{pmatrix} \sum w\, \Delta\phi\, d_x \\[2pt] \sum w\, \Delta\phi\, d_y \end{pmatrix}
+$$
+
+$\Delta\phi = \phi_k - \phi_C$。左边矩阵只由邻居布局决定。可以每个单元算一次并存下来。优点很大。没有面插值假设。对畸变不敏感。只要邻居有 3 个以上就总能求解。
+
+## 用距离加权
+
+权重 $w_k$ 决定精度。常见的选择是距离的倒数。
+
+$$
+w_k = \frac{1}{\lvert \mathbf{d}_k \rvert^{\,n}}
+$$
+
+$n=0$ 时对所有邻居一视同仁。远处的邻居值差大，相应的曲率误差也大。那个邻居会把平面拟合往自己那边拉。把 $n$ 提到 1，远处邻居的话语权就减小。权重落在局部线性假设更成立的近邻上。无粘问题通常用 $n=1$。
+
+在下面的模拟里亲手调参数吧。
+
+<LeastSquaresGradientLab />
+
+把 anisotropy 降到 0.2 附近让模板变扁，再调高 curvature κ，橙色的重构梯度会从绿色的真值上偏离。此时把 weight exponent n 从 0 提到 1。橙色箭头会重新转回真值方向。这是压制远处邻居、减小曲率误差的结果。
+
+## Python —— 线性场精确，曲面靠加权
+
+分两步验证最小二乘的威力。先在随意撒开的模板上重构线性场 $\phi = 1.3x - 0.7y + 2$ 的梯度。理论上误差应为 0。接着在曲面 $\phi = e^{0.7x}\cos(0.9y)$ 上，让无加权一方与 $n=1$ 加权一较高下。
+
+```python
+import numpy as np
+
+def weighted_lsq_gradient(offsets, dphi, n):
+    # offsets: (K,2) 邻居偏移量 d_k；dphi: (K,) 差值 phi_k - phi_C
+    w = 1.0 / np.maximum(np.linalg.norm(offsets, axis=1), 1e-12) ** n
+    M = (offsets[:, :, None] * offsets[:, None, :] * w[:, None, None]).sum(axis=0)
+    b = (offsets * (dphi * w)[:, None]).sum(axis=0)
+    return np.linalg.solve(M, b)
+
+xc = np.array([0.4, -0.2])
+
+# (A) 线性场 —— 无论何种模板，最小二乘都精确
+lin = lambda x, y: 1.30 * x - 0.70 * y + 2.0
+scatter = np.array([[0.45, 0.30], [-0.40, 0.12], [0.05, -0.48], [-0.33, -0.29],
+                    [0.90, 0.15], [-0.11, 0.44], [0.28, -0.09]])   # 不规则模板
+dlin = np.array([lin(*(xc + d)) - lin(*xc) for d in scatter])
+gA = weighted_lsq_gradient(scatter, dlin, 1.0)
+print(f"linear field   LSQ = ({gA[0]:+.6f}, {gA[1]:+.6f})   exact = (+1.300000, -0.700000)")
+
+# (B) 曲面 —— 距离加权削减重构误差
+phi  = lambda x, y: np.exp(0.7*x) * np.cos(0.9*y)
+grad = lambda x, y: np.array([0.7*np.exp(0.7*x)*np.cos(0.9*y),
+                             -0.9*np.exp(0.7*x)*np.sin(0.9*y)])
+near = np.array([[0.10, 0.05], [-0.08, 0.09], [0.06, -0.10], [-0.09, -0.06], [0.11, 0.10]])
+offs = np.vstack([near, [0.90, 0.70]])          # 一个远处的邻居
+dphi = np.array([phi(*(xc + d)) - phi(*xc) for d in offs])
+gt   = grad(*xc)
+for n in (0.0, 1.0):
+    g = weighted_lsq_gradient(offs, dphi, n)
+    err = np.linalg.norm(g - gt)
+    print(f"curved field   n={n:.0f}  LSQ = ({g[0]:+.3f}, {g[1]:+.3f})   |error| = {err:.4f}")
+print(f"curved field   true = ({gt[0]:+.3f}, {gt[1]:+.3f})")
+```
+
+输出是这样的。
+
+```text
+linear field   LSQ = (+1.300000, -0.700000)   exact = (+1.300000, -0.700000)
+curved field   n=0  LSQ = (+0.885, +0.200)   |error| = 0.0293
+curved field   n=1  LSQ = (+0.891, +0.205)   |error| = 0.0222
+curved field   true = (+0.911, +0.213)
+```
+
+线性场上，模板再怎么扭曲，都精确到小数点后六位。这就是最小二乘的核心性质。曲面上，一个远处的邻居把误差放大了。$n=1$ 距离加权压住那个邻居，把误差削减了约四分之一。
+
+## 写代码时不能掉进的陷阱
+
+最小二乘抗畸变，但并非万能。左边矩阵 $M = \sum w_k \mathbf{d}_k \mathbf{d}_k^{\mathsf T}$ 可能病态。邻居排成一条直线时，$M$ 接近奇异。沿模板方向梯度能定得好，但横向几乎自由。条件数爆炸。
+
+在下面的模拟里亲手操作吧。
+
+<StencilConditioningExplorer />
+
+把 Collinearity 提到 0.9 附近，邻居就聚成一列，cond(M) 从几十飙到无穷大。椭圆被拉得又长又细的方向，正是梯度变得不准的方向。这是紧贴壁面的边界层单元常见的情形。
+
+现场要记住三点。第一，边界单元的邻居会偏向一侧。把壁面对侧的邻居或面中心加入模板，降低条件数。第二，别每步都重建 $M$；网格固定时就把逆矩阵（或 QR 分解）预先存好。第三，距离加权 $n$ 要按问题调。粘性项占主导时，$n=2$ 有时更好。
+
+一句话收尾。Green–Gauss 便宜但抗畸变差，加权最小二乘抗畸变强但模板排成一列就病态 —— 先看网格，再选方法。

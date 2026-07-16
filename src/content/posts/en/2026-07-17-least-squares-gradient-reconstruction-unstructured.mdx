@@ -1,0 +1,149 @@
+---
+title: "When Gradients Go Wrong on Skewed Meshes — Green–Gauss vs. Weighted Least-Squares Reconstruction"
+date: 2026-07-17
+description: "Two ways to build cell gradients on unstructured meshes, and which one survives distortion"
+tags: ["FVM", "Gradient-Reconstruction", "Least-Squares", "Unstructured", "OpenFOAM"]
+locale: en
+slug: least-squares-gradient-reconstruction-unstructured
+draft: false
+---
+
+import { LeastSquaresGradientLab } from '@/components/post-viz/2026-07-17-least-squares-gradient-reconstruction-unstructured/LeastSquaresGradientLab'
+import { StencilConditioningExplorer } from '@/components/post-viz/2026-07-17-least-squares-gradient-reconstruction-unstructured/StencilConditioningExplorer'
+
+The residuals leaned over in a strange way, then blew up. Digging through the logs, I found one cell near the wall where the temperature gradient pointed almost perpendicular to the real one. I looked at the mesh: that one cell was oddly flat. The values were fine. The method that builds the gradient had tripped over the shape of the mesh.
+
+In the finite volume method (FVM), the cell gradient feeds the diffusion flux, second-order reconstruction, and the limiter. Cell-center values alone are not enough. You have to gather neighbor information to estimate $\nabla\phi_C$. This post compares two ways to make that estimate — Green–Gauss and least-squares. We look at why one of them collapses on distorted meshes, and what distance weighting fixes, with code.
+
+## Green–Gauss: wrap the cell in faces and average
+
+Apply the divergence theorem directly to the cell. Turn the volume integral into a face integral.
+
+$$
+\nabla \phi_C = \frac{1}{V_C} \sum_{f} \phi_f \, \mathbf{n}_f \, A_f
+$$
+
+$V_C$ is the cell volume, $\mathbf{n}_f$ is the outward face normal, $A_f$ is the face area, and $\phi_f$ is the value on the face.
+
+You cannot know the face value $\phi_f$ directly. You interpolate it from cell-center values. The most common linear interpolation looks like this.
+
+$$
+\phi_f = g_f\, \phi_C + (1 - g_f)\, \phi_N
+$$
+
+$g_f$ is a weight set by the distance ratio from the face to the neighbor center $N$. It is cheap and intuitive. On structured meshes it gives second-order accuracy.
+
+## Skewed meshes shake Green–Gauss
+
+The trouble hides in $g_f$. Linear interpolation assumes the face center and the two cell centers all lie on one straight line. On unstructured meshes that assumption almost always breaks.
+
+When the face center strays off the line joining the two cell centers ($\text{skewness}$), the interpolated $\phi_f$ becomes biased. If cells are flat or neighbor sizes differ a lot, the bias grows. This error accumulates over iterations. In the end the gradient points the wrong way.
+
+Adding a correction term eases it. But the correction needs a gradient again. That creates a loop. Iterative correction is expensive, and if the distortion is severe, convergence slows down.
+
+## Least-squares: fit a plane to the neighbors
+
+Change the idea. Skip the face entirely. Fit a single plane straight to the value distribution around cell $C$.
+
+If neighbor $k$ sits at offset $\mathbf{d}_k = \mathbf{x}_k - \mathbf{x}_C$, the linear approximation is $\phi_k \approx \phi_C + \nabla\phi_C \cdot \mathbf{d}_k$. Minimize the squared sum of this error over all neighbors.
+
+$$
+\min_{\nabla\phi_C} \sum_k w_k \left( \phi_k - \phi_C - \nabla\phi_C \cdot \mathbf{d}_k \right)^2
+$$
+
+$w_k$ is a per-neighbor weight. Differentiate and set to zero, and you get the normal equations.
+
+$$
+\left( \sum_k w_k\, \mathbf{d}_k \mathbf{d}_k^{\mathsf T} \right) \nabla\phi_C = \sum_k w_k \left( \phi_k - \phi_C \right) \mathbf{d}_k
+$$
+
+In two dimensions this is a $2\times2$ system. Written out, it looks like this.
+
+$$
+\begin{pmatrix} \sum w\, d_x^2 & \sum w\, d_x d_y \\[2pt] \sum w\, d_x d_y & \sum w\, d_y^2 \end{pmatrix}
+\begin{pmatrix} \partial_x\phi \\[2pt] \partial_y\phi \end{pmatrix}
+=
+\begin{pmatrix} \sum w\, \Delta\phi\, d_x \\[2pt] \sum w\, \Delta\phi\, d_y \end{pmatrix}
+$$
+
+$\Delta\phi = \phi_k - \phi_C$. The left-hand matrix depends only on neighbor placement. You can compute it once per cell and store it. The upside is large. There is no face-interpolation assumption. It is insensitive to distortion. With three or more neighbors it always has a solution.
+
+## Weight by distance
+
+The weight $w_k$ decides the accuracy. A common choice is the inverse distance.
+
+$$
+w_k = \frac{1}{\lvert \mathbf{d}_k \rvert^{\,n}}
+$$
+
+With $n=0$, every neighbor counts equally. A far neighbor has a large value difference, and with it a large curvature error. That neighbor pulls the plane fit. Raise $n$ to 1 and the far neighbor loses its voice. Weight shifts to nearby neighbors, where the local linear assumption holds well. For inviscid problems, $n=1$ is the usual choice.
+
+Try adjusting the parameters yourself in the simulation below.
+
+<LeastSquaresGradientLab />
+
+Lower the anisotropy to around 0.2 to make the stencil flat, then raise the curvature κ, and the orange reconstructed gradient drifts away from the green true value. Now raise the weight exponent n from 0 to 1. The orange arrow swings back toward the true value. That is the result of pressing down the far neighbor to cut the curvature error.
+
+## Python — exact on linear fields, weighted on curved ones
+
+We confirm the power of least-squares in two parts. First, reconstruct the gradient of the linear field $\phi = 1.3x - 0.7y + 2$ on a randomly scattered stencil. In theory the error should be zero. Next, on the curved surface $\phi = e^{0.7x}\cos(0.9y)$, we pit the unweighted case against $n=1$ weighting.
+
+```python
+import numpy as np
+
+def weighted_lsq_gradient(offsets, dphi, n):
+    # offsets: (K,2) neighbor offsets d_k; dphi: (K,) diffs phi_k - phi_C
+    w = 1.0 / np.maximum(np.linalg.norm(offsets, axis=1), 1e-12) ** n
+    M = (offsets[:, :, None] * offsets[:, None, :] * w[:, None, None]).sum(axis=0)
+    b = (offsets * (dphi * w)[:, None]).sum(axis=0)
+    return np.linalg.solve(M, b)
+
+xc = np.array([0.4, -0.2])
+
+# (A) linear field — least-squares is exact for any stencil
+lin = lambda x, y: 1.30 * x - 0.70 * y + 2.0
+scatter = np.array([[0.45, 0.30], [-0.40, 0.12], [0.05, -0.48], [-0.33, -0.29],
+                    [0.90, 0.15], [-0.11, 0.44], [0.28, -0.09]])   # irregular stencil
+dlin = np.array([lin(*(xc + d)) - lin(*xc) for d in scatter])
+gA = weighted_lsq_gradient(scatter, dlin, 1.0)
+print(f"linear field   LSQ = ({gA[0]:+.6f}, {gA[1]:+.6f})   exact = (+1.300000, -0.700000)")
+
+# (B) curved surface — distance weighting trims the reconstruction error
+phi  = lambda x, y: np.exp(0.7*x) * np.cos(0.9*y)
+grad = lambda x, y: np.array([0.7*np.exp(0.7*x)*np.cos(0.9*y),
+                             -0.9*np.exp(0.7*x)*np.sin(0.9*y)])
+near = np.array([[0.10, 0.05], [-0.08, 0.09], [0.06, -0.10], [-0.09, -0.06], [0.11, 0.10]])
+offs = np.vstack([near, [0.90, 0.70]])          # one far-away neighbor
+dphi = np.array([phi(*(xc + d)) - phi(*xc) for d in offs])
+gt   = grad(*xc)
+for n in (0.0, 1.0):
+    g = weighted_lsq_gradient(offs, dphi, n)
+    err = np.linalg.norm(g - gt)
+    print(f"curved field   n={n:.0f}  LSQ = ({g[0]:+.3f}, {g[1]:+.3f})   |error| = {err:.4f}")
+print(f"curved field   true = ({gt[0]:+.3f}, {gt[1]:+.3f})")
+```
+
+The output comes out like this.
+
+```text
+linear field   LSQ = (+1.300000, -0.700000)   exact = (+1.300000, -0.700000)
+curved field   n=0  LSQ = (+0.885, +0.200)   |error| = 0.0293
+curved field   n=1  LSQ = (+0.891, +0.205)   |error| = 0.0222
+curved field   true = (+0.911, +0.213)
+```
+
+On the linear field, no matter how twisted the stencil is, it is accurate to six decimal places. This is the core property of least-squares. On the curved surface, one far-away neighbor inflates the error. The $n=1$ distance weighting presses that neighbor down and cuts the error by about a quarter.
+
+## Pitfalls to avoid when you code this
+
+Least-squares being robust to distortion does not make it a cure-all. The left-hand matrix $M = \sum w_k \mathbf{d}_k \mathbf{d}_k^{\mathsf T}$ can become ill-conditioned. When the neighbors line up along a single straight line, $M$ approaches singular. The gradient is well determined along the stencil direction, but almost free in the transverse direction. The condition number explodes.
+
+Try it yourself in the simulation below.
+
+<StencilConditioningExplorer />
+
+Raise the collinearity toward 0.9 and the neighbors bunch into one line, sending cond(M) shooting from tens to infinity. The direction in which the ellipse stretches long and thin is exactly the direction in which the gradient becomes inaccurate. This is a common situation in boundary-layer cells pressed right against the wall.
+
+Three things to keep in mind on the job. First, in boundary cells the neighbors skew to one side. Add the neighbor on the far side of the wall or the face center to the stencil to lower the condition number. Second, do not rebuild $M$ every step — if the mesh is fixed, precompute and store the inverse (or the QR factorization). Third, tune the distance weighting $n$ to the problem. When the viscous term dominates, $n=2$ can sometimes be better.
+
+To leave it in one line: Green–Gauss is cheap but weak to distortion, and weighted least-squares is strong against distortion but sickens when the stencil lines up in a row — look at your mesh first, then pick the method.
