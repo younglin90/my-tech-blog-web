@@ -1,0 +1,134 @@
+---
+title: "Deleting an Equation Made It More Robust — The Four-Equation Model and the Interface Equilibrium Condition"
+date: 2026-07-18
+description: "How the four-equation multiphase model kills interface pressure oscillations"
+tags: ["논문리뷰", "compressible-multiphase", "Four-Equation-Model", "Diffuse-Interface", "Interface-Equilibrium", "ENO"]
+locale: en
+slug: four-equation-interface-equilibrium
+draft: false
+---
+
+import { FourEqInterfaceOscillation } from '@/components/post-viz/2026-07-18-four-equation-interface-equilibrium/FourEqInterfaceOscillation'
+
+Deleting one equation made the code crash less. In compressible multiphase flow (a compressible flow where different fluids mix), you usually learn the opposite. The seven-equation model, which solves a separate pressure, velocity, and temperature for each phase, is supposed to be the safe one — and dropping equations is supposed to make things fragile. Collis (2025) flips that intuition. The most stripped-down four-equation model turns out to be the most robust. Today we follow the key idea behind it, the interface equilibrium condition, and use Python to watch exactly why a "conservative" scheme shakes a uniform pressure.
+
+## The Ladder of Equilibria — 7, 6, 5, 4 Equations
+
+A diffuse-interface method (which smears a boundary across a few cells) needs a rule to define both phases inside a smeared cell. That rule is precisely "what counts as equilibrium."
+
+- **Seven-equation** (Baer–Nunziato): each phase has its own velocity, pressure, and temperature. The most general and the most expensive.
+- **Six-equation**: velocity is shared; pressure is separate and driven together by relaxation.
+- **Five-equation**: velocity and pressure are shared; only temperature stays separate.
+- **Four-equation**: velocity, pressure, and temperature are all shared. The most concise.
+
+A physical interface is nanometers thick. The numerical interface just inflates that to a few grid cells. Inside that thin band, thermo-mechanical equilibrium is effectively instantaneous. So for the physics near an interface, the four-equation model is the closest.
+
+$$
+T^{(1)} = T^{(2)}, \quad P^{(1)} = P^{(2)}, \quad \mathbf{u}^{(1)} = \mathbf{u}^{(2)}
+$$
+
+The superscripts $(1),(2)$ label the two phases. The four-equation model enforces all three equalities inside a cell.
+
+## Why Fewer Equations Are More Robust
+
+Models with five equations or more usually carry extra transport equations — for the volume fraction (the fraction of a cell occupied by one phase) or for quantities like $1/(\gamma-1)$. At the PDE level these are redundant. Redundant equations drift apart once you discretize them. You compute the same quantity along two paths and the two answers split.
+
+The four-equation model deletes that redundancy. It conserves only mass, momentum, and energy. Pressure is closed by the mixture equation of state. Fewer equations mean fewer places to drift. The cost drops too.
+
+There is exactly one catch. Once you lose the slack the extra equations provided, a conservative discretization starts throwing the pressure off at the interface.
+
+## The Moment the Interface Equilibrium Condition Breaks
+
+The interface equilibrium condition (IEC) has a simple definition. If pressure, temperature, and velocity start uniform, they must stay uniform as the interface passes through.
+
+A scheme that violates it grows pressure oscillations around the interface out of nothing. The oscillations grow with time. When the density ratio is large, negative density or negative internal energy pops out and the code dies.
+
+Why does a conservative scheme break this? Take an ideal-gas mixture. Set $\Gamma \equiv 1/(\gamma-1)$; then the total energy reads
+
+$$
+E = P\,\Gamma + \tfrac{1}{2}\,\rho\,u^2
+$$
+
+$E$ total energy, $P$ pressure, $\rho$ density, $u$ velocity. $\Gamma$ jumps across the interface because the fluid changes.
+
+Push one step with first-order upwind under uniform $u,P$. Here $\nu = u\,\Delta t/\Delta x$ is the CFL number (the fraction of a cell information crosses per step). The conservative energy update simplifies cleanly, because the $+P$ terms cancel.
+
+$$
+E_i^{n+1} = E_i - \nu\,(E_i - E_{i-1})
+$$
+
+Substitute the total-energy definition and the right-hand side splits like this.
+
+$$
+E_i^{n+1} = P_0\big[\,\Gamma_i - \nu(\Gamma_i - \Gamma_{i-1})\,\big] + \tfrac{1}{2}\,u_0^2\,\rho_i^{n+1}
+$$
+
+For the new pressure to stay $P_0$, $\Gamma$ must update as exactly that bracket — that is, by **non-conservative upwind**. But a conservative scheme advects $\rho\Gamma$ as a lump and divides by $\rho$ again. The two results split at the interface. That split is the pressure oscillation.
+
+Try it directly in the simulation below.
+
+<FourEqInterfaceOscillation />
+
+Turn on Naive and the red pressure curve spikes at the interface. Push right gas $\gamma$ to 1.66 (helium) or 1.09 (SF6) to widen the jump, and the oscillation widens with it. Switch to IEC-consistent and the green curve stays flat all the way to step 900.
+
+## Python — The Oscillation and Its Cure
+
+Move the same calculation into code. Advect an interface with uniform $u,P$ and a jump only in $\gamma$, using first-order upwind. Only the two schemes differ.
+
+```python
+import numpy as np
+
+def advect_interface(scheme, gamma_R=1.66, nu=0.6, steps=300, N=200):
+    x = np.linspace(0.0, 1.0, N, endpoint=False)
+    ramp = np.clip((x - 0.28) / 0.06, 0.0, 1.0)   # interface smeared over a few cells
+    gamma = 1.4 + (gamma_R - 1.4) * ramp          # air (1.4) -> chosen gas
+    rho = 1.0 + (0.2 - 1.0) * ramp                # density jumps too
+    u0, P0 = 1.0, 1.0
+    Gam = 1.0 / (gamma - 1.0)                      # mixture stiffness 1/(gamma-1)
+    mom = rho * u0
+    E = P0 * Gam + 0.5 * rho * u0**2               # E = P*Gamma + 0.5*rho*u^2
+
+    for _ in range(steps):
+        rhoG = rho * Gam                           # rho*Gamma before the update
+        r_up, m_up, e_up = np.roll(rho, 1), np.roll(mom, 1), np.roll(E, 1)
+        rho = rho - nu * (rho - r_up)              # mass: conservative upwind
+        mom = mom - nu * (mom - m_up)              # momentum: conservative
+        E   = E   - nu * (E   - e_up)              # energy: conservative
+        if scheme == "naive":
+            rhoG = rhoG - nu * (rhoG - np.roll(rhoG, 1))  # advect rho*Gamma conservatively
+            Gam = rhoG / rho                              # then divide by rho again
+        else:  # consistent
+            Gam = Gam - nu * (Gam - np.roll(Gam, 1))      # advect Gamma directly (non-conservative)
+
+    P = (E - 0.5 * mom**2 / rho) / Gam             # recover pressure
+    return float(np.max(np.abs(P - P0)))
+
+for s in ("naive", "consistent"):
+    print(f"{s:11s}  max|P-P0| = {advect_interface(s):.3e}")
+```
+
+The output lays the two-order-of-magnitude gap bare.
+
+```text
+naive        max|P-P0| = 3.83e-02
+consistent   max|P-P0| = 4.44e-15
+```
+
+Naive throws the pressure off by about 4% at the interface. Consistent stays flat down to machine precision (the floating-point round-off limit). One line made the difference: whether you recover $\Gamma$ by dividing out `rho`, or transport $\Gamma$ itself from the start.
+
+## What the Paper Actually Did
+
+The toy above handled only the $\gamma$ of a single ideal gas. Collis (2025) works on a far wider stage.
+
+- It closes water, air, helium, and SF6 together with the **NASG equation of state** (Noble–Abel Stiffened Gas, which also covers liquids). The mixture pressure closes in closed form as a quadratic via Amagat's law.
+- Instead of first-order upwind it uses **ENO-type** (WENO/TENO) high-order reconstruction. The key move is formulating that reconstruction consistently with the four-equation thermo-mechanical assumptions, so the IEC holds to machine precision.
+- For strong shocks hitting high-density-ratio interfaces, it extends a **positivity-preserving limiter** to the four-equation setting, blocking density and squared sound speed from leaking negative.
+- It achieves all of this without extra volume-fraction or specific-heat-ratio equations, and without sacrificing conservation or reaching for a scalar filter.
+
+There are limits. The liquid phase is restricted to a single component and the gas phase to ideal-gas components. With multiple components you must solve pressure–temperature equilibrium with an iterative solver. And it is still a preprint (not yet peer-reviewed).
+
+## Worth Remembering
+
+- The four-equation model shares velocity, pressure, and temperature **across phases**. It has the fewest equations and sits closest to the physics.
+- Interface equilibrium condition (IEC): a uniform pressure and velocity must not wobble as an interface passes. A conservative scheme breaks it by transporting the mixture-EOS parameter the wrong way.
+- The cure is to transport that parameter ($1/(\gamma-1)$) **consistently** with the equilibrium assumption. Collis (2025) lifts this to high-order ENO and makes the four-equation model robust with no redundant equations.

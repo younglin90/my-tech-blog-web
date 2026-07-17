@@ -1,0 +1,134 @@
+---
+title: "减少一个方程反而更稳健 — 四方程模型与界面平衡条件"
+date: 2026-07-18
+description: "四方程多相模型如何消除界面压力振荡"
+tags: ["논문리뷰", "compressible-multiphase", "Four-Equation-Model", "Diffuse-Interface", "Interface-Equilibrium", "ENO"]
+locale: zh
+slug: four-equation-interface-equilibrium
+draft: false
+---
+
+import { FourEqInterfaceOscillation } from '@/components/post-viz/2026-07-18-four-equation-interface-equilibrium/FourEqInterfaceOscillation'
+
+删掉一个方程，代码反而更不容易崩了。在可压缩多相流(不同流体混合的可压缩流动)里，人们通常学到的是相反的道理。为每个相(phase·物质的不同形态)分别求解压力、速度、温度的七方程模型最安全,而方程越少越危险。Collis(2025)推翻了这一常识。方程最少的四方程模型,反倒最稳健。今天就追踪它的关键——界面平衡条件,并用 Python 亲眼看看为什么"守恒型"格式会晃动一个本该均匀的压力。
+
+## 平衡的阶梯 — 七、六、五、四方程
+
+扩散界面法(diffuse interface·把边界抹开在数个网格单元上求解)需要一条规则,来定义被抹开的单元内两个相的状态。这条规则就是"把什么当作平衡"。
+
+- **七方程**(Baer–Nunziato):每个相各有自己的速度、压力、温度。最一般,也最昂贵。
+- **六方程**:速度共享;压力分开,靠松弛(relaxation)拉到一致。
+- **五方程**:速度、压力共享;只有温度分开。
+- **四方程**:速度、压力、温度全部共享。最简洁。
+
+物理界面的厚度在纳米量级。数值界面只是把它膨胀到几个网格单元。在那条窄带里,热-力学平衡几乎瞬间成立。所以对界面附近的物理而言,四方程最接近真实。
+
+$$
+T^{(1)} = T^{(2)}, \quad P^{(1)} = P^{(2)}, \quad \mathbf{u}^{(1)} = \mathbf{u}^{(2)}
+$$
+
+上标 $(1),(2)$ 标记两个相。四方程模型在单元内强制这三个等式全部成立。
+
+## 方程越少为何越稳健
+
+五方程及以上通常还要多解一些冗余的输运方程——体积分数(volume fraction·单元内某一相占据的体积比例),或 $1/(\gamma-1)$ 之类的量。在偏微分方程层面,这些是冗余的。冗余方程一经离散就会彼此偏离。同一个量沿两条路径计算,两个答案就分了岔。
+
+四方程模型删去这份冗余。它只守恒质量、动量、能量。压力由混合物状态方程封闭。方程越少,能偏离的地方也越少。开销也随之下降。
+
+只有一个麻烦。一旦失去冗余方程带来的余地,守恒型离散就开始在界面上把压力算错。
+
+## 界面平衡条件被打破的那一刻
+
+界面平衡条件(IEC·interface equilibrium condition)的定义很简单。若压力、温度、速度起初均匀,界面掠过时这份均匀不得被打破。
+
+违背它的格式会在界面周围凭空长出压力振荡。振荡随时间增长。密度比一大,负密度或负内能就会冒出来,代码随之停摆。
+
+守恒型为何会违背它?以理想气体混合为例。令 $\Gamma \equiv 1/(\gamma-1)$,则总能量写作
+
+$$
+E = P\,\Gamma + \tfrac{1}{2}\,\rho\,u^2
+$$
+
+$E$ 总能量,$P$ 压力,$\rho$ 密度,$u$ 速度。$\Gamma$ 随流体种类在界面处跳变。
+
+在均匀的 $u,P$ 下用一阶迎风推进一步。$\nu = u\,\Delta t/\Delta x$ 是 CFL 数(一步内信息穿过单元的比例)。守恒型的能量更新因 $+P$ 项相消而很干净。
+
+$$
+E_i^{n+1} = E_i - \nu\,(E_i - E_{i-1})
+$$
+
+把总能量定义代入,右端便分成这样。
+
+$$
+E_i^{n+1} = P_0\big[\,\Gamma_i - \nu(\Gamma_i - \Gamma_{i-1})\,\big] + \tfrac{1}{2}\,u_0^2\,\rho_i^{n+1}
+$$
+
+要让新压力仍为 $P_0$,$\Gamma$ 必须恰好按那个方括号更新——也就是用**非守恒迎风**。可守恒型把 $\rho\Gamma$ 整体输运,再除回 $\rho$。两个结果在界面处分了岔。这份分岔,就是压力振荡。
+
+在下面的模拟里亲手调一调。
+
+<FourEqInterfaceOscillation />
+
+打开 Naive,界面处的红色压力线就会窜起。把 right gas $\gamma$ 推到 1.66(氦)或 1.09(SF6)以加大跳变,振荡也随之加大。切到 IEC-consistent,绿色曲线一直到第 900 步都保持平直。
+
+## Python — 振荡的真身与药方
+
+把同样的计算搬进代码。对均匀 $u,P$、只有 $\gamma$ 跳变的界面,用一阶迎风推进。只有两种格式不同。
+
+```python
+import numpy as np
+
+def advect_interface(scheme, gamma_R=1.66, nu=0.6, steps=300, N=200):
+    x = np.linspace(0.0, 1.0, N, endpoint=False)
+    ramp = np.clip((x - 0.28) / 0.06, 0.0, 1.0)   # 抹开在几个单元上的界面
+    gamma = 1.4 + (gamma_R - 1.4) * ramp          # 空气(1.4) -> 所选气体
+    rho = 1.0 + (0.2 - 1.0) * ramp                # 密度也跳变
+    u0, P0 = 1.0, 1.0
+    Gam = 1.0 / (gamma - 1.0)                      # 混合物刚度 1/(gamma-1)
+    mom = rho * u0
+    E = P0 * Gam + 0.5 * rho * u0**2               # E = P*Gamma + 0.5*rho*u^2
+
+    for _ in range(steps):
+        rhoG = rho * Gam                           # 更新前的 rho*Gamma
+        r_up, m_up, e_up = np.roll(rho, 1), np.roll(mom, 1), np.roll(E, 1)
+        rho = rho - nu * (rho - r_up)              # 质量:守恒型迎风
+        mom = mom - nu * (mom - m_up)              # 动量:守恒型
+        E   = E   - nu * (E   - e_up)              # 能量:守恒型
+        if scheme == "naive":
+            rhoG = rhoG - nu * (rhoG - np.roll(rhoG, 1))  # 守恒输运 rho*Gamma
+            Gam = rhoG / rho                              # 再除回 rho
+        else:  # consistent
+            Gam = Gam - nu * (Gam - np.roll(Gam, 1))      # 直接对 Gamma 做非守恒迎风
+
+    P = (E - 0.5 * mom**2 / rho) / Gam             # 还原压力
+    return float(np.max(np.abs(P - P0)))
+
+for s in ("naive", "consistent"):
+    print(f"{s:11s}  max|P-P0| = {advect_interface(s):.3e}")
+```
+
+输出把两个数量级的差距摆得一清二楚。
+
+```text
+naive        max|P-P0| = 3.83e-02
+consistent   max|P-P0| = 4.44e-15
+```
+
+naive 在界面处把压力算偏约 4%。consistent 则平直到机器精度(浮点舍入的极限)。造成差别的只有一行:是把 $\Gamma$ 除回 `rho` 找回来,还是从一开始就直接输运 $\Gamma$ 本身。
+
+## 论文真正做了什么
+
+上面的玩具只处理了单一理想气体的 $\gamma$。Collis(2025)的舞台要宽得多。
+
+- 用 **NASG 状态方程**(Noble–Abel Stiffened Gas·连液体也能刻画的状态式)把水、空气、氦、SF6 一起封闭。混合压力借 Amagat 定律,以闭式二次式求出。
+- 不用一阶迎风,而用 **ENO 族**(WENO/TENO)高阶重构。关键在于把这套重构与四方程的热-力学平衡假设一致地搭起来,使 IEC 满足到机器精度。
+- 为了强激波撞上大密度比界面的情形,把**保正限制器**(positivity-preserving limiter)扩展到四方程,阻止密度与声速平方漏成负值。
+- 这一切都在不添加冗余的体积分数、比热比方程,也不牺牲守恒性、不动用标量滤波器的前提下完成。
+
+它也有边界。液相限定为单一组分,气相限定为理想气体组分。组分一多,就得用迭代求解器求压力-温度平衡。而且它还是预印本(未经同行评审),这一点也别忘。
+
+## 值得记住的
+
+- 四方程模型在相之间**全部共享**速度、压力、温度。方程最少,也最贴近物理。
+- 界面平衡条件(IEC):均匀的压力与速度,界面掠过时不得晃动。守恒型格式因错误输运混合物状态方程的参数而打破它。
+- 药方是把那个参数($1/(\gamma-1)$)与平衡假设**一致地**输运。Collis(2025)把这一点提升到高阶 ENO,在不添加冗余方程的情况下让四方程模型变得稳健。

@@ -1,0 +1,134 @@
+---
+title: "Quitar una ecuación lo volvió más robusto — el modelo de cuatro ecuaciones y la condición de equilibrio de interfaz"
+date: 2026-07-18
+description: "Cómo el modelo multifásico de cuatro ecuaciones elimina las oscilaciones de presión en la interfaz"
+tags: ["논문리뷰", "compressible-multiphase", "Four-Equation-Model", "Diffuse-Interface", "Interface-Equilibrium", "ENO"]
+locale: es
+slug: four-equation-interface-equilibrium
+draft: false
+---
+
+import { FourEqInterfaceOscillation } from '@/components/post-viz/2026-07-18-four-equation-interface-equilibrium/FourEqInterfaceOscillation'
+
+Quitar una ecuación hizo que el código fallara menos. En flujo multifásico compresible (un flujo compresible donde se mezclan fluidos distintos) suele enseñarse lo contrario. El modelo de siete ecuaciones, que resuelve una presión, una velocidad y una temperatura por cada fase, se supone que es el seguro, y quitar ecuaciones se supone que lo vuelve frágil. Collis (2025) invierte esa intuición. El modelo de cuatro ecuaciones, el más reducido, resulta ser el más robusto. Hoy seguimos la idea clave detrás de él, la condición de equilibrio de interfaz, y usamos Python para ver exactamente por qué un esquema "conservativo" sacude una presión uniforme.
+
+## La escalera de los equilibrios — 7, 6, 5, 4 ecuaciones
+
+Un método de interfaz difusa (diffuse interface, que difumina el borde a lo largo de unas pocas celdas) necesita una regla para definir ambas fases dentro de una celda difuminada. Esa regla es precisamente "qué cuenta como equilibrio".
+
+- **Siete ecuaciones** (Baer–Nunziato): cada fase tiene su propia velocidad, presión y temperatura. El más general y el más costoso.
+- **Seis ecuaciones**: la velocidad se comparte; la presión va aparte y se junta por relajación (relaxation).
+- **Cinco ecuaciones**: velocidad y presión compartidas; solo la temperatura queda aparte.
+- **Cuatro ecuaciones**: velocidad, presión y temperatura, todas compartidas. El más conciso.
+
+Una interfaz física mide nanómetros de espesor. La interfaz numérica solo la infla a unas pocas celdas. Dentro de esa banda estrecha, el equilibrio termomecánico es prácticamente instantáneo. Por eso, para la física cerca de una interfaz, el modelo de cuatro ecuaciones es el más cercano.
+
+$$
+T^{(1)} = T^{(2)}, \quad P^{(1)} = P^{(2)}, \quad \mathbf{u}^{(1)} = \mathbf{u}^{(2)}
+$$
+
+Los superíndices $(1),(2)$ etiquetan las dos fases. El modelo de cuatro ecuaciones impone las tres igualdades dentro de una celda.
+
+## Por qué menos ecuaciones son más robustas
+
+Los modelos de cinco ecuaciones o más suelen arrastrar ecuaciones de transporte adicionales: para la fracción de volumen (volume fraction, la fracción de una celda ocupada por una fase) o para cantidades como $1/(\gamma-1)$. En el nivel de la EDP son redundantes. Las ecuaciones redundantes se separan al discretizarlas. Se calcula la misma cantidad por dos caminos y las dos respuestas divergen.
+
+El modelo de cuatro ecuaciones elimina esa redundancia. Conserva solo masa, momento y energía. La presión se cierra con la ecuación de estado de la mezcla. Menos ecuaciones significan menos lugares donde divergir. El costo también baja.
+
+Hay exactamente una trampa. Al perder el margen que daban las ecuaciones adicionales, una discretización conservativa empieza a desviar la presión en la interfaz.
+
+## El momento en que se rompe la condición de equilibrio de interfaz
+
+La condición de equilibrio de interfaz (IEC, interface equilibrium condition) tiene una definición simple. Si la presión, la temperatura y la velocidad parten uniformes, deben seguir uniformes cuando la interfaz pasa.
+
+Un esquema que la viola hace crecer oscilaciones de presión alrededor de la interfaz de la nada. Las oscilaciones crecen con el tiempo. Cuando la razón de densidades es grande, aparece una densidad negativa o una energía interna negativa y el código muere.
+
+¿Por qué un esquema conservativo rompe esto? Tomemos una mezcla de gas ideal. Con $\Gamma \equiv 1/(\gamma-1)$, la energía total se lee
+
+$$
+E = P\,\Gamma + \tfrac{1}{2}\,\rho\,u^2
+$$
+
+$E$ energía total, $P$ presión, $\rho$ densidad, $u$ velocidad. $\Gamma$ salta en la interfaz porque cambia el fluido.
+
+Avancemos un paso con upwind de primer orden bajo $u,P$ uniformes. Aquí $\nu = u\,\Delta t/\Delta x$ es el número de CFL (la fracción de una celda que la información cruza por paso). La actualización conservativa de la energía se simplifica limpiamente, porque los términos $+P$ se cancelan.
+
+$$
+E_i^{n+1} = E_i - \nu\,(E_i - E_{i-1})
+$$
+
+Al sustituir la definición de la energía total, el lado derecho se separa así.
+
+$$
+E_i^{n+1} = P_0\big[\,\Gamma_i - \nu(\Gamma_i - \Gamma_{i-1})\,\big] + \tfrac{1}{2}\,u_0^2\,\rho_i^{n+1}
+$$
+
+Para que la nueva presión se mantenga en $P_0$, $\Gamma$ debe actualizarse exactamente como ese corchete, es decir, mediante **upwind no conservativo**. Pero un esquema conservativo transporta $\rho\Gamma$ en bloque y vuelve a dividir por $\rho$. Los dos resultados divergen en la interfaz. Esa divergencia es la oscilación de presión.
+
+Pruébalo directamente en la simulación de abajo.
+
+<FourEqInterfaceOscillation />
+
+Con Naive activado, la curva roja de presión salta en la interfaz. Al llevar right gas $\gamma$ a 1.66 (helio) o 1.09 (SF6) para ensanchar el salto, la oscilación se ensancha con él. Al cambiar a IEC-consistent, la curva verde queda plana hasta el paso 900.
+
+## Python — la oscilación y su cura
+
+Llevemos el mismo cálculo al código. Se transporta una interfaz con $u,P$ uniformes y un salto solo en $\gamma$, usando upwind de primer orden. Solo difieren los dos esquemas.
+
+```python
+import numpy as np
+
+def advect_interface(scheme, gamma_R=1.66, nu=0.6, steps=300, N=200):
+    x = np.linspace(0.0, 1.0, N, endpoint=False)
+    ramp = np.clip((x - 0.28) / 0.06, 0.0, 1.0)   # interfaz difuminada en unas celdas
+    gamma = 1.4 + (gamma_R - 1.4) * ramp          # aire (1.4) -> gas elegido
+    rho = 1.0 + (0.2 - 1.0) * ramp                # la densidad tambien salta
+    u0, P0 = 1.0, 1.0
+    Gam = 1.0 / (gamma - 1.0)                      # rigidez de la mezcla 1/(gamma-1)
+    mom = rho * u0
+    E = P0 * Gam + 0.5 * rho * u0**2               # E = P*Gamma + 0.5*rho*u^2
+
+    for _ in range(steps):
+        rhoG = rho * Gam                           # rho*Gamma antes de actualizar
+        r_up, m_up, e_up = np.roll(rho, 1), np.roll(mom, 1), np.roll(E, 1)
+        rho = rho - nu * (rho - r_up)              # masa: upwind conservativo
+        mom = mom - nu * (mom - m_up)              # momento: conservativo
+        E   = E   - nu * (E   - e_up)              # energia: conservativo
+        if scheme == "naive":
+            rhoG = rhoG - nu * (rhoG - np.roll(rhoG, 1))  # transporta rho*Gamma conservativo
+            Gam = rhoG / rho                              # y vuelve a dividir por rho
+        else:  # consistent
+            Gam = Gam - nu * (Gam - np.roll(Gam, 1))      # transporta Gamma directo (no conservativo)
+
+    P = (E - 0.5 * mom**2 / rho) / Gam             # recupera la presion
+    return float(np.max(np.abs(P - P0)))
+
+for s in ("naive", "consistent"):
+    print(f"{s:11s}  max|P-P0| = {advect_interface(s):.3e}")
+```
+
+La salida deja al descubierto la brecha de dos órdenes de magnitud.
+
+```text
+naive        max|P-P0| = 3.83e-02
+consistent   max|P-P0| = 4.44e-15
+```
+
+Naive desvía la presión cerca de un 4% en la interfaz. Consistent queda plano hasta la precisión de máquina (el límite de redondeo de punto flotante). Una sola línea marcó la diferencia: recuperar $\Gamma$ dividiendo por `rho`, o transportar $\Gamma$ mismo desde el principio.
+
+## Lo que el artículo realmente hizo
+
+El modelo de juguete de arriba trató solo el $\gamma$ de un único gas ideal. Collis (2025) trabaja en un escenario mucho más amplio.
+
+- Cierra agua, aire, helio y SF6 juntos con la **ecuación de estado NASG** (Noble–Abel Stiffened Gas, que también cubre líquidos). La presión de la mezcla se cierra en forma cerrada como una cuadrática vía la ley de Amagat.
+- En lugar de upwind de primer orden usa reconstrucción de alto orden **de tipo ENO** (WENO/TENO). La jugada clave es formular esa reconstrucción de forma consistente con los supuestos termomecánicos de cuatro ecuaciones, para que la IEC se cumpla a precisión de máquina.
+- Para choques fuertes que golpean interfaces de alta razón de densidades, extiende un **limitador que preserva positividad** (positivity-preserving limiter) al marco de cuatro ecuaciones, impidiendo que la densidad y la velocidad del sonido al cuadrado se filtren en negativo.
+- Logra todo esto sin ecuaciones adicionales de fracción de volumen o de razón de calores específicos, y sin sacrificar la conservación ni recurrir a un filtro escalar.
+
+Hay límites. La fase líquida se restringe a un solo componente y la gaseosa a componentes de gas ideal. Con varios componentes hay que resolver el equilibrio presión–temperatura con un solver iterativo. Y sigue siendo un preprint (aún sin revisión por pares).
+
+## Para recordar
+
+- El modelo de cuatro ecuaciones comparte velocidad, presión y temperatura **entre fases**. Tiene menos ecuaciones y es el más cercano a la física.
+- Condición de equilibrio de interfaz (IEC): una presión y una velocidad uniformes no deben oscilar cuando pasa una interfaz. Un esquema conservativo la rompe al transportar mal el parámetro de la EOS de la mezcla.
+- La cura es transportar ese parámetro ($1/(\gamma-1)$) de forma **consistente** con el supuesto de equilibrio. Collis (2025) lo eleva a ENO de alto orden y vuelve robusto el modelo de cuatro ecuaciones sin ecuaciones redundantes.
