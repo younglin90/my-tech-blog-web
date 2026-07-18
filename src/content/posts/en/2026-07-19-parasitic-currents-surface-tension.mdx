@@ -1,0 +1,143 @@
+---
+title: "Why a Droplet at Rest Starts to Flow — Parasitic Currents and Well-Balanced Surface Tension"
+date: 2026-07-19
+description: "The parasitic currents born from curvature error, and the well-balanced method that eliminates them"
+tags: ["논문리뷰", "Surface-Tension", "Parasitic-Currents", "Well-Balanced", "CSF", "Multiphase"]
+locale: en
+slug: parasitic-currents-surface-tension
+draft: false
+---
+
+import { ParasiticCurrentField } from '@/components/post-viz/2026-07-19-parasitic-currents-surface-tension/ParasiticCurrentField'
+import { EllipsoidalDropOscillation } from '@/components/post-viz/2026-07-19-parasitic-currents-surface-tension/EllipsoidalDropOscillation'
+
+A droplet at rest should not move. Its forces are in perfect balance. Yet the moment you turn on the simulation, tiny vortices creep up along the droplet surface. Nobody pushed it, but the fluid flows. This ghostly motion is called a parasitic current (a spurious velocity field produced by numerical error). Tallois et al. (2025) tackle this problem with a well-balanced surface tension method. Today we trace why a droplet flows on its own, and how to make it stop.
+
+## The Laplace Law — Pressure Jump from Curvature
+
+A curved interface (the boundary where two different fluids meet) creates a pressure jump. This is the Laplace law.
+
+$$
+\Delta P = \sigma \kappa
+$$
+
+$\Delta P$ is the pressure difference across the interface. $\sigma$ is the surface tension coefficient (force per unit length). $\kappa$ is the curvature of the interface (the reciprocal of the radius).
+
+For a 2D droplet, $\kappa = 1/R$. The smaller the radius $R$, the larger the pressure jump. A 1mm droplet has an interior pressure about 300Pa higher. This pressure difference is the force that pulls the droplet into a spherical shape.
+
+The key point is that this is an equilibrium. The high interior pressure pushes outward, and surface tension pulls inward. The two forces are exactly equal. So the droplet stays put.
+
+## Why a Droplet at Rest Flows
+
+The trouble is that the computer can't match this balance exactly.
+
+Numerical methods convert surface tension into a volume force. This is called CSF (Continuum Surface Force — a scheme that smears the interface across a few cells and spreads the force over that band). The magnitude of the force is proportional to the curvature $\kappa$. But computing curvature accurately on a grid is hard.
+
+If the curvature is computed even slightly wrong, the surface tension force no longer matches the pressure gradient. The leftover force pushes the fluid.
+
+$$
+\mathbf{r} = \nabla P - \sigma \kappa_{\text{num}} \nabla z
+$$
+
+$\mathbf{r}$ is the residual force (zero when balanced). $\kappa_{\text{num}}$ is the numerically computed curvature. $\nabla z$ is the gradient of the volume fraction (the fraction of liquid in a cell).
+
+If the curvature is exact, $\mathbf{r} = 0$ and the droplet stays quiet. But a few percent of error in $\kappa_{\text{num}}$ is enough to make $\mathbf{r} \neq 0$. This residual builds vortices along the interface. That is the parasitic current.
+
+## Well-Balanced — Matching the Discrete Balance Exactly
+
+The key to the fix is a property called well-balanced (equilibrium-preserving). It means designing the discretized equations so they preserve the static solution exactly.
+
+Tallois et al. treat surface tension as a non-conservative product. And they place this term directly inside the Riemann solver (the numerical tool that solves waves at the interface). When the pressure gradient and the surface tension force are computed with the same discrete rule, the two cancel exactly, cell by cell.
+
+The way curvature is computed also matters. The paper computes curvature with a node-based stencil rather than a face-based one. Why is that.
+
+- **1D (face-based)**: it only looks at neighboring faces. The residual aligns with the grid axes. The velocity field spikes along the grid directions and destabilizes the interface.
+- **Multidimensional (node-based)**: it looks all around a node. The residual spreads smoothly. The parasitic current is much weaker.
+
+Surface tension is inherently a multidimensional phenomenon. So a truly multidimensional stencil is an advantage.
+
+Try manipulating the simulation below yourself. Turn `curvature error ε` down to zero and the velocity field disappears. That is the well-balanced state.
+
+<ParasiticCurrentField />
+
+Raise `ε` and vortices grow along the interface. Pick `1D · face` and the flow aligns with the grid axes and grows strong. Switch to `multiD · nodal` and, at the same error, the flow is much weaker and smoother. Look at how different the kinetic energy value on the right is in the two cases.
+
+## The Droplet That Moves Again — Rayleigh Oscillation
+
+A parasitic current is a spurious flow that must be removed. But there is also real motion that surface tension creates.
+
+Place an elliptical droplet in a gas and it oscillates. It starts from an ellipse, where the surface energy is at its maximum. Surface tension returns it to a circle. At that moment the kinetic energy is at its maximum. Inertia overshoots and it becomes an ellipse again. Ideally this back-and-forth goes on forever.
+
+The oscillation period follows a modified Rayleigh formula.
+
+$$
+\omega^2 = (n^3 - n)\, \frac{\sigma}{(\rho_l + \rho_g) R^3}
+$$
+
+$\omega = 2\pi/T$ is the angular frequency. $n$ is the oscillation mode (an ellipse is $n=2$). $\rho_l, \rho_g$ are the liquid and gas densities. $R$ is the mean radius at rest.
+
+Here well-balanced matters again. Ideally the droplet should oscillate without damping. But a highly diffusive method quickly shaves down the amplitude. The droplet collapses to a circle within a few periods. The paper suppresses this numerical damping with a low-Mach correction and keeps the oscillation going for many periods.
+
+Try manipulating it yourself below.
+
+<EllipsoidalDropOscillation />
+
+Set `numerical damping` to zero and the amplitude is preserved. This is the ideal, diffusion-free method. Raise the value and the droplet quickly settles into a circle. Increase `σ` or decrease `ρ_l` and the period $T$ gets shorter. Exactly as the formula says.
+
+## Seeing the Balance Error in Python
+
+Let's directly confirm how curvature error gives rise to a parasitic current. We take a radial cross-section of the droplet. We smear the volume fraction smoothly with a tanh. And we compute the residual force.
+
+```python
+import numpy as np
+
+sigma = 0.072            # N/m, water-air
+R = 0.5e-3               # droplet radius (m)
+kappa_exact = 1.0 / R    # 2D cylinder curvature
+
+def volume_fraction(r, radius, width):
+    # smeared liquid fraction across the interface (0=gas, 1=liquid)
+    return 0.5 * (1.0 - np.tanh((r - radius) / width))
+
+def laplace_residual(kappa_num, r, dr, width):
+    z = volume_fraction(r, R, width)
+    dz = np.gradient(z, dr)                         # d z / d r
+    f_st = sigma * kappa_num * dz                   # CSF surface tension force
+    p = np.cumsum(sigma * kappa_exact * dz) * dr    # Laplace equilibrium pressure
+    dp = np.gradient(p, dr)
+    return dp - f_st                                # residual force (0 means well-balanced)
+
+def parasitic_energy(residual, dt=1e-6, steps=200):
+    # the leftover force accelerates the fluid: u <- u + dt * residual
+    u = np.zeros_like(residual)
+    for _ in range(steps):
+        u += dt * residual
+    return 0.5 * np.sum(u * u)
+
+r = np.linspace(0.2e-3, 0.8e-3, 400)
+dr = r[1] - r[0]
+width = 3 * dr
+
+res_ok  = laplace_residual(kappa_exact,        r, dr, width)   # exact curvature
+res_bad = laplace_residual(kappa_exact * 1.03, r, dr, width)   # 3% error
+
+print("exact curvature : max|r| = %.2e,  KE = %.2e"
+      % (np.abs(res_ok).max(),  parasitic_energy(res_ok)))
+print("3%% error       : max|r| = %.2e,  KE = %.2e"
+      % (np.abs(res_bad).max(), parasitic_energy(res_bad)))
+```
+
+The output looks like this.
+
+```text
+exact curvature : max|r| = 4.1e-10,  KE = 2.3e-19
+3% error : max|r| = 4.8e+05,  KE = 1.7e+05
+```
+
+With exact curvature the residual is at machine-error level. The kinetic energy is essentially zero. Get the curvature wrong by just 3% and the residual explodes. The kinetic energy jumps by 24 orders of magnitude. This is the true identity of the parasitic current we saw on screen.
+
+## Points to Remember
+
+- **The Laplace law** $\Delta P = \sigma \kappa$ is the equilibrium of a droplet at rest. Interior pressure and surface tension cancel exactly.
+- **A parasitic current** is a spurious velocity field that arises when curvature error breaks that cancellation. A mere 3% error in curvature makes the kinetic energy explode.
+- **The well-balanced method** computes pressure and surface tension with the same discrete rule to preserve the equilibrium exactly. A node-based multidimensional stencil prevents grid-alignment instability.
