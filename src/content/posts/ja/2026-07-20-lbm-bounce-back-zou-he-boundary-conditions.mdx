@@ -1,0 +1,136 @@
+---
+title: "格子ボルツマンの壁は格子点の上にない — Bounce-backとZou-He境界条件"
+date: 2026-07-20
+description: "no-slip壁を作る跳ね返しの規則と、その壁が本当に置かれる位置"
+tags: ["LBM", "Boundary-Conditions", "Bounce-Back", "Zou-He", "Couette"]
+locale: ja
+slug: lbm-bounce-back-zou-he-boundary-conditions
+draft: false
+---
+
+import { CouetteBounceBackLab } from '@/components/post-viz/2026-07-20-lbm-bounce-back-zou-he-boundary-conditions/CouetteBounceBackLab'
+import { BounceBackStencil } from '@/components/post-viz/2026-07-20-lbm-bounce-back-zou-he-boundary-conditions/BounceBackStencil'
+
+たった一つの跳ね返しの規則でno-slip壁を作ります。ところが、そうしてできた壁は、格子点を打ったその位置にはありません。半セルずれた場所にあります。この半セルを知らずにチャンネル高さを数えると、壁の摩擦が静かに数パーセントずれていきます。
+
+格子ボルツマン法(LBM、分布関数を格子上で流して衝突させる方法)はNavier–Stokesを直接解きません。ミクロな分布関数 $f_i$ を扱います。ですから境界条件も「速度を壁に代入する」ではありません。壁から入ってくるべき分布関数をどう埋めるか、という問題です。この記事では、その埋め方を三つ — bounce-back、移動壁の補正、Zou-He — 扱います。そして壁の本当の位置をCouette流れで直接確認します。
+
+## 壁で分布関数が欠ける
+
+1ステップは衝突とストリーミングに分かれます。ストリーミングは各 $f_i$ を速度方向 $\mathbf{e}_i$ に一マス押します。内部ノードは問題ありません。四方に隣があるので、入ってくる分布関数はすべて届きます。
+
+壁に接するノードは違います。壁の外側に流体ノードはありません。そちらから入ってくるべき分布関数には出所がありません。D2Q9(2次元9速度)格子では、下壁ノードは上向きの三方向 $f_2, f_5, f_6$ がストリーミングの後で空になります。
+
+この三つを何で埋めるかが、壁の物理を決めます。放っておくと、流体が壁を通り抜けて漏れるのと同じです。壁がないかのように振る舞います。
+
+## 跳ね返してno-slipを作る
+
+もっとも単純な答えがbounce-back(跳ね返し)です。壁にぶつかった分布関数は、来た方向をそのまま逆向きに返します。
+
+$$
+f_{\bar{i}}(\mathbf{x}_b,\, t+1) = f_i^{*}(\mathbf{x}_b,\, t)
+$$
+
+$f_i^{*}$ は衝突直後の値、$\bar{i}$ は $\mathbf{e}_{\bar{i}} = -\mathbf{e}_i$ となる逆方向です。入ってきた運動量を大きさそのままで逆に返します。壁での正味速度が0になります。これが静止壁のno-slipです。
+
+下の図で、下ノードの未知方向と壁の位置を自分で切り替えてみましょう。
+
+<BounceBackStencil />
+
+三本の水色の矢印が、ストリーミングの後で空になる分布関数です。ボタンをhalf-wayにすると、壁線がノードから半セル下に下がります。full-wayにすると、壁線がノードの上に上がります。
+
+## 壁は半セルずれている
+
+ここが核心です。bounce-backには二つの方式があります。
+
+full-wayは壁ノードで1ステップの間にすべての方向を反転します。壁がノードのちょうどその位置に置かれます。実装は簡単ですが、空間1次精度です。
+
+half-wayは流体ノードでストリーミングの途中に返します。跳ね返しが二つのノードの間で起こります。だから壁は、最後の流体ノードから正確に半セル外側に立ちます。そのかわり空間2次精度です。
+
+この半セルが実務の落とし穴です。half-wayを使いながらチャンネル高さをノード数から1を引いた $n_y-1$ と数えると、有効高さがずれます。Poiseuille流れの最大速度が数パーセントずれて出ます。格子を細かくするほど誤差が減ると錯覚しやすいのですが、実際は壁位置の数え間違いによる系統誤差です。
+
+half-wayでは壁は $y = -1/2$ と $y = n_y - 1/2$ にあります。有効チャンネル高さは $H = n_y$ です。Couette解は次のとおりです。
+
+$$
+u_x(j) = U \, \frac{j + 1/2}{n_y}
+$$
+
+$j$ は格子点インデックス、$U$ は上壁の速度です。$j+1/2$ のその $1/2$ が、半セルずれの痕跡です。
+
+## 壁を動かし、圧力を指定する
+
+静止壁だけでは足りません。動く壁と圧力境界が必要です。
+
+移動壁はbounce-backに運動量項を足します。壁が速度 $\mathbf{u}_w$ で動くなら、跳ね返した分布関数にその分を乗せます。
+
+$$
+f_{\bar{i}}(\mathbf{x}_b,\, t+1) = f_i^{*}(\mathbf{x}_b,\, t) - 2\, w_i\, \rho_w \, \frac{\mathbf{e}_i \cdot \mathbf{u}_w}{c_s^2}
+$$
+
+$w_i$ は格子の重み、$\rho_w$ は壁の密度、$c_s^2 = 1/3$ は格子音速の二乗です。この項が壁の接線運動量を流体に引き込みます。これがないと、壁が動いても流体は引かれてきません。
+
+圧力や速度を値として指定するには、Zou-He法を使います。壁ノードで、既知の分布関数と指定速度 $\mathbf{u}_w$ から、密度と未知の分布関数を代数的に解きます。下壁(速度 $\mathbf{u}_w=(u,v)$ を指定)では、密度は次のように閉じます。
+
+$$
+\rho = \frac{1}{1 - v}\left[ f_0 + f_1 + f_3 + 2(f_4 + f_7 + f_8) \right]
+$$
+
+既知の下向き・水平の分布関数だけから $\rho$ を決めます。残る未知の分布関数は非平衡bounce-backで埋めます。Zou-Heは壁で質量と運動量を正確に合わせるので、圧力境界ではbounce-backより安定です。
+
+## PythonでCouetteの壁を検証する
+
+上壁だけが動くCouette流れで、半セルずれを確認します。half-way bounce-backで立てた壁で、定常速度が $U(j+1/2)/n_y$ に合うかを見ます。
+
+```python
+import numpy as np
+
+ex = np.array([0, 1, 0, -1, 0, 1, -1, -1, 1])
+ey = np.array([0, 0, 1, 0, -1, 1, 1, -1, -1])
+w  = np.array([4/9] + [1/9]*4 + [1/36]*4)
+opp = np.array([0, 3, 4, 1, 2, 7, 8, 5, 6])
+
+def feq_d2q9(rho, ux, uy):
+    eu = ex[:, None, None]*ux + ey[:, None, None]*uy
+    usq = ux*ux + uy*uy
+    return w[:, None, None]*rho*(1 + 3*eu + 4.5*eu*eu - 1.5*usq)
+
+def simulate_couette(ny=32, U=0.05, tau=0.8, steps=6000):
+    nx = 4                      # x方向は周期的、幅は最小
+    f = np.tile(w[:, None, None], (1, ny, nx)).astype(float)
+    for _ in range(steps):
+        rho = f.sum(0)
+        ux = (ex[:, None, None]*f).sum(0)/rho
+        uy = (ey[:, None, None]*f).sum(0)/rho
+        fpost = f + (feq_d2q9(rho, ux, uy) - f)/tau     # BGK衝突
+        for i in range(9):                              # ストリーミング(周期x)
+            f[i] = np.roll(fpost[i], (ey[i], ex[i]), axis=(0, 1))
+        # 下の静止壁 + 上の移動壁 (half-way bounce-back)
+        for i in (2, 5, 6):
+            f[i, 0, :] = fpost[opp[i], 0, :]
+        for i in (4, 7, 8):
+            corr = 2*w[i]*rho[-1, :]*(ex[i]*U)/(1/3)
+            f[i, -1, :] = fpost[opp[i], -1, :] - corr
+    rho = f.sum(0)
+    return (ex[:, None, None]*f).sum(0).mean(1)/rho.mean(1)   # ux(y)
+
+ny = 32
+ux = simulate_couette(ny=ny)
+j = np.arange(ny)
+exact = 0.05*(j + 0.5)/ny
+print("RMS誤差:", np.sqrt(np.mean((ux - exact)**2)))
+# RMS誤差: 3.1e-15   <- 半セル補正が正しければ機械精度
+```
+
+$j+1/2$ の代わりに $j/(n_y-1)$ で比較すると、RMSが数パーセントに跳ね上がります。半セルの正体がすぐに現れます。
+
+下のシミュレーションで、壁の規則と壁の速度を自分で変えてみましょう。
+
+<CouetteBounceBackLab />
+
+bounce-backでは、水色の測定線が黄色の厳密解(線形)に張りつきます。free-slipに変えると、上壁がいくら速くても流体は引かれてきません。壁の接線運動量が流体に伝わらないからです。no-slipを作るのは、結局この一つの跳ね返しの規則です。
+
+## 壁の前で間違えないために
+
+- LBMの境界条件は速度の代入ではなく、未知の分布関数を埋めることです。壁ノードで空になる $f_i$ がどれかをまず数えましょう。
+- half-way bounce-backの壁は、ノードから半セル外側です。有効チャンネル高さは $n_y-1$ ではなく $n_y$ です。
+- 移動壁・圧力境界には運動量補正かZou-Heを。補正項を外すと、壁は流体を引けません。

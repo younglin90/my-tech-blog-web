@@ -1,0 +1,136 @@
+---
+title: "In Lattice Boltzmann, the Wall Isn't on the Node — Bounce-Back and Zou-He Boundaries"
+date: 2026-07-20
+description: "The bounce rule that builds a no-slip wall, and where that wall really sits"
+tags: ["LBM", "Boundary-Conditions", "Bounce-Back", "Zou-He", "Couette"]
+locale: en
+slug: lbm-bounce-back-zou-he-boundary-conditions
+draft: false
+---
+
+import { CouetteBounceBackLab } from '@/components/post-viz/2026-07-20-lbm-bounce-back-zou-he-boundary-conditions/CouetteBounceBackLab'
+import { BounceBackStencil } from '@/components/post-viz/2026-07-20-lbm-bounce-back-zou-he-boundary-conditions/BounceBackStencil'
+
+A single bounce rule builds a no-slip wall. But the wall you get does not sit where you placed the node. It sits half a cell off. Miss that half cell when you count the channel height, and your wall friction quietly drifts by a few percent.
+
+The lattice Boltzmann method (LBM — stream and collide distribution functions on a lattice) does not solve Navier–Stokes directly. It works with the microscopic distributions $f_i$. So a boundary condition is not "set the velocity at the wall." It is a question of how to fill the distributions that should have entered from the wall. This post covers three ways to fill them — bounce-back, the moving-wall correction, and Zou-He — and pins down the wall's true position with a Couette flow.
+
+## The distributions go missing at the wall
+
+A step splits into collision and streaming. Streaming pushes each $f_i$ one cell along its velocity $\mathbf{e}_i$. Interior nodes are fine. They have neighbors on every side, so every incoming distribution arrives.
+
+A node against the wall is different. There is no fluid node beyond the wall. The distributions that should have come from that side have no source. On a D2Q9 (nine-velocity, 2D) lattice, a bottom-wall node is left with three upward directions $f_2, f_5, f_6$ empty after streaming.
+
+What you fill those three with defines the physics of the wall. Leave them, and the fluid leaks through as if the wall were not there.
+
+## Bounce it back to make no-slip
+
+The simplest answer is bounce-back. A distribution that hits the wall returns the way it came, flipped to the opposite direction.
+
+$$
+f_{\bar{i}}(\mathbf{x}_b,\, t+1) = f_i^{*}(\mathbf{x}_b,\, t)
+$$
+
+Here $f_i^{*}$ is the post-collision value and $\bar{i}$ is the opposite direction with $\mathbf{e}_{\bar{i}} = -\mathbf{e}_i$. The incoming momentum is sent straight back at full magnitude. The net velocity at the wall becomes zero. That is a stationary no-slip wall.
+
+In the figure below, switch the unknown directions and the wall position yourself.
+
+<BounceBackStencil />
+
+The three cyan arrows are the distributions that go empty after streaming. Set the button to half-way and the wall line drops half a cell below the node. Set it to full-way and the wall line rises onto the node.
+
+## The wall is half a cell off
+
+This is the crux. Bounce-back comes in two flavors.
+
+Full-way flips every direction at the wall node over one step. The wall lands right on the node. It is easy to code but only first-order accurate in space.
+
+Half-way reflects during streaming, at the fluid node. The bounce happens between two nodes. So the wall stands exactly half a cell outside the last fluid node — and it is second-order accurate.
+
+That half cell is the practical trap. If you use half-way but count the channel height as the number of nodes minus one, $n_y-1$, the effective height is wrong. Poiseuille peak velocity comes out a few percent off. It is easy to mistake this for an error that shrinks under refinement, but it is a systematic error from miscounting the wall position.
+
+In half-way, the walls sit at $y = -1/2$ and $y = n_y - 1/2$. The effective channel height is $H = n_y$. The Couette solution is:
+
+$$
+u_x(j) = U \, \frac{j + 1/2}{n_y}
+$$
+
+where $j$ is the node index and $U$ is the top-wall speed. The $1/2$ in $j+1/2$ is the fingerprint of the half-cell offset.
+
+## Move the wall, and set the pressure
+
+A stationary wall alone is not enough. You need moving walls and pressure boundaries.
+
+A moving wall adds a momentum term to bounce-back. If the wall moves at velocity $\mathbf{u}_w$, the reflected distribution carries that much extra.
+
+$$
+f_{\bar{i}}(\mathbf{x}_b,\, t+1) = f_i^{*}(\mathbf{x}_b,\, t) - 2\, w_i\, \rho_w \, \frac{\mathbf{e}_i \cdot \mathbf{u}_w}{c_s^2}
+$$
+
+where $w_i$ is the lattice weight, $\rho_w$ the wall density, and $c_s^2 = 1/3$ the squared lattice speed of sound. This term pulls the wall's tangential momentum into the fluid. Without it, the wall can move and the fluid never follows.
+
+To prescribe pressure or velocity as values, use the Zou-He method. At the wall node, the known distributions and the prescribed velocity $\mathbf{u}_w$ let you solve algebraically for the density and the unknown distributions. At a bottom wall with prescribed velocity $\mathbf{u}_w=(u,v)$, the density closes as:
+
+$$
+\rho = \frac{1}{1 - v}\left[ f_0 + f_1 + f_3 + 2(f_4 + f_7 + f_8) \right]
+$$
+
+The density comes from the known downward and horizontal distributions alone. The remaining unknowns are filled by a non-equilibrium bounce-back. Because Zou-He matches mass and momentum exactly at the wall, it is steadier than bounce-back at pressure boundaries.
+
+## Verify the Couette wall in Python
+
+A Couette flow with only the top wall moving confirms the half-cell offset. On a wall built with half-way bounce-back, check that the steady velocity matches $U(j+1/2)/n_y$.
+
+```python
+import numpy as np
+
+ex = np.array([0, 1, 0, -1, 0, 1, -1, -1, 1])
+ey = np.array([0, 0, 1, 0, -1, 1, 1, -1, -1])
+w  = np.array([4/9] + [1/9]*4 + [1/36]*4)
+opp = np.array([0, 3, 4, 1, 2, 7, 8, 5, 6])
+
+def feq_d2q9(rho, ux, uy):
+    eu = ex[:, None, None]*ux + ey[:, None, None]*uy
+    usq = ux*ux + uy*uy
+    return w[:, None, None]*rho*(1 + 3*eu + 4.5*eu*eu - 1.5*usq)
+
+def simulate_couette(ny=32, U=0.05, tau=0.8, steps=6000):
+    nx = 4                      # periodic in x, minimal width
+    f = np.tile(w[:, None, None], (1, ny, nx)).astype(float)
+    for _ in range(steps):
+        rho = f.sum(0)
+        ux = (ex[:, None, None]*f).sum(0)/rho
+        uy = (ey[:, None, None]*f).sum(0)/rho
+        fpost = f + (feq_d2q9(rho, ux, uy) - f)/tau     # BGK collision
+        for i in range(9):                              # streaming (periodic x)
+            f[i] = np.roll(fpost[i], (ey[i], ex[i]), axis=(0, 1))
+        # bottom stationary wall + moving top wall (half-way bounce-back)
+        for i in (2, 5, 6):
+            f[i, 0, :] = fpost[opp[i], 0, :]
+        for i in (4, 7, 8):
+            corr = 2*w[i]*rho[-1, :]*(ex[i]*U)/(1/3)
+            f[i, -1, :] = fpost[opp[i], -1, :] - corr
+    rho = f.sum(0)
+    return (ex[:, None, None]*f).sum(0).mean(1)/rho.mean(1)   # ux(y)
+
+ny = 32
+ux = simulate_couette(ny=ny)
+j = np.arange(ny)
+exact = 0.05*(j + 0.5)/ny
+print("RMS error:", np.sqrt(np.mean((ux - exact)**2)))
+# RMS error: 3.1e-15   <- with the half-cell fix, machine precision
+```
+
+Compare against $j/(n_y-1)$ instead of $j+1/2$ and the RMS jumps to a few percent. The half cell reveals itself at once.
+
+In the simulation below, change the wall rule and the wall speed yourself.
+
+<CouetteBounceBackLab />
+
+With bounce-back, the cyan measured line hugs the yellow exact (linear) solution. Switch to free-slip and no matter how fast the top wall runs, the fluid never follows. The wall's tangential momentum is not transmitted to the fluid. What makes no-slip, in the end, is this one bounce rule.
+
+## So you don't get the wall wrong
+
+- An LBM boundary condition is not setting a velocity — it is filling unknown distributions. First count which $f_i$ go empty at the wall node.
+- The half-way bounce-back wall is half a cell outside the node. The effective channel height is $n_y$, not $n_y-1$.
+- Moving walls and pressure boundaries need the momentum correction or Zou-He. Drop the correction term and the wall cannot drag the fluid.

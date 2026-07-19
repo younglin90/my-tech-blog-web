@@ -1,0 +1,136 @@
+---
+title: "En Lattice Boltzmann la pared no está sobre el nodo — Condiciones bounce-back y Zou-He"
+date: 2026-07-20
+description: "La regla de rebote que construye una pared no-slip y dónde queda esa pared"
+tags: ["LBM", "Boundary-Conditions", "Bounce-Back", "Zou-He", "Couette"]
+locale: es
+slug: lbm-bounce-back-zou-he-boundary-conditions
+draft: false
+---
+
+import { CouetteBounceBackLab } from '@/components/post-viz/2026-07-20-lbm-bounce-back-zou-he-boundary-conditions/CouetteBounceBackLab'
+import { BounceBackStencil } from '@/components/post-viz/2026-07-20-lbm-bounce-back-zou-he-boundary-conditions/BounceBackStencil'
+
+Una sola regla de rebote construye una pared no-slip. Pero la pared que resulta no queda donde se marcó el nodo. Queda media celda desplazada. Si se ignora esa media celda al contar la altura del canal, la fricción de pared se desvía en silencio unos pocos por ciento.
+
+El método de lattice Boltzmann (LBM, hacer fluir y colisionar funciones de distribución sobre una malla) no resuelve Navier–Stokes de forma directa. Trabaja con las distribuciones microscópicas $f_i$. Por eso una condición de frontera no es "asignar la velocidad en la pared". Es la cuestión de cómo llenar las distribuciones que debían haber entrado desde la pared. Este texto cubre tres maneras de llenarlas — bounce-back, la corrección de pared móvil y Zou-He — y fija la posición real de la pared con un flujo de Couette.
+
+## Las distribuciones faltan en la pared
+
+Un paso se divide en colisión y propagación. La propagación empuja cada $f_i$ una celda a lo largo de su velocidad $\mathbf{e}_i$. Los nodos interiores no tienen problema. Tienen vecinos por todos lados, así que toda distribución entrante llega.
+
+Un nodo contra la pared es distinto. Más allá de la pared no hay nodo de fluido. Las distribuciones que debían llegar desde ese lado no tienen origen. En una malla D2Q9 (nueve velocidades, 2D), a un nodo de pared inferior le quedan vacías tras la propagación tres direcciones hacia arriba: $f_2, f_5, f_6$.
+
+Con qué se llenan esas tres define la física de la pared. Si se dejan así, el fluido se filtra a través como si la pared no existiera.
+
+## Rebotar de vuelta para lograr no-slip
+
+La respuesta más simple es bounce-back (rebote). Una distribución que choca con la pared vuelve por donde llegó, invertida a la dirección opuesta.
+
+$$
+f_{\bar{i}}(\mathbf{x}_b,\, t+1) = f_i^{*}(\mathbf{x}_b,\, t)
+$$
+
+Aquí $f_i^{*}$ es el valor tras la colisión y $\bar{i}$ es la dirección opuesta con $\mathbf{e}_{\bar{i}} = -\mathbf{e}_i$. El momento entrante se devuelve directo, con la misma magnitud. La velocidad neta en la pared se vuelve cero. Eso es una pared estacionaria no-slip.
+
+En la figura de abajo, cambia por tu cuenta las direcciones desconocidas y la posición de la pared.
+
+<BounceBackStencil />
+
+Las tres flechas cian son las distribuciones que quedan vacías tras la propagación. Con el botón en half-way, la línea de pared baja media celda por debajo del nodo. En full-way, la línea sube sobre el nodo.
+
+## La pared está media celda desplazada
+
+Aquí está el punto central. El bounce-back viene en dos variantes.
+
+El full-way invierte todas las direcciones en el nodo de pared durante un paso. La pared queda justo sobre el nodo. Es fácil de programar, pero solo de primer orden en el espacio.
+
+El half-way refleja durante la propagación, en el nodo de fluido. El rebote ocurre entre dos nodos. Por eso la pared se ubica exactamente media celda por fuera del último nodo de fluido, y es de segundo orden en el espacio.
+
+Esa media celda es la trampa práctica. Si se usa half-way pero se cuenta la altura del canal como el número de nodos menos uno, $n_y-1$, la altura efectiva queda mal. La velocidad máxima del flujo de Poiseuille sale con unos pocos por ciento de desviación. Es fácil confundirlo con un error que decrece al refinar, pero es un error sistemático por contar mal la posición de la pared.
+
+En half-way, las paredes están en $y = -1/2$ y $y = n_y - 1/2$. La altura efectiva del canal es $H = n_y$. La solución de Couette es la siguiente.
+
+$$
+u_x(j) = U \, \frac{j + 1/2}{n_y}
+$$
+
+donde $j$ es el índice del nodo y $U$ es la velocidad de la pared superior. Ese $1/2$ en $j+1/2$ es la huella del desfase de media celda.
+
+## Mover la pared y fijar la presión
+
+Una pared estacionaria por sí sola no basta. Hacen falta paredes móviles y fronteras de presión.
+
+Una pared móvil agrega un término de momento al bounce-back. Si la pared se mueve con velocidad $\mathbf{u}_w$, la distribución reflejada lleva esa cantidad extra.
+
+$$
+f_{\bar{i}}(\mathbf{x}_b,\, t+1) = f_i^{*}(\mathbf{x}_b,\, t) - 2\, w_i\, \rho_w \, \frac{\mathbf{e}_i \cdot \mathbf{u}_w}{c_s^2}
+$$
+
+donde $w_i$ es el peso de la malla, $\rho_w$ la densidad en la pared y $c_s^2 = 1/3$ la velocidad del sonido de la malla al cuadrado. Este término arrastra el momento tangencial de la pared hacia el fluido. Sin él, la pared se mueve y el fluido nunca la sigue.
+
+Para prescribir presión o velocidad como valores, se usa el método de Zou-He. En el nodo de pared, las distribuciones conocidas y la velocidad prescrita $\mathbf{u}_w$ permiten despejar de forma algebraica la densidad y las distribuciones desconocidas. En una pared inferior con velocidad prescrita $\mathbf{u}_w=(u,v)$, la densidad se cierra así.
+
+$$
+\rho = \frac{1}{1 - v}\left[ f_0 + f_1 + f_3 + 2(f_4 + f_7 + f_8) \right]
+$$
+
+La densidad sale solo de las distribuciones conocidas hacia abajo y horizontales. Las desconocidas restantes se llenan con un bounce-back de no-equilibrio. Como Zou-He iguala masa y momento de forma exacta en la pared, es más estable que bounce-back en fronteras de presión.
+
+## Verificar la pared de Couette en Python
+
+Un flujo de Couette con solo la pared superior en movimiento confirma el desfase de media celda. En una pared construida con half-way bounce-back, se comprueba que la velocidad estacionaria coincide con $U(j+1/2)/n_y$.
+
+```python
+import numpy as np
+
+ex = np.array([0, 1, 0, -1, 0, 1, -1, -1, 1])
+ey = np.array([0, 0, 1, 0, -1, 1, 1, -1, -1])
+w  = np.array([4/9] + [1/9]*4 + [1/36]*4)
+opp = np.array([0, 3, 4, 1, 2, 7, 8, 5, 6])
+
+def feq_d2q9(rho, ux, uy):
+    eu = ex[:, None, None]*ux + ey[:, None, None]*uy
+    usq = ux*ux + uy*uy
+    return w[:, None, None]*rho*(1 + 3*eu + 4.5*eu*eu - 1.5*usq)
+
+def simulate_couette(ny=32, U=0.05, tau=0.8, steps=6000):
+    nx = 4                      # periodico en x, ancho minimo
+    f = np.tile(w[:, None, None], (1, ny, nx)).astype(float)
+    for _ in range(steps):
+        rho = f.sum(0)
+        ux = (ex[:, None, None]*f).sum(0)/rho
+        uy = (ey[:, None, None]*f).sum(0)/rho
+        fpost = f + (feq_d2q9(rho, ux, uy) - f)/tau     # colision BGK
+        for i in range(9):                              # propagacion (x periodico)
+            f[i] = np.roll(fpost[i], (ey[i], ex[i]), axis=(0, 1))
+        # pared inferior estacionaria + pared superior movil (half-way bounce-back)
+        for i in (2, 5, 6):
+            f[i, 0, :] = fpost[opp[i], 0, :]
+        for i in (4, 7, 8):
+            corr = 2*w[i]*rho[-1, :]*(ex[i]*U)/(1/3)
+            f[i, -1, :] = fpost[opp[i], -1, :] - corr
+    rho = f.sum(0)
+    return (ex[:, None, None]*f).sum(0).mean(1)/rho.mean(1)   # ux(y)
+
+ny = 32
+ux = simulate_couette(ny=ny)
+j = np.arange(ny)
+exact = 0.05*(j + 0.5)/ny
+print("error RMS:", np.sqrt(np.mean((ux - exact)**2)))
+# error RMS: 3.1e-15   <- con la correccion de media celda, precision de maquina
+```
+
+Si se compara contra $j/(n_y-1)$ en lugar de $j+1/2$, el RMS salta a unos pocos por ciento. La media celda se revela de inmediato.
+
+En la simulación de abajo, cambia por tu cuenta la regla de pared y la velocidad de pared.
+
+<CouetteBounceBackLab />
+
+Con bounce-back, la línea cian medida se pega a la solución exacta amarilla (lineal). Al cambiar a free-slip, por más rápido que corra la pared superior, el fluido nunca la sigue. El momento tangencial de la pared no se transmite al fluido. Lo que produce el no-slip, al final, es esta única regla de rebote.
+
+## Para no equivocarse frente a la pared
+
+- Una condición de frontera en LBM no es asignar una velocidad, sino llenar distribuciones desconocidas. Primero cuenta qué $f_i$ quedan vacías en el nodo de pared.
+- La pared del half-way bounce-back está media celda por fuera del nodo. La altura efectiva del canal es $n_y$, no $n_y-1$.
+- Las paredes móviles y las fronteras de presión necesitan la corrección de momento o Zou-He. Sin el término de corrección, la pared no puede arrastrar al fluido.

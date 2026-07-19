@@ -1,0 +1,136 @@
+---
+title: "格子玻尔兹曼的壁面不在格点上 — Bounce-back与Zou-He边界条件"
+date: 2026-07-20
+description: "构造无滑移壁的反弹规则，以及这堵壁真正所在的位置"
+tags: ["LBM", "Boundary-Conditions", "Bounce-Back", "Zou-He", "Couette"]
+locale: zh
+slug: lbm-bounce-back-zou-he-boundary-conditions
+draft: false
+---
+
+import { CouetteBounceBackLab } from '@/components/post-viz/2026-07-20-lbm-bounce-back-zou-he-boundary-conditions/CouetteBounceBackLab'
+import { BounceBackStencil } from '@/components/post-viz/2026-07-20-lbm-bounce-back-zou-he-boundary-conditions/BounceBackStencil'
+
+仅用一条反弹规则就能构造无滑移壁。可是这样得到的壁，并不在你标出格点的那个位置上。它偏了半个格子。数通道高度时若忽略这半个格子，壁面摩擦就会悄悄偏差几个百分点。
+
+格子玻尔兹曼方法(LBM，在格子上让分布函数流动并碰撞的方法)不直接求解Navier–Stokes。它处理的是微观分布函数 $f_i$。所以边界条件也不是"把速度代入壁面"。它是一个问题：本该从壁面进入的分布函数该如何填补。本文讨论三种填补方式 — bounce-back、动壁修正、Zou-He，并用Couette流动直接确认壁面的真实位置。
+
+## 分布函数在壁面处缺失
+
+一个时间步分为碰撞与迁移。迁移把每个 $f_i$ 沿速度方向 $\mathbf{e}_i$ 推进一格。内部节点没有问题。四周都有邻居，所有应进入的分布函数都会抵达。
+
+贴着壁面的节点不同。壁外没有流体节点。本该从那侧进入的分布函数没有来源。在D2Q9(二维九速度)格子上，底壁节点在迁移之后，指向上方的三个方向 $f_2, f_5, f_6$ 变为空缺。
+
+用什么来填补这三个，就决定了壁面的物理。放着不管，流体就会穿壁而漏，如同壁面不存在。
+
+## 反弹回去以构造无滑移
+
+最简单的答案是bounce-back(反弹)。撞上壁面的分布函数，沿原路返回，翻转到相反方向。
+
+$$
+f_{\bar{i}}(\mathbf{x}_b,\, t+1) = f_i^{*}(\mathbf{x}_b,\, t)
+$$
+
+其中 $f_i^{*}$ 是碰撞后的值，$\bar{i}$ 是满足 $\mathbf{e}_{\bar{i}} = -\mathbf{e}_i$ 的相反方向。进入的动量以原大小反向送回。壁面处的净速度变为0。这就是静止壁的无滑移。
+
+在下图中，自己切换底节点的未知方向与壁面位置。
+
+<BounceBackStencil />
+
+三支青色箭头就是迁移后变空的分布函数。把按钮设为half-way，壁线降到节点下方半个格子。设为full-way，壁线升到节点上。
+
+## 壁面偏了半个格子
+
+这里是关键。bounce-back有两种方式。
+
+full-way在壁面节点上，于一个时间步内翻转所有方向。壁面恰好落在节点那个位置。实现简单，但空间只有一阶精度。
+
+half-way在流体节点上，于迁移过程中返回。反弹发生在两个节点之间。因此壁面正好立在最后一个流体节点外侧半个格子处，而且是空间二阶精度。
+
+这半个格子是工程中的陷阱。若用half-way却把通道高度数成节点数减一，即 $n_y-1$，有效高度就错了。Poiseuille流动的最大速度会偏差几个百分点。人们容易误以为这是随网格加密而减小的误差，实际上它是数错壁面位置造成的系统误差。
+
+在half-way中，壁面位于 $y = -1/2$ 与 $y = n_y - 1/2$。有效通道高度为 $H = n_y$。Couette解如下。
+
+$$
+u_x(j) = U \, \frac{j + 1/2}{n_y}
+$$
+
+$j$ 是格点索引，$U$ 是上壁速度。$j+1/2$ 中的那个 $1/2$，正是半格偏移的印记。
+
+## 让壁运动，并指定压力
+
+仅有静止壁还不够。还需要运动壁与压力边界。
+
+运动壁在bounce-back上加一个动量项。壁以速度 $\mathbf{u}_w$ 运动时，就给反弹的分布函数附上相应的量。
+
+$$
+f_{\bar{i}}(\mathbf{x}_b,\, t+1) = f_i^{*}(\mathbf{x}_b,\, t) - 2\, w_i\, \rho_w \, \frac{\mathbf{e}_i \cdot \mathbf{u}_w}{c_s^2}
+$$
+
+其中 $w_i$ 是格子权重，$\rho_w$ 是壁面密度，$c_s^2 = 1/3$ 是格子声速的平方。这一项把壁面的切向动量引入流体。没有它，壁面运动而流体不会被带动。
+
+要以数值指定压力或速度，就用Zou-He方法。在壁面节点上，由已知分布函数与指定速度 $\mathbf{u}_w$，代数地解出密度与未知分布函数。在指定速度 $\mathbf{u}_w=(u,v)$ 的底壁上，密度按下式封闭。
+
+$$
+\rho = \frac{1}{1 - v}\left[ f_0 + f_1 + f_3 + 2(f_4 + f_7 + f_8) \right]
+$$
+
+仅由已知的向下与水平分布函数确定 $\rho$。其余未知分布函数以非平衡bounce-back填补。由于Zou-He在壁面上精确匹配质量与动量，它在压力边界处比bounce-back更稳定。
+
+## 用Python检验Couette壁面
+
+用仅上壁运动的Couette流动确认半格偏移。在以half-way bounce-back构造的壁上，检查定常速度是否符合 $U(j+1/2)/n_y$。
+
+```python
+import numpy as np
+
+ex = np.array([0, 1, 0, -1, 0, 1, -1, -1, 1])
+ey = np.array([0, 0, 1, 0, -1, 1, 1, -1, -1])
+w  = np.array([4/9] + [1/9]*4 + [1/36]*4)
+opp = np.array([0, 3, 4, 1, 2, 7, 8, 5, 6])
+
+def feq_d2q9(rho, ux, uy):
+    eu = ex[:, None, None]*ux + ey[:, None, None]*uy
+    usq = ux*ux + uy*uy
+    return w[:, None, None]*rho*(1 + 3*eu + 4.5*eu*eu - 1.5*usq)
+
+def simulate_couette(ny=32, U=0.05, tau=0.8, steps=6000):
+    nx = 4                      # x方向周期，宽度取最小
+    f = np.tile(w[:, None, None], (1, ny, nx)).astype(float)
+    for _ in range(steps):
+        rho = f.sum(0)
+        ux = (ex[:, None, None]*f).sum(0)/rho
+        uy = (ey[:, None, None]*f).sum(0)/rho
+        fpost = f + (feq_d2q9(rho, ux, uy) - f)/tau     # BGK碰撞
+        for i in range(9):                              # 迁移(周期x)
+            f[i] = np.roll(fpost[i], (ey[i], ex[i]), axis=(0, 1))
+        # 底部静止壁 + 顶部运动壁 (half-way bounce-back)
+        for i in (2, 5, 6):
+            f[i, 0, :] = fpost[opp[i], 0, :]
+        for i in (4, 7, 8):
+            corr = 2*w[i]*rho[-1, :]*(ex[i]*U)/(1/3)
+            f[i, -1, :] = fpost[opp[i], -1, :] - corr
+    rho = f.sum(0)
+    return (ex[:, None, None]*f).sum(0).mean(1)/rho.mean(1)   # ux(y)
+
+ny = 32
+ux = simulate_couette(ny=ny)
+j = np.arange(ny)
+exact = 0.05*(j + 0.5)/ny
+print("RMS误差:", np.sqrt(np.mean((ux - exact)**2)))
+# RMS误差: 3.1e-15   <- 半格修正正确时，达到机器精度
+```
+
+若改用 $j/(n_y-1)$ 而非 $j+1/2$ 来比较，RMS会跳到几个百分点。半个格子的真面目随即显现。
+
+在下面的模拟中，自己改变壁面规则与壁面速度。
+
+<CouetteBounceBackLab />
+
+在bounce-back下，青色测量线紧贴黄色精确解(线性)。切换到free-slip，无论上壁跑得多快，流体都不会被带动。因为壁面的切向动量没有传给流体。归根结底，构造无滑移的就是这一条反弹规则。
+
+## 别在壁面前出错
+
+- LBM的边界条件不是设定速度，而是填补未知分布函数。先数清壁面节点上哪些 $f_i$ 会变空。
+- half-way bounce-back的壁面在节点外侧半个格子。有效通道高度是 $n_y$，而非 $n_y-1$。
+- 运动壁与压力边界需要动量修正或Zou-He。去掉修正项，壁面就带不动流体。
