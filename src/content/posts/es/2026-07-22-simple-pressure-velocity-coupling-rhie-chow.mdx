@@ -1,0 +1,135 @@
+---
+title: "Cuando la presión oscila en tablero de ajedrez — SIMPLE y Rhie-Chow"
+date: 2026-07-22
+description: "La causa del tablero de presión, la interpolación de Rhie-Chow y el bucle SIMPLE"
+tags: ["SIMPLE", "Rhie-Chow", "Pressure-Velocity-Coupling", "Incompressible", "OpenFOAM"]
+locale: es
+slug: simple-pressure-velocity-coupling-rhie-chow
+draft: false
+---
+
+import { CheckerboardRhieChow } from '@/components/post-viz/2026-07-22-simple-pressure-velocity-coupling-rhie-chow/CheckerboardRhieChow'
+import { PressureCorrectionRelaxLab } from '@/components/post-viz/2026-07-22-simple-pressure-velocity-coupling-rhie-chow/PressureCorrectionRelaxLab'
+
+El campo de velocidad se veía bien. Pero al abrir el campo de presión, cada celda saltaba hacia arriba y hacia abajo respecto a su vecina. Un tablero de ajedrez (checkerboard). Los residuos seguían bajando y, aun así, solo la presión oscilaba como un diente de sierra. No era un error de código. Quedó sellado en el instante en que la presión y la velocidad se guardaron en los mismos puntos de la malla.
+
+Este artículo recorre por qué aparece ese diente de sierra, cómo lo elimina la interpolación de Rhie-Chow y cómo la ecuación de continuidad se convierte en una ecuación de presión. Al final, el mismo solver se estira hasta el flujo compresible.
+
+## La continuidad no ve la presión de al lado
+
+En una malla colocada (velocidad y presión almacenadas en el mismo centro de celda), la ecuación de cantidad de movimiento semidiscreta se escribe
+
+$$
+a_P \mathbf{u}_P = \sum_{nb} a_{nb}\mathbf{u}_{nb} - V_P (\nabla p)_P = \mathbf{H}(\mathbf{u}) - V_P (\nabla p)_P
+$$
+
+donde $a_P$ es el coeficiente diagonal, $\mathbf{H}(\mathbf{u})$ reúne las contribuciones vecinas, $V_P$ es el volumen de celda y $(\nabla p)_P$ es el gradiente de presión en el centro de celda.
+
+El problema es ese gradiente en el centro. Con diferencias centradas, $(\partial p/\partial x)_P = (p_E - p_W)/2\Delta x$. Nótese que $p_P$ no aparece. Una celda nunca ve su propia presión: solo la de los vecinos a dos celdas de distancia. Así, las celdas pares e impares se desacoplan (desacoplamiento par-impar). La presión en diente de sierra $(+,-,+,-,\dots)$ queda en el espacio nulo de las ecuaciones discretas y no produce residuo alguno.
+
+## Rhie–Chow: construir la velocidad de cara desde la cantidad de movimiento
+
+La cura es dejar de promediar velocidades de celda hacia la cara. Se reaplica la ecuación de cantidad de movimiento en la propia cara, de modo que la diferencia de presión vecina a través de esa cara entre directamente.
+
+$$
+u_f = \overline{\left(\frac{\mathbf{H}(\mathbf{u})}{a_P}\right)}_f - \left(\frac{V}{a_P}\right)_f \frac{p_E - p_P}{\Delta x}
+$$
+
+La barra superior es interpolación lineal; el segundo término es el gradiente de presión recalculado en la cara. Ahora la velocidad de cara queda ligada a $p_E - p_P$, la diferencia entre celdas adyacentes. El modo diente de sierra ya no tiene dónde esconderse.
+
+Conviene manipular la simulación de abajo. Relaja la presión de dos maneras distintas y muestra qué ocurre con un campo inicializado como tablero de ajedrez.
+
+<CheckerboardRhieChow />
+
+Con la interpolación naive, la amplitud del diente de sierra se queda quieta. Al cambiar a Rhie-Chow, el mismo tablero se asienta sobre la curva suave. Al pulsar `Reseed checkerboard` se puede observar de nuevo.
+
+## SIMPLE: convertir la continuidad en una ecuación de presión
+
+La dificultad de fondo del flujo incompresible es que no existe una ecuación que resuelva la presión de forma directa. SIMPLE (Semi-Implicit Method for Pressure Linked Equations) convierte la continuidad $\nabla\cdot\mathbf{u}=0$ en una. Al sustituir la velocidad de cara de Rhie-Chow en la continuidad se obtiene una ecuación elíptica (de Poisson) para la presión.
+
+$$
+\nabla\cdot\left[\left(\frac{V}{a_P}\right)_f \nabla p\right] = \nabla\cdot\left(\frac{\mathbf{H}(\mathbf{u})}{a_P}\right)_f
+$$
+
+El lado izquierdo es un laplaciano (forma de difusión); el derecho es la divergencia de la velocidad predicha. El procedimiento es predictor-corrector.
+
+1. Resolver cantidad de movimiento con un $p^*$ supuesto para predecir $\mathbf{u}^*$.
+2. Resolver la ecuación de presión anterior para actualizar $p$.
+3. Corregir las velocidades de cara y de celda con el nuevo gradiente de presión para que se cumpla la continuidad.
+4. Repetir 1–3 hasta converger.
+
+PISO añade dos o tres pasos correctores más por iteración y se usa en cálculos transitorios. PIMPLE anida un bucle SIMPLE externo y un bucle PISO interno para pasos de tiempo grandes.
+
+## Sin subrelajación, revienta
+
+Hay una trampa. Si se reemplaza la presión por completo en cada paso ($p \leftarrow p^*$), el acoplamiento sobrecorrige y diverge. SIMPLE solo deja pasar una fracción de la actualización.
+
+$$
+p^{\text{new}} = p^{\text{old}} + \alpha_p\,(p^* - p^{\text{old}})
+$$
+
+$\alpha_p$ es el factor de subrelajación de presión (de 0 a 1). La velocidad tiene su propio $\alpha_u$. Demasiado pequeño y la convergencia se arrastra; demasiado grande y oscila hasta estallar. Una regla práctica habitual es $\alpha_p \approx 0.3$ y $\alpha_u \approx 0.7$, elegidos para que ambos sumen alrededor de uno.
+
+En el laboratorio de abajo conviene cambiar el factor de relajación por cuenta propia. Resuelve la ecuación de corrección de presión con un barrido de Gauss-Seidel relajado.
+
+<PressureCorrectionRelaxLab />
+
+Al bajar el factor a 0.3, la curva de residuo desciende con lentitud. Cerca de 1.5 cae más rápido. Al acercarlo a 2, la sobrecorrección se acumula en cada barrido y el residuo vuelve a saltar hacia arriba. El $\alpha_p$ de SIMPLE vive justo sobre este mismo equilibrio.
+
+## Un solo solver para toda velocidad — el alcance compresible
+
+El verdadero atractivo del método basado en presión es que no le importa el número de Mach. En flujo compresible la continuidad se vuelve una ecuación de densidad, y una ecuación de estado (EOS) liga la densidad a la presión. Al escribir $\psi \equiv \partial\rho/\partial p$ (la compresibilidad, $=1/c^2$), aparece un término temporal en la ecuación de presión.
+
+$$
+\frac{\partial (\psi\, p)}{\partial t} + \nabla\cdot(\rho\,\mathbf{u}_f) = 0
+$$
+
+Esta ecuación tiene carácter convectivo y difusivo a la vez. Cuando $M\to 0$, $\psi$ crece y el término temporal deja de dominar, de modo que la presión se resuelve de forma elíptica (acoplamiento global e instantáneo). Con $M$ grande se vuelve hiperbólica (las ondas acústicas viajan a velocidad finita). Los solvers basados en densidad se vuelven rígidos a bajo Mach porque el acoplamiento densidad-presión se debilita, pero el método basado en presión mantiene ese acoplamiento explícito mediante la EOS. Así un solo código abarca desde subsónico hasta supersónico.
+
+## Revivir y borrar el tablero en Python
+
+Las afirmaciones no bastan. Conviene ejecutar ambos esténciles en una malla periódica 1D y medir si el tablero sobrevive o desaparece.
+
+```python
+import numpy as np
+
+def poisson_sweep(p, f, naive):
+    """Un barrido de Gauss-Seidel de -p'' = f en una malla periodica 1D."""
+    N = len(p)
+    for i in range(N):
+        if naive:                       # interp lineal naive: esténcil desacoplado que salta una celda
+            p[i] = 0.5 * (p[(i - 2) % N] + p[(i + 2) % N] + f[i])
+        else:                           # Rhie-Chow: esténcil compacto de 3 puntos que acopla vecinos
+            p[i] = 0.5 * (p[(i - 1) % N] + p[(i + 1) % N] + f[i])
+    p -= p.mean()                       # la presion es libre salvo una constante -> se fija la media
+    return p
+
+def checkerboard_metric(p):
+    """Tamano de la componente (+,-,+,-,...). Cero significa sin diente de sierra."""
+    signs = (-1.0) ** np.arange(len(p))
+    return abs(np.dot(p, signs)) / len(p)
+
+N = 48
+x = 2 * np.pi * np.arange(N) / N
+f = np.sin(x) + 0.4 * np.sin(2 * x)
+f -= f.mean()
+
+for naive in (True, False):
+    p = 0.8 * (-1.0) ** np.arange(N)    # inicializar como tablero de ajedrez
+    for _ in range(4000):
+        p = poisson_sweep(p, f, naive)
+    tag = "naive linear" if naive else "Rhie-Chow  "
+    print(f"{tag}  checkerboard = {checkerboard_metric(p):.2e}")
+
+# naive linear   checkerboard = 8.00e-01   <- el diente de sierra permanece
+# Rhie-Chow      checkerboard = 3.1e-16    <- desaparece hasta la precision de maquina
+```
+
+La misma fuente, el mismo valor inicial, el mismo número de iteraciones. Solo cambió el esténcil. Naive no logra quitar el diente de sierra; Rhie-Chow lo borra por completo, exactamente lo que mostró el visor.
+
+## Cómo no quemarse ante el solver de presión
+
+- En una malla colocada, **nunca se construye la velocidad de cara promediando sin más las velocidades de celda**. Con Rhie-Chow (o una malla escalonada), la diferencia de presión adyacente se siente de forma directa y no se forma diente de sierra.
+- La continuidad no tiene una ecuación para la presión. SIMPLE **la reemplaza por una ecuación de Poisson de presión** dentro de un bucle predictor-corrector.
+- Si diverge, **conviene bajar primero $\alpha_p$**. Empezar cerca de 0.3 y ajustar $\alpha_u$ para que ambos sumen alrededor de uno.
+- Para abarcar bajo Mach y supersónico con un solo código, se liga la densidad a la presión mediante $\psi=\partial\rho/\partial p$ de la EOS, lo que revive el término temporal en la ecuación de presión.

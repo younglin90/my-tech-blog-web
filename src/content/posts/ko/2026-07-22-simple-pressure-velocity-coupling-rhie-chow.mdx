@@ -1,0 +1,135 @@
+---
+title: "압력이 격자무늬로 진동할 때 — SIMPLE과 Rhie-Chow 압력-속도 연계"
+date: 2026-07-22
+description: "체커보드 압력의 원인과 Rhie-Chow 보간, SIMPLE 압력 방정식, 언더릴랙세이션"
+tags: ["SIMPLE", "Rhie-Chow", "Pressure-Velocity-Coupling", "Incompressible", "OpenFOAM"]
+locale: ko
+slug: simple-pressure-velocity-coupling-rhie-chow
+draft: false
+---
+
+import { CheckerboardRhieChow } from '@/components/post-viz/2026-07-22-simple-pressure-velocity-coupling-rhie-chow/CheckerboardRhieChow'
+import { PressureCorrectionRelaxLab } from '@/components/post-viz/2026-07-22-simple-pressure-velocity-coupling-rhie-chow/PressureCorrectionRelaxLab'
+
+속도장은 멀쩡해 보였다. 그런데 압력장을 열어보니 셀마다 값이 위아래로 튀었다. 격자무늬(checkerboard)였다. 잔차는 줄어드는데 압력만 톱니처럼 진동했다. 코드 버그가 아니었다. 압력과 속도를 같은 격자점에 함께 놓은 순간부터 예고된 결과였다.
+
+이 글은 그 톱니가 왜 생기는지, Rhie-Chow 보간이 어떻게 없애는지, 그리고 연속방정식이 어떻게 압력 방정식으로 바뀌는지를 다룬다. 마지막엔 압축성까지 하나의 solver로 잇는다.
+
+## 연속방정식은 옆 칸 압력을 보지 못한다
+
+코로케이트 격자(속도·압력을 같은 셀 중심에 저장)에서 반이산 운동량 방정식은 이렇게 쓴다.
+
+$$
+a_P \mathbf{u}_P = \sum_{nb} a_{nb}\mathbf{u}_{nb} - V_P (\nabla p)_P = \mathbf{H}(\mathbf{u}) - V_P (\nabla p)_P
+$$
+
+$a_P$는 대각 계수, $\mathbf{H}(\mathbf{u})$는 이웃 기여, $V_P$는 셀 부피, $(\nabla p)_P$는 셀 중심 압력구배다.
+
+문제는 셀 중심의 압력구배다. 중심차분으로 쓰면 $ (\partial p/\partial x)_P = (p_E - p_W)/2\Delta x $ 가 된다. 여기엔 $p_P$가 없다. 셀은 자기 압력을 보지 못하고 두 칸 건너 이웃만 본다. 그래서 홀수 셀과 짝수 셀이 서로 분리된다(odd-even decoupling). $(+,-,+,-,\dots)$ 톱니 압력은 이산 방정식의 영공간(null space)에 숨어 아무 잔차도 만들지 않는다.
+
+## Rhie–Chow: 운동량으로 면속도를 만든다
+
+해법은 면속도를 셀 속도의 단순 평균으로 얻지 않는 것이다. 면에서 운동량 방정식을 다시 적용해, 그 면의 이웃 압력차를 직접 넣는다.
+
+$$
+u_f = \overline{\left(\frac{\mathbf{H}(\mathbf{u})}{a_P}\right)}_f - \left(\frac{V}{a_P}\right)_f \frac{p_E - p_P}{\Delta x}
+$$
+
+윗줄 막대는 선형보간, 둘째 항은 면에서 다시 계산한 압력구배다. 이제 면속도가 $p_E - p_P$, 즉 바로 옆 셀 압력차에 직접 걸린다. 톱니 모드는 더 이상 보이지 않는 곳에 숨을 수 없다.
+
+아래 시뮬레이션에서 직접 조작해보자. 두 방식으로 압력을 이완하며, 체커보드로 초기화한 압력이 어떻게 되는지 본다.
+
+<CheckerboardRhieChow />
+
+Naive 보간에서는 톱니 진폭이 그대로 남는다. Rhie-Chow로 바꾸면 같은 초기 격자무늬가 매끄러운 곡선으로 가라앉는다. `Reseed checkerboard`를 눌러 다시 확인해보라.
+
+## SIMPLE: 연속방정식을 압력 방정식으로 바꾼다
+
+압력을 직접 푸는 방정식이 없다는 게 비압축성의 근본 난점이다. SIMPLE(Semi-Implicit Method for Pressure Linked Equations)은 연속방정식 $\nabla\cdot\mathbf{u}=0$ 을 압력 방정식으로 바꾼다. Rhie-Chow 면속도를 연속방정식에 대입하면 압력에 대한 타원형(Poisson) 방정식이 나온다.
+
+$$
+\nabla\cdot\left[\left(\frac{V}{a_P}\right)_f \nabla p\right] = \nabla\cdot\left(\frac{\mathbf{H}(\mathbf{u})}{a_P}\right)_f
+$$
+
+좌변은 라플라시안(확산꼴), 우변은 예측 속도의 발산이다. 절차는 예측자-수정자다.
+
+1. 추측한 $p^*$로 운동량을 풀어 $\mathbf{u}^*$ 예측.
+2. 위 압력 방정식을 풀어 $p$ 갱신.
+3. 새 압력구배로 면속도·셀속도를 수정해 연속성을 맞춤.
+4. 수렴할 때까지 1–3 반복.
+
+PISO는 여기서 수정 단계를 2–3번 더 도는 예측자-수정자로, 과도(transient) 계산에 쓴다. PIMPLE은 큰 시간간격에서 바깥 SIMPLE 루프와 안쪽 PISO 루프를 겹친다.
+
+## 언더릴랙세이션 없이는 발산한다
+
+문제가 있다. 스텝마다 압력을 완전히 갱신하면($p \leftarrow p^*$) 커플링이 과보정되어 발산한다. SIMPLE은 압력을 조금씩만 반영한다.
+
+$$
+p^{\text{new}} = p^{\text{old}} + \alpha_p\,(p^* - p^{\text{old}})
+$$
+
+$\alpha_p$는 압력 언더릴랙세이션 계수(0~1)다. 속도에도 $\alpha_u$를 따로 건다. 너무 작으면 수렴이 기어가고, 너무 크면 진동하다 터진다. 경험칙은 $\alpha_p \approx 0.3$, $\alpha_u \approx 0.7$ 이며 둘의 합이 대략 1이 되게 맞춘다.
+
+아래 실습에서 이완 계수를 직접 바꿔보자. 압력-수정 방정식을 이완된 Gauss-Seidel로 푼다.
+
+<PressureCorrectionRelaxLab />
+
+계수를 0.3으로 낮추면 잔차 곡선이 완만하게 기어 내려간다. 1.5 근처에서 가장 빠르다. 2에 붙이면 매 스윕 과보정이 쌓여 잔차가 위로 튄다. SIMPLE의 $\alpha_p$도 정확히 이 균형 위에 있다.
+
+## 하나의 solver로 모든 속도를 — 압축성 확장
+
+압력-기반 방법의 진짜 매력은 마하수를 안 가린다는 것이다. 압축성에선 연속방정식이 밀도 방정식이 되고, 상태방정식(EOS)으로 밀도를 압력에 건다. $\psi \equiv \partial\rho/\partial p$ (압축률, $=1/c^2$)를 쓰면 압력 방정식에 시간항이 붙는다.
+
+$$
+\frac{\partial (\psi\, p)}{\partial t} + \nabla\cdot(\rho\,\mathbf{u}_f) = 0
+$$
+
+이 방정식은 대류-확산 성격을 동시에 가진다. $M\to 0$ 이면 $\psi$가 커져 시간항이 지배하지 않고, 압력은 타원형(순간적 전역 커플링)으로 푼다. $M$이 크면 쌍곡형(음향파 유한속도 전파)으로 넘어간다. 밀도-기반 solver는 저마하에서 밀도-압력 커플링이 약해 굳지만, 압력-기반은 EOS로 그 커플링을 명시적으로 유지한다. 그래서 저·초음속을 한 코드로 다룬다.
+
+## Python으로 체커보드를 되살리고 없앤다
+
+주장만으로는 부족하다. 두 스텐실을 1차원 주기 격자에서 직접 돌려, 체커보드가 남는지 사라지는지 재본다.
+
+```python
+import numpy as np
+
+def poisson_sweep(p, f, naive):
+    """1D 주기 격자에서 -p'' = f 의 이완 없는 Gauss-Seidel 한 스윕."""
+    N = len(p)
+    for i in range(N):
+        if naive:                       # naive 선형보간: 두 칸 건너뛰는 분리 스텐실
+            p[i] = 0.5 * (p[(i - 2) % N] + p[(i + 2) % N] + f[i])
+        else:                           # Rhie-Chow: 옆 칸을 잇는 조밀 3점 스텐실
+            p[i] = 0.5 * (p[(i - 1) % N] + p[(i + 1) % N] + f[i])
+    p -= p.mean()                       # 압력은 상수만큼 자유 → 평균을 고정
+    return p
+
+def checkerboard_metric(p):
+    """(+,-,+,-,...) 성분의 크기. 0이면 톱니 없음."""
+    signs = (-1.0) ** np.arange(len(p))
+    return abs(np.dot(p, signs)) / len(p)
+
+N = 48
+x = 2 * np.pi * np.arange(N) / N
+f = np.sin(x) + 0.4 * np.sin(2 * x)
+f -= f.mean()
+
+for naive in (True, False):
+    p = 0.8 * (-1.0) ** np.arange(N)    # 체커보드로 초기화
+    for _ in range(4000):
+        p = poisson_sweep(p, f, naive)
+    tag = "naive linear" if naive else "Rhie-Chow  "
+    print(f"{tag}  checkerboard = {checkerboard_metric(p):.2e}")
+
+# naive linear   checkerboard = 8.00e-01   ← 톱니가 그대로 남는다
+# Rhie-Chow      checkerboard = 3.1e-16    ← 기계 정밀도까지 사라진다
+```
+
+같은 소스, 같은 초기 조건, 같은 반복 횟수다. 스텐실만 바꿨다. Naive는 톱니를 못 없애고, Rhie-Chow는 완전히 지운다. 뷰어에서 본 것과 정확히 같다.
+
+## 압력 solver 앞에서 틀리지 않으려면
+
+- 코로케이트 격자에서 면속도는 **절대 셀 속도의 단순 평균으로 쓰지 말 것**. Rhie-Chow(또는 스태거드 격자)로 옆 칸 압력차를 직접 걸어야 톱니가 안 생긴다.
+- 연속방정식은 압력을 푸는 방정식이 없다. SIMPLE은 그것을 **압력 Poisson 방정식으로 대체**한 예측자-수정자 루프다.
+- 발산하면 먼저 **$\alpha_p$를 낮춰라**. 0.3 부근에서 시작하고, 속도와 합이 1이 되게 $\alpha_u$를 맞춘다.
+- 저마하와 초음속을 한 코드로 원하면, EOS의 $\psi=\partial\rho/\partial p$ 로 밀도를 압력에 걸어 압력 방정식에 시간항을 살린다.

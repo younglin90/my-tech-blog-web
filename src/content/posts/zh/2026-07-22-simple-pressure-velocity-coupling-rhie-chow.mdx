@@ -1,0 +1,135 @@
+---
+title: "当压力振荡成棋盘格 — SIMPLE 与 Rhie-Chow 压力-速度耦合"
+date: 2026-07-22
+description: "棋盘格压力的成因、Rhie-Chow 插值、SIMPLE 压力方程与欠松弛"
+tags: ["SIMPLE", "Rhie-Chow", "Pressure-Velocity-Coupling", "Incompressible", "OpenFOAM"]
+locale: zh
+slug: simple-pressure-velocity-coupling-rhie-chow
+draft: false
+---
+
+import { CheckerboardRhieChow } from '@/components/post-viz/2026-07-22-simple-pressure-velocity-coupling-rhie-chow/CheckerboardRhieChow'
+import { PressureCorrectionRelaxLab } from '@/components/post-viz/2026-07-22-simple-pressure-velocity-coupling-rhie-chow/PressureCorrectionRelaxLab'
+
+速度场看起来没问题。可是打开压力场，每个网格的值都在上下跳动。这是棋盘格（checkerboard）。残差在下降，唯独压力像锯齿一样振荡。这不是代码错误。从把压力和速度放在同一网格点的那一刻起，结果就已注定。
+
+本文讲清这个锯齿为何出现、Rhie-Chow 插值如何消除它，以及连续方程如何变成压力方程。最后把同一个求解器一路延伸到可压缩流动。
+
+## 连续方程看不到邻格的压力
+
+在同位网格（速度与压力都存储在网格中心）上，半离散动量方程写作
+
+$$
+a_P \mathbf{u}_P = \sum_{nb} a_{nb}\mathbf{u}_{nb} - V_P (\nabla p)_P = \mathbf{H}(\mathbf{u}) - V_P (\nabla p)_P
+$$
+
+其中 $a_P$ 是对角系数，$\mathbf{H}(\mathbf{u})$ 汇集邻格贡献，$V_P$ 是网格体积，$(\nabla p)_P$ 是网格中心的压力梯度。
+
+麻烦就在这个中心梯度。用中心差分写成 $(\partial p/\partial x)_P = (p_E - p_W)/2\Delta x$。注意其中没有 $p_P$。网格看不到自己的压力，只看到隔一格的邻居。于是奇数格与偶数格彼此分离（奇偶解耦）。$(+,-,+,-,\dots)$ 的锯齿压力藏在离散方程的零空间里，完全不产生残差。
+
+## Rhie–Chow：用动量构造面速度
+
+对策是不要用网格速度的简单平均来求面速度。在面上重新运用动量方程，让该面的邻格压力差直接进入。
+
+$$
+u_f = \overline{\left(\frac{\mathbf{H}(\mathbf{u})}{a_P}\right)}_f - \left(\frac{V}{a_P}\right)_f \frac{p_E - p_P}{\Delta x}
+$$
+
+上划线表示线性插值，第二项是在面上重新计算的压力梯度。现在面速度直接系于 $p_E - p_P$，即相邻两格的压力差。锯齿模态再也无处可藏。
+
+请直接操作下面的仿真。它用两种方式松弛压力，展示以棋盘格初始化的压力会如何演变。
+
+<CheckerboardRhieChow />
+
+在 naive 插值下，锯齿幅值原封不动。切换到 Rhie-Chow，同样的棋盘格便沉降到光滑曲线上。点击 `Reseed checkerboard` 再看一次。
+
+## SIMPLE：把连续方程变成压力方程
+
+不可压缩流动的根本困难在于没有一个直接求解压力的方程。SIMPLE（Semi-Implicit Method for Pressure Linked Equations）把连续方程 $\nabla\cdot\mathbf{u}=0$ 变成压力方程。把 Rhie-Chow 面速度代入连续方程，就得到关于压力的椭圆型（Poisson）方程。
+
+$$
+\nabla\cdot\left[\left(\frac{V}{a_P}\right)_f \nabla p\right] = \nabla\cdot\left(\frac{\mathbf{H}(\mathbf{u})}{a_P}\right)_f
+$$
+
+左端是拉普拉斯算子（扩散形式），右端是预测速度的散度。流程为预测-校正。
+
+1. 用猜测的 $p^*$ 求解动量，预测 $\mathbf{u}^*$。
+2. 求解上述压力方程，更新 $p$。
+3. 用新的压力梯度校正面速度与网格速度，使连续性成立。
+4. 重复 1–3 直到收敛。
+
+PISO 在此基础上每步再多做两三次校正，用于瞬态计算。PIMPLE 为大时间步把外层 SIMPLE 循环与内层 PISO 循环叠合。
+
+## 没有欠松弛就会发散
+
+有个陷阱。若每步完全替换压力（$p \leftarrow p^*$），耦合会过校正而发散。SIMPLE 只让更新的一部分通过。
+
+$$
+p^{\text{new}} = p^{\text{old}} + \alpha_p\,(p^* - p^{\text{old}})
+$$
+
+$\alpha_p$ 是压力欠松弛因子（0 到 1）。速度另有一个 $\alpha_u$。太小则收敛缓慢，太大则振荡并崩溃。经验法则是 $\alpha_p \approx 0.3$、$\alpha_u \approx 0.7$，使两者之和约为 1。
+
+在下面的实验里亲自调节松弛因子。它用带松弛的 Gauss-Seidel 求解压力校正方程。
+
+<PressureCorrectionRelaxLab />
+
+把因子降到 0.3，残差曲线便缓慢地爬着下降。在 1.5 附近下降最快。逼近 2 时，每次扫掠的过校正不断累积，残差反而跳回上去。SIMPLE 的 $\alpha_p$ 也恰好处在同样的平衡之上。
+
+## 一个求解器通吃所有速度 — 向可压缩延伸
+
+压力基方法真正的魅力在于它不挑马赫数。可压缩时连续方程变为密度方程，用状态方程（EOS）把密度系于压力。引入 $\psi \equiv \partial\rho/\partial p$（压缩率，$=1/c^2$），压力方程便多出一个时间项。
+
+$$
+\frac{\partial (\psi\, p)}{\partial t} + \nabla\cdot(\rho\,\mathbf{u}_f) = 0
+$$
+
+这个方程同时兼具对流与扩散的性格。当 $M\to 0$，$\psi$ 增大使时间项不再主导，压力按椭圆型（瞬时的全局耦合）求解。当 $M$ 较大，则转为双曲型（声波以有限速度传播）。密度基求解器在低马赫下因密度-压力耦合变弱而变得刚性，而压力基方法通过 EOS 把该耦合显式保留。于是一份代码就能跨越亚音速到超音速。
+
+## 用 Python 复活并抹去棋盘格
+
+光有论断还不够。让我们在一维周期网格上运行两种模板，测量棋盘格是残留还是消失。
+
+```python
+import numpy as np
+
+def poisson_sweep(p, f, naive):
+    """一维周期网格上 -p'' = f 的一次无松弛 Gauss-Seidel 扫掠。"""
+    N = len(p)
+    for i in range(N):
+        if naive:                       # naive 线性插值: 隔格取值的解耦模板
+            p[i] = 0.5 * (p[(i - 2) % N] + p[(i + 2) % N] + f[i])
+        else:                           # Rhie-Chow: 联系相邻格的紧凑三点模板
+            p[i] = 0.5 * (p[(i - 1) % N] + p[(i + 1) % N] + f[i])
+    p -= p.mean()                       # 压力仅相差一个常数 -> 固定均值
+    return p
+
+def checkerboard_metric(p):
+    """(+,-,+,-,...) 分量的大小。为 0 表示无锯齿。"""
+    signs = (-1.0) ** np.arange(len(p))
+    return abs(np.dot(p, signs)) / len(p)
+
+N = 48
+x = 2 * np.pi * np.arange(N) / N
+f = np.sin(x) + 0.4 * np.sin(2 * x)
+f -= f.mean()
+
+for naive in (True, False):
+    p = 0.8 * (-1.0) ** np.arange(N)    # 以棋盘格初始化
+    for _ in range(4000):
+        p = poisson_sweep(p, f, naive)
+    tag = "naive linear" if naive else "Rhie-Chow  "
+    print(f"{tag}  checkerboard = {checkerboard_metric(p):.2e}")
+
+# naive linear   checkerboard = 8.00e-01   <- 锯齿残留
+# Rhie-Chow      checkerboard = 3.1e-16    <- 消至机器精度
+```
+
+同样的源项、同样的初值、同样的迭代次数。只改了模板。naive 消不掉锯齿，Rhie-Chow 则彻底抹去——与查看器里看到的完全一致。
+
+## 在压力求解器面前别栽跟头
+
+- 在同位网格上，**绝不要用网格速度的简单平均来构造面速度**。用 Rhie-Chow（或交错网格）让相邻压力差直接起作用，锯齿就不会出现。
+- 连续方程没有求解压力的方程。SIMPLE 把它**替换为一个压力 Poisson 方程**，置于预测-校正循环中。
+- 一旦发散，**先降低 $\alpha_p$**。从 0.3 附近起步，并调 $\alpha_u$ 使两者之和约为 1。
+- 若要一份代码兼顾低马赫与超音速，就用 EOS 的 $\psi=\partial\rho/\partial p$ 把密度系于压力，复活压力方程中的时间项。

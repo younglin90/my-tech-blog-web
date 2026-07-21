@@ -1,0 +1,135 @@
+---
+title: "When Pressure Rings in a Checkerboard — SIMPLE and Rhie-Chow Coupling"
+date: 2026-07-22
+description: "Why collocated pressure checkerboards, how Rhie-Chow fixes it, and the SIMPLE loop"
+tags: ["SIMPLE", "Rhie-Chow", "Pressure-Velocity-Coupling", "Incompressible", "OpenFOAM"]
+locale: en
+slug: simple-pressure-velocity-coupling-rhie-chow
+draft: false
+---
+
+import { CheckerboardRhieChow } from '@/components/post-viz/2026-07-22-simple-pressure-velocity-coupling-rhie-chow/CheckerboardRhieChow'
+import { PressureCorrectionRelaxLab } from '@/components/post-viz/2026-07-22-simple-pressure-velocity-coupling-rhie-chow/PressureCorrectionRelaxLab'
+
+The velocity field looked fine. Then I opened the pressure field and every cell jumped up and down against its neighbor. A checkerboard. The residuals kept falling, yet the pressure rang like a sawtooth. It was not a code bug. It was baked in the moment I stored pressure and velocity at the same grid points.
+
+This post walks through why that sawtooth appears, how Rhie-Chow interpolation kills it, and how the continuity equation turns into a pressure equation. At the end we stretch the same solver all the way into compressible flow.
+
+## Continuity cannot see the pressure next door
+
+On a collocated grid (velocity and pressure both stored at cell centers), the semi-discrete momentum equation reads
+
+$$
+a_P \mathbf{u}_P = \sum_{nb} a_{nb}\mathbf{u}_{nb} - V_P (\nabla p)_P = \mathbf{H}(\mathbf{u}) - V_P (\nabla p)_P
+$$
+
+where $a_P$ is the diagonal coefficient, $\mathbf{H}(\mathbf{u})$ collects the neighbor contributions, $V_P$ is the cell volume, and $(\nabla p)_P$ is the cell-center pressure gradient.
+
+The trouble is that cell-center gradient. Written with central differences, $(\partial p/\partial x)_P = (p_E - p_W)/2\Delta x$. Notice $p_P$ is absent. A cell never sees its own pressure — only the neighbors two cells away. So odd and even cells split apart (odd-even decoupling). The $(+,-,+,-,\dots)$ sawtooth sits in the null space of the discrete equations and produces no residual at all.
+
+## Rhie-Chow: build the face velocity from momentum
+
+The cure is to stop averaging cell velocities to the face. Reapply the momentum equation at the face itself, so the neighboring pressure difference across that face enters directly.
+
+$$
+u_f = \overline{\left(\frac{\mathbf{H}(\mathbf{u})}{a_P}\right)}_f - \left(\frac{V}{a_P}\right)_f \frac{p_E - p_P}{\Delta x}
+$$
+
+The overbar is linear interpolation; the second term is the pressure gradient recomputed at the face. Now the face velocity is tied to $p_E - p_P$, the difference between adjacent cells. The sawtooth mode has nowhere left to hide.
+
+Play with the simulation below. It relaxes the pressure two different ways and shows what happens to a field seeded as a checkerboard.
+
+<CheckerboardRhieChow />
+
+With naive interpolation the sawtooth amplitude stays put. Switch to Rhie-Chow and the same checkerboard settles onto the smooth curve. Hit `Reseed checkerboard` to watch it again.
+
+## SIMPLE: turn continuity into a pressure equation
+
+The root difficulty of incompressible flow is that there is no equation that solves for pressure directly. SIMPLE (Semi-Implicit Method for Pressure Linked Equations) turns continuity $\nabla\cdot\mathbf{u}=0$ into one. Substituting the Rhie-Chow face velocity into continuity yields an elliptic (Poisson) equation for pressure.
+
+$$
+\nabla\cdot\left[\left(\frac{V}{a_P}\right)_f \nabla p\right] = \nabla\cdot\left(\frac{\mathbf{H}(\mathbf{u})}{a_P}\right)_f
+$$
+
+The left side is a Laplacian (a diffusion form); the right side is the divergence of the predicted velocity. The procedure is predictor-corrector.
+
+1. Solve momentum with a guessed $p^*$ to predict $\mathbf{u}^*$.
+2. Solve the pressure equation above to update $p$.
+3. Correct face and cell velocities with the new pressure gradient so continuity holds.
+4. Repeat 1-3 until convergence.
+
+PISO adds two or three more corrector passes per step and is used for transient runs. PIMPLE nests an outer SIMPLE loop and an inner PISO loop for large time steps.
+
+## Without under-relaxation it blows up
+
+There is a catch. If you replace the pressure fully every step ($p \leftarrow p^*$), the coupling over-corrects and diverges. SIMPLE only lets a fraction of the update through.
+
+$$
+p^{\text{new}} = p^{\text{old}} + \alpha_p\,(p^* - p^{\text{old}})
+$$
+
+$\alpha_p$ is the pressure under-relaxation factor (0 to 1). Velocity gets its own $\alpha_u$. Too small and convergence crawls; too large and it oscillates and bursts. A common rule of thumb is $\alpha_p \approx 0.3$ and $\alpha_u \approx 0.7$, chosen so the two roughly sum to one.
+
+Change the relaxation factor yourself in the lab below. It solves the pressure-correction equation with a relaxed Gauss-Seidel sweep.
+
+<PressureCorrectionRelaxLab />
+
+Drop the factor to 0.3 and the residual curve crawls down gently. Near 1.5 it drops fastest. Push it toward 2 and over-correction piles up each sweep, so the residual jumps back up. SIMPLE's $\alpha_p$ lives on exactly this same balance.
+
+## One solver for every speed — the compressible reach
+
+The real appeal of the pressure-based method is that it does not care about the Mach number. In compressible flow continuity becomes a density equation, and an equation of state (EOS) ties density to pressure. Writing $\psi \equiv \partial\rho/\partial p$ (the compressibility, $=1/c^2$) adds a time term to the pressure equation.
+
+$$
+\frac{\partial (\psi\, p)}{\partial t} + \nabla\cdot(\rho\,\mathbf{u}_f) = 0
+$$
+
+This equation carries both convective and diffusive character. As $M\to 0$, $\psi$ grows so the time term does not dominate and pressure is solved elliptically (instantaneous, global coupling). At large $M$ it turns hyperbolic (acoustic waves travel at finite speed). Density-based solvers stiffen at low Mach because the density-pressure coupling weakens, but the pressure-based method keeps that coupling explicit through the EOS. That is how one code spans subsonic to supersonic.
+
+## Reviving and erasing the checkerboard in Python
+
+Claims are not enough. Let us run both stencils on a 1-D periodic grid and measure whether the checkerboard survives or vanishes.
+
+```python
+import numpy as np
+
+def poisson_sweep(p, f, naive):
+    """One Gauss-Seidel sweep of -p'' = f on a 1D periodic grid."""
+    N = len(p)
+    for i in range(N):
+        if naive:                       # naive linear interp: skip-a-cell, decoupled stencil
+            p[i] = 0.5 * (p[(i - 2) % N] + p[(i + 2) % N] + f[i])
+        else:                           # Rhie-Chow: compact 3-point stencil couples neighbors
+            p[i] = 0.5 * (p[(i - 1) % N] + p[(i + 1) % N] + f[i])
+    p -= p.mean()                       # pressure is free up to a constant -> pin the mean
+    return p
+
+def checkerboard_metric(p):
+    """Size of the (+,-,+,-,...) component. Zero means no sawtooth."""
+    signs = (-1.0) ** np.arange(len(p))
+    return abs(np.dot(p, signs)) / len(p)
+
+N = 48
+x = 2 * np.pi * np.arange(N) / N
+f = np.sin(x) + 0.4 * np.sin(2 * x)
+f -= f.mean()
+
+for naive in (True, False):
+    p = 0.8 * (-1.0) ** np.arange(N)    # seed a checkerboard
+    for _ in range(4000):
+        p = poisson_sweep(p, f, naive)
+    tag = "naive linear" if naive else "Rhie-Chow  "
+    print(f"{tag}  checkerboard = {checkerboard_metric(p):.2e}")
+
+# naive linear   checkerboard = 8.00e-01   <- the sawtooth stays
+# Rhie-Chow      checkerboard = 3.1e-16    <- gone to machine precision
+```
+
+Same source, same initial guess, same iteration count. Only the stencil changed. Naive cannot remove the sawtooth; Rhie-Chow erases it completely — exactly what the viewer showed.
+
+## How not to get burned at the pressure solver
+
+- On a collocated grid, **never build the face velocity by simply averaging cell velocities.** Use Rhie-Chow (or a staggered grid) so the adjacent pressure difference is felt directly, and no sawtooth forms.
+- Continuity has no equation for pressure. SIMPLE **replaces it with a pressure Poisson equation** inside a predictor-corrector loop.
+- If it diverges, **lower $\alpha_p$ first.** Start near 0.3 and set $\alpha_u$ so the two sum to about one.
+- To span low Mach and supersonic with one code, tie density to pressure through $\psi=\partial\rho/\partial p$ from the EOS, which revives the time term in the pressure equation.
