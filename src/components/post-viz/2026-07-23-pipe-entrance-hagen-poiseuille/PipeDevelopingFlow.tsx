@@ -95,6 +95,46 @@ export function PipeDevelopingFlow() {
         ctx.fillText('entrance longer than view →', W - padR, cy - R - 8)
       }
 
+      // boundary layers growing from each wall, merging at L_h
+      const blRight = Math.min(LhPx, W - padR)
+      const segs = 60
+      const deltaAt = (x: number) => {
+        const s = LhD > 0 ? Math.min(((x - padL) / pxPerD) / LhD, 1) : 1
+        return R * Math.sqrt(s) // grows fast then slows, meets center at L_h
+      }
+      if (blRight > padL + 1) {
+        ctx.fillStyle = 'rgba(56,189,248,0.14)'
+        for (const sign of [-1, 1]) {
+          ctx.beginPath()
+          ctx.moveTo(padL, cy + sign * R)
+          for (let i = 0; i <= segs; i++) {
+            const x = padL + (i / segs) * (blRight - padL)
+            ctx.lineTo(x, cy + sign * (R - deltaAt(x)))
+          }
+          ctx.lineTo(blRight, cy + sign * R)
+          ctx.closePath()
+          ctx.fill()
+        }
+        // boundary-layer edge lines
+        ctx.strokeStyle = 'rgba(125,211,252,0.75)'
+        ctx.lineWidth = 1.4
+        for (const sign of [-1, 1]) {
+          ctx.beginPath()
+          for (let i = 0; i <= segs; i++) {
+            const x = padL + (i / segs) * (blRight - padL)
+            const yy = cy + sign * (R - deltaAt(x))
+            i === 0 ? ctx.moveTo(x, yy) : ctx.lineTo(x, yy)
+          }
+          ctx.stroke()
+        }
+        ctx.fillStyle = '#7dd3fc'
+        ctx.font = '11px ui-sans-serif, system-ui'
+        ctx.textAlign = 'left'
+        ctx.fillText('boundary layer', padL + 6, cy - R + 15)
+        ctx.fillStyle = '#94a3b8'
+        ctx.fillText('inviscid core', padL + 6, cy + 4)
+      }
+
       // velocity profiles at stations
       const stations = 8
       ctx.strokeStyle = 'rgba(56,189,248,0.9)'
