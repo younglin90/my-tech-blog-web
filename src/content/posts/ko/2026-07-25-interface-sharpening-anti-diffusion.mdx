@@ -1,0 +1,133 @@
+---
+title: "번진 계면을 매 스텝 되돌리다 — 안티확산 계면 샤프닝(IST) 직접 구현"
+date: 2026-07-25
+description: "수치 확산으로 뭉개진 계면을 상수 두께로 고정하는 후처리 기법"
+tags: ["논문리뷰", "Interface-Sharpening", "Diffuse-Interface", "Anti-Diffusion", "Compressible", "Multiphase"]
+locale: ko
+slug: interface-sharpening-anti-diffusion
+draft: false
+---
+
+import { InterfaceSharpeningLab1D } from '@/components/post-viz/2026-07-25-interface-sharpening-anti-diffusion/InterfaceSharpeningLab1D'
+import { ShockBubbleSharpenGrid } from '@/components/post-viz/2026-07-25-interface-sharpening-anti-diffusion/ShockBubbleSharpenGrid'
+
+shock-bubble 문제를 5-방정식 모델로 돌렸다. 200스텝 뒤, helium 기포의 경계는 6칸에서 20칸으로 번져 있었다. 물리량은 맞는데 계면이 죽처럼 뭉개진다. 이게 확산 계면법(diffuse interface method·계면을 유한한 폭으로 번지게 두는 접근)의 숙명이다. Nguyen 등(2021)은 이 번짐을 매 시간스텝 뒤 후처리 한 번으로 되돌린다. 오늘은 그 안티확산 기법을 직접 짜서, 왜 계면 두께가 상수로 고정되는지 눈으로 확인한다.
+
+## 논문 정보
+
+- **제목**: Numerical modeling of multiphase compressible flows with the presence of shock waves using an interface-sharpening five-equation model
+- **저자**: Van-Tu Nguyen, Thanh-Hoang Phan, Warn-Gyu Park (Pusan National University)
+- **출처**: International Journal of Multiphase Flow, 2021, 103542
+- **DOI**: 10.1016/j.ijmultiphaseflow.2020.103542
+- **한 줄 요약**: 5-방정식 압축성 2상 모델에 계면 샤프닝(IST)을 **후처리**로 붙여, 충격파와 함께 있는 계면을 상수 두께로 유지한다.
+
+## 왜 계면은 저절로 뚱뚱해지는가
+
+5-방정식 모델은 보존형에 색함수(color function) 하나를 얹은 준보존 시스템이다. 부피분율 $\alpha_1$(셀 안에서 유체 1이 차지하는 비율)의 이송 방정식은 이렇게 생겼다.
+
+$$
+\frac{\partial \alpha_1}{\partial t} + \mathbf{u}\cdot\nabla \alpha_1 = \alpha_1 K\, \nabla\cdot\mathbf{u}
+$$
+
+$\alpha_1$은 유체 1의 부피분율, $\mathbf{u}$는 혼합 속도, 우변의 Kapila 항은 두 상의 압축률 차이를 보정한다.
+
+문제는 이 방정식을 충격파 포착 스킴으로 풀 때 생긴다. 셀 경계에서 값을 매끄럽게 보간하는 순간, 날카로워야 할 $\alpha_1$의 계단이 매 스텝 조금씩 번진다. 이 수치 확산은 누적된다. 스텝이 쌓이면 계면은 몇 칸에서 수십 칸으로 퍼지고, 기포 모양·충격파 반사 위치 같은 핵심 특징이 통째로 사라진다.
+
+WENO 같은 고차 스킴은 확산을 줄이지만 진동을 낳고, 다차원에서는 비싸다. 그래서 저자들은 방향을 튼다. 스킴 자체를 건드리지 않고, **매 스텝이 끝난 뒤 $\alpha$ 장을 따로 손질**하기로 한다.
+
+## 안티확산: 샤프닝 방정식
+
+핵심은 Shukla 등(2010)의 정규화 방정식이다. 실제 물리 시간이 아닌 **가상 시간** $\tau$에 대해 $\alpha$를 몇 번 진화시킨다.
+
+$$
+\frac{\partial \alpha}{\partial \tau} = \nabla\cdot\!\left(\varepsilon\, \nabla \alpha\right) - \nabla\cdot\!\left(a\, \alpha(1-\alpha)\, \hat{\mathbf{n}}\right)
+$$
+
+$\varepsilon$은 두께를 규제하는 확산 계수, $a$는 계면을 조이는 압축 세기, $\hat{\mathbf{n}} = \nabla\alpha / |\nabla\alpha|$는 계면 법선 방향이다.
+
+두 항이 줄다리기를 한다. 첫 항은 보통의 확산이라 $\alpha$를 퍼뜨린다. 둘째 항은 부호가 반대인 **안티확산(anti-diffusion)** 이라 계면을 법선 방향으로 조인다. $\alpha(1-\alpha)$ 인자 덕에 압축은 계면($0<\alpha<1$)에서만 작동하고, 순수 유체 영역($\alpha=0$ 또는 $1$)에서는 꺼진다.
+
+정상상태($\partial_\tau \alpha = 0$)를 1차원에서 풀면 두 플럭스가 균형을 이룬다.
+
+$$
+\varepsilon\, \frac{d\alpha}{dx} = a\, \alpha(1-\alpha)
+\quad\Longrightarrow\quad
+\alpha(x) = \tfrac{1}{2}\!\left[1 + \tanh\!\left(\frac{a}{2\varepsilon}\,x\right)\right]
+$$
+
+계면은 하이퍼볼릭 탄젠트 모양으로 수렴하고, 그 두께는 $\varepsilon/a$에 비례한다. 즉 **두께를 사용자가 정한다.** 이게 저자들이 강조하는 "상수 두께" 성질이다. 계면이 항상 같은 칸 수를 유지하면 충격·접촉 불연속을 안정적으로 포착할 수 있다.
+
+## 1D로 직접: 번짐과 샤프닝의 줄다리기
+
+말보다 눈이 빠르다. 아래 시뮬레이션에서 직접 조작해보자. `numerical diffusion`을 켜면 계면이 스스로 번지기 시작한다. 그 상태에서 `sharpening (IST)`을 켜면 번짐이 멈추고 두께가 목표값 근처로 잠긴다.
+
+<InterfaceSharpeningLab1D />
+
+`compression a`를 올리면 계면이 얇아지고, `regularization ε`를 올리면 두꺼워진다. 두 슬라이더의 비 $\varepsilon/a$가 목표 두께(노란 띠)를 정한다는 걸, 측정 밴드 칸 수가 그 값을 따라가는 것으로 확인할 수 있다.
+
+같은 논리를 numpy로 옮기면 이렇게 된다. 이송 스킴의 확산을 흉내 낸 뒤, 샤프닝 방정식을 몇 번 돌린다.
+
+```python
+import numpy as np
+
+N, dx = 201, 1.0 / 200
+x = np.linspace(0, 1, N)
+
+def band_width(a, lo=0.05, hi=0.95):
+    # 계면으로 간주하는 셀 수 (두께 측정)
+    return int(np.sum((a > lo) & (a < hi)))
+
+def smear_once(a, D=0.16):
+    # 이송 스킴이 매 스텝 계면을 번지게 하는 효과
+    lap = np.zeros_like(a)
+    lap[1:-1] = a[2:] - 2 * a[1:-1] + a[:-2]
+    return a + D * lap
+
+def sharpen_sweep(a, comp_a, eps, iters=200):
+    # 플럭스형 안티확산 정규화 (Shukla 2010, 논문 식 (38)-(39))
+    dtau = 0.9 * min(dx * dx / (2 * eps), dx / comp_a)
+    for _ in range(iters):
+        af = 0.5 * (a[:-1] + a[1:])          # 면 중심 alpha
+        dA = a[1:] - a[:-1]
+        s = np.sign(dA)
+        J = comp_a * af * (1 - af) * s - eps * dA / dx   # 면 플럭스
+        a[1:-1] = np.clip(a[1:-1] - dtau / dx * (J[1:] - J[:-1]), 0, 1)
+    return a
+
+# 날카로운 계단에서 시작 -> 20번 번지게 둔다
+a = 0.5 * (1 + np.tanh((x - 0.5) / 0.012))
+for _ in range(20):
+    a = smear_once(a)
+print("번진 뒤 밴드:", band_width(a), "칸")     # -> 넓어짐
+
+a = sharpen_sweep(a, comp_a=1.0, eps=0.004)
+print("샤프닝 뒤 밴드:", band_width(a), "칸")   # -> 목표 두께로 수축
+```
+
+출력은 번진 뒤 밴드가 넓게 나오고, 샤프닝 뒤에는 $\varepsilon/a$가 정한 몇 칸으로 줄어든다. 스킴을 전혀 손대지 않았다는 점이 핵심이다. `sharpen_sweep`은 결과 배열만 받아 손질할 뿐, 어떤 리만 솔버를 썼는지 모른다.
+
+## 두께를 상수로 만든다는 것
+
+단순히 계면을 얇게 만드는 것과, 두께를 **상수**로 고정하는 것은 다르다. 저자들이 이전 접근(Tiwari 등 2013)과 선을 긋는 지점이 여기다. 소스 항에 샤프닝 함수를 더하는 방식은 확산 오차를 줄이지만, 시간·공간에 따라 두께가 들쭉날쭉해진다. 반면 후처리로 $\varepsilon/a$를 고정하면 어디서나 같은 두께가 나온다.
+
+압축성 유동에서는 여기에 한 겹이 더 붙는다. $\alpha$를 손질하면 혼합 밀도·에너지가 함께 바뀌어야 열역학이 일관된다. 저자들은 $\alpha$만 고치는 게 아니라, 보존 변수 전체($\alpha_1\rho_1$, $\alpha_2\rho_2$, 운동량, 에너지)를 혼합 규칙에 맞게 재분배한다. 이 "혼합 일관 정규화" 덕에, 계면에서 속도·압력·온도 평형이 깨지지 않는다. 논문의 1D 순수 계면 이송 테스트가 이걸 보여준다. 물과 공기가 같은 속도로 흐를 때, 샤프닝을 켜도 압력·온도가 그대로 유지된다.
+
+## 2D 기포로: 원형 계면 유지
+
+1D에서 통했으니 2D 기포로 넘어간다. 논문의 shock-bubble 그림이 보여준 것 — 계면이 몇 칸 두께의 날카로운 원을 끝까지 유지하는 것 — 을 재현해보자. 아래에서 `numerical diffusion`을 켜면 원형 기포의 테두리가 흐려진다. `sharpening`을 켜고 `compression a`를 올리면 테두리가 다시 또렷한 링으로 조여진다.
+
+<ShockBubbleSharpenGrid />
+
+관찰 포인트는 두 가지다. 첫째, 샤프닝은 계면을 조이되 **위치는 옮기지 않는다** — 기포가 커지거나 작아지지 않는다. 둘째, 청록색 링(계면 밴드)의 칸 수가 압축 세기에 따라 줄어든다. 법선 방향 $\hat{\mathbf{n}}$을 따라 압축하기 때문에 원의 곡률이 뭉개지지 않고 유지된다.
+
+## 재현하며 부딪힌 것
+
+세 가지가 걸렸다. 첫째, $\hat{\mathbf{n}} = \nabla\alpha/|\nabla\alpha|$는 순수 유체 영역에서 $|\nabla\alpha|\to 0$이라 0으로 나뉜다. 논문은 $a\,\alpha(1-\alpha)$ 인자가 그 영역에서 0이라 문제가 없다고 넘어가지만, 구현에서는 분모에 작은 값을 더해야 NaN을 피한다. 둘째, 가상 시간 스텝 $d\tau$가 크면 안티확산이 계면을 진동시킨다. CFL형 제한을 걸어야 안정적이다. 셋째, 반복 횟수의 트레이드오프다. 논문은 스텝당 1~3회면 충분하다지만, 이는 매 물리 스텝의 확산이 작다는 전제 위에 있다. 성긴 격자나 강한 충격에서는 더 필요할 수 있다.
+
+한 가지 더. 후처리라는 우아함에는 대가가 있다. 샤프닝은 지배 방정식과 별개로 $\alpha$를 바꾸므로, 그 순간의 이송은 원래 PDE의 해가 아니다. 두께가 상수로 유지되는 대신, 계면 근처의 국소 보존이 미세하게 어긋날 여지가 있다. 저자들은 혼합 일관 재분배로 이를 최소화하지만 완전히 0은 아니다. OpenFOAM의 `interfoam`이 쓰는 압축 항($\nabla\cdot(\alpha(1-\alpha)\mathbf{u}_r)$)도 같은 계열의 아이디어라, 이 기법을 압축성 솔버에 이식할 때 비교 기준으로 삼을 만하다.
+
+## 이 논문이 바꾼 것
+
+- **스킴과 계면 손질의 분리.** 리만 솔버를 그대로 두고, 계면 두께만 후처리로 제어한다. 이식성이 높다.
+- **두께 = $\varepsilon/a$.** 계면을 얇게가 아니라 **상수**로 유지한다. 충격·접촉 불연속 포착에 필요한 성질을 사용자가 직접 정한다.
+- **압축성에서의 열역학 일관성.** $\alpha$만이 아니라 보존 변수 전체를 혼합 규칙에 맞게 재분배해, 계면에서 속도·압력·온도 평형을 지킨다.

@@ -1,0 +1,133 @@
+---
+title: "每一步都把糊掉的界面拉回来 — 亲手实现反扩散锐化(IST)"
+date: 2026-07-25
+description: "把被数值扩散抹糊的界面固定到恒定厚度的后处理技术"
+tags: ["논문리뷰", "Interface-Sharpening", "Diffuse-Interface", "Anti-Diffusion", "Compressible", "Multiphase"]
+locale: zh
+slug: interface-sharpening-anti-diffusion
+draft: false
+---
+
+import { InterfaceSharpeningLab1D } from '@/components/post-viz/2026-07-25-interface-sharpening-anti-diffusion/InterfaceSharpeningLab1D'
+import { ShockBubbleSharpenGrid } from '@/components/post-viz/2026-07-25-interface-sharpening-anti-diffusion/ShockBubbleSharpenGrid'
+
+用五方程模型跑了一个激波–气泡问题。200 步之后，氦气泡的边界从 6 个网格膨胀到了 20 个。物理量是对的，但界面糊成了一团粥。这就是扩散界面法(让界面在有限宽度内弥散的一类方法)的宿命。Nguyen 等(2021)在每个时间步之后用一次后处理，把这种弥散拉回来。今天我们从零实现这套反扩散技术，亲眼看清为什么界面厚度会锁定为一个常数。
+
+## 论文信息
+
+- **标题**: Numerical modeling of multiphase compressible flows with the presence of shock waves using an interface-sharpening five-equation model
+- **作者**: Van-Tu Nguyen, Thanh-Hoang Phan, Warn-Gyu Park (Pusan National University)
+- **来源**: International Journal of Multiphase Flow, 2021, 103542
+- **DOI**: 10.1016/j.ijmultiphaseflow.2020.103542
+- **一句话总结**: 把界面锐化(IST)作为**后处理**附加到五方程可压缩两相模型上，即使紧邻激波也能让界面保持恒定厚度。
+
+## 界面为何会自己变胖
+
+五方程模型是准守恒系统：守恒律再加一个颜色函数。体积分数 $\alpha_1$(单元格内流体 1 所占的比例)满足这样一个对流方程。
+
+$$
+\frac{\partial \alpha_1}{\partial t} + \mathbf{u}\cdot\nabla \alpha_1 = \alpha_1 K\, \nabla\cdot\mathbf{u}
+$$
+
+其中 $\alpha_1$ 是流体 1 的体积分数，$\mathbf{u}$ 是混合速度，右端的 Kapila 项修正两相压缩率的差异。
+
+麻烦出在用激波捕捉格式求解它的时候。一旦在单元格面上平滑插值，本该锋利的 $\alpha_1$ 台阶每一步都会糊开一点。这种数值扩散会累积。步数一多，界面就从几个网格扩展到几十个，气泡形状、激波反射位置这些核心特征整个消失。
+
+WENO 这类高阶格式能减少扩散，但会带来振荡，在多维中还很昂贵。于是作者转了个方向。他们不动格式本身，而是**在每一步结束后单独修整 $\alpha$ 场**。
+
+## 反扩散：锐化方程
+
+核心是 Shukla 等(2010)的正则化方程。我们对**虚拟时间** $\tau$(而非物理时间)让 $\alpha$ 演化若干次。
+
+$$
+\frac{\partial \alpha}{\partial \tau} = \nabla\cdot\!\left(\varepsilon\, \nabla \alpha\right) - \nabla\cdot\!\left(a\, \alpha(1-\alpha)\, \hat{\mathbf{n}}\right)
+$$
+
+$\varepsilon$ 是调控厚度的扩散系数，$a$ 是收紧界面的压缩强度，$\hat{\mathbf{n}} = \nabla\alpha / |\nabla\alpha|$ 是界面法线方向。
+
+两项在拔河。第一项是普通扩散，把 $\alpha$ 摊开。第二项符号相反，是**反扩散(anti-diffusion)**，沿法线方向收紧界面。多亏 $\alpha(1-\alpha)$ 因子，压缩只在界面($0<\alpha<1$)处作用，在纯流体区($\alpha=0$ 或 $1$)则关闭。
+
+在一维求解定常态($\partial_\tau \alpha = 0$)，两个通量平衡。
+
+$$
+\varepsilon\, \frac{d\alpha}{dx} = a\, \alpha(1-\alpha)
+\quad\Longrightarrow\quad
+\alpha(x) = \tfrac{1}{2}\!\left[1 + \tanh\!\left(\frac{a}{2\varepsilon}\,x\right)\right]
+$$
+
+界面收敛到双曲正切形状，其厚度正比于 $\varepsilon/a$。也就是说，**厚度由你来定**。这正是作者强调的"恒定厚度"性质。当界面始终保持相同的网格数，激波与接触间断就能被稳定捕捉。
+
+## 一维直接看：弥散与锐化的拔河
+
+眼睛比文字快。在下面的模拟里亲手操作一下。打开 `numerical diffusion`，界面就会自己开始扩散。在此状态下打开 `sharpening (IST)`，扩散便停止，厚度锁定在目标值附近。
+
+<InterfaceSharpeningLab1D />
+
+调高 `compression a` 界面变薄，调高 `regularization ε` 界面变厚。两个滑块之比 $\varepsilon/a$ 决定目标厚度(黄色带)，这一点可以通过测量带的网格数跟随该值来确认。
+
+把同样的逻辑搬到 numpy 就是下面这样。先模拟对流格式的扩散，再把锐化方程跑几次。
+
+```python
+import numpy as np
+
+N, dx = 201, 1.0 / 200
+x = np.linspace(0, 1, N)
+
+def band_width(a, lo=0.05, hi=0.95):
+    # 视为界面的网格数（厚度度量）
+    return int(np.sum((a > lo) & (a < hi)))
+
+def smear_once(a, D=0.16):
+    # 对流格式每步把界面变胖的效果
+    lap = np.zeros_like(a)
+    lap[1:-1] = a[2:] - 2 * a[1:-1] + a[:-2]
+    return a + D * lap
+
+def sharpen_sweep(a, comp_a, eps, iters=200):
+    # 通量形式的反扩散正则化 (Shukla 2010, 式 (38)-(39))
+    dtau = 0.9 * min(dx * dx / (2 * eps), dx / comp_a)
+    for _ in range(iters):
+        af = 0.5 * (a[:-1] + a[1:])          # 面心 alpha
+        dA = a[1:] - a[:-1]
+        s = np.sign(dA)
+        J = comp_a * af * (1 - af) * s - eps * dA / dx   # 面通量
+        a[1:-1] = np.clip(a[1:-1] - dtau / dx * (J[1:] - J[:-1]), 0, 1)
+    return a
+
+# 从锋利台阶开始 -> 让它弥散 20 次
+a = 0.5 * (1 + np.tanh((x - 0.5) / 0.012))
+for _ in range(20):
+    a = smear_once(a)
+print("弥散后的带宽:", band_width(a), "格")     # -> 变宽
+
+a = sharpen_sweep(a, comp_a=1.0, eps=0.004)
+print("锐化后的带宽:", band_width(a), "格")     # -> 收缩到目标厚度
+```
+
+输出显示弥散后带宽很宽，锐化后缩到 $\varepsilon/a$ 所决定的几个网格。关键在于我们完全没碰格式。`sharpen_sweep` 只接收结果数组并加以修整，它并不知道用的是哪种黎曼求解器。
+
+## 把厚度做成常数意味着什么
+
+把界面做薄，和把厚度钉成一个**常数**，是两回事。作者与早期方法(Tiwari 等 2013)划清界限的地方正在于此。在源项里加锐化函数能减少扩散误差，但厚度会随时间与空间起伏。相反，用后处理固定 $\varepsilon/a$，处处都得到相同的厚度。
+
+在可压缩流里还多一层。修整 $\alpha$ 时，混合密度与能量必须随之改变，热力学才能自洽。于是作者不只修正 $\alpha$，而是按照混合律把整个守恒变量向量($\alpha_1\rho_1$、$\alpha_2\rho_2$、动量、能量)重新分配。多亏这种"混合一致正则化"，界面处的速度、压力、温度平衡不会被打破。论文的一维纯界面对流测试正说明了这点：当水和空气以相同速度流动，打开锐化后压力与温度仍保持不变。
+
+## 二维气泡：保持圆形界面
+
+一维通了，就转到二维气泡。让我们复现论文激波–气泡图所展示的东西 —— 界面把一个几格厚的锐利圆形保持到最后。下面打开 `numerical diffusion`，圆形气泡的边缘会变模糊。打开 `sharpening` 并调高 `compression a`，边缘又会收紧成清晰的圆环。
+
+<ShockBubbleSharpenGrid />
+
+有两点值得看。其一，锐化收紧界面，但**不移动它** —— 气泡既不变大也不变小。其二，青色圆环(界面带)的网格数随压缩强度增大而减少。由于沿法线 $\hat{\mathbf{n}}$ 压缩，圆的曲率不被压皱而得以保持。
+
+## 复现时撞上的问题
+
+有三处卡住了。其一，$\hat{\mathbf{n}} = \nabla\alpha/|\nabla\alpha|$ 在纯流体区 $|\nabla\alpha|\to 0$，会被零除。论文以 $a\,\alpha(1-\alpha)$ 因子在那里为零为由略过，但在代码里必须给分母加一个小量以避免 NaN。其二，虚拟时间步 $d\tau$ 过大时，反扩散会让界面振荡；需要 CFL 型限制来保证稳定。其三，迭代次数的取舍。论文说每步 1~3 次就够，但这建立在每个物理步的扩散很小的前提上。粗网格或强激波下可能需要更多。
+
+还有一点。"后处理"这份优雅是有代价的。锐化独立于控制方程去改变 $\alpha$，因此那一瞬的对流并不是原始 PDE 的解。换来恒定厚度的同时，界面附近的局部守恒可能会略有偏移。作者用混合一致再分配把它降到最低，但并非恰好为零。OpenFOAM 的 `interfoam` 所用的压缩项($\nabla\cdot(\alpha(1-\alpha)\mathbf{u}_r)$)属于同一类思路，把这套技术移植到可压缩求解器时，可以拿它作对照基准。
+
+## 这篇论文改变了什么
+
+- **格式与界面修整的分离。** 让黎曼求解器保持原样，只用后处理控制界面厚度。移植性强。
+- **厚度 = $\varepsilon/a$。** 让界面不只是薄，而是**恒定**，把捕捉激波与接触间断所需的性质交给使用者直接设定。
+- **可压缩流中的热力学自洽。** 不只重分配 $\alpha$，而是按混合律重分配整个守恒变量向量，守住界面处的速度、压力、温度平衡。

@@ -1,0 +1,133 @@
+---
+title: "Devolver la nitidez a la interfaz en cada paso — Implementando el afilado anti-difusión (IST)"
+date: 2026-07-25
+description: "Una técnica de posprocesado que fija a un grosor constante una interfaz emborronada por difusión numérica"
+tags: ["논문리뷰", "Interface-Sharpening", "Diffuse-Interface", "Anti-Diffusion", "Compressible", "Multiphase"]
+locale: es
+slug: interface-sharpening-anti-diffusion
+draft: false
+---
+
+import { InterfaceSharpeningLab1D } from '@/components/post-viz/2026-07-25-interface-sharpening-anti-diffusion/InterfaceSharpeningLab1D'
+import { ShockBubbleSharpenGrid } from '@/components/post-viz/2026-07-25-interface-sharpening-anti-diffusion/ShockBubbleSharpenGrid'
+
+Ejecuté un caso de choque–burbuja con un modelo de cinco ecuaciones. Tras 200 pasos, el borde de la burbuja de helio se había hinchado de 6 celdas a 20. Las cantidades físicas eran correctas, pero la interfaz quedó hecha una papilla. Ese es el destino del método de interfaz difusa (un enfoque que deja a propósito que la interfaz se extienda sobre un ancho finito). Nguyen et al. (2021) deshacen ese emborronamiento con una sola pasada de posprocesado después de cada paso temporal. Hoy construimos esa técnica anti-difusión desde cero y comprobamos, con nuestros propios ojos, por qué el grosor de la interfaz se bloquea en una constante.
+
+## Información del artículo
+
+- **Título**: Numerical modeling of multiphase compressible flows with the presence of shock waves using an interface-sharpening five-equation model
+- **Autores**: Van-Tu Nguyen, Thanh-Hoang Phan, Warn-Gyu Park (Pusan National University)
+- **Fuente**: International Journal of Multiphase Flow, 2021, 103542
+- **DOI**: 10.1016/j.ijmultiphaseflow.2020.103542
+- **Resumen en una línea**: Acoplar el afilado de interfaz (IST) a un modelo compresible bifásico de cinco ecuaciones como paso de **posprocesado**, para mantener las interfaces a un grosor constante incluso junto a los choques.
+
+## Por qué la interfaz engorda por sí sola
+
+El modelo de cinco ecuaciones es un sistema casi conservativo: leyes de conservación más una función de color. La fracción de volumen $\alpha_1$ (la porción de fluido 1 dentro de una celda) obedece una ecuación de advección como esta.
+
+$$
+\frac{\partial \alpha_1}{\partial t} + \mathbf{u}\cdot\nabla \alpha_1 = \alpha_1 K\, \nabla\cdot\mathbf{u}
+$$
+
+Aquí $\alpha_1$ es la fracción de volumen del fluido 1, $\mathbf{u}$ es la velocidad de mezcla y el término de Kapila del lado derecho corrige la diferencia de compresibilidad entre las dos fases.
+
+El problema empieza al resolver esto con un esquema de captura de choques. En cuanto se interpolan suavemente los valores en las caras de la celda, el escalón de $\alpha_1$ que debería seguir afilado se emborrona un poco en cada paso. Esa difusión numérica se acumula. Tras muchos pasos, la interfaz pasa de unas pocas celdas a decenas, y rasgos clave —la forma de la burbuja, las posiciones de reflexión de los choques— desaparecen por completo.
+
+Los esquemas de alto orden como WENO reducen la difusión, pero introducen oscilaciones y son costosos en varias dimensiones. Por eso los autores giran de lado. En vez de tocar el esquema en sí, **arreglan el campo de $\alpha$ por separado después de cada paso**.
+
+## Anti-difusión: la ecuación de afilado
+
+El núcleo es la ecuación de regularización de Shukla et al. (2010). Hacemos evolucionar $\alpha$ durante unas pocas iteraciones en un **pseudo-tiempo** $\tau$, no en tiempo físico.
+
+$$
+\frac{\partial \alpha}{\partial \tau} = \nabla\cdot\!\left(\varepsilon\, \nabla \alpha\right) - \nabla\cdot\!\left(a\, \alpha(1-\alpha)\, \hat{\mathbf{n}}\right)
+$$
+
+$\varepsilon$ es el coeficiente de difusión que regula el grosor, $a$ es la intensidad de compresión que aprieta la interfaz y $\hat{\mathbf{n}} = \nabla\alpha / |\nabla\alpha|$ es la dirección normal a la interfaz.
+
+Los dos términos juegan al tira y afloja. El primero es difusión ordinaria, así que dispersa $\alpha$. El segundo, con signo opuesto, es **anti-difusión**: comprime la interfaz a lo largo de su normal. Gracias al factor $\alpha(1-\alpha)$, la compresión actúa solo en la interfaz ($0<\alpha<1$) y se apaga dentro de los fluidos puros ($\alpha=0$ o $1$).
+
+Resolviendo el estado estacionario ($\partial_\tau \alpha = 0$) en una dimensión, los dos flujos se equilibran.
+
+$$
+\varepsilon\, \frac{d\alpha}{dx} = a\, \alpha(1-\alpha)
+\quad\Longrightarrow\quad
+\alpha(x) = \tfrac{1}{2}\!\left[1 + \tanh\!\left(\frac{a}{2\varepsilon}\,x\right)\right]
+$$
+
+La interfaz converge a una forma de tangente hiperbólica, y su grosor escala como $\varepsilon/a$. En otras palabras, **el grosor lo eliges tú**. Esta es la propiedad de "grosor constante" que los autores subrayan. Cuando la interfaz mantiene siempre el mismo número de celdas, los choques y las discontinuidades de contacto pueden capturarse de forma estable.
+
+## En 1D: el tira y afloja entre emborronado y afilado
+
+El ojo es más rápido que las palabras. Juega directamente con la simulación de abajo. Activa `numerical diffusion` y la interfaz empieza a extenderse sola. Desde ese estado, activa `sharpening (IST)` y la extensión se detiene mientras el grosor se bloquea cerca del objetivo.
+
+<InterfaceSharpeningLab1D />
+
+Subir `compression a` adelgaza la interfaz; subir `regularization ε` la engrosa. Puedes confirmar que el cociente $\varepsilon/a$ de los dos deslizadores fija el grosor objetivo (la banda amarilla) observando cómo el número de celdas de la banda medida sigue ese valor.
+
+Trasladada a numpy, la misma lógica se lee así. Primero imita la difusión del esquema de transporte, luego ejecuta la ecuación de afilado unas cuantas veces.
+
+```python
+import numpy as np
+
+N, dx = 201, 1.0 / 200
+x = np.linspace(0, 1, N)
+
+def band_width(a, lo=0.05, hi=0.95):
+    # número de celdas contadas como interfaz (medida del grosor)
+    return int(np.sum((a > lo) & (a < hi)))
+
+def smear_once(a, D=0.16):
+    # el esquema de transporte engordando la interfaz en cada paso
+    lap = np.zeros_like(a)
+    lap[1:-1] = a[2:] - 2 * a[1:-1] + a[:-2]
+    return a + D * lap
+
+def sharpen_sweep(a, comp_a, eps, iters=200):
+    # regularización anti-difusión en forma de flujo (Shukla 2010, ecs. (38)-(39))
+    dtau = 0.9 * min(dx * dx / (2 * eps), dx / comp_a)
+    for _ in range(iters):
+        af = 0.5 * (a[:-1] + a[1:])          # alpha centrada en la cara
+        dA = a[1:] - a[:-1]
+        s = np.sign(dA)
+        J = comp_a * af * (1 - af) * s - eps * dA / dx   # flujo en la cara
+        a[1:-1] = np.clip(a[1:-1] - dtau / dx * (J[1:] - J[:-1]), 0, 1)
+    return a
+
+# empezar desde un escalón afilado -> dejar que se emborrone 20 veces
+a = 0.5 * (1 + np.tanh((x - 0.5) / 0.012))
+for _ in range(20):
+    a = smear_once(a)
+print("banda tras emborronar:", band_width(a), "celdas")     # -> más ancha
+
+a = sharpen_sweep(a, comp_a=1.0, eps=0.004)
+print("banda tras afilar:", band_width(a), "celdas")         # -> se encoge al objetivo
+```
+
+La salida muestra una banda ancha tras el emborronado y, tras el afilado, cae a las pocas celdas que dicta $\varepsilon/a$. El punto clave es que nunca tocamos el esquema. `sharpen_sweep` solo recibe el arreglo resultante y lo limpia; no tiene ni idea de qué solver de Riemann lo produjo.
+
+## Qué significa mantener el grosor constante
+
+Adelgazar la interfaz no es lo mismo que fijar su grosor a una **constante**. Aquí es exactamente donde los autores trazan una línea frente a enfoques anteriores (Tiwari et al. 2013). Añadir una función de afilado al término fuente reduce el error de difusión, pero el grosor vaga en el espacio y el tiempo. Fijar $\varepsilon/a$ como paso de posprocesado, en cambio, produce el mismo grosor en todas partes.
+
+En flujo compresible hay una capa más. Si arreglas $\alpha$, la densidad y la energía de mezcla deben cambiar con ella para que la termodinámica sea consistente. Por eso los autores no corrigen solo $\alpha$; redistribuyen todo el vector de variables conservativas ($\alpha_1\rho_1$, $\alpha_2\rho_2$, cantidad de movimiento, energía) según las reglas de mezcla. Gracias a esta "regularización consistente con la mezcla", el equilibrio de velocidad, presión y temperatura en la interfaz no se rompe. La prueba de advección de interfaz pura en 1D del artículo muestra justo esto: cuando el agua y el aire se mueven a la misma velocidad, activar el afilado mantiene intactas la presión y la temperatura.
+
+## En 2D: mantener redonda la interfaz de la burbuja
+
+Funcionó en 1D, así que pasamos a una burbuja en 2D. Reproduzcamos lo que mostraban las figuras de choque–burbuja del artículo: la interfaz sosteniendo hasta el final un círculo nítido de pocas celdas de grosor. Abajo, activa `numerical diffusion` y el borde de la burbuja redonda se vuelve borroso. Activa `sharpening` y sube `compression a`, y el borde se aprieta de nuevo en un anillo definido.
+
+<ShockBubbleSharpenGrid />
+
+Observa dos cosas. Primera, el afilado aprieta la interfaz pero **no la mueve**: la burbuja ni crece ni encoge. Segunda, el número de celdas del anillo turquesa (la banda de interfaz) baja al subir la compresión. Como la compresión actúa a lo largo de la normal $\hat{\mathbf{n}}$, la curvatura del círculo se conserva en vez de arrugarse.
+
+## Con qué me topé al reproducirlo
+
+Tres cosas me trabaron. Primera, $\hat{\mathbf{n}} = \nabla\alpha/|\nabla\alpha|$ divide por cero en el fluido puro, donde $|\nabla\alpha|\to 0$. El artículo lo despacha porque el factor $a\,\alpha(1-\alpha)$ es cero allí, pero en código hay que añadir un valor pequeño al denominador para evitar NaN. Segunda, si el paso de pseudo-tiempo $d\tau$ es demasiado grande, la anti-difusión hace oscilar la interfaz; se necesita un límite tipo CFL para la estabilidad. Tercera, hay un compromiso en el número de iteraciones. El artículo dice que bastan 1–3 pasadas por paso, pero eso descansa en que la difusión por paso físico sea pequeña. Mallas gruesas o choques fuertes pueden requerir más.
+
+Una cosa más. La elegancia del "posprocesado" tiene un precio. El afilado cambia $\alpha$ independientemente de las ecuaciones de gobierno, así que en ese instante la advección no es una solución de la EDP original. A cambio de grosor constante, la conservación local cerca de la interfaz puede desviarse un poco. Los autores lo minimizan con la redistribución consistente con la mezcla, pero no es exactamente cero. El `interfoam` de OpenFOAM usa un término de compresión de la misma familia ($\nabla\cdot(\alpha(1-\alpha)\mathbf{u}_r)$), lo que sirve de vara de medir útil al portar esta técnica a un solver compresible.
+
+## Qué cambió este artículo
+
+- **Separación entre esquema y limpieza de interfaz.** Deja en paz al solver de Riemann y controla solo el grosor de la interfaz como posprocesado. Muy portable.
+- **Grosor = $\varepsilon/a$.** Mantén la interfaz no solo delgada sino **constante**, dejándote fijar la propiedad necesaria para capturar choques y discontinuidades de contacto.
+- **Consistencia termodinámica en flujo compresible.** Redistribuye no solo $\alpha$ sino todo el vector de variables conservativas según las reglas de mezcla, preservando el equilibrio de velocidad, presión y temperatura en la interfaz.
