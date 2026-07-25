@@ -1,0 +1,203 @@
+---
+title: "El número de Mach tiende a cero y el paso temporal no se inmuta — Reproduciendo un esquema IMEX TVD"
+date: 2026-07-26
+description: "Un esquema IMEX de segundo orden que escapa del CFL acústico sin oscilar"
+tags: ["IMEX", "Asymptotic-Preserving", "Low-Mach", "TVD", "Compressible"]
+locale: es
+slug: imex-tvd-ap-low-mach
+draft: false
+---
+
+import { LowMachIMEXPulseLab } from '@/components/post-viz/2026-07-26-imex-tvd-ap-low-mach/LowMachIMEXPulseLab'
+import { AcousticCFLBudget } from '@/components/post-viz/2026-07-26-imex-tvd-ap-low-mach/AcousticCFLBudget'
+
+El esquema AP de primer orden corrió sin problemas. Bajara el número de Mach a $10^{-2}$ o a $10^{-4}$, el paso temporal no se inmutaba. En cuanto le monté encima la discretización temporal de segundo orden ARS(2,2,2), brotaron sobreimpulsos a ambos lados del pulso. No era una divergencia. La amplitud quedaba acotada, pero por más pasos que corriera no desaparecía, y solo se esfumó al bajar el paso temporal hasta el CFL acústico (Courant–Friedrichs–Lewy: la condición sobre el paso temporal que impide que la información avance más de una celda por paso). Es justo la restricción que el esquema pretendía evitar.
+
+El artículo que leí hoy dice que ese fracaso no es un error de implementación sino un teorema. De este post quedan tres cosas. Por qué el segundo orden y un paso temporal sin restricción no pueden sostenerse a la vez, cómo esquivaron los autores ese muro, y qué dicen los números reales de una reproducción en 30 líneas de Python. Adelantando el final: las oscilaciones desaparecieron exactamente como indica el artículo, y a cambio hubo un precio mayor de lo previsto.
+
+- **Título**: Second order Implicit-Explicit Total Variation Diminishing schemes for the Euler system in the low Mach regime
+- **Autores**: Giacomo Dimarco (Ferrara), Raphaël Loubère (Bordeaux), Victor Michel-Dansac, Marie-Hélène Vignal (Toulouse)
+- **Fuente**: Preprint enviado a Elsevier, 2017-10-23
+- **DOI**: El resumen interno no tiene campo DOI — el original hay que buscarlo por su título.
+- **Resumen en una línea**: Combinar de forma convexa un esquema AP de primer orden con un esquema IMEX de segundo orden, para usar un paso temporal independiente del número de Mach sin perder la propiedad TVD (variación total no creciente: la variación total de la solución nunca aumenta con el tiempo) ni la propiedad $L^\infty$.
+
+## Q1. ¿Por qué muere el paso temporal cuando el número de Mach se hace pequeño?
+
+El punto de partida es el sistema de Euler isentrópico, adimensionalizado tomando el cuadrado del número de Mach como $\varepsilon$.
+
+$$
+\partial_t \rho + \nabla\cdot(\rho U) = 0
+$$
+
+$\rho$ es la densidad, $U$ es el campo de velocidad y la primera ecuación es la conservación de masa.
+
+$$
+\partial_t (\rho U) + \nabla\cdot(\rho U \otimes U) + \frac{1}{\varepsilon}\nabla p(\rho) = 0
+$$
+
+$\rho U$ es la cantidad de movimiento, $p(\rho)=\rho^\gamma$ es la presión, $\gamma$ es la razón de calores específicos y $1/\varepsilon$ es el inverso del cuadrado del número de Mach.
+
+Conviene fijarse en que solo el término de presión lleva $1/\varepsilon$. Cuando el gradiente de presión crece, la velocidad del sonido crece con él. Más exactamente, la velocidad del sonido escala como $1/\sqrt{\varepsilon}$. Un solver totalmente explícito debe seguir a la onda más rápida, así que queda atado a $\Delta t \le \Delta x / (|u| + c/\sqrt{\varepsilon})$. Con $\varepsilon = 10^{-4}$ eso es un paso unas 100 veces menor que el que pediría la escala temporal convectiva.
+
+El problema es que nadie necesita ese factor 100. En flujo de bajo Mach lo que interesa son las estructuras convectivas, no las ondas acústicas. De hecho, en el límite $\varepsilon \to 0$ el sistema converge al Euler incompresible. La densidad queda fija en una constante $\rho_0$, se cumple $\nabla\cdot U = 0$ y la ecuación de cantidad de movimiento toma la forma $\rho_0\partial_t U + \rho_0\nabla\cdot(U\otimes U) + \nabla\pi_1 = 0$. Aquí $\pi_1$ es la perturbación de presión de primer orden y hace de multiplicador de Lagrange que sostiene la restricción de incompresibilidad.
+
+La propiedad que hace falta entonces es AP (asymptotic-preserving, preservación asintótica). La definición es simple. Es la propiedad de que el esquema degenere, cuando $\varepsilon \to 0$, en una discretización consistente de las ecuaciones límite. Es decir, que el límite se capture bien sin encoger la malla ni el paso temporal para ajustarlos a $\varepsilon$.
+
+Se entiende más rápido tocándolo que con números. Bajemos $\varepsilon$ directamente abajo.
+
+<AcousticCFLBudget />
+
+Al bajar el deslizador de $\varepsilon$ hasta $10^{-4}$, las características acústicas se acuestan casi horizontales. Conviene alternar entre los botones Explicit e IMEX y comparar las lecturas de abajo. Llegar al mismo $t=1$ cuesta 4489 pasos explícitos frente a 89 pasos IMEX.
+
+## Q2. ¿Qué hay que pasar a implícito para que el CFL se suelte?
+
+Hacerlo todo implícito significa resolver un sistema no lineal en cada paso, y ese costo es inasumible. El artículo parte en dos piezas el flujo de las variables conservativas $W = (\rho, \rho U)$.
+
+$$
+\frac{W^{n+1}-W^n}{\Delta t} + \nabla\cdot F_e(W^n) + \nabla\cdot F_i(W^{n+1}) = 0
+$$
+
+$F_e(W) = (0,\ \rho U \otimes U)$ es el flujo convectivo tratado de forma explícita, y $F_i(W) = (\rho U,\ p(\rho)/\varepsilon \cdot I)$ es el flujo acústico tratado de forma implícita.
+
+Lo esencial es que esta partición no es arbitraria. Poner implícito el gradiente de presión da consistencia asintótica. Poner implícito el flujo de masa da estabilidad uniforme, independiente de $\varepsilon$. Si solo se pasa uno de los dos, se rompe una de las dos propiedades.
+
+Queda entonces cómo resolver el sistema implícito. El truco es tomar la divergencia. Al sustituir la divergencia de la ecuación implícita de cantidad de movimiento en la ecuación de masa, la cantidad de movimiento se cancela y queda una única ecuación elíptica no lineal para $\rho^{n+1}$.
+
+$$
+\frac{\rho^{n+1}-\rho^n}{\Delta t} + (\nabla\cdot(\rho U))^n - \Delta t\,(\nabla^2 : (\rho U\otimes U))^n - \frac{\Delta t}{\varepsilon}(\Delta p(\rho))^{n+1} = 0
+$$
+
+El último término del lado izquierdo, $\Delta p(\rho)^{n+1}$, es el laplaciano de presión implícito, y los términos que lo preceden son todos fuentes explícitas evaluadas en el instante $n$.
+
+Una vez resuelta esta ecuación elíptica para $\rho^{n+1}$, la cantidad de movimiento se actualiza con una sola sustitución explícita. Su estructura es la misma que la del paso de corrección de presión de un solver basado en presión. La única parte explícita que queda es $F_e$, así que la restricción sobre el paso temporal solo mira la velocidad convectiva. El resultado es $\Delta t \le \Delta x / \max_j(2|u_j^n|)$. El factor 2 aparece porque el mayor autovalor del flujo explícito $\rho U \otimes U$ es $2u$. No hay $\varepsilon$ por ninguna parte.
+
+## Q3. ¿Por qué aparecen oscilaciones al subir a segundo orden?
+
+El segundo orden en tiempo llega con un Runge–Kutta IMEX (implicit-explicit: una integración temporal que mezcla tratamiento implícito y explícito término a término) ARS(2,2,2). El coeficiente $\beta = 1 - \sqrt{2}/2 \approx 0.2929$ gobierna todo el esquema. La forma semidiscreta tiene dos etapas.
+
+$$
+W^{(1)} = W^n - \beta\,\Delta t\,\nabla\cdot F_e(W^n) - \beta\,\Delta t\,\nabla\cdot F_i(W^{(1)})
+$$
+
+$W^{(1)}$ es la solución de la etapa intermedia, y tanto la parte explícita como la implícita avanzan solo una fracción $\beta$.
+
+$$
+W^{n+1} = W^n - \Delta t\Big[\delta\,\nabla\cdot F_e(W^n) + (1-\delta)\,\nabla\cdot F_e(W^{(1)})\Big] - \Delta t\Big[(1-\beta)\,\nabla\cdot F_i(W^{(1)}) + \beta\,\nabla\cdot F_i(W^{n+1})\Big]
+$$
+
+$\delta = 1 - 1/(2\beta) \approx -0.7071$ sale de la condición de segundo orden de la tabla explícita, y que sea negativo se convierte más adelante en un problema.
+
+Aquí el artículo pone sobre la mesa un resultado negativo.
+
+> No existe ningún esquema Runge–Kutta implícito de orden mayor que uno que sea TVD sin restricción sobre el paso temporal. (Resultado negativo de la línea de Gottlieb, Teorema 1 del artículo)
+
+Este no es un muro que se atraviese con mejor código. El esquema AP de segundo orden es $L^2$ estable bajo el número CFL explícito $\sigma_e = c_e\Delta t/\Delta x \le 1$. Pero en cuanto $\Delta t$ supera el CFL acústico $\Delta x/(c_e + c_i/\sqrt{\varepsilon})$, pierde por igual la estabilidad $L^\infty$ y la propiedad TVD. El sobreimpulso que vi era exactamente eso. Acotado, así que nunca diverge. Estructural, así que dar más pasos no lo borra.
+
+Para el análisis, el artículo reduce el sistema a un problema modelo escalar (ecuación 12 del artículo). Basta con imaginar un pulso acústico montado sobre un flujo lento.
+
+$$
+\partial_t w + c_e \partial_x w + \frac{c_i}{\sqrt{\varepsilon}} \partial_x w = 0
+$$
+
+$w$ es la incógnita escalar, $c_e$ es la velocidad convectiva lenta y $c_i/\sqrt{\varepsilon}$ es la velocidad acústica rápida. Es una estructura que traslada tal cual el escalado $1/\sqrt{\varepsilon}$ de las ondas de presión de Euler.
+
+## Q4. ¿Mezclar primer y segundo orden da realmente TVD?
+
+La solución de los autores es simple. Calcular el mismo paso con el esquema AP de primer orden y con el de segundo orden, y luego combinarlos de forma convexa.
+
+$$
+w_j^{n+1} = \theta\, w_j^{n+1,\mathrm{O2}} + (1-\theta)\, w_j^{n+1,\mathrm{O1}}
+$$
+
+$\theta$ es el peso que carga el esquema de segundo orden. Con $\theta = 0$ queda primer orden puro; con $\theta = 1$, segundo orden puro.
+
+La idea es la misma que la de un limitador de flujo en el espacio. La diferencia está en que la mezcla se aplica a la discretización **temporal** y no a la espacial. El Teorema 3 del artículo da la condición. Si $\theta = \alpha\beta/(1-\beta)$ con $\alpha \in [0,1]$, el esquema mezclado es uniformemente TVD y $L^\infty$ estable. Y eso bajo un CFL independiente del número de Mach, $\sigma_e \le \sqrt{2}$ (tomando $\alpha = 1$). De ahí queda fijado el peso máximo que puede cargar el esquema de segundo orden.
+
+$$
+\theta_M = \frac{\beta}{1-\beta} = \sqrt{2}-1 \approx 0.4142
+$$
+
+$\theta_M$ es la cota superior de la cuota de segundo orden admisible manteniendo la propiedad TVD.
+
+Leído con honestidad, queda así. Solo se puede quemar hasta un 41% del esquema de segundo orden. Y esa cota no es una constante universal, sino un valor que viene con la discretización temporal IMEX elegida, es decir, con ARS(2,2,2). Con otra tabla IMEX, $\theta_M$ también cambia.
+
+Con un 41% la precisión se queda corta. Por eso el artículo le monta encima un enfoque MOOD (Multi-dimensional Optimal Order Detection: un limitador a posteriori que revisa la solución una vez calculada y rehace a orden más bajo solo las celdas problemáticas). El procedimiento tiene tres pasos. Primero se calcula una solución candidata de segundo orden. Luego se buscan las celdas que violan las cotas $L^\infty$ o la condición TVD. Por último se devuelven a la solución TVD-AP únicamente esas celdas. Las regiones suaves se quedan en segundo orden pleno, y solo el entorno de las discontinuidades cae a la mezcla segura.
+
+El efecto de la mezcla se capta más rápido tocándolo. Movamos $\theta$ abajo.
+
+<LowMachIMEXPulseLab />
+
+Al subir $\theta$ hasta 1, la curva solución atraviesa la banda de $\pm 1$ y la variación total pasa de 4. Al volver de golpe a $\theta = \sqrt{2}-1$, el sobreimpulso cae a cero y la curva queda atrapada dentro de la banda.
+
+## Q5. Reproducción en Python: las oscilaciones se van, ¿y qué se pierde?
+
+Con el problema modelo (ec. 12) y el esquema mezclado (ec. 17) basta para que la reproducción sea corta. Se parte de un pulso cuadrado y se miden la variación total y el sobreimpulso máximo para tres valores de $\theta$.
+
+```python
+import numpy as np
+
+BETA = 1.0 - np.sqrt(2.0) / 2.0        # ARS(2,2,2)
+THETA_M = BETA / (1.0 - BETA)          # = sqrt(2) - 1
+
+def solve_backward(rhs, s):
+    """Resuelve (1+s)w_j - s*w_{j-1} = rhs_j con frontera periódica (upwind implícito)."""
+    n = rhs.size
+    A = (1.0 + s) * np.eye(n)
+    A[np.arange(n), np.arange(n) - 1] -= s
+    return np.linalg.solve(A, rhs)
+
+def dminus(v):
+    return v - np.roll(v, 1)
+
+def blended_step(w, se, si, theta):
+    """Ecuación (17) del artículo: theta es la cuota del esquema de segundo orden."""
+    b = BETA
+    star = solve_backward(w - b * se * dminus(w), b * si)          # (17a)
+    rhs = (w - theta * (b - 1.0) * se * dminus(w)
+             - theta * (1.0 - b) * si * dminus(star)
+             - theta * (2.0 - b) * se * dminus(star)
+             - (1.0 - theta) * se * dminus(w))                     # (17b)
+    return solve_backward(rhs, (1.0 - theta + theta * b) * si)
+
+def pulse_run(eps, theta, steps=60, n=200, cfl=0.9, ce=1.0, ci=1.0):
+    dx = 1.0 / n
+    x = (np.arange(n) + 0.5) * dx
+    w = np.where((x > 0.25) & (x <= 0.75), 1.0, -1.0)   # pulso cuadrado, TV = 4
+    se, si = ce * cfl, (ci / np.sqrt(eps)) * cfl        # dt = cfl*dx/ce
+    over = 0.0
+    for _ in range(steps):
+        w = blended_step(w, se, si, theta)
+        over = max(over, w.max() - 1.0, -1.0 - w.min())
+    tv = np.abs(np.roll(w, -1) - w).sum()
+    return tv, over
+
+for eps in (1e-2, 1e-4):
+    for theta, tag in ((0.0, "AP 1er orden"), (THETA_M, "TVD-AP      "), (1.0, "AP 2do orden")):
+        tv, over = pulse_run(eps, theta)
+        print(f"eps={eps:<7g} {tag} TV={tv:6.3f}  sobreimpulso máx={over:+.4f}")
+```
+
+La salida es la siguiente.
+
+```text
+eps=0.01    AP 1er orden TV= 0.395  sobreimpulso máx=+0.0000
+eps=0.01    TVD-AP       TV= 0.977  sobreimpulso máx=+0.0000
+eps=0.01    AP 2do orden TV= 3.784  sobreimpulso máx=+0.4226
+eps=0.0001  AP 1er orden TV= 0.000  sobreimpulso máx=+0.0000
+eps=0.0001  TVD-AP       TV= 0.000  sobreimpulso máx=+0.0000
+eps=0.0001  AP 2do orden TV= 0.006  sobreimpulso máx=+0.3776
+```
+
+El sobreimpulso desaparece exactamente como dice el artículo. Solo el AP de segundo orden atraviesa la banda, en $\pm 0.38 \sim 0.42$, mientras que el AP de primer orden y el TVD-AP quedan en cero para ambos valores de $\varepsilon$. Hasta aquí la teoría y la implementación encajan sin fisuras.
+
+El precio es la difusión. Con $\varepsilon = 10^{-2}$, tras 60 pasos la variación total se recupera desde el 0.395 del AP de primer orden hasta el 0.977 del TVD-AP. Más del doble de mejora, pero muy lejos de la variación total inicial de 4.0. Es decir, lo que vende el TVD-AP es "emborrona menos que el primer orden", no que conserve la nitidez del segundo orden.
+
+Con $\varepsilon = 10^{-4}$ la diferencia asoma con un solo paso. El AP de segundo orden llega a una variación total de 5.510, por encima del valor inicial 4.0, y genera un sobreimpulso de $+0.378$. El TVD-AP tiene sobreimpulso exactamente cero, pero su variación total baja hasta 1.860. El número de Courant acústico es 90, así que la difusión del upwind implícito se come todo eso en un solo paso. A los 4 pasos, los valores caen a 0.062 para el AP de primer orden y 0.068 para el TVD-AP, y a los 60 pasos el pulso se ha extinguido en la práctica para los tres esquemas.
+
+Esta difusión es justamente la razón por la que el artículo monta el limitador MOOD. Los autores sabían que la mezcla por sí sola no puede proteger la precisión.
+
+## Puntuación de reproducibilidad
+
+- **Dificultad de reproducción**: El problema modelo (ecs. 12 y 17) se reproduce en 30 líneas. En cambio, el sistema de Euler completo es otro problema, porque cada paso exige resolver una ecuación elíptica no lineal para $\rho^{n+1}$. El artículo no indica ni el criterio de convergencia ni el número de iteraciones de ese solver no lineal.
+- **Lectura crítica**: La cota superior $\sqrt{2}-1$ de $\theta$ está atada a ARS(2,2,2). Se le llama "segundo orden", pero la precisión efectiva es la de una mezcla con una cuota de segundo orden del 41%. El propio artículo escribe que usar un $\theta$ local por celda mejoraría las cosas, y a la vez deja la demostración TVD de ese caso como problema abierto. Además, el coeficiente CFL de los experimentos numéricos de la sección 6 es $C = 0.9$ solo para el esquema de primer orden y $C = 0.45$ para los otros tres. Se indica que es por la reconstrucción espacial de segundo orden, pero leído junto al titular de "se liberó el paso temporal del número de Mach", conviene señalar que la ganancia real se recorta a la mitad. Y, como admite la propia conclusión del artículo, incluso con el limitador activo quedan pequeñas oscilaciones en algunos casos.
+- **Aplicación práctica**: Los solvers basados en presión de la familia OpenFOAM (PISO/SIMPLE) ya tratan el término de presión de forma implícita y alcanzan el mismo objetivo en bajo Mach. La contribución de este artículo se acerca más a plantar esa idea en un marco conservativo basado en densidad, junto con una demostración TVD. Para problemas donde lo compresible y lo incompresible conviven en un mismo dominio —por ejemplo, una geometría con una tobera de alta velocidad pegada a una región de estancamiento— vale la pena retomarlo.

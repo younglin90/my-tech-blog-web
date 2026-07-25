@@ -1,0 +1,203 @@
+---
+title: "The Mach Number Goes to Zero, the Time Step Doesn't Budge — Reproducing an IMEX TVD Scheme"
+date: 2026-07-26
+description: "A second-order IMEX scheme that escapes the acoustic CFL without oscillating"
+tags: ["IMEX", "Asymptotic-Preserving", "Low-Mach", "TVD", "Compressible"]
+locale: en
+slug: imex-tvd-ap-low-mach
+draft: false
+---
+
+import { LowMachIMEXPulseLab } from '@/components/post-viz/2026-07-26-imex-tvd-ap-low-mach/LowMachIMEXPulseLab'
+import { AcousticCFLBudget } from '@/components/post-viz/2026-07-26-imex-tvd-ap-low-mach/AcousticCFLBudget'
+
+The first-order AP scheme ran just fine. Whether I dropped the Mach number to $10^{-2}$ or to $10^{-4}$, the time step did not budge. The moment I stacked the second-order ARS(2,2,2) time discretization on top, overshoots sprouted on both sides of the pulse. It was not a blow-up. The amplitude stayed bounded, but no amount of stepping made it go away, and it only vanished once I pushed the time step down to the acoustic CFL (Courant–Friedrichs–Lewy — the time-step condition that keeps information from traveling more than one cell per step). That is exactly the constraint the scheme was built to avoid.
+
+The paper I read today says this failure is not an implementation bug but a theorem. There are three things to take away from this post. Why second order and an unconstrained time step cannot hold at the same time, how the authors sidestepped that wall, and what the actual numbers from a 30-line Python reproduction say. To give away the ending: the oscillations disappeared exactly as the paper predicts, and the price was steeper than expected.
+
+- **Title**: Second order Implicit-Explicit Total Variation Diminishing schemes for the Euler system in the low Mach regime
+- **Authors**: Giacomo Dimarco (Ferrara), Raphaël Loubère (Bordeaux), Victor Michel-Dansac, Marie-Hélène Vignal (Toulouse)
+- **Source**: Preprint submitted to Elsevier, 2017-10-23
+- **DOI**: The in-house summary has no DOI field — the original has to be found by searching its title.
+- **One-line summary**: Take a convex combination of a first-order AP scheme and a second-order IMEX scheme, so that a Mach-independent time step can be used without losing TVD (total variation diminishing — the property that the total variation of the solution never grows in time) or the $L^\infty$ property.
+
+## Q1. Why does the time step die when the Mach number gets small?
+
+The starting point is the isentropic Euler system, nondimensionalized with the squared Mach number set to $\varepsilon$.
+
+$$
+\partial_t \rho + \nabla\cdot(\rho U) = 0
+$$
+
+$\rho$ is density, $U$ is the velocity field, and the first equation is mass conservation.
+
+$$
+\partial_t (\rho U) + \nabla\cdot(\rho U \otimes U) + \frac{1}{\varepsilon}\nabla p(\rho) = 0
+$$
+
+$\rho U$ is momentum, $p(\rho)=\rho^\gamma$ is pressure, $\gamma$ is the ratio of specific heats, and $1/\varepsilon$ is the inverse of the squared Mach number.
+
+Notice that only the pressure term carries $1/\varepsilon$. As the pressure gradient grows, the sound speed grows with it. More precisely, the sound speed scales like $1/\sqrt{\varepsilon}$. A fully explicit solver has to follow the fastest wave, so it is tied to $\Delta t \le \Delta x / (|u| + c/\sqrt{\varepsilon})$. At $\varepsilon = 10^{-4}$ that is a step about 100 times smaller than the convective time scale would ask for.
+
+The problem is that nobody needs that factor of 100. In low Mach flow the objects of interest are convective structures, not acoustic waves. In fact, in the $\varepsilon \to 0$ limit the system converges to incompressible Euler. Density freezes at a constant $\rho_0$, $\nabla\cdot U = 0$ holds, and the momentum equation takes the form $\rho_0\partial_t U + \rho_0\nabla\cdot(U\otimes U) + \nabla\pi_1 = 0$. Here $\pi_1$ is the first-order pressure perturbation, acting as the Lagrange multiplier that enforces the incompressibility constraint.
+
+The property needed here is AP (asymptotic-preserving). The definition is simple. It is the property that the scheme degenerates, as $\varepsilon \to 0$, into a consistent discretization of the limit equations. Meaning the limit is captured correctly without shrinking the grid and the time step to match $\varepsilon$.
+
+Hands beat numbers here. Let's dial $\varepsilon$ down directly below.
+
+<AcousticCFLBudget />
+
+Pull the $\varepsilon$ slider down to $10^{-4}$ and the acoustic characteristics flatten out almost horizontally. Toggle between the Explicit and IMEX buttons and compare the readouts below. Reaching the same $t=1$ takes 4489 explicit steps against 89 IMEX steps.
+
+## Q2. What has to go implicit for the CFL to loosen?
+
+Making everything implicit means solving a nonlinear system every step, and that cost is not affordable. The paper splits the flux of the conservative variables $W = (\rho, \rho U)$ into two pieces.
+
+$$
+\frac{W^{n+1}-W^n}{\Delta t} + \nabla\cdot F_e(W^n) + \nabla\cdot F_i(W^{n+1}) = 0
+$$
+
+$F_e(W) = (0,\ \rho U \otimes U)$ is the convective flux handled explicitly, and $F_i(W) = (\rho U,\ p(\rho)/\varepsilon \cdot I)$ is the acoustic flux handled implicitly.
+
+The key point is that this split is not arbitrary. Making the pressure gradient implicit buys asymptotic consistency. Making the mass flux implicit buys uniform stability independent of $\varepsilon$. Move only one of the two and one property breaks.
+
+That leaves the question of how to solve the implicit system. The trick is to take a divergence. Substituting the divergence of the implicit momentum equation into the mass equation cancels the momentum, leaving a single nonlinear elliptic equation for $\rho^{n+1}$.
+
+$$
+\frac{\rho^{n+1}-\rho^n}{\Delta t} + (\nabla\cdot(\rho U))^n - \Delta t\,(\nabla^2 : (\rho U\otimes U))^n - \frac{\Delta t}{\varepsilon}(\Delta p(\rho))^{n+1} = 0
+$$
+
+The last term on the left, $\Delta p(\rho)^{n+1}$, is the implicit pressure Laplacian, and the terms before it are all explicit sources evaluated at time level $n$.
+
+Once this elliptic equation is solved for $\rho^{n+1}$, the momentum updates with a single explicit substitution. Structurally it is the pressure-correction step of a pressure-based solver. The only explicit part left is $F_e$, so the time-step constraint only sees the convective speed. The result is $\Delta t \le \Delta x / \max_j(2|u_j^n|)$. The factor 2 shows up because the largest eigenvalue of the explicit flux $\rho U \otimes U$ is $2u$. There is no $\varepsilon$ anywhere.
+
+## Q3. Why does going second order create oscillations?
+
+Second order in time comes from an ARS(2,2,2) IMEX (implicit-explicit — a time integrator that mixes implicit and explicit treatment term by term) Runge–Kutta. The coefficient $\beta = 1 - \sqrt{2}/2 \approx 0.2929$ governs the whole scheme. The semi-discrete form has two stages.
+
+$$
+W^{(1)} = W^n - \beta\,\Delta t\,\nabla\cdot F_e(W^n) - \beta\,\Delta t\,\nabla\cdot F_i(W^{(1)})
+$$
+
+$W^{(1)}$ is the intermediate-stage solution, and both the explicit and the implicit part advance only by $\beta$.
+
+$$
+W^{n+1} = W^n - \Delta t\Big[\delta\,\nabla\cdot F_e(W^n) + (1-\delta)\,\nabla\cdot F_e(W^{(1)})\Big] - \Delta t\Big[(1-\beta)\,\nabla\cdot F_i(W^{(1)}) + \beta\,\nabla\cdot F_i(W^{n+1})\Big]
+$$
+
+$\delta = 1 - 1/(2\beta) \approx -0.7071$ comes out of the second-order condition on the explicit tableau, and the fact that it is negative becomes a problem later.
+
+Here the paper puts a negative result on the table.
+
+> No implicit Runge–Kutta scheme of order higher than one is TVD without a time-step restriction. (A negative result in the Gottlieb line of work, Theorem 1 in the paper)
+
+This is not a wall you can break through with better code. The second-order AP scheme is $L^2$ stable under the explicit CFL number $\sigma_e = c_e\Delta t/\Delta x \le 1$. But the moment $\Delta t$ exceeds the acoustic CFL $\Delta x/(c_e + c_i/\sqrt{\varepsilon})$, it loses $L^\infty$ stability and TVD alike. That is exactly the overshoot I saw. Bounded, so it never blows up. Structural, so more steps never clear it.
+
+For the analysis the paper reduces the system to a scalar model problem (equation 12 in the paper). Picture an acoustic pulse riding on top of a slow flow.
+
+$$
+\partial_t w + c_e \partial_x w + \frac{c_i}{\sqrt{\varepsilon}} \partial_x w = 0
+$$
+
+$w$ is the scalar unknown, $c_e$ is the slow convective speed, and $c_i/\sqrt{\varepsilon}$ is the fast acoustic speed. The structure carries the $1/\sqrt{\varepsilon}$ scaling of the Euler pressure waves over as is.
+
+## Q4. Does blending first and second order really give TVD?
+
+The authors' fix is simple. Compute the same step with the first-order AP scheme and with the second-order scheme, then take a convex combination.
+
+$$
+w_j^{n+1} = \theta\, w_j^{n+1,\mathrm{O2}} + (1-\theta)\, w_j^{n+1,\mathrm{O1}}
+$$
+
+$\theta$ is the weight placed on the second-order scheme. $\theta = 0$ gives pure first order, $\theta = 1$ gives pure second order.
+
+The idea is the same as a flux limiter in space. The difference is that the blend is applied to the **time** discretization instead of to space. Theorem 3 in the paper gives the condition. If $\theta = \alpha\beta/(1-\beta)$ with $\alpha \in [0,1]$, the blended scheme is uniformly TVD and $L^\infty$ stable. And that holds under a Mach-independent CFL $\sigma_e \le \sqrt{2}$ (taking $\alpha = 1$). So the largest weight the second-order scheme can carry is fixed like this.
+
+$$
+\theta_M = \frac{\beta}{1-\beta} = \sqrt{2}-1 \approx 0.4142
+$$
+
+$\theta_M$ is the upper bound on the second-order share allowed while TVD still holds.
+
+Read honestly, it comes to this. Only 41% of the second-order scheme can be burned. And that ceiling is not a universal constant. It belongs to the chosen IMEX time discretization, ARS(2,2,2). A different IMEX tableau gives a different $\theta_M$.
+
+41% leaves accuracy on the table. So the paper stacks a MOOD (Multi-dimensional Optimal Order Detection — an a posteriori limiter that inspects the solution after the computation and redoes only the offending cells at lower order) approach on top. The procedure has three steps. First compute a candidate second-order solution. Then find the cells that violate the $L^\infty$ bounds or the TVD condition. Finally roll only those cells back to the TVD-AP solution. Smooth regions stay fully second order, and only the neighborhoods of discontinuities drop to the safe blend.
+
+The fastest way to feel the blend is to touch it. Let's move $\theta$ below.
+
+<LowMachIMEXPulseLab />
+
+Push $\theta$ to 1 and the solution curve breaks through the $\pm 1$ band while the total variation climbs past 4. Snap it back to $\theta = \sqrt{2}-1$ and the overshoot drops to zero and the curve stays trapped inside the band.
+
+## Q5. Reproducing it in Python — the oscillations go, but what is lost?
+
+With just the model problem (eq. 12) and the blended scheme (eq. 17), the reproduction is short. Start from a square pulse and measure total variation and maximum overshoot for three values of $\theta$.
+
+```python
+import numpy as np
+
+BETA = 1.0 - np.sqrt(2.0) / 2.0        # ARS(2,2,2)
+THETA_M = BETA / (1.0 - BETA)          # = sqrt(2) - 1
+
+def solve_backward(rhs, s):
+    """Solve (1+s)w_j - s*w_{j-1} = rhs_j on a periodic domain (implicit upwind)."""
+    n = rhs.size
+    A = (1.0 + s) * np.eye(n)
+    A[np.arange(n), np.arange(n) - 1] -= s
+    return np.linalg.solve(A, rhs)
+
+def dminus(v):
+    return v - np.roll(v, 1)
+
+def blended_step(w, se, si, theta):
+    """Paper eq. (17): theta is the second-order share."""
+    b = BETA
+    star = solve_backward(w - b * se * dminus(w), b * si)          # (17a)
+    rhs = (w - theta * (b - 1.0) * se * dminus(w)
+             - theta * (1.0 - b) * si * dminus(star)
+             - theta * (2.0 - b) * se * dminus(star)
+             - (1.0 - theta) * se * dminus(w))                     # (17b)
+    return solve_backward(rhs, (1.0 - theta + theta * b) * si)
+
+def pulse_run(eps, theta, steps=60, n=200, cfl=0.9, ce=1.0, ci=1.0):
+    dx = 1.0 / n
+    x = (np.arange(n) + 0.5) * dx
+    w = np.where((x > 0.25) & (x <= 0.75), 1.0, -1.0)   # square pulse, TV = 4
+    se, si = ce * cfl, (ci / np.sqrt(eps)) * cfl        # dt = cfl*dx/ce
+    over = 0.0
+    for _ in range(steps):
+        w = blended_step(w, se, si, theta)
+        over = max(over, w.max() - 1.0, -1.0 - w.min())
+    tv = np.abs(np.roll(w, -1) - w).sum()
+    return tv, over
+
+for eps in (1e-2, 1e-4):
+    for theta, tag in ((0.0, "1st-order AP"), (THETA_M, "TVD-AP      "), (1.0, "2nd-order AP")):
+        tv, over = pulse_run(eps, theta)
+        print(f"eps={eps:<7g} {tag} TV={tv:6.3f}  max overshoot={over:+.4f}")
+```
+
+The output looks like this.
+
+```text
+eps=0.01    1st-order AP TV= 0.395  max overshoot=+0.0000
+eps=0.01    TVD-AP       TV= 0.977  max overshoot=+0.0000
+eps=0.01    2nd-order AP TV= 3.784  max overshoot=+0.4226
+eps=0.0001  1st-order AP TV= 0.000  max overshoot=+0.0000
+eps=0.0001  TVD-AP       TV= 0.000  max overshoot=+0.0000
+eps=0.0001  2nd-order AP TV= 0.006  max overshoot=+0.3776
+```
+
+The overshoot disappears exactly as the paper says. Only second-order AP breaks the band, by $\pm 0.38 \sim 0.42$, while first-order AP and TVD-AP sit at zero for both values of $\varepsilon$. Up to here theory and implementation line up cleanly.
+
+The price is diffusion. At $\varepsilon = 10^{-2}$, after 60 steps the total variation recovers from 0.395 for first-order AP to 0.977 for TVD-AP. More than twice as good, but nowhere near the initial total variation of 4.0. What TVD-AP sells is "smears less than first order," not "keeps the sharpness of second order."
+
+At $\varepsilon = 10^{-4}$ the difference shows up after a single step. Second-order AP reaches a total variation of 5.510, past the initial 4.0, and produces an overshoot of $+0.378$. TVD-AP has exactly zero overshoot, but its total variation falls to 1.860. The acoustic Courant number is 90, so the diffusion of the implicit upwind eats that much in one step. By 4 steps the numbers are down to 0.062 for first-order AP and 0.068 for TVD-AP, and by 60 steps the pulse has effectively vanished for all three schemes.
+
+This diffusion is exactly why the paper adds the MOOD limiter. The authors knew the blend alone cannot protect accuracy.
+
+## Reproducibility score
+
+- **Reproduction difficulty**: The model problem (eqs. 12 and 17) reproduces in 30 lines. The full Euler system, on the other hand, is a different problem, since every step requires solving a nonlinear elliptic equation for $\rho^{n+1}$. The paper states neither the convergence criterion nor the iteration count for that nonlinear solver.
+- **Critical read**: The upper bound $\sqrt{2}-1$ on $\theta$ is tied to ARS(2,2,2). We call it "second order," but the effective accuracy is a blend carrying a 41% second-order share. The paper itself writes that a cell-local $\theta$ would improve things, while leaving the TVD proof for that case as an open problem. On top of that, the CFL coefficient in the numerical experiments of Section 6 is $C = 0.9$ only for the first-order scheme and $C = 0.45$ for the other three. It is stated to be because of the second-order spatial reconstruction, but read side by side with the headline "the time step has been freed from the Mach number," it is worth pointing out that the practical gain is cut in half. And as the paper's own conclusion admits, small oscillations survive in some cases even with the limiter on.
+- **Practical use**: Pressure-based solvers of the OpenFOAM family (PISO/SIMPLE) already treat the pressure term implicitly and reach the same goal at low Mach. This paper's contribution is closer to planting that idea in a density-based conservative framework together with a TVD proof. For problems where compressible and incompressible regions coexist in one domain — say a geometry with a high-speed nozzle attached to a stagnation region — it is worth revisiting.

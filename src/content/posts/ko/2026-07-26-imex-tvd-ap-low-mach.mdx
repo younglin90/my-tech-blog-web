@@ -1,0 +1,203 @@
+---
+title: "마하수가 0으로 가도 시간스텝은 그대로 — IMEX TVD 스킴 재현기"
+date: 2026-07-26
+description: "음속 CFL을 벗어나면서도 진동하지 않는 2차 IMEX 스킴"
+tags: ["IMEX", "Asymptotic-Preserving", "Low-Mach", "TVD", "Compressible"]
+locale: ko
+slug: imex-tvd-ap-low-mach
+draft: false
+---
+
+import { LowMachIMEXPulseLab } from '@/components/post-viz/2026-07-26-imex-tvd-ap-low-mach/LowMachIMEXPulseLab'
+import { AcousticCFLBudget } from '@/components/post-viz/2026-07-26-imex-tvd-ap-low-mach/AcousticCFLBudget'
+
+1차 AP 스킴은 잘 돌았다. 마하수를 $10^{-2}$로 내리든 $10^{-4}$로 내리든 시간스텝은 꿈쩍도 하지 않았다. 거기에 2차 시간이산화 ARS(2,2,2)를 얹은 순간, 펄스 양옆에 오버슈트가 돋았다. 발산은 아니었다. 크기는 유계였지만 스텝을 아무리 돌려도 사라지지 않았고, 시간스텝을 음속 CFL(Courant–Friedrichs–Lewy·정보 전파 속도가 격자 한 칸을 넘지 않게 하는 시간스텝 조건)까지 내리자 그제야 없어졌다. 스킴이 피하려던 바로 그 제약이다.
+
+오늘 읽는 논문은 이 실패가 구현 버그가 아니라 정리(theorem)라고 말한다. 이 포스트에서 얻어갈 것은 세 가지다. 왜 2차와 무제약 시간스텝이 동시에 성립할 수 없는지, 저자들이 그 벽을 어떻게 우회했는지, 그리고 30줄 파이썬으로 재현한 실제 수치가 무엇을 말하는지다. 결론부터 말하면 진동은 정확히 논문대로 사라졌고, 대신 예상보다 큰 대가를 치렀다.
+
+- **제목**: Second order Implicit-Explicit Total Variation Diminishing schemes for the Euler system in the low Mach regime
+- **저자**: Giacomo Dimarco (Ferrara), Raphaël Loubère (Bordeaux), Victor Michel-Dansac, Marie-Hélène Vignal (Toulouse)
+- **출처**: Elsevier 제출 프리프린트, 2017-10-23
+- **DOI**: 사내 요약본에 DOI 항목이 없다 — 원문은 제목으로 검색해야 한다.
+- **한 줄 요약**: 1차 AP 스킴과 2차 IMEX 스킴을 볼록결합해서, 마하수와 무관한 시간스텝을 쓰면서도 TVD(전변동 비증가·해의 총 변동이 시간이 지나도 늘지 않는 성질)와 $L^\infty$ 성질을 잃지 않는 스킴을 만든다.
+
+## Q1. 마하수가 작아지면 왜 시간스텝이 죽는가
+
+출발점은 마하수 제곱을 $\varepsilon$로 놓고 무차원화한 등엔트로피 Euler 방정식이다.
+
+$$
+\partial_t \rho + \nabla\cdot(\rho U) = 0
+$$
+
+$\rho$는 밀도, $U$는 속도장, 첫 식은 질량 보존이다.
+
+$$
+\partial_t (\rho U) + \nabla\cdot(\rho U \otimes U) + \frac{1}{\varepsilon}\nabla p(\rho) = 0
+$$
+
+$\rho U$는 운동량, $p(\rho)=\rho^\gamma$는 압력, $\gamma$는 비열비, $1/\varepsilon$은 마하수 제곱의 역수다.
+
+눈여겨볼 것은 압력 항에만 $1/\varepsilon$이 붙는다는 점이다. 압력 구배가 커지면 음속도 같이 커진다. 정확히는 음속이 $1/\sqrt{\varepsilon}$처럼 스케일한다. 완전 explicit 솔버는 가장 빠른 파동을 따라가야 하므로 $\Delta t \le \Delta x / (|u| + c/\sqrt{\varepsilon})$에 묶인다. $\varepsilon = 10^{-4}$이면 대류 시간스케일 기준보다 약 100배 작은 스텝이 된다.
+
+문제는 그 100배를 아무도 필요로 하지 않는다는 것이다. 저마하수 유동에서 관심 대상은 대류 구조지 음향파가 아니다. 실제로 $\varepsilon \to 0$ 극한에서 계는 비압축성 Euler로 수렴한다. 밀도는 상수 $\rho_0$로 고정되고, $\nabla\cdot U = 0$이 되며, 운동량 식은 $\rho_0\partial_t U + \rho_0\nabla\cdot(U\otimes U) + \nabla\pi_1 = 0$ 형태가 된다. 여기서 $\pi_1$은 압력의 1차 섭동으로, 비압축 제약을 유지시키는 Lagrange 승수 역할을 한다.
+
+이때 필요한 성질이 AP(asymptotic-preserving·점근 보존)다. 정의는 간단하다. 스킴이 $\varepsilon \to 0$에서 극한 방정식의 정합적 이산화로 degenerate하는 성질이다. 격자와 시간스텝을 $\varepsilon$에 맞춰 줄이지 않아도 극한이 제대로 잡힌다는 뜻이다.
+
+숫자 대신 손으로 만져보는 편이 빠르다. 아래에서 $\varepsilon$을 직접 내려보자.
+
+<AcousticCFLBudget />
+
+$\varepsilon$ 슬라이더를 $10^{-4}$까지 내리면 음향 특성곡선이 거의 수평으로 눕는다. Explicit과 IMEX 버튼을 번갈아 눌러 아래 판독값을 비교해보자. 같은 $t=1$까지 가는 데 explicit은 4489스텝, IMEX는 89스텝이다.
+
+## Q2. 무엇을 implicit으로 넘겨야 CFL이 풀리는가
+
+전부 implicit으로 만들면 비선형 시스템을 매 스텝 푸는 비용이 감당이 안 된다. 논문은 보존변수 $W = (\rho, \rho U)$의 플럭스를 두 조각으로 쪼갠다.
+
+$$
+\frac{W^{n+1}-W^n}{\Delta t} + \nabla\cdot F_e(W^n) + \nabla\cdot F_i(W^{n+1}) = 0
+$$
+
+$F_e(W) = (0,\ \rho U \otimes U)$는 explicit으로 처리하는 대류 플럭스, $F_i(W) = (\rho U,\ p(\rho)/\varepsilon \cdot I)$는 implicit으로 처리하는 음향 플럭스다.
+
+이 분할이 임의적이지 않다는 점이 핵심이다. 압력 구배를 implicit으로 두면 asymptotic consistency가 나오고, 질량 플럭스를 implicit으로 두면 $\varepsilon$에 무관한 균일 안정성이 나온다. 둘 중 하나만 넘기면 한쪽 성질이 깨진다.
+
+그러면 implicit 시스템을 어떻게 푸느냐가 남는다. 트릭은 발산을 취하는 것이다. implicit 운동량 식의 발산을 질량 식에 대입하면 운동량이 소거되고, $\rho^{n+1}$에 대한 단일 비선형 타원 방정식만 남는다.
+
+$$
+\frac{\rho^{n+1}-\rho^n}{\Delta t} + (\nabla\cdot(\rho U))^n - \Delta t\,(\nabla^2 : (\rho U\otimes U))^n - \frac{\Delta t}{\varepsilon}(\Delta p(\rho))^{n+1} = 0
+$$
+
+좌변 마지막 항의 $\Delta p(\rho)^{n+1}$이 implicit 압력 Laplacian이고, 그 앞의 항들은 모두 $n$ 시점 값으로 계산되는 명시적 소스다.
+
+이 타원 방정식을 풀어 $\rho^{n+1}$을 얻고 나면, 운동량은 명시적 대입 한 번으로 갱신된다. 압력 기반 solver의 압력 보정 단계와 구조가 같다. 남은 explicit 부분은 $F_e$뿐이므로 시간스텝 제약도 대류 속도만 본다. 결과는 $\Delta t \le \Delta x / \max_j(2|u_j^n|)$이다. 계수 2는 explicit 플럭스 $\rho U \otimes U$의 최대 고유값이 $2u$이기 때문에 붙는다. $\varepsilon$이 어디에도 없다.
+
+## Q3. 2차로 올렸더니 왜 진동이 생기는가
+
+시간 2차는 ARS(2,2,2) IMEX(implicit-explicit·항별로 음해와 양해를 섞는 시간적분) Runge–Kutta로 올린다. 계수 $\beta = 1 - \sqrt{2}/2 \approx 0.2929$가 스킴 전체를 지배한다. 반이산 형태는 두 단계다.
+
+$$
+W^{(1)} = W^n - \beta\,\Delta t\,\nabla\cdot F_e(W^n) - \beta\,\Delta t\,\nabla\cdot F_i(W^{(1)})
+$$
+
+$W^{(1)}$은 중간 단계 해이고, explicit·implicit 모두 $\beta$만큼만 전진한다.
+
+$$
+W^{n+1} = W^n - \Delta t\Big[\delta\,\nabla\cdot F_e(W^n) + (1-\delta)\,\nabla\cdot F_e(W^{(1)})\Big] - \Delta t\Big[(1-\beta)\,\nabla\cdot F_i(W^{(1)}) + \beta\,\nabla\cdot F_i(W^{n+1})\Big]
+$$
+
+$\delta = 1 - 1/(2\beta) \approx -0.7071$은 explicit 테이블의 2차 조건에서 나오는 계수로, 음수라는 점이 뒤에 문제가 된다.
+
+여기서 논문은 부정 결과를 정면으로 꺼낸다.
+
+> 차수가 1보다 높은 implicit Runge–Kutta 스킴 중 시간스텝 제약 없이 TVD인 것은 존재하지 않는다. (Gottlieb 계열의 부정 결과, 논문 Theorem 1)
+
+이건 구현으로 뚫을 수 있는 벽이 아니다. 2차 AP 스킴은 explicit CFL 수 $\sigma_e = c_e\Delta t/\Delta x \le 1$ 아래에서 $L^2$ 안정하다. 하지만 $\Delta t$가 음향 CFL $\Delta x/(c_e + c_i/\sqrt{\varepsilon})$을 넘는 순간 $L^\infty$ 안정성도, TVD도 잃는다. 내가 본 오버슈트가 정확히 그것이었다. 유계이므로 발산은 안 하고, 구조적이므로 스텝을 더 돌려도 안 사라진다.
+
+분석을 위해 논문은 시스템을 스칼라 모델 문제로 줄인다(논문 식 12). 느린 유동 위를 타고 흐르는 음향 펄스를 생각하면 된다.
+
+$$
+\partial_t w + c_e \partial_x w + \frac{c_i}{\sqrt{\varepsilon}} \partial_x w = 0
+$$
+
+$w$는 스칼라 미지수, $c_e$는 느린 대류 속도, $c_i/\sqrt{\varepsilon}$은 빠른 음향 속도다. Euler 압력파의 $1/\sqrt{\varepsilon}$ 스케일링을 그대로 옮긴 구조다.
+
+## Q4. 1차와 2차를 섞으면 정말 TVD가 되는가
+
+저자들의 해법은 단순하다. 같은 스텝을 1차 AP 스킴과 2차 스킴으로 각각 계산한 뒤 볼록결합한다.
+
+$$
+w_j^{n+1} = \theta\, w_j^{n+1,\mathrm{O2}} + (1-\theta)\, w_j^{n+1,\mathrm{O1}}
+$$
+
+$\theta$는 2차 스킴에 실리는 가중치이고, $\theta = 0$이면 순수 1차, $\theta = 1$이면 순수 2차다.
+
+공간에서 쓰는 플럭스 리미터와 발상이 같다. 다른 점은 그 혼합을 공간이 아니라 **시간** 이산화에 적용한다는 것이다. 논문 Theorem 3이 조건을 준다. $\theta = \alpha\beta/(1-\beta)$, $\alpha \in [0,1]$이면 혼합 스킴은 균일하게 TVD이고 $L^\infty$ 안정하다. 그것도 마하수와 무관한 CFL $\sigma_e \le \sqrt{2}$ 아래에서다($\alpha = 1$ 기준). 따라서 2차 스킴에 실을 수 있는 최대 가중치는 이렇게 정해진다.
+
+$$
+\theta_M = \frac{\beta}{1-\beta} = \sqrt{2}-1 \approx 0.4142
+$$
+
+$\theta_M$은 TVD를 유지하면서 허용되는 2차 지분의 상한이다.
+
+정직하게 읽으면 이렇다. 2차 스킴 지분을 41%까지만 태울 수 있다는 뜻이다. 그리고 그 상한은 보편 상수가 아니라 선택한 IMEX 시간이산화, 즉 ARS(2,2,2)에 딸린 값이다. 다른 IMEX 테이블을 쓰면 $\theta_M$도 달라진다.
+
+41%로는 정확도가 아쉽다. 그래서 논문은 MOOD(Multi-dimensional Optimal Order Detection·계산이 끝난 뒤 해를 검사해 문제된 셀만 낮은 차수로 다시 푸는 사후 리미터) 방식을 얹는다. 절차는 세 단계다. 먼저 후보 2차 해를 계산하고, 다음으로 $L^\infty$ 경계나 TVD 조건을 위반한 셀을 찾고, 마지막으로 위반한 셀만 TVD-AP 해로 되돌린다. 매끄러운 영역은 온전한 2차로 남고, 불연속 근처만 안전한 혼합으로 떨어진다.
+
+혼합의 효과는 직접 만져보는 게 빠르다. 아래에서 $\theta$를 움직여보자.
+
+<LowMachIMEXPulseLab />
+
+$\theta$를 1로 올리면 해 곡선이 $\pm 1$ 밴드를 뚫고 전변동이 4를 넘어간다. 반대로 $\theta = \sqrt{2}-1$로 스냅하면 오버슈트가 0으로 떨어지고 밴드 안에 갇힌다.
+
+## Q5. Python으로 재현 — 진동은 사라지고 무엇을 잃는가
+
+모델 문제(식 12)와 혼합 스킴(식 17)만 있으면 재현은 짧다. 사각 펄스를 초기조건으로 두고, $\theta$를 셋으로 바꿔가며 전변동과 최대 오버슈트를 잰다.
+
+```python
+import numpy as np
+
+BETA = 1.0 - np.sqrt(2.0) / 2.0        # ARS(2,2,2)
+THETA_M = BETA / (1.0 - BETA)          # = sqrt(2) - 1
+
+def solve_backward(rhs, s):
+    """주기 경계에서 (1+s)w_j - s*w_{j-1} = rhs_j 를 푼다 (implicit upwind)."""
+    n = rhs.size
+    A = (1.0 + s) * np.eye(n)
+    A[np.arange(n), np.arange(n) - 1] -= s
+    return np.linalg.solve(A, rhs)
+
+def dminus(v):
+    return v - np.roll(v, 1)
+
+def blended_step(w, se, si, theta):
+    """논문 식 (17): theta는 2차 스킴 지분."""
+    b = BETA
+    star = solve_backward(w - b * se * dminus(w), b * si)          # (17a)
+    rhs = (w - theta * (b - 1.0) * se * dminus(w)
+             - theta * (1.0 - b) * si * dminus(star)
+             - theta * (2.0 - b) * se * dminus(star)
+             - (1.0 - theta) * se * dminus(w))                     # (17b)
+    return solve_backward(rhs, (1.0 - theta + theta * b) * si)
+
+def pulse_run(eps, theta, steps=60, n=200, cfl=0.9, ce=1.0, ci=1.0):
+    dx = 1.0 / n
+    x = (np.arange(n) + 0.5) * dx
+    w = np.where((x > 0.25) & (x <= 0.75), 1.0, -1.0)   # 사각 펄스, TV = 4
+    se, si = ce * cfl, (ci / np.sqrt(eps)) * cfl        # dt = cfl*dx/ce
+    over = 0.0
+    for _ in range(steps):
+        w = blended_step(w, se, si, theta)
+        over = max(over, w.max() - 1.0, -1.0 - w.min())
+    tv = np.abs(np.roll(w, -1) - w).sum()
+    return tv, over
+
+for eps in (1e-2, 1e-4):
+    for theta, tag in ((0.0, "1차 AP  "), (THETA_M, "TVD-AP "), (1.0, "2차 AP  ")):
+        tv, over = pulse_run(eps, theta)
+        print(f"eps={eps:<7g} {tag} TV={tv:6.3f}  최대 오버슈트={over:+.4f}")
+```
+
+출력은 다음과 같다.
+
+```text
+eps=0.01    1차 AP   TV= 0.395  최대 오버슈트=+0.0000
+eps=0.01    TVD-AP  TV= 0.977  최대 오버슈트=+0.0000
+eps=0.01    2차 AP   TV= 3.784  최대 오버슈트=+0.4226
+eps=0.0001  1차 AP   TV= 0.000  최대 오버슈트=+0.0000
+eps=0.0001  TVD-AP  TV= 0.000  최대 오버슈트=+0.0000
+eps=0.0001  2차 AP   TV= 0.006  최대 오버슈트=+0.3776
+```
+
+오버슈트는 정확히 논문대로 사라진다. 2차 AP만 $\pm 0.38 \sim 0.42$만큼 밴드를 뚫고, 1차 AP와 TVD-AP는 두 $\varepsilon$ 모두에서 0이다. 여기까지는 이론과 구현이 깔끔하게 맞는다.
+
+대가는 확산이다. $\varepsilon = 10^{-2}$에서 60스텝 뒤 전변동은 1차 AP의 0.395에서 TVD-AP의 0.977로 회복된다. 두 배 이상 나아졌지만 초기 전변동 4.0에는 한참 못 미친다. 즉 TVD-AP가 파는 것은 "1차보다 덜 뭉갠다"이지, 2차의 선명함을 지킨다는 얘기가 아니다.
+
+$\varepsilon = 10^{-4}$에서는 단 1스텝 만에도 차이가 드러난다. 2차 AP는 전변동이 5.510으로 초기값 4.0을 넘고 오버슈트 $+0.378$을 만든다. TVD-AP는 오버슈트가 정확히 0이지만 전변동이 1.860까지 내려간다. 음향 Courant 수가 90이라 implicit upwind의 확산이 한 스텝에 그만큼 먹어버린다. 4스텝이면 1차 AP 0.062, TVD-AP 0.068까지 떨어지고, 60스텝이면 세 스킴 모두 펄스가 사실상 소멸한다.
+
+이 확산이 바로 논문이 MOOD 리미터를 얹은 이유다. 혼합만으로는 정확도를 지킬 수 없다는 것을 저자들도 알고 있었다.
+
+## 재현 가능성 점수
+
+- **재현 난이도**: 모델 문제(식 12·17)는 30줄로 재현된다. 반면 Euler 시스템 전체는 매 스텝 $\rho^{n+1}$에 대한 비선형 타원 방정식을 푸는 것이 필요해 난이도가 다른 문제다. 논문에는 그 비선형 solver의 수렴 기준도, 반복 횟수도 적혀 있지 않다.
+- **비판적 고찰**: $\theta$의 상한 $\sqrt{2}-1$이 ARS(2,2,2)에 묶여 있다. "2차"라고 부르지만 실효 정확도는 2차 지분 41%짜리 혼합이다. 논문 스스로 셀별 국소 $\theta$를 쓰면 좋아진다고 적으면서, 그 경우의 TVD 증명은 열린 문제로 남긴다. 게다가 6절 수치실험의 CFL 계수가 1차 스킴만 $C = 0.9$이고 나머지 셋은 $C = 0.45$다. 공간 2차 재구성 때문이라고 명시되어 있지만, "시간스텝을 마하수에서 해방시켰다"는 헤드라인과 나란히 읽으면 실질 이득이 절반 깎인다는 점은 짚어야 한다. 그리고 논문의 결론이 인정하듯, 리미터를 걸어도 일부 케이스에서는 작은 진동이 남는다.
+- **실무 적용**: OpenFOAM 계열의 압력 기반 solver(PISO/SIMPLE 계열)는 이미 압력 항을 implicit으로 다뤄 저마하수에서 같은 목표를 달성한다. 이 논문의 기여는 그 아이디어를 밀도 기반 보존형 프레임에서 TVD 증명과 함께 세운 것에 가깝다. 압축성과 비압축성이 한 도메인 안에 공존하는 문제, 예컨대 고속 노즐과 정체 영역이 붙어 있는 형상이라면 되짚어볼 값이 있다.

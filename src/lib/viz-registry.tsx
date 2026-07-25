@@ -13,6 +13,7 @@ function VizLoading() {
 
 export const VIZ_COMPONENTS: Record<string, ComponentType> = {
   "AbsoluteStabilityRegion": dynamic(() => import("@/components/post-viz/2026-06-22-lu-sgs-implicit-time-integration/AbsoluteStabilityRegion").then((m) => ({ default: m.AbsoluteStabilityRegion })), { ssr: false, loading: VizLoading }),
+  "AcousticCFLBudget": dynamic(() => import("@/components/post-viz/2026-07-26-imex-tvd-ap-low-mach/AcousticCFLBudget").then((m) => ({ default: m.AcousticCFLBudget })), { ssr: false, loading: VizLoading }),
   "AcousticConvectiveScales": dynamic(() => import("@/components/post-viz/2026-06-06-weston-block-preconditioner-jfnk/AcousticConvectiveScales").then((m) => ({ default: m.AcousticConvectiveScales })), { ssr: false, loading: VizLoading }),
   "AcousticConvectiveSplitDemo": dynamic(() => import("@/components/post-viz/2026-07-11-acoustic-convective-splitting-lagrange-projection/AcousticConvectiveSplitDemo").then((m) => ({ default: m.AcousticConvectiveSplitDemo })), { ssr: false, loading: VizLoading }),
   "AcousticImpedanceTube1D": dynamic(() => import("@/components/post-viz/2026-06-14-acoustic-interface-transmission-snell/AcousticImpedanceTube1D").then((m) => ({ default: m.AcousticImpedanceTube1D })), { ssr: false, loading: VizLoading }),
@@ -108,6 +109,7 @@ export const VIZ_COMPONENTS: Record<string, ComponentType> = {
   "LODICharacteristicWaves": dynamic(() => import("@/components/post-viz/2026-05-29-nscbc-nonreflecting-outflow-boundary/LODICharacteristicWaves").then((m) => ({ default: m.LODICharacteristicWaves })), { ssr: false, loading: VizLoading }),
   "LorenzConvectionAttractor": dynamic(() => import("@/components/post-viz/2026-07-09-rayleigh-benard-convection-lorenz/LorenzConvectionAttractor").then((m) => ({ default: m.LorenzConvectionAttractor })), { ssr: false, loading: VizLoading }),
   "LowMachAcousticDamping1D": dynamic(() => import("@/components/post-viz/2026-05-17-hope-collins-2022-lowmach-artificial-diffusion/LowMachAcousticDamping1D").then((m) => ({ default: m.LowMachAcousticDamping1D })), { ssr: false, loading: VizLoading }),
+  "LowMachIMEXPulseLab": dynamic(() => import("@/components/post-viz/2026-07-26-imex-tvd-ap-low-mach/LowMachIMEXPulseLab").then((m) => ({ default: m.LowMachIMEXPulseLab })), { ssr: false, loading: VizLoading }),
   "LowMachWaveDecay1D": dynamic(() => import("@/components/post-viz/2026-06-21-asymptotic-preserving-low-mach-wave/LowMachWaveDecay1D").then((m) => ({ default: m.LowMachWaveDecay1D })), { ssr: false, loading: VizLoading }),
   "LuSgsSweepConvergence": dynamic(() => import("@/components/post-viz/2026-06-22-lu-sgs-implicit-time-integration/LuSgsSweepConvergence").then((m) => ({ default: m.LuSgsSweepConvergence })), { ssr: false, loading: VizLoading }),
   "MachArchitect": dynamic(() => import("@/components/MachArchitect").then((m) => ({ default: m.MachArchitect })), { ssr: false, loading: VizLoading }),

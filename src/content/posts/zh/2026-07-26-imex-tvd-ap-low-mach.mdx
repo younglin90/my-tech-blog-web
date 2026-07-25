@@ -1,0 +1,203 @@
+---
+title: "马赫数趋于零，时间步长却纹丝不动 — IMEX TVD 格式复现记"
+date: 2026-07-26
+description: "摆脱声学CFL却不产生振荡的二阶IMEX格式"
+tags: ["IMEX", "Asymptotic-Preserving", "Low-Mach", "TVD", "Compressible"]
+locale: zh
+slug: imex-tvd-ap-low-mach
+draft: false
+---
+
+import { LowMachIMEXPulseLab } from '@/components/post-viz/2026-07-26-imex-tvd-ap-low-mach/LowMachIMEXPulseLab'
+import { AcousticCFLBudget } from '@/components/post-viz/2026-07-26-imex-tvd-ap-low-mach/AcousticCFLBudget'
+
+一阶 AP 格式跑得很顺。马赫数降到 $10^{-2}$ 也好，降到 $10^{-4}$ 也好，时间步长纹丝不动。可是把二阶时间离散 ARS(2,2,2) 加上去的那一刻，脉冲两侧就冒出了过冲。这不是发散。幅值有界，但步数再多也不消失，直到把时间步长降到声学CFL(Courant–Friedrichs–Lewy·让信息传播速度不越过一个网格的时间步长条件)才终于消掉。这正是该格式想要避开的那个约束。
+
+今天读的论文说，这个失败不是实现上的 bug，而是一条定理(theorem)。这篇文章能带走三样东西：为什么二阶和无约束时间步长无法同时成立，作者们如何绕开这堵墙，以及用 30 行 Python 复现出来的实际数值说明了什么。先说结论：振荡确实按论文所说彻底消失，代价却比预想的大。
+
+- **标题**: Second order Implicit-Explicit Total Variation Diminishing schemes for the Euler system in the low Mach regime
+- **作者**: Giacomo Dimarco (Ferrara), Raphaël Loubère (Bordeaux), Victor Michel-Dansac, Marie-Hélène Vignal (Toulouse)
+- **来源**: Elsevier 投稿预印本，2017-10-23
+- **DOI**: 内部摘要中没有 DOI 字段 — 原文需要按标题检索。
+- **一句话总结**: 把一阶 AP 格式与二阶 IMEX 格式做凸组合，在使用与马赫数无关的时间步长的同时，不丢失 TVD(总变差不增·解的总变差不随时间增长的性质)与 $L^\infty$ 性质。
+
+## Q1. 马赫数变小后为什么时间步长会崩
+
+出发点是把马赫数平方记为 $\varepsilon$ 后无量纲化的等熵 Euler 方程。
+
+$$
+\partial_t \rho + \nabla\cdot(\rho U) = 0
+$$
+
+$\rho$ 是密度，$U$ 是速度场，第一式是质量守恒。
+
+$$
+\partial_t (\rho U) + \nabla\cdot(\rho U \otimes U) + \frac{1}{\varepsilon}\nabla p(\rho) = 0
+$$
+
+$\rho U$ 是动量，$p(\rho)=\rho^\gamma$ 是压力，$\gamma$ 是比热比，$1/\varepsilon$ 是马赫数平方的倒数。
+
+值得注意的是，只有压力项带 $1/\varepsilon$。压力梯度变大，声速也跟着变大。准确地说，声速按 $1/\sqrt{\varepsilon}$ 标度。完全显式的求解器必须跟上最快的波，因此被 $\Delta t \le \Delta x / (|u| + c/\sqrt{\varepsilon})$ 束缚住。$\varepsilon = 10^{-4}$ 时，步长比对流时间尺度所要求的小约 100 倍。
+
+问题是，没有人需要这 100 倍。低马赫数流动中关心的是对流结构，不是声波。事实上在 $\varepsilon \to 0$ 极限下，系统收敛到不可压 Euler。密度固定为常数 $\rho_0$，$\nabla\cdot U = 0$ 成立，动量方程变成 $\rho_0\partial_t U + \rho_0\nabla\cdot(U\otimes U) + \nabla\pi_1 = 0$ 的形式。这里 $\pi_1$ 是压力的一阶扰动，起到维持不可压约束的 Lagrange 乘子的作用。
+
+此时需要的性质就是 AP(asymptotic-preserving·渐近保持)。定义很简单：格式在 $\varepsilon \to 0$ 时退化(degenerate)为极限方程的相容离散。意思是不必把网格和时间步长按 $\varepsilon$ 一起缩小，极限也能被正确捕捉。
+
+与其看数字，不如亲手摸一摸。在下面直接把 $\varepsilon$ 调低看看。
+
+<AcousticCFLBudget />
+
+把 $\varepsilon$ 滑块降到 $10^{-4}$，声学特征线几乎躺平。交替点击 Explicit 与 IMEX 按钮，对比下方的读数。走到同样的 $t=1$，显式格式需要 4489 步，IMEX 只需 89 步。
+
+## Q2. 把什么交给隐式才能解开 CFL
+
+全部做成隐式，每步求解非线性系统的开销就承受不起。论文把守恒变量 $W = (\rho, \rho U)$ 的通量劈成两块。
+
+$$
+\frac{W^{n+1}-W^n}{\Delta t} + \nabla\cdot F_e(W^n) + \nabla\cdot F_i(W^{n+1}) = 0
+$$
+
+$F_e(W) = (0,\ \rho U \otimes U)$ 是显式处理的对流通量，$F_i(W) = (\rho U,\ p(\rho)/\varepsilon \cdot I)$ 是隐式处理的声学通量。
+
+关键在于这个分裂并不随意。把压力梯度放到隐式一侧就得到 asymptotic consistency，把质量通量放到隐式一侧就得到与 $\varepsilon$ 无关的一致稳定性。只挪其中一项，就会破坏另一侧的性质。
+
+那么剩下的就是如何求解隐式系统。技巧是取散度。把隐式动量方程的散度代入质量方程，动量被消去，只剩下关于 $\rho^{n+1}$ 的单个非线性椭圆方程。
+
+$$
+\frac{\rho^{n+1}-\rho^n}{\Delta t} + (\nabla\cdot(\rho U))^n - \Delta t\,(\nabla^2 : (\rho U\otimes U))^n - \frac{\Delta t}{\varepsilon}(\Delta p(\rho))^{n+1} = 0
+$$
+
+左端最后一项的 $\Delta p(\rho)^{n+1}$ 是隐式压力 Laplacian，它前面的各项全部用 $n$ 时刻的值计算，属于显式源项。
+
+解出这个椭圆方程得到 $\rho^{n+1}$ 之后，动量只需一次显式代入即可更新。这与压力基求解器的压力修正步在结构上相同。剩下的显式部分只有 $F_e$，所以时间步长约束也只看对流速度。结果是 $\Delta t \le \Delta x / \max_j(2|u_j^n|)$。系数 2 来自显式通量 $\rho U \otimes U$ 的最大特征值为 $2u$。$\varepsilon$ 已经不在任何地方出现。
+
+## Q3. 升到二阶后为什么会出现振荡
+
+时间二阶用 ARS(2,2,2) IMEX(implicit-explicit·按项混用隐式与显式的时间积分) Runge–Kutta 来实现。系数 $\beta = 1 - \sqrt{2}/2 \approx 0.2929$ 支配整个格式。半离散形式分两个阶段。
+
+$$
+W^{(1)} = W^n - \beta\,\Delta t\,\nabla\cdot F_e(W^n) - \beta\,\Delta t\,\nabla\cdot F_i(W^{(1)})
+$$
+
+$W^{(1)}$ 是中间阶段的解，显式和隐式都只前进 $\beta$ 那么多。
+
+$$
+W^{n+1} = W^n - \Delta t\Big[\delta\,\nabla\cdot F_e(W^n) + (1-\delta)\,\nabla\cdot F_e(W^{(1)})\Big] - \Delta t\Big[(1-\beta)\,\nabla\cdot F_i(W^{(1)}) + \beta\,\nabla\cdot F_i(W^{n+1})\Big]
+$$
+
+$\delta = 1 - 1/(2\beta) \approx -0.7071$ 来自显式表的二阶条件，它是负数，这一点后面会成为问题。
+
+论文在这里正面抛出一个否定性结果。
+
+> 阶数高于一阶的隐式 Runge–Kutta 格式中，不存在无时间步长约束即为 TVD 的格式。(Gottlieb 一系的否定性结果，论文 Theorem 1)
+
+这不是靠实现能凿穿的墙。二阶 AP 格式在显式 CFL 数 $\sigma_e = c_e\Delta t/\Delta x \le 1$ 之下是 $L^2$ 稳定的。但 $\Delta t$ 一旦越过声学CFL $\Delta x/(c_e + c_i/\sqrt{\varepsilon})$，$L^\infty$ 稳定性和 TVD 就同时丢掉。我看到的过冲正是这个。因为有界所以不发散，因为是结构性的所以多跑几步也不会消失。
+
+为便于分析，论文把系统约化成一个标量模型问题(论文式 12)。可以想象一道声脉冲搭在缓慢流动之上被带着走。
+
+$$
+\partial_t w + c_e \partial_x w + \frac{c_i}{\sqrt{\varepsilon}} \partial_x w = 0
+$$
+
+$w$ 是标量未知量，$c_e$ 是缓慢的对流速度，$c_i/\sqrt{\varepsilon}$ 是快速的声速。这个结构原样搬来了 Euler 压力波的 $1/\sqrt{\varepsilon}$ 标度。
+
+## Q4. 一阶与二阶混合真的能得到 TVD 吗
+
+作者们的解法很简单。同一步分别用一阶 AP 格式和二阶格式各算一次，然后做凸组合。
+
+$$
+w_j^{n+1} = \theta\, w_j^{n+1,\mathrm{O2}} + (1-\theta)\, w_j^{n+1,\mathrm{O1}}
+$$
+
+$\theta$ 是压在二阶格式上的权重，$\theta = 0$ 是纯一阶，$\theta = 1$ 是纯二阶。
+
+这与空间中使用的通量限制器思路相同。不同之处在于，这个混合被施加到**时间**离散而不是空间离散上。论文 Theorem 3 给出了条件：若 $\theta = \alpha\beta/(1-\beta)$ 且 $\alpha \in [0,1]$，则混合格式一致 TVD 且 $L^\infty$ 稳定。而且是在与马赫数无关的 CFL $\sigma_e \le \sqrt{2}$ 之下($\alpha = 1$ 的情形)。因此能压在二阶格式上的最大权重就这样定下来。
+
+$$
+\theta_M = \frac{\beta}{1-\beta} = \sqrt{2}-1 \approx 0.4142
+$$
+
+$\theta_M$ 是保持 TVD 的前提下所允许的二阶占比上限。
+
+老实读下来是这样：二阶格式的占比最多只能烧到 41%。而且这个上限不是普适常数，而是绑在所选 IMEX 时间离散——也就是 ARS(2,2,2)——上的数值。换一张 IMEX 表，$\theta_M$ 也随之改变。
+
+41% 的精度让人不满足。于是论文又加上了 MOOD(Multi-dimensional Optimal Order Detection·算完之后检查解，只把出问题的单元用低阶重算的事后限制器)方案。步骤分三步。先算出候选的二阶解，再找出违反 $L^\infty$ 界或 TVD 条件的单元，最后只把违规单元退回到 TVD-AP 解。光滑区域保留完整的二阶，只有间断附近才落到安全的混合上。
+
+混合的效果直接上手更快。在下面拖动 $\theta$ 看看。
+
+<LowMachIMEXPulseLab />
+
+把 $\theta$ 提到 1，解曲线会冲出 $\pm 1$ 的带，总变差超过 4。反过来把它吸附到 $\theta = \sqrt{2}-1$，过冲降为 0 并被关在带内。
+
+## Q5. 用 Python 复现 — 振荡消失了，失去的是什么
+
+只要有模型问题(式 12)和混合格式(式 17)，复现就很短。以方波脉冲作初始条件，把 $\theta$ 换成三种，测量总变差与最大过冲。
+
+```python
+import numpy as np
+
+BETA = 1.0 - np.sqrt(2.0) / 2.0        # ARS(2,2,2)
+THETA_M = BETA / (1.0 - BETA)          # = sqrt(2) - 1
+
+def solve_backward(rhs, s):
+    """在周期边界上求解 (1+s)w_j - s*w_{j-1} = rhs_j（隐式迎风）。"""
+    n = rhs.size
+    A = (1.0 + s) * np.eye(n)
+    A[np.arange(n), np.arange(n) - 1] -= s
+    return np.linalg.solve(A, rhs)
+
+def dminus(v):
+    return v - np.roll(v, 1)
+
+def blended_step(w, se, si, theta):
+    """论文式 (17)：theta 是二阶格式的占比。"""
+    b = BETA
+    star = solve_backward(w - b * se * dminus(w), b * si)          # (17a)
+    rhs = (w - theta * (b - 1.0) * se * dminus(w)
+             - theta * (1.0 - b) * si * dminus(star)
+             - theta * (2.0 - b) * se * dminus(star)
+             - (1.0 - theta) * se * dminus(w))                     # (17b)
+    return solve_backward(rhs, (1.0 - theta + theta * b) * si)
+
+def pulse_run(eps, theta, steps=60, n=200, cfl=0.9, ce=1.0, ci=1.0):
+    dx = 1.0 / n
+    x = (np.arange(n) + 0.5) * dx
+    w = np.where((x > 0.25) & (x <= 0.75), 1.0, -1.0)   # 方波脉冲, TV = 4
+    se, si = ce * cfl, (ci / np.sqrt(eps)) * cfl        # dt = cfl*dx/ce
+    over = 0.0
+    for _ in range(steps):
+        w = blended_step(w, se, si, theta)
+        over = max(over, w.max() - 1.0, -1.0 - w.min())
+    tv = np.abs(np.roll(w, -1) - w).sum()
+    return tv, over
+
+for eps in (1e-2, 1e-4):
+    for theta, tag in ((0.0, "一阶AP "), (THETA_M, "TVD-AP "), (1.0, "二阶AP ")):
+        tv, over = pulse_run(eps, theta)
+        print(f"eps={eps:<7g} {tag} TV={tv:6.3f}  最大过冲={over:+.4f}")
+```
+
+输出如下。
+
+```text
+eps=0.01    一阶AP  TV= 0.395  最大过冲=+0.0000
+eps=0.01    TVD-AP  TV= 0.977  最大过冲=+0.0000
+eps=0.01    二阶AP  TV= 3.784  最大过冲=+0.4226
+eps=0.0001  一阶AP  TV= 0.000  最大过冲=+0.0000
+eps=0.0001  TVD-AP  TV= 0.000  最大过冲=+0.0000
+eps=0.0001  二阶AP  TV= 0.006  最大过冲=+0.3776
+```
+
+过冲确实按论文所说消失了。只有二阶 AP 冲出带外 $\pm 0.38 \sim 0.42$，一阶 AP 与 TVD-AP 在两个 $\varepsilon$ 下都是 0。到这里为止，理论与实现吻合得很干净。
+
+代价是扩散。在 $\varepsilon = 10^{-2}$ 下跑 60 步后，总变差从一阶 AP 的 0.395 回升到 TVD-AP 的 0.977。改善超过两倍，但离初始总变差 4.0 还差得远。也就是说，TVD-AP 卖的是"比一阶少抹一些"，而不是保住二阶的锐利。
+
+在 $\varepsilon = 10^{-4}$ 下，仅仅一步就能看出差别。二阶 AP 的总变差达到 5.510，超过初值 4.0，并制造出 $+0.378$ 的过冲。TVD-AP 的过冲恰好为 0，但总变差掉到 1.860。声学 Courant 数是 90，隐式迎风的扩散一步就吃掉了这么多。跑到 4 步，一阶 AP 降到 0.062、TVD-AP 降到 0.068；跑到 60 步，三种格式的脉冲实际上都已消亡。
+
+这个扩散正是论文要加上 MOOD 限制器的理由。仅靠混合守不住精度，作者们自己也清楚。
+
+## 复现可能性评分
+
+- **复现难度**: 模型问题(式 12·17)用 30 行就能复现。而完整的 Euler 系统每一步都要求解关于 $\rho^{n+1}$ 的非线性椭圆方程，难度完全是另一回事。论文里既没有写那个非线性求解器的收敛准则，也没有写迭代次数。
+- **批判性考察**: $\theta$ 的上限 $\sqrt{2}-1$ 被绑死在 ARS(2,2,2) 上。虽然叫"二阶"，实效精度不过是二阶占比 41% 的混合。论文自己写到按单元使用局部 $\theta$ 会更好，却把那种情形的 TVD 证明留作开放问题。而且第 6 节数值实验的 CFL 系数，只有一阶格式是 $C = 0.9$，其余三个都是 $C = 0.45$。虽然明确说明这是因为空间二阶重构，但把它与"把时间步长从马赫数中解放出来"这个标题并排读，实际收益被砍掉一半这一点必须点出来。而且正如论文结论自己承认的，即使挂上限制器，某些算例中仍会残留小幅振荡。
+- **工程应用**: OpenFOAM 一系的压力基求解器(PISO/SIMPLE 系列)早已把压力项做隐式处理，在低马赫数下达成了同样的目标。这篇论文的贡献更接近于：把那个想法在密度基守恒型框架中连同 TVD 证明一起立了起来。若遇到可压缩与不可压缩共存于同一计算域的问题，比如高速喷管与滞止区相邻的构型，就值得回头翻一翻。

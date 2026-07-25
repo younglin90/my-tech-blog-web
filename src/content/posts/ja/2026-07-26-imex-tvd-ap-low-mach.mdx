@@ -1,0 +1,203 @@
+---
+title: "マッハ数がゼロへ向かっても時間刻みはそのまま — IMEX TVD スキーム再現記"
+date: 2026-07-26
+description: "音響CFLを外しても振動しない2次IMEXスキーム"
+tags: ["IMEX", "Asymptotic-Preserving", "Low-Mach", "TVD", "Compressible"]
+locale: ja
+slug: imex-tvd-ap-low-mach
+draft: false
+---
+
+import { LowMachIMEXPulseLab } from '@/components/post-viz/2026-07-26-imex-tvd-ap-low-mach/LowMachIMEXPulseLab'
+import { AcousticCFLBudget } from '@/components/post-viz/2026-07-26-imex-tvd-ap-low-mach/AcousticCFLBudget'
+
+1次のAPスキームはきちんと動きました。マッハ数を $10^{-2}$ まで下げても $10^{-4}$ まで下げても、時間刻みはびくともしません。そこに2次の時間離散化 ARS(2,2,2) を載せた瞬間、パルスの両脇にオーバーシュートが生えました。発散ではありません。大きさは有界でしたが、ステップをいくら回しても消えず、時間刻みを音響CFL(Courant–Friedrichs–Lewy・情報の伝播速度が格子1セル分を越えないようにする時間刻み条件)まで下げたところで、ようやく消えました。スキームが避けようとしていた、まさにその制約です。
+
+今日読む論文は、この失敗が実装バグではなく定理(theorem)だと言います。この記事から持ち帰るものは三つです。なぜ2次と無制約の時間刻みが同時には成り立たないのか、著者らがその壁をどう迂回したのか、そして30行のPythonで再現した実際の数値が何を語るのかです。結論から言うと、振動は論文のとおりぴたりと消え、その代わりに予想より大きな代償を払いました。
+
+- **タイトル**: Second order Implicit-Explicit Total Variation Diminishing schemes for the Euler system in the low Mach regime
+- **著者**: Giacomo Dimarco (Ferrara), Raphaël Loubère (Bordeaux), Victor Michel-Dansac, Marie-Hélène Vignal (Toulouse)
+- **出典**: Elsevier 投稿プレプリント、2017-10-23
+- **DOI**: 社内要約にDOIの項目がありません — 原文はタイトルで検索する必要があります。
+- **一行要約**: 1次APスキームと2次IMEXスキームを凸結合し、マッハ数によらない時間刻みを使いながらも、TVD(全変動非増加・解の全変動が時間とともに増えない性質)と $L^\infty$ 性質を失わないスキームを作ります。
+
+## Q1. マッハ数が小さくなるとなぜ時間刻みが死ぬのか
+
+出発点は、マッハ数の2乗を $\varepsilon$ と置いて無次元化した等エントロピー Euler 方程式です。
+
+$$
+\partial_t \rho + \nabla\cdot(\rho U) = 0
+$$
+
+$\rho$ は密度、$U$ は速度場で、最初の式は質量保存です。
+
+$$
+\partial_t (\rho U) + \nabla\cdot(\rho U \otimes U) + \frac{1}{\varepsilon}\nabla p(\rho) = 0
+$$
+
+$\rho U$ は運動量、$p(\rho)=\rho^\gamma$ は圧力、$\gamma$ は比熱比、$1/\varepsilon$ はマッハ数の2乗の逆数です。
+
+注目すべきは、圧力項にだけ $1/\varepsilon$ が付くという点です。圧力勾配が大きくなれば音速も一緒に大きくなります。正確には音速が $1/\sqrt{\varepsilon}$ のようにスケールします。完全 explicit なソルバは最も速い波に追随しなければならないので、$\Delta t \le \Delta x / (|u| + c/\sqrt{\varepsilon})$ に縛られます。$\varepsilon = 10^{-4}$ なら、対流の時間スケール基準よりおよそ100倍小さい刻みになります。
+
+問題は、その100倍を誰も必要としていないことです。低マッハ数流れで関心があるのは対流構造であって音響波ではありません。実際、$\varepsilon \to 0$ の極限で系は非圧縮 Euler へ収束します。密度は定数 $\rho_0$ に固定され、$\nabla\cdot U = 0$ となり、運動量の式は $\rho_0\partial_t U + \rho_0\nabla\cdot(U\otimes U) + \nabla\pi_1 = 0$ の形になります。ここで $\pi_1$ は圧力の1次摂動で、非圧縮の拘束を保つ Lagrange 乗数の役割を果たします。
+
+このとき必要になる性質が AP(asymptotic-preserving・漸近保存)です。定義は単純です。スキームが $\varepsilon \to 0$ で極限方程式の整合的な離散化へ degenerate する性質です。格子と時間刻みを $\varepsilon$ に合わせて縮めなくても、極限がきちんと捉えられるという意味です。
+
+数字より手で触ってみるほうが早いです。下で $\varepsilon$ を直接下げてみましょう。
+
+<AcousticCFLBudget />
+
+$\varepsilon$ スライダーを $10^{-4}$ まで下げると、音響特性曲線がほぼ水平に寝ます。Explicit と IMEX のボタンを交互に押して、下の数値を比べてみてください。同じ $t=1$ に到達するのに explicit は 4489 ステップ、IMEX は 89 ステップです。
+
+## Q2. 何を implicit へ回せば CFL が解けるのか
+
+すべてを implicit にすると、非線形システムを毎ステップ解く費用に耐えられません。論文は保存変数 $W = (\rho, \rho U)$ のフラックスを二つに切り分けます。
+
+$$
+\frac{W^{n+1}-W^n}{\Delta t} + \nabla\cdot F_e(W^n) + \nabla\cdot F_i(W^{n+1}) = 0
+$$
+
+$F_e(W) = (0,\ \rho U \otimes U)$ は explicit で扱う対流フラックス、$F_i(W) = (\rho U,\ p(\rho)/\varepsilon \cdot I)$ は implicit で扱う音響フラックスです。
+
+この分割が恣意的でない点が核心です。圧力勾配を implicit に置くと asymptotic consistency が出て、質量フラックスを implicit に置くと $\varepsilon$ によらない一様安定性が出ます。どちらか一方だけを回すと、片方の性質が壊れます。
+
+そうすると、implicit システムをどう解くかが残ります。トリックは発散を取ることです。implicit な運動量の式の発散を質量の式へ代入すると運動量が消去され、$\rho^{n+1}$ に対する単一の非線形楕円方程式だけが残ります。
+
+$$
+\frac{\rho^{n+1}-\rho^n}{\Delta t} + (\nabla\cdot(\rho U))^n - \Delta t\,(\nabla^2 : (\rho U\otimes U))^n - \frac{\Delta t}{\varepsilon}(\Delta p(\rho))^{n+1} = 0
+$$
+
+左辺最後の項の $\Delta p(\rho)^{n+1}$ が implicit な圧力 Laplacian で、その手前の項はすべて $n$ 時点の値で計算される陽的なソースです。
+
+この楕円方程式を解いて $\rho^{n+1}$ を得たあとは、運動量は明示的な代入一回で更新されます。圧力ベースのソルバにおける圧力補正ステップと構造が同じです。残った explicit 部分は $F_e$ だけなので、時間刻みの制約も対流速度だけを見ます。結果は $\Delta t \le \Delta x / \max_j(2|u_j^n|)$ です。係数2は、explicit フラックス $\rho U \otimes U$ の最大固有値が $2u$ であるために付きます。$\varepsilon$ はどこにもありません。
+
+## Q3. 2次へ上げるとなぜ振動が出るのか
+
+時間2次は ARS(2,2,2) IMEX(implicit-explicit・項ごとに陰解法と陽解法を混ぜる時間積分) Runge–Kutta で上げます。係数 $\beta = 1 - \sqrt{2}/2 \approx 0.2929$ がスキーム全体を支配します。半離散形は二段階です。
+
+$$
+W^{(1)} = W^n - \beta\,\Delta t\,\nabla\cdot F_e(W^n) - \beta\,\Delta t\,\nabla\cdot F_i(W^{(1)})
+$$
+
+$W^{(1)}$ は中間段階の解で、explicit も implicit も $\beta$ の分だけ前進します。
+
+$$
+W^{n+1} = W^n - \Delta t\Big[\delta\,\nabla\cdot F_e(W^n) + (1-\delta)\,\nabla\cdot F_e(W^{(1)})\Big] - \Delta t\Big[(1-\beta)\,\nabla\cdot F_i(W^{(1)}) + \beta\,\nabla\cdot F_i(W^{n+1})\Big]
+$$
+
+$\delta = 1 - 1/(2\beta) \approx -0.7071$ は explicit テーブルの2次条件から出る係数で、負であることが後で問題になります。
+
+ここで論文は否定的な結果を正面から持ち出します。
+
+> 次数が1より高い implicit Runge–Kutta スキームのうち、時間刻みの制約なしに TVD であるものは存在しません。(Gottlieb 系列の否定的結果、論文 Theorem 1)
+
+これは実装で突破できる壁ではありません。2次APスキームは explicit CFL 数 $\sigma_e = c_e\Delta t/\Delta x \le 1$ の下で $L^2$ 安定です。しかし $\Delta t$ が音響CFL $\Delta x/(c_e + c_i/\sqrt{\varepsilon})$ を越えた瞬間、$L^\infty$ 安定性も TVD も失われます。私が見たオーバーシュートが、まさにそれでした。有界なので発散はせず、構造的なのでステップをさらに回しても消えません。
+
+解析のために論文はシステムをスカラーのモデル問題へ縮約します(論文の式12)。遅い流れの上に乗って流れる音響パルスを思い浮かべればよいです。
+
+$$
+\partial_t w + c_e \partial_x w + \frac{c_i}{\sqrt{\varepsilon}} \partial_x w = 0
+$$
+
+$w$ はスカラーの未知数、$c_e$ は遅い対流速度、$c_i/\sqrt{\varepsilon}$ は速い音響速度です。Euler の圧力波の $1/\sqrt{\varepsilon}$ スケーリングをそのまま移した構造です。
+
+## Q4. 1次と2次を混ぜると本当に TVD になるのか
+
+著者らの解法は単純です。同じステップを1次APスキームと2次スキームでそれぞれ計算したあと、凸結合します。
+
+$$
+w_j^{n+1} = \theta\, w_j^{n+1,\mathrm{O2}} + (1-\theta)\, w_j^{n+1,\mathrm{O1}}
+$$
+
+$\theta$ は2次スキームに載る重みで、$\theta = 0$ なら純粋な1次、$\theta = 1$ なら純粋な2次です。
+
+空間で使うフラックスリミターと発想は同じです。違うのは、その混合を空間ではなく**時間**の離散化に適用する点です。論文の Theorem 3 が条件を与えます。$\theta = \alpha\beta/(1-\beta)$、$\alpha \in [0,1]$ であれば、混合スキームは一様に TVD であり $L^\infty$ 安定です。しかもマッハ数によらない CFL $\sigma_e \le \sqrt{2}$ の下でです($\alpha = 1$ の場合)。したがって2次スキームに載せられる最大の重みはこう決まります。
+
+$$
+\theta_M = \frac{\beta}{1-\beta} = \sqrt{2}-1 \approx 0.4142
+$$
+
+$\theta_M$ は TVD を保ったまま許される2次の取り分の上限です。
+
+正直に読むとこうです。2次スキームの取り分を41%までしか焚けない、という意味です。しかもその上限は普遍定数ではなく、選んだ IMEX 時間離散化、つまり ARS(2,2,2) に紐づいた値です。別の IMEX テーブルを使えば $\theta_M$ も変わります。
+
+41%では精度が物足りません。そこで論文は MOOD(Multi-dimensional Optimal Order Detection・計算が終わったあとに解を検査し、問題のあったセルだけを低次で解き直す事後リミター)方式を載せます。手順は三段階です。まず候補となる2次解を計算し、次に $L^\infty$ 境界や TVD 条件に違反したセルを探し、最後に違反したセルだけを TVD-AP 解へ戻します。滑らかな領域はそのまま2次で残り、不連続の近くだけが安全な混合へ落ちます。
+
+混合の効果は直接触るのが早いです。下で $\theta$ を動かしてみましょう。
+
+<LowMachIMEXPulseLab />
+
+$\theta$ を1まで上げると、解の曲線が $\pm 1$ のバンドを突き抜け、全変動が4を越えます。逆に $\theta = \sqrt{2}-1$ へスナップすると、オーバーシュートが0まで落ちてバンドの内側に閉じ込められます。
+
+## Q5. Python で再現 — 振動は消え、何を失うのか
+
+モデル問題(式12)と混合スキーム(式17)さえあれば、再現は短く済みます。矩形パルスを初期条件に置き、$\theta$ を三つに変えながら全変動と最大オーバーシュートを測ります。
+
+```python
+import numpy as np
+
+BETA = 1.0 - np.sqrt(2.0) / 2.0        # ARS(2,2,2)
+THETA_M = BETA / (1.0 - BETA)          # = sqrt(2) - 1
+
+def solve_backward(rhs, s):
+    """周期境界で (1+s)w_j - s*w_{j-1} = rhs_j を解く(implicit 風上)。"""
+    n = rhs.size
+    A = (1.0 + s) * np.eye(n)
+    A[np.arange(n), np.arange(n) - 1] -= s
+    return np.linalg.solve(A, rhs)
+
+def dminus(v):
+    return v - np.roll(v, 1)
+
+def blended_step(w, se, si, theta):
+    """論文の式 (17): theta は2次スキームの取り分。"""
+    b = BETA
+    star = solve_backward(w - b * se * dminus(w), b * si)          # (17a)
+    rhs = (w - theta * (b - 1.0) * se * dminus(w)
+             - theta * (1.0 - b) * si * dminus(star)
+             - theta * (2.0 - b) * se * dminus(star)
+             - (1.0 - theta) * se * dminus(w))                     # (17b)
+    return solve_backward(rhs, (1.0 - theta + theta * b) * si)
+
+def pulse_run(eps, theta, steps=60, n=200, cfl=0.9, ce=1.0, ci=1.0):
+    dx = 1.0 / n
+    x = (np.arange(n) + 0.5) * dx
+    w = np.where((x > 0.25) & (x <= 0.75), 1.0, -1.0)   # 矩形パルス, TV = 4
+    se, si = ce * cfl, (ci / np.sqrt(eps)) * cfl        # dt = cfl*dx/ce
+    over = 0.0
+    for _ in range(steps):
+        w = blended_step(w, se, si, theta)
+        over = max(over, w.max() - 1.0, -1.0 - w.min())
+    tv = np.abs(np.roll(w, -1) - w).sum()
+    return tv, over
+
+for eps in (1e-2, 1e-4):
+    for theta, tag in ((0.0, "1次AP  "), (THETA_M, "TVD-AP "), (1.0, "2次AP  ")):
+        tv, over = pulse_run(eps, theta)
+        print(f"eps={eps:<7g} {tag} TV={tv:6.3f}  最大オーバーシュート={over:+.4f}")
+```
+
+出力は次のとおりです。
+
+```text
+eps=0.01    1次AP   TV= 0.395  最大オーバーシュート=+0.0000
+eps=0.01    TVD-AP  TV= 0.977  最大オーバーシュート=+0.0000
+eps=0.01    2次AP   TV= 3.784  最大オーバーシュート=+0.4226
+eps=0.0001  1次AP   TV= 0.000  最大オーバーシュート=+0.0000
+eps=0.0001  TVD-AP  TV= 0.000  最大オーバーシュート=+0.0000
+eps=0.0001  2次AP   TV= 0.006  最大オーバーシュート=+0.3776
+```
+
+オーバーシュートは論文のとおりぴたりと消えます。2次APだけが $\pm 0.38 \sim 0.42$ ほどバンドを突き抜け、1次APと TVD-AP は二つの $\varepsilon$ のどちらでも0です。ここまでは理論と実装がきれいに一致します。
+
+代償は拡散です。$\varepsilon = 10^{-2}$ で60ステップ後の全変動は、1次APの0.395から TVD-AP の0.977へ回復します。二倍以上よくなりましたが、初期の全変動4.0にはまだ遠く届きません。つまり TVD-AP が売っているのは「1次より潰さない」であって、2次の鮮明さを守るという話ではありません。
+
+$\varepsilon = 10^{-4}$ では、たった1ステップでも差が現れます。2次APは全変動が5.510と初期値4.0を越え、オーバーシュート $+0.378$ を作ります。TVD-AP はオーバーシュートがちょうど0ですが、全変動は1.860まで下がります。音響 Courant 数が90あるので、implicit 風上の拡散が1ステップでそれだけ食ってしまうのです。4ステップなら1次AP 0.062、TVD-AP 0.068まで落ち、60ステップなら三つのスキームすべてでパルスが事実上消滅します。
+
+この拡散こそが、論文が MOOD リミターを載せた理由です。混合だけでは精度を守れないことを、著者らも分かっていました。
+
+## 再現可能性スコア
+
+- **再現の難易度**: モデル問題(式12・17)は30行で再現できます。一方 Euler システム全体は、毎ステップ $\rho^{n+1}$ に対する非線形楕円方程式を解く必要があり、難易度が別物です。論文にはその非線形ソルバの収束基準も、反復回数も書かれていません。
+- **批判的考察**: $\theta$ の上限 $\sqrt{2}-1$ が ARS(2,2,2) に縛られています。「2次」と呼びますが、実効精度は2次の取り分41%の混合です。論文自身がセルごとの局所 $\theta$ を使えばよくなると書きながら、その場合の TVD 証明は未解決問題として残しています。さらに6節の数値実験の CFL 係数は、1次スキームだけ $C = 0.9$ で残り三つは $C = 0.45$ です。空間2次再構成のためだと明記されてはいますが、「時間刻みをマッハ数から解放した」という見出しと並べて読むと、実質的な利得が半分に削られる点は指摘しておくべきです。そして論文の結論自身が認めるとおり、リミターをかけても一部のケースでは小さな振動が残ります。
+- **実務への適用**: OpenFOAM 系の圧力ベースソルバ(PISO/SIMPLE 系)は、すでに圧力項を implicit に扱うことで低マッハ数において同じ目標を達成しています。この論文の貢献は、そのアイデアを密度ベースの保存形フレームで TVD 証明とともに立てた点に近いです。圧縮性と非圧縮性が一つの領域の中で共存する問題、たとえば高速ノズルとよどみ領域が隣り合う形状であれば、読み返す価値があります。
