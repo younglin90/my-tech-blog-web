@@ -1,0 +1,250 @@
+---
+title: "LBM で力の半分はどこへ消えたのか — forcing スキーム四種と 1−1/(2τ)"
+date: 2026-07-27
+description: "格子ボルツマンの体積力スキーム比較と、半分だけの力補正の正体"
+tags: ["LBM", "Forcing-Term", "Guo-Forcing", "Shan-Chen", "Poiseuille"]
+locale: ja
+slug: lbm-forcing-term-guo-shan-chen-edm
+draft: false
+---
+
+import { ForcedChannelSchemeLab } from '@/components/post-viz/2026-07-27-lbm-forcing-term-guo-shan-chen-edm/ForcedChannelSchemeLab'
+import { ForceMomentBudgetDial } from '@/components/post-viz/2026-07-27-lbm-forcing-term-guo-shan-chen-edm/ForceMomentBudgetDial'
+
+1993年、Shan と Chen は格子の上で水と油を引き剥がしました。処方は素朴でした。衝突に使う平衡速度に $\tau\mathbf{F}/\rho$ を足す、それだけです。1998年、He は力を平衡分布へ直接組み込みました。2002年、Guo は先の処方が応力に誤差を残すと指摘し、力の項の前に $(1-\frac{1}{2\tau})$ を付けました。2004年、Kupershtokh は平衡分布二つの差だけで同じ仕事をやってのけました。
+
+同じ問いに答えが四つあります。では何を使えばよいのでしょうか。今日はこの問いを D2Q9 チャネルへ直接ぶつけました。答えは予想と違いました。定常流では、どのスキームを使っても小数第4位まで同じ誤差が出ます。本当の落とし穴は、スキームを選ぶ場所にはありませんでした。この記事では導出で落とし穴の位置を突き止め、数値でその大きさを測ります。
+
+## 連続方程式から力の項を切り出す
+
+外力のある Boltzmann 方程式は項が一つ増えます。
+
+$$
+\partial_t f + \boldsymbol{\xi}\cdot\nabla_{\mathbf{x}} f + \frac{\mathbf{F}}{\rho}\cdot\nabla_{\boldsymbol{\xi}} f = -\frac{1}{\lambda}\left(f - f^{\rm eq}\right)
+$$
+
+$f$ は分布関数、$\boldsymbol{\xi}$ は粒子速度、$\mathbf{F}$ は単位体積あたりの体積力、$\lambda$ は緩和時間です。
+
+厄介なのは三番目の項です。速度空間の微分 $\nabla_{\boldsymbol{\xi}} f$ は格子の上に存在しません。手元にあるのは九方向の離散速度だけです。そこで $f$ を $f^{\rm eq}$ に差し替え、微分を解析的に処理します。
+
+$$
+\frac{\mathbf{F}}{\rho}\cdot\nabla_{\boldsymbol{\xi}} f \simeq -\frac{(\boldsymbol{\xi}-\mathbf{u})\cdot\mathbf{F}}{\rho c_s^2}\,f^{\rm eq}
+$$
+
+$c_s$ は格子音速(D2Q9 では $c_s^2=1/3$)、$\mathbf{u}$ は流体速度です。
+
+$f$ を $f^{\rm eq}$ に置き換えてよいのでしょうか。低マッハ数なら大丈夫です。非平衡部分 $f^{(1)}$ は Knudsen 数(平均自由行程/代表長さ)の1次の大きさなので、力と掛かれば無視できる次数まで落ちます。その代わり、この置き換えが後で応力に残差を残します。スキームが分かれる地点がまさにここです。
+
+この表現を離散速度 $\mathbf{c}_i$ へ射影し、Hermite 級数を2次で打ち切ります。すると格子上の力の項が出てきます。
+
+$$
+F_i = w_i\left[\frac{\mathbf{c}_i-\mathbf{u}}{c_s^2} + \frac{(\mathbf{c}_i\cdot\mathbf{u})}{c_s^4}\mathbf{c}_i\right]\cdot\mathbf{F}
+$$
+
+$w_i$ は格子重みです。よりによって2次で打ち切る理由ははっきりしています。Navier–Stokes を取り戻すのに必要なモーメントが2次までだからです。
+
+三つのモーメントを確認しておきます。
+
+$$
+\sum_i F_i = 0,\qquad \sum_i \mathbf{c}_i F_i = \mathbf{F},\qquad \sum_i \mathbf{c}_i\mathbf{c}_i F_i = \mathbf{u}\mathbf{F}+\mathbf{F}\mathbf{u}
+$$
+
+0次は質量です。力は質量を生まないので0でなければなりません。1次は運動量、2次は応力です。
+
+## 台形積分が残した半分
+
+ここで離散速度 Boltzmann 方程式を特性線に沿って $\delta t$ だけ積分します。衝突項と力の項を台形則で積分すれば2次精度が得られます。その代わり右辺に $t+\delta t$ が入り込みます。
+
+$$
+f_i(\mathbf{x}+\mathbf{c}_i\delta t,\ t+\delta t) - f_i(\mathbf{x},t)
+= -\frac{\delta t}{2\lambda}\left[(f_i-f_i^{\rm eq})^{n} + (f_i-f_i^{\rm eq})^{n+1}\right]
++ \frac{\delta t}{2}\left[F_i^{\,n} + F_i^{\,n+1}\right]
+$$
+
+上付きの $n$ と $n+1$ はそれぞれ $t$ と $t+\delta t$ を意味します。このままでは陰的です。毎ステップ連立方程式を解くことになります。
+
+LBM はこの陰性を変数変換で消します。
+
+$$
+\bar f_i = f_i + \frac{\delta t}{2\lambda}\left(f_i - f_i^{\rm eq}\right) - \frac{\delta t}{2}F_i
+$$
+
+$\bar f_i$ で書き直し、$\tau = \lambda/\delta t + 1/2$ と置くと、見慣れた一行になります。
+
+$$
+\bar f_i(\mathbf{x}+\mathbf{c}_i\delta t,\ t+\delta t) = \bar f_i - \frac{1}{\tau}\left(\bar f_i - f_i^{\rm eq}\right) + \delta t\left(1-\frac{1}{2\tau}\right)F_i
+$$
+
+変換は痕跡を二つ残しました。一つは力の前に付いた $(1-\frac{1}{2\tau})$ です。もう一つは目立ちません。配列に保存しているのは $\bar f_i$ であって $f_i$ ではありません。だから運動量も半分だけずれます。
+
+$$
+\rho\mathbf{u} = \sum_i \bar f_i \mathbf{c}_i + \frac{\delta t}{2}\mathbf{F}
+$$
+
+この二つは一つの体です。同じ変換から一緒に落ちてきました。片方だけ拾って片方を落とすと、帳尻が合いません。どれだけ合わないかは、以下で測ります。
+
+## 四つのスキーム比較表
+
+$\mathbf{j}=\sum_i \bar f_i\mathbf{c}_i$ を保存された分布関数の生の運動量、$\delta\mathbf{u}=\delta t\,\mathbf{F}/\rho$ を力が1ステップで与える速度増分とします。
+
+| スキーム | 力を入れる場所 | 平衡に使う速度 | 2次モーメント $\sum\mathbf{c}_i\mathbf{c}_i F_i$ |
+|------|----------------|------------------|------------|
+| plain | $F_i = w_i(\mathbf{c}_i\cdot\mathbf{F})/c_s^2$ | $\mathbf{j}/\rho$ | 0 — $\mathbf{u}\mathbf{F}$ 項がまるごと欠落 |
+| Shan–Chen (1993) | 明示的な項なし | $\mathbf{j}/\rho + \tau\mathbf{F}/\rho$ | $\mathbf{u}\mathbf{F}+\mathbf{F}\mathbf{u} + \tau\mathbf{F}\mathbf{F}/\rho$ |
+| He (1998) | $(\mathbf{c}_i-\mathbf{u})\cdot\mathbf{F}\,f_i^{\rm eq}/(\rho c_s^2)$ | $(\mathbf{j}+\delta t\mathbf{F}/2)/\rho$ | $\mathbf{u}\mathbf{F}+\mathbf{F}\mathbf{u}$(平衡の打ち切り誤差の範囲で) |
+| EDM (2004) | $f_i^{\rm eq}(\rho,\mathbf{u}+\delta\mathbf{u}) - f_i^{\rm eq}(\rho,\mathbf{u})$ | $\mathbf{j}/\rho$ | $\mathbf{u}\mathbf{F}+\mathbf{F}\mathbf{u} + \rho\,\delta\mathbf{u}\delta\mathbf{u}$ |
+| Guo (2002) | 上の $F_i$ に $(1-\frac{1}{2\tau})$ を掛ける | $(\mathbf{j}+\delta t\mathbf{F}/2)/\rho$ | $(1-\frac{1}{2\tau})(\mathbf{u}\mathbf{F}+\mathbf{F}\mathbf{u})$ |
+
+五行を縦に読むと共通点が見えます。1次モーメントはすべて正確に $\mathbf{F}$ です。そう設計したのだから当然です。分かれるのは2次モーメント、つまり応力です。
+
+ところが変数変換が要求する目標値は $\mathbf{u}\mathbf{F}+\mathbf{F}\mathbf{u}$ ではなく $(1-\frac{1}{2\tau})(\mathbf{u}\mathbf{F}+\mathbf{F}\mathbf{u})$ です。この係数を明示的に背負っているのは一番下の一行だけです。残りは $\frac{1}{2\tau}$ の分だけ応力のずれを抱えたまま進みます。
+
+ずれの大きさは力と速度の積、つまり $u F$ の次数です。低マッハ数で $u$ が小さければ、この項自体が小さくなります。Shan–Chen と EDM が残す $\mathbf{F}\mathbf{F}$ 項はさらに小さく、$F^2$ の次数です。だから弱い重力で押す問題では、どれを使っても大差ありません。差が現れるのは力が強いとき($\tau\mathbf{F}/\rho$ が $\mathbf{u}$ に匹敵するとき)や、多相流のように界面で力が急激に変わる場所です。
+
+下の図で直接操作してみましょう。
+
+<ForceMomentBudgetDial />
+
+力の方向ダイヤルをいくら回しても、M0(質量)と M1(運動量)のバーは目標に貼り付いたままです。四つのスキームすべてでそうなります。$\tau$ を1から遠くへ押しながら、M2(応力)のバーだけを見てください。prefactor スイッチを切った瞬間、M2 だけが目標から離れていきます。
+
+## 定常 Poiseuille はこれらを区別できません
+
+最もよく使われる検証問題へ行きましょう。上下の壁の間を体積力で押すチャネルです。定常状態の解は放物線として知られています。
+
+$$
+u(y) = \frac{F_x}{2\nu}\,y\,(H-y),\qquad \nu = c_s^2\left(\tau-\tfrac{1}{2}\right)
+$$
+
+$H$ はチャネル高さ、$\nu$ は動粘度です。half-way bounce-back を使うと壁が格子点から半セル外に置かれるので、$H$ は流体ノード数と等しく、$j$ 番ノードの座標は $y=j+0.5$ になります。
+
+下のシミュレーションで直接操作してみましょう。
+
+<ForcedChannelSchemeLab />
+
+スキームのボタンを四つとも押してみてください。破線の放物線の上で、青緑の曲線は動きません。$\tau$ を 0.6 から 2.0 まで動かしても同じです。次に、下の二つのスイッチのうち一方だけを切ってみてください。その瞬間、放物線の振幅がまるごと乗り換わります。
+
+数値でも同じです。流体ノード33個、$F_x = 10^{-5}$ で40,000ステップ回したあとに測った最大相対誤差です。
+
+| $\tau$ | plain | Shan–Chen | He | EDM | Guo |
+|--------|-------|-----------|----|-----|-----|
+| 0.60 | 0.0875% | 0.0875% | 0.0875% | 0.0875% | 0.0875% |
+| 1.00 | 0.0306% | 0.0306% | 0.0306% | 0.0306% | 0.0306% |
+| 1.80 | 0.7358% | 0.7358% | 0.7358% | 0.7358% | 0.7358% |
+
+列どうしで比べるものがありません。値が同じです。残った誤差はスキームではなく bounce-back の離散化から来ています。
+
+理由は2次モーメントが入る場所にあります。この流れは定常で一方向です。速度は $u_x(y)$ 一つだけ、力も $x$ 成分だけです。スキームが分かれる項は $\mathbf{u}\mathbf{F}$、つまり $xx$ 成分です。ところがこの流れの運動量収支を実際に支配するのは $xy$ せん断応力です。力が作る $xx$ のずれには、収支式へ入る通路がありません。
+
+$\partial_t\mathbf{u}=0$ であることも一緒に効きます。力の項の誤差が時間とともに蓄積して現れる余地がありません。スキームの違いを見たければ、非定常流か空間的に変化する力へ行く必要があります。少なくともこの試験では、五つを見分けられません。
+
+これは悪い知らせではありません。検証問題を選ぶときに知っておくべき情報です。Poiseuille を通ったからといって forcing の実装が正しいとは言えない、という意味ですから。
+
+## 半分を二度数えると力が大きくなる
+
+では実際には何が狂うのでしょうか。先ほど一つの体だと言った二つ、つまり速度の半セル補正と力の前の係数です。
+
+1ステップで実際に注入される運動量を数えてみます。平衡速度に $\delta t\mathbf{F}/2\rho$ を足すと、衝突がそのうち $1/\tau$ の分を毎ステップ運びます。ここに力の項が直接与える分が加わります。半セル補正をオンにしたかを $s\in\{0,1\}$、力の前の係数を $g$ とすると
+
+$$
+\Delta(\rho u) = \frac{1}{\tau}\cdot\frac{s\,\delta t F}{2} + g\,\delta t F
+$$
+
+これが $\delta t F$ と等しくなければなりません。条件は $g = 1 - s/(2\tau)$ の一つだけです。二つのスイッチは独立ではありません。
+
+ずらすと振幅が予測可能な比率でずれます。Guo の力の項を固定し、二つのスイッチだけを変えて測定した振幅比です。
+
+| $\tau$ | 両方オン | 補正のみオン | 予測 $1+\frac{1}{2\tau}$ | 係数のみオン | 予測 $1-\frac{1}{2\tau}$ |
+|--------|---------|-----------|--------------------------|-----------|--------------------------|
+| 0.60 | 0.9991 | 1.8316 | 1.8333 | 0.1666 | 0.1667 |
+| 0.80 | 0.9995 | 1.6240 | 1.6250 | 0.3751 | 0.3750 |
+| 1.00 | 1.0003 | 1.5002 | 1.5000 | 0.5005 | 0.5000 |
+| 1.40 | 1.0030 | 1.3609 | 1.3571 | 0.6452 | 0.6429 |
+| 1.80 | 1.0074 | 1.2867 | 1.2778 | 0.7280 | 0.7222 |
+
+測定と予測が小数第3位まで一致します。$\tau=0.6$ で半セル補正だけをオンにすると、力が83%大きくなります。係数だけをオンにすると、力が6分の1に減ります。
+
+これは微妙な精度の問題ではありません。論文から Guo の $F_i$ をそのまま写してきて、速度は昔のコードの $\mathbf{j}/\rho$ を放置したとき、まさにこれが起きます。粘性がおかしいと言って $\tau$ をいじり始めると、さらに深みへ入ります。$\tau$ を変えるたびに誤差の比率も一緒に動くからです。
+
+症状で見分ける方法があります。格子を2倍に増やしても誤差の比率が減らなければ、離散化誤差ではありません。$\tau$ を1に近づけるほど比率が 1.5 付近へ収束し、$\tau$ を 0.5 へ下げるほど発散するように大きくなるなら、$1+\frac{1}{2\tau}$ の指紋です。逆に力を強くしても比率が変わらなければ、帳簿の問題であって非線形の問題ではありません。三つが重なったら、スキームを疑う前に速度の定義から開いてみればよいです。
+
+## Python — 二つのスイッチをずらしてみる
+
+二つのスイッチを引数へ出した D2Q9 チャネルソルバです。$x$ 方向に一様なので列を一つだけ残します。上の表の五つのスキームは `source_terms` と平衡に入れる速度を差し替えるだけなので、ここでは Guo の力の項一つに固定します。
+
+```python
+import numpy as np
+
+EX = np.array([0, 1, 0, -1, 0, 1, -1, -1, 1])
+EY = np.array([0, 0, 1, 0, -1, 1, 1, -1, -1])
+W = np.array([4/9, 1/9, 1/9, 1/9, 1/9, 1/36, 1/36, 1/36, 1/36])
+OPP = np.array([0, 3, 4, 1, 2, 7, 8, 5, 6])
+CS2 = 1.0 / 3.0
+
+
+def lattice_equilibrium(rho, ux, uy):
+    feq = np.empty((9, rho.size))
+    usq = ux**2 + uy**2
+    for i in range(9):
+        eu = EX[i] * ux + EY[i] * uy
+        feq[i] = W[i] * rho * (1 + eu/CS2 + eu**2/(2*CS2**2) - usq/(2*CS2))
+    return feq
+
+
+def source_terms(rho, ux, uy, fx):
+    """Guo forcing term, before the (1 - 1/2tau) gain."""
+    src = np.empty((9, rho.size))
+    for i in range(9):
+        eu = EX[i]*ux + EY[i]*uy
+        src[i] = W[i] * ((EX[i] - ux)/CS2 + eu*EX[i]/CS2**2) * fx
+    return src
+
+
+def run_forced_channel(tau, half_shift, prefactor, ny=33, fx=1.0e-5, steps=40000):
+    rho = np.ones(ny)
+    f = lattice_equilibrium(rho, np.zeros(ny), np.zeros(ny))
+    gain = (1.0 - 1.0/(2*tau)) if prefactor else 1.0
+    for _ in range(steps):
+        rho = f.sum(axis=0)
+        jx = (f*EX[:, None]).sum(axis=0)
+        jy = (f*EY[:, None]).sum(axis=0)
+        ux = (jx + (0.5*fx if half_shift else 0.0)) / rho   # switch 1
+        uy = jy / rho
+        fpost = f - (f - lattice_equilibrium(rho, ux, uy))/tau \
+                + gain*source_terms(rho, ux, uy, fx)        # switch 2
+        for i in range(9):                                   # streaming in y
+            f[i] = fpost[i] if EY[i] == 0 else np.roll(fpost[i], EY[i])
+        for i in range(9):                                   # half-way bounce-back
+            if EY[i] > 0:
+                f[i, 0] = fpost[OPP[i], 0]
+            elif EY[i] < 0:
+                f[i, -1] = fpost[OPP[i], -1]
+    jx = (f*EX[:, None]).sum(axis=0)
+    return (jx + 0.5*fx) / f.sum(axis=0)      # physical velocity, always shifted
+
+
+NY, FX = 33, 1.0e-5
+y = np.arange(NY) + 0.5
+for tau in (0.6, 1.0, 1.8):
+    exact = FX / (2*CS2*(tau - 0.5)) * y * (NY - y)
+    ok = run_forced_channel(tau, True, True).max() / exact.max()
+    m1 = run_forced_channel(tau, True, False).max() / exact.max()
+    m2 = run_forced_channel(tau, False, True).max() / exact.max()
+    print(f"tau={tau:4.2f}  both={ok:.4f}  shift_only={m1:.4f} (pred {1+1/(2*tau):.4f})"
+          f"  gain_only={m2:.4f} (pred {1-1/(2*tau):.4f})")
+```
+
+出力はこうなります。
+
+```text
+tau=0.60  both=0.9991  shift_only=1.8316 (pred 1.8333)  gain_only=0.1666 (pred 0.1667)
+tau=1.00  both=1.0003  shift_only=1.5002 (pred 1.5000)  gain_only=0.5005 (pred 0.5000)
+tau=1.80  both=1.0074  shift_only=1.2867 (pred 1.2778)  gain_only=0.7280 (pred 0.7222)
+```
+
+$\tau=1.8$ で予測と 0.7% ずれますが、同じ条件でスキーム自体の離散化誤差が 0.74% です。大きさが同じです。ずれの出どころが帳簿ではなく格子だという意味です。
+
+## 記憶すべき点
+
+- 力の項の前の $(1-\frac{1}{2\tau})$ と速度の $+\delta t\mathbf{F}/2\rho$ は、台形積分の変数変換から一緒に出てきた一対です。どちらか一方だけを使うと、力が $1\pm\frac{1}{2\tau}$ 倍にずれます。$\tau=0.6$ なら83%の超過です。
+- 定常一方向 Poiseuille は forcing スキームを見分けられません。五つのスキームが小数第4位まで同じ誤差を出します。スキームの比較は非定常流か非一様な力で行うべきです。
+- どのスキームでも1次モーメントは $\mathbf{F}$ に合わせてあります。違いは2次モーメント、つまり応力にあり、その目標値に $(1-\frac{1}{2\tau})$ が入っています。新しいスキームを検討するときは M2 から確認すると早いです。

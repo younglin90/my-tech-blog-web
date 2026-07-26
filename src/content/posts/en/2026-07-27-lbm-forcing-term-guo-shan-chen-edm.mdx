@@ -1,0 +1,250 @@
+---
+title: "Where Half the Force Goes in LBM — Four Forcing Schemes and 1−1/(2τ)"
+date: 2026-07-27
+description: "Comparing lattice Boltzmann body-force schemes and pinning down the half-force correction"
+tags: ["LBM", "Forcing-Term", "Guo-Forcing", "Shan-Chen", "Poiseuille"]
+locale: en
+slug: lbm-forcing-term-guo-shan-chen-edm
+draft: false
+---
+
+import { ForcedChannelSchemeLab } from '@/components/post-viz/2026-07-27-lbm-forcing-term-guo-shan-chen-edm/ForcedChannelSchemeLab'
+import { ForceMomentBudgetDial } from '@/components/post-viz/2026-07-27-lbm-forcing-term-guo-shan-chen-edm/ForceMomentBudgetDial'
+
+In 1993 Shan and Chen pulled water and oil apart on a lattice. The prescription was modest. All they did was add $\tau\mathbf{F}/\rho$ to the velocity fed to the equilibrium during collision. In 1998 He attached the force directly to the equilibrium distribution. In 2002 Guo argued that the earlier prescriptions leave an error in the stress, and put $(1-\frac{1}{2\tau})$ in front of the force term. In 2004 Kupershtokh did the same job with nothing but the difference of two equilibrium distributions.
+
+Four answers to one question. So which one should you use? Today I put that question straight to a D2Q9 channel. The answer was not what I expected. In steady flow, every scheme gave the same error out to the fourth decimal place. The real trap is not where you pick a scheme. This post uses the derivation to locate that trap, and numbers to measure its size.
+
+## Cutting the force term out of the continuous equation
+
+The Boltzmann equation with an external force gains one term.
+
+$$
+\partial_t f + \boldsymbol{\xi}\cdot\nabla_{\mathbf{x}} f + \frac{\mathbf{F}}{\rho}\cdot\nabla_{\boldsymbol{\xi}} f = -\frac{1}{\lambda}\left(f - f^{\rm eq}\right)
+$$
+
+$f$ is the distribution function, $\boldsymbol{\xi}$ the particle velocity, $\mathbf{F}$ the body force per unit volume, and $\lambda$ the relaxation time.
+
+The trouble is the third term. The velocity-space derivative $\nabla_{\boldsymbol{\xi}} f$ does not exist on a lattice. All we have is nine discrete velocities. So we swap $f$ for $f^{\rm eq}$ and handle the derivative analytically.
+
+$$
+\frac{\mathbf{F}}{\rho}\cdot\nabla_{\boldsymbol{\xi}} f \simeq -\frac{(\boldsymbol{\xi}-\mathbf{u})\cdot\mathbf{F}}{\rho c_s^2}\,f^{\rm eq}
+$$
+
+$c_s$ is the lattice sound speed ($c_s^2=1/3$ in D2Q9) and $\mathbf{u}$ is the fluid velocity.
+
+Is it legal to swap $f$ for $f^{\rm eq}$? At low Mach number, yes. The non-equilibrium part $f^{(1)}$ is first order in the Knudsen number (mean free path over characteristic length), so once it is multiplied by the force it drops to a negligible order. What the swap does instead is leave a residual error in the stress. That is exactly where the schemes part ways.
+
+Project this expression onto the discrete velocities $\mathbf{c}_i$ and truncate the Hermite series at second order. Out comes the force term on the lattice.
+
+$$
+F_i = w_i\left[\frac{\mathbf{c}_i-\mathbf{u}}{c_s^2} + \frac{(\mathbf{c}_i\cdot\mathbf{u})}{c_s^4}\mathbf{c}_i\right]\cdot\mathbf{F}
+$$
+
+$w_i$ is the lattice weight. The reason for cutting at second order is plain. The moments needed to recover Navier–Stokes go up to second order.
+
+Three moments are worth pinning down.
+
+$$
+\sum_i F_i = 0,\qquad \sum_i \mathbf{c}_i F_i = \mathbf{F},\qquad \sum_i \mathbf{c}_i\mathbf{c}_i F_i = \mathbf{u}\mathbf{F}+\mathbf{F}\mathbf{u}
+$$
+
+Zeroth order is mass. A force creates no mass, so it has to vanish. First order is momentum, second order is stress.
+
+## The half left behind by the trapezoidal rule
+
+Now integrate the discrete-velocity Boltzmann equation along a characteristic over $\delta t$. Integrating the collision and force terms with the trapezoidal rule buys second-order accuracy. The price is that $t+\delta t$ slips onto the right-hand side.
+
+$$
+f_i(\mathbf{x}+\mathbf{c}_i\delta t,\ t+\delta t) - f_i(\mathbf{x},t)
+= -\frac{\delta t}{2\lambda}\left[(f_i-f_i^{\rm eq})^{n} + (f_i-f_i^{\rm eq})^{n+1}\right]
++ \frac{\delta t}{2}\left[F_i^{\,n} + F_i^{\,n+1}\right]
+$$
+
+The superscripts $n$ and $n+1$ mean $t$ and $t+\delta t$. As written this is implicit. It would take a linear system solved every step.
+
+LBM erases that implicitness with a change of variables.
+
+$$
+\bar f_i = f_i + \frac{\delta t}{2\lambda}\left(f_i - f_i^{\rm eq}\right) - \frac{\delta t}{2}F_i
+$$
+
+Rewrite in terms of $\bar f_i$ and set $\tau = \lambda/\delta t + 1/2$, and you get the familiar one-liner.
+
+$$
+\bar f_i(\mathbf{x}+\mathbf{c}_i\delta t,\ t+\delta t) = \bar f_i - \frac{1}{\tau}\left(\bar f_i - f_i^{\rm eq}\right) + \delta t\left(1-\frac{1}{2\tau}\right)F_i
+$$
+
+The transformation left two traces. One is the $(1-\frac{1}{2\tau})$ in front of the force. The other is easier to miss. What we store in the array is $\bar f_i$, not $f_i$. So the momentum is off by that same half.
+
+$$
+\rho\mathbf{u} = \sum_i \bar f_i \mathbf{c}_i + \frac{\delta t}{2}\mathbf{F}
+$$
+
+These two are one body. They fell out of the same transformation together. Keep one and drop the other and the books do not balance. How badly they fail to balance gets measured below.
+
+## A comparison table for four schemes
+
+Call $\mathbf{j}=\sum_i \bar f_i\mathbf{c}_i$ the raw momentum of the stored distributions, and $\delta\mathbf{u}=\delta t\,\mathbf{F}/\rho$ the velocity increment the force delivers in one step.
+
+| Scheme | Where the force enters | Velocity used in the equilibrium | Second moment $\sum\mathbf{c}_i\mathbf{c}_i F_i$ |
+|------|----------------|------------------|------------|
+| plain | $F_i = w_i(\mathbf{c}_i\cdot\mathbf{F})/c_s^2$ | $\mathbf{j}/\rho$ | 0 — the $\mathbf{u}\mathbf{F}$ term is missing entirely |
+| Shan–Chen (1993) | no explicit term | $\mathbf{j}/\rho + \tau\mathbf{F}/\rho$ | $\mathbf{u}\mathbf{F}+\mathbf{F}\mathbf{u} + \tau\mathbf{F}\mathbf{F}/\rho$ |
+| He (1998) | $(\mathbf{c}_i-\mathbf{u})\cdot\mathbf{F}\,f_i^{\rm eq}/(\rho c_s^2)$ | $(\mathbf{j}+\delta t\mathbf{F}/2)/\rho$ | $\mathbf{u}\mathbf{F}+\mathbf{F}\mathbf{u}$ (within the equilibrium truncation error) |
+| EDM (2004) | $f_i^{\rm eq}(\rho,\mathbf{u}+\delta\mathbf{u}) - f_i^{\rm eq}(\rho,\mathbf{u})$ | $\mathbf{j}/\rho$ | $\mathbf{u}\mathbf{F}+\mathbf{F}\mathbf{u} + \rho\,\delta\mathbf{u}\delta\mathbf{u}$ |
+| Guo (2002) | the $F_i$ above times $(1-\frac{1}{2\tau})$ | $(\mathbf{j}+\delta t\mathbf{F}/2)/\rho$ | $(1-\frac{1}{2\tau})(\mathbf{u}\mathbf{F}+\mathbf{F}\mathbf{u})$ |
+
+Read the five rows down the columns and the common ground shows. Every first moment is exactly $\mathbf{F}$. No surprise — they were designed that way. What differs is the second moment, which is the stress.
+
+But the target the change of variables demands is not $\mathbf{u}\mathbf{F}+\mathbf{F}\mathbf{u}$. It is $(1-\frac{1}{2\tau})(\mathbf{u}\mathbf{F}+\mathbf{F}\mathbf{u})$. Only the bottom row carries that coefficient explicitly. The rest go along carrying a stress deviation of size $\frac{1}{2\tau}$.
+
+The deviation scales as force times velocity, order $u F$. At low Mach, $u$ is small, so the term itself is small. The $\mathbf{F}\mathbf{F}$ term that Shan–Chen and EDM leave behind is smaller still, order $F^2$. That is why it barely matters which one you use when the driving is weak gravity. The differences surface where the force is strong (when $\tau\mathbf{F}/\rho$ rivals $\mathbf{u}$), or where the force changes sharply across an interface, as in multiphase flow.
+
+Let's work the figure below directly.
+
+<ForceMomentBudgetDial />
+
+Spin the force-direction dial as far as you like and the M0 (mass) and M1 (momentum) bars stay glued to their targets. All four schemes do this. Push $\tau$ away from 1 and watch only the M2 (stress) bar. The instant you flip the prefactor switch off, M2 alone comes away from its target.
+
+## Steady Poiseuille cannot tell them apart
+
+Let's go to the most common validation problem. A channel pushed by a body force between an upper and a lower wall. The steady solution is a known parabola.
+
+$$
+u(y) = \frac{F_x}{2\nu}\,y\,(H-y),\qquad \nu = c_s^2\left(\tau-\tfrac{1}{2}\right)
+$$
+
+$H$ is the channel height and $\nu$ the kinematic viscosity. With half-way bounce-back the wall sits half a cell outside the lattice nodes, so $H$ equals the number of fluid nodes and node $j$ sits at $y=j+0.5$.
+
+Let's work the simulation below directly.
+
+<ForcedChannelSchemeLab />
+
+Press all four scheme buttons. The teal curve does not budge off the dashed parabola. Push $\tau$ from 0.6 up to 2.0 and it is the same story. Then switch off just one of the two toggles below. The amplitude of the parabola jumps wholesale.
+
+The numbers say the same thing. Maximum relative error measured after 40,000 steps with 33 fluid nodes and $F_x = 10^{-5}$.
+
+| $\tau$ | plain | Shan–Chen | He | EDM | Guo |
+|--------|-------|-----------|----|-----|-----|
+| 0.60 | 0.0875% | 0.0875% | 0.0875% | 0.0875% | 0.0875% |
+| 1.00 | 0.0306% | 0.0306% | 0.0306% | 0.0306% | 0.0306% |
+| 1.80 | 0.7358% | 0.7358% | 0.7358% | 0.7358% | 0.7358% |
+
+There is nothing to compare across the columns. The values are identical. The error that remains comes from the discretization of bounce-back, not from the scheme.
+
+The reason lies in where the second moment enters. This flow is steady and unidirectional. The velocity has a single component $u_x(y)$ and the force has only an $x$ component. The term where the schemes part ways is $\mathbf{u}\mathbf{F}$, the $xx$ component. But what actually governs the momentum balance of this flow is the $xy$ shear stress. The $xx$ deviation the force creates has no route into the balance.
+
+That $\partial_t\mathbf{u}=0$ works in the same direction. There is no room for the force-term error to accumulate in time. To see the difference between schemes you have to go to unsteady flow, or to a spatially varying force. With this test, at least, the five cannot be told apart.
+
+This is not bad news. It is something to know when choosing a validation problem. It means a passing Poiseuille does not let you say your forcing implementation is right.
+
+## Count the half twice and the force grows
+
+So what does actually go wrong? The two things called one body earlier — the half-step velocity correction and the coefficient in front of the force.
+
+Count the momentum actually injected in one step. Add $\delta t\mathbf{F}/2\rho$ to the equilibrium velocity and collision carries $1/\tau$ of it across each step. On top of that comes the share the force term delivers directly. Write $s\in\{0,1\}$ for whether the half correction is on, and $g$ for the coefficient in front of the force, and
+
+$$
+\Delta(\rho u) = \frac{1}{\tau}\cdot\frac{s\,\delta t F}{2} + g\,\delta t F
+$$
+
+This has to equal $\delta t F$. The condition is a single one, $g = 1 - s/(2\tau)$. The two switches are not independent.
+
+Mismatch them and the amplitude misses by a predictable ratio. Here are the amplitude ratios measured with the Guo force term held fixed and only the two switches changed.
+
+| $\tau$ | both on | shift only | predicted $1+\frac{1}{2\tau}$ | gain only | predicted $1-\frac{1}{2\tau}$ |
+|--------|---------|-----------|--------------------------|-----------|--------------------------|
+| 0.60 | 0.9991 | 1.8316 | 1.8333 | 0.1666 | 0.1667 |
+| 0.80 | 0.9995 | 1.6240 | 1.6250 | 0.3751 | 0.3750 |
+| 1.00 | 1.0003 | 1.5002 | 1.5000 | 0.5005 | 0.5000 |
+| 1.40 | 1.0030 | 1.3609 | 1.3571 | 0.6452 | 0.6429 |
+| 1.80 | 1.0074 | 1.2867 | 1.2778 | 0.7280 | 0.7222 |
+
+Measurement and prediction agree to the third decimal place. At $\tau=0.6$, turning on only the half correction makes the force 83% larger. Turning on only the coefficient shrinks it to a sixth.
+
+This is not a subtle accuracy issue. It is exactly what happens when you copy Guo's $F_i$ straight out of a paper and leave the velocity as the old code's $\mathbf{j}/\rho$. Start touching $\tau$ because the viscosity looks off and you go in deeper. Every change to $\tau$ moves the error ratio along with it.
+
+There is a way to spot it from the symptoms. If doubling the grid does not shrink the error ratio, it is not a discretization error. If the ratio converges toward 1.5 as $\tau$ is brought near 1 and grows as if diverging as $\tau$ drops toward 0.5, that is the fingerprint of $1+\frac{1}{2\tau}$. And if raising the force leaves the ratio unchanged, it is a bookkeeping problem, not a nonlinear one. When all three line up, do not suspect the scheme — open up the velocity definition first.
+
+## Python — mismatching the two switches
+
+A D2Q9 channel solver with the two switches pulled out as arguments. The flow is homogeneous in $x$, so only one column is kept. The five schemes in the table above only need `source_terms` and the velocity fed to the equilibrium swapped out, so here we fix on the Guo force term alone.
+
+```python
+import numpy as np
+
+EX = np.array([0, 1, 0, -1, 0, 1, -1, -1, 1])
+EY = np.array([0, 0, 1, 0, -1, 1, 1, -1, -1])
+W = np.array([4/9, 1/9, 1/9, 1/9, 1/9, 1/36, 1/36, 1/36, 1/36])
+OPP = np.array([0, 3, 4, 1, 2, 7, 8, 5, 6])
+CS2 = 1.0 / 3.0
+
+
+def lattice_equilibrium(rho, ux, uy):
+    feq = np.empty((9, rho.size))
+    usq = ux**2 + uy**2
+    for i in range(9):
+        eu = EX[i] * ux + EY[i] * uy
+        feq[i] = W[i] * rho * (1 + eu/CS2 + eu**2/(2*CS2**2) - usq/(2*CS2))
+    return feq
+
+
+def source_terms(rho, ux, uy, fx):
+    """Guo forcing term, before the (1 - 1/2tau) gain."""
+    src = np.empty((9, rho.size))
+    for i in range(9):
+        eu = EX[i]*ux + EY[i]*uy
+        src[i] = W[i] * ((EX[i] - ux)/CS2 + eu*EX[i]/CS2**2) * fx
+    return src
+
+
+def run_forced_channel(tau, half_shift, prefactor, ny=33, fx=1.0e-5, steps=40000):
+    rho = np.ones(ny)
+    f = lattice_equilibrium(rho, np.zeros(ny), np.zeros(ny))
+    gain = (1.0 - 1.0/(2*tau)) if prefactor else 1.0
+    for _ in range(steps):
+        rho = f.sum(axis=0)
+        jx = (f*EX[:, None]).sum(axis=0)
+        jy = (f*EY[:, None]).sum(axis=0)
+        ux = (jx + (0.5*fx if half_shift else 0.0)) / rho   # switch 1
+        uy = jy / rho
+        fpost = f - (f - lattice_equilibrium(rho, ux, uy))/tau \
+                + gain*source_terms(rho, ux, uy, fx)        # switch 2
+        for i in range(9):                                   # streaming in y
+            f[i] = fpost[i] if EY[i] == 0 else np.roll(fpost[i], EY[i])
+        for i in range(9):                                   # half-way bounce-back
+            if EY[i] > 0:
+                f[i, 0] = fpost[OPP[i], 0]
+            elif EY[i] < 0:
+                f[i, -1] = fpost[OPP[i], -1]
+    jx = (f*EX[:, None]).sum(axis=0)
+    return (jx + 0.5*fx) / f.sum(axis=0)      # physical velocity, always shifted
+
+
+NY, FX = 33, 1.0e-5
+y = np.arange(NY) + 0.5
+for tau in (0.6, 1.0, 1.8):
+    exact = FX / (2*CS2*(tau - 0.5)) * y * (NY - y)
+    ok = run_forced_channel(tau, True, True).max() / exact.max()
+    m1 = run_forced_channel(tau, True, False).max() / exact.max()
+    m2 = run_forced_channel(tau, False, True).max() / exact.max()
+    print(f"tau={tau:4.2f}  both={ok:.4f}  shift_only={m1:.4f} (pred {1+1/(2*tau):.4f})"
+          f"  gain_only={m2:.4f} (pred {1-1/(2*tau):.4f})")
+```
+
+The output looks like this.
+
+```text
+tau=0.60  both=0.9991  shift_only=1.8316 (pred 1.8333)  gain_only=0.1666 (pred 0.1667)
+tau=1.00  both=1.0003  shift_only=1.5002 (pred 1.5000)  gain_only=0.5005 (pred 0.5000)
+tau=1.80  both=1.0074  shift_only=1.2867 (pred 1.2778)  gain_only=0.7280 (pred 0.7222)
+```
+
+At $\tau=1.8$ the measurement misses the prediction by 0.7%, and under the same conditions the scheme's own discretization error is 0.74%. Same size. Which means the mismatch comes from the lattice, not from the bookkeeping.
+
+## What to remember
+
+- The $(1-\frac{1}{2\tau})$ in front of the force term and the $+\delta t\mathbf{F}/2\rho$ on the velocity are a pair that came out of the same change of variables in the trapezoidal integration. Use only one of the two and the force is off by a factor of $1\pm\frac{1}{2\tau}$. At $\tau=0.6$ that is 83% too much.
+- Steady unidirectional Poiseuille cannot tell forcing schemes apart. All five produce the same error to the fourth decimal place. Scheme comparison has to be done in unsteady flow or with an inhomogeneous force.
+- Whichever scheme you take, the first moment is matched to $\mathbf{F}$. The difference sits in the second moment, the stress, and its target value carries a $(1-\frac{1}{2\tau})$. When reviewing a new scheme, checking M2 first is the fast route.
