@@ -200,6 +200,7 @@ export const VIZ_COMPONENTS: Record<string, ComponentType> = {
   "VOFvsLevelSet": dynamic(() => import("@/components/post-viz/interface-capturing/VOFvsLevelSet").then((m) => ({ default: m.VOFvsLevelSet })), { ssr: false, loading: VizLoading }),
   "VolumeFractionAdvect": dynamic(() => import("@/components/post-viz/five-equation-model/VolumeFractionAdvect").then((m) => ({ default: m.VolumeFractionAdvect })), { ssr: false, loading: VizLoading }),
   "VonNeumannShockTube1D": dynamic(() => import("@/components/post-viz/2026-05-13-von-neumann-artificial-viscosity-1950/VonNeumannShockTube1D").then((m) => ({ default: m.VonNeumannShockTube1D })), { ssr: false, loading: VizLoading }),
+  "VortexFlameCrossingLab": dynamic(() => import("@/components/post-viz/2026-07-28-turbulent-flame-speed-damkohler-bending/VortexFlameCrossingLab").then((m) => ({ default: m.VortexFlameCrossingLab })), { ssr: false, loading: VizLoading }),
   "WallClusteringStretch1D": dynamic(() => import("@/components/post-viz/2026-06-17-curvilinear-coordinate-transformation-grid-metrics/WallClusteringStretch1D").then((m) => ({ default: m.WallClusteringStretch1D })), { ssr: false, loading: VizLoading }),
   "WaterPropertyVariation": dynamic(() => import("@/components/post-viz/2026-05-10-demou-non-oberbeck-boussinesq-pressure-split/WaterPropertyVariation").then((m) => ({ default: m.WaterPropertyVariation })), { ssr: false, loading: VizLoading }),
   "WaveDispersionExplorer": dynamic(() => import("@/components/post-viz/2026-07-21-water-wave-dispersion-phase-group-velocity/WaveDispersionExplorer").then((m) => ({ default: m.WaveDispersionExplorer })), { ssr: false, loading: VizLoading }),
@@ -207,4 +208,5 @@ export const VIZ_COMPONENTS: Record<string, ComponentType> = {
   "WeberRegimeLadder": dynamic(() => import("@/components/post-viz/2026-07-07-tab-droplet-breakup-weber/WeberRegimeLadder").then((m) => ({ default: m.WeberRegimeLadder })), { ssr: false, loading: VizLoading }),
   "WetDryAquifer1D": dynamic(() => import("@/components/post-viz/2026-05-16-casulli-zanolli-2012-nested-newton-free-surface/WetDryAquifer1D").then((m) => ({ default: m.WetDryAquifer1D })), { ssr: false, loading: VizLoading }),
   "WoodVsFrozenSoundSpeed": dynamic(() => import("@/components/post-viz/2026-05-09-saurel-2009-pressure-relaxation-multiphase/WoodVsFrozenSoundSpeed").then((m) => ({ default: m.WoodVsFrozenSoundSpeed })), { ssr: false, loading: VizLoading }),
+  "WrinkledFlameFrontLab": dynamic(() => import("@/components/post-viz/2026-07-28-turbulent-flame-speed-damkohler-bending/WrinkledFlameFrontLab").then((m) => ({ default: m.WrinkledFlameFrontLab })), { ssr: false, loading: VizLoading }),
 }
