@@ -1,0 +1,200 @@
+---
+title: "El mallador que muere por respetar la frontera — Delaunay con restricciones y puntos de Steiner"
+date: 2026-07-29
+description: "Por qué tetgen se derrumba en el 8.5% de los modelos y cómo funciona la recuperación de segmentos y caras"
+tags: ["Mesh-Generation", "Delaunay", "Steiner-Point", "Robust-Predicates", "Tetrahedralization"]
+locale: es
+slug: constrained-delaunay-steiner-boundary-recovery
+draft: false
+---
+
+import { SchonhardtTwistLab } from '@/components/post-viz/2026-07-29-constrained-delaunay-steiner-boundary-recovery/SchonhardtTwistLab'
+import { MissingSegmentSplitLab } from '@/components/post-viz/2026-07-29-constrained-delaunay-steiner-boundary-recovery/MissingSegmentSplitLab'
+
+Un STL entró en tetgen y el programa simplemente murió. La última línea del log decía `A segment and a facet intersect at point`. Al abrir la geometría no aparecía nada roto. Las caras cerraban, no había autointersecciones y otros malladores comerciales la procesaban sin quejarse. El problema no estaba en el archivo.
+
+De los 4408 modelos válidos del conjunto de datos Thingi10k, tetgen se derrumba de la misma forma en cerca del 8.5%. Este artículo sigue el rastro de dónde sale ese 8.5%. La causa se bifurca en dos. Una es el punto flotante; la otra no tiene absolutamente nada que ver con el punto flotante. La segunda resulta bastante más interesante.
+
+## La triangulación no recuerda la frontera
+
+La triangulación de Delaunay (la que cumple la condición del círculo circunscrito vacío) es una propiedad de un **conjunto de puntos**. Si la entrada es una nube de puntos, funciona a la perfección. El problema está en que la CFD no entrega nubes de puntos.
+
+Lo que se entrega es un PLC (complejo lineal por partes: un complejo donde vértices, segmentos y caras poligonales encajan entre sí de forma íntegra). La superficie de un ala, la pared de un cilindro, el parche de entrada. Todo eso tiene que sobrevivir dentro de la malla **como aristas y caras exactas**. Una condición de contorno de pared no se puede imponer sobre una cara aproximada.
+
+Pero al insertar solo los vértices y ejecutar Delaunay no hay garantía alguna de que esa arista siga viva. Otra arista termina cruzándola por encima. A lo que desaparece de este modo se le llama **missing segment**, segmento perdido.
+
+Los enfoques que aproximan la frontera, como TetWild o Quartet, esquivan este problema. A cambio hay que proyectar las condiciones de contorno para trasladarlas, y esa proyección tiene pérdida y ni siquiera se garantiza biyectiva. Imponer sobre ella la fricción de pared o el flujo de calor cuesta exactamente esa precisión.
+
+## Todo segmento perdido tiene un punto invasor
+
+La única forma de resucitar un segmento es cortarlo. Pero dónde se corta decide la convergencia del algoritmo. Cortar a ciegas por la mitad da lugar a casos que no terminan nunca.
+
+El criterio es uno solo. Si dentro del **círculo diametral** $D$ de un segmento $e = \langle v_1, v_2 \rangle$ (el círculo circunscrito mínimo que tiene los dos extremos como diámetro) no hay ningún otro vértice, entonces $e$ es fuertemente Delaunay.
+
+$$
+\|x - \tfrac{v_1+v_2}{2}\| \;\ge\; \tfrac{1}{2}\|v_2 - v_1\| \quad \forall x \in V \setminus \{v_1, v_2\}
+$$
+
+$V$ es el conjunto de vértices del PLC y el lado izquierdo es la distancia al centro del círculo diametral. Si esta condición se cumple, $e$ está necesariamente dentro de la triangulación de Delaunay.
+
+La clave está en leerlo en sentido inverso. **Si un segmento desapareció, dentro de su círculo diametral hay con seguridad algún vértice.** A esos vértices se les llama puntos invasores (encroaching points). El recíproco no vale. Puede haber puntos invasores y el segmento seguir perfectamente vivo: basta con que algún círculo circunscrito más inflado quede vacío.
+
+Conviene manipularlo directamente en la simulación de abajo.
+
+<MissingSegmentSplitLab />
+
+Al bajar el punto invasor hacia el segmento con el deslizador, el círculo diametral se tiñe de rojo primero. Y sin embargo el segmento verde sigue vivo un buen rato. Solo al bajarlo más se corta el segmento y una arista amarilla cruza ese lugar. Ahí se ve que la invasión es condición necesaria pero no suficiente. Al pulsar `split once` queda fijado el punto de referencia $r$ (círculo naranja) y el segmento se corta justo ahí.
+
+## Dónde se corta decide la convergencia
+
+El punto de referencia $r$ es, entre los puntos invasores, aquel para el que el círculo que pasa por $(v_1, v_2, r)$ tiene el radio mayor. No se elige el que invade más profundo, sino el que estorba más ampliamente.
+
+La posición de división se fija con la distancia hasta $r$. Sean $R_1 = \|r - v_1\|$, $R_2 = \|r - v_2\|$ y $L = \|v_2 - v_1\|$.
+
+$$
+t = \begin{cases}
+L/2, & R_1 > L/2 \;\text{y}\; R_2 > L/2 \\
+\min(R_1,\, L - R_2), & \text{en otro caso}
+\end{cases}
+$$
+
+$t$ es la distancia desde $v_1$ hasta el punto de división. El segundo caso corresponde al lugar donde el segmento se encuentra con la circunferencia centrada en $v_1$ o en $v_2$ que toca a $r$. Solo con esta regla se demuestra que la iteración termina en un número finito de pasos.
+
+Aquí aparece la primera trampa. Como es la intersección de una circunferencia con un segmento, $t$ puede ser irracional. Aunque todas las coordenadas de entrada sean double, las del punto de división no se representan en double. En el instante en que se redondea, ese punto se sale mínimamente del segmento original y todas las demostraciones del algoritmo quedan sin efecto.
+
+El rodeo consiste en no almacenar coordenadas. Si el punto de división se lleva tal cual como la **expresión** $t v_1 + (1-t) v_2$, ese punto está sobre el segmento por definición. A estos puntos se les llama implicit points y, cuando son combinación lineal de dos puntos, LNC (linear combination). Al extender los predicados `orient3d` e `inSphere` para que acepten LNC, se sigue usando el hardware de punto flotante sin equivocar ni un signo.
+
+## En 3D existen poliedros que no tienen respuesta
+
+En 2D, para cualquier conjunto de segmentos que no se cruzan siempre existe la triangulación de Delaunay con restricciones. En 3D no.
+
+Conviene torcer un ángulo $\theta$ la cara superior de un prisma triangular. Las tres caras laterales cuadrangulares pierden la planitud. Cada cuadrilátero hay que partirlo con una diagonal, y hay dos opciones. Cuál de ellas se toma lo decide un solo signo.
+
+$$
+\mathrm{orient3d}(a,b,c,d) = \big((b-a) \times (c-a)\big) \cdot (d-a)
+$$
+
+$(a,b,c)$ es el triángulo orientado hacia afuera y $d$ el vértice restante. Si el valor es negativo, $d$ queda del lado interior y esa diagonal es una arista convexa; si es positivo, es una arista cóncava (reflex).
+
+Al elegir las tres caras del lado cóncavo se obtiene el **poliedro de Schönhardt** (1928). Está cerrado, es simple y no tiene autointersecciones. Y con sus seis vértices, y solo con ellos, jamás se divide en tetraedros.
+
+<SchonhardtTwistLab />
+
+Conviene activar `reflex split` y subir $\theta$ desde 0. De los 15 tetraedros candidatos, los válidos caen a 0 en un instante. Al cambiar a `convex split`, esa misma forma se divide sin problema. El motivo son las diagonales dibujadas con línea punteada, que se vuelven amarillas: esas aristas se escapan fuera del sólido, así que todo tetraedro que las use como lado queda descalificado. Al activar `Steiner point` se agrega un punto central y el volumen se rellena de inmediato con 8 tetraedros.
+
+Aquí queda claro por qué el teorema de la CDT habla solo de segmentos. Si todos los segmentos son fuertemente Delaunay, la CDT existe. Es decir, no hay que decidir cómo destripar el poliedro, sino únicamente **dónde cortar los segmentos**. La división es una operación puramente topológica. La geometría de entrada no se mueve ni 1 mm.
+
+## Recuperación de caras — perforar y rellenar de nuevo
+
+Una vez recuperados todos los segmentos llega el turno de las caras. Si una sola arista de la malla atraviesa una cara $f$ del PLC, esa cara está missing.
+
+El procedimiento es este. Se reúnen todos los tetraedros incidentes a las aristas que perforan $f$ y con ellos se arma una cavidad. Con el plano de $f$ se parte la cavidad en dos mitades $C_1$ y $C_2$, arriba y abajo. Los vértices que caen sobre el plano entran en ambas. Con los vértices de cada mitad se calcula una triangulación de Delaunay local $D_i$ y se rellena solo con los tetraedros que quedan dentro de la cavidad. $D_i$ es convexa pero $C_i$ puede ser cóncava, así que no se usan todos.
+
+El problema llega cuando un triángulo de la frontera de $C_i$ no aparece en $D_i$. Entonces se pega el tetraedro del otro lado para ampliar la cavidad y se vuelve a calcular. Esa expansión es el segundo punto de fallo.
+
+## Contar puntos invasores y divisiones en Python
+
+Este es el bucle completo para recuperar un segmento en 2D. Test del círculo circunscrito → detección del segmento perdido → recolección de puntos invasores → elección del punto de referencia → división, y otra vez desde arriba.
+
+```python
+import numpy as np
+from itertools import combinations
+
+def circumcircle(a, b, c):
+    """Círculo circunscrito de tres puntos (centro, radio). Si son colineales, (None, None)."""
+    (ax, ay), (bx, by), (cx, cy) = a, b, c
+    d = 2.0 * (ax*(by-cy) + bx*(cy-ay) + cx*(ay-by))
+    if abs(d) < 1e-12:
+        return None, None
+    ux = ((ax*ax+ay*ay)*(by-cy) + (bx*bx+by*by)*(cy-ay) + (cx*cx+cy*cy)*(ay-by)) / d
+    uy = ((ax*ax+ay*ay)*(cx-bx) + (bx*bx+by*by)*(ax-cx) + (cx*cx+cy*cy)*(bx-ax)) / d
+    ctr = np.array([ux, uy])
+    return ctr, float(np.linalg.norm(ctr - np.asarray(a)))
+
+def delaunay_edges(pts):
+    """Conjunto de aristas de los triángulos que pasan el test del círculo vacío."""
+    n = len(pts)
+    edges = set()
+    for i, j, k in combinations(range(n), 3):
+        ctr, rad = circumcircle(pts[i], pts[j], pts[k])
+        if ctr is None:
+            continue
+        rest = [m for m in range(n) if m not in (i, j, k)]
+        if rest and np.linalg.norm(pts[rest] - ctr, axis=1).min() < rad - 1e-9:
+            continue                      # si hay un punto dentro del círculo, no es Delaunay
+        edges |= {(i, j), (j, k), (i, k)}
+    return {(min(a, b), max(a, b)) for a, b in edges}
+
+def encroaching(pts, i1, i2):
+    """Vértices que caen dentro del círculo diametral del segmento = puntos invasores."""
+    mid = 0.5 * (pts[i1] + pts[i2])
+    rad = 0.5 * float(np.linalg.norm(pts[i2] - pts[i1]))
+    return [k for k in range(len(pts))
+            if k not in (i1, i2) and np.linalg.norm(pts[k] - mid) < rad - 1e-9]
+
+def recover_segment(points, chain, max_split=16):
+    pts = [np.asarray(p, dtype=float) for p in points]
+    for step in range(max_split):
+        E = delaunay_edges(np.array(pts))
+        gone = [s for s in range(len(chain)-1)
+                if (min(chain[s], chain[s+1]), max(chain[s], chain[s+1])) not in E]
+        if not gone:
+            return np.array(pts), chain, step
+        s = gone[0]
+        i1, i2 = chain[s], chain[s+1]
+        vd = encroaching(np.array(pts), i1, i2)
+        v1, v2 = pts[i1], pts[i2]
+        L = float(np.linalg.norm(v2 - v1)); u = (v2 - v1) / L
+        r = max(vd, key=lambda k: circumcircle(v1, v2, pts[k])[1] or 0.0)
+        R1 = float(np.linalg.norm(pts[r] - v1))
+        R2 = float(np.linalg.norm(pts[r] - v2))
+        t = L/2 if (R1 > L/2 and R2 > L/2) else (R1 if R1 <= R2 else L - R2)
+        pts.append(v1 + u * float(np.clip(t, 0.12*L, 0.88*L)))
+        chain = chain[:s+1] + [len(pts)-1] + chain[s+1:]
+        print(f"  step {step}: {len(vd)} puntos invasores, referencia #{r}, t/L = {t/L:.3f}")
+    raise RuntimeError("límite de divisiones superado")
+
+rng = np.random.default_rng(20260729)
+P = [np.array([0.0, 0.0]), np.array([10.0, 0.0])]
+P += [rng.uniform([1.0, -3.0], [9.0, 3.0]) for _ in range(14)]
+
+pts, chain, nsplit = recover_segment(P, [0, 1])
+E = delaunay_edges(pts)
+ok = all((min(chain[s], chain[s+1]), max(chain[s], chain[s+1])) in E
+         for s in range(len(chain)-1))
+print(f"{len(pts)-len(P)} puntos de Steiner, {nsplit} divisiones, {len(chain)-1} subsegmentos")
+print(f"Todos los subsegmentos son aristas Delaunay: {ok}")
+```
+
+El resultado de la ejecución es este.
+
+```text
+  step 0: 14 puntos invasores, referencia #8, t/L = 0.453
+  step 1: 4 puntos invasores, referencia #15, t/L = 0.516
+  step 2: 5 puntos invasores, referencia #11, t/L = 0.698
+  step 3: 3 puntos invasores, referencia #4, t/L = 0.315
+4 puntos de Steiner, 4 divisiones, 5 subsegmentos
+Todos los subsegmentos son aristas Delaunay: True
+```
+
+Lo que llama la atención es el paso 1. Los puntos invasores caen de 14 a 4 y en el paso 2 vuelven a subir a 5. La razón es que los subsegmentos recién creados generan relaciones de invasión que antes no existían. Aun así, gracias a la regla de $t$ el proceso termina en un número finito de pasos aunque no decrezca de forma monótona. Ahí está el motivo de que las implementaciones que solo cortan por la mitad caigan en bucles infinitos.
+
+## Los dos fallos que quedan — redondeo y teoría
+
+En ese 8.5% donde tetgen muere se mezclan dos causas.
+
+La primera es el redondeo. En el instante en que las coordenadas de un punto de Steiner se ajustan (snap) a double, el PLC de entrada se deforma mínimamente. Usar los predicados filtrados de Shewchuk no sirve de nada. Aunque el predicado sea exacto, **la entrada ya está mal**. Al llevarlo todo como expresión LNC, esta rama desaparece.
+
+La segunda no tiene relación con lo numérico. La expansión de la cavidad supone de forma implícita que los interiores de las triangulaciones de las dos mitades no se solapan. Pero durante la expansión existen casos en los que se arrastra un tetraedro del otro lado, cruzando el plano de la cara que se está recuperando. Las dos triangulaciones terminan intersecándose. De los 4408 modelos que probaron los autores, esto ocurrió exactamente en 2. Falla incluso calculando con precisión infinita. Es un agujero del algoritmo en sí.
+
+Reimplementarlo con tipos numéricos exactos (la biblioteca CORE) resuelve la primera causa pero deja intacta la segunda. Y la velocidad se sale del rango práctico: un solo archivo de tamaño medio se lleva varias horas. Parametrizar racionalmente la coordenada con un único $t \in (0,1)$ y usar predicados indirectos es el compromiso que de verdad resulta usable. Los 4408 modelos completos se procesan en unas 5 horas sobre un solo núcleo.
+
+## La próxima vez que muera un mallador
+
+Conviene no sospechar primero de la geometría. Si ya se comprobaron las autointersecciones y las caras abiertas y aun así muere, lo que se rompió no es la forma sino una hipótesis del algoritmo.
+
+- **El precio de respetar la frontera son los puntos de Steiner.** La CDT en 3D no existe gratis. El poliedro de Schönhardt es un contraejemplo de apenas seis vértices, y en la geometría CAD real esos sitios abundan.
+- **La posición de división no es cuestión de gusto, es condición de convergencia.** Dividir por el punto medio es simple, pero puede no terminar. El punto de referencia y la regla de $t$ son el mecanismo que garantiza la terminación.
+- **En cuanto se redondea una coordenada, la demostración queda invalidada.** Los puntos que crea el algoritmo conviene llevarlos como expresión, no como coordenada. Así se siguen usando los predicados de punto flotante conservando el signo intacto.
+
+En un análisis donde hay que imponer funciones de pared sobre la superficie de frontera, la opción de huir hacia una malla aproximada no existe desde el principio. No queda más que atravesar de frente ese 8.5%.

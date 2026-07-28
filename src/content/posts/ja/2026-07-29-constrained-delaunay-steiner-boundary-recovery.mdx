@@ -1,0 +1,200 @@
+---
+title: "境界面を守って死ぬメッシュ生成器 — 制約付きドロネーと Steiner 点"
+date: 2026-07-29
+description: "tetgen が 8.5% で崩れる理由と、線分・面の復元の原理"
+tags: ["Mesh-Generation", "Delaunay", "Steiner-Point", "Robust-Predicates", "Tetrahedralization"]
+locale: ja
+slug: constrained-delaunay-steiner-boundary-recovery
+draft: false
+---
+
+import { SchonhardtTwistLab } from '@/components/post-viz/2026-07-29-constrained-delaunay-steiner-boundary-recovery/SchonhardtTwistLab'
+import { MissingSegmentSplitLab } from '@/components/post-viz/2026-07-29-constrained-delaunay-steiner-boundary-recovery/MissingSegmentSplitLab'
+
+STL を一つ tetgen に食わせたら、プログラムがそのまま落ちました。ログの最終行は `A segment and a facet intersect at point`。形状を調べても壊れた箇所は見つかりません。面は閉じていて、自己交差もなく、別の商用メッシャは問題なく通します。ファイルの問題ではありませんでした。
+
+Thingi10k データセットの有効なモデル 4408 個のうち約 8.5% で、tetgen は同じ壊れ方をします。この記事では、その 8.5% がどこから来るのかを追いかけます。原因は二系統です。一つは浮動小数点、もう一つは浮動小数点とまったく関係ありません。後者のほうが面白いです。
+
+## 三角形分割はあなたの境界を覚えていない
+
+ドロネー三角形分割(空外接円条件を満たす分割)は**点集合**の性質です。入力が点群なら完璧に動きます。問題は、CFD が点群を渡してくれないことにあります。
+
+私たちが渡すのは PLC(piecewise-linear complex、区分線形複体 — 頂点・線分・多角形面が互いに整合して噛み合った複体)です。翼の表面、シリンダ壁、流入パッチ。これらはメッシュの中に**辺と面そのままの姿で**生き残らなければなりません。壁境界条件を近似された面に課すわけにはいきません。
+
+ところが頂点だけ入れてドロネーを回すと、その辺が生き残る保証はまったくありません。別の辺がその上を横切ってしまいます。こうして消えたものを **missing segment** と呼びます。
+
+TetWild や Quartet のように境界を近似する方式は、この問題を回避します。代わりに境界条件を投影して移す必要があり、その投影は損失があり、全単射(bijective)である保証もありません。壁面摩擦や熱流束をその上に課せば、精度はその分だけ飛びます。
+
+## 消えた線分には必ず侵入点がある
+
+線分を復元する方法は割ることだけです。ところが、どこで割るかがアルゴリズムの収束を決めます。やみくもに半分で割ると終わらない場合が出てきます。
+
+判定基準は一つです。線分 $e = \langle v_1, v_2 \rangle$ の**直径円**(両端点を直径とする最小外接円)$D$ の中に他の頂点が一つもなければ、$e$ は strongly Delaunay です。
+
+$$
+\|x - \tfrac{v_1+v_2}{2}\| \;\ge\; \tfrac{1}{2}\|v_2 - v_1\| \quad \forall x \in V \setminus \{v_1, v_2\}
+$$
+
+$V$ は PLC の頂点集合、左辺は直径円の中心までの距離です。この条件が成り立てば、$e$ は必ずドロネー三角形分割の中にあります。
+
+向きを反転して読むのが要点です。**線分が消えたなら、直径円の中に必ず頂点がある。** その頂点たちを侵入点(encroaching point)と呼びます。逆は成り立ちません。侵入点があっても線分が無事に生き残ることはあります。もっと大きく膨らんだ外接円が空であれば、それで済むからです。
+
+下のシミュレーションで直接操作してみましょう。
+
+<MissingSegmentSplitLab />
+
+スライダで侵入点を線分のほうへ下ろすと、直径円が先に赤く染まります。ところが緑の線分はしばらく生きています。さらに下ろすと、そこでようやく線分が切れて、黄色の辺がその場所を横切ります。侵入が必要条件でしかなく十分条件ではないことが、目に見える地点です。`split once` を押すと基準点 $r$(オレンジの円)が決まり、その位置で線分が割られます。
+
+## どこで割るかが収束を決める
+
+基準点 $r$ は、侵入点のうち $(v_1, v_2, r)$ を通る外接円の半径が最大の点です。最も深く侵入した点ではなく、最も広く邪魔をする点を選びます。
+
+分割位置は $r$ までの距離で決めます。$R_1 = \|r - v_1\|$、$R_2 = \|r - v_2\|$、$L = \|v_2 - v_1\|$ とします。
+
+$$
+t = \begin{cases}
+L/2, & R_1 > L/2 \;\text{かつ}\; R_2 > L/2 \\
+\min(R_1,\, L - R_2), & \text{その他}
+\end{cases}
+$$
+
+$t$ は $v_1$ から測った分割点までの距離です。二番目の場合は、$v_1$ または $v_2$ を中心に $r$ へ届く円と線分が交わる位置です。この規則があってはじめて、反復が有限回で終わることが証明されます。
+
+ここで一つ目の落とし穴が生じます。円と線分の交点なので、$t$ は無理数になりえます。入力座標がすべて double でも、分割点の座標は double では表現されません。丸めた瞬間にその点は元の線分からわずかに外れ、アルゴリズムのすべての証明が無効になります。
+
+迂回路は、座標を保存しないことです。分割点を $t v_1 + (1-t) v_2$ という**式**のまま持ち回れば、その点は定義上つねに線分の上にあります。こうした点を implicit point、そのうち二点の線形結合であるものを LNC(linear combination)と呼びます。`orient3d` と `inSphere` 述語を LNC を受け取れるよう拡張すれば、浮動小数点ハードウェアを使いながら符号を間違えずに済みます。
+
+## 3D には答えが存在しない多面体がある
+
+2D では、交差しない線分の集合でありさえすれば、制約付きドロネー三角形分割は必ず存在します。3D では違います。
+
+三角柱の上面を $\theta$ だけねじってみましょう。側面の四角形三つが平面性を失います。各四角形は対角線一本で割らなければならず、割り方は二通りあります。どちらを選ぶかは符号一つが決めます。
+
+$$
+\mathrm{orient3d}(a,b,c,d) = \big((b-a) \times (c-a)\big) \cdot (d-a)
+$$
+
+$(a,b,c)$ は外を向く三角形、$d$ は残りの頂点です。値が負なら $d$ が内側にあり、その対角線は凸(convex)な辺、正なら凹(reflex)な辺です。
+
+三面すべてを凹側に選ぶと **Schönhardt の多面体**(1928)になります。閉じていて、単純で、自己交差もありません。そして自分の六つの頂点だけでは、四面体に絶対に分割できません。
+
+<SchonhardtTwistLab />
+
+`reflex split` を入れて $\theta$ を 0 から上げてみましょう。候補四面体 15 個のうち、有効なものが一瞬で 0 になります。`convex split` に切り替えると、同じ形状が問題なく分割されます。点線で描かれた対角線が黄色に変わるのが理由です。それらの辺が固体の外へ抜け出すため、その辺を使う四面体は全部失格になります。`Steiner point` を入れると中心点が一つ追加され、8 個の四面体で即座に埋まります。
+
+ここで、CDT 定理がなぜ線分の話しかしないのかが見えてきます。すべての線分が strongly Delaunay であれば、CDT は存在します。多面体をどう作り直すかではなく、**線分をどこで割るか**だけを決めればよいという意味です。分割は純粋に位相操作です。入力形状は 1 mm も動きません。
+
+## 面の復元 — 掘り抜いて詰め直す
+
+線分がすべて復元できたら、次は面です。PLC の面 $f$ をメッシュの辺が一本でも貫通すれば、その面は missing です。
+
+手順はこうです。$f$ を貫く辺に接する四面体を全部集めてキャビティを作ります。$f$ の平面でキャビティを上下の半分 $C_1$, $C_2$ に割ります。平面の上に載る頂点は両方に入れます。各半分の頂点で局所的なドロネー分割 $D_i$ を計算し、キャビティの内側に入る四面体だけを選んで詰めます。$D_i$ は凸ですが $C_i$ は凹でありうるので、全部が使われるわけではありません。
+
+問題は、$C_i$ の境界三角形が $D_i$ に現れないときです。このときは反対側の四面体を足してキャビティを広げ、再計算します。この拡張が二つ目の失敗地点です。
+
+## Python で数える侵入点と分割回数
+
+2D で線分一本を復元する全体ループです。外接円判定 → 消えた線分の検出 → 侵入点の収集 → 基準点の選択 → 分割、そして反復。
+
+```python
+import numpy as np
+from itertools import combinations
+
+def circumcircle(a, b, c):
+    """三点の外接円(中心、半径)。共線なら (None, None)。"""
+    (ax, ay), (bx, by), (cx, cy) = a, b, c
+    d = 2.0 * (ax*(by-cy) + bx*(cy-ay) + cx*(ay-by))
+    if abs(d) < 1e-12:
+        return None, None
+    ux = ((ax*ax+ay*ay)*(by-cy) + (bx*bx+by*by)*(cy-ay) + (cx*cx+cy*cy)*(ay-by)) / d
+    uy = ((ax*ax+ay*ay)*(cx-bx) + (bx*bx+by*by)*(ax-cx) + (cx*cx+cy*cy)*(bx-ax)) / d
+    ctr = np.array([ux, uy])
+    return ctr, float(np.linalg.norm(ctr - np.asarray(a)))
+
+def delaunay_edges(pts):
+    """空外接円条件を通過した三角形の辺の集合。"""
+    n = len(pts)
+    edges = set()
+    for i, j, k in combinations(range(n), 3):
+        ctr, rad = circumcircle(pts[i], pts[j], pts[k])
+        if ctr is None:
+            continue
+        rest = [m for m in range(n) if m not in (i, j, k)]
+        if rest and np.linalg.norm(pts[rest] - ctr, axis=1).min() < rad - 1e-9:
+            continue                      # 外接円の中に点があればドロネーではない
+        edges |= {(i, j), (j, k), (i, k)}
+    return {(min(a, b), max(a, b)) for a, b in edges}
+
+def encroaching(pts, i1, i2):
+    """線分の直径円の中に入った頂点 = 侵入点。"""
+    mid = 0.5 * (pts[i1] + pts[i2])
+    rad = 0.5 * float(np.linalg.norm(pts[i2] - pts[i1]))
+    return [k for k in range(len(pts))
+            if k not in (i1, i2) and np.linalg.norm(pts[k] - mid) < rad - 1e-9]
+
+def recover_segment(points, chain, max_split=16):
+    pts = [np.asarray(p, dtype=float) for p in points]
+    for step in range(max_split):
+        E = delaunay_edges(np.array(pts))
+        gone = [s for s in range(len(chain)-1)
+                if (min(chain[s], chain[s+1]), max(chain[s], chain[s+1])) not in E]
+        if not gone:
+            return np.array(pts), chain, step
+        s = gone[0]
+        i1, i2 = chain[s], chain[s+1]
+        vd = encroaching(np.array(pts), i1, i2)
+        v1, v2 = pts[i1], pts[i2]
+        L = float(np.linalg.norm(v2 - v1)); u = (v2 - v1) / L
+        r = max(vd, key=lambda k: circumcircle(v1, v2, pts[k])[1] or 0.0)
+        R1 = float(np.linalg.norm(pts[r] - v1))
+        R2 = float(np.linalg.norm(pts[r] - v2))
+        t = L/2 if (R1 > L/2 and R2 > L/2) else (R1 if R1 <= R2 else L - R2)
+        pts.append(v1 + u * float(np.clip(t, 0.12*L, 0.88*L)))
+        chain = chain[:s+1] + [len(pts)-1] + chain[s+1:]
+        print(f"  step {step}: 侵入点 {len(vd)}個, 基準点 #{r}, t/L = {t/L:.3f}")
+    raise RuntimeError("分割回数の上限を超過")
+
+rng = np.random.default_rng(20260729)
+P = [np.array([0.0, 0.0]), np.array([10.0, 0.0])]
+P += [rng.uniform([1.0, -3.0], [9.0, 3.0]) for _ in range(14)]
+
+pts, chain, nsplit = recover_segment(P, [0, 1])
+E = delaunay_edges(pts)
+ok = all((min(chain[s], chain[s+1]), max(chain[s], chain[s+1])) in E
+         for s in range(len(chain)-1))
+print(f"Steiner 点 {len(pts)-len(P)}個, 分割 {nsplit}回, 部分線分 {len(chain)-1}個")
+print(f"すべての部分線分がドロネー辺か: {ok}")
+```
+
+実行結果です。
+
+```text
+  step 0: 侵入点 14個, 基準点 #8, t/L = 0.453
+  step 1: 侵入点 4個, 基準点 #15, t/L = 0.516
+  step 2: 侵入点 5個, 基準点 #11, t/L = 0.698
+  step 3: 侵入点 3個, 基準点 #4, t/L = 0.315
+Steiner 点 4個, 分割 4回, 部分線分 5個
+すべての部分線分がドロネー辺か: True
+```
+
+注目したいのは step 1 です。侵入点が 14 個から 4 個へ落ちたあと、step 2 で再び 5 個に増えます。新しく作った部分線分が、それまでなかった侵入関係を生むからです。それでも $t$ 規則のおかげで、単調に減らなくても有限回で終わります。半分で割るだけの実装が無限ループになる理由はここにあります。
+
+## 残る二つの失敗 — 丸めと理論
+
+tetgen が落ちる 8.5% には、二つの原因が混ざっています。
+
+一つ目は丸めです。Steiner 点の座標を double にスナップした瞬間、入力 PLC がわずかに変形します。Shewchuk のフィルタ付き述語を使っても無駄です。述語が正確でも、**入力がすでに間違っている**からです。LNC の式として持ち回れば、この系統は消えます。
+
+二つ目は数値と無関係です。キャビティの拡張は、二つの半分の分割の内部が互いに重ならないことを暗黙に仮定しています。ところが拡張の過程で、復元中の面の平面を越えて反対側の四面体を引き込む場合が存在します。二つの分割が交差してしまいます。著者らがテストした 4408 個のモデルのうち、ちょうど 2 個で発生しました。無限精度で計算しても失敗します。アルゴリズムそのものの穴です。
+
+正確な数値型(CORE ライブラリ)で実装し直せば一つ目は解決しますが、二つ目は残ります。そして速度が実用範囲を外れます。中規模のファイル一つに数時間かかります。座標を $t \in (0,1)$ 一つで有理数パラメータ化し、間接述語を使うほうが、実際に使える折衷案です。4408 個のモデル全部がシングルコアで約 5 時間で処理されます。
+
+## 次にメッシュ生成器が落ちたら
+
+まず形状を疑うのはやめましょう。自己交差と開いた面を確認したうえでなお落ちるなら、壊れているのは形状ではなくアルゴリズムの仮定です。
+
+- **境界を守る代償が Steiner 点です。** 3D CDT はただでは存在しません。Schönhardt の多面体は頂点六つの反例で、実際の CAD 形状にはそういう箇所がありふれています。
+- **分割位置は好みではなく収束条件です。** 中点分割は簡単ですが、終わらないことがあります。基準点と $t$ 規則は終了を保証するための仕掛けです。
+- **座標を丸めた瞬間に証明が無効になります。** アルゴリズムが作った点は、座標ではなく式として持ち回りましょう。浮動小数点述語をそのまま使いながら、符号だけは守れます。
+
+境界面の上に壁関数を課す解析なら、近似メッシュへ逃げる選択肢ははじめからありません。その 8.5% を正面から越えるしかありません。

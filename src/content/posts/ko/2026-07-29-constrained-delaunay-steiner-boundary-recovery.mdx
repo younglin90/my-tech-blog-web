@@ -1,0 +1,200 @@
+---
+title: "경계면을 지키다 죽는 격자 생성기 — 제약 Delaunay와 Steiner 점"
+date: 2026-07-29
+description: "tetgen이 8.5%에서 무너지는 이유와 선분·면 복구의 원리"
+tags: ["Mesh-Generation", "Delaunay", "Steiner-Point", "Robust-Predicates", "Tetrahedralization"]
+locale: ko
+slug: constrained-delaunay-steiner-boundary-recovery
+draft: false
+---
+
+import { SchonhardtTwistLab } from '@/components/post-viz/2026-07-29-constrained-delaunay-steiner-boundary-recovery/SchonhardtTwistLab'
+import { MissingSegmentSplitLab } from '@/components/post-viz/2026-07-29-constrained-delaunay-steiner-boundary-recovery/MissingSegmentSplitLab'
+
+STL 하나를 tetgen에 넣었더니 프로그램이 그냥 죽었다. 로그 마지막 줄은 `A segment and a facet intersect at point`. 형상을 뜯어보니 깨진 데가 없다. 면은 닫혀 있고, 자기교차도 없고, 다른 상용 격자기는 잘 넘어간다. 파일 문제가 아니었다.
+
+Thingi10k 데이터셋의 유효한 모델 4408개 중 약 8.5%에서 tetgen은 같은 방식으로 무너진다. 이 글은 그 8.5%가 어디서 오는지 따라간다. 원인은 두 갈래다. 하나는 부동소수점이고, 다른 하나는 부동소수점과 아무 상관이 없다. 후자가 더 흥미롭다.
+
+## 삼각분할은 당신의 경계를 기억하지 않는다
+
+Delaunay 삼각분할(빈 외접원 조건을 만족하는 분할)은 **점 집합**의 성질이다. 입력이 점 구름이면 완벽하게 동작한다. 문제는 CFD가 점 구름을 주지 않는다는 데 있다.
+
+우리가 주는 것은 PLC(piecewise-linear complex, 정점·선분·다각형 면이 서로 온전하게 맞물린 복합체)다. 날개 표면, 실린더 벽, 유입구 패치. 이것들은 격자 안에 **간선과 면 그대로** 살아 있어야 한다. 벽 경계조건을 근사된 면에 걸 수는 없다.
+
+그런데 정점만 넣고 Delaunay를 돌리면 그 간선이 살아 있으리라는 보장이 전혀 없다. 다른 간선이 그 위를 가로질러 버린다. 이렇게 사라진 것을 **missing segment**라 부른다.
+
+TetWild나 Quartet처럼 경계를 근사하는 방식은 이 문제를 피해 간다. 대신 경계조건을 투영해서 옮겨야 하고, 그 투영은 손실이 있으며 전단사(bijective)라는 보장도 없다. 벽면 마찰이나 열유속을 그 위에 걸면 정확도가 그만큼 날아간다.
+
+## 사라진 선분에는 반드시 침입점이 있다
+
+선분을 되살리는 방법은 자르는 것뿐이다. 그런데 어디서 자를지가 알고리즘의 수렴을 결정한다. 무작정 반으로 자르면 끝나지 않는 경우가 나온다.
+
+판정 기준은 하나다. 선분 $e = \langle v_1, v_2 \rangle$의 **지름원**(두 끝점을 지름으로 하는 최소 외접원) $D$ 안에 다른 정점이 하나도 없으면, $e$는 strongly Delaunay다.
+
+$$
+\|x - \tfrac{v_1+v_2}{2}\| \;\ge\; \tfrac{1}{2}\|v_2 - v_1\| \quad \forall x \in V \setminus \{v_1, v_2\}
+$$
+
+$V$는 PLC 정점 집합, 좌변은 지름원 중심까지의 거리다. 이 조건이 성립하면 $e$는 반드시 Delaunay 삼각분할 안에 있다.
+
+방향을 뒤집어 읽는 것이 핵심이다. **선분이 사라졌다면 지름원 안에 반드시 정점이 있다.** 그 정점들을 침입점(encroaching point)이라 부른다. 역은 성립하지 않는다. 침입점이 있어도 선분이 멀쩡히 살아 있을 수 있다. 더 크게 부푼 외접원이 비어 있으면 그만이기 때문이다.
+
+아래 시뮬레이션에서 직접 조작해보자.
+
+<MissingSegmentSplitLab />
+
+슬라이더로 침입점을 선분 쪽으로 내리면 지름원이 먼저 빨갛게 물든다. 그런데 초록 선분은 한동안 살아 있다. 더 내리면 그제서야 선분이 끊어지고 노란 간선이 그 자리를 가로지른다. 침입이 필요조건일 뿐 충분조건은 아니라는 것이 눈에 보이는 지점이다. `split once`를 누르면 기준점 $r$(주황 원)이 정해지고 그 자리에서 선분이 잘린다.
+
+## 어디서 자를지가 수렴을 결정한다
+
+기준점 $r$은 침입점 중에서 $(v_1, v_2, r)$을 지나는 외접원 반지름이 가장 큰 점이다. 가장 깊이 침입한 점이 아니라, 가장 넓게 방해하는 점을 고른다.
+
+분할 위치는 $r$까지의 거리로 정한다. $R_1 = \|r - v_1\|$, $R_2 = \|r - v_2\|$, $L = \|v_2 - v_1\|$이라 하자.
+
+$$
+t = \begin{cases}
+L/2, & R_1 > L/2 \;\text{이고}\; R_2 > L/2 \\
+\min(R_1,\, L - R_2), & \text{그 외}
+\end{cases}
+$$
+
+$t$는 $v_1$에서 잰 분할점까지의 거리다. 두 번째 경우는 $v_1$ 또는 $v_2$를 중심으로 $r$에 닿는 원과 선분이 만나는 자리다. 이 규칙이 있어야 반복이 유한 번에 끝난다는 것이 증명된다.
+
+여기서 첫 번째 함정이 생긴다. 원과 선분의 교점이므로 $t$는 무리수가 될 수 있다. 입력 좌표가 전부 double이어도 분할점 좌표는 double로 표현되지 않는다. 반올림하는 순간 그 점은 원래 선분 위에서 미세하게 벗어나고, 알고리즘의 모든 증명은 무효가 된다.
+
+우회로는 좌표를 저장하지 않는 것이다. 분할점을 $t v_1 + (1-t) v_2$라는 **표현식** 그대로 들고 다니면 그 점은 정의상 선분 위에 있다. 이런 점을 implicit point, 그중 두 점의 선형결합인 것을 LNC(linear combination)라 부른다. `orient3d`와 `inSphere` 술어를 LNC를 받도록 확장하면, 부동소수점 하드웨어를 쓰면서도 부호가 틀리지 않는다.
+
+## 3D에는 답이 아예 없는 다면체가 있다
+
+2D에서는 교차하지 않는 선분 집합이면 언제나 제약 Delaunay 삼각분할이 존재한다. 3D에서는 아니다.
+
+삼각기둥의 윗면을 $\theta$만큼 비틀어 보자. 옆면 사각형 세 개가 평면성을 잃는다. 각 사각형은 대각선 하나로 갈라야 하는데, 갈래가 두 개다. 어느 쪽을 고를지는 부호 하나가 정한다.
+
+$$
+\mathrm{orient3d}(a,b,c,d) = \big((b-a) \times (c-a)\big) \cdot (d-a)
+$$
+
+$(a,b,c)$는 바깥을 향하는 삼각형, $d$는 남은 정점이다. 값이 음수면 $d$가 안쪽에 있어 그 대각선은 볼록(convex) 간선, 양수면 오목(reflex) 간선이다.
+
+세 면을 모두 오목 쪽으로 고르면 **Schönhardt 다면체**(1928)가 된다. 닫혀 있고, 단순하고, 자기교차도 없다. 그리고 자기 여섯 개 정점만으로는 사면체로 절대 나뉘지 않는다.
+
+<SchonhardtTwistLab />
+
+`reflex split`을 켜고 $\theta$를 0에서 올려 보자. 후보 사면체 15개 중 유효한 것이 순식간에 0이 된다. `convex split`으로 바꾸면 같은 형상이 멀쩡히 분할된다. 점선으로 그린 대각선이 노랗게 바뀌는 것이 이유다. 그 간선들이 고체 바깥으로 빠져나가기 때문에, 그것을 변으로 쓰는 사면체는 전부 실격이다. `Steiner point`를 켜면 중심점 하나가 추가되고 8개 사면체로 즉시 채워진다.
+
+여기서 CDT 정리가 왜 선분만 이야기하는지가 드러난다. 모든 선분이 strongly Delaunay이면 CDT는 존재한다. 다면체를 어떻게 뜯어고칠지가 아니라, **선분을 어디서 자를지**만 정하면 된다는 뜻이다. 분할은 순수하게 위상 연산이다. 입력 형상은 1 mm도 움직이지 않는다.
+
+## 면 복구 — 뚫고 다시 채운다
+
+선분이 전부 복구되면 다음은 면이다. PLC 면 $f$를 격자 간선 하나라도 관통하면 그 면은 missing이다.
+
+절차는 이렇다. $f$를 뚫는 간선에 붙은 사면체를 전부 모아 cavity를 만든다. $f$의 평면으로 cavity를 위아래 반쪽 $C_1$, $C_2$로 가른다. 평면 위의 정점은 양쪽 모두에 넣는다. 각 반쪽의 정점으로 국소 Delaunay 분할 $D_i$를 계산하고, cavity 안에 들어오는 사면체만 골라 채운다. $D_i$는 볼록이지만 $C_i$는 오목할 수 있으므로 전부 쓰이지는 않는다.
+
+문제는 $C_i$의 경계 삼각형이 $D_i$에 나타나지 않을 때다. 이때는 반대편 사면체를 붙여 cavity를 넓히고 다시 계산한다. 이 확장이 두 번째 실패 지점이다.
+
+## Python으로 세는 침입점과 분할 횟수
+
+2D에서 선분 하나를 복구하는 전체 루프다. 외접원 판정 → 사라진 선분 검출 → 침입점 수집 → 기준점 선택 → 분할, 그리고 반복.
+
+```python
+import numpy as np
+from itertools import combinations
+
+def circumcircle(a, b, c):
+    """세 점의 외접원 (중심, 반지름). 공선이면 (None, None)."""
+    (ax, ay), (bx, by), (cx, cy) = a, b, c
+    d = 2.0 * (ax*(by-cy) + bx*(cy-ay) + cx*(ay-by))
+    if abs(d) < 1e-12:
+        return None, None
+    ux = ((ax*ax+ay*ay)*(by-cy) + (bx*bx+by*by)*(cy-ay) + (cx*cx+cy*cy)*(ay-by)) / d
+    uy = ((ax*ax+ay*ay)*(cx-bx) + (bx*bx+by*by)*(ax-cx) + (cx*cx+cy*cy)*(bx-ax)) / d
+    ctr = np.array([ux, uy])
+    return ctr, float(np.linalg.norm(ctr - np.asarray(a)))
+
+def delaunay_edges(pts):
+    """빈 외접원 조건을 통과한 삼각형들의 간선 집합."""
+    n = len(pts)
+    edges = set()
+    for i, j, k in combinations(range(n), 3):
+        ctr, rad = circumcircle(pts[i], pts[j], pts[k])
+        if ctr is None:
+            continue
+        rest = [m for m in range(n) if m not in (i, j, k)]
+        if rest and np.linalg.norm(pts[rest] - ctr, axis=1).min() < rad - 1e-9:
+            continue                      # 외접원 안에 점이 있으면 Delaunay가 아니다
+        edges |= {(i, j), (j, k), (i, k)}
+    return {(min(a, b), max(a, b)) for a, b in edges}
+
+def encroaching(pts, i1, i2):
+    """선분의 지름원 안에 들어온 정점 = 침입점."""
+    mid = 0.5 * (pts[i1] + pts[i2])
+    rad = 0.5 * float(np.linalg.norm(pts[i2] - pts[i1]))
+    return [k for k in range(len(pts))
+            if k not in (i1, i2) and np.linalg.norm(pts[k] - mid) < rad - 1e-9]
+
+def recover_segment(points, chain, max_split=16):
+    pts = [np.asarray(p, dtype=float) for p in points]
+    for step in range(max_split):
+        E = delaunay_edges(np.array(pts))
+        gone = [s for s in range(len(chain)-1)
+                if (min(chain[s], chain[s+1]), max(chain[s], chain[s+1])) not in E]
+        if not gone:
+            return np.array(pts), chain, step
+        s = gone[0]
+        i1, i2 = chain[s], chain[s+1]
+        vd = encroaching(np.array(pts), i1, i2)
+        v1, v2 = pts[i1], pts[i2]
+        L = float(np.linalg.norm(v2 - v1)); u = (v2 - v1) / L
+        r = max(vd, key=lambda k: circumcircle(v1, v2, pts[k])[1] or 0.0)
+        R1 = float(np.linalg.norm(pts[r] - v1))
+        R2 = float(np.linalg.norm(pts[r] - v2))
+        t = L/2 if (R1 > L/2 and R2 > L/2) else (R1 if R1 <= R2 else L - R2)
+        pts.append(v1 + u * float(np.clip(t, 0.12*L, 0.88*L)))
+        chain = chain[:s+1] + [len(pts)-1] + chain[s+1:]
+        print(f"  step {step}: 침입점 {len(vd)}개, 기준점 #{r}, t/L = {t/L:.3f}")
+    raise RuntimeError("분할 한계 초과")
+
+rng = np.random.default_rng(20260729)
+P = [np.array([0.0, 0.0]), np.array([10.0, 0.0])]
+P += [rng.uniform([1.0, -3.0], [9.0, 3.0]) for _ in range(14)]
+
+pts, chain, nsplit = recover_segment(P, [0, 1])
+E = delaunay_edges(pts)
+ok = all((min(chain[s], chain[s+1]), max(chain[s], chain[s+1])) in E
+         for s in range(len(chain)-1))
+print(f"Steiner 점 {len(pts)-len(P)}개, 분할 {nsplit}회, 부분선분 {len(chain)-1}개")
+print(f"모든 부분선분이 Delaunay 간선인가: {ok}")
+```
+
+실행 결과다.
+
+```text
+  step 0: 침입점 14개, 기준점 #8, t/L = 0.453
+  step 1: 침입점 4개, 기준점 #15, t/L = 0.516
+  step 2: 침입점 5개, 기준점 #11, t/L = 0.698
+  step 3: 침입점 3개, 기준점 #4, t/L = 0.315
+Steiner 점 4개, 분할 4회, 부분선분 5개
+모든 부분선분이 Delaunay 간선인가: True
+```
+
+주목할 것은 1단계다. 침입점이 14개에서 4개로 떨어졌다가 2단계에서 다시 5개로 늘어난다. 새로 만든 부분선분이 이전에는 없던 침입 관계를 만들기 때문이다. 그래도 $t$ 규칙 덕분에 단조롭게 줄지 않아도 유한 번에 끝난다. 반으로만 자르는 구현에서 무한 루프가 나는 이유가 여기 있다.
+
+## 남은 두 개의 실패 — 반올림과 이론
+
+tetgen이 죽는 8.5%는 두 원인이 섞여 있다.
+
+첫째는 반올림이다. Steiner 점 좌표를 double로 스냅하는 순간 입력 PLC가 미세하게 변형된다. Shewchuk의 필터링 술어를 써도 소용없다. 술어가 정확해도 **입력이 이미 틀려 있기** 때문이다. LNC 표현식으로 들고 다니면 이 갈래는 사라진다.
+
+둘째는 수치와 무관하다. cavity 확장은 두 반쪽 분할의 내부가 서로 겹치지 않는다고 암묵적으로 가정한다. 그런데 확장 과정에서 복구 중인 면의 평면을 넘어 반대편 사면체를 끌어오는 경우가 존재한다. 두 분할이 교차해 버린다. 저자들이 테스트한 4408개 모델 중 딱 2개에서 발생했다. 무한 정밀도로 계산해도 실패한다. 알고리즘 자체의 구멍이다.
+
+정확한 수 타입(CORE 라이브러리)으로 다시 구현하면 첫째는 해결되지만 둘째는 남는다. 그리고 속도가 실용 범위를 벗어난다. 중간 크기 파일 하나에 몇 시간이 걸린다. 좌표를 $t \in (0,1)$ 하나로 유리수 매개변수화하고 간접 술어를 쓰는 쪽이 실제로 쓸 만한 절충이다. 4408개 모델 전부가 단일 코어에서 약 5시간에 처리된다.
+
+## 다음에 격자 생성기가 죽거든
+
+형상부터 의심하지 말자. 자기교차와 열린 면을 확인했는데도 죽는다면, 형상이 아니라 알고리즘의 가정이 깨진 것이다.
+
+- **경계를 지키는 대가는 Steiner 점이다.** 3D CDT는 공짜로 존재하지 않는다. Schönhardt 다면체는 정점 여섯 개짜리 반례이고, 실제 CAD 형상에는 그런 자리가 흔하다.
+- **분할 위치는 취향이 아니라 수렴 조건이다.** 중점 분할은 간단하지만 끝나지 않을 수 있다. 기준점과 $t$ 규칙은 종료를 위한 장치다.
+- **좌표를 반올림하는 순간 증명이 무효가 된다.** 알고리즘이 만든 점은 좌표가 아니라 표현식으로 들고 다녀라. 부동소수점 술어는 그대로 쓰면서 부호만 지킬 수 있다.
+
+경계면 위에 벽함수를 걸어야 하는 해석이라면, 근사 격자로 도망가는 선택지는 애초에 없다. 그 8.5%를 정면으로 넘는 수밖에 없다.

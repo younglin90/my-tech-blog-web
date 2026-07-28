@@ -1,0 +1,200 @@
+---
+title: "为守住边界而倒下的网格生成器 — 约束德劳内与斯坦纳点"
+date: 2026-07-29
+description: "tetgen 在 8.5% 的模型上崩溃的原因,以及线段与面恢复的原理"
+tags: ["Mesh-Generation", "Delaunay", "Steiner-Point", "Robust-Predicates", "Tetrahedralization"]
+locale: zh
+slug: constrained-delaunay-steiner-boundary-recovery
+draft: false
+---
+
+import { SchonhardtTwistLab } from '@/components/post-viz/2026-07-29-constrained-delaunay-steiner-boundary-recovery/SchonhardtTwistLab'
+import { MissingSegmentSplitLab } from '@/components/post-viz/2026-07-29-constrained-delaunay-steiner-boundary-recovery/MissingSegmentSplitLab'
+
+把一个 STL 丢进 tetgen,程序直接挂掉了。日志最后一行是 `A segment and a facet intersect at point`。把几何翻来覆去查了一遍,没有任何破损。面是闭合的,没有自交,换成别的商用网格生成器又能顺利通过。问题不在文件上。
+
+Thingi10k 数据集里 4408 个有效模型中,大约 8.5% 会让 tetgen 以同样的方式倒下。本文追踪这 8.5% 到底从哪里来。原因分成两支。一支是浮点数,另一支和浮点数毫无关系。后者更有意思。
+
+## 三角剖分不会记住你的边界
+
+德劳内三角剖分(满足空外接圆条件的剖分)是**点集**的性质。输入是点云时,它工作得完美无缺。麻烦在于 CFD 给的从来不是点云。
+
+我们给出的是 PLC(分片线性复形,piecewise-linear complex,由顶点、线段、多边形面完整咬合而成的复形)。机翼表面、圆柱壁面、入口面片。这些东西必须**以边和面的原样**存活在网格里。壁面边界条件不能施加在被近似过的面上。
+
+可是只把顶点丢进去跑德劳内,完全没有任何机制保证那条边还活着。别的边会横穿过去。这样消失掉的东西叫 **missing segment**。
+
+TetWild、Quartet 这类近似边界的做法绕开了这个问题。代价是边界条件必须投影过去,而投影是有损的,也不保证是双射(bijective)。把壁面摩擦或热流施加在上面,精度就按这个量丢掉了。
+
+## 消失的线段背后一定有侵入点
+
+要救回一条线段,唯一的办法是切开它。可是在哪里切,决定了算法收不收敛。不管三七二十一对半切,会出现永远结束不了的情况。
+
+判据只有一条。线段 $e = \langle v_1, v_2 \rangle$ 的**直径圆**(以两端点为直径的最小外接圆)$D$ 内部若没有任何其他顶点,则 $e$ 是强德劳内的。
+
+$$
+\|x - \tfrac{v_1+v_2}{2}\| \;\ge\; \tfrac{1}{2}\|v_2 - v_1\| \quad \forall x \in V \setminus \{v_1, v_2\}
+$$
+
+$V$ 是 PLC 顶点集,左边是到直径圆圆心的距离。这个条件成立时,$e$ 必定出现在德劳内三角剖分中。
+
+反过来读才是关键。**线段消失了,直径圆内就一定有顶点。** 这些顶点称为侵入点(encroaching point)。逆命题不成立。有侵入点,线段也可能好端端地活着。只要膨胀得更大的那个外接圆是空的就够了。
+
+在下面的模拟中亲手操作一下。
+
+<MissingSegmentSplitLab />
+
+用滑块把侵入点往线段方向压下去,直径圆会先变红。可是绿色线段还会撑上一阵。再往下压,线段才断开,黄色的边横穿过原来的位置。侵入只是必要条件而非充分条件,在这里看得见。按下 `split once`,基准点 $r$(橙色圆)被选定,线段就在那个位置切开。
+
+## 在哪里切开决定了收敛性
+
+基准点 $r$ 是侵入点中让过 $(v_1, v_2, r)$ 的外接圆半径最大的那一个。选的不是侵入最深的点,而是妨碍范围最广的点。
+
+分割位置由到 $r$ 的距离确定。记 $R_1 = \|r - v_1\|$、$R_2 = \|r - v_2\|$、$L = \|v_2 - v_1\|$。
+
+$$
+t = \begin{cases}
+L/2, & R_1 > L/2 \;\text{且}\; R_2 > L/2 \\
+\min(R_1,\, L - R_2), & \text{其他}
+\end{cases}
+$$
+
+$t$ 是从 $v_1$ 量到分割点的距离。第二种情形对应以 $v_1$ 或 $v_2$ 为圆心、恰好触到 $r$ 的圆与线段的交点。有了这条规则,才能证明迭代在有限步内结束。
+
+第一个陷阱在这里出现。既然是圆与线段的交点,$t$ 就可能是无理数。哪怕输入坐标全是 double,分割点坐标也无法用 double 表示。一旦四舍五入,那个点就微微偏离了原线段,算法的全部证明随之作废。
+
+绕过去的办法是不存坐标。把分割点当作 $t v_1 + (1-t) v_2$ 这个**表达式**本身带着走,那个点按定义就落在线段上。这样的点叫 implicit point,其中属于两点线性组合的那一类称为 LNC(linear combination)。把 `orient3d` 和 `inSphere` 谓词扩展成能接收 LNC,就能在使用浮点硬件的同时保证符号不出错。
+
+## 三维中存在根本无解的多面体
+
+二维里只要线段集合互不相交,约束德劳内三角剖分总是存在。三维不是这样。
+
+把三棱柱的顶面扭转 $\theta$。三个侧面四边形失去了平面性。每个四边形都必须用一条对角线切开,而切法有两种。选哪一边,由一个符号决定。
+
+$$
+\mathrm{orient3d}(a,b,c,d) = \big((b-a) \times (c-a)\big) \cdot (d-a)
+$$
+
+$(a,b,c)$ 是朝外的三角形,$d$ 是剩下的那个顶点。值为负说明 $d$ 在内侧,该对角线是凸(convex)边;为正则是凹(reflex)边。
+
+三个面全都选凹的一侧,得到的就是 **Schönhardt多面体**(1928)。它闭合、简单、无自交。而且仅凭自己那六个顶点,绝对无法剖分成四面体。
+
+<SchonhardtTwistLab />
+
+打开 `reflex split`,把 $\theta$ 从 0 往上调。15 个候选四面体中有效的数量瞬间归零。切换到 `convex split`,同样的形状就能好好剖开。虚线画出的对角线变黄,就是原因所在。那些边跑到了固体外部,凡是把它们当作棱的四面体统统出局。打开 `Steiner point`,中心多出一个点,立刻用 8 个四面体填满。
+
+CDT 定理为什么只谈线段,到这里就清楚了。所有线段都是强德劳内的,CDT 就存在。也就是说,要定的不是多面体该怎么改造,而只是**线段该在哪里切**。分割纯粹是拓扑操作。输入形状连 1 mm 都不会移动。
+
+## 面恢复 — 挖空再填回
+
+线段全部恢复之后,轮到面。PLC 面 $f$ 只要被任何一条网格边穿过,这个面就是 missing 的。
+
+流程是这样。把穿过 $f$ 的边所关联的四面体全部收集起来,构成一个空腔。用 $f$ 所在的平面把空腔切成上下两半 $C_1$、$C_2$。位于平面上的顶点两边都放。对每一半的顶点计算局部德劳内剖分 $D_i$,只挑落在空腔内部的四面体填回去。$D_i$ 是凸的,而 $C_i$ 可能是凹的,所以不会全部用上。
+
+问题出在 $C_i$ 的边界三角形没有出现在 $D_i$ 里的时候。这时把对面的四面体并进来,把空腔扩大,再算一遍。这个扩张就是第二处失败点。
+
+## 用 Python 数侵入点与分割次数
+
+二维中恢复一条线段的完整循环。外接圆判定 → 检出消失的线段 → 收集侵入点 → 选择基准点 → 分割,然后重复。
+
+```python
+import numpy as np
+from itertools import combinations
+
+def circumcircle(a, b, c):
+    """三点的外接圆(圆心, 半径)。共线时返回 (None, None)。"""
+    (ax, ay), (bx, by), (cx, cy) = a, b, c
+    d = 2.0 * (ax*(by-cy) + bx*(cy-ay) + cx*(ay-by))
+    if abs(d) < 1e-12:
+        return None, None
+    ux = ((ax*ax+ay*ay)*(by-cy) + (bx*bx+by*by)*(cy-ay) + (cx*cx+cy*cy)*(ay-by)) / d
+    uy = ((ax*ax+ay*ay)*(cx-bx) + (bx*bx+by*by)*(ax-cx) + (cx*cx+cy*cy)*(bx-ax)) / d
+    ctr = np.array([ux, uy])
+    return ctr, float(np.linalg.norm(ctr - np.asarray(a)))
+
+def delaunay_edges(pts):
+    """通过空外接圆判定的三角形的边集合。"""
+    n = len(pts)
+    edges = set()
+    for i, j, k in combinations(range(n), 3):
+        ctr, rad = circumcircle(pts[i], pts[j], pts[k])
+        if ctr is None:
+            continue
+        rest = [m for m in range(n) if m not in (i, j, k)]
+        if rest and np.linalg.norm(pts[rest] - ctr, axis=1).min() < rad - 1e-9:
+            continue                      # 外接圆内有点就不是 Delaunay
+        edges |= {(i, j), (j, k), (i, k)}
+    return {(min(a, b), max(a, b)) for a, b in edges}
+
+def encroaching(pts, i1, i2):
+    """落入线段直径圆内部的顶点 = 侵入点。"""
+    mid = 0.5 * (pts[i1] + pts[i2])
+    rad = 0.5 * float(np.linalg.norm(pts[i2] - pts[i1]))
+    return [k for k in range(len(pts))
+            if k not in (i1, i2) and np.linalg.norm(pts[k] - mid) < rad - 1e-9]
+
+def recover_segment(points, chain, max_split=16):
+    pts = [np.asarray(p, dtype=float) for p in points]
+    for step in range(max_split):
+        E = delaunay_edges(np.array(pts))
+        gone = [s for s in range(len(chain)-1)
+                if (min(chain[s], chain[s+1]), max(chain[s], chain[s+1])) not in E]
+        if not gone:
+            return np.array(pts), chain, step
+        s = gone[0]
+        i1, i2 = chain[s], chain[s+1]
+        vd = encroaching(np.array(pts), i1, i2)
+        v1, v2 = pts[i1], pts[i2]
+        L = float(np.linalg.norm(v2 - v1)); u = (v2 - v1) / L
+        r = max(vd, key=lambda k: circumcircle(v1, v2, pts[k])[1] or 0.0)
+        R1 = float(np.linalg.norm(pts[r] - v1))
+        R2 = float(np.linalg.norm(pts[r] - v2))
+        t = L/2 if (R1 > L/2 and R2 > L/2) else (R1 if R1 <= R2 else L - R2)
+        pts.append(v1 + u * float(np.clip(t, 0.12*L, 0.88*L)))
+        chain = chain[:s+1] + [len(pts)-1] + chain[s+1:]
+        print(f"  step {step}: 侵入点 {len(vd)}个, 基准点 #{r}, t/L = {t/L:.3f}")
+    raise RuntimeError("超出分割次数上限")
+
+rng = np.random.default_rng(20260729)
+P = [np.array([0.0, 0.0]), np.array([10.0, 0.0])]
+P += [rng.uniform([1.0, -3.0], [9.0, 3.0]) for _ in range(14)]
+
+pts, chain, nsplit = recover_segment(P, [0, 1])
+E = delaunay_edges(pts)
+ok = all((min(chain[s], chain[s+1]), max(chain[s], chain[s+1])) in E
+         for s in range(len(chain)-1))
+print(f"斯坦纳点 {len(pts)-len(P)}个, 分割 {nsplit}次, 子线段 {len(chain)-1}个")
+print(f"所有子线段都是 Delaunay 边吗: {ok}")
+```
+
+运行结果如下。
+
+```text
+  step 0: 侵入点 14个, 基准点 #8, t/L = 0.453
+  step 1: 侵入点 4个, 基准点 #15, t/L = 0.516
+  step 2: 侵入点 5个, 基准点 #11, t/L = 0.698
+  step 3: 侵入点 3个, 基准点 #4, t/L = 0.315
+斯坦纳点 4个, 分割 4次, 子线段 5个
+所有子线段都是 Delaunay 边吗: True
+```
+
+值得注意的是第 1 步。侵入点从 14 个掉到 4 个,到第 2 步又涨回 5 个。新造出来的子线段制造了此前不存在的侵入关系。即便如此,靠着 $t$ 规则,数量不单调下降也照样会在有限步内结束。只做对半切的实现之所以会陷入死循环,原因就在这里。
+
+## 剩下的两类失败 — 舍入与理论
+
+tetgen 崩溃的那 8.5%,混着两种原因。
+
+第一种是舍入。把斯坦纳点坐标 snap 成 double 的那一刻,输入 PLC 就发生了微小变形。用 Shewchuk 的筛选谓词也没用。谓词再精确也没有意义,因为**输入本身已经错了**。改用 LNC 表达式带着走,这一支就消失了。
+
+第二种和数值无关。空腔扩张隐含地假定两半剖分的内部互不重叠。可是在扩张过程中,确实存在越过正在恢复的那个面所在平面、把对面四面体拉进来的情况。两个剖分就交叉了。作者们测试的 4408 个模型里,恰好有 2 个发生了这种事。就算用无限精度计算也照样失败。这是算法本身的漏洞。
+
+改用精确数类型(CORE 库)重新实现,第一种能解决,第二种仍然留着。而且速度会掉出实用范围。一个中等大小的文件要跑上几个小时。把坐标用单个 $t \in (0,1)$ 做有理参数化,再配上间接谓词,才是实际可用的折中。4408 个模型在单核上约 5 小时全部处理完。
+
+## 下次网格生成器崩溃时
+
+先别怀疑几何。自交和开放面都查过了还是崩,那就不是形状的问题,而是算法的前提被打破了。
+
+- **守住边界的代价就是斯坦纳点。** 三维 CDT 不会白白存在。Schönhardt多面体是只有六个顶点的反例,而真实 CAD 形状里这样的位置很常见。
+- **分割位置不是口味问题,而是收敛条件。** 中点分割简单,却可能永远结束不了。基准点和 $t$ 规则是为终止而设的装置。
+- **坐标一旦舍入,证明就作废。** 算法造出来的点,要带着表达式走,而不是带着坐标走。浮点谓词照用不误,符号照样守得住。
+
+如果分析必须在边界面上施加壁面函数,那么逃向近似网格这个选项从一开始就不存在。只能正面翻过那 8.5%。

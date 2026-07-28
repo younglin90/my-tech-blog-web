@@ -1,0 +1,200 @@
+---
+title: "The Mesher That Dies Defending Your Boundary — Constrained Delaunay and Steiner Points"
+date: 2026-07-29
+description: "Why tetgen collapses on 8.5% of valid models, and how segment and facet recovery works"
+tags: ["Mesh-Generation", "Delaunay", "Steiner-Point", "Robust-Predicates", "Tetrahedralization"]
+locale: en
+slug: constrained-delaunay-steiner-boundary-recovery
+draft: false
+---
+
+import { SchonhardtTwistLab } from '@/components/post-viz/2026-07-29-constrained-delaunay-steiner-boundary-recovery/SchonhardtTwistLab'
+import { MissingSegmentSplitLab } from '@/components/post-viz/2026-07-29-constrained-delaunay-steiner-boundary-recovery/MissingSegmentSplitLab'
+
+I fed one STL into tetgen and the process just died. The last line of the log was `A segment and a facet intersect at point`. I pulled the geometry apart looking for damage and found none. The surface was closed, there were no self-intersections, and another commercial mesher chewed through it without complaint. The file was not the problem.
+
+Out of the 4408 valid models in the Thingi10k dataset, tetgen fails this same way on roughly 8.5%. This post traces where that 8.5% comes from. There are two branches. One is floating point. The other has nothing to do with floating point at all. The second one is the interesting one.
+
+## A triangulation does not remember your boundary
+
+Delaunay triangulation (the subdivision satisfying the empty circumcircle condition) is a property of a **point set**. Hand it a point cloud and it behaves perfectly. The trouble is that CFD never hands you a point cloud.
+
+What we hand it is a PLC (piecewise-linear complex — vertices, segments and polygonal facets that meet each other cleanly). Wing surfaces, cylinder walls, inlet patches. These have to survive inside the mesh **as actual edges and faces**. You cannot impose a wall boundary condition on an approximated surface.
+
+But if you insert only the vertices and run Delaunay, nothing guarantees that edge survives. Some other edge cuts straight across it. An edge lost this way is called a **missing segment**.
+
+Approaches like TetWild and Quartet dodge the problem by approximating the boundary. The price is that boundary conditions then have to be projected onto the new surface, and that projection is lossy with no guarantee of being bijective. Impose wall friction or heat flux on top of it and you lose exactly that much accuracy.
+
+## A missing segment always has an encroaching point
+
+The only way to bring a segment back is to cut it. Where you cut it decides whether the algorithm converges. Blindly bisecting produces cases that never terminate.
+
+The test is a single condition. If the **diametral circle** $D$ of a segment $e = \langle v_1, v_2 \rangle$ (the smallest circumscribing circle with the two endpoints as its diameter) contains no other vertex, then $e$ is strongly Delaunay.
+
+$$
+\|x - \tfrac{v_1+v_2}{2}\| \;\ge\; \tfrac{1}{2}\|v_2 - v_1\| \quad \forall x \in V \setminus \{v_1, v_2\}
+$$
+
+$V$ is the PLC vertex set and the left side is the distance to the center of the diametral circle. When this holds, $e$ is guaranteed to appear in the Delaunay triangulation.
+
+Reading the implication backwards is the key move. **If a segment went missing, there is definitely a vertex inside its diametral circle.** Those vertices are the encroaching points. The converse does not hold. A segment can have encroaching points and still be perfectly alive, because some larger circumscribing circle only needs to be empty.
+
+Try it yourself in the simulation below.
+
+<MissingSegmentSplitLab />
+
+Drag the slider to push the encroaching point toward the segment and the diametral circle turns red first. The green segment stays alive for a while longer. Push further and only then does the segment break, with a yellow edge cutting across its place. That is the moment where you can see encroachment being necessary but not sufficient. Press `split once` and the reference point $r$ (the orange circle) is chosen, and the segment is cut there.
+
+## The split location is a convergence condition
+
+The reference point $r$ is the encroaching point that maximizes the circumradius of $(v_1, v_2, r)$. Not the deepest intruder — the one that gets in the way most widely.
+
+The split position comes from the distances to $r$. Let $R_1 = \|r - v_1\|$, $R_2 = \|r - v_2\|$ and $L = \|v_2 - v_1\|$.
+
+$$
+t = \begin{cases}
+L/2, & R_1 > L/2 \;\text{and}\; R_2 > L/2 \\
+\min(R_1,\, L - R_2), & \text{otherwise}
+\end{cases}
+$$
+
+$t$ is the distance from $v_1$ to the split point. The second case puts the split where the segment meets a circle centered on $v_1$ or $v_2$ that reaches $r$. This rule is exactly what makes the termination proof work.
+
+Here is the first trap. Because it is the intersection of a circle and a segment, $t$ can be irrational. Even with all input coordinates in double precision, the split point's coordinates are not representable as doubles. The instant you round, that point drifts slightly off the original segment and every proof in the algorithm becomes void.
+
+The way around it is to never store the coordinates. Carry the split point as the **expression** $t v_1 + (1-t) v_2$ and the point lies on the segment by definition. Such a point is an implicit point; one that is a linear combination of two points is called an LNC (linear combination). Extend the `orient3d` and `inSphere` predicates to accept LNCs and the signs stay correct while still running on floating-point hardware.
+
+## In 3D there are polyhedra with no answer at all
+
+In 2D, any set of non-crossing segments admits a constrained Delaunay triangulation. In 3D it does not.
+
+Take a triangular prism and twist its top face by $\theta$. The three quadrilateral side faces lose their planarity. Each quad has to be split by a diagonal, and there are two choices. A single sign decides which one you get.
+
+$$
+\mathrm{orient3d}(a,b,c,d) = \big((b-a) \times (c-a)\big) \cdot (d-a)
+$$
+
+$(a,b,c)$ is an outward-facing triangle and $d$ is the remaining vertex. A negative value means $d$ lies inside, making that diagonal a convex edge; a positive value makes it a reflex edge.
+
+Choose the reflex side on all three faces and you get the **Schönhardt polyhedron** (1928). It is closed, simple, and free of self-intersections. And it cannot be split into tetrahedra using its own six vertices — ever.
+
+<SchonhardtTwistLab />
+
+Turn on `reflex split` and raise $\theta$ from 0. The number of valid tetrahedra among the 15 candidates drops to zero almost instantly. Switch to `convex split` and the same shape decomposes without any trouble. The reason is the dashed diagonals turning yellow. Those edges exit the solid, so every tetrahedron that uses one of them is disqualified. Turn on `Steiner point` and a single interior point appears, filling the volume with 8 tetrahedra immediately.
+
+This is where it becomes clear why the CDT theorem only talks about segments. If every segment is strongly Delaunay, a CDT exists. Meaning you never have to decide how to rebuild a polyhedron — only **where to cut a segment**. Splitting is a purely topological operation. The input geometry does not move by a single millimeter.
+
+## Facet recovery — punch a hole and refill it
+
+Once every segment is recovered, facets are next. If any mesh edge pierces a PLC facet $f$, that facet is missing.
+
+The procedure goes like this. Collect every tetrahedron incident on the edges piercing $f$ to form a cavity. Split the cavity along the plane of $f$ into an upper and a lower half, $C_1$ and $C_2$. Vertices sitting on the plane go into both. Compute a local Delaunay triangulation $D_i$ from each half's vertices and keep only the tetrahedra that fall inside the cavity. $D_i$ is convex while $C_i$ may be reflex, so not all of it gets used.
+
+The problem arises when a boundary triangle of $C_i$ never shows up in $D_i$. Then you attach a tetrahedron from the other side, enlarge the cavity, and recompute. That enlargement is the second failure point.
+
+## Counting encroaching points and splits in Python
+
+Here is the full loop for recovering a single segment in 2D. Circumcircle test, missing segment detection, encroaching point collection, reference point selection, split, and repeat.
+
+```python
+import numpy as np
+from itertools import combinations
+
+def circumcircle(a, b, c):
+    """Circumcircle of three points (center, radius). (None, None) if collinear."""
+    (ax, ay), (bx, by), (cx, cy) = a, b, c
+    d = 2.0 * (ax*(by-cy) + bx*(cy-ay) + cx*(ay-by))
+    if abs(d) < 1e-12:
+        return None, None
+    ux = ((ax*ax+ay*ay)*(by-cy) + (bx*bx+by*by)*(cy-ay) + (cx*cx+cy*cy)*(ay-by)) / d
+    uy = ((ax*ax+ay*ay)*(cx-bx) + (bx*bx+by*by)*(ax-cx) + (cx*cx+cy*cy)*(bx-ax)) / d
+    ctr = np.array([ux, uy])
+    return ctr, float(np.linalg.norm(ctr - np.asarray(a)))
+
+def delaunay_edges(pts):
+    """Edge set of the triangles that pass the empty circumcircle test."""
+    n = len(pts)
+    edges = set()
+    for i, j, k in combinations(range(n), 3):
+        ctr, rad = circumcircle(pts[i], pts[j], pts[k])
+        if ctr is None:
+            continue
+        rest = [m for m in range(n) if m not in (i, j, k)]
+        if rest and np.linalg.norm(pts[rest] - ctr, axis=1).min() < rad - 1e-9:
+            continue                      # a point inside the circumcircle means not Delaunay
+        edges |= {(i, j), (j, k), (i, k)}
+    return {(min(a, b), max(a, b)) for a, b in edges}
+
+def encroaching(pts, i1, i2):
+    """Vertices inside the diametral circle of the segment = encroaching points."""
+    mid = 0.5 * (pts[i1] + pts[i2])
+    rad = 0.5 * float(np.linalg.norm(pts[i2] - pts[i1]))
+    return [k for k in range(len(pts))
+            if k not in (i1, i2) and np.linalg.norm(pts[k] - mid) < rad - 1e-9]
+
+def recover_segment(points, chain, max_split=16):
+    pts = [np.asarray(p, dtype=float) for p in points]
+    for step in range(max_split):
+        E = delaunay_edges(np.array(pts))
+        gone = [s for s in range(len(chain)-1)
+                if (min(chain[s], chain[s+1]), max(chain[s], chain[s+1])) not in E]
+        if not gone:
+            return np.array(pts), chain, step
+        s = gone[0]
+        i1, i2 = chain[s], chain[s+1]
+        vd = encroaching(np.array(pts), i1, i2)
+        v1, v2 = pts[i1], pts[i2]
+        L = float(np.linalg.norm(v2 - v1)); u = (v2 - v1) / L
+        r = max(vd, key=lambda k: circumcircle(v1, v2, pts[k])[1] or 0.0)
+        R1 = float(np.linalg.norm(pts[r] - v1))
+        R2 = float(np.linalg.norm(pts[r] - v2))
+        t = L/2 if (R1 > L/2 and R2 > L/2) else (R1 if R1 <= R2 else L - R2)
+        pts.append(v1 + u * float(np.clip(t, 0.12*L, 0.88*L)))
+        chain = chain[:s+1] + [len(pts)-1] + chain[s+1:]
+        print(f"  step {step}: {len(vd)} encroaching points, reference #{r}, t/L = {t/L:.3f}")
+    raise RuntimeError("split limit exceeded")
+
+rng = np.random.default_rng(20260729)
+P = [np.array([0.0, 0.0]), np.array([10.0, 0.0])]
+P += [rng.uniform([1.0, -3.0], [9.0, 3.0]) for _ in range(14)]
+
+pts, chain, nsplit = recover_segment(P, [0, 1])
+E = delaunay_edges(pts)
+ok = all((min(chain[s], chain[s+1]), max(chain[s], chain[s+1])) in E
+         for s in range(len(chain)-1))
+print(f"{len(pts)-len(P)} Steiner points, {nsplit} splits, {len(chain)-1} sub-segments")
+print(f"Every sub-segment is a Delaunay edge: {ok}")
+```
+
+Here is what it prints.
+
+```text
+  step 0: 14 encroaching points, reference #8, t/L = 0.453
+  step 1: 4 encroaching points, reference #15, t/L = 0.516
+  step 2: 5 encroaching points, reference #11, t/L = 0.698
+  step 3: 3 encroaching points, reference #4, t/L = 0.315
+4 Steiner points, 4 splits, 5 sub-segments
+Every sub-segment is a Delaunay edge: True
+```
+
+Step 1 is the one to watch. The encroaching count falls from 14 to 4, then climbs back to 5 at step 2. The freshly created sub-segments introduce encroachment relations that did not exist before. Even so, the $t$ rule makes it terminate in finitely many steps without any monotone decrease. This is precisely why implementations that only bisect fall into infinite loops.
+
+## The two failures that remain — rounding and theory
+
+The 8.5% where tetgen dies mixes two causes.
+
+The first is rounding. The moment a Steiner point's coordinates get snapped to doubles, the input PLC is slightly deformed. Shewchuk's filtered predicates do not help. Even an exact predicate is useless when **the input is already wrong**. Carry the point as an LNC expression and this branch disappears.
+
+The second has nothing to do with numerics. Cavity enlargement implicitly assumes that the interiors of the two half triangulations never overlap. But the enlargement process can reach across the plane of the facet being recovered and pull in a tetrahedron from the other side. The two triangulations then intersect. Among the 4408 models the authors tested, this happened in exactly 2. It fails even with infinite precision. It is a hole in the algorithm itself.
+
+Reimplement with an exact number type (the CORE library) and the first cause goes away while the second stays. And the speed leaves the practical range entirely — hours for a single mid-sized file. Parameterizing the coordinate as a single rational $t \in (0,1)$ and using indirect predicates is the compromise that actually works. All 4408 models process in roughly 5 hours on a single core.
+
+## Next time your mesher dies
+
+Do not blame the geometry first. If it still dies after you have ruled out self-intersections and open surfaces, what broke is not the shape but an assumption in the algorithm.
+
+- **Steiner points are the price of keeping your boundary.** A 3D CDT does not exist for free. The Schönhardt polyhedron is a six-vertex counterexample, and real CAD geometry is full of places that look like it.
+- **Where you split is a convergence condition, not a matter of taste.** Midpoint splitting is simple and may never terminate. The reference point and the $t$ rule exist to guarantee termination.
+- **Rounding a coordinate voids the proof.** Carry algorithm-generated points as expressions, not coordinates. You keep the floating-point predicates and still get the signs right.
+
+If your analysis has to impose a wall function on the boundary surface, escaping into an approximate mesh was never an option. You have to go straight through that 8.5%.
