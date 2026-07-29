@@ -1,0 +1,213 @@
+---
+title: "Why Laundry Dries at 5 °C — Diffusion-Limited Evaporation vs. Heat-Driven Boiling"
+date: 2026-07-30
+description: "Why non-boiling and boiling evaporation need different source terms"
+tags: ["Phase-Change", "Evaporation", "Multiphase", "Heat-Transfer", "Spalding-Number"]
+locale: en
+slug: evaporation-source-term-d2-law-lee-model
+draft: false
+---
+
+import { DropletShrinkD2Law } from '@/components/post-viz/2026-07-30-evaporation-source-term-d2-law-lee-model/DropletShrinkD2Law'
+import { InterfaceSuperheatRelaxer } from '@/components/post-viz/2026-07-30-evaporation-source-term-d2-law-lee-model/InterfaceSuperheatRelaxer'
+
+Laundry hung on a balcony dries. The air is at 5 °C. Water boils at 100 °C. Ninety-five degrees are missing, and the water leaves anyway.
+
+The same water inside a kettle waits until 100 °C. Both cases are phase change: liquid becoming vapor. But different things set the rate. The same is true in CFD. Use one source term for both situations and one of them will be wrong.
+
+This post separates them. It builds the equations for evaporation limited by diffusion and for evaporation limited by heat, then carries both into the Navier–Stokes equations as source terms. At the end you get to pick the Lee model's relaxation coefficient $r$ yourself — and see why published values for $r$ are scattered across seven orders of magnitude.
+
+## The two evaporations have different bottlenecks
+
+Evaporation needs two things: enough energy for a molecule to leave the interface, and somewhere for that molecule to go once it has left. Which one is in short supply decides the regime.
+
+**Diffusion-limited.** The gas just above the interface is already saturated. Further evaporation requires that vapor to be carried away. The bottleneck is diffusion on the gas side. Liquid temperature barely moves. Puddles, wet laundry, and room-temperature fuel sprays live here.
+
+**Thermally driven.** The liquid near the interface has already passed saturation temperature. There is plenty of room for the vapor to go. The bottleneck is the heat supply that pays for the latent heat (the hidden energy cost of the phase change). Boiling, cavitation, and wall condensation live here.
+
+The two regimes are even measured by different dimensionless groups. Diffusion-limited evaporation is scaled by the Spalding mass transfer number $B_M$ (the vapor concentration drop between interface and far field); heat-driven evaporation by the Jakob number $\mathrm{Ja} = c_p \Delta T / L$ (sensible over latent heat). The first pairs with the Schmidt number $\mathrm{Sc} = \nu/D$, the second with the Prandtl number.
+
+## Diffusion-limited — the concentration gradient sets the rate
+
+Write the vapor mass flux leaving a spherical droplet. Fick's law (diffusion proportional to the concentration gradient) alone is not enough, because the escaping vapor also pushes the whole gas mixture outward. That convective piece is called Stefan flow.
+
+$$
+\dot{m}'' = -\rho_g D \frac{\partial Y_v}{\partial r}\bigg|_{s} + \dot{m}'' Y_{v,s}
+$$
+
+$\dot{m}''$ is evaporation rate per unit area, $\rho_g$ gas density, $D$ the vapor diffusivity, $Y_v$ the vapor mass fraction, and subscript $s$ the interface. The second term on the right is the share Stefan flow carries back.
+
+Integrate radially under the quasi-steady assumption and a logarithm falls out.
+
+$$
+\dot{m}'' = \frac{\rho_g D}{r_s}\ln(1 + B_M),
+\qquad
+B_M = \frac{Y_s - Y_\infty}{1 - Y_s}
+$$
+
+$r_s$ is droplet radius, $Y_s$ the saturated mass fraction at the interface, $Y_\infty$ the far-field value. $B_M$ is the Spalding mass transfer number — the whole driving concentration drop compressed into one number.
+
+Attach droplet mass conservation, $\dot{m} = -\frac{d}{dt}(\rho_l \pi d^3/6)$, and the **square** of the diameter shrinks linearly.
+
+$$
+\frac{d(d^2)}{dt} = -K,
+\qquad
+K = \frac{8\rho_g D}{\rho_l}\ln(1 + B_M)
+$$
+
+That is the d²-law. It is $d^2$, not $d$, that plots as a straight line. The lifetime is $t_{life} = d_0^2 / K$.
+
+The key point is that $Y_s$ depends only on temperature. Water at 25 °C has a saturation pressure of 3.17 kPa — 3 % of atmospheric — giving $Y_s \approx 0.019$. Not zero. That is why things dry. At 5 °C it drops to $Y_s \approx 0.0054$, still not zero. The boiling point never enters the story.
+
+Try the parameters yourself in the simulation below.
+
+<DropletShrinkD2Law />
+
+Push the RH slider from 30 % to 95 %: $Y_\infty$ climbs toward $Y_s$, $B_M$ collapses, and the straight line on the right lies flat. A 1 mm droplet goes from a 5-minute lifetime to nearly an hour. Raise the temperature instead and $Y_s$ runs away exponentially, so the same droplet vanishes in seconds. The radius of the disk on the left is drawn from the **same** $d(t)$ that the plot traces.
+
+## Thermally driven — the heat that arrives pays the latent bill
+
+Now the interface is pinned at saturation temperature. What sets the rate is not concentration but the imbalance of heat arriving at the interface.
+
+$$
+\dot{m}'' L = k_l \frac{\partial T}{\partial n}\bigg|_l - k_v \frac{\partial T}{\partial n}\bigg|_v
+$$
+
+$L$ is latent heat, $k_l$ and $k_v$ the liquid and vapor conductivities, $n$ the interface normal. Whatever heat comes in from the liquid side and does not leave on the vapor side goes entirely into phase change.
+
+This is the Stefan condition, and it is awkward for a specific reason: the interface carries **two** conditions at once. Temperature is fixed at $T = T_{sat}$ (Dirichlet), and simultaneously the flux jump sets the interface velocity. Two conditions, and the boundary location is itself unknown. It is a free-boundary problem.
+
+Solving it honestly with a sharp interface means tracking that interface and satisfying the equation above every step. Most commercial and open-source solvers avoid that road. They let the interface smear over one or two cells and insert a volumetric source term designed so the condition above is satisfied **on its own**.
+
+## Where the source term actually goes
+
+Define one volumetric evaporation rate $\dot{m}'''$ in kg/m³/s, and it appears in four places.
+
+It enters the phasic continuity equations as a sign-flipped pair.
+
+$$
+\frac{\partial (\alpha_l \rho_l)}{\partial t} + \nabla\cdot(\alpha_l \rho_l \mathbf{u}) = -\dot{m}''' ,
+\qquad
+\frac{\partial (\alpha_v \rho_v)}{\partial t} + \nabla\cdot(\alpha_v \rho_v \mathbf{u}) = +\dot{m}'''
+$$
+
+$\alpha$ is volume fraction. Add the two and the sources cancel, so mixture mass is conserved.
+
+In the energy equation it appears as a sink worth the latent heat. If your solver also transports a vapor mass fraction (the diffusion-limited path), the same value shows up there as a source.
+
+$$
+\frac{\partial (\rho e)}{\partial t} + \nabla\cdot(\rho \mathbf{u} h) = \nabla\cdot(k\nabla T) - \dot{m}''' L
+$$
+
+The fourth place is the one people forget. Phase change changes the divergence constraint on the velocity field.
+
+$$
+\nabla\cdot\mathbf{u} = \dot{m}''' \left( \frac{1}{\rho_v} - \frac{1}{\rho_l} \right)
+$$
+
+An incompressible solver's pressure Poisson equation usually has zero on the right. With phase change it does not. Water turning to steam at atmospheric pressure expands roughly 1600-fold. Insert the evaporation rate but drop this term and mass disappears while nothing gets pushed aside: the bubble never grows and the pressure field goes strange.
+
+## Choosing $r$ — the trap in the Lee model
+
+The most widely used source term is the Lee model.
+
+$$
+\dot{m}''' = r\,\alpha_l \rho_l \frac{T - T_{sat}}{T_{sat}}
+$$
+
+$r$ is the relaxation coefficient, in 1/s, and this is where the misunderstanding starts. $r$ is not a material property. It is not something you can measure. Its only job is to hold the interface cell's temperature at $T_{sat}$. Once the temperature is pinned there, that cell's energy balance *becomes* the Stefan condition. In other words, $r$ is a numerical device that enforces the free-boundary condition of the previous section by penalty.
+
+So in theory, bigger is better. The trouble appears when you integrate explicitly. Isolate the source term and it is linear decay in $T - T_{sat}$ with decay rate $r L/(T_{sat} c_p)$. The explicit Euler stability condition is then
+
+$$
+S = r\,\frac{L}{T_{sat}\,c_p}\,\Delta t < 2
+$$
+
+For water and steam, $L/(T_{sat} c_p) \approx 1.43$. At $\Delta t = 10^{-5}$ s, $r$ cannot exceed $1.4\times10^{5}$. Refine the mesh, shrink $\Delta t$, and the admissible $r$ grows. That is why published values of $r$ range from 0.1 to $10^7$: every author used a different $\Delta t$.
+
+Sweep $r$ yourself in the heated column below.
+
+<InterfaceSuperheatRelaxer />
+
+Drag $r$ down to $10^2$ and the amber shaded area — superheat the model failed to convert into vapor — swells while the interface stalls. The wall keeps pouring in heat and nothing boils. Push past $10^5$ and $S$ crosses 2: the temperature profile rings, and the history trace on the right turns into a sawtooth. Green covers only about two decades in between, and that window moves bodily whenever you change $\Delta t$ or the mesh.
+
+Property-based alternatives do exist. The Hertz–Knudsen–Schrage relation starts from kinetic theory and expresses the interfacial rate through a single accommodation coefficient $\sigma$. The Tanasawa model linearizes it into $\dot{m}'' \propto \sigma (T - T_{sat})$. Since $\sigma$ is a property, it has measured values — though reported values for water spread from 0.01 to 1, so the uncertainty moves rather than disappears.
+
+## Both regimes in one Python script
+
+On one side humidity decides the answer; on the other, the time step does. Check both in the same script.
+
+```python
+import math
+
+M_V, M_A, P_ATM = 18.015, 28.96, 101325.0
+RHO_L, RHO_G, D_AB = 997.0, 1.18, 2.5e-5     # water, humid air, vapor diffusivity
+L_VAP, CP_L, T_SAT = 2.26e6, 4220.0, 373.15
+
+def p_sat(t_c):
+    """Antoine equation (water, mmHg) -> Pa"""
+    return 10 ** (8.07131 - 1730.63 / (233.426 + t_c)) * 133.322
+
+def mass_fraction(x):
+    """vapor mole fraction -> mass fraction"""
+    return x * M_V / (x * M_V + (1 - x) * M_A)
+
+def spalding_number(t_c, rh):
+    """Spalding mass transfer number B_M = (Y_s - Y_inf) / (1 - Y_s)"""
+    x_s = p_sat(t_c) / P_ATM
+    y_s = mass_fraction(x_s)
+    y_inf = mass_fraction(x_s * rh)
+    return (y_s - y_inf) / (1 - y_s)
+
+def d2_lifetime(d0_mm, t_c, rh):
+    """d^2-law lifetime t = d0^2 / K,  K = 8 rho_g D / rho_l * ln(1 + B_M)"""
+    b_m = spalding_number(t_c, rh)
+    k = 8 * RHO_G * D_AB / RHO_L * math.log(1 + b_m)     # m^2/s
+    return (d0_mm * 1e-3) ** 2 / k, k * 1e6              # s, mm^2/s
+
+def lee_source(r, alpha_l, temp):
+    """Lee model volumetric evaporation rate [kg/m^3/s]"""
+    if temp > T_SAT:
+        return r * alpha_l * RHO_L * (temp - T_SAT) / T_SAT
+    return 0.0
+
+print("diffusion-limited - 1 mm water droplet, 25 degC")
+for rh in (0.0, 0.3, 0.6, 0.9, 0.97):
+    life, k = d2_lifetime(1.0, 25.0, rh)
+    print(f"  RH {rh*100:4.0f} %   B_M = {spalding_number(25.0, rh):.5f}"
+          f"   K = {k:.2e} mm^2/s   lifetime = {life/60:7.2f} min")
+
+print("\nthermally driven - Lee coefficient vs explicit stability limit")
+dt = 1e-5
+for r in (1e2, 1e3, 1e4, 1e5, 1e6):
+    s = r * L_VAP / (T_SAT * CP_L) * dt
+    rate = lee_source(r, 1.0, T_SAT + 1.0)
+    print(f"  r = {r:8.0e}   m''' (1 K superheat) = {rate:9.2e} kg/m^3/s"
+          f"   S = {s:8.3f}  {'diverges' if s > 2 else 'stable'}")
+```
+
+The output:
+
+```text
+diffusion-limited - 1 mm water droplet, 25 degC
+  RH    0 %   B_M = 0.02001   K = 4.69e-03 mm^2/s   lifetime =    3.55 min
+  RH   30 %   B_M = 0.01406   K = 3.30e-03 mm^2/s   lifetime =    5.04 min
+  RH   60 %   B_M = 0.00806   K = 1.90e-03 mm^2/s   lifetime =    8.77 min
+  RH   90 %   B_M = 0.00202   K = 4.78e-04 mm^2/s   lifetime =   34.85 min
+  RH   97 %   B_M = 0.00061   K = 1.44e-04 mm^2/s   lifetime =  115.98 min
+
+thermally driven - Lee coefficient vs explicit stability limit
+  r =    1e+02   m''' (1 K superheat) =  2.67e+02 kg/m^3/s   S =    0.001  stable
+  r =    1e+03   m''' (1 K superheat) =  2.67e+03 kg/m^3/s   S =    0.014  stable
+  r =    1e+04   m''' (1 K superheat) =  2.67e+04 kg/m^3/s   S =    0.144  stable
+  r =    1e+05   m''' (1 K superheat) =  2.67e+05 kg/m^3/s   S =    1.435  stable
+  r =    1e+06   m''' (1 K superheat) =  2.67e+06 kg/m^3/s   S =   14.352  diverges
+```
+
+Between 30 % and 97 % humidity the lifetime spreads by a factor of 23, at fixed temperature. When a diffusion-limited case refuses to match experiment, the far-field humidity boundary condition is usually the culprit.
+
+## For the lab notebook
+
+- Decide what limits the evaporation before picking a model. Gas-side concentration gradient means $B_M$ and the d²-law; interfacial heat imbalance means the Stefan condition and Lee or Tanasawa. Reverse that order and a correct answer is only luck.
+- The Lee model's $r$ is a penalty coefficient, not a property. Do not copy a value from a paper. Take it as large as $S = r L \Delta t/(T_{sat} c_p) < 2$ allows, then confirm that the interface cell's superheat really does collapse to zero.
+- If you added an evaporation rate, add $\nabla\cdot\mathbf{u} = \dot{m}'''(1/\rho_v - 1/\rho_l)$ too. Skip it and mass disappears while volume stays put. For water and steam that error is a factor of 1600.
