@@ -1,0 +1,205 @@
+---
+title: "경계층 격자에서 Jacobi가 죽는 자리 — 라인렛 선-음함수 전처리"
+date: 2026-07-31
+description: "셀을 벽 쪽으로 누를수록 점 스무더가 멈추는 이유와 그 처방"
+tags: ["Linelet", "Preconditioning", "Anisotropic-Grid", "Krylov", "Boundary-Layer"]
+locale: ko
+slug: linelet-preconditioner-stretched-grid
+draft: false
+---
+
+import { AnisotropicSmootherArena } from '@/components/post-viz/2026-07-31-linelet-preconditioner-stretched-grid/AnisotropicSmootherArena'
+import { LineletChainBuilder } from '@/components/post-viz/2026-07-31-linelet-preconditioner-stretched-grid/LineletChainBuilder'
+
+같은 방정식이다. 셀 개수도, 반복법도, 수렴 판정 기준도 그대로다. 격자를 벽 쪽으로 한 번 눌렀을 뿐인데 반복 횟수가 18회에서 5,000회로 뛰었다.
+
+물리는 하나도 바뀌지 않았다. 바뀐 것은 셀의 종횡비뿐이다. 그런데 선형 솔버는 다른 문제를 푸는 것처럼 굴기 시작한다. 난류 해석에서 $y^+ \approx 1$을 맞추려면 벽면 첫 셀은 어차피 눌러야 하니, 이건 피할 수 있는 상황도 아니다.
+
+이 글은 그 300배가 행렬의 어디에서 나오는지 짚는다. 그리고 SU2를 비롯한 코드들이 쓰는 라인렛(linelet·강한 결합 방향을 따라 셀을 엮은 사슬) 전처리가 왜 그 300배를 되돌리는지, 직접 짠 반복 횟수 카운터로 확인한다.
+
+## 셀을 누르면 행렬이 다른 물건이 된다
+
+직사각 셀에서 확산항을 유한체적으로 이산화하면 면 계수는 이렇게 나온다.
+
+$$
+a_E = a_W = \frac{\Gamma \Delta y}{\Delta x}, \qquad a_N = a_S = \frac{\Gamma \Delta x}{\Delta y}
+$$
+
+$\Gamma$는 확산계수, $\Delta x$·$\Delta y$는 셀의 가로·세로 크기다. 두 계수의 비를 보자.
+
+$$
+\frac{a_N}{a_E} = \left(\frac{\Delta x}{\Delta y}\right)^{2} = \mathrm{AR}^{2}
+$$
+
+$\mathrm{AR}$은 셀 종횡비(가로/세로)다. 계수 비는 종횡비의 **제곱**이다. 벽면 첫 셀이 $\mathrm{AR} = 1000$이면 남북 결합은 동서 결합의 백만 배다. 격자를 10배 눌렀는데 행렬은 100배 비뚤어진다.
+
+여기에 시간 미분을 음함수로 넣으면 대각은 이렇게 된다.
+
+$$
+a_P = \frac{V}{\Delta t} + 2a_E + 2a_N
+$$
+
+$V = \Delta x \Delta y$는 셀 부피, $\Delta t$는 (의사)시간스텝이다. 이 $V/\Delta t$ 항이 대각을 살려주는 유일한 장치인데, $a_N$이 커지는 속도를 따라가지 못한다.
+
+## 점 스무더의 수렴계수에는 AR이 들어 있다
+
+Jacobi 반복의 오차 감쇠는 대각 대비 비대각 총합으로 위에서 눌린다.
+
+$$
+\rho_{\text{point}} \le \frac{2a_E + 2a_N}{V/\Delta t + 2a_E + 2a_N}
+$$
+
+$V/\Delta t = 4a_E$로 잡으면 $\mathrm{AR} = 1$에서 0.5, $\mathrm{AR} = 100$에서 0.9998이다. 다만 이 상한은 $\mathrm{AR}$이 커지면 1에 붙어버려서 더 이상 아무것도 말해주지 않는다. 실제로 무엇이 남는지 보려면 모드별로 봐야 한다. Fourier 모드 $(\theta_x, \theta_y)$에 대한 감쇠 인자는
+
+$$
+\rho(\theta_x, \theta_y) = 1 - \frac{V/\Delta t + 2a_E(1 - \cos\theta_x) + 2a_N(1 - \cos\theta_y)}{a_P}
+$$
+
+가장 느린 모드는 $\theta_y$가 가장 작은 것, 즉 벽 수직 방향으로 가장 완만한 모드다. $a_N$이 대각을 장악해 $a_P \approx 2a_N$이 되면
+
+$$
+\rho_{\max} \approx 1 - \frac{\pi^{2}}{2 N_y^{2}}
+$$
+
+$N_y$는 벽 수직 방향 층 개수다. 여기에 $\mathrm{AR}$이 없다는 점이 오히려 나쁜 소식이다. 격자를 아무리 더 눌러도 이 값 위로는 안 가지만, 그 천장 자체가 이미 쓸모없이 높다. $N_y = 48$이면 0.99786, 오차를 $10^{-6}$까지 줄이는 데 약 6,000회다.
+
+무슨 일이 벌어지는지는 간단하다. 점 스무더는 벽 수직 방향 고주파 오차를 한두 번에 지운다. 문제는 그다음이다. 벽에 **나란한** 방향의 오차를 지우려면 정보가 $a_E$를 타고 옆으로 가야 하는데, 대각이 $a_N$에 잡혀 있으니 한 걸음의 크기가 $\mathrm{AR}^2$만큼 줄어든다.
+
+아래 시뮬레이션에서 직접 격자를 눌러보자.
+
+<AnisotropicSmootherArena />
+
+$\mathrm{AR}$을 1에서 100으로 올리면 세로 줄무늬는 즉시 사라지는데 가로로 길게 늘어진 얼룩만 그대로 남는다. 화면 아래 "measured" 값이 0.997 근처로 올라가는 순간이 스톨의 시작이다. 같은 $\mathrm{AR}$에서 linelet 버튼을 누르면 그 얼룩이 한두 번의 sweep에 걷힌다.
+
+## 세 처방을 같은 표에 올려놓는다
+
+| 전처리 | 반복당 비용 | 이방성 대응 | 병렬성 | 걸리는 곳 |
+|---|---|---|---|---|
+| Jacobi (대각) | 셀당 나눗셈 1회 | 없음 | 완전 | $\mathrm{AR} \gtrsim 10$에서 무너짐 |
+| ILU(0) | 인수분해 1회 + 전·후치환 | 부분적 | 번호매김에 종속 | 도메인 분할마다 성능이 바뀜 |
+| 라인렛 | 라인 셀당 Thomas 5 flop | 강한 방향을 정확히 제거 | 라인 단위로 독립 | 라인 밖은 여전히 Jacobi |
+
+라인렛의 거래 조건은 분명하다. 강한 결합 방향 **하나만** 정확히 뒤집는다. 그 대가로 저장은 3-band 하나, 비용은 사실상 Jacobi와 같은 자릿수다. ILU(0)처럼 전체 행렬을 건드리지 않으므로 MPI 분할에도 덜 민감하다.
+
+## 라인렛은 어떻게 만들어지는가
+
+1. 각 셀에서 면 계수 비 $\sigma = a_f / a_{f,\perp}$를 잰다. 벽 수직 면이면 $\sigma = \mathrm{AR}^2$이다.
+2. $\sigma \ge \sigma_{\min}$인 면을 강한 면으로 표시한다. 실무 기본값은 $\sigma_{\min} = 10$ 근처다.
+3. 벽면에 붙은 셀에서 출발해 강한 면을 따라 위로 사슬을 뻗는다.
+4. 한 셀은 강한 면을 최대 2개까지만 가진다. 분기가 생기면 계수가 큰 쪽만 남긴다. 분기를 허용하면 결과가 삼중대각이 아니게 된다.
+5. 이미 다른 라인렛에 속한 셀을 만나면 사슬을 끊는다.
+6. 길이가 1인 사슬은 버리고 그 셀은 Jacobi로 돌려보낸다.
+
+사슬 안에서만 번호를 다시 매기면 그 부분 행렬이 삼중대각이 된다. 삼중대각이면 Thomas 알고리듬(전진소거 후 후진대입)으로 $O(n)$에 정확히 뒤집힌다. 라인렛 전처리의 전부가 이 문장이다.
+
+아래에서 첫 층 두께와 성장률을 바꿔가며 사슬이 어디까지 자라는지 보자.
+
+<LineletChainBuilder />
+
+$\Delta y_{\text{wall}}$을 줄이면 사슬이 경계층 안쪽으로 깊어지고, 성장률을 키우면 격자가 빨리 등방으로 돌아와 사슬이 짧아진다. 여기서 눈여겨볼 것은 사슬이 **짧다**는 사실이다. 전체 층의 절반도 덮지 않는다. 라인렛이 싼 이유가 그것이다.
+
+## Python으로 반복 횟수를 세어본다
+
+$64 \times 48$ 격자에 오차만 남겨놓고(우변 $f = 0$이므로 정확해는 $u = 0$이다), 점 Jacobi와 라인 Gauss-Seidel을 각각 돌려 오차가 $10^{-6}$로 줄 때까지의 sweep 수를 센다.
+
+```python
+import numpy as np
+
+def cell_coefficients(dx, dy, gamma=1.0, diag_factor=4.0):
+    """직사각 셀 하나의 FVM 확산 계수. diag_factor는 V/dt를 a_E의 배수로 지정."""
+    a_e = gamma * dy / dx        # 동/서 면
+    a_n = gamma * dx / dy        # 북/남 면
+    d0 = diag_factor * a_e       # V/dt 항
+    return a_e, a_n, d0
+
+def residual_field(u, a_e, a_n, d0):
+    r = -d0 * u
+    r[1:-1, 1:-1] -= a_e * (2*u[1:-1, 1:-1] - u[:-2, 1:-1] - u[2:, 1:-1])
+    r[1:-1, 1:-1] -= a_n * (2*u[1:-1, 1:-1] - u[1:-1, :-2] - u[1:-1, 2:])
+    r[0, :] = r[-1, :] = 0.0     # Dirichlet 경계
+    r[:, 0] = r[:, -1] = 0.0
+    return r
+
+def jacobi_sweep(u, a_e, a_n, d0, omega=1.0):
+    r = residual_field(u, a_e, a_n, d0)
+    u += omega * r / (d0 + 2*a_e + 2*a_n)
+
+def thomas(a, b, c, d):
+    """삼중대각 정확 해법: 전진소거 후 후진대입."""
+    n = len(d)
+    cp, dp = np.empty(n), np.empty(n)
+    cp[0], dp[0] = c[0]/b[0], d[0]/b[0]
+    for k in range(1, n):
+        m = b[k] - a[k]*cp[k-1]
+        cp[k] = c[k]/m
+        dp[k] = (d[k] - a[k]*dp[k-1])/m
+    x = np.empty(n)
+    x[-1] = dp[-1]
+    for k in range(n-2, -1, -1):
+        x[k] = dp[k] - cp[k]*x[k+1]
+    return x
+
+def linelet_sweep(u, a_e, a_n, d0):
+    """벽 수직 방향 사슬 하나를 통째로 정확히 뒤집는다 (라인 Gauss-Seidel)."""
+    nx, ny = u.shape
+    m = ny - 2
+    dg = d0 + 2*a_e + 2*a_n
+    a = np.full(m, -a_n)
+    b = np.full(m, dg)
+    c = np.full(m, -a_n)
+    a[0] = c[-1] = 0.0
+    for i in range(1, nx-1):
+        rhs = a_e * (u[i-1, 1:-1] + u[i+1, 1:-1])   # 라인 밖 결합은 우변으로
+        u[i, 1:-1] = thomas(a, b, c, rhs)
+
+def count_sweeps(ar, kind, nx=64, ny=48, tol=1e-6, max_sweeps=20000):
+    dx, dy = 1.0/nx, 1.0/nx/ar
+    a_e, a_n, d0 = cell_coefficients(dx, dy)
+    u = np.random.default_rng(7).standard_normal((nx, ny))
+    u[0, :] = u[-1, :] = 0.0
+    u[:, 0] = u[:, -1] = 0.0
+    e0 = prev = np.linalg.norm(u)
+    for k in range(1, max_sweeps + 1):
+        jacobi_sweep(u, a_e, a_n, d0) if kind == 'jacobi' else linelet_sweep(u, a_e, a_n, d0)
+        e = np.linalg.norm(u)
+        rho, prev = e/prev, e
+        if e/e0 < tol:
+            return k, rho
+    return max_sweeps, rho
+
+print(f"{'AR':>6} {'Jacobi':>8} {'rho_J':>8} {'linelet':>8} {'rho_L':>8}")
+for ar in (1, 10, 100, 1000):
+    nj, rj = count_sweeps(ar, 'jacobi')
+    nl, rl = count_sweeps(ar, 'linelet')
+    print(f"{ar:>6} {nj:>8} {rj:>8.4f} {nl:>8} {rl:>8.4f}")
+```
+
+돌린 결과는 이렇다.
+
+```text
+    AR   Jacobi    rho_J  linelet    rho_L
+     1       18   0.4870        8   0.1839
+    10      514   0.9780        7   0.1699
+   100     4879   0.9975        4   0.0194
+  1000     5471   0.9978        2   0.0002
+```
+
+$\mathrm{AR}$을 1000배 눌렀을 때 Jacobi는 300배 느려지고 앞 절의 예측대로 6,000회 근처에서 천장을 친다. 라인렛은 오히려 빨라진다. 라인 사이를 잇는 결합이 $a_E/a_N = \mathrm{AR}^{-2}$로 작아지면서 사슬들이 서로 독립해지기 때문이다. 최악 모드 기준 상한 $2a_E/(V/\Delta t + 2a_E) = 1/3$은 그대로 지켜지고, 실제 감쇠는 그보다 훨씬 좋다.
+
+## 코드 짤 때 빠지지 말아야 할 함정
+
+**라인 방향을 반대로 깔기.** 사슬은 계수가 **큰** 방향, 즉 벽 수직 방향으로 깔아야 한다. 벽에 나란하게 깔면 이득은 0이고 Thomas 비용만 늘어난다. 격자가 벽면을 따라 늘어난 형태면 그 방향이 눈으로는 "길어" 보이므로 헷갈리기 쉽다.
+
+**$\sigma_{\min}$을 기본값 그대로 두기.** 격자를 바꿨는데 임계값을 안 건드리면 사슬이 통째로 사라진다. 그러면 전처리는 조용히 Jacobi로 퇴화하고, 로그에는 아무 경고도 안 찍힌다. 라인렛 개수와 평균 길이를 매 실행마다 출력해 두면 이 사고는 한 줄로 잡힌다.
+
+**MPI 파티션이 사슬을 자르는 것.** 파티션 경계에서 끊긴 사슬은 조각조각 짧아지고, 코어 수를 늘릴수록 수렴이 나빠진다. 파티셔너에 라인 방향 가중치를 주거나, 라인을 자르지 않도록 제약을 걸어야 한다.
+
+**전처리로 비선형 문제를 덮으려 하기.** 라인렛을 넣었는데도 발산한다면 대개 선형 솔버가 아니라 바깥 루프가 문제다. CFL을 먼저 내리고, 언더릴랙세이션 계수를 0.7 근처로 낮춰서 갱신량 자체를 줄인 다음에 다시 판단해야 한다. 전처리는 주어진 행렬을 빨리 풀 뿐, 틀린 행렬을 고쳐주지 않는다.
+
+## 다시 읽지 않을 사람을 위한 요약
+
+셀을 $\mathrm{AR}$배 누르면 행렬 계수 비는 $\mathrm{AR}^2$배 벌어진다. 점 스무더의 한 걸음은 그만큼 짧아진다.
+
+라인렛은 강한 결합 방향 하나를 Thomas로 정확히 뒤집는다. 상한 $2a_E/(V/\Delta t + 2a_E)$에는 $\mathrm{AR}$이 없다.
+
+사슬은 경계층 안에서만 자란다. 사슬 개수와 평균 길이를 로그에 찍어라. 그 숫자가 0이 되는 순간 당신의 전처리는 Jacobi다.

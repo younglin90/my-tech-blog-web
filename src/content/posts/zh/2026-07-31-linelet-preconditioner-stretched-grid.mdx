@@ -1,0 +1,205 @@
+---
+title: "边界层网格上 Jacobi 停摆的地方 — 线元(linelet)线隐式预条件"
+date: 2026-07-31
+description: "把单元往壁面压扁为何让点光滑器停滞，以及对应的处方"
+tags: ["Linelet", "Preconditioning", "Anisotropic-Grid", "Krylov", "Boundary-Layer"]
+locale: zh
+slug: linelet-preconditioner-stretched-grid
+draft: false
+---
+
+import { AnisotropicSmootherArena } from '@/components/post-viz/2026-07-31-linelet-preconditioner-stretched-grid/AnisotropicSmootherArena'
+import { LineletChainBuilder } from '@/components/post-viz/2026-07-31-linelet-preconditioner-stretched-grid/LineletChainBuilder'
+
+同一个方程。单元数、迭代法、收敛判据都没有动。只是把网格往壁面压扁了一次，迭代次数就从 18 次跳到了 5,000 次。
+
+物理没有任何改变，变的只有单元的长宽比。可线性求解器却开始表现得像在解另一个问题。而且这一步躲不掉：湍流计算要把 $y^+ \approx 1$ 卡住，壁面第一层单元就必须压扁。
+
+本文要找出那 300 倍藏在矩阵的哪个位置，再说明 SU2 等代码采用的线元(linelet，沿强耦合方向把单元串成的链)预条件为何能把这 300 倍还回来，并用一个可以自己跑的迭代计数器验证。
+
+## 压扁单元，矩阵就变成另一个东西
+
+在矩形单元上用有限体积离散扩散项，面系数是这样的。
+
+$$
+a_E = a_W = \frac{\Gamma \Delta y}{\Delta x}, \qquad a_N = a_S = \frac{\Gamma \Delta x}{\Delta y}
+$$
+
+$\Gamma$ 是扩散系数，$\Delta x$、$\Delta y$ 是单元尺寸。取两者之比。
+
+$$
+\frac{a_N}{a_E} = \left(\frac{\Delta x}{\Delta y}\right)^{2} = \mathrm{AR}^{2}
+$$
+
+$\mathrm{AR}$ 是单元长宽比(流向/壁面法向)。系数比按它的**平方**走。壁面第一层若 $\mathrm{AR} = 1000$，南北耦合就是东西耦合的一百万倍。网格压扁十倍，矩阵歪斜一百倍。
+
+再把时间导数写成隐式，对角项变为
+
+$$
+a_P = \frac{V}{\Delta t} + 2a_E + 2a_N
+$$
+
+其中 $V = \Delta x \Delta y$ 是单元体积，$\Delta t$ 是(拟)时间步长。这个 $V/\Delta t$ 是唯一支撑对角的机制，但它追不上 $a_N$ 的增长速度。
+
+## 点光滑器的收敛系数里带着 AR
+
+Jacobi 迭代的误差衰减，被非对角之和与对角之比从上方压住。
+
+$$
+\rho_{\text{point}} \le \frac{2a_E + 2a_N}{V/\Delta t + 2a_E + 2a_N}
+$$
+
+取 $V/\Delta t = 4a_E$，则 $\mathrm{AR} = 1$ 时为 0.5，$\mathrm{AR} = 100$ 时为 0.9998。问题是这个上界随 $\mathrm{AR}$ 增大会贴到 1，从此不再提供任何信息。要看清真正留下来的是什么，得逐模态分析。对 Fourier 模态 $(\theta_x, \theta_y)$，衰减因子为
+
+$$
+\rho(\theta_x, \theta_y) = 1 - \frac{V/\Delta t + 2a_E(1 - \cos\theta_x) + 2a_N(1 - \cos\theta_y)}{a_P}
+$$
+
+最慢的模态是 $\theta_y$ 最小的那个，也就是壁面法向上变化最平缓的模态。当 $a_N$ 主导对角、$a_P \approx 2a_N$ 时
+
+$$
+\rho_{\max} \approx 1 - \frac{\pi^{2}}{2 N_y^{2}}
+$$
+
+$N_y$ 是壁面法向的层数。这里没有 $\mathrm{AR}$，这不是好消息而是坏消息：再怎么压扁，系数也不会超过这个值，可这个天花板本身已经高到没用。$N_y = 48$ 时它是 0.99786，把误差降到 $10^{-6}$ 需要大约 6,000 次。
+
+发生了什么其实很直观。点光滑器一两次就能抹掉壁面法向的高频误差。麻烦在之后：要抹掉**沿**壁面方向的误差，信息必须顺着 $a_E$ 横向传递，而对角被 $a_N$ 压住，于是每一步的幅度缩小了 $\mathrm{AR}^2$ 倍。
+
+在下面的模拟里亲手压一下网格。
+
+<AnisotropicSmootherArena />
+
+把 $\mathrm{AR}$ 从 1 调到 100，竖条纹立刻消失，横向拉长的色块却纹丝不动。图下方 "measured" 爬到 0.997 附近的那一刻，就是停滞的开始。在同样的 $\mathrm{AR}$ 下点一下 linelet 按钮，这些色块一两个 sweep 就没了。
+
+## 把三种处方放在同一张表上
+
+| 预条件 | 每次迭代代价 | 应对各向异性 | 并行性 | 卡住的地方 |
+|---|---|---|---|---|
+| Jacobi(对角) | 每单元一次除法 | 无 | 完全 | $\mathrm{AR} \gtrsim 10$ 就崩 |
+| ILU(0) | 一次分解 + 前后代入 | 部分 | 依赖编号 | 每换一次区域分解性能就变 |
+| 线元 | 线内每单元 Thomas 约 5 flop | 精确消去强方向 | 按线独立 | 线之外仍然是 Jacobi |
+
+线元的交换条件很明确：只把**一个**强耦合方向精确求逆。代价是一组三对角带的存储，开销与 Jacobi 同一量级。因为不像 ILU(0) 那样动整个矩阵，它对 MPI 分区也不敏感。
+
+## 线元是怎么搭出来的
+
+1. 在每个单元上量面系数比 $\sigma = a_f / a_{f,\perp}$。壁面法向的面上 $\sigma = \mathrm{AR}^2$。
+2. 把 $\sigma \ge \sigma_{\min}$ 的面标记为强面。工程上常用的默认值在 $\sigma_{\min} = 10$ 附近。
+3. 从贴壁单元出发，沿强面向上延伸出一条链。
+4. 每个单元最多保留两条强面。出现分叉时只留系数大的一侧——允许分叉，结果就不是三对角。
+5. 一旦碰到已属于其他线元的单元，就把链切断。
+6. 长度为 1 的链丢弃，把该单元交还给 Jacobi。
+
+只在链内部重新编号，那块子矩阵就成了三对角。三对角就能用 Thomas 算法(先前向消去再回代)在 $O(n)$ 内精确求逆。线元预条件的全部内容就是这一句话。
+
+下面改变第一层厚度和增长率，看看链能长到多远。
+
+<LineletChainBuilder />
+
+减小 $\Delta y_{\text{wall}}$，链会往边界层深处扎；提高增长率，网格更早回到各向同性，链就变短。值得注意的是链**很短**，连一半层数都覆盖不到。线元便宜的原因正在于此。
+
+## 用 Python 数迭代次数
+
+在 $64 \times 48$ 的网格上只留下误差(右端项 $f = 0$，所以精确解是 $u = 0$)，分别跑点 Jacobi 和线 Gauss-Seidel，数出误差降到 $10^{-6}$ 所需的 sweep 数。
+
+```python
+import numpy as np
+
+def cell_coefficients(dx, dy, gamma=1.0, diag_factor=4.0):
+    """单个矩形单元的 FVM 扩散系数。diag_factor 以 a_E 的倍数指定 V/dt。"""
+    a_e = gamma * dy / dx        # 东/西面
+    a_n = gamma * dx / dy        # 北/南面
+    d0 = diag_factor * a_e       # V/dt 项
+    return a_e, a_n, d0
+
+def residual_field(u, a_e, a_n, d0):
+    r = -d0 * u
+    r[1:-1, 1:-1] -= a_e * (2*u[1:-1, 1:-1] - u[:-2, 1:-1] - u[2:, 1:-1])
+    r[1:-1, 1:-1] -= a_n * (2*u[1:-1, 1:-1] - u[1:-1, :-2] - u[1:-1, 2:])
+    r[0, :] = r[-1, :] = 0.0     # Dirichlet 边界
+    r[:, 0] = r[:, -1] = 0.0
+    return r
+
+def jacobi_sweep(u, a_e, a_n, d0, omega=1.0):
+    r = residual_field(u, a_e, a_n, d0)
+    u += omega * r / (d0 + 2*a_e + 2*a_n)
+
+def thomas(a, b, c, d):
+    """三对角精确解法：先前向消去，再回代。"""
+    n = len(d)
+    cp, dp = np.empty(n), np.empty(n)
+    cp[0], dp[0] = c[0]/b[0], d[0]/b[0]
+    for k in range(1, n):
+        m = b[k] - a[k]*cp[k-1]
+        cp[k] = c[k]/m
+        dp[k] = (d[k] - a[k]*dp[k-1])/m
+    x = np.empty(n)
+    x[-1] = dp[-1]
+    for k in range(n-2, -1, -1):
+        x[k] = dp[k] - cp[k]*x[k+1]
+    return x
+
+def linelet_sweep(u, a_e, a_n, d0):
+    """把一整条壁面法向的链精确求逆(线 Gauss-Seidel)。"""
+    nx, ny = u.shape
+    m = ny - 2
+    dg = d0 + 2*a_e + 2*a_n
+    a = np.full(m, -a_n)
+    b = np.full(m, dg)
+    c = np.full(m, -a_n)
+    a[0] = c[-1] = 0.0
+    for i in range(1, nx-1):
+        rhs = a_e * (u[i-1, 1:-1] + u[i+1, 1:-1])   # 线外的耦合放到右端
+        u[i, 1:-1] = thomas(a, b, c, rhs)
+
+def count_sweeps(ar, kind, nx=64, ny=48, tol=1e-6, max_sweeps=20000):
+    dx, dy = 1.0/nx, 1.0/nx/ar
+    a_e, a_n, d0 = cell_coefficients(dx, dy)
+    u = np.random.default_rng(7).standard_normal((nx, ny))
+    u[0, :] = u[-1, :] = 0.0
+    u[:, 0] = u[:, -1] = 0.0
+    e0 = prev = np.linalg.norm(u)
+    for k in range(1, max_sweeps + 1):
+        jacobi_sweep(u, a_e, a_n, d0) if kind == 'jacobi' else linelet_sweep(u, a_e, a_n, d0)
+        e = np.linalg.norm(u)
+        rho, prev = e/prev, e
+        if e/e0 < tol:
+            return k, rho
+    return max_sweeps, rho
+
+print(f"{'AR':>6} {'Jacobi':>8} {'rho_J':>8} {'linelet':>8} {'rho_L':>8}")
+for ar in (1, 10, 100, 1000):
+    nj, rj = count_sweeps(ar, 'jacobi')
+    nl, rl = count_sweeps(ar, 'linelet')
+    print(f"{ar:>6} {nj:>8} {rj:>8.4f} {nl:>8} {rl:>8.4f}")
+```
+
+跑出来是这样。
+
+```text
+    AR   Jacobi    rho_J  linelet    rho_L
+     1       18   0.4870        8   0.1839
+    10      514   0.9780        7   0.1699
+   100     4879   0.9975        4   0.0194
+  1000     5471   0.9978        2   0.0002
+```
+
+压扁 1000 倍后，Jacobi 慢了 300 倍，并如上一节所料在 6,000 次附近撞上天花板。线元反而更快了。相邻链之间的耦合按 $a_E/a_N = \mathrm{AR}^{-2}$ 变小，链与链彼此独立。最坏模态的上界 $2a_E/(V/\Delta t + 2a_E) = 1/3$ 依然成立，只是实测衰减远好于它。
+
+## 写代码时别掉进去的坑
+
+**把线铺反方向。** 链必须沿系数**大**的方向铺，也就是壁面法向。沿壁面铺，收益为零，只多付 Thomas 的开销。网格在流向上看起来"更长"，所以很容易搞反。
+
+**把 $\sigma_{\min}$ 留在默认值。** 换了网格却不重新审视阈值，链可能整体消失。预条件于是悄悄退化成 Jacobi，日志里不会有任何警告。每次运行都打印线元条数和平均长度，一行就能抓住这个问题。
+
+**让 MPI 分区把链切断。** 在分区边界被切断的链会变成碎片，核数越多收敛越差。给分区器加上沿线方向的权重，或者直接约束它不要切线。
+
+**想用预条件盖住非线性问题。** 如果加了线元还是发散，问题通常出在外层循环而非线性求解器。先降 CFL，把亚松弛因子压到 0.7 附近以缩小更新量，再下判断。预条件只会把给定的矩阵解得更快，不会修好一个错的矩阵。
+
+## 给不打算重读的人的摘要
+
+把单元压扁 $\mathrm{AR}$ 倍，矩阵系数比就拉开 $\mathrm{AR}^2$ 倍，点光滑器的一步也就缩小同样的倍数。
+
+线元用 Thomas 精确求逆一个强耦合方向。上界 $2a_E/(V/\Delta t + 2a_E)$ 里没有 $\mathrm{AR}$。
+
+链只在边界层内部生长。把链的条数和平均长度打进日志。这个数变成 0 的那一刻，你的预条件就是 Jacobi。

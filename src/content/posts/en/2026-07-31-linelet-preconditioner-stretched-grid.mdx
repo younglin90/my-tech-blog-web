@@ -1,0 +1,205 @@
+---
+title: "Where Jacobi Dies on a Boundary-Layer Mesh — the Linelet Line-Implicit Preconditioner"
+date: 2026-07-31
+description: "Why squashing cells toward the wall stalls point smoothers, and the fix"
+tags: ["Linelet", "Preconditioning", "Anisotropic-Grid", "Krylov", "Boundary-Layer"]
+locale: en
+slug: linelet-preconditioner-stretched-grid
+draft: false
+---
+
+import { AnisotropicSmootherArena } from '@/components/post-viz/2026-07-31-linelet-preconditioner-stretched-grid/AnisotropicSmootherArena'
+import { LineletChainBuilder } from '@/components/post-viz/2026-07-31-linelet-preconditioner-stretched-grid/LineletChainBuilder'
+
+Same equation. Same cell count, same iteration, same convergence criterion. The mesh got squashed toward the wall once, and the iteration count jumped from 18 to 5,000.
+
+None of the physics changed. The only thing that changed is the cell aspect ratio. Yet the linear solver starts behaving as if it were handed a different problem. And you cannot dodge this: hitting $y^+ \approx 1$ in a turbulent run means the first cell off the wall has to be squashed.
+
+This post pins down where that factor of 300 lives inside the matrix. Then it shows why the linelet preconditioner — a chain of cells threaded along the strongly coupled direction, used in SU2 among others — hands the factor back, with an iteration counter you can run yourself.
+
+## Squash a cell and the matrix becomes a different object
+
+Discretize the diffusion term over a rectangular cell with finite volumes and the face coefficients come out as
+
+$$
+a_E = a_W = \frac{\Gamma \Delta y}{\Delta x}, \qquad a_N = a_S = \frac{\Gamma \Delta x}{\Delta y}
+$$
+
+where $\Gamma$ is the diffusion coefficient and $\Delta x$, $\Delta y$ are the cell dimensions. Now take the ratio.
+
+$$
+\frac{a_N}{a_E} = \left(\frac{\Delta x}{\Delta y}\right)^{2} = \mathrm{AR}^{2}
+$$
+
+$\mathrm{AR}$ is the cell aspect ratio (streamwise over wall-normal). The coefficient ratio goes as the **square** of it. A first cell at $\mathrm{AR} = 1000$ has north-south coupling a million times stronger than east-west. Squash the mesh by ten and the matrix skews by a hundred.
+
+Add an implicit time derivative and the diagonal becomes
+
+$$
+a_P = \frac{V}{\Delta t} + 2a_E + 2a_N
+$$
+
+with $V = \Delta x \Delta y$ the cell volume and $\Delta t$ the (pseudo-)time step. That $V/\Delta t$ term is the only thing propping up the diagonal, and it cannot keep pace with $a_N$.
+
+## The point-smoother factor has AR in it
+
+The error decay of a Jacobi sweep is bounded above by the off-diagonal sum over the diagonal.
+
+$$
+\rho_{\text{point}} \le \frac{2a_E + 2a_N}{V/\Delta t + 2a_E + 2a_N}
+$$
+
+Set $V/\Delta t = 4a_E$ and this reads 0.5 at $\mathrm{AR} = 1$ and 0.9998 at $\mathrm{AR} = 100$. The trouble is that the bound glues itself to 1 as $\mathrm{AR}$ grows and stops telling you anything. To see what actually survives, go mode by mode. For a Fourier mode $(\theta_x, \theta_y)$ the damping factor is
+
+$$
+\rho(\theta_x, \theta_y) = 1 - \frac{V/\Delta t + 2a_E(1 - \cos\theta_x) + 2a_N(1 - \cos\theta_y)}{a_P}
+$$
+
+The slowest mode is the one with the smallest $\theta_y$ — the gentlest variation in the wall-normal direction. Once $a_N$ owns the diagonal, $a_P \approx 2a_N$, and
+
+$$
+\rho_{\max} \approx 1 - \frac{\pi^{2}}{2 N_y^{2}}
+$$
+
+where $N_y$ is the number of wall-normal layers. The absence of $\mathrm{AR}$ here is bad news, not good: squashing further will not push the factor higher, but the ceiling it saturates at is already useless. With $N_y = 48$ that is 0.99786, or roughly 6,000 sweeps to drive the error down by $10^{-6}$.
+
+What is happening is easy to picture. A point smoother wipes out wall-normal high-frequency error in a sweep or two. Then it is stuck. Killing error that varies **along** the wall requires information to travel sideways through $a_E$, and since the diagonal is pinned by $a_N$, each step shrinks by $\mathrm{AR}^2$.
+
+Squash the mesh yourself in the simulation below.
+
+<AnisotropicSmootherArena />
+
+Push $\mathrm{AR}$ from 1 to 100 and the vertical stripes vanish immediately while the long horizontal smears simply sit there. The moment the "measured" number under the map climbs toward 0.997, you are watching the stall begin. Hit the linelet button at the same $\mathrm{AR}$ and those smears are gone in a sweep or two.
+
+## Three remedies on one table
+
+| Preconditioner | Cost per iteration | Anisotropy handling | Parallelism | Where it bites |
+|---|---|---|---|---|
+| Jacobi (diagonal) | one division per cell | none | perfect | falls apart past $\mathrm{AR} \approx 10$ |
+| ILU(0) | one factorization + fwd/back solve | partial | ordering dependent | performance shifts with every partitioning |
+| Linelet | Thomas, ~5 flop per line cell | removes the strong direction exactly | independent per line | outside the lines it is still Jacobi |
+
+The linelet's bargain is explicit. It inverts exactly **one** direction — the strongly coupled one. In exchange, storage is a single three-band array and the cost lands in the same order of magnitude as Jacobi. Because it never touches the full matrix the way ILU(0) does, it is also far less sensitive to MPI partitioning.
+
+## How the linelets get built
+
+1. For each cell, measure the face coefficient ratio $\sigma = a_f / a_{f,\perp}$. For a wall-normal face this is $\sigma = \mathrm{AR}^2$.
+2. Mark a face strong when $\sigma \ge \sigma_{\min}$. A common default sits near $\sigma_{\min} = 10$.
+3. Start at a cell touching the wall and extend a chain upward along strong faces.
+4. Allow at most two strong faces per cell. If a branch appears, keep only the larger coefficient — allowing branches means the result is not tridiagonal.
+5. Cut the chain the moment it reaches a cell that already belongs to another linelet.
+6. Discard chains of length one and hand those cells back to Jacobi.
+
+Renumber inside a chain and that submatrix becomes tridiagonal. Tridiagonal means the Thomas algorithm (forward elimination, then back substitution) inverts it exactly in $O(n)$. That sentence is the entire linelet preconditioner.
+
+Below, change the first-layer thickness and growth ratio and watch how far the chains reach.
+
+<LineletChainBuilder />
+
+Shrink $\Delta y_{\text{wall}}$ and the chains dig deeper into the layer; raise the growth ratio and the mesh returns to isotropy sooner, so the chains get shorter. The thing worth noticing is that the chains are **short**. They do not even cover half the layers. That is exactly why linelet is cheap.
+
+## Counting sweeps in Python
+
+On a $64 \times 48$ mesh, leave nothing but error behind (the right-hand side is $f = 0$, so the exact answer is $u = 0$), then run point Jacobi and line Gauss-Seidel and count sweeps until the error drops by $10^{-6}$.
+
+```python
+import numpy as np
+
+def cell_coefficients(dx, dy, gamma=1.0, diag_factor=4.0):
+    """FVM diffusion coefficients of one rectangular cell. diag_factor sets V/dt as a multiple of a_E."""
+    a_e = gamma * dy / dx        # east/west faces
+    a_n = gamma * dx / dy        # north/south faces
+    d0 = diag_factor * a_e       # the V/dt term
+    return a_e, a_n, d0
+
+def residual_field(u, a_e, a_n, d0):
+    r = -d0 * u
+    r[1:-1, 1:-1] -= a_e * (2*u[1:-1, 1:-1] - u[:-2, 1:-1] - u[2:, 1:-1])
+    r[1:-1, 1:-1] -= a_n * (2*u[1:-1, 1:-1] - u[1:-1, :-2] - u[1:-1, 2:])
+    r[0, :] = r[-1, :] = 0.0     # Dirichlet boundaries
+    r[:, 0] = r[:, -1] = 0.0
+    return r
+
+def jacobi_sweep(u, a_e, a_n, d0, omega=1.0):
+    r = residual_field(u, a_e, a_n, d0)
+    u += omega * r / (d0 + 2*a_e + 2*a_n)
+
+def thomas(a, b, c, d):
+    """Exact tridiagonal solve: forward elimination, then back substitution."""
+    n = len(d)
+    cp, dp = np.empty(n), np.empty(n)
+    cp[0], dp[0] = c[0]/b[0], d[0]/b[0]
+    for k in range(1, n):
+        m = b[k] - a[k]*cp[k-1]
+        cp[k] = c[k]/m
+        dp[k] = (d[k] - a[k]*dp[k-1])/m
+    x = np.empty(n)
+    x[-1] = dp[-1]
+    for k in range(n-2, -1, -1):
+        x[k] = dp[k] - cp[k]*x[k+1]
+    return x
+
+def linelet_sweep(u, a_e, a_n, d0):
+    """Invert one whole wall-normal chain exactly (line Gauss-Seidel)."""
+    nx, ny = u.shape
+    m = ny - 2
+    dg = d0 + 2*a_e + 2*a_n
+    a = np.full(m, -a_n)
+    b = np.full(m, dg)
+    c = np.full(m, -a_n)
+    a[0] = c[-1] = 0.0
+    for i in range(1, nx-1):
+        rhs = a_e * (u[i-1, 1:-1] + u[i+1, 1:-1])   # off-line coupling goes to the RHS
+        u[i, 1:-1] = thomas(a, b, c, rhs)
+
+def count_sweeps(ar, kind, nx=64, ny=48, tol=1e-6, max_sweeps=20000):
+    dx, dy = 1.0/nx, 1.0/nx/ar
+    a_e, a_n, d0 = cell_coefficients(dx, dy)
+    u = np.random.default_rng(7).standard_normal((nx, ny))
+    u[0, :] = u[-1, :] = 0.0
+    u[:, 0] = u[:, -1] = 0.0
+    e0 = prev = np.linalg.norm(u)
+    for k in range(1, max_sweeps + 1):
+        jacobi_sweep(u, a_e, a_n, d0) if kind == 'jacobi' else linelet_sweep(u, a_e, a_n, d0)
+        e = np.linalg.norm(u)
+        rho, prev = e/prev, e
+        if e/e0 < tol:
+            return k, rho
+    return max_sweeps, rho
+
+print(f"{'AR':>6} {'Jacobi':>8} {'rho_J':>8} {'linelet':>8} {'rho_L':>8}")
+for ar in (1, 10, 100, 1000):
+    nj, rj = count_sweeps(ar, 'jacobi')
+    nl, rl = count_sweeps(ar, 'linelet')
+    print(f"{ar:>6} {nj:>8} {rj:>8.4f} {nl:>8} {rl:>8.4f}")
+```
+
+Here is what it prints.
+
+```text
+    AR   Jacobi    rho_J  linelet    rho_L
+     1       18   0.4870        8   0.1839
+    10      514   0.9780        7   0.1699
+   100     4879   0.9975        4   0.0194
+  1000     5471   0.9978        2   0.0002
+```
+
+Squash by a factor of 1000 and Jacobi slows by 300× before hitting the ceiling near 6,000 that the previous section predicted. Linelet gets *faster*. The coupling between neighboring chains falls off as $a_E/a_N = \mathrm{AR}^{-2}$, so the chains become independent of one another. The worst-mode bound $2a_E/(V/\Delta t + 2a_E) = 1/3$ still holds; the measured decay is simply much better than it.
+
+## Traps to stay out of when you code this
+
+**Laying the lines the wrong way.** Chains must follow the direction with the **larger** coefficient, which is wall-normal. Lay them along the wall and you gain nothing while paying for Thomas. It is easy to get backwards, because the mesh visually looks "long" in the streamwise direction.
+
+**Leaving $\sigma_{\min}$ at its default.** Change the mesh without revisiting the threshold and the chains can disappear entirely. The preconditioner then degrades silently into Jacobi, and nothing in the log warns you. Printing the linelet count and mean length on every run catches this in one line.
+
+**Letting MPI partitions cut the chains.** Chains severed at a partition boundary come out in fragments, and convergence gets worse the more cores you add. Give the partitioner a weight along the line direction, or constrain it not to cut lines at all.
+
+**Trying to paper over a nonlinear problem.** If it still diverges with linelet in place, the culprit is usually the outer loop rather than the linear solver. Lower the CFL first, pull the under-relaxation factor down toward 0.7 so the updates themselves shrink, and only then judge. A preconditioner solves the matrix you gave it faster; it does not repair a wrong one.
+
+## The short version, for anyone not reading twice
+
+Squash a cell by $\mathrm{AR}$ and the coefficient ratio opens by $\mathrm{AR}^2$. A point smoother's step shrinks by the same amount.
+
+A linelet inverts exactly one strongly coupled direction with Thomas. The bound $2a_E/(V/\Delta t + 2a_E)$ has no $\mathrm{AR}$ in it.
+
+Chains only grow inside the boundary layer. Log the chain count and mean length. The moment that number reaches zero, your preconditioner is Jacobi.

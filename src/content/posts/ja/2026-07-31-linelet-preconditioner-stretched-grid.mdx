@@ -1,0 +1,205 @@
+---
+title: "境界層格子でJacobiが止まる場所 — ラインレット線陰的前処理"
+date: 2026-07-31
+description: "セルを壁側に潰すほど点スムーザが停滞する理由と、その処方"
+tags: ["Linelet", "Preconditioning", "Anisotropic-Grid", "Krylov", "Boundary-Layer"]
+locale: ja
+slug: linelet-preconditioner-stretched-grid
+draft: false
+---
+
+import { AnisotropicSmootherArena } from '@/components/post-viz/2026-07-31-linelet-preconditioner-stretched-grid/AnisotropicSmootherArena'
+import { LineletChainBuilder } from '@/components/post-viz/2026-07-31-linelet-preconditioner-stretched-grid/LineletChainBuilder'
+
+同じ方程式です。セル数も反復法も収束判定も変えていません。格子を壁側に一度潰しただけで、反復回数が18回から5,000回に跳ね上がりました。
+
+物理は何も変わっていません。変わったのはセルのアスペクト比だけです。それなのに線形ソルバーはまるで別の問題を渡されたかのように振る舞い始めます。しかも避けようがありません。乱流解析で $y^+ \approx 1$ を狙えば、壁面第一セルは潰すしかないからです。
+
+この記事では、その300倍が行列のどこに潜んでいるのかを突き止めます。そして SU2 などが採用するラインレット(linelet・結合の強い方向にセルを連ねた鎖)前処理が、なぜその300倍を取り戻すのかを、自分で回せる反復回数カウンタで確認します。
+
+## セルを潰すと行列は別物になる
+
+矩形セル上で拡散項を有限体積離散化すると、面の係数はこうなります。
+
+$$
+a_E = a_W = \frac{\Gamma \Delta y}{\Delta x}, \qquad a_N = a_S = \frac{\Gamma \Delta x}{\Delta y}
+$$
+
+$\Gamma$ は拡散係数、$\Delta x$・$\Delta y$ はセルの寸法です。比を取ってみます。
+
+$$
+\frac{a_N}{a_E} = \left(\frac{\Delta x}{\Delta y}\right)^{2} = \mathrm{AR}^{2}
+$$
+
+$\mathrm{AR}$ はセルのアスペクト比(流れ方向/壁垂直方向)です。係数比はその**二乗**で効きます。壁面第一セルが $\mathrm{AR} = 1000$ なら、南北方向の結合は東西方向の百万倍です。格子を10倍潰すと行列は100倍歪みます。
+
+ここに時間微分を陰的に入れると、対角成分はこうなります。
+
+$$
+a_P = \frac{V}{\Delta t} + 2a_E + 2a_N
+$$
+
+$V = \Delta x \Delta y$ はセル体積、$\Delta t$ は(擬似)時間刻みです。この $V/\Delta t$ が対角を支える唯一の仕掛けですが、$a_N$ の増加速度には追いつきません。
+
+## 点スムーザの収束係数にはARが入っている
+
+Jacobi 反復の誤差減衰は、対角に対する非対角の総和で上から押さえられます。
+
+$$
+\rho_{\text{point}} \le \frac{2a_E + 2a_N}{V/\Delta t + 2a_E + 2a_N}
+$$
+
+$V/\Delta t = 4a_E$ と置けば、$\mathrm{AR} = 1$ で 0.5、$\mathrm{AR} = 100$ で 0.9998 です。ただしこの上界は $\mathrm{AR}$ が大きくなると 1 に貼り付いてしまい、何も教えてくれなくなります。実際に何が残るのかはモード別に見る必要があります。Fourier モード $(\theta_x, \theta_y)$ に対する減衰因子は
+
+$$
+\rho(\theta_x, \theta_y) = 1 - \frac{V/\Delta t + 2a_E(1 - \cos\theta_x) + 2a_N(1 - \cos\theta_y)}{a_P}
+$$
+
+最も遅いモードは $\theta_y$ が最小のもの、つまり壁垂直方向に最も緩やかなモードです。$a_N$ が対角を支配して $a_P \approx 2a_N$ になると
+
+$$
+\rho_{\max} \approx 1 - \frac{\pi^{2}}{2 N_y^{2}}
+$$
+
+$N_y$ は壁垂直方向の層数です。ここに $\mathrm{AR}$ が現れないのは、良い知らせではなく悪い知らせです。これ以上潰しても係数はこの値を超えませんが、その天井自体がすでに使い物になりません。$N_y = 48$ なら 0.99786、誤差を $10^{-6}$ まで落とすのに約6,000回です。
+
+何が起きているかは単純です。点スムーザは壁垂直方向の高周波誤差を1、2回で消し去ります。問題はその先です。壁に**沿う**方向の誤差を消すには情報が $a_E$ を伝って横に進む必要がありますが、対角が $a_N$ に押さえられているため、一歩の大きさが $\mathrm{AR}^2$ 分だけ縮みます。
+
+下のシミュレーションで実際に格子を潰してみてください。
+
+<AnisotropicSmootherArena />
+
+$\mathrm{AR}$ を1から100に上げると、縦縞は即座に消えるのに、横に長く伸びた染みだけがそのまま残ります。図の下の "measured" が 0.997 付近まで上がった瞬間が停滞の始まりです。同じ $\mathrm{AR}$ で linelet ボタンを押すと、その染みが1、2回の sweep で消えます。
+
+## 三つの処方を同じ表に並べる
+
+| 前処理 | 反復あたりのコスト | 異方性への対応 | 並列性 | 引っかかる箇所 |
+|---|---|---|---|---|
+| Jacobi(対角) | セルあたり除算1回 | なし | 完全 | $\mathrm{AR} \gtrsim 10$ で崩れる |
+| ILU(0) | 分解1回 + 前進・後退代入 | 部分的 | 番号付けに依存 | 領域分割ごとに性能が変わる |
+| ラインレット | ライン内セルあたり Thomas 5 flop | 強い方向を正確に除去 | ライン単位で独立 | ラインの外は依然 Jacobi |
+
+ラインレットの取引条件は明快です。結合の強い方向を**一つだけ**正確に反転します。その代わり記憶は3バンド一組、コストは実質的に Jacobi と同じ桁です。ILU(0) のように行列全体に手を入れないので、MPI 分割にも鈍感です。
+
+## ラインレットはどう作られるか
+
+1. 各セルで面係数比 $\sigma = a_f / a_{f,\perp}$ を測ります。壁垂直面なら $\sigma = \mathrm{AR}^2$ です。
+2. $\sigma \ge \sigma_{\min}$ の面を強い面として印を付けます。実務での既定値は $\sigma_{\min} = 10$ 付近です。
+3. 壁に接するセルから出発し、強い面をたどって上へ鎖を伸ばします。
+4. 1セルが持てる強い面は最大2本までです。分岐が生じたら係数の大きい側だけを残します。分岐を許すと結果が三重対角になりません。
+5. 既に他のラインレットに属するセルに到達したら鎖を切ります。
+6. 長さ1の鎖は捨て、そのセルは Jacobi に戻します。
+
+鎖の中だけで番号を振り直すと、その部分行列は三重対角になります。三重対角なら Thomas 法(前進消去のあと後退代入)で $O(n)$ で正確に反転できます。ラインレット前処理の中身はこの一文がすべてです。
+
+下では第一層厚さと成長率を変えて、鎖がどこまで伸びるかを見てください。
+
+<LineletChainBuilder />
+
+$\Delta y_{\text{wall}}$ を小さくすると鎖は境界層の奥へ深くなり、成長率を上げると格子が早く等方に戻るので鎖は短くなります。ここで注目すべきは鎖が**短い**ことです。全層の半分も覆いません。ラインレットが安いのはそのためです。
+
+## Python で反復回数を数える
+
+$64 \times 48$ の格子に誤差だけを残し(右辺は $f = 0$ なので厳密解は $u = 0$)、点 Jacobi とライン Gauss-Seidel をそれぞれ回して、誤差が $10^{-6}$ まで落ちるまでの sweep 数を数えます。
+
+```python
+import numpy as np
+
+def cell_coefficients(dx, dy, gamma=1.0, diag_factor=4.0):
+    """矩形セル1個のFVM拡散係数。diag_factor は V/dt を a_E の倍数で指定。"""
+    a_e = gamma * dy / dx        # 東/西の面
+    a_n = gamma * dx / dy        # 北/南の面
+    d0 = diag_factor * a_e       # V/dt 項
+    return a_e, a_n, d0
+
+def residual_field(u, a_e, a_n, d0):
+    r = -d0 * u
+    r[1:-1, 1:-1] -= a_e * (2*u[1:-1, 1:-1] - u[:-2, 1:-1] - u[2:, 1:-1])
+    r[1:-1, 1:-1] -= a_n * (2*u[1:-1, 1:-1] - u[1:-1, :-2] - u[1:-1, 2:])
+    r[0, :] = r[-1, :] = 0.0     # Dirichlet 境界
+    r[:, 0] = r[:, -1] = 0.0
+    return r
+
+def jacobi_sweep(u, a_e, a_n, d0, omega=1.0):
+    r = residual_field(u, a_e, a_n, d0)
+    u += omega * r / (d0 + 2*a_e + 2*a_n)
+
+def thomas(a, b, c, d):
+    """三重対角の厳密解法: 前進消去のあと後退代入。"""
+    n = len(d)
+    cp, dp = np.empty(n), np.empty(n)
+    cp[0], dp[0] = c[0]/b[0], d[0]/b[0]
+    for k in range(1, n):
+        m = b[k] - a[k]*cp[k-1]
+        cp[k] = c[k]/m
+        dp[k] = (d[k] - a[k]*dp[k-1])/m
+    x = np.empty(n)
+    x[-1] = dp[-1]
+    for k in range(n-2, -1, -1):
+        x[k] = dp[k] - cp[k]*x[k+1]
+    return x
+
+def linelet_sweep(u, a_e, a_n, d0):
+    """壁垂直方向の鎖を丸ごと正確に反転する(ライン Gauss-Seidel)。"""
+    nx, ny = u.shape
+    m = ny - 2
+    dg = d0 + 2*a_e + 2*a_n
+    a = np.full(m, -a_n)
+    b = np.full(m, dg)
+    c = np.full(m, -a_n)
+    a[0] = c[-1] = 0.0
+    for i in range(1, nx-1):
+        rhs = a_e * (u[i-1, 1:-1] + u[i+1, 1:-1])   # ライン外の結合は右辺へ
+        u[i, 1:-1] = thomas(a, b, c, rhs)
+
+def count_sweeps(ar, kind, nx=64, ny=48, tol=1e-6, max_sweeps=20000):
+    dx, dy = 1.0/nx, 1.0/nx/ar
+    a_e, a_n, d0 = cell_coefficients(dx, dy)
+    u = np.random.default_rng(7).standard_normal((nx, ny))
+    u[0, :] = u[-1, :] = 0.0
+    u[:, 0] = u[:, -1] = 0.0
+    e0 = prev = np.linalg.norm(u)
+    for k in range(1, max_sweeps + 1):
+        jacobi_sweep(u, a_e, a_n, d0) if kind == 'jacobi' else linelet_sweep(u, a_e, a_n, d0)
+        e = np.linalg.norm(u)
+        rho, prev = e/prev, e
+        if e/e0 < tol:
+            return k, rho
+    return max_sweeps, rho
+
+print(f"{'AR':>6} {'Jacobi':>8} {'rho_J':>8} {'linelet':>8} {'rho_L':>8}")
+for ar in (1, 10, 100, 1000):
+    nj, rj = count_sweeps(ar, 'jacobi')
+    nl, rl = count_sweeps(ar, 'linelet')
+    print(f"{ar:>6} {nj:>8} {rj:>8.4f} {nl:>8} {rl:>8.4f}")
+```
+
+出力はこうなりました。
+
+```text
+    AR   Jacobi    rho_J  linelet    rho_L
+     1       18   0.4870        8   0.1839
+    10      514   0.9780        7   0.1699
+   100     4879   0.9975        4   0.0194
+  1000     5471   0.9978        2   0.0002
+```
+
+$\mathrm{AR}$ を1000倍潰すと Jacobi は300倍遅くなり、前節の予測どおり6,000回付近で天井に当たります。ラインレットはむしろ速くなります。隣り合う鎖の間の結合が $a_E/a_N = \mathrm{AR}^{-2}$ で小さくなり、鎖同士が独立していくからです。最悪モード基準の上界 $2a_E/(V/\Delta t + 2a_E) = 1/3$ はそのまま成り立ち、実測の減衰はそれよりずっと良いだけです。
+
+## 実装で踏みやすい落とし穴
+
+**ラインの向きを逆に敷く。** 鎖は係数の**大きい**方向、つまり壁垂直方向に敷きます。壁に沿って敷けば利得はゼロで Thomas の費用だけが増えます。格子は見た目には流れ方向に「長い」ので、取り違えやすい箇所です。
+
+**$\sigma_{\min}$ を既定値のまま放置する。** 格子を変えたのに閾値を見直さないと、鎖が丸ごと消えることがあります。すると前処理は静かに Jacobi へ退化し、ログには何の警告も出ません。ラインレット本数と平均長さを毎回出力しておけば、これは一行で捕まえられます。
+
+**MPI 分割が鎖を切る。** 分割境界で切られた鎖は断片になり、コア数を増やすほど収束が悪化します。パーティショナにライン方向の重みを与えるか、ラインを切らない制約を課してください。
+
+**前処理で非線形問題を覆い隠そうとする。** ラインレットを入れても発散するなら、原因は線形ソルバーではなく外側ループであることがほとんどです。まず CFL を下げ、緩和係数を 0.7 付近まで落として更新量そのものを縮めてから判断してください。前処理は与えられた行列を速く解くだけで、間違った行列を直してはくれません。
+
+## 読み返さない人のための要約
+
+セルを $\mathrm{AR}$ 倍潰すと、行列の係数比は $\mathrm{AR}^2$ 倍に開きます。点スムーザの一歩はその分だけ縮みます。
+
+ラインレットは強い結合方向を一つだけ Thomas で正確に反転します。上界 $2a_E/(V/\Delta t + 2a_E)$ に $\mathrm{AR}$ は入っていません。
+
+鎖は境界層の中でしか育ちません。鎖の本数と平均長さをログに出してください。その数が0になった瞬間、あなたの前処理は Jacobi です。

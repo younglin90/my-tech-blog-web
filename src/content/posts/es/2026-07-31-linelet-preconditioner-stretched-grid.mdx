@@ -1,0 +1,205 @@
+---
+title: "Donde Jacobi se muere en una malla de capa límite — el precondicionador linelet"
+date: 2026-07-31
+description: "Por qué aplastar celdas contra la pared estanca los suavizadores puntuales"
+tags: ["Linelet", "Preconditioning", "Anisotropic-Grid", "Krylov", "Boundary-Layer"]
+locale: es
+slug: linelet-preconditioner-stretched-grid
+draft: false
+---
+
+import { AnisotropicSmootherArena } from '@/components/post-viz/2026-07-31-linelet-preconditioner-stretched-grid/AnisotropicSmootherArena'
+import { LineletChainBuilder } from '@/components/post-viz/2026-07-31-linelet-preconditioner-stretched-grid/LineletChainBuilder'
+
+La misma ecuación. El mismo número de celdas, la misma iteración, el mismo criterio de convergencia. Bastó aplastar la malla una vez contra la pared para que el número de iteraciones saltara de 18 a 5.000.
+
+La física no cambió en nada. Lo único que cambió es la relación de aspecto de la celda. Y aun así el solver lineal empieza a comportarse como si le hubieran entregado otro problema. Tampoco hay forma de esquivarlo: alcanzar $y^+ \approx 1$ en un cálculo turbulento obliga a aplastar la primera celda junto a la pared.
+
+Este artículo localiza dónde vive ese factor 300 dentro de la matriz. Después muestra por qué el precondicionador linelet — una cadena de celdas enhebrada a lo largo de la dirección fuertemente acoplada, usado en SU2 entre otros — devuelve ese factor, con un contador de iteraciones que cualquiera puede ejecutar.
+
+## Aplastar una celda convierte la matriz en otra cosa
+
+Al discretizar el término difusivo por volúmenes finitos sobre una celda rectangular, los coeficientes de cara quedan así.
+
+$$
+a_E = a_W = \frac{\Gamma \Delta y}{\Delta x}, \qquad a_N = a_S = \frac{\Gamma \Delta x}{\Delta y}
+$$
+
+$\Gamma$ es el coeficiente de difusión y $\Delta x$, $\Delta y$ son las dimensiones de la celda. Ahora el cociente.
+
+$$
+\frac{a_N}{a_E} = \left(\frac{\Delta x}{\Delta y}\right)^{2} = \mathrm{AR}^{2}
+$$
+
+$\mathrm{AR}$ es la relación de aspecto de la celda (longitudinal sobre normal a la pared). El cociente de coeficientes va con el **cuadrado**. Una primera celda con $\mathrm{AR} = 1000$ tiene un acoplamiento norte-sur un millón de veces mayor que el este-oeste. Aplastar la malla diez veces sesga la matriz cien veces.
+
+Con la derivada temporal implícita, la diagonal queda
+
+$$
+a_P = \frac{V}{\Delta t} + 2a_E + 2a_N
+$$
+
+donde $V = \Delta x \Delta y$ es el volumen de la celda y $\Delta t$ el paso de (pseudo-)tiempo. Ese término $V/\Delta t$ es lo único que sostiene la diagonal, y no alcanza el ritmo al que crece $a_N$.
+
+## El factor del suavizador puntual lleva AR dentro
+
+El decaimiento del error de un barrido de Jacobi queda acotado por la suma de los términos fuera de la diagonal sobre la diagonal.
+
+$$
+\rho_{\text{point}} \le \frac{2a_E + 2a_N}{V/\Delta t + 2a_E + 2a_N}
+$$
+
+Con $V/\Delta t = 4a_E$ esto vale 0,5 en $\mathrm{AR} = 1$ y 0,9998 en $\mathrm{AR} = 100$. El problema es que la cota se pega a 1 cuando $\mathrm{AR}$ crece y deja de decir nada. Para ver qué sobrevive de verdad hay que ir modo a modo. Para un modo de Fourier $(\theta_x, \theta_y)$ el factor de amortiguamiento es
+
+$$
+\rho(\theta_x, \theta_y) = 1 - \frac{V/\Delta t + 2a_E(1 - \cos\theta_x) + 2a_N(1 - \cos\theta_y)}{a_P}
+$$
+
+El modo más lento es el de menor $\theta_y$, es decir, el que varía más suavemente en dirección normal a la pared. Cuando $a_N$ domina la diagonal y $a_P \approx 2a_N$,
+
+$$
+\rho_{\max} \approx 1 - \frac{\pi^{2}}{2 N_y^{2}}
+$$
+
+donde $N_y$ es el número de capas normales a la pared. Que aquí no aparezca $\mathrm{AR}$ es mala noticia, no buena: seguir aplastando ya no empeora el factor, pero el techo en el que se satura es inservible de por sí. Con $N_y = 48$ vale 0,99786, o sea unos 6.000 barridos para bajar el error un factor $10^{-6}$.
+
+Lo que ocurre se visualiza fácil. Un suavizador puntual borra el error de alta frecuencia normal a la pared en uno o dos barridos. Ahí se atasca. Eliminar el error que varía **a lo largo** de la pared exige que la información viaje de lado por $a_E$, y como la diagonal está sujeta por $a_N$, cada paso se encoge en $\mathrm{AR}^2$.
+
+Conviene aplastar la malla en la simulación de abajo.
+
+<AnisotropicSmootherArena />
+
+Al llevar $\mathrm{AR}$ de 1 a 100 las franjas verticales desaparecen enseguida, mientras que las manchas horizontales alargadas se quedan quietas. El instante en que el valor "measured" bajo el mapa sube hacia 0,997 marca el comienzo del estancamiento. Con el mismo $\mathrm{AR}$, al pulsar el botón linelet esas manchas se van en uno o dos barridos.
+
+## Tres remedios en una sola tabla
+
+| Precondicionador | Coste por iteración | Trato de la anisotropía | Paralelismo | Dónde falla |
+|---|---|---|---|---|
+| Jacobi (diagonal) | una división por celda | ninguno | perfecto | se rompe pasado $\mathrm{AR} \approx 10$ |
+| ILU(0) | una factorización + sustituciones | parcial | depende del ordenamiento | el rendimiento cambia con cada partición |
+| Linelet | Thomas, ~5 flop por celda de línea | elimina la dirección fuerte de forma exacta | independiente por línea | fuera de las líneas sigue siendo Jacobi |
+
+El trato del linelet es explícito: invierte de forma exacta **una sola** dirección, la fuertemente acoplada. A cambio, el almacenamiento es un único arreglo de tres bandas y el coste cae en el mismo orden de magnitud que Jacobi. Como nunca toca la matriz completa al modo de ILU(0), resulta además mucho menos sensible al particionado MPI.
+
+## Cómo se construyen los linelets
+
+1. En cada celda se mide el cociente de coeficientes de cara $\sigma = a_f / a_{f,\perp}$. En una cara normal a la pared vale $\sigma = \mathrm{AR}^2$.
+2. Se marca una cara como fuerte cuando $\sigma \ge \sigma_{\min}$. Un valor por defecto habitual ronda $\sigma_{\min} = 10$.
+3. Se arranca en una celda pegada a la pared y se extiende una cadena hacia arriba siguiendo caras fuertes.
+4. Se admiten como mucho dos caras fuertes por celda. Si aparece una bifurcación se conserva solo el coeficiente mayor: permitir ramas hace que el resultado deje de ser tridiagonal.
+5. La cadena se corta en cuanto alcanza una celda que ya pertenece a otro linelet.
+6. Las cadenas de longitud uno se descartan y esas celdas vuelven a Jacobi.
+
+Al renumerar dentro de una cadena, esa submatriz queda tridiagonal. Y tridiagonal significa que el algoritmo de Thomas (eliminación hacia adelante y luego sustitución hacia atrás) la invierte de forma exacta en $O(n)$. Esa frase es todo el precondicionador linelet.
+
+Abajo se pueden cambiar el espesor de la primera capa y la razón de crecimiento para ver hasta dónde llegan las cadenas.
+
+<LineletChainBuilder />
+
+Al reducir $\Delta y_{\text{wall}}$ las cadenas se hunden más en la capa; al subir la razón de crecimiento la malla vuelve antes a ser isótropa y las cadenas se acortan. Lo llamativo es que las cadenas son **cortas**: no llegan a cubrir ni la mitad de las capas. Por eso el linelet sale barato.
+
+## Contando barridos en Python
+
+Sobre una malla $64 \times 48$ se deja únicamente error (el término fuente es $f = 0$, así que la solución exacta es $u = 0$), se ejecutan Jacobi puntual y Gauss-Seidel por líneas, y se cuentan los barridos hasta que el error baja $10^{-6}$.
+
+```python
+import numpy as np
+
+def cell_coefficients(dx, dy, gamma=1.0, diag_factor=4.0):
+    """Coeficientes difusivos FVM de una celda rectangular. diag_factor fija V/dt como múltiplo de a_E."""
+    a_e = gamma * dy / dx        # caras este/oeste
+    a_n = gamma * dx / dy        # caras norte/sur
+    d0 = diag_factor * a_e       # término V/dt
+    return a_e, a_n, d0
+
+def residual_field(u, a_e, a_n, d0):
+    r = -d0 * u
+    r[1:-1, 1:-1] -= a_e * (2*u[1:-1, 1:-1] - u[:-2, 1:-1] - u[2:, 1:-1])
+    r[1:-1, 1:-1] -= a_n * (2*u[1:-1, 1:-1] - u[1:-1, :-2] - u[1:-1, 2:])
+    r[0, :] = r[-1, :] = 0.0     # contornos de Dirichlet
+    r[:, 0] = r[:, -1] = 0.0
+    return r
+
+def jacobi_sweep(u, a_e, a_n, d0, omega=1.0):
+    r = residual_field(u, a_e, a_n, d0)
+    u += omega * r / (d0 + 2*a_e + 2*a_n)
+
+def thomas(a, b, c, d):
+    """Solución tridiagonal exacta: eliminación hacia adelante y sustitución hacia atrás."""
+    n = len(d)
+    cp, dp = np.empty(n), np.empty(n)
+    cp[0], dp[0] = c[0]/b[0], d[0]/b[0]
+    for k in range(1, n):
+        m = b[k] - a[k]*cp[k-1]
+        cp[k] = c[k]/m
+        dp[k] = (d[k] - a[k]*dp[k-1])/m
+    x = np.empty(n)
+    x[-1] = dp[-1]
+    for k in range(n-2, -1, -1):
+        x[k] = dp[k] - cp[k]*x[k+1]
+    return x
+
+def linelet_sweep(u, a_e, a_n, d0):
+    """Invierte de forma exacta una cadena normal a la pared completa (Gauss-Seidel por líneas)."""
+    nx, ny = u.shape
+    m = ny - 2
+    dg = d0 + 2*a_e + 2*a_n
+    a = np.full(m, -a_n)
+    b = np.full(m, dg)
+    c = np.full(m, -a_n)
+    a[0] = c[-1] = 0.0
+    for i in range(1, nx-1):
+        rhs = a_e * (u[i-1, 1:-1] + u[i+1, 1:-1])   # el acoplamiento fuera de línea pasa al miembro derecho
+        u[i, 1:-1] = thomas(a, b, c, rhs)
+
+def count_sweeps(ar, kind, nx=64, ny=48, tol=1e-6, max_sweeps=20000):
+    dx, dy = 1.0/nx, 1.0/nx/ar
+    a_e, a_n, d0 = cell_coefficients(dx, dy)
+    u = np.random.default_rng(7).standard_normal((nx, ny))
+    u[0, :] = u[-1, :] = 0.0
+    u[:, 0] = u[:, -1] = 0.0
+    e0 = prev = np.linalg.norm(u)
+    for k in range(1, max_sweeps + 1):
+        jacobi_sweep(u, a_e, a_n, d0) if kind == 'jacobi' else linelet_sweep(u, a_e, a_n, d0)
+        e = np.linalg.norm(u)
+        rho, prev = e/prev, e
+        if e/e0 < tol:
+            return k, rho
+    return max_sweeps, rho
+
+print(f"{'AR':>6} {'Jacobi':>8} {'rho_J':>8} {'linelet':>8} {'rho_L':>8}")
+for ar in (1, 10, 100, 1000):
+    nj, rj = count_sweeps(ar, 'jacobi')
+    nl, rl = count_sweeps(ar, 'linelet')
+    print(f"{ar:>6} {nj:>8} {rj:>8.4f} {nl:>8} {rl:>8.4f}")
+```
+
+Esto es lo que imprime.
+
+```text
+    AR   Jacobi    rho_J  linelet    rho_L
+     1       18   0.4870        8   0.1839
+    10      514   0.9780        7   0.1699
+   100     4879   0.9975        4   0.0194
+  1000     5471   0.9978        2   0.0002
+```
+
+Al aplastar mil veces, Jacobi se vuelve 300 veces más lento y choca contra el techo cercano a 6.000 que predijo la sección anterior. El linelet, en cambio, se acelera. El acoplamiento entre cadenas vecinas decae como $a_E/a_N = \mathrm{AR}^{-2}$, de modo que las cadenas se independizan entre sí. La cota del peor modo, $2a_E/(V/\Delta t + 2a_E) = 1/3$, sigue cumpliéndose; el decaimiento medido simplemente es mucho mejor.
+
+## Trampas que conviene evitar al programarlo
+
+**Tender las líneas al revés.** Las cadenas deben seguir la dirección de coeficiente **mayor**, la normal a la pared. Tendidas a lo largo de la pared no aportan nada y solo cuestan el Thomas. Es fácil equivocarse, porque visualmente la malla parece "larga" en la dirección longitudinal.
+
+**Dejar $\sigma_{\min}$ en su valor por defecto.** Si se cambia la malla sin revisar el umbral, las cadenas pueden desaparecer por completo. El precondicionador degenera entonces en Jacobi sin hacer ruido, y en el registro no aparece ninguna advertencia. Imprimir el número de linelets y su longitud media en cada ejecución detecta esto en una línea.
+
+**Dejar que las particiones MPI corten las cadenas.** Una cadena seccionada en el borde de una partición queda en fragmentos, y la convergencia empeora cuantos más núcleos se añaden. Conviene dar al particionador un peso en la dirección de las líneas, o restringirlo para que no las corte.
+
+**Tapar un problema no lineal con el precondicionador.** Si con linelet la simulación sigue divergiendo, el culpable suele ser el bucle externo y no el solver lineal. Primero hay que bajar el CFL y llevar el factor de subrelajación hacia 0,7 para reducir las propias actualizaciones; después se juzga. Un precondicionador resuelve más rápido la matriz que se le entrega, pero no arregla una matriz equivocada.
+
+## La versión corta, para quien no vaya a releer
+
+Aplastar una celda un factor $\mathrm{AR}$ abre el cociente de coeficientes un factor $\mathrm{AR}^2$. El paso de un suavizador puntual se encoge en la misma proporción.
+
+Un linelet invierte con Thomas exactamente una dirección fuertemente acoplada. La cota $2a_E/(V/\Delta t + 2a_E)$ no contiene $\mathrm{AR}$.
+
+Las cadenas solo crecen dentro de la capa límite. Conviene registrar su número y su longitud media: en cuanto ese número llega a cero, el precondicionador es Jacobi.
