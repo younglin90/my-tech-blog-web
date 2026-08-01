@@ -1,0 +1,232 @@
+---
+title: "[论文评述] 如何取消欠松弛 — 压力基全耦合求解器的线性化"
+date: 2026-08-02
+description: "固定系数与Newton线性化决定全马赫收敛的原因"
+tags: ["논문리뷰", "Pressure-Based", "Coupled-Solver", "Linearisation", "All-Mach", "Newton"]
+locale: zh
+slug: coupled-pressure-based-linearisation-all-mach
+draft: false
+---
+
+import { MachCouplingSeesaw } from '@/components/post-viz/2026-08-02-coupled-pressure-based-linearisation-all-mach/MachCouplingSeesaw'
+import { MassFluxCobwebLinearisation } from '@/components/post-viz/2026-08-02-coupled-pressure-based-linearisation-all-mach/MassFluxCobwebLinearisation'
+
+面对不收敛的计算，最先被伸手去拧的旋钮是欠松弛因子。从0.7降到0.5，再降到0.3。迭代次数增加，计算时间翻倍，但答案总归会出来。
+
+Denner(2018)主张干脆把这个旋钮拆掉。真正该动手的地方是切割非线性项的方式，也就是线性化。本文沿着这一主张展开。先看固定系数线性化与Newton线性化在离散连续方程中各自保留了什么、抹掉了什么，再用一个极小的玩具模型给"被抹掉的项从何时开始致命"标出刻度。
+
+> **论文**: F. Denner, *Fully-coupled pressure-based algorithm for compressible flows: linearisation and iterative solution strategies*, arXiv:1807.04232 (2018). Imperial College London.
+> 系统比较了在全马赫可压缩流的全耦合(fully-coupled)压力基算法中，线性化策略与迭代解法对性能和稳定性的影响。
+
+## 在超声速停下的不是求解器，而是迭代
+
+可压缩求解器大致分两支。密度基(density-based)把连续方程视为密度的输运方程，在带激波的超声速下运行良好，却在低马赫下崩溃：马赫数趋于0时，密度与压力的耦合消失了。
+
+压力基(pressure-based)恰好相反。连续方程被写成压力方程，密度由状态方程另行求得。它在低马赫区很强。
+
+麻烦出在两者之间。跨声速(transonic·马赫数1附近)区域里，压力-速度耦合与压力-密度耦合同时很强。在这两种非线性重叠的区间，压力基算法的收敛开始动摇。这也是SIMPLE这类分离式(segregated)解法离不开欠松弛的原因。
+
+全耦合解法把连续、动量、能量方程放进同一个线性系统同时求解。内存开销更大，但耦合更紧。不过"放进同一个线性系统"这句话本身就已包含选择。原方程是非线性的。必须先决定什么留作未知量、什么降格为系数，线性系统才能成形。
+
+## 压力同时干两件事
+
+压力基算法之所以成功，源于压力兼任两个角色。
+
+低马赫下，压力是对速度场的约束。连续方程成为椭圆型(elliptic·解在全域内瞬时相互影响的性质)压力方程，密度近乎常数。
+
+超声速下则相反。压力与密度直接绑定，连续方程趋于双曲型(hyperbolic·信息以有限速度传播的性质)，压力-速度耦合退居其次。
+
+把面(face)上的质量通量 $\tilde\rho_f\vartheta_f$ 对压力求导，两种耦合的权重就直接显现。
+
+$$
+\frac{\partial(\tilde\rho_f\vartheta_f)}{\partial p} = \underbrace{\rho\,\hat d}_{\text{速度侧}} + \underbrace{\vartheta\,\frac{\partial\rho}{\partial p}}_{\text{密度侧}}
+$$
+
+$\vartheta_f$ 是对流速度(advecting velocity·穿过面的流速，由动量加权插值得到)，$\hat d$ 是该插值中的压力阻尼系数。在理想气体等温近似下 $\partial\rho/\partial p = 1/a_T^2$，于是两项之比收缩为一个数。
+
+$$
+\frac{\text{密度侧}}{\text{速度侧}} = \frac{\vartheta/a_T^2}{\rho\,\hat d} = \frac{M}{Co}
+$$
+
+$M = u_0/a_T$ 是马赫数，$Co = a_T\Delta t/\Delta x$ 是声学Courant数(声波一步跨过多少个网格)。在下面的跷跷板上亲手拖动两个滑块。
+
+<MachCouplingSeesaw />
+
+把马赫数从0.001拉到3，右侧(密度侧)的砝码变重，横梁随之倾斜。下方色带上的白色标记从椭圆型滑向双曲型，是同一个原因。按下 `fixed-coefficient`，右侧砝码整个消失——意思是那一项根本不在矩阵里。
+
+## 切割非线性项的两种方法
+
+考虑一般的非线性项 $\alpha^{(n+1)}\varphi^{(n+1)}$，$n$ 为非线性迭代次数。固定系数线性化(fixed-coefficient·延迟系数)只把主变量作隐式处理。
+
+$$
+\alpha^{(n+1)}\varphi^{(n+1)} \approx \alpha^{(n)}\varphi^{(n+1)}
+$$
+
+实现简单，用上一次迭代的值填充系数即可。
+
+Newton线性化则对两个变量都做一阶展开。
+
+$$
+\alpha^{(n+1)}\varphi^{(n+1)} \approx \alpha^{(n)}\varphi^{(n+1)} + \alpha^{(n+1)}\varphi^{(n)} - \alpha^{(n)}\varphi^{(n)}
+$$
+
+多出一项，代价是 $\alpha$ 也必须隐式处理。在压力基算法中，若 $\alpha$ 是密度，这意味着要把通过 $\rho = \rho(p,T)$ 对压力的隐式依赖放进矩阵。由于压力本就是所有方程的主未知量，**不会产生新的非零矩阵元素。** 几乎不花代价——这是该论文一项重要的工程观察。
+
+## 连续方程里消失了什么
+
+把两种线性化分别用于离散连续方程。固定系数得到
+
+$$
+\frac{\rho_P^{(n+1)} - \rho_P^{(t-\Delta t)}}{\Delta t}V_P + \sum_f \tilde\rho_f^{(n)}\vartheta_f^{(n+1)}A_f = 0
+$$
+
+Newton则多出一对项。
+
+$$
+\frac{\rho_P^{(n+1)} - \rho_P^{(t-\Delta t)}}{\Delta t}V_P + \sum_f \Big(\tilde\rho_f^{(n)}\vartheta_f^{(n+1)} + \tilde\rho_f^{(n+1)}\vartheta_f^{(n)} - \tilde\rho_f^{(n)}\vartheta_f^{(n)}\Big)A_f = 0
+$$
+
+$V_P$ 是单元体积，$A_f$ 是面积，上标 $(t-\Delta t)$ 表示上一时间层。上一节的跷跷板原封不动地藏在这里：$\tilde\rho_f^{(n)}\vartheta_f^{(n+1)}$ 是速度侧，$\tilde\rho_f^{(n+1)}\vartheta_f^{(n)}$ 是密度侧。
+
+固定系数把密度侧整项丢弃。低马赫下没有问题，因为丢掉的是轻的那一侧。马赫数一大，丢掉的就成了重的一侧。按论文的说法，固定系数线性化源自不可压缩的压力基框架，因此在大马赫数下的性能与稳定性预期极为有限。
+
+## 动量与能量方程的四条分支
+
+动量与能量方程的对流项 $\tilde\rho_f\vartheta_f\tilde\varphi_f$ 含三个候选未知量，选项因此增至四种。$\varphi$ 是速度分量或比总焓。
+
+| 名称 | 隐式处理的量 | 性质 |
+|------|--------------|------|
+| 固定系数 | 仅 $\tilde\varphi_f$ | 沿用不可压缩的惯例 |
+| $\rho$-Newton | $\tilde\varphi_f$, $\tilde\rho_f$ | 压力-密度耦合隐式化 |
+| $\vartheta$-Newton | $\tilde\varphi_f$, $\vartheta_f$ | 流速本身隐式化 |
+| full-Newton | 三者全部 | 完全展开 |
+
+论文结果的分水岭正在此处。仅对时间项采用Newton线性化，声波传播算例就能快1.4至1.5倍。对流项的选择在低马赫下几乎看不出差别，而在马赫3前台阶算例把时间步推到 $Co = 0.9$ 时则变得决定性。在该条件下，用单循环解法能收敛的只有 $\rho$-Newton 系列。加上 $\vartheta$-Newton 构成的full-Newton消除了收敛率的负值区间，但运行时间的收益很小。
+
+## 何时更新温度 — 单循环与双循环
+
+线性化并非唯一的变量，非线性迭代的结构同样有分支。
+
+单循环很直接：求解线性系统，由焓更新温度，用 $p^{(n+1)}$ 与 $T^{(n+1)}$ 更新密度，更新对流速度，然后检查残差。
+
+$$
+\frac{\lVert A^{(n+1)}\varphi^{(n+1)} - b^{(n+1)}\rVert}{\lVert b^{(n+1)}\rVert\,\Theta} < \eta
+$$
+
+$\Theta = \sqrt{N_r}$ 是按残差向量长度确定的归一化因子。
+
+双循环沿用Xiao等人的处方。在内循环中，用于更新密度的温度被固定为常数，即把密度视为仅依赖压力的函数。这不表示流动是等温的，被冻结的只是计算密度时所用的温度。内循环收敛后，外循环再用更新过的温度重算密度。这一结构取代了欠松弛的作用。
+
+论文的结论并不把两者对立。**只要对所有时间项与对流项一致地施加Newton线性化，就可以完全不使用任何形式的欠松弛；此时单循环比双循环更快。** 马赫3前台阶算例中，单循环 $\rho$-Newton 用时10,616秒，同条件下的双循环为12,117秒。圆锥超声速流动中的次序也相同。
+
+## 用Python缩小收敛边界
+
+以下不是论文的代码，而是把它的主张压缩到最小仍能显现的玩具模型：一个单元、等温理想气体、单个面上的质量通量。
+
+$$
+\rho(p) = \frac{p}{a_T^2}, \qquad \vartheta(p) = u_0 - \hat d\,(p - p_0)
+$$
+
+以 $P = p/p_0$ 无量纲化，并把目标质量通量取为 $\rho_0 u_0$，待解的非线性方程就只剩一个。
+
+$$
+m(P) = P\big[1 - D\,(P-1)\big] = 1, \qquad D = \frac{\hat d\,p_0}{u_0} = \frac{Co}{M}
+$$
+
+对它施加两种线性化，会得到两个不同的迭代映射(map)。固定系数给出
+
+$$
+P^{(n+1)} = g_{\mathrm{fix}}(P^{(n)}) = 1 + \frac{1 - 1/P^{(n)}}{D}, \qquad \big|g_{\mathrm{fix}}'(1)\big| = \frac{1}{D} = \frac{M}{Co}
+$$
+
+Newton那一侧则恰好等同于对 $m(P)-1=0$ 的Newton–Raphson迭代，代入整理即可落到同一式。
+
+于是压缩映射条件 $|g'|<1$ 正是 $M < Co$，与上一节跷跷板翻倒的那个数完全相同。还有一层：$m(P)=1$ 是二次式，因而有两个根，$P=1$ 与 $P=1/D=M/Co$。一旦物理根开始排斥，迭代**被拽向另一分支的情形比发散更常见**。
+
+```python
+import math
+
+def face_mass_flux(P, D):
+    """无量纲面质量通量 m/(rho0 u0)。 P = p/p0, D = Co/M。"""
+    return P * (1.0 - D * (P - 1.0))
+
+def iterate_lagged(P0, D, nmax=40, eta=1e-10):
+    """固定系数: rho^(n) theta^(n+1) = mdot*  — 把密度按住当作系数。"""
+    P, hist = P0, []
+    for _ in range(nmax):
+        r = abs(face_mass_flux(P, D) - 1.0)
+        hist.append(r)
+        if r < eta:
+            return P, hist
+        P = 1.0 + (1.0 - 1.0 / P) / D
+        if not math.isfinite(P) or P <= 0.02 or P > 8.0:
+            return float('nan'), hist
+    return P, hist
+
+def iterate_newton(P0, D, nmax=40, eta=1e-10):
+    """Newton: rho^(n)theta^(n+1) + rho^(n+1)theta^(n) - rho^(n)theta^(n) = mdot*。"""
+    P, hist = P0, []
+    for _ in range(nmax):
+        r = abs(face_mass_flux(P, D) - 1.0)
+        hist.append(r)
+        if r < eta:
+            return P, hist
+        dm = (1.0 + D) - 2.0 * D * P           # d(rho theta)/dP
+        P = P - (face_mass_flux(P, D) - 1.0) / dm
+    return P, hist
+
+def verdict(P, hist):
+    if math.isnan(P):
+        return "diverged"
+    if abs(P - 1.0) < 1e-4:
+        return f"physical root ({len(hist)} it)"
+    return f"other branch P={P:.3f} ({len(hist)} it)"
+
+cases = [("acoustic wave",  0.003, 0.10),
+         ("Sod shock tube", 0.900, 0.40),
+         ("forward step",   3.000, 0.90),
+         ("forward step*",  3.000, 0.30)]
+
+print(f"{'case':<16}{'M':>7}{'Co':>6}{'M/Co':>7}   {'lagged':<32}{'Newton'}")
+for name, M, Co in cases:
+    D = Co / M
+    Pl, hl = iterate_lagged(1.18, D)
+    Pn, hn = iterate_newton(1.18, D)
+    print(f"{name:<16}{M:>7.3f}{Co:>6.2f}{M / Co:>7.2f}   "
+          f"{verdict(Pl, hl):<32}{verdict(Pn, hn)}")
+
+print("\nSod shock tube - residual ||r|| per iteration")
+_, hl = iterate_lagged(1.18, 0.40 / 0.90)
+_, hn = iterate_newton(1.18, 0.40 / 0.90)
+for n in range(5):
+    print(f"  n={n}   lagged {hl[n]:.3e}   Newton {hn[n]:.3e}")
+```
+
+```text
+case                  M    Co   M/Co   lagged                          Newton
+acoustic wave     0.003  0.10   0.03   physical root (9 it)            physical root (5 it)
+Sod shock tube    0.900  0.40   2.25   other branch P=2.250 (32 it)    physical root (5 it)
+forward step      3.000  0.90   3.33   other branch P=3.333 (23 it)    physical root (5 it)
+forward step*     3.000  0.30  10.00   diverged                        physical root (4 it)
+
+Sod shock tube - residual ||r|| per iteration
+  n=0   lagged 8.560e-02   Newton 8.560e-02
+  n=1   lagged 1.383e-01   Newton 2.081e-02
+  n=2   lagged 1.725e-01   Newton 5.570e-04
+  n=3   lagged 1.565e-01   Newton 4.454e-07
+  n=4   lagged 1.061e-01   Newton 2.855e-13
+```
+
+Newton在四个算例中都是4到5次。残差每迭代一次就平方一次的二次收敛，直接写在数字里。固定系数在 $M/Co$ 越过1的瞬间连续三次让残差变大，随后漂向另一分支。下面亲手把这条轨迹画出来。
+
+<MassFluxCobwebLinearisation />
+
+在 `fixed-coefficient` 状态下，把马赫滑块拖到低于Courant值，阶梯会收紧到绿点($P=1$)上。反过来拖高，同一段阶梯被绿点推开，走向红点($P=M/Co$)。切换到 `Newton`，无论哪种组合，右侧残差曲线都会在三四步内落到 $\eta$ 线以下。
+
+必须说清楚这只是玩具。真实求解器还要叠加能量方程、多维对流以及压力阻尼项的时间依赖性。$M = Co$ 是刻度，不是精确边界。但它与论文报告的次序指向同一个方向：声波算例在任何线性化下都能跑，前台阶算例离开 $\rho$-Newton 就跑不动。
+
+## 值得记住的三行
+
+1. 在压力基耦合求解器中，对面质量通量做线性化，就是在决定把压力-速度耦合还是压力-密度耦合留在矩阵里。固定系数抹去了密度侧。
+2. 被抹掉那一项的权重大致按 $M/Co$ 衡量。低马赫下可以忽略；跨声速与超声速下若用大时间步，被抹掉的一侧就成了主导。
+3. 把密度作为压力的函数隐式处理并不会新增矩阵元素。代价低廉，而且一致地施加就能彻底取消欠松弛。

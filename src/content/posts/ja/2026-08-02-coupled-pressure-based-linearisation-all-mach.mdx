@@ -1,0 +1,232 @@
+---
+title: "[論文レビュー] アンダーリラクゼーションを消す方法 — 圧力基準完全連成ソルバーの線形化"
+date: 2026-08-02
+description: "固定係数とNewton線形化が全マッハ収束を分ける理由"
+tags: ["논문리뷰", "Pressure-Based", "Coupled-Solver", "Linearisation", "All-Mach", "Newton"]
+locale: ja
+slug: coupled-pressure-based-linearisation-all-mach
+draft: false
+---
+
+import { MachCouplingSeesaw } from '@/components/post-viz/2026-08-02-coupled-pressure-based-linearisation-all-mach/MachCouplingSeesaw'
+import { MassFluxCobwebLinearisation } from '@/components/post-viz/2026-08-02-coupled-pressure-based-linearisation-all-mach/MassFluxCobwebLinearisation'
+
+収束しない計算を前にして、まず手が伸びるつまみはアンダーリラクゼーション係数です。0.7から0.5へ、さらに0.3へ下げます。反復回数は増え、計算時間は倍になりますが、とにかく答えは出ます。
+
+Denner(2018)は、そのつまみ自体を取り外そうと述べています。代わりに手を入れるべきなのは非線形項の切り方、つまり線形化です。この記事はその主張を追いかけます。固定係数線形化とNewton線形化が離散化された連続の式で何を残し何を消すのかを見て、消された項がいつから致命的になるのかを、おもちゃの模型で目盛りを付けます。
+
+> **論文**: F. Denner, *Fully-coupled pressure-based algorithm for compressible flows: linearisation and iterative solution strategies*, arXiv:1807.04232 (2018). Imperial College London.
+> 全マッハ圧縮性流れのための完全連成(fully-coupled)圧力基準アルゴリズムにおいて、線形化戦略と反復解法が性能・安定性に及ぼす影響を体系的に比較した論文です。
+
+## 超音速で止まったのはソルバーではなく反復です
+
+圧縮性ソルバーは大きく二つに分かれます。密度基準(density-based)は連続の式を密度の輸送方程式とみなします。衝撃波のある超音速でよく回ります。その代わり低マッハで崩れます。マッハ数が0に向かうと密度と圧力の結合が消えるからです。
+
+圧力基準(pressure-based)は逆です。連続の式を圧力の方程式として書き、密度は状態方程式で別に求めます。低マッハで強いのはこちらです。
+
+問題はその中間にあります。遷音速(transonic・マッハ数1付近)域では圧力-速度結合と圧力-密度結合が同時に強くなります。二つの非線形性が重なるこの区間で、圧力基準アルゴリズムの収束が揺らぎます。SIMPLEのような分離型(segregated)解法がアンダーリラクゼーションなしでは回らない理由でもあります。
+
+完全連成解法は、連続・運動量・エネルギーの式を一つの線形系に入れて同時に解きます。メモリは食いますが結合は強くなります。ところで「一つの線形系に入れる」という言い方そのものが、すでに選択を含んでいます。元の方程式は非線形です。何を未知数とし何を係数に回すかを決めて初めて線形系ができます。
+
+## 圧力は二つの仕事を同時にします
+
+圧力基準アルゴリズムの成功は、圧力が二つの役割を兼ねる点から来ます。
+
+低マッハでは圧力は速度場に対する拘束条件です。連続の式は楕円型(elliptic・解が全領域に即座に影響する性質)の圧力方程式になります。密度はほぼ一定です。
+
+超音速では逆になります。圧力は密度と直接結びつき、連続の式は双曲型(hyperbolic・情報が有限の速度で伝わる性質)に近づきます。圧力-速度結合は後回しになります。
+
+面(face)での質量流束 $\tilde\rho_f\vartheta_f$ を圧力で微分すると、二つの結合の重みがそのまま出てきます。
+
+$$
+\frac{\partial(\tilde\rho_f\vartheta_f)}{\partial p} = \underbrace{\rho\,\hat d}_{\text{速度側}} + \underbrace{\vartheta\,\frac{\partial\rho}{\partial p}}_{\text{密度側}}
+$$
+
+$\vartheta_f$ は移流速度(advecting velocity・面を通過する流速で、運動量重み付き補間で得ます)、$\hat d$ はその補間に入る圧力減衰係数です。理想気体の等温近似では $\partial\rho/\partial p = 1/a_T^2$ なので、二項の比は次の一つの数に縮みます。
+
+$$
+\frac{\text{密度側}}{\text{速度側}} = \frac{\vartheta/a_T^2}{\rho\,\hat d} = \frac{M}{Co}
+$$
+
+$M = u_0/a_T$ はマッハ数、$Co = a_T\Delta t/\Delta x$ は音響Courant数(音波が1ステップで格子を何セル進むか)です。下のシーソーで二つのスライダーを直接動かしてみましょう。
+
+<MachCouplingSeesaw />
+
+マッハ数を0.001から3まで引き上げると、右(密度側)の錘が重くなって梁が傾きます。下の帯の白い印が楕円型から双曲型へ滑るのも同じ理由です。`fixed-coefficient` ボタンを押すと右の錘が丸ごと消えます。その項が行列に存在しないという意味です。
+
+## 非線形項を切る二つの方法
+
+一般的な非線形項 $\alpha^{(n+1)}\varphi^{(n+1)}$ を考えます。$n$ は非線形反復の回数です。固定係数線形化(fixed-coefficient・係数を遅らせる)は主変数だけを陰的に扱います。
+
+$$
+\alpha^{(n+1)}\varphi^{(n+1)} \approx \alpha^{(n)}\varphi^{(n+1)}
+$$
+
+実装は簡単です。係数を前の反復値で埋めるだけで済みます。
+
+Newton線形化は両方の変数について1次展開します。
+
+$$
+\alpha^{(n+1)}\varphi^{(n+1)} \approx \alpha^{(n)}\varphi^{(n+1)} + \alpha^{(n+1)}\varphi^{(n)} - \alpha^{(n)}\varphi^{(n)}
+$$
+
+項が一つ増え、代わりに $\alpha$ も陰的に扱う必要があります。圧力基準アルゴリズムで $\alpha$ が密度なら、これは $\rho = \rho(p,T)$ を通じた圧力への陰的依存を行列に入れることを意味します。圧力はすでにすべての式の主未知数なので、**新しい非ゼロの行列成分は生じません。** ほぼ無料だという点が、この論文の重要な実務的観察です。
+
+## 連続の式から何が消えるのか
+
+離散化された連続の式に二つの線形化をそれぞれ適用します。固定係数はこうなります。
+
+$$
+\frac{\rho_P^{(n+1)} - \rho_P^{(t-\Delta t)}}{\Delta t}V_P + \sum_f \tilde\rho_f^{(n)}\vartheta_f^{(n+1)}A_f = 0
+$$
+
+Newtonでは項が増えます。
+
+$$
+\frac{\rho_P^{(n+1)} - \rho_P^{(t-\Delta t)}}{\Delta t}V_P + \sum_f \Big(\tilde\rho_f^{(n)}\vartheta_f^{(n+1)} + \tilde\rho_f^{(n+1)}\vartheta_f^{(n)} - \tilde\rho_f^{(n)}\vartheta_f^{(n)}\Big)A_f = 0
+$$
+
+$V_P$ はセル体積、$A_f$ は面積、上付きの $(t-\Delta t)$ は前の時間層です。前節のシーソーがそのままここに入っています。$\tilde\rho_f^{(n)}\vartheta_f^{(n+1)}$ が速度側、$\tilde\rho_f^{(n+1)}\vartheta_f^{(n)}$ が密度側です。
+
+固定係数は密度側の項を丸ごと捨てます。低マッハでは問題ありません。捨てた側が軽かったからです。マッハ数が大きくなると、捨てた側が重い側になります。論文の表現どおり、固定係数線形化は非圧縮性の圧力基準の枠組みから導かれたものなので、大きなマッハ数では性能と安定性が極めて限られると予想されます。
+
+## 運動量・エネルギー式の四つの分岐
+
+運動量・エネルギー式の移流項 $\tilde\rho_f\vartheta_f\tilde\varphi_f$ には未知数が三つあるので、選択肢は四つに増えます。$\varphi$ は速度成分または比全エンタルピーです。
+
+| 名称 | 陰的に扱うもの | 性格 |
+|------|----------------|------|
+| 固定係数 | $\tilde\varphi_f$ のみ | 非圧縮性の慣行のまま |
+| $\rho$-Newton | $\tilde\varphi_f$, $\tilde\rho_f$ | 圧力-密度結合を陰的に |
+| $\vartheta$-Newton | $\tilde\varphi_f$, $\vartheta_f$ | 流速そのものを陰的に |
+| full-Newton | 三つすべて | 完全展開 |
+
+論文の結果が分かれるのはここです。時間項にNewton線形化を使うだけで、音波伝播問題では1.4〜1.5倍速くなります。移流項の選択は低マッハではほとんど差が出ませんが、マッハ3の前向きステップ問題で $Co = 0.9$ まで時間ステップを大きくすると決定的に変わります。その条件で単一ループ解法で収束したのは $\rho$-Newton系だけでした。$\vartheta$-Newtonを加えたfull-Newtonは収束率の負の区間をなくしますが、実行時間の利得は小さいものでした。
+
+## 温度をいつ更新するか — 単一ループと二重ループ
+
+線形化だけが変数ではありません。非線形反復の構造も分かれます。
+
+単一ループは単純です。線形系を解き、エンタルピーから温度を更新し、$p^{(n+1)}$ と $T^{(n+1)}$ で密度を更新し、移流速度を更新してから残差を見ます。
+
+$$
+\frac{\lVert A^{(n+1)}\varphi^{(n+1)} - b^{(n+1)}\rVert}{\lVert b^{(n+1)}\rVert\,\Theta} < \eta
+$$
+
+$\Theta = \sqrt{N_r}$ は残差ベクトルの大きさによる正規化因子です。
+
+二重ループはXiaoらの処方に従います。内側ループでは密度更新に使う温度を定数に固定します。つまり密度を圧力だけの関数とみなします。流れが等温だという意味ではありません。密度を計算するときに使う温度だけを凍らせるのです。内側が収束したら、外側ループで更新された温度を用いて密度を再計算します。この構造がアンダーリラクゼーションの代わりを務めます。
+
+論文の結論は二つを対立させません。**すべての時間項と移流項にNewton線形化を一貫して適用すれば、アンダーリラクゼーションをどんな形でも使わずに済み、そうすると単一ループが二重ループより速くなります。** マッハ3の前向きステップで単一ループの $\rho$-Newtonは10,616秒、同条件の二重ループは12,117秒でした。円錐超音速流れでも順序は同じでした。
+
+## Pythonで絞り込む収束の境界
+
+ここからは論文のコードではなく、その主張を最小まで縮めたおもちゃの模型です。セル一つ、等温理想気体、面一つの質量流束だけを残します。
+
+$$
+\rho(p) = \frac{p}{a_T^2}, \qquad \vartheta(p) = u_0 - \hat d\,(p - p_0)
+$$
+
+$P = p/p_0$ で無次元化し、目標質量流束を $\rho_0 u_0$ とすれば、解くべき非線形方程式は一つに縮みます。
+
+$$
+m(P) = P\big[1 - D\,(P-1)\big] = 1, \qquad D = \frac{\hat d\,p_0}{u_0} = \frac{Co}{M}
+$$
+
+ここに二つの線形化を適用すると、異なる反復写像(map)が出てきます。固定係数は
+
+$$
+P^{(n+1)} = g_{\mathrm{fix}}(P^{(n)}) = 1 + \frac{1 - 1/P^{(n)}}{D}, \qquad \big|g_{\mathrm{fix}}'(1)\big| = \frac{1}{D} = \frac{M}{Co}
+$$
+
+Newton側は $m(P)-1=0$ に対するNewton–Raphson反復と正確に一致します。代入して整理するとそのまま落ちます。
+
+縮小写像の条件 $|g'|<1$ がそのまま $M < Co$ です。前節のシーソーがひっくり返る地点と同じ数です。もう一つあります。$m(P)=1$ は2次式なので根が二つです。$P=1$ と $P=1/D=M/Co$ です。物理的な根が押し返し始めると、反復は発散するよりも**別の枝に引き寄せられる場合の方が多い**のです。
+
+```python
+import math
+
+def face_mass_flux(P, D):
+    """無次元の面質量流束 m/(rho0 u0)。 P = p/p0, D = Co/M。"""
+    return P * (1.0 - D * (P - 1.0))
+
+def iterate_lagged(P0, D, nmax=40, eta=1e-10):
+    """固定係数: rho^(n) theta^(n+1) = mdot*  — 密度を係数として固定する。"""
+    P, hist = P0, []
+    for _ in range(nmax):
+        r = abs(face_mass_flux(P, D) - 1.0)
+        hist.append(r)
+        if r < eta:
+            return P, hist
+        P = 1.0 + (1.0 - 1.0 / P) / D
+        if not math.isfinite(P) or P <= 0.02 or P > 8.0:
+            return float('nan'), hist
+    return P, hist
+
+def iterate_newton(P0, D, nmax=40, eta=1e-10):
+    """Newton: rho^(n)theta^(n+1) + rho^(n+1)theta^(n) - rho^(n)theta^(n) = mdot*。"""
+    P, hist = P0, []
+    for _ in range(nmax):
+        r = abs(face_mass_flux(P, D) - 1.0)
+        hist.append(r)
+        if r < eta:
+            return P, hist
+        dm = (1.0 + D) - 2.0 * D * P           # d(rho theta)/dP
+        P = P - (face_mass_flux(P, D) - 1.0) / dm
+    return P, hist
+
+def verdict(P, hist):
+    if math.isnan(P):
+        return "diverged"
+    if abs(P - 1.0) < 1e-4:
+        return f"physical root ({len(hist)} it)"
+    return f"other branch P={P:.3f} ({len(hist)} it)"
+
+cases = [("acoustic wave",  0.003, 0.10),
+         ("Sod shock tube", 0.900, 0.40),
+         ("forward step",   3.000, 0.90),
+         ("forward step*",  3.000, 0.30)]
+
+print(f"{'case':<16}{'M':>7}{'Co':>6}{'M/Co':>7}   {'lagged':<32}{'Newton'}")
+for name, M, Co in cases:
+    D = Co / M
+    Pl, hl = iterate_lagged(1.18, D)
+    Pn, hn = iterate_newton(1.18, D)
+    print(f"{name:<16}{M:>7.3f}{Co:>6.2f}{M / Co:>7.2f}   "
+          f"{verdict(Pl, hl):<32}{verdict(Pn, hn)}")
+
+print("\nSod shock tube - residual ||r|| per iteration")
+_, hl = iterate_lagged(1.18, 0.40 / 0.90)
+_, hn = iterate_newton(1.18, 0.40 / 0.90)
+for n in range(5):
+    print(f"  n={n}   lagged {hl[n]:.3e}   Newton {hn[n]:.3e}")
+```
+
+```text
+case                  M    Co   M/Co   lagged                          Newton
+acoustic wave     0.003  0.10   0.03   physical root (9 it)            physical root (5 it)
+Sod shock tube    0.900  0.40   2.25   other branch P=2.250 (32 it)    physical root (5 it)
+forward step      3.000  0.90   3.33   other branch P=3.333 (23 it)    physical root (5 it)
+forward step*     3.000  0.30  10.00   diverged                        physical root (4 it)
+
+Sod shock tube - residual ||r|| per iteration
+  n=0   lagged 8.560e-02   Newton 8.560e-02
+  n=1   lagged 1.383e-01   Newton 2.081e-02
+  n=2   lagged 1.725e-01   Newton 5.570e-04
+  n=3   lagged 1.565e-01   Newton 4.454e-07
+  n=4   lagged 1.061e-01   Newton 2.855e-13
+```
+
+Newtonは四つの場合すべてで4〜5回です。残差が毎反復で二乗になる2次収束がそのまま見えます。固定係数は $M/Co$ が1を超えた瞬間に残差が三回連続で大きくなり、その後別の枝へ流れます。下でその軌跡を直接描いてみましょう。
+
+<MassFluxCobwebLinearisation />
+
+`fixed-coefficient` の状態でマッハのスライダーをCourant値より下げると、階段が緑の点($P=1$)へ締まっていきます。逆に上げると同じ階段が緑の点に押し返され、赤い点($P=M/Co$)へ歩いていきます。`Newton` に切り替えれば、どの組み合わせでも右の残差グラフが3〜4回で $\eta$ 線の下へ落ちます。
+
+おもちゃである点ははっきりさせておきます。実際のソルバーにはエネルギー方程式、多次元移流、圧力減衰項の時間依存性がさらに乗ります。$M = Co$ は正確な境界ではなく目盛りです。ただし論文が報告した順序 — 音波問題はどの線形化でも回り、前向きステップは $\rho$-Newtonなしでは回らない — と、この目盛りは同じ方向を指しています。
+
+## 覚えておくこと三行
+
+1. 圧力基準連成ソルバーで面質量流束の線形化とは、圧力-速度結合と圧力-密度結合のどちらを行列に残すかを決める作業です。固定係数は密度側を消します。
+2. 消した項の重みはおおよそ $M/Co$ で測れます。低マッハでは無視できますが、遷音速・超音速で大きな時間ステップを使うと消した側が支配的になります。
+3. 密度を圧力の関数として陰的に扱っても新しい行列成分は生じません。安価であり、一貫して適用すればアンダーリラクゼーション自体をなくせます。

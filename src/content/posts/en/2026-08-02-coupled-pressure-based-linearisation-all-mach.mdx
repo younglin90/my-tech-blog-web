@@ -1,0 +1,232 @@
+---
+title: "[Paper Review] How to Delete Under-Relaxation — Linearisation in a Coupled Pressure-Based Solver"
+date: 2026-08-02
+description: "Why fixed-coefficient vs Newton linearisation decides all-Mach convergence"
+tags: ["논문리뷰", "Pressure-Based", "Coupled-Solver", "Linearisation", "All-Mach", "Newton"]
+locale: en
+slug: coupled-pressure-based-linearisation-all-mach
+draft: false
+---
+
+import { MachCouplingSeesaw } from '@/components/post-viz/2026-08-02-coupled-pressure-based-linearisation-all-mach/MachCouplingSeesaw'
+import { MassFluxCobwebLinearisation } from '@/components/post-viz/2026-08-02-coupled-pressure-based-linearisation-all-mach/MassFluxCobwebLinearisation'
+
+When a simulation refuses to converge, the first knob most of us reach for is the under-relaxation factor. From 0.7 down to 0.5, then down to 0.3. The iteration count climbs, the runtime doubles, but an answer eventually appears.
+
+Denner (2018) argues for removing that knob entirely. What deserves the attention instead is how the nonlinear terms are cut apart — the linearisation. This post follows that argument. We look at what fixed-coefficient and Newton linearisation each keep and each throw away in the discretised continuity equation, then put a number on when the discarded term starts to matter, using a toy model small enough to run in your head.
+
+> **Paper**: F. Denner, *Fully-coupled pressure-based algorithm for compressible flows: linearisation and iterative solution strategies*, arXiv:1807.04232 (2018). Imperial College London.
+> A systematic comparison of how linearisation strategy and iterative solution procedure affect the performance and stability of a fully-coupled pressure-based algorithm for compressible flows at all speeds.
+
+## What stalls in supersonic flow is the iteration, not the solver
+
+Compressible solvers split into two families. Density-based methods treat the continuity equation as a transport equation for density. They work beautifully with shocks. They fall apart at low Mach numbers, where the coupling between density and pressure vanishes.
+
+Pressure-based methods do the opposite. The continuity equation becomes an equation for pressure, and density comes separately from an equation of state. These are strong in the low-Mach regime.
+
+The trouble lives in between. In the transonic regime (near Mach 1), the pressure-velocity coupling and the pressure-density coupling are both strong. Where those two nonlinearities overlap, convergence of a pressure-based algorithm gets shaky. It is the same reason segregated methods like SIMPLE cannot run without under-relaxation.
+
+A fully-coupled method puts continuity, momentum and energy into a single linear system and solves them simultaneously. It costs more memory, but the coupling is much tighter. And yet "putting them into a single linear system" already implies a choice. The original equations are nonlinear. You have to decide what stays an unknown and what gets demoted to a coefficient before any linear system exists.
+
+## Pressure does two jobs at once
+
+Pressure-based algorithms succeed because pressure plays a double role.
+
+At low Mach numbers, pressure is a constraint on the velocity field. Continuity becomes an elliptic pressure equation (elliptic: the solution everywhere responds instantly to a change anywhere). Density is nearly constant.
+
+In supersonic flow the picture flips. Pressure is tied directly to density, and continuity turns hyperbolic (hyperbolic: information travels at finite speed). Pressure-velocity coupling takes a back seat.
+
+Differentiate the face mass flux $\tilde\rho_f\vartheta_f$ with respect to pressure and the weights of both couplings drop out.
+
+$$
+\frac{\partial(\tilde\rho_f\vartheta_f)}{\partial p} = \underbrace{\rho\,\hat d}_{\text{velocity side}} + \underbrace{\vartheta\,\frac{\partial\rho}{\partial p}}_{\text{density side}}
+$$
+
+Here $\vartheta_f$ is the advecting velocity (the flux velocity through the face, obtained by momentum-weighted interpolation) and $\hat d$ is the pressure-damping coefficient in that interpolation. For an isothermal ideal gas $\partial\rho/\partial p = 1/a_T^2$, so the ratio of the two terms collapses to a single number.
+
+$$
+\frac{\text{density side}}{\text{velocity side}} = \frac{\vartheta/a_T^2}{\rho\,\hat d} = \frac{M}{Co}
+$$
+
+$M = u_0/a_T$ is the Mach number and $Co = a_T\Delta t/\Delta x$ is the acoustic Courant number (how many cells a sound wave crosses per step). Play with both sliders on the balance below.
+
+<MachCouplingSeesaw />
+
+Drag the Mach number from 0.001 up to 3 and the right-hand weight (the density side) grows until the beam tips over. The white marker on the lower bar slides from elliptic to hyperbolic for the same reason. Hit `fixed-coefficient` and the right-hand weight disappears altogether — that term is simply not in the matrix.
+
+## Two ways to cut a nonlinear term
+
+Take a generic nonlinear term $\alpha^{(n+1)}\varphi^{(n+1)}$, with $n$ the nonlinear iteration counter. The fixed-coefficient linearisation (also called lagging the coefficients) treats only the primary variable implicitly.
+
+$$
+\alpha^{(n+1)}\varphi^{(n+1)} \approx \alpha^{(n)}\varphi^{(n+1)}
+$$
+
+It is easy to implement. Fill the coefficients with the last available values and you're done.
+
+The Newton linearisation expands to first order in both variables.
+
+$$
+\alpha^{(n+1)}\varphi^{(n+1)} \approx \alpha^{(n)}\varphi^{(n+1)} + \alpha^{(n+1)}\varphi^{(n)} - \alpha^{(n)}\varphi^{(n)}
+$$
+
+One extra term, and now $\alpha$ has to be handled implicitly too. In a pressure-based algorithm, when $\alpha$ is the density, that means putting the implicit dependence on pressure through $\rho = \rho(p,T)$ into the matrix. Since pressure is already a primary unknown in every governing equation, **no additional non-zero matrix coefficients arise.** That it is nearly free is one of the paper's most practical observations.
+
+## What disappears from the continuity equation
+
+Apply both linearisations to the discretised continuity equation. Fixed-coefficient gives
+
+$$
+\frac{\rho_P^{(n+1)} - \rho_P^{(t-\Delta t)}}{\Delta t}V_P + \sum_f \tilde\rho_f^{(n)}\vartheta_f^{(n+1)}A_f = 0
+$$
+
+Newton carries an extra pair of terms.
+
+$$
+\frac{\rho_P^{(n+1)} - \rho_P^{(t-\Delta t)}}{\Delta t}V_P + \sum_f \Big(\tilde\rho_f^{(n)}\vartheta_f^{(n+1)} + \tilde\rho_f^{(n+1)}\vartheta_f^{(n)} - \tilde\rho_f^{(n)}\vartheta_f^{(n)}\Big)A_f = 0
+$$
+
+$V_P$ is the cell volume, $A_f$ the face area, and the superscript $(t-\Delta t)$ marks the previous time level. The balance from the previous section sits right here. $\tilde\rho_f^{(n)}\vartheta_f^{(n+1)}$ is the velocity side; $\tilde\rho_f^{(n+1)}\vartheta_f^{(n)}$ is the density side.
+
+Fixed-coefficient throws the density side away entirely. At low Mach that costs nothing, because the discarded side was the light one. Raise the Mach number and the discarded side becomes the heavy one. In the paper's own words, the fixed-coefficient linearisation is derived from an incompressible pressure-based framework, so it is expected to yield very limited performance and stability at large Mach numbers.
+
+## Four branches in momentum and energy
+
+The advection term $\tilde\rho_f\vartheta_f\tilde\varphi_f$ of the momentum and energy equations has three candidate unknowns, so the options multiply to four. Here $\varphi$ is a velocity component or the specific total enthalpy.
+
+| Name | Treated implicitly | Character |
+|------|--------------------|-----------|
+| fixed-coefficient | $\tilde\varphi_f$ only | incompressible practice, unchanged |
+| $\rho$-Newton | $\tilde\varphi_f$, $\tilde\rho_f$ | pressure-density coupling made implicit |
+| $\vartheta$-Newton | $\tilde\varphi_f$, $\vartheta_f$ | the flux velocity itself made implicit |
+| full-Newton | all three | complete expansion |
+
+This is where the paper's results separate. A Newton linearisation of the transient terms alone speeds up the acoustic-wave case by a factor of 1.4 to 1.5. The choice for the advection terms barely registers at low Mach, then becomes decisive for the Mach 3 forward-facing step once the time step is pushed to $Co = 0.9$. Under those conditions, only the $\rho$-Newton variants converged with the single-loop procedure. Adding $\vartheta$-Newton to give full-Newton removes the negative convergence rates but buys little extra runtime.
+
+## When do you update the temperature — single loop or dual loop
+
+Linearisation is not the only variable. The structure of the nonlinear iteration branches too.
+
+The single loop is straightforward. Solve the linear system, update the temperature from enthalpy, update the density from $p^{(n+1)}$ and $T^{(n+1)}$, update the advecting velocity, then check the residual.
+
+$$
+\frac{\lVert A^{(n+1)}\varphi^{(n+1)} - b^{(n+1)}\rVert}{\lVert b^{(n+1)}\rVert\,\Theta} < \eta
+$$
+
+$\Theta = \sqrt{N_r}$ is a scaling factor based on the size of the residual vector.
+
+The dual loop follows the recipe of Xiao et al. In the inner loop, the temperature used to update the density is held constant — density becomes a function of pressure alone. That does not mean the flow is isothermal. Only the temperature entering the density evaluation is frozen. Once the inner loop converges, the outer loop re-evaluates the density with the updated temperature. This structure stands in for under-relaxation.
+
+The paper's conclusion does not pit the two against each other. **Apply the Newton linearisation consistently to every transient and advection term and you can eliminate under-relaxation in any form — at which point the single loop beats the dual loop.** For the Mach 3 forward-facing step, single-loop $\rho$-Newton took 10,616 s against 12,117 s for the same case with the dual loop. The supersonic cone showed the same ordering.
+
+## Narrowing down the convergence boundary in Python
+
+From here on this is not the paper's code but a toy model that shrinks its claim to the smallest thing that still shows it. One cell, an isothermal ideal gas, and the mass flux through a single face.
+
+$$
+\rho(p) = \frac{p}{a_T^2}, \qquad \vartheta(p) = u_0 - \hat d\,(p - p_0)
+$$
+
+Non-dimensionalise with $P = p/p_0$ and set the target mass flux to $\rho_0 u_0$, and the whole thing reduces to one nonlinear equation.
+
+$$
+m(P) = P\big[1 - D\,(P-1)\big] = 1, \qquad D = \frac{\hat d\,p_0}{u_0} = \frac{Co}{M}
+$$
+
+The two linearisations produce two different iteration maps for it. Fixed-coefficient gives
+
+$$
+P^{(n+1)} = g_{\mathrm{fix}}(P^{(n)}) = 1 + \frac{1 - 1/P^{(n)}}{D}, \qquad \big|g_{\mathrm{fix}}'(1)\big| = \frac{1}{D} = \frac{M}{Co}
+$$
+
+The Newton version turns out to be exactly Newton–Raphson applied to $m(P)-1=0$; substitute and the algebra collapses onto it.
+
+So the contraction condition $|g'|<1$ is precisely $M < Co$ — the same number at which the balance in the previous section tipped over. There is one more wrinkle. $m(P)=1$ is a quadratic, so it has two roots: $P=1$ and $P=1/D=M/Co$. Once the physical root starts repelling, the iteration more often gets **dragged onto the other branch** than blows up.
+
+```python
+import math
+
+def face_mass_flux(P, D):
+    """Non-dimensional face mass flux m/(rho0 u0).  P = p/p0,  D = Co/M."""
+    return P * (1.0 - D * (P - 1.0))
+
+def iterate_lagged(P0, D, nmax=40, eta=1e-10):
+    """Fixed-coefficient: rho^(n) theta^(n+1) = mdot*  — density held as a coefficient."""
+    P, hist = P0, []
+    for _ in range(nmax):
+        r = abs(face_mass_flux(P, D) - 1.0)
+        hist.append(r)
+        if r < eta:
+            return P, hist
+        P = 1.0 + (1.0 - 1.0 / P) / D
+        if not math.isfinite(P) or P <= 0.02 or P > 8.0:
+            return float('nan'), hist
+    return P, hist
+
+def iterate_newton(P0, D, nmax=40, eta=1e-10):
+    """Newton: rho^(n)theta^(n+1) + rho^(n+1)theta^(n) - rho^(n)theta^(n) = mdot*."""
+    P, hist = P0, []
+    for _ in range(nmax):
+        r = abs(face_mass_flux(P, D) - 1.0)
+        hist.append(r)
+        if r < eta:
+            return P, hist
+        dm = (1.0 + D) - 2.0 * D * P           # d(rho theta)/dP
+        P = P - (face_mass_flux(P, D) - 1.0) / dm
+    return P, hist
+
+def verdict(P, hist):
+    if math.isnan(P):
+        return "diverged"
+    if abs(P - 1.0) < 1e-4:
+        return f"physical root ({len(hist)} it)"
+    return f"other branch P={P:.3f} ({len(hist)} it)"
+
+cases = [("acoustic wave",  0.003, 0.10),
+         ("Sod shock tube", 0.900, 0.40),
+         ("forward step",   3.000, 0.90),
+         ("forward step*",  3.000, 0.30)]
+
+print(f"{'case':<16}{'M':>7}{'Co':>6}{'M/Co':>7}   {'lagged':<32}{'Newton'}")
+for name, M, Co in cases:
+    D = Co / M
+    Pl, hl = iterate_lagged(1.18, D)
+    Pn, hn = iterate_newton(1.18, D)
+    print(f"{name:<16}{M:>7.3f}{Co:>6.2f}{M / Co:>7.2f}   "
+          f"{verdict(Pl, hl):<32}{verdict(Pn, hn)}")
+
+print("\nSod shock tube - residual ||r|| per iteration")
+_, hl = iterate_lagged(1.18, 0.40 / 0.90)
+_, hn = iterate_newton(1.18, 0.40 / 0.90)
+for n in range(5):
+    print(f"  n={n}   lagged {hl[n]:.3e}   Newton {hn[n]:.3e}")
+```
+
+```text
+case                  M    Co   M/Co   lagged                          Newton
+acoustic wave     0.003  0.10   0.03   physical root (9 it)            physical root (5 it)
+Sod shock tube    0.900  0.40   2.25   other branch P=2.250 (32 it)    physical root (5 it)
+forward step      3.000  0.90   3.33   other branch P=3.333 (23 it)    physical root (5 it)
+forward step*     3.000  0.30  10.00   diverged                        physical root (4 it)
+
+Sod shock tube - residual ||r|| per iteration
+  n=0   lagged 8.560e-02   Newton 8.560e-02
+  n=1   lagged 1.383e-01   Newton 2.081e-02
+  n=2   lagged 1.725e-01   Newton 5.570e-04
+  n=3   lagged 1.565e-01   Newton 4.454e-07
+  n=4   lagged 1.061e-01   Newton 2.855e-13
+```
+
+Newton takes 4 or 5 iterations in all four cases. The residual squares itself every iteration — textbook quadratic convergence, visible in the numbers. The lagged version grows its residual three times running the moment $M/Co$ exceeds 1, then drifts onto the other branch. Trace that path yourself below.
+
+<MassFluxCobwebLinearisation />
+
+With `fixed-coefficient` selected, drag the Mach slider below the Courant value and the staircase tightens onto the green dot at $P=1$. Push it above and the same staircase is repelled from the green dot and walks over to the red one at $P=M/Co$. Switch to `Newton` and, for any combination, the residual plot on the right drops below the $\eta$ line within three or four steps.
+
+It is a toy, and worth saying so. A real solver adds the energy equation, multi-dimensional advection, and the time dependence of the pressure-damping term. $M = Co$ is a scale, not an exact boundary. But it points the same way as the ordering the paper reports: the acoustic case runs under any linearisation, and the forward-facing step does not run without $\rho$-Newton.
+
+## Three things to remember
+
+1. In a coupled pressure-based solver, linearising the face mass flux is the act of deciding which coupling stays in the matrix — pressure-velocity or pressure-density. Fixed-coefficient erases the density side.
+2. The weight of what you erased scales roughly as $M/Co$. Negligible at low Mach; dominant in transonic and supersonic flow with large time steps.
+3. Treating density implicitly as a function of pressure adds no new matrix coefficients. It is cheap, and applied consistently it removes the need for under-relaxation altogether.

@@ -1,0 +1,232 @@
+---
+title: "[Reseña de artículo] Cómo eliminar la subrelajación — linealización en un solver acoplado basado en presión"
+date: 2026-08-02
+description: "Por qué la linealización de coeficiente fijo o de Newton decide la convergencia a todo Mach"
+tags: ["논문리뷰", "Pressure-Based", "Coupled-Solver", "Linearisation", "All-Mach", "Newton"]
+locale: es
+slug: coupled-pressure-based-linearisation-all-mach
+draft: false
+---
+
+import { MachCouplingSeesaw } from '@/components/post-viz/2026-08-02-coupled-pressure-based-linearisation-all-mach/MachCouplingSeesaw'
+import { MassFluxCobwebLinearisation } from '@/components/post-viz/2026-08-02-coupled-pressure-based-linearisation-all-mach/MassFluxCobwebLinearisation'
+
+Ante un cálculo que no converge, la primera perilla a la que se recurre es el factor de subrelajación. De 0.7 a 0.5, y luego a 0.3. El número de iteraciones sube, el tiempo de cálculo se duplica, pero al final aparece una respuesta.
+
+Denner (2018) propone quitar esa perilla por completo. Lo que merece atención es cómo se cortan los términos no lineales: la linealización. Este artículo sigue ese argumento. Primero se examina qué conserva y qué borra cada linealización —coeficiente fijo y Newton— en la ecuación de continuidad discretizada; después se pone una escala numérica al momento en que el término borrado empieza a ser fatal, mediante un modelo de juguete.
+
+> **Artículo**: F. Denner, *Fully-coupled pressure-based algorithm for compressible flows: linearisation and iterative solution strategies*, arXiv:1807.04232 (2018). Imperial College London.
+> Comparación sistemática del efecto que la estrategia de linealización y el procedimiento iterativo tienen sobre el rendimiento y la estabilidad de un algoritmo acoplado (fully-coupled) basado en presión para flujos compresibles a todas las velocidades.
+
+## Lo que se detiene en régimen supersónico es la iteración, no el solver
+
+Los solvers compresibles se dividen en dos familias. Los basados en densidad (density-based) tratan la ecuación de continuidad como una ecuación de transporte para la densidad. Funcionan muy bien con ondas de choque, pero se derrumban a bajo Mach: cuando el número de Mach tiende a cero, el acoplamiento entre densidad y presión desaparece.
+
+Los basados en presión (pressure-based) hacen lo contrario. La continuidad se escribe como ecuación para la presión y la densidad se obtiene aparte mediante una ecuación de estado. Ahí reside su fortaleza en régimen de bajo Mach.
+
+El problema está en medio. En el régimen transónico (transonic, cerca de Mach 1) el acoplamiento presión-velocidad y el acoplamiento presión-densidad son fuertes al mismo tiempo. En ese tramo donde ambas no linealidades se solapan, la convergencia del algoritmo basado en presión se tambalea. Es también la razón por la que métodos segregados como SIMPLE no giran sin subrelajación.
+
+El método acoplado mete continuidad, cantidad de movimiento y energía en un único sistema lineal y los resuelve simultáneamente. Consume más memoria, pero el acoplamiento es mucho más firme. Ahora bien, la frase «meterlos en un único sistema lineal» ya encierra una decisión. Las ecuaciones originales son no lineales. Hay que elegir qué queda como incógnita y qué se degrada a coeficiente antes de que exista sistema lineal alguno.
+
+## La presión hace dos trabajos a la vez
+
+El éxito de los algoritmos basados en presión nace de que la presión desempeña un doble papel.
+
+A bajo Mach la presión es una restricción sobre el campo de velocidad. La continuidad se convierte en una ecuación elíptica (elliptic: la solución responde de inmediato en todo el dominio) para la presión. La densidad es casi constante.
+
+En régimen supersónico ocurre lo contrario. La presión queda ligada directamente a la densidad y la continuidad se vuelve hiperbólica (hyperbolic: la información viaja a velocidad finita). El acoplamiento presión-velocidad pasa a segundo plano.
+
+Al derivar el flujo másico en la cara $\tilde\rho_f\vartheta_f$ respecto a la presión, los pesos de ambos acoplamientos aparecen directamente.
+
+$$
+\frac{\partial(\tilde\rho_f\vartheta_f)}{\partial p} = \underbrace{\rho\,\hat d}_{\text{lado velocidad}} + \underbrace{\vartheta\,\frac{\partial\rho}{\partial p}}_{\text{lado densidad}}
+$$
+
+Aquí $\vartheta_f$ es la velocidad advectiva (advecting velocity: la velocidad de flujo a través de la cara, obtenida por interpolación ponderada por cantidad de movimiento) y $\hat d$ es el coeficiente de amortiguamiento de presión de esa interpolación. Para un gas ideal isotermo $\partial\rho/\partial p = 1/a_T^2$, de modo que la razón entre ambos términos se reduce a un único número.
+
+$$
+\frac{\text{lado densidad}}{\text{lado velocidad}} = \frac{\vartheta/a_T^2}{\rho\,\hat d} = \frac{M}{Co}
+$$
+
+$M = u_0/a_T$ es el número de Mach y $Co = a_T\Delta t/\Delta x$ el número de Courant acústico (cuántas celdas cruza una onda sonora por paso). Conviene mover ambos deslizadores en la balanza siguiente.
+
+<MachCouplingSeesaw />
+
+Al subir el número de Mach de 0.001 a 3, la pesa derecha (lado densidad) engorda y la viga se inclina. La marca blanca de la barra inferior se desliza de elíptico a hiperbólico por la misma razón. Al pulsar `fixed-coefficient`, la pesa derecha desaparece entera: ese término sencillamente no está en la matriz.
+
+## Dos maneras de cortar un término no lineal
+
+Sea un término no lineal genérico $\alpha^{(n+1)}\varphi^{(n+1)}$, con $n$ el contador de iteraciones no lineales. La linealización de coeficiente fijo (fixed-coefficient, o retrasar los coeficientes) trata implícitamente solo la variable primaria.
+
+$$
+\alpha^{(n+1)}\varphi^{(n+1)} \approx \alpha^{(n)}\varphi^{(n+1)}
+$$
+
+Su implementación es sencilla: basta con rellenar los coeficientes con los últimos valores disponibles.
+
+La linealización de Newton expande a primer orden en ambas variables.
+
+$$
+\alpha^{(n+1)}\varphi^{(n+1)} \approx \alpha^{(n)}\varphi^{(n+1)} + \alpha^{(n+1)}\varphi^{(n)} - \alpha^{(n)}\varphi^{(n)}
+$$
+
+Un término más y, a cambio, $\alpha$ también debe tratarse de forma implícita. En un algoritmo basado en presión, si $\alpha$ es la densidad, eso significa introducir en la matriz la dependencia implícita respecto a la presión a través de $\rho = \rho(p,T)$. Como la presión ya es incógnita primaria en todas las ecuaciones, **no aparece ningún coeficiente matricial no nulo adicional.** Que resulte casi gratis es una de las observaciones prácticas más valiosas del artículo.
+
+## Qué desaparece de la ecuación de continuidad
+
+Se aplican ambas linealizaciones a la ecuación de continuidad discretizada. Con coeficiente fijo queda
+
+$$
+\frac{\rho_P^{(n+1)} - \rho_P^{(t-\Delta t)}}{\Delta t}V_P + \sum_f \tilde\rho_f^{(n)}\vartheta_f^{(n+1)}A_f = 0
+$$
+
+Con Newton aparecen términos extra.
+
+$$
+\frac{\rho_P^{(n+1)} - \rho_P^{(t-\Delta t)}}{\Delta t}V_P + \sum_f \Big(\tilde\rho_f^{(n)}\vartheta_f^{(n+1)} + \tilde\rho_f^{(n+1)}\vartheta_f^{(n)} - \tilde\rho_f^{(n)}\vartheta_f^{(n)}\Big)A_f = 0
+$$
+
+$V_P$ es el volumen de la celda, $A_f$ el área de la cara y el superíndice $(t-\Delta t)$ marca el nivel temporal anterior. La balanza de la sección previa está justo aquí: $\tilde\rho_f^{(n)}\vartheta_f^{(n+1)}$ es el lado velocidad y $\tilde\rho_f^{(n+1)}\vartheta_f^{(n)}$ el lado densidad.
+
+El coeficiente fijo descarta el lado densidad por completo. A bajo Mach no cuesta nada, porque lo descartado era lo ligero. Al subir el Mach, lo descartado pasa a ser lo pesado. En palabras del propio artículo, la linealización de coeficiente fijo procede de un marco incompresible basado en presión, por lo que cabe esperar de ella un rendimiento y una estabilidad muy limitados a números de Mach grandes.
+
+## Cuatro ramas en cantidad de movimiento y energía
+
+El término advectivo $\tilde\rho_f\vartheta_f\tilde\varphi_f$ de las ecuaciones de cantidad de movimiento y energía tiene tres incógnitas candidatas, de modo que las opciones se multiplican hasta cuatro. Aquí $\varphi$ es una componente de velocidad o la entalpía total específica.
+
+| Nombre | Tratado implícitamente | Carácter |
+|--------|------------------------|----------|
+| coeficiente fijo | solo $\tilde\varphi_f$ | práctica incompresible sin cambios |
+| $\rho$-Newton | $\tilde\varphi_f$, $\tilde\rho_f$ | acoplamiento presión-densidad implícito |
+| $\vartheta$-Newton | $\tilde\varphi_f$, $\vartheta_f$ | la propia velocidad de flujo implícita |
+| full-Newton | los tres | expansión completa |
+
+Aquí es donde se separan los resultados del artículo. Solo con aplicar la linealización de Newton a los términos transitorios, el caso de propagación de ondas acústicas se acelera en un factor de 1.4 a 1.5. La elección para los términos advectivos apenas se nota a bajo Mach, y se vuelve decisiva en el escalón frontal a Mach 3 cuando el paso temporal sube a $Co = 0.9$. En esas condiciones, lo único que convergió con el procedimiento de bucle simple fueron las variantes $\rho$-Newton. Añadir $\vartheta$-Newton para formar full-Newton elimina los tramos de tasa de convergencia negativa, pero aporta poca ganancia en tiempo de ejecución.
+
+## Cuándo actualizar la temperatura: bucle simple o bucle doble
+
+La linealización no es la única variable. La estructura de la iteración no lineal también se ramifica.
+
+El bucle simple es directo: resolver el sistema lineal, actualizar la temperatura a partir de la entalpía, actualizar la densidad con $p^{(n+1)}$ y $T^{(n+1)}$, actualizar la velocidad advectiva y comprobar el residuo.
+
+$$
+\frac{\lVert A^{(n+1)}\varphi^{(n+1)} - b^{(n+1)}\rVert}{\lVert b^{(n+1)}\rVert\,\Theta} < \eta
+$$
+
+$\Theta = \sqrt{N_r}$ es un factor de escala basado en el tamaño del vector de residuos.
+
+El bucle doble sigue la receta de Xiao y colaboradores. En el bucle interior, la temperatura usada para actualizar la densidad se mantiene constante: la densidad pasa a ser función únicamente de la presión. Eso no significa que el flujo sea isotermo; solo se congela la temperatura que entra en la evaluación de la densidad. Cuando el bucle interior converge, el exterior recalcula la densidad con la temperatura actualizada. Esta estructura sustituye a la subrelajación.
+
+La conclusión del artículo no enfrenta a ambos. **Si la linealización de Newton se aplica de forma consistente a todos los términos transitorios y advectivos, se puede prescindir de la subrelajación en cualquiera de sus formas; y entonces el bucle simple resulta más rápido que el doble.** En el escalón frontal a Mach 3, el bucle simple con $\rho$-Newton tardó 10 616 s frente a 12 117 s del mismo caso con bucle doble. El flujo supersónico sobre un cono mostró el mismo orden.
+
+## Acotar la frontera de convergencia con Python
+
+A partir de aquí no se trata del código del artículo, sino de un modelo de juguete que reduce su afirmación a lo mínimo que aún la muestra: una celda, gas ideal isotermo y el flujo másico a través de una sola cara.
+
+$$
+\rho(p) = \frac{p}{a_T^2}, \qquad \vartheta(p) = u_0 - \hat d\,(p - p_0)
+$$
+
+Adimensionalizando con $P = p/p_0$ y fijando el flujo másico objetivo en $\rho_0 u_0$, todo se reduce a una única ecuación no lineal.
+
+$$
+m(P) = P\big[1 - D\,(P-1)\big] = 1, \qquad D = \frac{\hat d\,p_0}{u_0} = \frac{Co}{M}
+$$
+
+Aplicándole las dos linealizaciones salen dos mapas de iteración distintos. El de coeficiente fijo da
+
+$$
+P^{(n+1)} = g_{\mathrm{fix}}(P^{(n)}) = 1 + \frac{1 - 1/P^{(n)}}{D}, \qquad \big|g_{\mathrm{fix}}'(1)\big| = \frac{1}{D} = \frac{M}{Co}
+$$
+
+El lado Newton coincide exactamente con la iteración de Newton–Raphson aplicada a $m(P)-1=0$; al sustituir, el álgebra se reduce a ella.
+
+Así, la condición de contracción $|g'|<1$ es precisamente $M < Co$, el mismo número en el que se volcaba la balanza de la sección anterior. Hay un matiz más: $m(P)=1$ es una cuadrática, luego tiene dos raíces, $P=1$ y $P=1/D=M/Co$. Cuando la raíz física empieza a repeler, la iteración **acaba arrastrada a la otra rama más a menudo de lo que diverge**.
+
+```python
+import math
+
+def face_mass_flux(P, D):
+    """Flujo másico adimensional en la cara m/(rho0 u0).  P = p/p0,  D = Co/M."""
+    return P * (1.0 - D * (P - 1.0))
+
+def iterate_lagged(P0, D, nmax=40, eta=1e-10):
+    """Coeficiente fijo: rho^(n) theta^(n+1) = mdot*  — la densidad queda como coeficiente."""
+    P, hist = P0, []
+    for _ in range(nmax):
+        r = abs(face_mass_flux(P, D) - 1.0)
+        hist.append(r)
+        if r < eta:
+            return P, hist
+        P = 1.0 + (1.0 - 1.0 / P) / D
+        if not math.isfinite(P) or P <= 0.02 or P > 8.0:
+            return float('nan'), hist
+    return P, hist
+
+def iterate_newton(P0, D, nmax=40, eta=1e-10):
+    """Newton: rho^(n)theta^(n+1) + rho^(n+1)theta^(n) - rho^(n)theta^(n) = mdot*."""
+    P, hist = P0, []
+    for _ in range(nmax):
+        r = abs(face_mass_flux(P, D) - 1.0)
+        hist.append(r)
+        if r < eta:
+            return P, hist
+        dm = (1.0 + D) - 2.0 * D * P           # d(rho theta)/dP
+        P = P - (face_mass_flux(P, D) - 1.0) / dm
+    return P, hist
+
+def verdict(P, hist):
+    if math.isnan(P):
+        return "diverged"
+    if abs(P - 1.0) < 1e-4:
+        return f"physical root ({len(hist)} it)"
+    return f"other branch P={P:.3f} ({len(hist)} it)"
+
+cases = [("acoustic wave",  0.003, 0.10),
+         ("Sod shock tube", 0.900, 0.40),
+         ("forward step",   3.000, 0.90),
+         ("forward step*",  3.000, 0.30)]
+
+print(f"{'case':<16}{'M':>7}{'Co':>6}{'M/Co':>7}   {'lagged':<32}{'Newton'}")
+for name, M, Co in cases:
+    D = Co / M
+    Pl, hl = iterate_lagged(1.18, D)
+    Pn, hn = iterate_newton(1.18, D)
+    print(f"{name:<16}{M:>7.3f}{Co:>6.2f}{M / Co:>7.2f}   "
+          f"{verdict(Pl, hl):<32}{verdict(Pn, hn)}")
+
+print("\nSod shock tube - residual ||r|| per iteration")
+_, hl = iterate_lagged(1.18, 0.40 / 0.90)
+_, hn = iterate_newton(1.18, 0.40 / 0.90)
+for n in range(5):
+    print(f"  n={n}   lagged {hl[n]:.3e}   Newton {hn[n]:.3e}")
+```
+
+```text
+case                  M    Co   M/Co   lagged                          Newton
+acoustic wave     0.003  0.10   0.03   physical root (9 it)            physical root (5 it)
+Sod shock tube    0.900  0.40   2.25   other branch P=2.250 (32 it)    physical root (5 it)
+forward step      3.000  0.90   3.33   other branch P=3.333 (23 it)    physical root (5 it)
+forward step*     3.000  0.30  10.00   diverged                        physical root (4 it)
+
+Sod shock tube - residual ||r|| per iteration
+  n=0   lagged 8.560e-02   Newton 8.560e-02
+  n=1   lagged 1.383e-01   Newton 2.081e-02
+  n=2   lagged 1.725e-01   Newton 5.570e-04
+  n=3   lagged 1.565e-01   Newton 4.454e-07
+  n=4   lagged 1.061e-01   Newton 2.855e-13
+```
+
+Newton necesita 4 o 5 iteraciones en los cuatro casos. El residuo se eleva al cuadrado en cada iteración: convergencia cuadrática de manual, legible en los propios números. La versión con coeficiente retrasado hace crecer el residuo tres veces seguidas en cuanto $M/Co$ supera 1, y luego deriva hacia la otra rama. Conviene dibujar esa trayectoria a mano abajo.
+
+<MassFluxCobwebLinearisation />
+
+Con `fixed-coefficient` activo, al bajar el deslizador de Mach por debajo del valor de Courant la escalera se cierra sobre el punto verde ($P=1$). Al subirlo, esa misma escalera es repelida por el punto verde y camina hacia el rojo ($P=M/Co$). Al cambiar a `Newton`, en cualquier combinación la gráfica de residuos de la derecha cae por debajo de la línea $\eta$ en tres o cuatro pasos.
+
+Conviene decir con claridad que es un juguete. Un solver real añade la ecuación de energía, advección multidimensional y la dependencia temporal del término de amortiguamiento de presión. $M = Co$ es una escala, no una frontera exacta. Pero apunta en la misma dirección que el orden reportado en el artículo: el caso acústico gira con cualquier linealización y el escalón frontal no gira sin $\rho$-Newton.
+
+## Tres cosas para recordar
+
+1. En un solver acoplado basado en presión, linealizar el flujo másico de la cara equivale a decidir qué acoplamiento permanece en la matriz: presión-velocidad o presión-densidad. El coeficiente fijo borra el lado densidad.
+2. El peso de lo borrado se mide aproximadamente por $M/Co$. Despreciable a bajo Mach; dominante en régimen transónico y supersónico con pasos temporales grandes.
+3. Tratar la densidad implícitamente como función de la presión no añade coeficientes nuevos a la matriz. Sale barato y, aplicado de forma consistente, elimina por completo la necesidad de subrelajación.
