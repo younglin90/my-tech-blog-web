@@ -1,0 +1,192 @@
+---
+title: "[Reseña de artículo] Una gota devuelve casi toda la onda sonora — impedancia acústica y un solver bifásico de interfaz sharp"
+date: 2026-08-01
+description: "Por qué una interfaz líquido-gas refleja el 99,9% de una onda acústica y qué velocidad del sonido falsa inventa una interfaz difusa"
+tags: ["논문리뷰", "Compressible", "Multiphase", "Acoustics", "Ghost-Fluid", "Impedance"]
+locale: es
+slug: acoustic-impedance-interface-two-phase
+draft: false
+---
+
+import { AcousticImpedanceMirror } from '@/components/post-viz/2026-08-01-acoustic-impedance-interface-two-phase/AcousticImpedanceMirror'
+import { SmearedInterfaceSoundSpeedRace } from '@/components/post-viz/2026-08-01-acoustic-impedance-interface-two-phase/SmearedInterfaceSoundSpeedRace'
+
+Quien está sumergido no oye los gritos desde el borde de la piscina. Apenas un 0,1% de la energía acústica atraviesa la superficie del agua. El resto vuelve entero hacia el aire.
+
+Ese mismo número aparece dentro de un solver bifásico compresible. Basta con suspender una gota de agua en aire y lanzarle una onda acústica: también sobre la malla de cálculo, el 99,9% de la onda da media vuelta en la interfaz. Sostener numéricamente ese contraste extremo es la verdadera dificultad de un cálculo compresible que contiene líquido.
+
+> **Artículo**: A. Urbano, M. Bibal, S. Tanguy, *A semi implicit compressible solver for two-phase flows of real fluids*, Journal of Computational Physics (2022).
+> ISAE-SUPAERO / IMFT. Interfaz sharp con level set + ghost fluid, método de proyección semiimplícito en variables primitivas, ecuación de estado de van der Waals.
+
+## Con líquido presente, el paso de tiempo acústico muere primero
+
+Al resolver un flujo bifásico compresible de forma totalmente explícita, el paso de tiempo queda atado a la condición CFL acústica.
+
+$$
+\Delta t \le \frac{\Delta x}{\max(|u| + c)}
+$$
+
+$c$ es la velocidad del sonido y $\Delta x$ el tamaño de celda. El problema es que $c$ cambia según la fase. En aire son 347 m/s; en agua, 1500 m/s. Una sola celda de líquido aprieta el paso de tiempo global más de cuatro veces.
+
+Mientras tanto, la materia dentro del líquido se mueve a algo así como 1 m/s. En número de Mach (relación entre velocidad del flujo y velocidad del sonido) eso es $10^{-3}$. Lo que de verdad se quiere observar es la deformación de la interfaz, pero el paso de tiempo lo fijan ondas acústicas que nadie mira.
+
+La salida clásica era un enfoque mixto: gas compresible y líquido incompresible. El paso de tiempo se libera, pero desaparece la propagación acústica dentro del líquido. Con ella desaparece también el objetivo mismo: ver cómo responde una gota al sonido.
+
+Este artículo divide en cambio las ecuaciones en una parte de advección y otra acústica. La advección se trata de forma explícita; la acústica, de forma implícita mediante un método de proyección. Lo que queda es solo esto.
+
+$$
+\frac{1}{\Delta t} = \frac{1}{\Delta t_{\mathrm{conv}}} + \frac{1}{\Delta t_{\mu}} + \frac{1}{\Delta t_{\sigma}}
+$$
+
+$\Delta t_{\mathrm{conv}} = \Delta x / \max\lVert \vec{u} \rVert$ viene de la convección, $\Delta t_{\mu} = \rho \Delta x^{2} / 2\mu$ de la viscosidad y $\Delta t_{\sigma} = \tfrac{1}{2}\sqrt{\max(\rho)\Delta x^{3}/\sigma}$ de la tensión superficial. $c$ no aparece en ninguna parte.
+
+## Qué es continuo a través de la interfaz y qué no
+
+Usar una interfaz sharp significa tratar $\Gamma$ como una superficie de espesor cero e imponer sobre ella, de forma directa, las condiciones que deben cumplirse. El artículo emplea tres.
+
+$$
+[\vec{u}]_{\Gamma} = 0, \qquad
+[p]_{\Gamma} = \sigma \kappa + 2\left[\mu \frac{\partial u_n}{\partial n}\right]_{\Gamma} - \frac{2}{3}\left[\mu \nabla \cdot \vec{u}\right]_{\Gamma}, \qquad
+[-k \nabla T \cdot \vec{n}]_{\Gamma} = 0
+$$
+
+$[\,\cdot\,]_{\Gamma}$ es el salto a través de la interfaz, $\sigma$ la tensión superficial, $\kappa$ la curvatura, $\mu$ la viscosidad y $k$ la conductividad térmica. La velocidad es continua, la presión salta por el término capilar y el flujo de calor es continuo. Como no se admite transferencia de masa, la temperatura también es continua ($[T]_{\Gamma}=0$).
+
+Conviene fijarse en que **la densidad no está en esa lista**. La densidad la fija la ecuación de estado de cada fase por separado. Nada la promedia cerca de la interfaz, así que nunca se crea un estado intermedio que ninguno de los dos materiales posee. Ahí queda cortado de raíz el problema de la velocidad del sonido falsa que veremos enseguida.
+
+El cierre es una ecuación de estado cúbica.
+
+$$
+\rho^{3} + a_{1}\rho^{2} + a_{2}\rho + a_{3} = 0
+$$
+
+Los coeficientes $a_1, a_2, a_3$ dependen de la presión, la temperatura y las propiedades de la especie. van der Waals, Peng-Robinson y Redlich-Soave-Kwong tienen todas esta forma. Una sola expresión describe a la vez un estado gaseoso y uno líquido, y esa es la razón de la elección. La ley de gas ideal no describe un líquido, y la ecuación de Tait no describe un gas.
+
+## Un solo número, la impedancia, decide toda la reflexión
+
+Cómo se parte una onda en la interfaz se reduce a una cantidad sorprendentemente simple: la impedancia acústica.
+
+$$
+Z = \rho c
+$$
+
+Para una onda que pasa del medio 1 al medio 2, los coeficientes de reflexión y transmisión en presión son estos.
+
+$$
+R = \frac{Z_2 - Z_1}{Z_2 + Z_1}, \qquad T = 1 + R = \frac{2 Z_2}{Z_2 + Z_1}
+$$
+
+$R$ es la razón de amplitud de presión reflejada y $T$ la transmitida. Ni la densidad sola ni la velocidad del sonido sola: solo cuenta el producto.
+
+Con aire y agua, $Z_{\text{air}} = 416$ y $Z_{\text{water}} = 1{,}50 \times 10^{6}$, una relación de 3600. Resulta $R = 0{,}9994$, es decir, el 99,89% de la energía regresa. Y $T = 1{,}999$: en la interfaz la presión casi se **duplica**.
+
+Conviene manipular la simulación siguiente directamente.
+
+<AcousticImpedanceMirror />
+
+Hay dos cosas que observar. Con medium 2 en water, el pulso amarillo de presión vuelve casi intacto y en la interfaz su amplitud sube al doble. El pulso cian de velocidad, en cambio, invierte el signo y su amplitud en el lado líquido cae al orden de $10^{-4}$. Presión duplicada, velocidad nula: la interfaz se comporta como una pared. Después basta con bajar $\rho_2$ y subir $c_2$ en la misma proporción: la imagen no cambia en absoluto, porque solo cuenta el producto.
+
+## Una interfaz difusa fabrica una velocidad del sonido que no existe
+
+Veamos ahora qué ocurre cuando la interfaz se extiende sobre varias celdas, que es la situación con la que convive cualquier método de interfaz difusa.
+
+Cuando una celda contiene gas y líquido a la vez, su densidad y su compresibilidad se promedian así.
+
+$$
+\rho_m = \alpha \rho_g + (1-\alpha)\rho_\ell, \qquad
+\frac{1}{\rho_m c_m^{2}} = \frac{\alpha}{\rho_g c_g^{2}} + \frac{1-\alpha}{\rho_\ell c_\ell^{2}}
+$$
+
+$\alpha$ es la fracción volumétrica de gas y los subíndices $g$/$\ell$ indican gas y líquido. Es la relación de Wood. La combinación resulta perversa porque la mezcla es **tan blanda como el gas y a la vez tan pesada como el líquido**.
+
+Con $\alpha = 0{,}5$ sale $c_m = 24$ m/s: la catorceava parte del aire y la sesentava parte del agua. Ningún material del problema transmite una señal a esa velocidad. El número es un subproducto del promediado, no física.
+
+<SmearedInterfaceSoundSpeedRace />
+
+Al subir n de 0 a 8 celdas —un espesor que cualquier esquema de captura alcanza en unos cientos de pasos— la curva cian cava un valle que no pertenece a ninguno de los dos materiales, y en la carrera de abajo la señal difusa se atasca justo ahí. Al bajar $\rho_\ell$ el valle se rellena: quien construye esta trampa es el contraste de densidad, no el de velocidad del sonido.
+
+El efecto colateral llega también al paso de tiempo. Un solver explícito debe respetar $\Delta t \le \Delta x / c_m$ en esa celda del valle. El difuminado aprieta la condición CFL.
+
+## El precio de resolver en variables primitivas
+
+La parte discutible de la formulación del artículo es la decisión de resolver en variables primitivas $(p, \vec{u}, T)$ y no en conservativas $(\rho, \rho\vec{u}, \rho E)$, reescribiendo la ecuación de energía como una ecuación de presión.
+
+Se ganan dos cosas. Primero, la presión que devuelve la ecuación de estado y la que calcula la corrección semiimplícita coinciden en cada paso; en las formulaciones conservativas es un problema conocido que ambas se separen. Segundo, el término de conducción de calor puede tratarse de forma implícita. En problemas de bajo Mach donde el calor es el protagonista, como la convección natural, la diferencia es grande.
+
+Lo que se pierde está igual de claro: la conservación de energía total se degrada. Por eso el solver limita su propio alcance a flujos subsónicos. Quien pretenda capturar ondas de choque necesita otra formulación.
+
+Tampoco se garantiza la positividad de la presión. Los autores lo leen como margen y no como defecto: los líquidos metaestables en flujos cavitantes sí se encuentran a presión negativa, y una ecuación de estado como la de van der Waals puede asignar temperaturas positivas a presiones negativas.
+
+## Comprobación en Python de la reflexión y la velocidad de Wood
+
+Conviene imprimir los números que hay detrás de las dos figuras.
+
+```python
+# Reflexion/transmision en una interfaz aire-agua y velocidad del sonido de Wood
+from math import sqrt
+
+AIR   = (1.2,   347.0)    # (rho, c)
+WATER = (998.0, 1500.0)
+
+def impedance_split(m1, m2):
+    z1, z2 = m1[0] * m1[1], m2[0] * m2[1]
+    R = (z2 - z1) / (z2 + z1)
+    return z1, z2, R, 1.0 + R, R * R
+
+def wood_speed(alpha, gas=AIR, liq=WATER):
+    rho_m = alpha * gas[0] + (1.0 - alpha) * liq[0]
+    inv   = alpha / (gas[0] * gas[1] ** 2) + (1.0 - alpha) / (liq[0] * liq[1] ** 2)
+    return 1.0 / sqrt(rho_m * inv)
+
+z1, z2, R, T, E = impedance_split(AIR, WATER)
+print(f"Z_air = {z1:8.1f}   Z_water = {z2:10.1f}   Z2/Z1 = {z2/z1:6.0f}")
+print(f"R = {R:.5f}   T = 1+R = {T:.5f}   reflected energy = {100*E:.3f} %")
+print(f"velocity amp in water / incident = {(z1/z2)*T:.3e}")
+
+print("\nalpha   c_wood [m/s]")
+for a in (0.0, 0.01, 0.1, 0.5, 0.9, 0.99, 1.0):
+    print(f"{a:5.2f}   {wood_speed(a):8.1f}")
+```
+
+```text
+Z_air =    416.4   Z_water =  1497000.0   Z2/Z1 =   3595
+R = 0.99944   T = 1+R = 1.99944   reflected energy = 99.889 %
+velocity amp in water / incident = 5.562e-04
+
+alpha   c_wood [m/s]
+ 0.00     1500.0
+ 0.01      120.5
+ 0.10       40.1
+ 0.50       24.0
+ 0.90       39.9
+ 0.99      114.3
+ 1.00      347.0
+```
+
+Vale la pena mirar la fila $\alpha = 0{,}01$. Con solo un 1% de burbujas en agua, la velocidad del sonido cae de 1500 a 120 m/s. Es el valor medido en agua con burbujas y, a la vez, lo que la malla empieza a ver en cuanto la interfaz se difumina una sola celda.
+
+## Una gota en una onda estacionaria: el cierre del artículo
+
+El último caso de prueba coloca una gota de agua de 1 mm de radio en una cavidad cilíndrica de altura $L = 8$ mm y excita el contorno superior con una oscilación de presión.
+
+$$
+p(t) = p_0 + \Delta p \sin(\omega t)
+$$
+
+con $\omega = 2\pi f$ y $f = c_0/(2L) \approx 21{,}7$ kHz, el primer modo acústico de la cavidad. $\Delta p$ es el 2% de $p_0$, es decir, 2026 Pa. La gravedad se anula.
+
+Una vez establecida la onda estacionaria, aparece un nodo de presión en $z = L/2$. Un nodo de presión es un antinodo de velocidad, y la amplitud de velocidad allí se estima directamente con la impedancia.
+
+$$
+\Delta v = \frac{\Delta p}{\rho_0 c_0} \approx \frac{2026}{416} \approx 4{,}9\ \text{m/s}
+$$
+
+La gota queda en el centro de ese campo de velocidad oscilante. La presión se propaga también dentro del líquido, y la gota circular inicial mantiene una diferencia de presión de Laplace constante, $2\sigma/r = 116$ Pa. La distancia entre esos dos números gobierna el resultado: la perturbación acústica vale 2026 Pa mientras la tensión superficial solo defiende 116 Pa. Cada periodo estira y aplasta la gota en dirección axial, y con amplitud suficiente eso termina en rotura.
+
+Merece la pena ver por qué este caso necesita la formulación anterior. Con líquido incompresible desaparece la onda de presión dentro de la gota. Con la interfaz difuminada, una velocidad del sonido falsa de 24 m/s en las celdas vecinas desplaza la posición del nodo. Interfaz sharp y ambas fases compresibles: esa combinación es la que produce esta imagen.
+
+## Tres líneas para recordar
+
+1. El destino de una onda en la interfaz lo decide solo $Z = \rho c$. Entre aire y agua la relación es 3600, así que se refleja el 99,9% de la energía, la presión en la interfaz se duplica y la velocidad del lado líquido es prácticamente nula.
+2. Difuminar la interfaz sobre unas pocas celdas hace bajar la velocidad de Wood hasta 24 m/s. Ese valor no pertenece a ningún material y arruina a la vez el tiempo de llegada de la onda y el límite CFL explícito. Una interfaz sharp elimina el problema en su origen.
+3. Advección explícita más acústica implícita por proyección saca $c$ del paso de tiempo. El precio es una peor conservación de la energía total en formulación de variables primitivas, y por eso el rango de aplicación se detiene en el régimen subsónico.
