@@ -1,0 +1,242 @@
+---
+title: "Una pared que la malla no ve — núcleos delta del IBM y multi-direct forcing"
+date: 2026-08-03
+description: "Los dos puntos por donde se fuga el no-deslizamiento"
+tags: ["IBM", "Direct-Forcing", "Delta-Kernel", "Lagrangian-Marker", "Incompressible"]
+locale: es
+slug: 2026-08-03-immersed-boundary-direct-forcing-delta-kernel
+draft: false
+---
+
+import { KernelWobbleLab } from '@/components/post-viz/2026-08-03-immersed-boundary-direct-forcing-delta-kernel/KernelWobbleLab'
+import { MarkerSpacingLeakLab } from '@/components/post-viz/2026-08-03-immersed-boundary-direct-forcing-delta-kernel/MarkerSpacingLeakLab'
+
+La pared no está sobre la malla. Aun así el flujo la siente. El método de frontera inmersa (IBM: representar el cuerpo mediante un término de fuerza en vez de ajustar la malla a su forma) resuelve esa contradicción con un solo término fuente en la ecuación de momento. La malla sigue siendo cartesiana y el cuerpo existe únicamente como un conjunto de marcadores que flotan sobre ella. Este artículo muestra con código cómo se calcula ese término, por qué una sola evaluación no basta para imponer el no-deslizamiento, y hacia qué lado se derrumba todo cuando el espaciado de marcadores está mal elegido.
+
+## Levantar una pared con un solo término fuente
+
+Peskin creó el método en 1972 para resolver el flujo sanguíneo alrededor de las válvulas cardíacas. Las válvulas son delgadas y se doblan. Rehacer una malla ajustada a esa forma significa rehacerla en cada paso de tiempo. En lugar de tocar la malla, Peskin añadió un término a la ecuación.
+
+$$
+\frac{\partial \mathbf{u}}{\partial t} + (\mathbf{u}\cdot\nabla)\mathbf{u} = -\frac{1}{\rho}\nabla p + \nu\nabla^2\mathbf{u} + \mathbf{f}
+$$
+
+Aquí $\mathbf{u}$ es el campo de velocidad, $p$ la presión, $\nu$ la viscosidad cinemática y $\mathbf{f}$ la fuerza volumétrica que el sólido ejerce sobre el fluido. Toda la información de la pared vive dentro de $\mathbf{f}$.
+
+El cálculo va y viene entre dos mallas. El fluido vive en una malla cartesiana fija (euleriana); el cuerpo vive en marcadores dispuestos a lo largo de su superficie (lagrangianos). La función delta discreta $\delta_h$ conecta ambas, y funciona en los dos sentidos.
+
+$$
+\mathbf{U}_l = \sum_{\mathbf{x}} \mathbf{u}(\mathbf{x})\,\delta_h(\mathbf{x}-\mathbf{X}_l)\,h^d
+$$
+
+Esa es la interpolación: la velocidad de la malla llevada a la posición del marcador $\mathbf{X}_l$, con $h$ el espaciado de malla y $d$ la dimensión. El sentido inverso es
+
+$$
+\mathbf{f}(\mathbf{x}) = \sum_{l} \mathbf{F}_l\,\delta_h(\mathbf{x}-\mathbf{X}_l)\,\Delta s_l
+$$
+
+el esparcimiento, que reparte la fuerza del marcador $\mathbf{F}_l$ sobre la malla. $\Delta s_l$ es la longitud de superficie que representa cada marcador. Llamemos $\mathcal{I}$ y $\mathcal{S}$ a los dos operadores.
+
+## Forzado continuo frente a discreto: qué renuncia cada uno
+
+Hay dos grandes familias para construir ese término.
+
+| | continuo | discreto (ghost-cell / cut-cell) | direct forcing + MDF |
+|---|---|---|---|
+| interfaz | difuminada unos $4h$ | nítida | difuminada unos $4h$ |
+| orden espacial | primero | segundo o superior disponible | primero |
+| interior del cuerpo | se resuelve junto al fluido | excluido | se resuelve junto al fluido |
+| cuerpos móviles o deformables | funciona tal cual | requiere tratar fresh cells | funciona tal cual |
+| uso típico | membranas elásticas, Re bajo | cuerpos rígidos a Re alto | IB-LBM, cuerpos rígidos y móviles |
+
+El forzado continuo usa la función delta. Eso difumina la interfaz, fija la precisión en primer orden y obliga a resolver también el interior del cuerpo. A número de Reynolds alto (relación entre fuerzas de inercia y viscosas) ese desperdicio sale caro.
+
+El forzado discreto evita por completo la función delta. El IBM de celdas fantasma rellena las celdas del lado sólido con valores ficticios e impone la condición de contorno interpolando en un punto imagen a lo largo de la normal a la superficie. Sin la función delta de por medio, el segundo orden y más allá quedan al alcance. El precio es la clasificación de celdas (fluido / sólido / fantasma) más el tratamiento de fresh points: cuando el cuerpo se mueve, una celda que ayer era sólida hoy es fluido, y su valor no está en ninguna parte.
+
+El direct forcing, tema de hoy, pertenece a la primera familia. Es corto de implementar y robusto con cuerpos en movimiento, y por eso el IB-LBM se apoya tanto en él.
+
+## La tercera condición que debe cumplir un núcleo delta
+
+$\delta_h$ no puede ser cualquier función. Se construye como producto de núcleos unidimensionales, $\delta_h(\mathbf{x}) = h^{-d}\prod \varphi(x_k/h)$, y ese $\varphi$ tiene que ganarse el puesto. Los libros siempre listan dos condiciones de momento.
+
+$$
+\sum_i \varphi(r-i) = 1, \qquad \sum_i (i-r)\,\varphi(r-i) = 0
+$$
+
+$r$ es la coordenada del marcador en unidades de malla e $i$ el índice entero del nodo. La primera dice que la fuerza total esparcida se conserva. La segunda dice que el centroide de esa fuerza cae exactamente sobre el marcador.
+
+La interesante es la tercera condición, que se menciona mucho menos.
+
+$$
+\sum_i \varphi(r-i)^2 = \text{const} \quad (\forall r)
+$$
+
+Esta cantidad es la diagonal de $\mathcal{I}\mathcal{S}$: cuánto de su propia fuerza recupera un marcador. Si varía con $r$, la misma corrección de velocidad produce una fuerza de magnitud distinta según el cuerpo se desliza a través de la malla. La fuerza oscila con la frecuencia de la malla. De ahí sale el diente de sierra en la curva de arrastre cuando se remolca un cilindro a velocidad constante.
+
+Conviene probarlo directamente en la simulación siguiente.
+
+<KernelWobbleLab />
+
+Con `slide` activo, cambiar de núcleo y observar la curva inferior. Con el núcleo hat de 2 puntos, $\sum\varphi^2$ oscila por un factor de dos — de 0.5 a 1.0 — mientras el marcador cruza una sola celda. El núcleo de 3 puntos de Roma queda clavado en 0.5, y el de 4 puntos de Peskin en 0.375. Vale la pena notar que los tres cumplen idénticamente las dos condiciones de momento anteriores. Lo único que los separa es la tercera.
+
+El núcleo de 4 puntos de Peskin tiene esta forma.
+
+$$
+\varphi(r)=\begin{cases}
+\frac{1}{8}\left(3-2|r|+\sqrt{1+4|r|-4r^2}\right), & |r|\le 1 \\[4pt]
+\frac{1}{8}\left(5-2|r|-\sqrt{-7+12|r|-4r^2}\right), & 1<|r|\le 2 \\[4pt]
+0, & \text{en otro caso}
+\end{cases}
+$$
+
+Su soporte de $4h$ es ancho, así que la interfaz se difumina. A cambio, la fuerza sobre un cuerpo en movimiento no tiembla.
+
+## Una pasada de direct forcing no impone el no-deslizamiento
+
+La idea del direct forcing es directa. Se avanza un paso sin el término de fuerza para obtener un campo provisional $\mathbf{u}^*$, se interpola sobre los marcadores y la diferencia respecto a la velocidad objetivo $\mathbf{U}^d$ se convierte en fuerza dividiendo por $\Delta t$.
+
+$$
+\mathbf{F}_l = \frac{\mathbf{U}^{d}_l - \mathcal{I}[\mathbf{u}^*]_l}{\Delta t}
+$$
+
+Para un cuerpo rígido fijo $\mathbf{U}^d = \mathbf{0}$; si se mueve, es la velocidad del cuerpo. Se esparce esa fuerza sobre la malla, se actualiza la velocidad y listo — salvo que no está listo.
+
+La razón cabe en una línea: $\mathcal{I}\mathcal{S} \ne \mathbf{E}$. Interpolar y luego esparcir de vuelta no es la identidad. La fuerza colocada en un marcador se abre sobre $4h$, y solo una parte regresa a ese marcador. El resto va a los marcadores vecinos y se queda en los nodos de la malla. Así que al interpolar otra vez tras la corrección, el deslizamiento sigue ahí.
+
+En una malla de 64×64 con un cilindro de radio $0.18$ en una corriente uniforme $u=1$, el deslizamiento que quedaba sobre los marcadores tras una corrección era el **64%** de la corriente libre. La pared está levantada y el fluido sigue pasando de largo a dos tercios de la velocidad libre.
+
+## Multi-direct forcing: lo que rellena la iteración
+
+Wang y colaboradores (2008) respondieron con iteración. En vez de parar tras un ciclo de interpolar → calcular fuerza → esparcir, el deslizamiento sobrante se vuelve a inyectar.
+
+$$
+\mathbf{u}^{m+1} = \mathbf{u}^{m} + \mathcal{S}\left[\mathbf{U}^{d} - \mathcal{I}[\mathbf{u}^{m}]\right]
+$$
+
+Esto es una iteración de Richardson sobre $\mathbf{A} \equiv \mathcal{I}\mathcal{S}$. El error se multiplica por $(\mathbf{E}-\mathbf{A})$ en cada pasada, de modo que los autovalores de $\mathbf{A}$ fijan la velocidad de convergencia.
+
+También se puede resolver de forma implícita de una sola vez.
+
+$$
+\mathbf{A}\,\Delta\mathbf{U} = \mathbf{U}^{d} - \mathcal{I}[\mathbf{u}^*]
+$$
+
+Eso cuesta resolver una matriz densa del tamaño del número de marcadores en cada paso de tiempo. Si el cuerpo se mueve o se deforma, $\mathbf{A}$ hay que reconstruirla en cada paso. El MDF llega al mismo sitio usando solo productos matriz-vector, sin llegar a ensamblar la matriz.
+
+Aquí se esconde una trampa. Medido, el mayor autovalor de $\mathbf{A}$ está cerca de 0.374 y el menor está pegado a cero. El radio espectral de $(\mathbf{E}-\mathbf{A})$ es, por tanto, 1. El modo dominante se reduce a 0.64 por pasada, pero los modos con autovalor próximo a cero **no se reducen en absoluto**. Por eso el deslizamiento residual del MDF no converge a cero: se aplana en unos pocos por ciento. Subir a 20 pasadas apenas aporta nada frente a 5. Entre tres y cinco pasadas recogen todo lo que hay.
+
+## Contando el deslizamiento residual en Python
+
+Un cilindro en corriente uniforme, y el MDF ejecutado variando el espaciado de marcadores. Se miden dos cosas: el deslizamiento **sobre** los marcadores y el deslizamiento **entre** ellos, en los puntos medios.
+
+```python
+import numpy as np
+
+N, H = 64, 1.0 / 64            # malla euleriana: 64x64 celdas uniformes
+R, CX, CY = 0.18, 0.5, 0.5     # cuerpo circular dentro de una corriente uniforme u = 1
+
+def peskin_kernel(r):
+    """Núcleo de Peskin de 4 puntos: las condiciones de momento se cumplen en toda posición."""
+    a = np.abs(r)
+    out = np.zeros_like(a)
+    m1, m2 = a <= 1.0, (a > 1.0) & (a <= 2.0)
+    out[m1] = (3 - 2 * a[m1] + np.sqrt(1 + 4 * a[m1] - 4 * a[m1] ** 2)) / 8
+    out[m2] = (5 - 2 * a[m2] - np.sqrt(-7 + 12 * a[m2] - 4 * a[m2] ** 2)) / 8
+    return out
+
+def make_marker_ring(ratio, offset=0.0):
+    """Marcadores lagrangianos sobre la circunferencia, espaciado ds = ratio * h."""
+    n = max(8, int(round(2 * np.pi * R / (ratio * H))))
+    th = np.linspace(0, 2 * np.pi, n, endpoint=False) + offset * np.pi / n
+    return CX + R * np.cos(th), CY + R * np.sin(th), 2 * np.pi * R / n
+
+def marker_stencil(xm, ym):
+    """Índices del soporte 4x4 y pesos separables de cada marcador."""
+    ii = np.floor(xm / H - 1.5).astype(int)[:, None] + np.arange(4)
+    jj = np.floor(ym / H - 1.5).astype(int)[:, None] + np.arange(4)
+    return ii % N, jj % N, peskin_kernel(xm[:, None] / H - ii), peskin_kernel(ym[:, None] / H - jj)
+
+def interp_to_markers(u, st):
+    """Euleriano -> lagrangiano:  U_l = sum_x u(x) delta_h(x - X_l) h^2"""
+    ii, jj, wx, wy = st
+    out = np.zeros(ii.shape[0])
+    for a in range(4):
+        for b in range(4):
+            out += u[ii[:, a], jj[:, b]] * wx[:, a] * wy[:, b]
+    return out
+
+def spread_to_grid(dU, st, ds):
+    """Lagrangiano -> euleriano:  du(x) = sum_l dU_l delta_h(x - X_l) ds"""
+    ii, jj, wx, wy = st
+    out = np.zeros((N, N))
+    for a in range(4):
+        for b in range(4):
+            np.add.at(out, (ii[:, a], jj[:, b]), dU * wx[:, a] * wy[:, b] * ds / H)
+    return out
+
+def influence_matrix(st, ds):
+    """A = I S, la matriz que el planteamiento implícito tiene que invertir."""
+    n = st[0].shape[0]
+    A = np.zeros((n, n))
+    for l in range(n):
+        e = np.zeros(n)
+        e[l] = 1.0
+        A[:, l] = interp_to_markers(spread_to_grid(e, st, ds), st)
+    return A
+
+def slip_after_mdf(ratio, n_iter):
+    """Ejecuta n_iter pasadas de MDF y mide el deslizamiento sobre y entre marcadores."""
+    xm, ym, ds = make_marker_ring(ratio)
+    st = marker_stencil(xm, ym)
+    gap = marker_stencil(*make_marker_ring(ratio, offset=1.0)[:2])   # puntos medios entre marcadores
+    u = np.ones((N, N))                                             # corriente libre, aún no siente el cuerpo
+    history = []
+    for _ in range(n_iter):
+        slip = 0.0 - interp_to_markers(u, st)                       # la velocidad objetivo es cero
+        history.append(np.max(np.abs(slip)))
+        u += spread_to_grid(slip, st, ds)
+    A = influence_matrix(st, ds)
+    return dict(n=len(xm), history=history,
+                on=np.max(np.abs(interp_to_markers(u, st))),
+                between=np.max(np.abs(interp_to_markers(u, gap))),
+                cond=np.linalg.cond(A), lam=np.linalg.eigvals(A).real.max())
+
+print(f"{'ds/h':>5}{'markers':>9}{'slip@marker':>13}{'slip@gap':>10}{'cond(A)':>11}{'lam_max':>9}")
+for ratio in (0.25, 0.5, 1.0, 1.5, 2.0, 3.0):
+    r = slip_after_mdf(ratio, n_iter=10)
+    print(f"{ratio:5.2f}{r['n']:9d}{r['on']:13.4f}{r['between']:10.4f}{r['cond']:11.1e}{r['lam']:9.3f}")
+```
+
+La salida:
+
+```text
+ ds/h  markers  slip@marker  slip@gap    cond(A)  lam_max
+ 0.25      290       0.0407    0.0442    1.3e+11    0.369
+ 0.50      145       0.0352    0.0439    8.8e+05    0.371
+ 1.00       72       0.0425    0.0455    6.8e+02    0.374
+ 1.50       48       0.0368    0.0630    6.4e+00    0.374
+ 2.00       36       0.0114    0.0519    2.0e+00    0.376
+ 3.00       24       0.0041    0.2865    1.1e+00    0.434
+```
+
+Mirando solo la columna `slip@marker`, cuanto más espaciados los marcadores, mejor parece: 0.004 en $\Delta s/h = 3$, el valor más pequeño de la tabla. Ahí está la trampa.
+
+## Los dos precipicios a ambos lados de Δs/h
+
+Conviene mirar `slip@gap` en la misma tabla. En $\Delta s/h = 3$ vale 0.287. El no-deslizamiento es casi perfecto donde se sientan los marcadores, y el 29% de la corriente libre pasa de largo por el espacio entre ellos. Solo los puntos forzados quedan quietos; el fluido se fuga por el medio.
+
+El precipicio opuesto está en la columna `cond(A)`. En $\Delta s/h = 0.25$ el número de condición es $10^{11}$. Con los marcadores demasiado juntos, dos marcadores vecinos ven casi los mismos nodos de malla y las filas de $\mathbf{A}$ se vuelven paralelas. El MDF explícito sigue funcionando. El planteamiento implícito muere justo ahí.
+
+En la simulación siguiente se puede recorrer el trayecto entre los dos precipicios.
+
+<MarkerSpacingLeakLab />
+
+Al subir el deslizador `ds/h` por encima de 2.5 se abren huecos en el anillo de marcadores; los trazadores (puntos blancos) atraviesan el cuerpo por esos huecos y se vuelven rojos al entrar. Al bajarlo por debajo de 0.4 la fuga desaparece, pero el indicador `cos θ` de la derecha se pega a 1: la señal de que las filas vecinas ya son paralelas. Conviene observar además cómo el deslizamiento cae de golpe cuando `MDF passes` va de 0 a 3, y apenas se mueve después.
+
+La distancia entre esas dos columnas es la razón de que la práctica recomiende $\Delta s \approx h$. Mantener la discretización superficial algo más fina que la malla del fluido, alrededor de $\Delta s \approx 0.7h$ a $1.0h$, es la banda segura.
+
+## Antes de levantar la siguiente pared
+
+- No juzgar un núcleo solo por las dos condiciones de momento. Un núcleo cuyo $\sum\varphi^2$ varía con la posición del marcador deja un diente de sierra a la frecuencia de la malla en la señal de fuerza de un cuerpo móvil. En el hat de 2 puntos ese valor oscila por un factor de dos.
+- Una pasada de direct forcing no impone el no-deslizamiento: sobrevive más del 60% del deslizamiento de la corriente libre. Poner 3 a 5 pasadas de MDF como valor por defecto, y no esperar más de 20. Las componentes cercanas al núcleo de $\mathcal{I}\mathcal{S}$ no se borran iterando.
+- Cuando el arrastre no cuadra, graficar el deslizamiento **entre** marcadores, no sobre ellos. El número sobre el marcador sigue mejorando conforme crece $\Delta s$. El caudal que se fuga por los huecos, no.

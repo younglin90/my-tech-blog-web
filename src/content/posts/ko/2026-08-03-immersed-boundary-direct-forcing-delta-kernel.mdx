@@ -1,0 +1,242 @@
+---
+title: "격자가 모르는 벽 — IBM 델타 커널과 multi-direct forcing"
+date: 2026-08-03
+description: "강제항으로 세운 벽에서 no-slip이 새는 두 지점"
+tags: ["IBM", "Direct-Forcing", "Delta-Kernel", "Lagrangian-Marker", "Incompressible"]
+locale: ko
+slug: 2026-08-03-immersed-boundary-direct-forcing-delta-kernel
+draft: false
+---
+
+import { KernelWobbleLab } from '@/components/post-viz/2026-08-03-immersed-boundary-direct-forcing-delta-kernel/KernelWobbleLab'
+import { MarkerSpacingLeakLab } from '@/components/post-viz/2026-08-03-immersed-boundary-direct-forcing-delta-kernel/MarkerSpacingLeakLab'
+
+벽은 격자 위에 없다. 그런데 유동은 벽을 느낀다. Immersed boundary method(IBM·물체를 격자에 맞추지 않고 강제항으로 표현하는 기법)는 이 모순을 운동량 방정식의 소스항 하나로 처리한다. 격자는 직교 상태 그대로 두고, 물체는 그 위에 떠 있는 마커 점들의 집합으로만 존재한다. 오늘은 그 강제항이 실제로 어떻게 계산되는지, 왜 한 번 계산해서는 no-slip이 지켜지지 않는지, 그리고 마커 간격 하나를 잘못 잡으면 어느 방향으로 무너지는지를 코드로 확인한다.
+
+## 강제항 하나로 벽을 세운다
+
+Peskin은 1972년에 심장 판막 주위 혈류를 풀려고 이 기법을 만들었다. 판막은 얇고 휘어진다. 그 형상에 맞춰 격자를 다시 짜는 일은 매 시간스텝 반복해야 한다. Peskin은 격자를 건드리는 대신 방정식에 항을 하나 더 넣었다.
+
+$$
+\frac{\partial \mathbf{u}}{\partial t} + (\mathbf{u}\cdot\nabla)\mathbf{u} = -\frac{1}{\rho}\nabla p + \nu\nabla^2\mathbf{u} + \mathbf{f}
+$$
+
+$\mathbf{u}$는 속도장, $p$는 압력, $\nu$는 동점성계수, $\mathbf{f}$는 물체가 유체에 가하는 체적력이다. 벽 정보는 전부 $\mathbf{f}$ 안에 들어간다.
+
+계산은 두 개의 격자를 오간다. 유체는 고정된 직교 격자(Eulerian) 위에, 물체는 표면을 따라 늘어선 마커 점(Lagrangian) 위에 산다. 둘을 잇는 것이 이산 델타 함수 $\delta_h$다. 방향은 두 갈래다.
+
+$$
+\mathbf{U}_l = \sum_{\mathbf{x}} \mathbf{u}(\mathbf{x})\,\delta_h(\mathbf{x}-\mathbf{X}_l)\,h^d
+$$
+
+격자 속도를 마커 위치 $\mathbf{X}_l$로 끌어오는 보간(interpolation)이다. $h$는 격자 간격, $d$는 차원이다. 반대 방향은
+
+$$
+\mathbf{f}(\mathbf{x}) = \sum_{l} \mathbf{F}_l\,\delta_h(\mathbf{x}-\mathbf{X}_l)\,\Delta s_l
+$$
+
+마커에서 계산한 힘 $\mathbf{F}_l$을 격자로 뿌리는 확산(spreading)이다. $\Delta s_l$은 마커가 대표하는 표면 조각의 길이다. 두 연산자를 각각 $\mathcal{I}$와 $\mathcal{S}$로 쓰겠다.
+
+## 연속 강제와 이산 강제 — 무엇을 포기하는가
+
+강제항을 만드는 방식은 크게 두 갈래로 갈린다.
+
+| | 연속 강제 (continuous) | 이산 강제 (ghost-cell / cut-cell) | direct forcing + MDF |
+|---|---|---|---|
+| 계면 표현 | 델타 커널로 $4h$ 정도 번짐 | sharp | $4h$ 정도 번짐 |
+| 공간 정확도 | 1차 | 2차 이상 가능 | 1차 |
+| 물체 내부 | 같이 푼다 | 계산에서 제외 | 같이 푼다 |
+| 이동·변형 물체 | 그대로 됨 | fresh cell 처리 필요 | 그대로 됨 |
+| 주 사용처 | 탄성 막, 낮은 Re | 높은 Re 강체 | IB-LBM, 강체·이동체 |
+
+연속 강제는 델타 함수를 쓴다. 그래서 계면이 번지고, 정확도는 1차에 묶이며, 물체 내부까지 전부 푼다. 높은 Reynolds 수(관성력/점성력 비) 계산에서는 이 낭비가 크다.
+
+이산 강제는 델타 함수를 쓰지 않는다. 고스트 셀 IBM은 고체 쪽 셀에 가상값을 채우고, 표면 수직선을 따라 이미지 포인트에서 보간해 경계조건을 건다. 델타 함수가 없으니 2차 이상으로 올릴 수 있다. 대신 셀 분류(유체/고체/고스트)와 fresh point 처리가 붙는다. 물체가 움직이면 어제 고체였던 셀이 오늘 유체가 되고, 그 셀의 값은 어디에도 없다.
+
+오늘 다루는 direct forcing은 첫 번째 갈래에 속한다. 구현이 짧고 이동 물체에 강해서 IB-LBM에서 특히 많이 쓰인다.
+
+## 델타 커널이 지켜야 하는 세 번째 조건
+
+$\delta_h$는 아무 함수나 되지 않는다. 1차원 커널 $\varphi$를 곱으로 쌓아 만드는데($\delta_h(\mathbf{x}) = h^{-d}\prod \varphi(x_k/h)$), $\varphi$는 조건을 만족해야 한다. 교과서가 늘 적는 두 개는 모멘트 조건이다.
+
+$$
+\sum_i \varphi(r-i) = 1, \qquad \sum_i (i-r)\,\varphi(r-i) = 0
+$$
+
+$r$은 마커의 격자 좌표, $i$는 정수 노드 번호다. 앞의 것은 뿌린 힘의 총합이 보존된다는 뜻이고, 뒤의 것은 그 힘의 무게중심이 마커 위치에 정확히 놓인다는 뜻이다.
+
+문제는 잘 언급되지 않는 세 번째 조건이다.
+
+$$
+\sum_i \varphi(r-i)^2 = \text{const} \quad (\forall r)
+$$
+
+이 값은 $\mathcal{I}\mathcal{S}$의 대각 성분, 즉 마커가 자기 자신에게 되돌려받는 양이다. 이것이 $r$에 따라 변하면, 물체가 격자를 가로질러 미끄러질 때 같은 속도 보정에 대해 다른 크기의 힘이 나온다. 힘이 격자 주기로 진동한다. 실린더를 균일하게 끌어당겼는데 항력 곡선에 톱니가 생기는 현상이 여기서 온다.
+
+아래 시뮬레이션에서 직접 조작해보자.
+
+<KernelWobbleLab />
+
+`slide`를 켜두고 커널을 바꿔가며 아래 곡선을 보면 된다. 2점 hat 커널은 마커가 셀 한 칸을 지나는 동안 $\sum\varphi^2$가 0.5에서 1.0까지 두 배로 출렁인다. Roma의 3점 커널은 0.5, Peskin의 4점 커널은 0.375에 못 박혀 있다. 세 커널 모두 위쪽 모멘트 조건 두 개는 똑같이 만족한다는 점도 같이 확인하자. 갈리는 것은 세 번째 조건뿐이다.
+
+Peskin 4점 커널의 형태는 다음과 같다.
+
+$$
+\varphi(r)=\begin{cases}
+\frac{1}{8}\left(3-2|r|+\sqrt{1+4|r|-4r^2}\right), & |r|\le 1 \\[4pt]
+\frac{1}{8}\left(5-2|r|-\sqrt{-7+12|r|-4r^2}\right), & 1<|r|\le 2 \\[4pt]
+0, & \text{그 외}
+\end{cases}
+$$
+
+지지 폭이 $4h$로 넓어 계면이 번지는 대가를 치른다. 그 대가로 이동 물체에서 힘이 떨지 않는다.
+
+## 한 번의 direct forcing으로는 no-slip이 안 잡힌다
+
+Direct forcing의 발상은 단순하다. 강제항 없이 한 스텝 전진시킨 임시 속도장 $\mathbf{u}^*$를 마커로 보간하고, 목표 속도 $\mathbf{U}^d$와의 차이를 $\Delta t$로 나눠 힘으로 삼는다.
+
+$$
+\mathbf{F}_l = \frac{\mathbf{U}^{d}_l - \mathcal{I}[\mathbf{u}^*]_l}{\Delta t}
+$$
+
+고정 강체면 $\mathbf{U}^d = \mathbf{0}$, 움직이면 그 물체의 속도다. 이 힘을 격자로 뿌리고 속도를 갱신하면 끝 — 이어야 하는데, 끝이 아니다.
+
+이유는 한 줄이다. $\mathcal{I}\mathcal{S} \ne \mathbf{E}$. 보간했다가 다시 뿌리는 왕복이 항등 연산이 아니다. 마커 하나에 힘을 뿌리면 그 힘은 $4h$ 폭으로 퍼지고, 그중 일부만 원래 마커로 되돌아온다. 나머지는 이웃 마커에게 가고, 격자 노드에 남는다. 그래서 보정 후 다시 보간해보면 슬립이 남아 있다.
+
+64×64 격자에 반지름 $0.18$ 원기둥, 균일류 $u=1$로 시험한 결과 한 번의 보정 뒤 마커 위 슬립은 자유류의 **64%**였다. 벽이 서긴 섰는데 유체는 여전히 벽 속도의 3분의 2로 지나간다.
+
+## Multi-direct forcing — 반복이 메우는 간극
+
+Wang 등(2008)이 낸 답은 반복이다. 보간 → 힘 계산 → 확산을 한 번으로 끝내지 말고, 남은 슬립을 다시 입력으로 넣는다.
+
+$$
+\mathbf{u}^{m+1} = \mathbf{u}^{m} + \mathcal{S}\left[\mathbf{U}^{d} - \mathcal{I}[\mathbf{u}^{m}]\right]
+$$
+
+이것은 $\mathbf{A} \equiv \mathcal{I}\mathcal{S}$에 대한 Richardson 반복이다. 오차는 매 회 $(\mathbf{E}-\mathbf{A})$가 곱해진다. 수렴 속도는 $\mathbf{A}$의 고유값이 정한다.
+
+암시적으로 한 번에 풀 수도 있다.
+
+$$
+\mathbf{A}\,\Delta\mathbf{U} = \mathbf{U}^{d} - \mathcal{I}[\mathbf{u}^*]
+$$
+
+마커 수만큼의 조밀 행렬을 매 시간스텝 푸는 비용이 든다. 물체가 움직이거나 변형되면 $\mathbf{A}$도 매 스텝 다시 만들어야 한다. MDF는 이 행렬을 만들지 않고 곱셈만으로 같은 지점에 접근하는 방법이다.
+
+여기에 함정이 하나 숨어 있다. 측정해보면 $\mathbf{A}$의 최대 고유값은 0.374 근처이고 최소 고유값은 0에 붙어 있다. $(\mathbf{E}-\mathbf{A})$의 스펙트럼 반경은 따라서 1이다. 지배 모드는 매 회 0.64배로 줄지만, 고유값이 0에 가까운 모드는 **전혀 줄지 않는다**. 그래서 MDF의 잔류 슬립은 0으로 수렴하지 않고 몇 % 수준에서 평평해진다. 반복 횟수를 20으로 올려도 5회일 때와 큰 차이가 없다. 3~5회면 얻을 것을 다 얻는다.
+
+## Python으로 세어보는 잔류 슬립
+
+원기둥 하나에 균일류를 걸고, 마커 간격을 바꿔가며 MDF를 돌린다. 측정하는 것은 두 가지다. 마커 **위**에서의 슬립, 그리고 마커 **사이**(중점)에서의 슬립.
+
+```python
+import numpy as np
+
+N, H = 64, 1.0 / 64            # Eulerian 격자: 64x64 균일 셀
+R, CX, CY = 0.18, 0.5, 0.5     # 균일류 u = 1 속에 놓인 원형 물체
+
+def peskin_kernel(r):
+    """4점 Peskin 커널. 마커 위치와 무관하게 모멘트 조건이 유지된다."""
+    a = np.abs(r)
+    out = np.zeros_like(a)
+    m1, m2 = a <= 1.0, (a > 1.0) & (a <= 2.0)
+    out[m1] = (3 - 2 * a[m1] + np.sqrt(1 + 4 * a[m1] - 4 * a[m1] ** 2)) / 8
+    out[m2] = (5 - 2 * a[m2] - np.sqrt(-7 + 12 * a[m2] - 4 * a[m2] ** 2)) / 8
+    return out
+
+def make_marker_ring(ratio, offset=0.0):
+    """원 위의 Lagrangian 마커. 간격은 ds = ratio * h."""
+    n = max(8, int(round(2 * np.pi * R / (ratio * H))))
+    th = np.linspace(0, 2 * np.pi, n, endpoint=False) + offset * np.pi / n
+    return CX + R * np.cos(th), CY + R * np.sin(th), 2 * np.pi * R / n
+
+def marker_stencil(xm, ym):
+    """마커마다 4x4 지지영역의 인덱스와 분리형 가중치."""
+    ii = np.floor(xm / H - 1.5).astype(int)[:, None] + np.arange(4)
+    jj = np.floor(ym / H - 1.5).astype(int)[:, None] + np.arange(4)
+    return ii % N, jj % N, peskin_kernel(xm[:, None] / H - ii), peskin_kernel(ym[:, None] / H - jj)
+
+def interp_to_markers(u, st):
+    """Eulerian -> Lagrangian:  U_l = sum_x u(x) delta_h(x - X_l) h^2"""
+    ii, jj, wx, wy = st
+    out = np.zeros(ii.shape[0])
+    for a in range(4):
+        for b in range(4):
+            out += u[ii[:, a], jj[:, b]] * wx[:, a] * wy[:, b]
+    return out
+
+def spread_to_grid(dU, st, ds):
+    """Lagrangian -> Eulerian:  du(x) = sum_l dU_l delta_h(x - X_l) ds"""
+    ii, jj, wx, wy = st
+    out = np.zeros((N, N))
+    for a in range(4):
+        for b in range(4):
+            np.add.at(out, (ii[:, a], jj[:, b]), dU * wx[:, a] * wy[:, b] * ds / H)
+    return out
+
+def influence_matrix(st, ds):
+    """A = I S. 암시적 IB 해법이 역행렬을 구해야 하는 바로 그 행렬."""
+    n = st[0].shape[0]
+    A = np.zeros((n, n))
+    for l in range(n):
+        e = np.zeros(n)
+        e[l] = 1.0
+        A[:, l] = interp_to_markers(spread_to_grid(e, st, ds), st)
+    return A
+
+def slip_after_mdf(ratio, n_iter):
+    """MDF를 n_iter회 돌린 뒤, 마커 위와 마커 사이의 슬립을 측정한다."""
+    xm, ym, ds = make_marker_ring(ratio)
+    st = marker_stencil(xm, ym)
+    gap = marker_stencil(*make_marker_ring(ratio, offset=1.0)[:2])   # 마커 사이 중점
+    u = np.ones((N, N))                                             # 자유류. 아직 물체를 모른다
+    history = []
+    for _ in range(n_iter):
+        slip = 0.0 - interp_to_markers(u, st)                       # 목표 속도는 0
+        history.append(np.max(np.abs(slip)))
+        u += spread_to_grid(slip, st, ds)
+    A = influence_matrix(st, ds)
+    return dict(n=len(xm), history=history,
+                on=np.max(np.abs(interp_to_markers(u, st))),
+                between=np.max(np.abs(interp_to_markers(u, gap))),
+                cond=np.linalg.cond(A), lam=np.linalg.eigvals(A).real.max())
+
+print(f"{'ds/h':>5}{'markers':>9}{'slip@marker':>13}{'slip@gap':>10}{'cond(A)':>11}{'lam_max':>9}")
+for ratio in (0.25, 0.5, 1.0, 1.5, 2.0, 3.0):
+    r = slip_after_mdf(ratio, n_iter=10)
+    print(f"{ratio:5.2f}{r['n']:9d}{r['on']:13.4f}{r['between']:10.4f}{r['cond']:11.1e}{r['lam']:9.3f}")
+```
+
+출력은 다음과 같다.
+
+```text
+ ds/h  markers  slip@marker  slip@gap    cond(A)  lam_max
+ 0.25      290       0.0407    0.0442    1.3e+11    0.369
+ 0.50      145       0.0352    0.0439    8.8e+05    0.371
+ 1.00       72       0.0425    0.0455    6.8e+02    0.374
+ 1.50       48       0.0368    0.0630    6.4e+00    0.374
+ 2.00       36       0.0114    0.0519    2.0e+00    0.376
+ 3.00       24       0.0041    0.2865    1.1e+00    0.434
+```
+
+`slip@marker` 열만 보면 마커를 성기게 둘수록 좋아 보인다. $\Delta s/h = 3$에서 0.004로 가장 작다. 함정이다.
+
+## Δs/h가 만드는 두 개의 낭떠러지
+
+같은 표의 `slip@gap` 열을 보자. $\Delta s/h = 3$에서 0.287이다. 마커가 앉은 자리에서는 no-slip이 거의 완벽한데, 마커와 마커 사이에서는 자유류의 29%가 그대로 지나간다. 강제한 지점만 조용하고 그 사이로는 물이 샌다.
+
+반대쪽 낭떠러지는 `cond(A)` 열에 있다. $\Delta s/h = 0.25$에서 조건수가 $10^{11}$이다. 마커가 너무 촘촘하면 이웃한 두 마커가 거의 같은 격자 노드를 보게 되고, $\mathbf{A}$의 행이 서로 평행해진다. 명시적 MDF는 그래도 돌아간다. 암시적 해법은 이 지점에서 죽는다.
+
+아래 시뮬레이션에서 두 낭떠러지 사이를 직접 오가보자.
+
+<MarkerSpacingLeakLab />
+
+`ds/h` 슬라이더를 2.5 이상으로 올리면 원 둘레의 띠에 틈이 생기고, 추적자(흰 점)가 그 틈으로 물체를 통과한다 — 통과한 입자는 빨간색으로 바뀐다. 반대로 0.4 아래로 내리면 누수는 사라지지만 오른쪽 `cos θ` 게이지가 1로 붙는다. 인접한 두 행이 평행해졌다는 신호다. `MDF passes`를 0에서 3으로 올릴 때 슬립이 크게 떨어지고, 그 뒤로는 거의 안 움직이는 것도 같이 확인하자.
+
+실무에서 $\Delta s \approx h$를 권하는 이유가 이 두 열 사이에 있다. 표면 격자를 유체 격자보다 조금 조밀하게($\Delta s \approx 0.7h \sim 1.0h$) 잡는 것이 안전한 구간이다.
+
+## 다시 벽을 세울 때 확인할 것
+
+- 커널을 고를 때 모멘트 조건 두 개만 보지 말 것. $\sum\varphi^2$가 마커 위치에 따라 변하는 커널은 이동 물체의 힘 신호에 격자 주기 톱니를 남긴다. 2점 hat은 그 값이 두 배로 출렁인다.
+- Direct forcing 한 번으로는 no-slip이 안 잡힌다. 남는 슬립이 자유류의 60% 넘는다. MDF 3~5회를 기본값으로 두되, 20회로 늘려도 더 얻을 것은 없다. $\mathcal{I}\mathcal{S}$의 영공간에 가까운 성분은 반복으로 지워지지 않는다.
+- 항력이 이상하면 마커 위 슬립이 아니라 마커 **사이** 슬립을 찍어볼 것. 전자만 보면 $\Delta s$를 키울수록 좋아 보인다. 실제로는 그 사이로 유량이 샌다.

@@ -1,0 +1,242 @@
+---
+title: "网格看不见的壁面 — IBM 的 delta 核与 multi-direct forcing"
+date: 2026-08-03
+description: "用强制项立起的壁面上，无滑移泄漏的两处"
+tags: ["IBM", "Direct-Forcing", "Delta-Kernel", "Lagrangian-Marker", "Incompressible"]
+locale: zh
+slug: 2026-08-03-immersed-boundary-direct-forcing-delta-kernel
+draft: false
+---
+
+import { KernelWobbleLab } from '@/components/post-viz/2026-08-03-immersed-boundary-direct-forcing-delta-kernel/KernelWobbleLab'
+import { MarkerSpacingLeakLab } from '@/components/post-viz/2026-08-03-immersed-boundary-direct-forcing-delta-kernel/MarkerSpacingLeakLab'
+
+壁面不在网格上。流动却感觉得到它。浸没边界法(IBM·不让网格贴合物体、而用强制项表示物体的方法)用动量方程里的一个源项处理这个矛盾。网格保持正交，物体只以浮在网格之上的一组标记点存在。本文用代码确认三件事：这个强制项究竟怎么算出来、为什么算一次并不能保证无滑移、以及标记点间距选错时会往哪个方向崩掉。
+
+## 用一个强制项立起壁面
+
+Peskin 在 1972 年为了求解心脏瓣膜周围的血流而创造了这个方法。瓣膜又薄又会弯。按那种形状重新划分网格，意味着每个时间步都要重来一次。Peskin 没有动网格，而是往方程里加了一项。
+
+$$
+\frac{\partial \mathbf{u}}{\partial t} + (\mathbf{u}\cdot\nabla)\mathbf{u} = -\frac{1}{\rho}\nabla p + \nu\nabla^2\mathbf{u} + \mathbf{f}
+$$
+
+$\mathbf{u}$ 是速度场，$p$ 是压力，$\nu$ 是运动黏度，$\mathbf{f}$ 是固体施加给流体的体积力。壁面的全部信息都装在 $\mathbf{f}$ 里。
+
+计算在两套网格之间往返。流体住在固定的正交网格(Eulerian)上，物体住在沿表面排列的标记点(Lagrangian)上。连接两者的是离散 delta 函数 $\delta_h$，方向有两个。
+
+$$
+\mathbf{U}_l = \sum_{\mathbf{x}} \mathbf{u}(\mathbf{x})\,\delta_h(\mathbf{x}-\mathbf{X}_l)\,h^d
+$$
+
+这是把网格速度拉到标记点位置 $\mathbf{X}_l$ 的插值(interpolation)。$h$ 是网格间距，$d$ 是维数。反方向是
+
+$$
+\mathbf{f}(\mathbf{x}) = \sum_{l} \mathbf{F}_l\,\delta_h(\mathbf{x}-\mathbf{X}_l)\,\Delta s_l
+$$
+
+这是把标记点上算出的力 $\mathbf{F}_l$ 撒回网格的扩散(spreading)。$\Delta s_l$ 是每个标记点所代表的表面片长度。两个算子分别记作 $\mathcal{I}$ 和 $\mathcal{S}$。
+
+## 连续强制与离散强制 — 各自放弃了什么
+
+构造强制项的方式大致分成两条路线。
+
+| | 连续强制 (continuous) | 离散强制 (ghost-cell / cut-cell) | direct forcing + MDF |
+|---|---|---|---|
+| 界面表示 | 被 delta 核抹开约 $4h$ | sharp | 抹开约 $4h$ |
+| 空间精度 | 一阶 | 可做到二阶以上 | 一阶 |
+| 物体内部 | 一起求解 | 排除在计算外 | 一起求解 |
+| 运动/变形物体 | 直接可用 | 需处理 fresh cell | 直接可用 |
+| 主要用途 | 弹性膜、低 Re | 高 Re 刚体 | IB-LBM、刚体与运动体 |
+
+连续强制使用 delta 函数。因此界面被抹开，精度被锁在一阶，而且连物体内部也一起求解。在高 Reynolds 数(惯性力与黏性力之比)的计算里，这份浪费代价不小。
+
+离散强制完全不用 delta 函数。ghost-cell IBM 往固体侧单元填入虚拟值，沿表面法线在镜像点上插值来施加边界条件。没有 delta 函数挡路，二阶以上就够得着了。代价是单元分类(流体/固体/ghost)和 fresh point 处理：物体一动，昨天还是固体的单元今天成了流体，而它的值无处可寻。
+
+今天讲的 direct forcing 属于第一条路线。实现简短、对运动物体稳健，所以 IB-LBM 尤其依赖它。
+
+## delta 核必须满足的第三个条件
+
+$\delta_h$ 不是随便什么函数都行。它由一维核 $\varphi$ 相乘搭成($\delta_h(\mathbf{x}) = h^{-d}\prod \varphi(x_k/h)$)，而 $\varphi$ 必须满足条件。教科书总会写下的两个是矩条件。
+
+$$
+\sum_i \varphi(r-i) = 1, \qquad \sum_i (i-r)\,\varphi(r-i) = 0
+$$
+
+$r$ 是标记点的网格坐标，$i$ 是整数节点编号。前者表示撒出去的力总量守恒，后者表示这份力的重心正好落在标记点上。
+
+真正值得注意的是很少被提起的第三个条件。
+
+$$
+\sum_i \varphi(r-i)^2 = \text{const} \quad (\forall r)
+$$
+
+这个量是 $\mathcal{I}\mathcal{S}$ 的对角元，也就是一个标记点从自己那里拿回来的份额。它若随 $r$ 变化，那么当物体横穿网格滑动时，同样的速度修正会给出不同大小的力。力就以网格频率振荡。匀速拖曳圆柱却在阻力曲线上看到锯齿，根源就在这里。
+
+在下面的模拟里直接操作看看。
+
+<KernelWobbleLab />
+
+让 `slide` 保持运行，一边切换核一边看下方曲线。2 点 hat 核在标记点穿过一个单元的过程中，$\sum\varphi^2$ 从 0.5 摆到 1.0，整整两倍。Roma 的 3 点核钉在 0.5，Peskin 的 4 点核钉在 0.375。同时留意三种核对上面两个矩条件的满足程度完全一样。区分它们的只有第三个条件。
+
+Peskin 4 点核的形式如下。
+
+$$
+\varphi(r)=\begin{cases}
+\frac{1}{8}\left(3-2|r|+\sqrt{1+4|r|-4r^2}\right), & |r|\le 1 \\[4pt]
+\frac{1}{8}\left(5-2|r|-\sqrt{-7+12|r|-4r^2}\right), & 1<|r|\le 2 \\[4pt]
+0, & \text{其他}
+\end{cases}
+$$
+
+支撑宽达 $4h$，代价是界面被抹开。换来的是运动物体上的力不会抖。
+
+## 一次 direct forcing 定不住无滑移
+
+direct forcing 的想法很直白。先不加强制项推进一步得到临时速度场 $\mathbf{u}^*$，插值到标记点上，再把它与目标速度 $\mathbf{U}^d$ 的差除以 $\Delta t$ 当作力。
+
+$$
+\mathbf{F}_l = \frac{\mathbf{U}^{d}_l - \mathcal{I}[\mathbf{u}^*]_l}{\Delta t}
+$$
+
+固定刚体时 $\mathbf{U}^d = \mathbf{0}$，运动时则取物体速度。把这份力撒到网格上更新速度就结束了 — 本该如此，但并没有结束。
+
+原因只有一行：$\mathcal{I}\mathcal{S} \ne \mathbf{E}$。先插值再撒回去的这趟往返不是恒等运算。往一个标记点撒力，力会摊开到 $4h$ 的宽度，只有一部分回到原来的标记点。其余的去了邻近标记点，或留在网格节点上。所以修正之后再插值一次，滑移仍然在那里。
+
+在 64×64 网格上放一个半径 $0.18$ 的圆柱、来流 $u=1$ 做试验，一次修正之后标记点上残留的滑移是自由来流的 **64%**。壁面是立起来了，流体照样以壁面速度的三分之二从旁边走过。
+
+## Multi-direct forcing — 迭代补上的缺口
+
+Wang 等(2008)给出的答案是迭代。别让插值 → 算力 → 扩散一次就收工，把剩下的滑移再喂回去。
+
+$$
+\mathbf{u}^{m+1} = \mathbf{u}^{m} + \mathcal{S}\left[\mathbf{U}^{d} - \mathcal{I}[\mathbf{u}^{m}]\right]
+$$
+
+这是关于 $\mathbf{A} \equiv \mathcal{I}\mathcal{S}$ 的 Richardson 迭代。误差每轮乘上 $(\mathbf{E}-\mathbf{A})$，所以收敛速度由 $\mathbf{A}$ 的特征值决定。
+
+也可以隐式地一次解完。
+
+$$
+\mathbf{A}\,\Delta\mathbf{U} = \mathbf{U}^{d} - \mathcal{I}[\mathbf{u}^*]
+$$
+
+代价是每个时间步求解一个规模等于标记点数的稠密矩阵。物体一旦运动或变形，$\mathbf{A}$ 每步都要重建。MDF 则不组装矩阵，只靠矩阵向量乘就逼近同一个位置。
+
+这里藏着一个陷阱。实测下来，$\mathbf{A}$ 的最大特征值在 0.374 附近，最小特征值贴着 0。于是 $(\mathbf{E}-\mathbf{A})$ 的谱半径是 1。主导模态每轮缩小到 0.64 倍，但特征值接近 0 的模态**完全不缩小**。所以 MDF 的残余滑移不会收敛到 0，而是在百分之几的水平上变平。把迭代次数提到 20 次，与 5 次相比几乎没有差别。3～5 次就把能拿的都拿到了。
+
+## 用 Python 数一数残余滑移
+
+给一个圆柱加上均匀来流，改变标记点间距并运行 MDF。测两样东西：标记点**上**的滑移，以及标记点**之间**(中点)的滑移。
+
+```python
+import numpy as np
+
+N, H = 64, 1.0 / 64            # Eulerian 网格：64x64 均匀单元
+R, CX, CY = 0.18, 0.5, 0.5     # 置于均匀来流 u = 1 中的圆形物体
+
+def peskin_kernel(r):
+    """4 点 Peskin 核。与标记点位置无关，矩条件始终成立。"""
+    a = np.abs(r)
+    out = np.zeros_like(a)
+    m1, m2 = a <= 1.0, (a > 1.0) & (a <= 2.0)
+    out[m1] = (3 - 2 * a[m1] + np.sqrt(1 + 4 * a[m1] - 4 * a[m1] ** 2)) / 8
+    out[m2] = (5 - 2 * a[m2] - np.sqrt(-7 + 12 * a[m2] - 4 * a[m2] ** 2)) / 8
+    return out
+
+def make_marker_ring(ratio, offset=0.0):
+    """圆周上的 Lagrangian 标记点，间距 ds = ratio * h。"""
+    n = max(8, int(round(2 * np.pi * R / (ratio * H))))
+    th = np.linspace(0, 2 * np.pi, n, endpoint=False) + offset * np.pi / n
+    return CX + R * np.cos(th), CY + R * np.sin(th), 2 * np.pi * R / n
+
+def marker_stencil(xm, ym):
+    """每个标记点的 4x4 支撑区索引与可分离权重。"""
+    ii = np.floor(xm / H - 1.5).astype(int)[:, None] + np.arange(4)
+    jj = np.floor(ym / H - 1.5).astype(int)[:, None] + np.arange(4)
+    return ii % N, jj % N, peskin_kernel(xm[:, None] / H - ii), peskin_kernel(ym[:, None] / H - jj)
+
+def interp_to_markers(u, st):
+    """Eulerian -> Lagrangian:  U_l = sum_x u(x) delta_h(x - X_l) h^2"""
+    ii, jj, wx, wy = st
+    out = np.zeros(ii.shape[0])
+    for a in range(4):
+        for b in range(4):
+            out += u[ii[:, a], jj[:, b]] * wx[:, a] * wy[:, b]
+    return out
+
+def spread_to_grid(dU, st, ds):
+    """Lagrangian -> Eulerian:  du(x) = sum_l dU_l delta_h(x - X_l) ds"""
+    ii, jj, wx, wy = st
+    out = np.zeros((N, N))
+    for a in range(4):
+        for b in range(4):
+            np.add.at(out, (ii[:, a], jj[:, b]), dU * wx[:, a] * wy[:, b] * ds / H)
+    return out
+
+def influence_matrix(st, ds):
+    """A = I S。隐式 IB 解法要求逆的正是这个矩阵。"""
+    n = st[0].shape[0]
+    A = np.zeros((n, n))
+    for l in range(n):
+        e = np.zeros(n)
+        e[l] = 1.0
+        A[:, l] = interp_to_markers(spread_to_grid(e, st, ds), st)
+    return A
+
+def slip_after_mdf(ratio, n_iter):
+    """跑 n_iter 轮 multi-direct forcing，再测标记点上与标记点之间的滑移。"""
+    xm, ym, ds = make_marker_ring(ratio)
+    st = marker_stencil(xm, ym)
+    gap = marker_stencil(*make_marker_ring(ratio, offset=1.0)[:2])   # 标记点之间的中点
+    u = np.ones((N, N))                                             # 自由来流，还不知道物体存在
+    history = []
+    for _ in range(n_iter):
+        slip = 0.0 - interp_to_markers(u, st)                       # 目标速度为零
+        history.append(np.max(np.abs(slip)))
+        u += spread_to_grid(slip, st, ds)
+    A = influence_matrix(st, ds)
+    return dict(n=len(xm), history=history,
+                on=np.max(np.abs(interp_to_markers(u, st))),
+                between=np.max(np.abs(interp_to_markers(u, gap))),
+                cond=np.linalg.cond(A), lam=np.linalg.eigvals(A).real.max())
+
+print(f"{'ds/h':>5}{'markers':>9}{'slip@marker':>13}{'slip@gap':>10}{'cond(A)':>11}{'lam_max':>9}")
+for ratio in (0.25, 0.5, 1.0, 1.5, 2.0, 3.0):
+    r = slip_after_mdf(ratio, n_iter=10)
+    print(f"{ratio:5.2f}{r['n']:9d}{r['on']:13.4f}{r['between']:10.4f}{r['cond']:11.1e}{r['lam']:9.3f}")
+```
+
+输出如下。
+
+```text
+ ds/h  markers  slip@marker  slip@gap    cond(A)  lam_max
+ 0.25      290       0.0407    0.0442    1.3e+11    0.369
+ 0.50      145       0.0352    0.0439    8.8e+05    0.371
+ 1.00       72       0.0425    0.0455    6.8e+02    0.374
+ 1.50       48       0.0368    0.0630    6.4e+00    0.374
+ 2.00       36       0.0114    0.0519    2.0e+00    0.376
+ 3.00       24       0.0041    0.2865    1.1e+00    0.434
+```
+
+只看 `slip@marker` 一列，标记点越稀疏似乎越好。$\Delta s/h = 3$ 时是 0.004，全表最小。这是陷阱。
+
+## Δs/h 两侧的两道悬崖
+
+看同一张表的 `slip@gap` 列。$\Delta s/h = 3$ 时是 0.287。标记点所在之处无滑移几乎完美，而标记点与标记点之间，自由来流的 29% 原样穿了过去。只有被强制的点是安静的，水从缝隙里漏走。
+
+另一侧的悬崖在 `cond(A)` 列。$\Delta s/h = 0.25$ 时条件数是 $10^{11}$。标记点排得太密，相邻两个标记点看到的几乎是同一批网格节点，$\mathbf{A}$ 的行就变得彼此平行。显式 MDF 照样能跑。隐式解法在这里死掉。
+
+在下面的模拟里，亲手在两道悬崖之间来回走一趟。
+
+<MarkerSpacingLeakLab />
+
+把 `ds/h` 滑块推到 2.5 以上，圆周的带子上会裂开缝隙，示踪粒子(白点)从缝隙里穿过物体 — 穿进去的粒子变成红色。反过来降到 0.4 以下，泄漏消失，但右侧的 `cos θ` 表针贴到 1。这是相邻两行已经平行的信号。也请留意 `MDF passes` 从 0 提到 3 时滑移大幅下降，之后几乎不再动。
+
+工程上推荐 $\Delta s \approx h$ 的理由，就在这两列之间。把表面离散取得比流体网格略密一点($\Delta s \approx 0.7h \sim 1.0h$)，是安全区间。
+
+## 下次立壁面之前要确认的
+
+- 选核时别只看那两个矩条件。$\sum\varphi^2$ 随标记点位置变化的核，会在运动物体的力信号里留下网格频率的锯齿。2 点 hat 的这个值摆动整整两倍。
+- 一次 direct forcing 定不住无滑移，残留的滑移超过自由来流的 60%。把 MDF 的 3～5 轮设为默认值，提到 20 轮也不会多拿到什么。接近 $\mathcal{I}\mathcal{S}$ 零空间的分量，靠迭代擦不掉。
+- 阻力不对劲时，输出标记点**之间**的滑移，而不是标记点上的。只看后者，$\Delta s$ 越大越好看。实际上流量正从那些缝隙里漏走。

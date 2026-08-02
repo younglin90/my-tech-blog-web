@@ -1,0 +1,242 @@
+---
+title: "A Wall the Grid Never Sees — IBM Delta Kernels and Multi-Direct Forcing"
+date: 2026-08-03
+description: "The two places no-slip leaks out of a forcing-term wall"
+tags: ["IBM", "Direct-Forcing", "Delta-Kernel", "Lagrangian-Marker", "Incompressible"]
+locale: en
+slug: 2026-08-03-immersed-boundary-direct-forcing-delta-kernel
+draft: false
+---
+
+import { KernelWobbleLab } from '@/components/post-viz/2026-08-03-immersed-boundary-direct-forcing-delta-kernel/KernelWobbleLab'
+import { MarkerSpacingLeakLab } from '@/components/post-viz/2026-08-03-immersed-boundary-direct-forcing-delta-kernel/MarkerSpacingLeakLab'
+
+The wall is not on the grid. The flow feels it anyway. The immersed boundary method (IBM — representing a body through a forcing term instead of fitting the grid to it) resolves that contradiction with a single source term in the momentum equation. The grid stays Cartesian, and the body exists only as a set of markers floating above it. This post works out how that forcing term is actually computed, why one evaluation of it fails to enforce no-slip, and which way things collapse when the marker spacing is chosen badly.
+
+## Standing a wall up with one source term
+
+Peskin built this method in 1972 to solve blood flow around heart valves. Valves are thin and they bend. Regenerating a body-fitted grid for that shape means doing it every single time step. Instead of touching the grid, Peskin added a term to the equation.
+
+$$
+\frac{\partial \mathbf{u}}{\partial t} + (\mathbf{u}\cdot\nabla)\mathbf{u} = -\frac{1}{\rho}\nabla p + \nu\nabla^2\mathbf{u} + \mathbf{f}
+$$
+
+Here $\mathbf{u}$ is velocity, $p$ pressure, $\nu$ kinematic viscosity, and $\mathbf{f}$ the body force the solid exerts on the fluid. Every bit of wall information lives inside $\mathbf{f}$.
+
+The computation shuttles between two grids. The fluid lives on a fixed Cartesian (Eulerian) grid; the body lives on markers strung along its surface (Lagrangian). The discrete delta function $\delta_h$ connects them, and it runs both ways.
+
+$$
+\mathbf{U}_l = \sum_{\mathbf{x}} \mathbf{u}(\mathbf{x})\,\delta_h(\mathbf{x}-\mathbf{X}_l)\,h^d
+$$
+
+That is interpolation: grid velocity pulled onto marker position $\mathbf{X}_l$, with $h$ the grid spacing and $d$ the dimension. The other direction is
+
+$$
+\mathbf{f}(\mathbf{x}) = \sum_{l} \mathbf{F}_l\,\delta_h(\mathbf{x}-\mathbf{X}_l)\,\Delta s_l
+$$
+
+spreading, which scatters the marker force $\mathbf{F}_l$ back onto the grid. $\Delta s_l$ is the length of surface each marker represents. Call the two operators $\mathcal{I}$ and $\mathcal{S}$.
+
+## Continuous versus discrete forcing — what each one gives up
+
+There are two broad families for building that forcing term.
+
+| | continuous | discrete (ghost-cell / cut-cell) | direct forcing + MDF |
+|---|---|---|---|
+| interface | smeared over roughly $4h$ | sharp | smeared over roughly $4h$ |
+| spatial order | first | second or higher available | first |
+| body interior | solved along with the fluid | excluded | solved along with the fluid |
+| moving/deforming bodies | works as is | needs fresh-cell handling | works as is |
+| typical use | elastic membranes, low Re | high-Re rigid bodies | IB-LBM, rigid and moving bodies |
+
+Continuous forcing uses the delta function. That smears the interface, pins accuracy at first order, and solves the interior of the body too. At high Reynolds number (inertia-to-viscosity ratio) that waste is expensive.
+
+Discrete forcing avoids the delta function entirely. Ghost-cell IBM fills solid-side cells with fictitious values and imposes the boundary condition by interpolating at an image point along the surface normal. With no delta function in the way, second order and beyond become reachable. The price is cell classification (fluid / solid / ghost) plus fresh-point handling: when the body moves, a cell that was solid yesterday is fluid today, and nothing in the solution knows its value.
+
+Direct forcing, today's subject, belongs to the first family. It is short to implement and robust for moving bodies, which is why IB-LBM leans on it so heavily.
+
+## The third condition a delta kernel has to satisfy
+
+$\delta_h$ cannot be any function you like. It is built as a product of one-dimensional kernels, $\delta_h(\mathbf{x}) = h^{-d}\prod \varphi(x_k/h)$, and $\varphi$ has to earn its place. Textbooks always list two moment conditions.
+
+$$
+\sum_i \varphi(r-i) = 1, \qquad \sum_i (i-r)\,\varphi(r-i) = 0
+$$
+
+$r$ is the marker's grid coordinate and $i$ the integer node index. The first says the total spread force is conserved. The second says the centroid of that force lands exactly on the marker.
+
+The interesting one is the third condition, which gets mentioned far less often.
+
+$$
+\sum_i \varphi(r-i)^2 = \text{const} \quad (\forall r)
+$$
+
+This quantity is the diagonal of $\mathcal{I}\mathcal{S}$ — how much of its own force a marker gets back. If it varies with $r$, then the same velocity correction produces a different force magnitude as the body slides across the grid. The force oscillates at the grid frequency. That is where the sawtooth in a drag curve comes from when you tow a cylinder at constant speed.
+
+Try it directly in the simulation below.
+
+<KernelWobbleLab />
+
+Leave `slide` running and switch kernels while watching the lower curve. With the 2-point hat kernel, $\sum\varphi^2$ swings by a factor of two — 0.5 to 1.0 — as the marker crosses a single cell. Roma's 3-point kernel is nailed at 0.5, Peskin's 4-point at 0.375. Notice that all three satisfy the two moment conditions above identically. The third condition is the only thing separating them.
+
+Peskin's 4-point kernel has this form.
+
+$$
+\varphi(r)=\begin{cases}
+\frac{1}{8}\left(3-2|r|+\sqrt{1+4|r|-4r^2}\right), & |r|\le 1 \\[4pt]
+\frac{1}{8}\left(5-2|r|-\sqrt{-7+12|r|-4r^2}\right), & 1<|r|\le 2 \\[4pt]
+0, & \text{otherwise}
+\end{cases}
+$$
+
+Its $4h$ support is wide, so the interface smears. In exchange, the force on a moving body does not shake.
+
+## One direct forcing pass does not enforce no-slip
+
+The idea behind direct forcing is plain. Advance one step without the forcing term to get a provisional field $\mathbf{u}^*$, interpolate it onto the markers, and turn the gap against the target velocity $\mathbf{U}^d$ into a force by dividing by $\Delta t$.
+
+$$
+\mathbf{F}_l = \frac{\mathbf{U}^{d}_l - \mathcal{I}[\mathbf{u}^*]_l}{\Delta t}
+$$
+
+For a fixed rigid body $\mathbf{U}^d = \mathbf{0}$; for a moving one it is the body velocity. Spread that force onto the grid, update the velocity, done — except it is not done.
+
+The reason is one line: $\mathcal{I}\mathcal{S} \ne \mathbf{E}$. Interpolating and then spreading back is not the identity. Force placed at one marker fans out over $4h$, and only part of it returns to that marker. The rest goes to neighboring markers and stays on grid nodes. So when you interpolate again after the correction, slip is still there.
+
+On a 64×64 grid with a cylinder of radius $0.18$ in a uniform stream $u=1$, the slip left on the markers after one correction was **64%** of the free stream. The wall is standing, and the fluid still walks past it at two thirds of the free-stream speed.
+
+## Multi-direct forcing — what the iteration fills in
+
+Wang et al. (2008) answered with iteration. Do not stop after one interpolate → force → spread cycle; feed the leftover slip back in.
+
+$$
+\mathbf{u}^{m+1} = \mathbf{u}^{m} + \mathcal{S}\left[\mathbf{U}^{d} - \mathcal{I}[\mathbf{u}^{m}]\right]
+$$
+
+This is Richardson iteration on $\mathbf{A} \equiv \mathcal{I}\mathcal{S}$. The error picks up a factor of $(\mathbf{E}-\mathbf{A})$ each pass, so the eigenvalues of $\mathbf{A}$ set the convergence rate.
+
+You can also solve it implicitly in one shot.
+
+$$
+\mathbf{A}\,\Delta\mathbf{U} = \mathbf{U}^{d} - \mathcal{I}[\mathbf{u}^*]
+$$
+
+That costs a dense solve of size equal to the marker count, every time step. If the body moves or deforms, $\mathbf{A}$ has to be rebuilt each step too. MDF reaches the same place using only matrix-vector products, never forming the matrix.
+
+There is a trap hiding here. Measured, the largest eigenvalue of $\mathbf{A}$ sits near 0.374 and the smallest sits on top of zero. The spectral radius of $(\mathbf{E}-\mathbf{A})$ is therefore 1. The dominant mode shrinks by 0.64 per pass, but modes whose eigenvalue is near zero **do not shrink at all**. So MDF's residual slip does not converge to zero; it flattens out at a few percent. Raising the pass count to 20 buys almost nothing over 5. Three to five passes collect everything on offer.
+
+## Counting the residual slip in Python
+
+Put a cylinder in a uniform stream and run MDF while varying the marker spacing. Two things get measured: slip **on** the markers, and slip **between** them, at the midpoints.
+
+```python
+import numpy as np
+
+N, H = 64, 1.0 / 64            # Eulerian grid: 64x64 uniform cells
+R, CX, CY = 0.18, 0.5, 0.5     # circular body inside a uniform stream u = 1
+
+def peskin_kernel(r):
+    """4-point Peskin kernel: both moment conditions hold for any marker position."""
+    a = np.abs(r)
+    out = np.zeros_like(a)
+    m1, m2 = a <= 1.0, (a > 1.0) & (a <= 2.0)
+    out[m1] = (3 - 2 * a[m1] + np.sqrt(1 + 4 * a[m1] - 4 * a[m1] ** 2)) / 8
+    out[m2] = (5 - 2 * a[m2] - np.sqrt(-7 + 12 * a[m2] - 4 * a[m2] ** 2)) / 8
+    return out
+
+def make_marker_ring(ratio, offset=0.0):
+    """Lagrangian markers around the circle, spacing ds = ratio * h."""
+    n = max(8, int(round(2 * np.pi * R / (ratio * H))))
+    th = np.linspace(0, 2 * np.pi, n, endpoint=False) + offset * np.pi / n
+    return CX + R * np.cos(th), CY + R * np.sin(th), 2 * np.pi * R / n
+
+def marker_stencil(xm, ym):
+    """4x4 support indices and separable weights for every marker."""
+    ii = np.floor(xm / H - 1.5).astype(int)[:, None] + np.arange(4)
+    jj = np.floor(ym / H - 1.5).astype(int)[:, None] + np.arange(4)
+    return ii % N, jj % N, peskin_kernel(xm[:, None] / H - ii), peskin_kernel(ym[:, None] / H - jj)
+
+def interp_to_markers(u, st):
+    """Eulerian -> Lagrangian:  U_l = sum_x u(x) delta_h(x - X_l) h^2"""
+    ii, jj, wx, wy = st
+    out = np.zeros(ii.shape[0])
+    for a in range(4):
+        for b in range(4):
+            out += u[ii[:, a], jj[:, b]] * wx[:, a] * wy[:, b]
+    return out
+
+def spread_to_grid(dU, st, ds):
+    """Lagrangian -> Eulerian:  du(x) = sum_l dU_l delta_h(x - X_l) ds"""
+    ii, jj, wx, wy = st
+    out = np.zeros((N, N))
+    for a in range(4):
+        for b in range(4):
+            np.add.at(out, (ii[:, a], jj[:, b]), dU * wx[:, a] * wy[:, b] * ds / H)
+    return out
+
+def influence_matrix(st, ds):
+    """A = I S, the matrix the implicit IB solve has to invert."""
+    n = st[0].shape[0]
+    A = np.zeros((n, n))
+    for l in range(n):
+        e = np.zeros(n)
+        e[l] = 1.0
+        A[:, l] = interp_to_markers(spread_to_grid(e, st, ds), st)
+    return A
+
+def slip_after_mdf(ratio, n_iter):
+    """Run n_iter multi-direct-forcing passes, then measure slip on and between markers."""
+    xm, ym, ds = make_marker_ring(ratio)
+    st = marker_stencil(xm, ym)
+    gap = marker_stencil(*make_marker_ring(ratio, offset=1.0)[:2])   # midpoints between markers
+    u = np.ones((N, N))                                             # free stream, body not yet felt
+    history = []
+    for _ in range(n_iter):
+        slip = 0.0 - interp_to_markers(u, st)                       # target velocity is zero
+        history.append(np.max(np.abs(slip)))
+        u += spread_to_grid(slip, st, ds)
+    A = influence_matrix(st, ds)
+    return dict(n=len(xm), history=history,
+                on=np.max(np.abs(interp_to_markers(u, st))),
+                between=np.max(np.abs(interp_to_markers(u, gap))),
+                cond=np.linalg.cond(A), lam=np.linalg.eigvals(A).real.max())
+
+print(f"{'ds/h':>5}{'markers':>9}{'slip@marker':>13}{'slip@gap':>10}{'cond(A)':>11}{'lam_max':>9}")
+for ratio in (0.25, 0.5, 1.0, 1.5, 2.0, 3.0):
+    r = slip_after_mdf(ratio, n_iter=10)
+    print(f"{ratio:5.2f}{r['n']:9d}{r['on']:13.4f}{r['between']:10.4f}{r['cond']:11.1e}{r['lam']:9.3f}")
+```
+
+The output:
+
+```text
+ ds/h  markers  slip@marker  slip@gap    cond(A)  lam_max
+ 0.25      290       0.0407    0.0442    1.3e+11    0.369
+ 0.50      145       0.0352    0.0439    8.8e+05    0.371
+ 1.00       72       0.0425    0.0455    6.8e+02    0.374
+ 1.50       48       0.0368    0.0630    6.4e+00    0.374
+ 2.00       36       0.0114    0.0519    2.0e+00    0.376
+ 3.00       24       0.0041    0.2865    1.1e+00    0.434
+```
+
+Read only the `slip@marker` column and sparser markers look better and better — 0.004 at $\Delta s/h = 3$, the smallest in the table. That is the trap.
+
+## The two cliffs on either side of Δs/h
+
+Look at `slip@gap` in the same table. At $\Delta s/h = 3$ it is 0.287. No-slip is nearly perfect where the markers sit, and 29% of the free stream walks straight through the space between them. Only the enforced points are quiet; the fluid leaks in between.
+
+The opposite cliff is in the `cond(A)` column. At $\Delta s/h = 0.25$ the condition number is $10^{11}$. Pack the markers too tightly and neighboring markers see almost identical grid nodes, so the rows of $\mathbf{A}$ turn parallel. Explicit MDF still runs. The implicit solve dies right here.
+
+Move between the two cliffs yourself in the simulation below.
+
+<MarkerSpacingLeakLab />
+
+Push the `ds/h` slider above 2.5 and gaps open in the ring of markers; tracers (white dots) pass through the body via those gaps and turn red once inside. Drop it below 0.4 and the leak disappears, but the `cos θ` gauge on the right pins to 1 — the signal that neighboring rows have gone parallel. Also watch the slip fall sharply as `MDF passes` goes from 0 to 3, then barely move afterward.
+
+The gap between those two columns is why practice says $\Delta s \approx h$. Keeping the surface discretization slightly finer than the fluid grid, around $\Delta s \approx 0.7h$ to $1.0h$, is the safe band.
+
+## Before you stand up the next wall
+
+- Do not judge a kernel by the two moment conditions alone. A kernel whose $\sum\varphi^2$ varies with marker position leaves grid-frequency sawtooth in the force signal of a moving body. For the 2-point hat, that value swings by a factor of two.
+- One direct forcing pass does not enforce no-slip; over 60% of the free-stream slip survives. Make 3 to 5 MDF passes the default, and do not expect more from 20. Components near the null space of $\mathcal{I}\mathcal{S}$ are not erased by iteration.
+- When drag looks wrong, plot slip **between** the markers, not on them. The on-marker number keeps improving as $\Delta s$ grows. The flux leaking through the gaps does not.

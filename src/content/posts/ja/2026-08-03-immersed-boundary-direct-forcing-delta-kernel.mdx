@@ -1,0 +1,242 @@
+---
+title: "格子が知らない壁 — IBMのデルタカーネルとmulti-direct forcing"
+date: 2026-08-03
+description: "強制項で立てた壁でno-slipが漏れる二か所"
+tags: ["IBM", "Direct-Forcing", "Delta-Kernel", "Lagrangian-Marker", "Incompressible"]
+locale: ja
+slug: 2026-08-03-immersed-boundary-direct-forcing-delta-kernel
+draft: false
+---
+
+import { KernelWobbleLab } from '@/components/post-viz/2026-08-03-immersed-boundary-direct-forcing-delta-kernel/KernelWobbleLab'
+import { MarkerSpacingLeakLab } from '@/components/post-viz/2026-08-03-immersed-boundary-direct-forcing-delta-kernel/MarkerSpacingLeakLab'
+
+壁は格子の上にありません。それでも流れは壁を感じます。Immersed boundary method(IBM・物体に格子を合わせず強制項で表現する手法)は、この矛盾を運動量方程式のソース項ひとつで処理します。格子は直交のまま、物体はその上に浮かぶマーカー点の集合としてだけ存在します。今回はその強制項が実際どう計算されるのか、なぜ一度計算しただけではno-slipが守られないのか、そしてマーカー間隔を誤るとどちらの方向に崩れるのかをコードで確認します。
+
+## 強制項ひとつで壁を立てる
+
+Peskinは1972年、心臓弁まわりの血流を解くためにこの手法を作りました。弁は薄く、しなります。その形状に合わせて格子を組み直す作業は、毎時間ステップ繰り返すことになります。Peskinは格子に触れる代わりに、方程式へ項をひとつ加えました。
+
+$$
+\frac{\partial \mathbf{u}}{\partial t} + (\mathbf{u}\cdot\nabla)\mathbf{u} = -\frac{1}{\rho}\nabla p + \nu\nabla^2\mathbf{u} + \mathbf{f}
+$$
+
+$\mathbf{u}$は速度場、$p$は圧力、$\nu$は動粘性係数、$\mathbf{f}$は物体が流体に及ぼす体積力です。壁の情報はすべて$\mathbf{f}$の中に入ります。
+
+計算はふたつの格子を行き来します。流体は固定された直交格子(Eulerian)の上に、物体は表面に沿って並ぶマーカー点(Lagrangian)の上にあります。両者をつなぐのが離散デルタ関数$\delta_h$で、向きはふた通りです。
+
+$$
+\mathbf{U}_l = \sum_{\mathbf{x}} \mathbf{u}(\mathbf{x})\,\delta_h(\mathbf{x}-\mathbf{X}_l)\,h^d
+$$
+
+格子速度をマーカー位置$\mathbf{X}_l$へ引き寄せる補間(interpolation)です。$h$は格子間隔、$d$は次元を表します。逆向きは
+
+$$
+\mathbf{f}(\mathbf{x}) = \sum_{l} \mathbf{F}_l\,\delta_h(\mathbf{x}-\mathbf{X}_l)\,\Delta s_l
+$$
+
+マーカーで計算した力$\mathbf{F}_l$を格子へ撒く拡散(spreading)です。$\Delta s_l$はマーカーが代表する表面片の長さです。ふたつの演算子をそれぞれ$\mathcal{I}$、$\mathcal{S}$と書きます。
+
+## 連続強制と離散強制 — 何を諦めるのか
+
+強制項の作り方は大きくふた筋に分かれます。
+
+| | 連続強制 (continuous) | 離散強制 (ghost-cell / cut-cell) | direct forcing + MDF |
+|---|---|---|---|
+| 界面の表現 | デルタカーネルで$4h$程度ぼやける | sharp | $4h$程度ぼやける |
+| 空間精度 | 1次 | 2次以上が可能 | 1次 |
+| 物体内部 | 一緒に解く | 計算から除外 | 一緒に解く |
+| 移動・変形物体 | そのまま扱える | fresh cell処理が必要 | そのまま扱える |
+| 主な用途 | 弾性膜、低Re | 高Reの剛体 | IB-LBM、剛体・移動体 |
+
+連続強制はデルタ関数を使います。そのため界面がぼやけ、精度は1次に留まり、物体内部まで全部解くことになります。高Reynolds数(慣性力/粘性力の比)の計算では、この無駄が高くつきます。
+
+離散強制はデルタ関数を使いません。ゴーストセルIBMは固体側セルに仮想値を詰め、表面法線に沿ったイメージ点で補間して境界条件を課します。デルタ関数がない分、2次以上へ上げられます。代わりにセル分類(流体/固体/ゴースト)とfresh point処理が付いてきます。物体が動けば、昨日まで固体だったセルが今日は流体になり、その値はどこにもありません。
+
+今回扱うdirect forcingは最初の筋に属します。実装が短く移動物体に強いため、IB-LBMで特によく使われます。
+
+## デルタカーネルが満たすべき三つ目の条件
+
+$\delta_h$は好きな関数で構わないわけではありません。1次元カーネル$\varphi$の積として作られ($\delta_h(\mathbf{x}) = h^{-d}\prod \varphi(x_k/h)$)、その$\varphi$が条件を満たす必要があります。教科書がいつも書くふたつはモーメント条件です。
+
+$$
+\sum_i \varphi(r-i) = 1, \qquad \sum_i (i-r)\,\varphi(r-i) = 0
+$$
+
+$r$はマーカーの格子座標、$i$は整数ノード番号です。前者は撒いた力の総和が保存されること、後者はその力の重心がマーカー位置にぴたりと乗ることを意味します。
+
+問題はあまり語られない三つ目の条件です。
+
+$$
+\sum_i \varphi(r-i)^2 = \text{const} \quad (\forall r)
+$$
+
+この値は$\mathcal{I}\mathcal{S}$の対角成分、つまりマーカーが自分自身へ返してもらう量です。これが$r$によって変わると、物体が格子を横切って滑るとき、同じ速度補正に対して異なる大きさの力が出ます。力が格子周期で振動します。円柱を一定速度で曳いたのに抗力曲線へ鋸歯が現れる現象は、ここから来ます。
+
+下のシミュレーションで実際に操作してみましょう。
+
+<KernelWobbleLab />
+
+`slide`を動かしたままカーネルを切り替え、下側の曲線を見てください。2点hatカーネルでは、マーカーがセル1つを通る間に$\sum\varphi^2$が0.5から1.0まで2倍に揺れます。Romaの3点カーネルは0.5、Peskinの4点カーネルは0.375に釘付けです。三つのカーネルとも上のモーメント条件ふたつは同じように満たしている点も併せて確認してください。分かれ目は三つ目の条件だけです。
+
+Peskinの4点カーネルの形は次の通りです。
+
+$$
+\varphi(r)=\begin{cases}
+\frac{1}{8}\left(3-2|r|+\sqrt{1+4|r|-4r^2}\right), & |r|\le 1 \\[4pt]
+\frac{1}{8}\left(5-2|r|-\sqrt{-7+12|r|-4r^2}\right), & 1<|r|\le 2 \\[4pt]
+0, & \text{その他}
+\end{cases}
+$$
+
+台が$4h$と広く、界面がぼやける代償を払います。その代わり、移動物体で力が震えません。
+
+## 一度のdirect forcingではno-slipが決まらない
+
+Direct forcingの発想は単純です。強制項なしで1ステップ進めた暫定速度場$\mathbf{u}^*$をマーカーへ補間し、目標速度$\mathbf{U}^d$との差を$\Delta t$で割って力とします。
+
+$$
+\mathbf{F}_l = \frac{\mathbf{U}^{d}_l - \mathcal{I}[\mathbf{u}^*]_l}{\Delta t}
+$$
+
+固定剛体なら$\mathbf{U}^d = \mathbf{0}$、動くならその物体の速度です。この力を格子へ撒いて速度を更新すれば終わり — のはずですが、終わりません。
+
+理由は一行です。$\mathcal{I}\mathcal{S} \ne \mathbf{E}$。補間してから撒き戻す往復は恒等演算ではありません。マーカーひとつに力を撒くと、その力は$4h$の幅へ広がり、一部だけが元のマーカーへ戻ります。残りは隣のマーカーへ行き、格子ノードに留まります。そのため補正後にもう一度補間すると、すべりが残っています。
+
+64×64格子に半径$0.18$の円柱、一様流$u=1$で試した結果、一度の補正後にマーカー上に残ったすべりは自由流の**64%**でした。壁は立ったのに、流体は依然として壁速度の3分の2で通り過ぎます。
+
+## Multi-direct forcing — 反復が埋める隙間
+
+Wangら(2008)の答えは反復です。補間 → 力の計算 → 拡散を一度で終わらせず、残ったすべりを再び入力に戻します。
+
+$$
+\mathbf{u}^{m+1} = \mathbf{u}^{m} + \mathcal{S}\left[\mathbf{U}^{d} - \mathcal{I}[\mathbf{u}^{m}]\right]
+$$
+
+これは$\mathbf{A} \equiv \mathcal{I}\mathcal{S}$に対するRichardson反復です。誤差には毎回$(\mathbf{E}-\mathbf{A})$が掛かるので、収束速度は$\mathbf{A}$の固有値が決めます。
+
+陰的に一度で解くこともできます。
+
+$$
+\mathbf{A}\,\Delta\mathbf{U} = \mathbf{U}^{d} - \mathcal{I}[\mathbf{u}^*]
+$$
+
+マーカー数と同じ大きさの密行列を毎時間ステップ解く費用がかかります。物体が動いたり変形したりすれば、$\mathbf{A}$も毎ステップ作り直しです。MDFはこの行列を作らず、掛け算だけで同じ地点へ近づく方法です。
+
+ここに罠がひとつ隠れています。測ってみると$\mathbf{A}$の最大固有値は0.374付近、最小固有値は0に張り付いています。したがって$(\mathbf{E}-\mathbf{A})$のスペクトル半径は1です。支配モードは毎回0.64倍に減りますが、固有値が0に近いモードは**まったく減りません**。そのためMDFの残留すべりは0へ収束せず、数%の水準で平らになります。反復回数を20へ上げても5回とほとんど変わりません。3〜5回で得られるものは出尽くします。
+
+## Pythonで数える残留すべり
+
+円柱ひとつに一様流を当て、マーカー間隔を変えながらMDFを回します。測るのはふたつ。マーカー**上**のすべりと、マーカー**間**(中点)のすべりです。
+
+```python
+import numpy as np
+
+N, H = 64, 1.0 / 64            # Eulerian格子: 64x64の一様セル
+R, CX, CY = 0.18, 0.5, 0.5     # 一様流 u = 1 の中に置いた円形物体
+
+def peskin_kernel(r):
+    """4点Peskinカーネル。マーカー位置によらずモーメント条件が保たれる。"""
+    a = np.abs(r)
+    out = np.zeros_like(a)
+    m1, m2 = a <= 1.0, (a > 1.0) & (a <= 2.0)
+    out[m1] = (3 - 2 * a[m1] + np.sqrt(1 + 4 * a[m1] - 4 * a[m1] ** 2)) / 8
+    out[m2] = (5 - 2 * a[m2] - np.sqrt(-7 + 12 * a[m2] - 4 * a[m2] ** 2)) / 8
+    return out
+
+def make_marker_ring(ratio, offset=0.0):
+    """円周上のLagrangianマーカー。間隔は ds = ratio * h。"""
+    n = max(8, int(round(2 * np.pi * R / (ratio * H))))
+    th = np.linspace(0, 2 * np.pi, n, endpoint=False) + offset * np.pi / n
+    return CX + R * np.cos(th), CY + R * np.sin(th), 2 * np.pi * R / n
+
+def marker_stencil(xm, ym):
+    """マーカーごとの4x4支持領域のインデックスと分離型重み。"""
+    ii = np.floor(xm / H - 1.5).astype(int)[:, None] + np.arange(4)
+    jj = np.floor(ym / H - 1.5).astype(int)[:, None] + np.arange(4)
+    return ii % N, jj % N, peskin_kernel(xm[:, None] / H - ii), peskin_kernel(ym[:, None] / H - jj)
+
+def interp_to_markers(u, st):
+    """Eulerian -> Lagrangian:  U_l = sum_x u(x) delta_h(x - X_l) h^2"""
+    ii, jj, wx, wy = st
+    out = np.zeros(ii.shape[0])
+    for a in range(4):
+        for b in range(4):
+            out += u[ii[:, a], jj[:, b]] * wx[:, a] * wy[:, b]
+    return out
+
+def spread_to_grid(dU, st, ds):
+    """Lagrangian -> Eulerian:  du(x) = sum_l dU_l delta_h(x - X_l) ds"""
+    ii, jj, wx, wy = st
+    out = np.zeros((N, N))
+    for a in range(4):
+        for b in range(4):
+            np.add.at(out, (ii[:, a], jj[:, b]), dU * wx[:, a] * wy[:, b] * ds / H)
+    return out
+
+def influence_matrix(st, ds):
+    """A = I S。陰的IB解法が逆行列を求める、まさにその行列。"""
+    n = st[0].shape[0]
+    A = np.zeros((n, n))
+    for l in range(n):
+        e = np.zeros(n)
+        e[l] = 1.0
+        A[:, l] = interp_to_markers(spread_to_grid(e, st, ds), st)
+    return A
+
+def slip_after_mdf(ratio, n_iter):
+    """MDFをn_iter回まわし、マーカー上とマーカー間のすべりを測る。"""
+    xm, ym, ds = make_marker_ring(ratio)
+    st = marker_stencil(xm, ym)
+    gap = marker_stencil(*make_marker_ring(ratio, offset=1.0)[:2])   # マーカー間の中点
+    u = np.ones((N, N))                                             # 自由流。まだ物体を知らない
+    history = []
+    for _ in range(n_iter):
+        slip = 0.0 - interp_to_markers(u, st)                       # 目標速度はゼロ
+        history.append(np.max(np.abs(slip)))
+        u += spread_to_grid(slip, st, ds)
+    A = influence_matrix(st, ds)
+    return dict(n=len(xm), history=history,
+                on=np.max(np.abs(interp_to_markers(u, st))),
+                between=np.max(np.abs(interp_to_markers(u, gap))),
+                cond=np.linalg.cond(A), lam=np.linalg.eigvals(A).real.max())
+
+print(f"{'ds/h':>5}{'markers':>9}{'slip@marker':>13}{'slip@gap':>10}{'cond(A)':>11}{'lam_max':>9}")
+for ratio in (0.25, 0.5, 1.0, 1.5, 2.0, 3.0):
+    r = slip_after_mdf(ratio, n_iter=10)
+    print(f"{ratio:5.2f}{r['n']:9d}{r['on']:13.4f}{r['between']:10.4f}{r['cond']:11.1e}{r['lam']:9.3f}")
+```
+
+出力は次の通りです。
+
+```text
+ ds/h  markers  slip@marker  slip@gap    cond(A)  lam_max
+ 0.25      290       0.0407    0.0442    1.3e+11    0.369
+ 0.50      145       0.0352    0.0439    8.8e+05    0.371
+ 1.00       72       0.0425    0.0455    6.8e+02    0.374
+ 1.50       48       0.0368    0.0630    6.4e+00    0.374
+ 2.00       36       0.0114    0.0519    2.0e+00    0.376
+ 3.00       24       0.0041    0.2865    1.1e+00    0.434
+```
+
+`slip@marker`の列だけ見ると、マーカーは粗いほど良さそうに見えます。$\Delta s/h = 3$で0.004と最小です。これが罠です。
+
+## Δs/hが作るふたつの崖
+
+同じ表の`slip@gap`列を見てください。$\Delta s/h = 3$で0.287です。マーカーが座っている場所ではno-slipがほぼ完璧なのに、マーカーとマーカーの間では自由流の29%がそのまま通り抜けます。強制した点だけが静かで、その隙間から水が漏れます。
+
+反対側の崖は`cond(A)`列にあります。$\Delta s/h = 0.25$で条件数が$10^{11}$です。マーカーが密すぎると隣り合うふたつのマーカーがほぼ同じ格子ノードを見ることになり、$\mathbf{A}$の行が互いに平行になります。陽的MDFはそれでも回ります。陰的解法はこの地点で死にます。
+
+下のシミュレーションで、ふたつの崖の間を行き来してみましょう。
+
+<MarkerSpacingLeakLab />
+
+`ds/h`スライダーを2.5以上へ上げると円周の帯に隙間ができ、トレーサ(白点)がその隙間から物体を通過します — 通過した粒子は赤に変わります。逆に0.4より下げると漏れは消えますが、右側の`cos θ`ゲージが1に張り付きます。隣り合う二行が平行になった合図です。`MDF passes`を0から3へ上げるとすべりが大きく落ち、その後はほとんど動かないことも併せて確認してください。
+
+実務で$\Delta s \approx h$が勧められる理由は、このふたつの列の間にあります。表面格子を流体格子より少しだけ密に($\Delta s \approx 0.7h \sim 1.0h$)取るのが安全な区間です。
+
+## 次に壁を立てるときの確認事項
+
+- カーネルを選ぶときモーメント条件ふたつだけを見ないこと。$\sum\varphi^2$がマーカー位置で変わるカーネルは、移動物体の力信号に格子周期の鋸歯を残します。2点hatではその値が2倍に揺れます。
+- Direct forcing一回ではno-slipが決まりません。残るすべりは自由流の60%を超えます。MDF 3〜5回を既定値にし、20回へ増やしても得るものはありません。$\mathcal{I}\mathcal{S}$の零空間に近い成分は反復で消えません。
+- 抗力がおかしいときは、マーカー上ではなくマーカー**間**のすべりを出力すること。前者だけを見ると$\Delta s$を大きくするほど良く見えます。実際にはその隙間から流量が漏れています。
