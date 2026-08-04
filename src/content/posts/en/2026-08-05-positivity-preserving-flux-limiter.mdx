@@ -1,0 +1,309 @@
+---
+title: "Mass Is Conserved Exactly, Yet the Density Is Negative — The Positivity-Preserving Flux Limiter"
+date: 2026-08-05
+description: "Bridging a high-order flux and the Lax–Friedrichs flux with a single θ per face"
+tags: ["Positivity-Preserving", "Riemann", "Compressible", "TVD", "Flux-Limiter"]
+locale: en
+slug: 2026-08-05-positivity-preserving-flux-limiter
+draft: false
+---
+
+import { VacuumRarefactionCrashLab } from '@/components/post-viz/2026-08-05-positivity-preserving-flux-limiter/VacuumRarefactionCrashLab'
+import { ThetaBudgetSplitDial } from '@/components/post-viz/2026-08-05-positivity-preserving-flux-limiter/ThetaBudgetSplitDial'
+
+A conservative scheme does not lose a single grain of mass. Whatever leaves through a face is exactly what the neighbor receives, so the sum over the whole domain is constant to machine precision. And that same scheme produces a density of −0.003. The total is right, but an individual cell is negative. Today: why conservation does not buy positivity, and how to write a flux limiter that protects the sign while leaving high-order accuracy essentially intact. We will also run it and count what percentage of faces actually get touched.
+
+## It Did Not Diverge — It Walked Out of Its Domain
+
+When a log ends in NaN, the first suspect is the time step. Halve the CFL. It still dies. Refine the grid. It dies faster.
+
+At that point it is probably not a stability problem. Look at the line that computes the speed of sound.
+
+$$
+c = \sqrt{\frac{\gamma p}{\rho}}
+$$
+
+$\gamma$ is the ratio of specific heats, $p$ the pressure, $\rho$ the density. The moment either $p$ or $\rho$ turns negative, $c$ becomes NaN. The next step's time interval is NaN, and every flux after that is NaN as well. The real accident was already over one step before the line where NaN got printed.
+
+Here is the crux. For a solution of the Euler equations to stay alive, the conserved variables $\mathbf{U} = (\rho,\ \rho u,\ E)$ must lie inside the **admissible set**.
+
+$$
+G = \left\{ \mathbf{U} : \rho > 0,\ \ p = (\gamma-1)\left(E - \frac{(\rho u)^2}{2\rho}\right) > 0 \right\}
+$$
+
+Conservation is the property that the total is preserved, not the property that each cell stays inside $G$. Those are entirely different demands.
+
+## High-Order Reconstruction Makes No Promise About the Sign
+
+The classic way out of $G$ is near vacuum. Strong expansion waves, high-altitude reentry flow, the inside of a cavitation bubble, and the region behind a blast wave. In places like these $\rho$ and $p$ fall to the $10^{-4}$ level.
+
+Lay a MUSCL or WENO reconstruction on top of that, and even with a positive cell average $\bar\rho_i$ the face value $\rho_{i+1/2}^{L}$ can come out negative. The slope gets multiplied by half a cell width and added on. Reconstruction preserves only the cell average; it promises nothing about the sign.
+
+Pressure is worse. $p$ is a **nonlinear** function of the conserved variables. Even with $\rho$ and $E$ each positive, once the kinetic energy $(\rho u)^2/2\rho$ exceeds $E$, $p$ goes negative. In the double rarefaction we run later, the density sits at a perfectly healthy 0.37 while the pressure drops to −0.163 first.
+
+## Why Lax–Friedrichs Holds Up at CFL 0.5
+
+So what can you trust? The first-order Lax–Friedrichs (LF) flux.
+
+$$
+\hat{\mathbf{F}}^{LF}_{i+1/2} = \frac{1}{2}\left[\mathbf{F}(\mathbf{U}_i) + \mathbf{F}(\mathbf{U}_{i+1}) - \alpha\,(\mathbf{U}_{i+1} - \mathbf{U}_i)\right]
+$$
+
+$\alpha = \max_j(|u_j| + c_j)$ is the largest characteristic speed. Expand the update with this flux and it rearranges as follows.
+
+$$
+\mathbf{U}_i^{n+1} = (1 - \lambda\alpha)\,\mathbf{U}_i + \frac{\lambda\alpha}{2}\left(\mathbf{U}_{i+1} - \frac{\mathbf{F}_{i+1}}{\alpha}\right) + \frac{\lambda\alpha}{2}\left(\mathbf{U}_{i-1} + \frac{\mathbf{F}_{i-1}}{\alpha}\right)
+$$
+
+Here $\lambda = \Delta t/\Delta x$. The three coefficients sum to exactly 1, and if $\lambda\alpha \le 1$ none of them is negative. That is a **convex combination**.
+
+$G$ is a convex set, so if all three terms entering the combination are inside $G$, the result is inside $G$ too. The open question is whether $\mathbf{U} \pm \mathbf{F}/\alpha$ lands back in $G$, and Perthame–Shu showed that this condition holds for $\lambda\alpha \le 1/2$. That is the origin of the sentence everyone quotes: "LF is positivity-preserving at CFL 0.5."
+
+To summarize, we hold two fluxes. The accurate high-order flux $\hat{\mathbf{F}}^{H}$ that does not protect the sign, and the inaccurate $\hat{\mathbf{F}}^{LF}$ that does.
+
+## Finding θ on the Segment Joining the Two Fluxes
+
+The idea of Hu, Adams and Shu (2013) is simple. Blend the two, and set the blend ratio **separately for every face**.
+
+$$
+\hat{\mathbf{F}}_{i+1/2} = \hat{\mathbf{F}}^{LF}_{i+1/2} + \theta_{i+1/2}\left(\hat{\mathbf{F}}^{H}_{i+1/2} - \hat{\mathbf{F}}^{LF}_{i+1/2}\right), \qquad \theta_{i+1/2} \in [0, 1]
+$$
+
+$\theta = 1$ is the pure high-order scheme, $\theta = 0$ retreats to LF. Whatever $\theta$ you use it is still flux form, so **conservation is maintained automatically**. Meaning the limiter neither creates nor destroys mass. This is the decisive difference from dumping artificial viscosity in locally.
+
+Write $\Delta\mathbf{F}_{i+1/2} \equiv \hat{\mathbf{F}}^{H} - \hat{\mathbf{F}}^{LF}$ and the update splits like this.
+
+$$
+\mathbf{U}_i^{n+1} = \underbrace{\mathbf{U}_i^{LF}}_{\text{safe reference point}} - \lambda\left(\theta_{i+1/2}\Delta\mathbf{F}_{i+1/2} - \theta_{i-1/2}\Delta\mathbf{F}_{i-1/2}\right)
+$$
+
+The first term is guaranteed to be inside $G$ as long as the CFL condition holds. The rest is a segment reaching from that safe point toward the high-order solution. All we have to do is stop the segment right before it leaves $G$.
+
+The floor is not 0 but a very small positive $\varepsilon$.
+
+$$
+\varepsilon = \min\left(10^{-13},\ \min_j \rho_j^0,\ \min_j p_j^0\right)
+$$
+
+$\rho_j^0$ and $p_j^0$ are the density and pressure of the initial state. Aim at exactly 0 and one rounding drops you back below it.
+
+## Spend the Budget in Halves — One Face Touches Two Cells
+
+Density is a conserved variable itself, so $\rho_i^{n+1}$ is a **linear function** of $\theta$. That makes the condition solvable algebraically.
+
+Call the slack that cell $i$ holds its budget: $b_i = \rho_i^{LF} - \varepsilon \ge 0$. At face $i+1/2$, if $\Delta F^\rho > 0$ that face drains the density of the left cell $i$. Otherwise it drains the right one.
+
+There is a trap here. An interior cell is drained from both faces **at once**. Compute as if each face could spend the whole budget of the cell it drains, and two faces that are each legal on their own together spend twice the budget. So each face is allowed only half.
+
+$$
+\theta_{i+1/2} = \min\left(1,\ \frac{b_{\text{victim}} / 2}{\lambda\,|\Delta F^\rho_{i+1/2}|}\right)
+$$
+
+Check it directly in the figure below.
+
+<ThetaBudgetSplitDial />
+
+Raise `|dF| scale` and the two $\theta$ values on either side of cell 2 come down in yellow. Press "full budget per face" here and both $\theta$ bounce back up near 1 — while the cell 2 bar underneath punches down through the green floor line. Judged face by face nothing is wrong; judged cell by cell it is a violation.
+
+## Pressure Comes After Density, and by Bisection
+
+Once density is settled, look at pressure. The order matters. Computing $p$ requires dividing by $\rho$, so $\rho > 0$ has to be secured first.
+
+$p$ is a nonlinear function of $\mathbf{U}$, so it does not fall out of a linear equation. Instead it has one good property. $p(\mathbf{U})$ is a **concave** function on $G$. Since $\mathbf{U}(\theta)$ is linear in $\theta$, $p(\theta)$ is concave too. The superlevel set $\{\theta : p(\theta) \ge \varepsilon\}$ of a concave function is an interval, and $\theta = 0$ (the LF state) already satisfies the condition, so that interval contains 0.
+
+In other words there is only one root. Bisection works safely. Twenty to forty iterations narrow it down to the double-precision limit.
+
+One thing to watch. Shrinking $\theta_{i\pm1/2}$ because of cell $i$ changes the computation for the neighbors $i\pm1$. A single sweep leaves a violation behind in rare cases. You have to repeat the sweep until no violating cell is left. Since $\theta \to 0$ converges to the LF state, the iteration is guaranteed to terminate.
+
+## The Double Rarefaction, Brought Back to Life in Python
+
+The toy problem is a double rarefaction. About the middle of the tube, the two sides move apart from each other at $\mp u_0$. A near-vacuum hole opens in the center, and that hole kills the high-order scheme.
+
+```python
+import numpy as np
+
+GAMMA = 1.4
+
+
+def to_primitive(U):
+    rho = U[0]
+    u = U[1] / rho
+    p = (GAMMA - 1.0) * (U[2] - 0.5 * rho * u * u)
+    return rho, u, p
+
+
+def euler_flux(U):
+    rho, u, p = to_primitive(U)
+    return np.array([rho * u, rho * u * u + p, (U[2] + p) * u])
+
+
+def lf_face_flux(UL, UR, alpha):
+    return 0.5 * (euler_flux(UL) + euler_flux(UR) - alpha * (UR - UL))
+
+
+def density_theta(rho_lf, dF_rho, lam, eps_rho):
+    """Set theta per face. Each face may spend at most half the budget of the cell it drains."""
+    n = rho_lf.size
+    budget = np.maximum(rho_lf - eps_rho, 0.0)
+    theta = np.ones(dF_rho.size)
+    for f in range(1, n):                      # interior faces only
+        d = dF_rho[f]
+        if d > 0.0:                            # drains the left cell
+            cap = 0.5 * budget[f - 1] / (lam * d)
+        elif d < 0.0:                          # drains the right cell
+            cap = 0.5 * budget[f] / (lam * (-d))
+        else:
+            cap = 1.0
+        theta[f] = min(1.0, cap)
+    return theta
+
+
+def pressure_at(U_lf, dFl, dFr, tl, tr, lam):
+    U = U_lf - lam * (tr * dFr - tl * dFl)
+    return to_primitive(U)[2]
+
+
+def pressure_theta(U_lf, dF, theta, lam, eps_p):
+    """p(theta) is concave, so the safe set is a single interval. Bisection locates its edge.
+    Shrinking one cell's theta affects its neighbors, so repeat until no violation remains."""
+    n = U_lf.shape[1]
+    for _ in range(20):
+        dirty = False
+        for i in range(n):
+            tl, tr = theta[i], theta[i + 1]
+            if pressure_at(U_lf[:, i], dF[:, i], dF[:, i + 1], tl, tr, lam) >= eps_p:
+                continue
+            dirty = True
+            lo, hi = 0.0, 1.0
+            for _ in range(40):
+                mid = 0.5 * (lo + hi)
+                ok = pressure_at(U_lf[:, i], dF[:, i], dF[:, i + 1],
+                                 tl * mid, tr * mid, lam) >= eps_p
+                lo, hi = (mid, hi) if ok else (lo, mid)
+            theta[i] *= lo
+            theta[i + 1] *= lo
+        if not dirty:
+            return theta
+    return theta
+```
+
+The time-marching loop builds two fluxes each step, finds $\theta$, blends them, and updates.
+
+```python
+def minmod(a, b):
+    return np.where(a * b <= 0.0, 0.0, np.where(np.abs(a) < np.abs(b), a, b))
+
+
+def face_states(U):
+    """MUSCL-minmod reconstruction -> left/right state at each face"""
+    d = minmod(U[:, 1:-1] - U[:, :-2], U[:, 2:] - U[:, 1:-1])
+    s = np.zeros_like(U)
+    s[:, 1:-1] = d
+    return U[:, :-1] + 0.5 * s[:, :-1], U[:, 1:] - 0.5 * s[:, 1:]
+
+
+def march_double_rarefaction(n=200, cfl=0.45, u0=4.0, t_end=0.15, limiter=True):
+    dx = 1.0 / n
+    x = (np.arange(n) + 0.5) * dx
+    rho = np.ones(n)
+    u = np.where(x < 0.5, -u0, u0)
+    p = np.full(n, 0.4)
+    U = np.vstack([rho, rho * u, p / (GAMMA - 1.0) + 0.5 * rho * u * u])
+
+    eps = min(1e-13, rho.min(), p.min())
+    t, step, clipped, total = 0.0, 0, 0, 0
+
+    while t < t_end:
+        r, v, pr = to_primitive(U)
+        if r.min() <= 0.0 or pr.min() <= 0.0:                 # left the admissible set
+            return dict(crashed=True, step=step,
+                        rho_min=r.min(), p_min=pr.min())
+        a = np.sqrt(GAMMA * pr / r)
+        alpha = float(np.max(np.abs(v) + a))
+        dt = min(cfl * dx / alpha, t_end - t)
+        lam = dt / dx
+
+        Ug = np.hstack([U[:, :1], U, U[:, -1:]])              # zero-gradient ghost
+        UL, UR = face_states(Ug)
+        Flow = np.zeros((3, n + 1))
+        Fhigh = np.zeros((3, n + 1))
+        for f in range(n + 1):
+            Flow[:, f] = lf_face_flux(Ug[:, f], Ug[:, f + 1], alpha)
+            Fhigh[:, f] = lf_face_flux(UL[:, f], UR[:, f], alpha)
+
+        dF = Fhigh - Flow
+        U_lf = U - lam * (Flow[:, 1:] - Flow[:, :-1])          # safe reference point
+
+        if limiter:
+            th = density_theta(U_lf[0], dF[0], lam, eps)
+            th = pressure_theta(U_lf, dF, th, lam, eps)
+            clipped += int(np.sum(th[1:n] < 1.0 - 1e-12))
+            total += n - 1
+        else:
+            th = np.ones(n + 1)
+
+        F = Flow + th * dF                                     # blended flux
+        U = U - lam * (F[:, 1:] - F[:, :-1])
+        t += dt
+        step += 1
+
+    r, _, pr = to_primitive(U)
+    return dict(crashed=False, step=step, rho_min=float(r.min()),
+                p_min=float(pr.min()), clipped=100.0 * clipped / max(total, 1))
+
+
+for lim in (False, True):
+    o = march_double_rarefaction(limiter=lim)
+    tag = "limiter ON " if lim else "limiter OFF"
+    if o["crashed"]:
+        print(f"{tag}: crashed at step {o['step']}  "
+              f"rho_min={o['rho_min']:.4f}  p_min={o['p_min']:+.4f}")
+    else:
+        print(f"{tag}: reached t=0.15 in {o['step']} steps  "
+              f"rho_min={o['rho_min']:.3e}  p_min={o['p_min']:.3e}  "
+              f"theta<1 on {o['clipped']:.3f}% of faces")
+```
+
+At $u_0 = 4$, 200 cells and CFL 0.45, the output is this.
+
+```text
+limiter OFF: crashed at step 2  rho_min=0.3698  p_min=-0.1630
+limiter ON : reached t=0.15 in 300 steps  rho_min=9.560e-04  p_min=5.140e-04  theta<1 on 0.027% of faces
+```
+
+Without the limiter it is over at the second step. What deserves attention is that the density at that moment is 0.3698. Density does not look remotely dangerous, yet the pressure went negative first. Code that only watches density misses this accident.
+
+Try it directly in the simulation below.
+
+<VacuumRarefactionCrashLab />
+
+Press `limiter OFF` and raise `pull-apart u0` above 3.5, and the pressure curve in the middle breaks through the red line while the density curve on top still looks fine. Switch back to `limiter ON` and only a tiny handful of the $\theta$ bars at the bottom come off green, and the computation runs all the way to the end.
+
+## What Percentage of Faces Ever Get θ Below 1
+
+The measured value is 0.027%. Out of roughly 60,000 faces — 200 cells × 300 steps — only about sixteen were touched. Push $u_0$ up to 8 and it still stops at 0.093%.
+
+That number is the heart of this method. The limiter is effectively asleep. It wakes only at the few cells and the few steps where a vacuum opens, and pulls the flux at those faces slightly toward LF. On the remaining 99.97% of faces the original high-order scheme runs exactly as it was.
+
+Compare that with raising artificial viscosity globally to paper over the problem. That approach shaves accuracy in the smooth regions along with everything else. This one is bit-for-bit identical to the original scheme wherever $\theta = 1$ is maintained. That is why the limiter does not drop the order in a grid-convergence test measuring the convergence rate.
+
+## Three Things to Check Before Putting It in Your Code
+
+**First, are you actually respecting the CFL bound?** This entire method stands on the premise that "$\mathbf{U}^{LF}$ is safe." LF positivity preservation holds only for $\lambda\alpha \le 1/2$. If your code normally runs at CFL 0.8, the reference point has already collapsed, and dropping $\theta$ to 0 will not bring it back. When the limiter does not seem to work, suspect this first.
+
+**Second, are you applying it at every Runge–Kutta stage?** SSP-RK makes each stage a convex combination of forward Euler steps. Every single stage has to be inside $G$ for the final result to land inside $G$. Check only at the end and the inside of the $\sqrt{}$ has already gone negative at an intermediate stage.
+
+**Third, did you leave $\varepsilon$ at 0?** Run bisection targeting exactly 0 and the last rounding hands you $-10^{-17}$. You need a small positive floor based on the initial minimum.
+
+## What to Reach For the Next Time You Meet a Vacuum
+
+Conservation and positivity are different properties. Flux form gives you the first for free; the second has to be enforced separately.
+
+Blending fluxes carries out that enforcement without breaking conservation. Whatever $\theta$ is, it is still a flux difference.
+
+And fewer than 0.1% of faces ever get touched. At that price for a safety net, there is no reason not to install it.
+
+---
+
+**References**
+X.Y. Hu, N.A. Adams, C.-W. Shu, "Positivity-preserving method for high-order conservative schemes solving compressible Euler equations", *Journal of Computational Physics* 242 (2013) 169–180.

@@ -1,0 +1,309 @@
+---
+title: "质量一粒不少，密度却是负的 — 正性保持通量限制器"
+date: 2026-08-05
+description: "用 θ 在高阶通量与 Lax–Friedrichs 通量之间连线的正性保持方法"
+tags: ["Positivity-Preserving", "Riemann", "Compressible", "TVD", "Flux-Limiter"]
+locale: zh
+slug: 2026-08-05-positivity-preserving-flux-limiter
+draft: false
+---
+
+import { VacuumRarefactionCrashLab } from '@/components/post-viz/2026-08-05-positivity-preserving-flux-limiter/VacuumRarefactionCrashLab'
+import { ThetaBudgetSplitDial } from '@/components/post-viz/2026-08-05-positivity-preserving-flux-limiter/ThetaBudgetSplitDial'
+
+守恒型格式不会丢掉一粒质量。从某个面流出去的量，正好是邻居收到的量，所以全域求和到机器精度都是常数。可就是这样的格式，算出了密度 −0.003。总量对得上，单个单元却是负的。今天要讲的是：为什么守恒性并不保证正性，以及如何写一个几乎不损失高阶精度、只守住符号的通量限制器。还要真的跑一遍，数清究竟有百分之几的面被动过。
+
+## 不是发散，是跑出了定义域
+
+日志以 NaN 收尾时，第一个被怀疑的总是时间步长。把 CFL 减半。照样死。加密网格。死得更快。
+
+这种时候多半不是稳定性问题。看一眼算声速的那一行。
+
+$$
+c = \sqrt{\frac{\gamma p}{\rho}}
+$$
+
+$\gamma$ 是比热比，$p$ 是压力，$\rho$ 是密度。$p$ 或 $\rho$ 中任何一个变成负数的瞬间，$c$ 就是 NaN。下一步的时间间隔也是 NaN，再下一步的通量全是 NaN。真正的事故，在打出 NaN 的那一行之前一步就已经结束了。
+
+要点在这里。Euler 方程的解要活着，守恒变量 $\mathbf{U} = (\rho,\ \rho u,\ E)$ 就必须待在**容许集**（admissible set）里。
+
+$$
+G = \left\{ \mathbf{U} : \rho > 0,\ \ p = (\gamma-1)\left(E - \frac{(\rho u)^2}{2\rho}\right) > 0 \right\}
+$$
+
+守恒性是"总量保持不变"这条性质，不是"每个单元都留在 $G$ 里"那条。两者是完全不同的要求。
+
+## 高阶重构不负责守住符号
+
+跑出 $G$ 的典型场景是真空附近。强膨胀波、高空再入流动、空化气泡内部，还有爆炸波后方。这些地方 $\rho$ 和 $p$ 会掉到 $10^{-4}$ 量级。
+
+在这上面叠一层 MUSCL 或 WENO 重构，即便单元平均 $\bar\rho_i$ 是正的，面值 $\rho_{i+1/2}^{L}$ 也可能为负。因为斜率要乘上半个单元宽再加上去。重构只保住单元平均，对符号不作任何承诺。
+
+压力更糟。$p$ 是守恒变量的**非线性**函数。哪怕 $\rho$ 和 $E$ 各自为正，只要动能 $(\rho u)^2/2\rho$ 超过 $E$，$p$ 就是负的。后面要跑的双稀疏波里，密度还稳稳停在 0.37 的时候，压力已经先掉到 −0.163。
+
+## Lax–Friedrichs 能在 CFL 0.5 撑住的理由
+
+那么什么是可信的。一阶 Lax–Friedrichs（LF）通量。
+
+$$
+\hat{\mathbf{F}}^{LF}_{i+1/2} = \frac{1}{2}\left[\mathbf{F}(\mathbf{U}_i) + \mathbf{F}(\mathbf{U}_{i+1}) - \alpha\,(\mathbf{U}_{i+1} - \mathbf{U}_i)\right]
+$$
+
+$\alpha = \max_j(|u_j| + c_j)$ 是最大特征速度。用这个通量把更新式展开，可以整理成下面的形式。
+
+$$
+\mathbf{U}_i^{n+1} = (1 - \lambda\alpha)\,\mathbf{U}_i + \frac{\lambda\alpha}{2}\left(\mathbf{U}_{i+1} - \frac{\mathbf{F}_{i+1}}{\alpha}\right) + \frac{\lambda\alpha}{2}\left(\mathbf{U}_{i-1} + \frac{\mathbf{F}_{i-1}}{\alpha}\right)
+$$
+
+$\lambda = \Delta t/\Delta x$。三个系数之和正好是 1，而且只要 $\lambda\alpha \le 1$ 就都非负。也就是说，这是一个**凸组合**。
+
+$G$ 是凸集，所以只要参与组合的三项都在 $G$ 内，结果也在 $G$ 内。问题在于 $\mathbf{U} \pm \mathbf{F}/\alpha$ 是否重新落回 $G$，而 Perthame–Shu 证明了这个条件在 $\lambda\alpha \le 1/2$ 时成立。常说的"LF 在 CFL 0.5 下正性保持"，出处就在这里。
+
+归纳一下，手上有两个通量。精确但不守符号的高阶通量 $\hat{\mathbf{F}}^{H}$，以及不精确但守符号的 $\hat{\mathbf{F}}^{LF}$。
+
+## 在连接两个通量的线段上找 θ
+
+Hu、Adams、Shu（2013）的想法很简单。把两者混合，而混合比例**逐面单独**决定。
+
+$$
+\hat{\mathbf{F}}_{i+1/2} = \hat{\mathbf{F}}^{LF}_{i+1/2} + \theta_{i+1/2}\left(\hat{\mathbf{F}}^{H}_{i+1/2} - \hat{\mathbf{F}}^{LF}_{i+1/2}\right), \qquad \theta_{i+1/2} \in [0, 1]
+$$
+
+$\theta = 1$ 是纯高阶格式，$\theta = 0$ 则退回 LF。不管取什么 $\theta$，形式仍是通量差分，所以**守恒性自动成立**。也就是说限制器既不造出质量，也不吃掉质量。这一点和局部猛灌人工粘性的做法有决定性的区别。
+
+记 $\Delta\mathbf{F}_{i+1/2} \equiv \hat{\mathbf{F}}^{H} - \hat{\mathbf{F}}^{LF}$，更新式就分成这样两块。
+
+$$
+\mathbf{U}_i^{n+1} = \underbrace{\mathbf{U}_i^{LF}}_{\text{安全的基准点}} - \lambda\left(\theta_{i+1/2}\Delta\mathbf{F}_{i+1/2} - \theta_{i-1/2}\Delta\mathbf{F}_{i-1/2}\right)
+$$
+
+第一项只要守住 CFL 条件，就保证在 $G$ 内。其余部分是从那个安全点朝高阶解伸出去的一条线段。要做的只是让线段在跨出 $G$ 之前停下来。
+
+底线不取 0，而取一个很小的正数 $\varepsilon$。
+
+$$
+\varepsilon = \min\left(10^{-13},\ \min_j \rho_j^0,\ \min_j p_j^0\right)
+$$
+
+$\rho_j^0$、$p_j^0$ 是初始状态的密度和压力。若把目标定在恰好为 0，一次舍入就又是负数。
+
+## 预算对半分 — 一个面动两个单元
+
+密度本身就是守恒变量，因此 $\rho_i^{n+1}$ 关于 $\theta$ 是**一次函数**。条件可以代数地解出来。
+
+把单元 $i$ 手上的余量叫作预算。$b_i = \rho_i^{LF} - \varepsilon \ge 0$。在面 $i+1/2$ 上若 $\Delta F^\rho > 0$，这个面削的是左侧单元 $i$ 的密度。反之则削右侧单元。
+
+这里有一个陷阱。内部单元会被左右两个面**同时**削。如果按每个面都能用光被削单元的全部预算来算，那么两个面各自合法，合起来却花掉了两倍预算。所以每个面只许用一半。
+
+$$
+\theta_{i+1/2} = \min\left(1,\ \frac{b_{\text{victim}} / 2}{\lambda\,|\Delta F^\rho_{i+1/2}|}\right)
+$$
+
+在下面的示意图里直接确认一下。
+
+<ThetaBudgetSplitDial />
+
+把 `|dF| scale` 调大，单元 2 两侧的两个 $\theta$ 会变黄下落。此时按下 "full budget per face"，两个 $\theta$ 又跳回 1 附近，但下方单元 2 的柱子会穿透绿色底线掉下去。只按面看没有任何问题，按单元看就是违规。
+
+## 压力排在密度之后，用二分法
+
+密度理顺之后再看压力。顺序很重要。算 $p$ 需要除以 $\rho$，所以必须先确保 $\rho > 0$。
+
+$p$ 是 $\mathbf{U}$ 的非线性函数，解不出一次式。不过有一条好性质。$p(\mathbf{U})$ 在 $G$ 上是**凹函数**（concave）。$\mathbf{U}(\theta)$ 关于 $\theta$ 线性，因此 $p(\theta)$ 也是凹的。凹函数的上水平集 $\{\theta : p(\theta) \ge \varepsilon\}$ 是一个区间，而 $\theta = 0$（LF 状态）已经满足条件，所以这个区间包含 0。
+
+也就是说根只有一个。二分法可以安全工作。20 到 40 次就能收缩到双精度极限。
+
+有一点要注意。因为单元 $i$ 而调小 $\theta_{i\pm1/2}$，会改变邻居单元 $i\pm1$ 的计算结果。扫一遍就收工，少数情况下会留下违规。必须反复扫描直到违规单元消失。由于 $\theta \to 0$ 时收敛到 LF 状态，迭代一定会终止。
+
+## 用 Python 复活的双稀疏波
+
+玩具问题取双稀疏波。以管子中央为界，左右各以 $\mp u_0$ 相互远离。中间张开一个接近真空的洞，正是这个洞杀死了高阶格式。
+
+```python
+import numpy as np
+
+GAMMA = 1.4
+
+
+def to_primitive(U):
+    rho = U[0]
+    u = U[1] / rho
+    p = (GAMMA - 1.0) * (U[2] - 0.5 * rho * u * u)
+    return rho, u, p
+
+
+def euler_flux(U):
+    rho, u, p = to_primitive(U)
+    return np.array([rho * u, rho * u * u + p, (U[2] + p) * u])
+
+
+def lf_face_flux(UL, UR, alpha):
+    return 0.5 * (euler_flux(UL) + euler_flux(UR) - alpha * (UR - UL))
+
+
+def density_theta(rho_lf, dF_rho, lam, eps_rho):
+    """逐面确定 theta。每个面最多只用掉被它削减单元预算的一半。"""
+    n = rho_lf.size
+    budget = np.maximum(rho_lf - eps_rho, 0.0)
+    theta = np.ones(dF_rho.size)
+    for f in range(1, n):                      # 只处理内部面
+        d = dF_rho[f]
+        if d > 0.0:                            # 削减左侧单元
+            cap = 0.5 * budget[f - 1] / (lam * d)
+        elif d < 0.0:                          # 削减右侧单元
+            cap = 0.5 * budget[f] / (lam * (-d))
+        else:
+            cap = 1.0
+        theta[f] = min(1.0, cap)
+    return theta
+
+
+def pressure_at(U_lf, dFl, dFr, tl, tr, lam):
+    U = U_lf - lam * (tr * dFr - tl * dFl)
+    return to_primitive(U)[2]
+
+
+def pressure_theta(U_lf, dF, theta, lam, eps_p):
+    """p(theta) 是凹的，安全区间只有一个。用二分法找边界。
+    调小一个单元的 theta 会影响邻居，因此反复迭代直到不再有违规。"""
+    n = U_lf.shape[1]
+    for _ in range(20):
+        dirty = False
+        for i in range(n):
+            tl, tr = theta[i], theta[i + 1]
+            if pressure_at(U_lf[:, i], dF[:, i], dF[:, i + 1], tl, tr, lam) >= eps_p:
+                continue
+            dirty = True
+            lo, hi = 0.0, 1.0
+            for _ in range(40):
+                mid = 0.5 * (lo + hi)
+                ok = pressure_at(U_lf[:, i], dF[:, i], dF[:, i + 1],
+                                 tl * mid, tr * mid, lam) >= eps_p
+                lo, hi = (mid, hi) if ok else (lo, mid)
+            theta[i] *= lo
+            theta[i + 1] *= lo
+        if not dirty:
+            return theta
+    return theta
+```
+
+时间推进循环每步构造两个通量，求出 $\theta$，混合后更新。
+
+```python
+def minmod(a, b):
+    return np.where(a * b <= 0.0, 0.0, np.where(np.abs(a) < np.abs(b), a, b))
+
+
+def face_states(U):
+    """MUSCL-minmod 重构 -> 每个面的左/右状态"""
+    d = minmod(U[:, 1:-1] - U[:, :-2], U[:, 2:] - U[:, 1:-1])
+    s = np.zeros_like(U)
+    s[:, 1:-1] = d
+    return U[:, :-1] + 0.5 * s[:, :-1], U[:, 1:] - 0.5 * s[:, 1:]
+
+
+def march_double_rarefaction(n=200, cfl=0.45, u0=4.0, t_end=0.15, limiter=True):
+    dx = 1.0 / n
+    x = (np.arange(n) + 0.5) * dx
+    rho = np.ones(n)
+    u = np.where(x < 0.5, -u0, u0)
+    p = np.full(n, 0.4)
+    U = np.vstack([rho, rho * u, p / (GAMMA - 1.0) + 0.5 * rho * u * u])
+
+    eps = min(1e-13, rho.min(), p.min())
+    t, step, clipped, total = 0.0, 0, 0, 0
+
+    while t < t_end:
+        r, v, pr = to_primitive(U)
+        if r.min() <= 0.0 or pr.min() <= 0.0:                 # 跑出容许集
+            return dict(crashed=True, step=step,
+                        rho_min=r.min(), p_min=pr.min())
+        a = np.sqrt(GAMMA * pr / r)
+        alpha = float(np.max(np.abs(v) + a))
+        dt = min(cfl * dx / alpha, t_end - t)
+        lam = dt / dx
+
+        Ug = np.hstack([U[:, :1], U, U[:, -1:]])              # zero-gradient ghost
+        UL, UR = face_states(Ug)
+        Flow = np.zeros((3, n + 1))
+        Fhigh = np.zeros((3, n + 1))
+        for f in range(n + 1):
+            Flow[:, f] = lf_face_flux(Ug[:, f], Ug[:, f + 1], alpha)
+            Fhigh[:, f] = lf_face_flux(UL[:, f], UR[:, f], alpha)
+
+        dF = Fhigh - Flow
+        U_lf = U - lam * (Flow[:, 1:] - Flow[:, :-1])          # 安全的基准点
+
+        if limiter:
+            th = density_theta(U_lf[0], dF[0], lam, eps)
+            th = pressure_theta(U_lf, dF, th, lam, eps)
+            clipped += int(np.sum(th[1:n] < 1.0 - 1e-12))
+            total += n - 1
+        else:
+            th = np.ones(n + 1)
+
+        F = Flow + th * dF                                     # 混合后的通量
+        U = U - lam * (F[:, 1:] - F[:, :-1])
+        t += dt
+        step += 1
+
+    r, _, pr = to_primitive(U)
+    return dict(crashed=False, step=step, rho_min=float(r.min()),
+                p_min=float(pr.min()), clipped=100.0 * clipped / max(total, 1))
+
+
+for lim in (False, True):
+    o = march_double_rarefaction(limiter=lim)
+    tag = "limiter ON " if lim else "limiter OFF"
+    if o["crashed"]:
+        print(f"{tag}: crashed at step {o['step']}  "
+              f"rho_min={o['rho_min']:.4f}  p_min={o['p_min']:+.4f}")
+    else:
+        print(f"{tag}: reached t=0.15 in {o['step']} steps  "
+              f"rho_min={o['rho_min']:.3e}  p_min={o['p_min']:.3e}  "
+              f"theta<1 on {o['clipped']:.3f}% of faces")
+```
+
+取 $u_0 = 4$、200 个网格、CFL 0.45，输出如下。
+
+```text
+limiter OFF: crashed at step 2  rho_min=0.3698  p_min=-0.1630
+limiter ON : reached t=0.15 in 300 steps  rho_min=9.560e-04  p_min=5.140e-04  theta<1 on 0.027% of faces
+```
+
+不带限制器，第二步就结束了。值得注意的是那一刻的密度是 0.3698。密度看上去毫无危险，压力却先掉成了负数。只监视密度的代码会漏掉这场事故。
+
+在下面的模拟里亲手操作一下。
+
+<VacuumRarefactionCrashLab />
+
+按下 `limiter OFF`，再把 `pull-apart u0` 调到 3.5 以上，上方的密度曲线还完好无损，中间的压力曲线就已经穿过红线。切回 `limiter ON`，最下方的 $\theta$ 柱只有极少数从绿色落下来，计算一路跑到终点。
+
+## θ 小于 1 的面占全部的百分之几
+
+实测值是 0.027%。200 单元 × 300 步 ≈ 6 万个面里，只有十六个左右被动过。把 $u_0$ 提到 8，也不过 0.093%。
+
+这个数字才是这套方法的核心。限制器基本上处于睡眠状态。只在真空张开的那几个单元、那几步里醒来，把那些面的通量朝 LF 方向轻轻拉一下。其余 99.97% 的面上，原来的高阶格式照常运行。
+
+和把人工粘性全局调高来掩盖问题的做法相比，差别很清楚。那一边连光滑区域的精度也一起削掉。这一边只要 $\theta = 1$ 保持不变，就和原格式逐比特相同。网格收敛试验中限制器不会拉低收敛阶，原因也在这里。
+
+## 接进代码前要确认的三件事
+
+**第一，CFL 上限是否真的守住了。** 整套方法都架在"$\mathbf{U}^{LF}$ 是安全的"这个前提上。LF 的正性保持只在 $\lambda\alpha \le 1/2$ 时成立。平时按 CFL 0.8 跑的代码，基准点本身就已经塌了，把 $\theta$ 压到 0 也救不回来。限制器不起作用时，先怀疑这一条。
+
+**第二，是否在 Runge–Kutta 的每个子步都施加了。** SSP-RK 的每个子步都是前向 Euler 的凸组合。每一个子步都在 $G$ 内，最终结果才会落在 $G$ 内。只在最后检查一次，那时 $\sqrt{}$ 里早在中间子步就已经是负的了。
+
+**第三，$\varepsilon$ 是不是被设成了 0。** 把二分法的目标定在恰好为 0，最后一次舍入就会给出 $-10^{-17}$。必须按初始最小值铺一个小正数作为底线。
+
+## 再遇到真空时该拿出什么
+
+守恒性和正性是两回事。前者由通量形式免费提供，后者必须另行强制。
+
+混合通量的做法在不破坏守恒性的前提下完成了这次强制。因为无论 $\theta$ 取何值，形式仍是通量差分。
+
+而实际被干预的面不到 0.1%。安全装置的代价只有这么点，没有理由不装。
+
+---
+
+**参考文献**
+X.Y. Hu, N.A. Adams, C.-W. Shu, "Positivity-preserving method for high-order conservative schemes solving compressible Euler equations", *Journal of Computational Physics* 242 (2013) 169–180.

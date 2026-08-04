@@ -1,0 +1,309 @@
+---
+title: "La masa se conserva exactamente y aun así la densidad es negativa — el limitador de flujo que preserva la positividad"
+date: 2026-08-05
+description: "Un θ por cara que une el flujo de alto orden con el de Lax–Friedrichs para salvar el signo"
+tags: ["Positivity-Preserving", "Riemann", "Compressible", "TVD", "Flux-Limiter"]
+locale: es
+slug: 2026-08-05-positivity-preserving-flux-limiter
+draft: false
+---
+
+import { VacuumRarefactionCrashLab } from '@/components/post-viz/2026-08-05-positivity-preserving-flux-limiter/VacuumRarefactionCrashLab'
+import { ThetaBudgetSplitDial } from '@/components/post-viz/2026-08-05-positivity-preserving-flux-limiter/ThetaBudgetSplitDial'
+
+Un esquema conservativo no pierde ni un grano de masa. Lo que sale por una cara es exactamente lo que recibe la vecina, así que la suma sobre todo el dominio se mantiene constante hasta la precisión de máquina. Y ese mismo esquema produce una densidad de −0.003. El total cuadra, pero una celda individual es negativa. Hoy toca ver por qué la conservación no garantiza la positividad, y cómo se arma un limitador de flujo que salva el signo manteniendo casi intacta la precisión de alto orden. Se ejecuta el caso de verdad y se cuenta qué porcentaje de caras acaba tocado.
+
+## No es divergencia: se salió del dominio de definición
+
+Cuando el log termina en NaN, lo primero que se sospecha es el paso de tiempo. Se baja el CFL a la mitad. Sigue muriendo. Se refina la malla. Muere antes.
+
+En ese punto lo más probable es que no sea un problema de estabilidad. Conviene mirar la línea que calcula la velocidad del sonido.
+
+$$
+c = \sqrt{\frac{\gamma p}{\rho}}
+$$
+
+$\gamma$ es la relación de calores específicos, $p$ la presión y $\rho$ la densidad. En el momento en que $p$ o $\rho$ se vuelve negativo, $c$ pasa a ser NaN. El intervalo de tiempo del paso siguiente también es NaN, y después todos los flujos. El accidente real ya había terminado un paso antes de la línea donde aparece el NaN.
+
+La clave es esta. Para que la solución de las ecuaciones de Euler siga viva, las variables conservadas $\mathbf{U} = (\rho,\ \rho u,\ E)$ deben permanecer dentro del **conjunto admisible** (admissible set).
+
+$$
+G = \left\{ \mathbf{U} : \rho > 0,\ \ p = (\gamma-1)\left(E - \frac{(\rho u)^2}{2\rho}\right) > 0 \right\}
+$$
+
+La conservación es la propiedad de que "la suma total se mantiene", no la de que "cada celda permanece dentro de $G$". Son dos exigencias completamente distintas.
+
+## La reconstrucción de alto orden no protege el signo
+
+La situación típica de salida de $G$ es la cercanía al vacío. Ondas de expansión fuertes, flujo de reentrada a gran altitud, el interior de una burbuja de cavitación, la parte trasera de una onda explosiva. Ahí $\rho$ y $p$ caen hasta el orden de $10^{-4}$.
+
+Si sobre eso se monta una reconstrucción MUSCL o WENO, el valor en la cara $\rho_{i+1/2}^{L}$ puede salir negativo aunque la media de celda $\bar\rho_i$ sea positiva. La pendiente se suma multiplicada por media anchura de celda. La reconstrucción solo conserva la media de celda; sobre el signo no promete nada.
+
+Con la presión es peor. $p$ es una función **no lineal** de las variables conservadas. Aunque $\rho$ y $E$ sean positivos por separado, si la energía cinética $(\rho u)^2/2\rho$ supera a $E$, entonces $p$ se vuelve negativo. De hecho, en la doble rarefacción que se ejecuta más abajo la presión cae primero a −0.163 con la densidad todavía sana en 0.37.
+
+## Por qué Lax–Friedrichs aguanta con CFL 0.5
+
+¿En qué se puede confiar entonces? En el flujo de Lax–Friedrichs (LF) de primer orden.
+
+$$
+\hat{\mathbf{F}}^{LF}_{i+1/2} = \frac{1}{2}\left[\mathbf{F}(\mathbf{U}_i) + \mathbf{F}(\mathbf{U}_{i+1}) - \alpha\,(\mathbf{U}_{i+1} - \mathbf{U}_i)\right]
+$$
+
+$\alpha = \max_j(|u_j| + c_j)$ es la velocidad característica máxima. Al desarrollar la actualización con este flujo, queda ordenada así.
+
+$$
+\mathbf{U}_i^{n+1} = (1 - \lambda\alpha)\,\mathbf{U}_i + \frac{\lambda\alpha}{2}\left(\mathbf{U}_{i+1} - \frac{\mathbf{F}_{i+1}}{\alpha}\right) + \frac{\lambda\alpha}{2}\left(\mathbf{U}_{i-1} + \frac{\mathbf{F}_{i-1}}{\alpha}\right)
+$$
+
+$\lambda = \Delta t/\Delta x$. La suma de los tres coeficientes es exactamente 1, y si $\lambda\alpha \le 1$ ninguno es negativo. Es decir, una **combinación convexa**.
+
+Como $G$ es un conjunto convexo, si los tres términos que entran en la combinación están dentro de $G$, el resultado también. La cuestión es si $\mathbf{U} \pm \mathbf{F}/\alpha$ vuelve a caer en $G$, y Perthame–Shu demostraron que esa condición se cumple para $\lambda\alpha \le 1/2$. De ahí viene la frase habitual de que "LF preserva la positividad con CFL 0.5".
+
+En resumen, hay dos flujos a mano. El de alto orden $\hat{\mathbf{F}}^{H}$, preciso pero que no respeta el signo, y el $\hat{\mathbf{F}}^{LF}$, impreciso pero que sí lo respeta.
+
+## Buscar θ sobre el segmento que une los dos flujos
+
+La idea de Hu, Adams y Shu (2013) es simple. Se mezclan los dos, pero la proporción de mezcla se decide **cara por cara**.
+
+$$
+\hat{\mathbf{F}}_{i+1/2} = \hat{\mathbf{F}}^{LF}_{i+1/2} + \theta_{i+1/2}\left(\hat{\mathbf{F}}^{H}_{i+1/2} - \hat{\mathbf{F}}^{LF}_{i+1/2}\right), \qquad \theta_{i+1/2} \in [0, 1]
+$$
+
+Con $\theta = 1$ queda el esquema de alto orden puro; con $\theta = 0$ se retrocede a LF. Sea cual sea el $\theta$ empleado, la forma sigue siendo de flujo, así que **la conservación se mantiene automáticamente**. Significa que el limitador no crea ni destruye masa. En esto se distingue de forma decisiva del método de verter viscosidad artificial de manera local.
+
+Escribiendo $\Delta\mathbf{F}_{i+1/2} \equiv \hat{\mathbf{F}}^{H} - \hat{\mathbf{F}}^{LF}$, la actualización se separa así.
+
+$$
+\mathbf{U}_i^{n+1} = \underbrace{\mathbf{U}_i^{LF}}_{\text{punto de partida seguro}} - \lambda\left(\theta_{i+1/2}\Delta\mathbf{F}_{i+1/2} - \theta_{i-1/2}\Delta\mathbf{F}_{i-1/2}\right)
+$$
+
+El primer término está garantizado dentro de $G$ con solo respetar la condición CFL. El resto es un segmento que se extiende desde ese punto seguro hacia la solución de alto orden. Lo único que hay que hacer es detener el segmento justo antes de que abandone $G$.
+
+El valor de suelo no se fija en 0, sino en un positivo muy pequeño $\varepsilon$.
+
+$$
+\varepsilon = \min\left(10^{-13},\ \min_j \rho_j^0,\ \min_j p_j^0\right)
+$$
+
+$\rho_j^0$ y $p_j^0$ son la densidad y la presión del estado inicial. Si se apunta exactamente a 0, un solo redondeo devuelve el signo negativo.
+
+## El presupuesto se gasta a medias — una cara toca dos celdas
+
+La densidad es una variable conservada en sí misma, así que $\rho_i^{n+1}$ es una **función lineal** de $\theta$. Por eso la condición se puede resolver algebraicamente.
+
+Llamemos presupuesto al margen que tiene la celda $i$. Es $b_i = \rho_i^{LF} - \varepsilon \ge 0$. Si en la cara $i+1/2$ resulta $\Delta F^\rho > 0$, esa cara recorta la densidad de la celda izquierda $i$. Si es al revés, recorta la de la derecha.
+
+Aquí hay una trampa. Una celda interior queda recortada **a la vez** por sus dos caras. Si cada cara calcula que puede gastar todo el presupuesto de la celda que recorta, las dos caras resultan legales por separado y entre ambas gastan el doble del presupuesto. Por eso a cada cara se le permite solo la mitad.
+
+$$
+\theta_{i+1/2} = \min\left(1,\ \frac{b_{\text{victim}} / 2}{\lambda\,|\Delta F^\rho_{i+1/2}|}\right)
+$$
+
+Conviene comprobarlo directamente en el esquema de abajo.
+
+<ThetaBudgetSplitDial />
+
+Al subir `|dF| scale`, los dos $\theta$ a ambos lados de la celda 2 bajan en amarillo. Si aquí se pulsa "full budget per face", los dos $\theta$ vuelven a saltar cerca de 1, pero la barra inferior de la celda 2 atraviesa hacia abajo la línea verde de suelo. Mirando cara por cara no hay nada mal; mirando celda por celda es una violación.
+
+## La presión va después de la densidad, y por bisección
+
+Resuelta la densidad, toca la presión. El orden importa. Para calcular $p$ hay que dividir por $\rho$, así que primero debe estar asegurado $\rho > 0$.
+
+$p$ es una función no lineal de $\mathbf{U}$ y no se despeja con una expresión lineal. A cambio tiene una buena propiedad. $p(\mathbf{U})$ es una función **cóncava** (concave) sobre $G$. Como $\mathbf{U}(\theta)$ es lineal en $\theta$, $p(\theta)$ también es cóncava. El conjunto de nivel superior de una función cóncava $\{\theta : p(\theta) \ge \varepsilon\}$ es un intervalo, y como en $\theta = 0$ (el estado LF) la condición ya se cumple, ese intervalo contiene el 0.
+
+Es decir, hay una sola raíz. La bisección funciona con seguridad. Con 20 a 40 iteraciones se estrecha hasta el límite de la doble precisión.
+
+Un detalle a tener en cuenta. Si por culpa de la celda $i$ se reduce $\theta_{i\pm1/2}$, cambia el cálculo de las celdas vecinas $i\pm1$. Con una sola pasada quedan violaciones en casos raros. Hay que repetir los barridos hasta que desaparezcan las celdas en violación. Como $\theta \to 0$ converge al estado LF, la iteración termina siempre.
+
+## La doble rarefacción resucitada en Python
+
+El problema de juguete es la doble rarefacción. Tomando como referencia el centro del tubo, los dos lados se alejan entre sí a $\mp u_0$. En el centro se abre un hueco casi vacío, y ese hueco mata al esquema de alto orden.
+
+```python
+import numpy as np
+
+GAMMA = 1.4
+
+
+def to_primitive(U):
+    rho = U[0]
+    u = U[1] / rho
+    p = (GAMMA - 1.0) * (U[2] - 0.5 * rho * u * u)
+    return rho, u, p
+
+
+def euler_flux(U):
+    rho, u, p = to_primitive(U)
+    return np.array([rho * u, rho * u * u + p, (U[2] + p) * u])
+
+
+def lf_face_flux(UL, UR, alpha):
+    return 0.5 * (euler_flux(UL) + euler_flux(UR) - alpha * (UR - UL))
+
+
+def density_theta(rho_lf, dF_rho, lam, eps_rho):
+    """Decide theta en cada cara. Cada cara gasta como maximo la mitad del presupuesto de la celda que recorta."""
+    n = rho_lf.size
+    budget = np.maximum(rho_lf - eps_rho, 0.0)
+    theta = np.ones(dF_rho.size)
+    for f in range(1, n):                      # solo caras interiores
+        d = dF_rho[f]
+        if d > 0.0:                            # recorta la celda izquierda
+            cap = 0.5 * budget[f - 1] / (lam * d)
+        elif d < 0.0:                          # recorta la celda derecha
+            cap = 0.5 * budget[f] / (lam * (-d))
+        else:
+            cap = 1.0
+        theta[f] = min(1.0, cap)
+    return theta
+
+
+def pressure_at(U_lf, dFl, dFr, tl, tr, lam):
+    U = U_lf - lam * (tr * dFr - tl * dFl)
+    return to_primitive(U)[2]
+
+
+def pressure_theta(U_lf, dF, theta, lam, eps_p):
+    """p(theta) es concava, asi que hay un solo intervalo seguro. Se busca el borde por biseccion.
+    Reducir el theta de una celda afecta a las vecinas, asi que se repite hasta que no queden violaciones."""
+    n = U_lf.shape[1]
+    for _ in range(20):
+        dirty = False
+        for i in range(n):
+            tl, tr = theta[i], theta[i + 1]
+            if pressure_at(U_lf[:, i], dF[:, i], dF[:, i + 1], tl, tr, lam) >= eps_p:
+                continue
+            dirty = True
+            lo, hi = 0.0, 1.0
+            for _ in range(40):
+                mid = 0.5 * (lo + hi)
+                ok = pressure_at(U_lf[:, i], dF[:, i], dF[:, i + 1],
+                                 tl * mid, tr * mid, lam) >= eps_p
+                lo, hi = (mid, hi) if ok else (lo, mid)
+            theta[i] *= lo
+            theta[i + 1] *= lo
+        if not dirty:
+            return theta
+    return theta
+```
+
+El bucle de avance temporal construye en cada paso los dos flujos, obtiene $\theta$ y actualiza con la mezcla.
+
+```python
+def minmod(a, b):
+    return np.where(a * b <= 0.0, 0.0, np.where(np.abs(a) < np.abs(b), a, b))
+
+
+def face_states(U):
+    """Reconstruccion MUSCL-minmod -> estado izquierdo/derecho de cada cara"""
+    d = minmod(U[:, 1:-1] - U[:, :-2], U[:, 2:] - U[:, 1:-1])
+    s = np.zeros_like(U)
+    s[:, 1:-1] = d
+    return U[:, :-1] + 0.5 * s[:, :-1], U[:, 1:] - 0.5 * s[:, 1:]
+
+
+def march_double_rarefaction(n=200, cfl=0.45, u0=4.0, t_end=0.15, limiter=True):
+    dx = 1.0 / n
+    x = (np.arange(n) + 0.5) * dx
+    rho = np.ones(n)
+    u = np.where(x < 0.5, -u0, u0)
+    p = np.full(n, 0.4)
+    U = np.vstack([rho, rho * u, p / (GAMMA - 1.0) + 0.5 * rho * u * u])
+
+    eps = min(1e-13, rho.min(), p.min())
+    t, step, clipped, total = 0.0, 0, 0, 0
+
+    while t < t_end:
+        r, v, pr = to_primitive(U)
+        if r.min() <= 0.0 or pr.min() <= 0.0:                 # salida del conjunto admisible
+            return dict(crashed=True, step=step,
+                        rho_min=r.min(), p_min=pr.min())
+        a = np.sqrt(GAMMA * pr / r)
+        alpha = float(np.max(np.abs(v) + a))
+        dt = min(cfl * dx / alpha, t_end - t)
+        lam = dt / dx
+
+        Ug = np.hstack([U[:, :1], U, U[:, -1:]])              # fantasma de gradiente nulo
+        UL, UR = face_states(Ug)
+        Flow = np.zeros((3, n + 1))
+        Fhigh = np.zeros((3, n + 1))
+        for f in range(n + 1):
+            Flow[:, f] = lf_face_flux(Ug[:, f], Ug[:, f + 1], alpha)
+            Fhigh[:, f] = lf_face_flux(UL[:, f], UR[:, f], alpha)
+
+        dF = Fhigh - Flow
+        U_lf = U - lam * (Flow[:, 1:] - Flow[:, :-1])          # punto de partida seguro
+
+        if limiter:
+            th = density_theta(U_lf[0], dF[0], lam, eps)
+            th = pressure_theta(U_lf, dF, th, lam, eps)
+            clipped += int(np.sum(th[1:n] < 1.0 - 1e-12))
+            total += n - 1
+        else:
+            th = np.ones(n + 1)
+
+        F = Flow + th * dF                                     # flujo mezclado
+        U = U - lam * (F[:, 1:] - F[:, :-1])
+        t += dt
+        step += 1
+
+    r, _, pr = to_primitive(U)
+    return dict(crashed=False, step=step, rho_min=float(r.min()),
+                p_min=float(pr.min()), clipped=100.0 * clipped / max(total, 1))
+
+
+for lim in (False, True):
+    o = march_double_rarefaction(limiter=lim)
+    tag = "limiter ON " if lim else "limiter OFF"
+    if o["crashed"]:
+        print(f"{tag}: crashed at step {o['step']}  "
+              f"rho_min={o['rho_min']:.4f}  p_min={o['p_min']:+.4f}")
+    else:
+        print(f"{tag}: reached t=0.15 in {o['step']} steps  "
+              f"rho_min={o['rho_min']:.3e}  p_min={o['p_min']:.3e}  "
+              f"theta<1 on {o['clipped']:.3f}% of faces")
+```
+
+Con $u_0 = 4$, 200 celdas y CFL 0.45, la salida es esta.
+
+```text
+limiter OFF: crashed at step 2  rho_min=0.3698  p_min=-0.1630
+limiter ON : reached t=0.15 in 300 steps  rho_min=9.560e-04  p_min=5.140e-04  theta<1 on 0.027% of faces
+```
+
+Sin limitador todo termina en el segundo paso. Lo llamativo es que la densidad en ese instante vale 0.3698. La densidad no parece nada peligrosa, y aun así la presión ya había caído antes a negativa. Un código que solo vigila la densidad se pierde este accidente.
+
+Conviene manipularlo directamente en la simulación de abajo.
+
+<VacuumRarefactionCrashLab />
+
+Al pulsar `limiter OFF` y subir `pull-apart u0` por encima de 3.5, la curva de presión del centro atraviesa la línea roja mientras la curva de densidad de arriba sigue todavía sana. Al volver a `limiter ON`, de las barras de $\theta$ del fondo solo unas poquísimas bajan del verde y el cálculo llega hasta el final.
+
+## Qué porcentaje del total suponen las caras con θ menor que 1
+
+El valor medido es 0.027%. De unas 60 mil caras (200 celdas × 300 pasos), solo unas dieciséis quedaron tocadas. Aunque se suba $u_0$ hasta 8, se queda en 0.093%.
+
+Ese número es el núcleo de la técnica. El limitador está prácticamente dormido. Solo despierta en las pocas celdas y los pocos pasos donde se abre el vacío, y tira un poco del flujo de esa cara hacia LF. En el 99.97% restante de las caras sigue corriendo el esquema de alto orden original.
+
+Comparado con subir la viscosidad artificial de forma global para tapar el problema, la diferencia es clara. Ese camino recorta también la precisión en las zonas suaves. Este otro es idéntico bit a bit al esquema original mientras se mantenga $\theta = 1$. Por eso el limitador tampoco baja el orden en un test de convergencia de malla.
+
+## Tres comprobaciones antes de llevarlo al código
+
+**Primera: ¿se está respetando de verdad el límite de CFL?** Toda la técnica se apoya en la premisa de que "$\mathbf{U}^{LF}$ es seguro". La preservación de positividad de LF solo se cumple para $\lambda\alpha \le 1/2$. Si el código venía corriendo con CFL 0.8, el punto de referencia ya está roto de entrada y bajar $\theta$ a 0 no lo salva. Si el limitador no surte efecto, conviene sospechar de esto primero.
+
+**Segunda: ¿se aplica en cada etapa de Runge–Kutta?** En SSP-RK cada etapa es una combinación convexa de Euler explícito. Cada etapa por separado debe estar dentro de $G$ para que el resultado final caiga en $G$. Si solo se comprueba una vez al final, el interior de la $\sqrt{}$ ya se volvió negativo en una etapa intermedia.
+
+**Tercera: ¿se ha dejado $\varepsilon$ en 0?** Si la bisección se ejecuta apuntando exactamente a 0, el último redondeo saca $-10^{-17}$. Hay que poner como suelo un positivo pequeño basado en el mínimo inicial.
+
+## Lo que hay que sacar al volver a encontrarse con el vacío
+
+Conservación y positividad son propiedades distintas. La primera la regala gratis la forma en flujo; la segunda hay que imponerla aparte.
+
+Mezclar flujos consigue esa imposición sin romper la conservación. Sea cual sea $\theta$, sigue siendo una diferencia de flujos.
+
+Y las caras que intervienen de verdad son menos del 0.1%. A ese precio, no hay razón para no montar el seguro.
+
+---
+
+**Referencias**
+X.Y. Hu, N.A. Adams, C.-W. Shu, "Positivity-preserving method for high-order conservative schemes solving compressible Euler equations", *Journal of Computational Physics* 242 (2013) 169–180.

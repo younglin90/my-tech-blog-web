@@ -1,0 +1,309 @@
+---
+title: "質量は厳密に保存されたのに密度が負 — 正値性保存フラックスリミター"
+date: 2026-08-05
+description: "高次フラックスとLax–Friedrichsフラックスをθでつなぐ正値性保存の手法"
+tags: ["Positivity-Preserving", "Riemann", "Compressible", "TVD", "Flux-Limiter"]
+locale: ja
+slug: 2026-08-05-positivity-preserving-flux-limiter
+draft: false
+---
+
+import { VacuumRarefactionCrashLab } from '@/components/post-viz/2026-08-05-positivity-preserving-flux-limiter/VacuumRarefactionCrashLab'
+import { ThetaBudgetSplitDial } from '@/components/post-viz/2026-08-05-positivity-preserving-flux-limiter/ThetaBudgetSplitDial'
+
+保存形スキームは質量を一粒も失いません。面を通って出た量がそのまま隣が受け取った量になるので、領域全体の総和は機械精度まで一定です。ところがそのスキームが密度 −0.003 を作ります。総和は合っているのに個別のセルが負です。今回は、なぜ保存性が正値性を保証しないのか、そして高次精度をほぼそのまま保ったまま符号だけを守るフラックスリミターをどう組むのかを扱います。実際に回して、何%の面が本当に手を入れられるのかまで数えてみます。
+
+## 発散ではなく定義域の外へ出たのです
+
+ログがNaNで終わったとき、まず疑うのは時間刻みです。CFLを半分に下げます。それでも落ちます。格子を細かくします。もっと早く落ちます。
+
+このときは安定性の問題ではない可能性が高いです。音速を求める行を見てみましょう。
+
+$$
+c = \sqrt{\frac{\gamma p}{\rho}}
+$$
+
+$\gamma$ は比熱比、$p$ は圧力、$\rho$ は密度です。$p$ か $\rho$ のどちらかが負になった瞬間に $c$ はNaNになります。次のステップの時間間隔もNaN、その次のフラックスも全部NaN。実際の事故はNaNが出力された行より一ステップ手前ですでに終わっています。
+
+肝心なのはここです。Euler方程式の解が生きているためには、保存変数 $\mathbf{U} = (\rho,\ \rho u,\ E)$ が**許容集合**(admissible set)の中になければなりません。
+
+$$
+G = \left\{ \mathbf{U} : \rho > 0,\ \ p = (\gamma-1)\left(E - \frac{(\rho u)^2}{2\rho}\right) > 0 \right\}
+$$
+
+保存性は「総和が保たれる」という性質であって、「各セルが $G$ の中に留まる」という性質ではありません。二つはまったく別の要求です。
+
+## 高次再構成は符号を守ってくれません
+
+$G$ を外れる典型的な状況は真空の近くです。強い膨張波、高高度の再突入流れ、キャビテーション気泡の内部、そして爆風の後方。こうした場所で $\rho$ と $p$ は $10^{-4}$ のレベルまで落ちます。
+
+ここにMUSCLやWENO再構成を載せると、セル平均 $\bar\rho_i$ が正でも面の値 $\rho_{i+1/2}^{L}$ は負になり得ます。勾配にセル幅の半分を掛けて足すからです。再構成はセル平均を保存するだけで、符号については何も約束しません。
+
+圧力はもっと悪いです。$p$ は保存変数の**非線形**関数です。$\rho$ と $E$ がそれぞれ正でも、運動エネルギー $(\rho u)^2/2\rho$ が $E$ を超えれば $p$ は負になります。実際、後で回してみる二重希薄波では、密度が0.37と無事な状態で圧力のほうが先に −0.163 まで落ちます。
+
+## Lax–FriedrichsがCFL 0.5で耐える理由
+
+では何を信じられるのか。1次のLax–Friedrichs(LF)フラックスです。
+
+$$
+\hat{\mathbf{F}}^{LF}_{i+1/2} = \frac{1}{2}\left[\mathbf{F}(\mathbf{U}_i) + \mathbf{F}(\mathbf{U}_{i+1}) - \alpha\,(\mathbf{U}_{i+1} - \mathbf{U}_i)\right]
+$$
+
+$\alpha = \max_j(|u_j| + c_j)$ は最大特性速度です。このフラックスで更新式を展開すると、次のように整理されます。
+
+$$
+\mathbf{U}_i^{n+1} = (1 - \lambda\alpha)\,\mathbf{U}_i + \frac{\lambda\alpha}{2}\left(\mathbf{U}_{i+1} - \frac{\mathbf{F}_{i+1}}{\alpha}\right) + \frac{\lambda\alpha}{2}\left(\mathbf{U}_{i-1} + \frac{\mathbf{F}_{i-1}}{\alpha}\right)
+$$
+
+$\lambda = \Delta t/\Delta x$ です。三つの係数の和はちょうど1で、$\lambda\alpha \le 1$ ならすべて非負です。つまり**凸結合**です。
+
+$G$ は凸集合なので、結合に入る三項がすべて $G$ の中なら結果も $G$ の中です。問題は $\mathbf{U} \pm \mathbf{F}/\alpha$ が再び $G$ に入るかどうかですが、Perthame–Shuがこの条件は $\lambda\alpha \le 1/2$ で成り立つことを示しました。よく使われる「LFはCFL 0.5で正値性保存」という一文の出所がここです。
+
+まとめると、私たちの手元には二つのフラックスがあります。正確だが符号を守らない高次フラックス $\hat{\mathbf{F}}^{H}$、そして不正確だが符号を守る $\hat{\mathbf{F}}^{LF}$ です。
+
+## 二つのフラックスを結ぶ線分の上でθを探す
+
+Hu, Adams, Shu(2013)のアイデアは単純です。二つを混ぜる、ただし混ぜる比率を**面ごとに別々に**決めるのです。
+
+$$
+\hat{\mathbf{F}}_{i+1/2} = \hat{\mathbf{F}}^{LF}_{i+1/2} + \theta_{i+1/2}\left(\hat{\mathbf{F}}^{H}_{i+1/2} - \hat{\mathbf{F}}^{LF}_{i+1/2}\right), \qquad \theta_{i+1/2} \in [0, 1]
+$$
+
+$\theta = 1$ なら純粋な高次スキーム、$\theta = 0$ ならLFへ後退します。どんな $\theta$ を使ってもフラックス形式なので、**保存性は自動的に保たれます**。リミターが質量を作りも消しもしないという意味です。この点が、人工粘性を局所的に注ぎ込むやり方と決定的に違います。
+
+$\Delta\mathbf{F}_{i+1/2} \equiv \hat{\mathbf{F}}^{H} - \hat{\mathbf{F}}^{LF}$ と書くと、更新式はこう分かれます。
+
+$$
+\mathbf{U}_i^{n+1} = \underbrace{\mathbf{U}_i^{LF}}_{\text{安全な基準点}} - \lambda\left(\theta_{i+1/2}\Delta\mathbf{F}_{i+1/2} - \theta_{i-1/2}\Delta\mathbf{F}_{i-1/2}\right)
+$$
+
+第一項はCFL条件さえ守れば $G$ の中にあることが保証されます。残りは、その安全な点から高次解のほうへ伸びる線分です。私たちがやることは、線分が $G$ を外れる直前で止まることだけです。
+
+下限値は0ではなく、ごく小さい正の数 $\varepsilon$ に取ります。
+
+$$
+\varepsilon = \min\left(10^{-13},\ \min_j \rho_j^0,\ \min_j p_j^0\right)
+$$
+
+$\rho_j^0$、$p_j^0$ は初期状態の密度・圧力です。ちょうど0を狙うと、丸め一回でまた負になります。
+
+## 予算を半分ずつ使う — 面一つがセル二つに触れる
+
+密度は保存変数そのものなので、$\rho_i^{n+1}$ は $\theta$ について**1次関数**です。だから条件を代数的に解けます。
+
+セル $i$ が持つ余裕を予算と呼びましょう。$b_i = \rho_i^{LF} - \varepsilon \ge 0$ です。面 $i+1/2$ で $\Delta F^\rho > 0$ なら、この面は左のセル $i$ の密度を削ります。逆なら右のセルを削ります。
+
+ここに落とし穴が一つあります。内部セルは左右の二つの面から**同時に**削られます。各面が自分の削るセルの予算を全部使えると計算すると、二つの面がそれぞれは合法でありながら、合わせて予算の二倍を使ってしまいます。そこで各面には半分ずつだけ許します。
+
+$$
+\theta_{i+1/2} = \min\left(1,\ \frac{b_{\text{victim}} / 2}{\lambda\,|\Delta F^\rho_{i+1/2}|}\right)
+$$
+
+下の図で直接確かめてみましょう。
+
+<ThetaBudgetSplitDial />
+
+`|dF| scale` を上げると、セル2の両隣の二つの $\theta$ が黄色になって下がります。ここで "full budget per face" を押すと二つの $\theta$ が再び1の近くまで跳ね上がりますが、下側のセル2のバーは緑の底線を突き抜けて下がります。面単位で見れば何も間違っていないのに、セル単位では違反です。
+
+## 圧力は密度の次に、そして二分法で
+
+密度が片付いたら圧力を見ます。順序が重要です。$p$ を計算するには $\rho$ で割る必要があるので、$\rho > 0$ が先に確保されていなければなりません。
+
+$p$ は $\mathbf{U}$ の非線形関数なので1次式では解けません。代わりに良い性質が一つあります。$p(\mathbf{U})$ は $G$ 上で**凹関数**(concave)です。$\mathbf{U}(\theta)$ が $\theta$ について線形なので $p(\theta)$ も凹です。凹関数の上位準位集合 $\{\theta : p(\theta) \ge \varepsilon\}$ は区間であり、$\theta = 0$(LF状態)ですでに条件を満たすので、その区間は0を含みます。
+
+つまり根は一つだけです。二分法が安全に働きます。20〜40回で倍精度の限界まで絞り込めます。
+
+一つ注意点があります。セル $i$ のために $\theta_{i\pm1/2}$ を下げると、隣のセル $i\pm1$ の計算が変わります。一度なぞって終わりにすると、まれに違反が残ります。違反セルが消えるまでスイープを繰り返す必要があります。$\theta \to 0$ ならLF状態へ収束するので、反復は必ず終わります。
+
+## Pythonで蘇らせた二重希薄波
+
+トイ問題は二重希薄波です。管の中央を境に左右が $\mp u_0$ で互いに離れていきます。中央に真空に近い穴が開き、その穴が高次スキームを殺します。
+
+```python
+import numpy as np
+
+GAMMA = 1.4
+
+
+def to_primitive(U):
+    rho = U[0]
+    u = U[1] / rho
+    p = (GAMMA - 1.0) * (U[2] - 0.5 * rho * u * u)
+    return rho, u, p
+
+
+def euler_flux(U):
+    rho, u, p = to_primitive(U)
+    return np.array([rho * u, rho * u * u + p, (U[2] + p) * u])
+
+
+def lf_face_flux(UL, UR, alpha):
+    return 0.5 * (euler_flux(UL) + euler_flux(UR) - alpha * (UR - UL))
+
+
+def density_theta(rho_lf, dF_rho, lam, eps_rho):
+    """面ごとにthetaを決める。各面は自分が削るセルの予算を半分までしか使わない。"""
+    n = rho_lf.size
+    budget = np.maximum(rho_lf - eps_rho, 0.0)
+    theta = np.ones(dF_rho.size)
+    for f in range(1, n):                      # 内部の面のみ
+        d = dF_rho[f]
+        if d > 0.0:                            # 左のセルを削る
+            cap = 0.5 * budget[f - 1] / (lam * d)
+        elif d < 0.0:                          # 右のセルを削る
+            cap = 0.5 * budget[f] / (lam * (-d))
+        else:
+            cap = 1.0
+        theta[f] = min(1.0, cap)
+    return theta
+
+
+def pressure_at(U_lf, dFl, dFr, tl, tr, lam):
+    U = U_lf - lam * (tr * dFr - tl * dFl)
+    return to_primitive(U)[2]
+
+
+def pressure_theta(U_lf, dF, theta, lam, eps_p):
+    """p(theta)は凹なので安全区間は一つ。二分法で境界を探す。
+    あるセルのthetaを下げると隣が影響を受けるので、違反がなくなるまで繰り返す。"""
+    n = U_lf.shape[1]
+    for _ in range(20):
+        dirty = False
+        for i in range(n):
+            tl, tr = theta[i], theta[i + 1]
+            if pressure_at(U_lf[:, i], dF[:, i], dF[:, i + 1], tl, tr, lam) >= eps_p:
+                continue
+            dirty = True
+            lo, hi = 0.0, 1.0
+            for _ in range(40):
+                mid = 0.5 * (lo + hi)
+                ok = pressure_at(U_lf[:, i], dF[:, i], dF[:, i + 1],
+                                 tl * mid, tr * mid, lam) >= eps_p
+                lo, hi = (mid, hi) if ok else (lo, mid)
+            theta[i] *= lo
+            theta[i + 1] *= lo
+        if not dirty:
+            return theta
+    return theta
+```
+
+時間前進ループは毎ステップ二つのフラックスを作り、$\theta$ を求め、混ぜて更新します。
+
+```python
+def minmod(a, b):
+    return np.where(a * b <= 0.0, 0.0, np.where(np.abs(a) < np.abs(b), a, b))
+
+
+def face_states(U):
+    """MUSCL-minmod再構成 -> 各面の左/右状態"""
+    d = minmod(U[:, 1:-1] - U[:, :-2], U[:, 2:] - U[:, 1:-1])
+    s = np.zeros_like(U)
+    s[:, 1:-1] = d
+    return U[:, :-1] + 0.5 * s[:, :-1], U[:, 1:] - 0.5 * s[:, 1:]
+
+
+def march_double_rarefaction(n=200, cfl=0.45, u0=4.0, t_end=0.15, limiter=True):
+    dx = 1.0 / n
+    x = (np.arange(n) + 0.5) * dx
+    rho = np.ones(n)
+    u = np.where(x < 0.5, -u0, u0)
+    p = np.full(n, 0.4)
+    U = np.vstack([rho, rho * u, p / (GAMMA - 1.0) + 0.5 * rho * u * u])
+
+    eps = min(1e-13, rho.min(), p.min())
+    t, step, clipped, total = 0.0, 0, 0, 0
+
+    while t < t_end:
+        r, v, pr = to_primitive(U)
+        if r.min() <= 0.0 or pr.min() <= 0.0:                 # 許容集合からの逸脱
+            return dict(crashed=True, step=step,
+                        rho_min=r.min(), p_min=pr.min())
+        a = np.sqrt(GAMMA * pr / r)
+        alpha = float(np.max(np.abs(v) + a))
+        dt = min(cfl * dx / alpha, t_end - t)
+        lam = dt / dx
+
+        Ug = np.hstack([U[:, :1], U, U[:, -1:]])              # zero-gradient ghost
+        UL, UR = face_states(Ug)
+        Flow = np.zeros((3, n + 1))
+        Fhigh = np.zeros((3, n + 1))
+        for f in range(n + 1):
+            Flow[:, f] = lf_face_flux(Ug[:, f], Ug[:, f + 1], alpha)
+            Fhigh[:, f] = lf_face_flux(UL[:, f], UR[:, f], alpha)
+
+        dF = Fhigh - Flow
+        U_lf = U - lam * (Flow[:, 1:] - Flow[:, :-1])          # 安全な基準点
+
+        if limiter:
+            th = density_theta(U_lf[0], dF[0], lam, eps)
+            th = pressure_theta(U_lf, dF, th, lam, eps)
+            clipped += int(np.sum(th[1:n] < 1.0 - 1e-12))
+            total += n - 1
+        else:
+            th = np.ones(n + 1)
+
+        F = Flow + th * dF                                     # 混ぜたフラックス
+        U = U - lam * (F[:, 1:] - F[:, :-1])
+        t += dt
+        step += 1
+
+    r, _, pr = to_primitive(U)
+    return dict(crashed=False, step=step, rho_min=float(r.min()),
+                p_min=float(pr.min()), clipped=100.0 * clipped / max(total, 1))
+
+
+for lim in (False, True):
+    o = march_double_rarefaction(limiter=lim)
+    tag = "limiter ON " if lim else "limiter OFF"
+    if o["crashed"]:
+        print(f"{tag}: crashed at step {o['step']}  "
+              f"rho_min={o['rho_min']:.4f}  p_min={o['p_min']:+.4f}")
+    else:
+        print(f"{tag}: reached t=0.15 in {o['step']} steps  "
+              f"rho_min={o['rho_min']:.3e}  p_min={o['p_min']:.3e}  "
+              f"theta<1 on {o['clipped']:.3f}% of faces")
+```
+
+$u_0 = 4$、格子200個、CFL 0.45での出力はこうです。
+
+```text
+limiter OFF: crashed at step 2  rho_min=0.3698  p_min=-0.1630
+limiter ON : reached t=0.15 in 300 steps  rho_min=9.560e-04  p_min=5.140e-04  theta<1 on 0.027% of faces
+```
+
+リミターなしでは二番目のステップで終わります。注目すべきはその瞬間の密度が0.3698だという点です。密度はまったく危なく見えないのに、圧力のほうが先に負へ落ちました。密度だけを監視するコードはこの事故を見逃します。
+
+下のシミュレーションで直接操作してみましょう。
+
+<VacuumRarefactionCrashLab />
+
+`limiter OFF` を押して `pull-apart u0` を3.5以上に上げると、上の密度曲線がまだ無事な状態で、中央の圧力曲線が赤い線を突き抜けます。`limiter ON` に戻すと、一番下の $\theta$ バーのうちごく一部だけが緑から下がり、計算は最後まで進みます。
+
+## θが1より小さくなった面は全体の何%か
+
+測定値は0.027%です。200セル × 300ステップ = 約6万個の面のうち、十六個ほどしか手を入れられていません。$u_0$ を8まで上げても0.093%に留まります。
+
+この数字がこの手法の核心です。リミターは事実上眠っています。真空が開く数個のセル、数個のステップでだけ目を覚まし、その面のフラックスをLF側へ少し引き寄せます。残り99.97%の面では、元の高次スキームがそのまま回ります。
+
+人工粘性を全域で上げて問題を覆い隠すやり方と比べれば違いは明確です。あちらは滑らかな領域の精度まで一緒に削ります。こちらは $\theta = 1$ が保たれる限り、元のスキームとビット単位で同一です。収束次数を測る格子収束試験でリミターが次数を落とさない理由がこれです。
+
+## コードに入れる前に確認する三つ
+
+**第一に、CFL上限を実際に守っているか。** この手法全体が「$\mathbf{U}^{LF}$ は安全だ」という前提の上に立っています。LFの正値性保存は $\lambda\alpha \le 1/2$ でのみ成り立ちます。普段CFL 0.8で回しているコードなら基準点からすでに崩れているので、$\theta$ を0まで下げても生き返りません。リミターが効かないなら、まずこれを疑いましょう。
+
+**第二に、Runge–Kuttaの各ステージごとに適用しているか。** SSP-RKは各ステージが前進Eulerの凸結合です。ステージ一つ一つが $G$ の中にあってこそ、最終結果も $G$ の中に入ります。最後に一度だけ検査すると、途中のステージですでに $\sqrt{}$ の中が負になった後です。
+
+**第三に、$\varepsilon$ を0にしていないか。** ちょうど0を目標に二分法を回すと、最後の丸めで $-10^{-17}$ が出ます。初期最小値を基準にした小さい正の数を下限に敷く必要があります。
+
+## また真空に出会ったときに取り出すもの
+
+保存性と正値性は別の性質です。前者はフラックス形式がただでくれ、後者は別に強制しなければなりません。
+
+フラックスを混ぜるやり方は、この強制を保存性を壊さずにやってのけます。$\theta$ が何であっても、依然としてフラックス差分だからです。
+
+そして実際に介入する面は0.1%未満です。安全装置の費用がこの程度なら、付けない理由はありません。
+
+---
+
+**参考文献**
+X.Y. Hu, N.A. Adams, C.-W. Shu, "Positivity-preserving method for high-order conservative schemes solving compressible Euler equations", *Journal of Computational Physics* 242 (2013) 169–180.
