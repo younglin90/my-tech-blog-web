@@ -1,0 +1,181 @@
+---
+title: "[Paper Review] Prying Advection and Pressure Fully Apart — TV Flux Splitting for Baer–Nunziato"
+date: 2026-08-09
+description: "Split the BN flux in two and the sound speed ends up entirely in the pressure system"
+tags: ["Flux-Splitting", "Baer-Nunziato", "Riemann-Solver", "Compressible", "Multiphase", "논문리뷰"]
+locale: en
+slug: tv-flux-splitting-baer-nunziato
+draft: false
+---
+
+import { TVSplitWaveFanBN } from '@/components/post-viz/2026-08-09-tv-flux-splitting-baer-nunziato/TVSplitWaveFanBN'
+import { PSystemInvariantLinearizer } from '@/components/post-viz/2026-08-09-tv-flux-splitting-baer-nunziato/PSystemInvariantLinearizer'
+
+Tokareva and Toro's 2016 paper looked like a thirty-minute reimplementation. Cut the flux in two, evaluate each piece separately, add them back. The implementation really did land in 40 lines. On a Riemann problem with two strong shocks colliding, it came out 1.5× more accurate than a Rusanov flux. Then I moved to the Noh problem and the pressure hit −0.12 on the third step. Today I trace what that split actually does, what it buys for free, and where it sends the bill.
+
+## How the paper cuts the flux
+
+- **Authors**: S. A. Tokareva, E. F. Toro
+- **Title**: A flux splitting method for the Baer–Nunziato equations of compressible two-phase flow
+- **Venue**: Journal of Computational Physics 323 (2016) 45–74
+- **DOI**: 10.1016/j.jcp.2016.07.019
+
+In one line: extend Toro–Vázquez (TV) flux splitting to the Baer–Nunziato (BN — the seven-equation model that gives each phase its own velocity and pressure) equations, then build the full flux by solving only the cheap pressure half.
+
+The BN equations cannot be written in conservation-law form. The x-split 1D system carries its nonconservative term separately.
+
+$$
+\partial_t \mathbf{Q} + \partial_x \mathbf{F}(\mathbf{Q}) + \mathbf{T}(\mathbf{Q})\,\partial_x \bar\alpha = 0
+$$
+
+Here $\mathbf{Q}$ holds the seven conserved variables, $\mathbf{F}$ is the conservative flux, and $\mathbf{T}\,\partial_x\bar\alpha$ is the nonconservative term riding on the volume-fraction gradient. Barred symbols are the solid phase, unbarred the gas.
+
+The paper's starting move is to cut the conservative part of $\mathbf{F}$ in two. Writing just the three gas components:
+
+$$
+\mathbf{A} = \begin{pmatrix} \alpha\rho u \\ \alpha\rho u^2 \\ \tfrac12 \alpha\rho u^3 \end{pmatrix},
+\qquad
+\mathbf{P} = \begin{pmatrix} 0 \\ \alpha p \\ \alpha u(\rho e + p) \end{pmatrix}
+$$
+
+There is not one pressure term in $\mathbf{A}$, and not one $\rho u$ advection term in $\mathbf{P}$. Add them and you recover the Euler flux exactly. Out of this come the **advection system** (A-system) and the **pressure system** (P-system), with the nonconservative term attached to the latter.
+
+$$
+\partial_t \mathbf{Q} + \partial_x \mathbf{A}(\mathbf{Q}) = 0, \qquad
+\partial_t \mathbf{Q} + \partial_x \mathbf{P}(\mathbf{Q}) + \mathbf{T}(\mathbf{Q})\,\partial_x \bar\alpha = 0
+$$
+
+## After the cut, the sound speed sits on one side only
+
+The payoff shows up in each subsystem's characteristic speeds. The A-system Jacobian has a zero third column, so its eigenvalues are $\{0, u, u\}$. No sound speed. The P-system, in primitive variables $(\rho, u, p)$, gives
+
+$$
+\lambda_{1,3} = \tfrac12\left(u \mp A\right), \quad \lambda_2 = 0,
+\qquad A = \sqrt{u^2 + \frac{4h}{\rho e_p}}
+$$
+
+where $h$ is specific enthalpy and $e_p = \partial e/\partial p$. Substitute an ideal gas: $\rho e_p = 1/(\gamma-1)$, so $h/(\rho e_p) = \gamma p/\rho = a^2$, giving $A = \sqrt{u^2 + 4a^2}$. A stiffened EOS for the solid collapses the same way to $\bar A = \sqrt{\bar u^2 + 4\bar a^2}$.
+
+Set $u = 0$ and you get $\lambda_{1,3} = \mp a$. The sound speed lives entirely inside the pressure system. Whatever pins down your time step, it is not the advection system.
+
+Move the four parameters yourself in the simulation below.
+
+<TVSplitWaveFanBN />
+
+Drag `a` from 0.1 up to 2.0: the fan in the middle panel (A-system) does not open at all, while only the right panel (P-system) widens. Watch the `|λ|max` bars under each panel alongside it, and it becomes obvious which side the acoustic CFL restriction comes from.
+
+## All BN adds is one more field, λ₇ = ū
+
+Three eigenvalues per phase makes six; a seventh, $\lambda_7 = \bar u$, joins them. What the paper extracts from expanding the eigenvectors matters in practice: the volume fraction $\bar\alpha$ jumps across the $\lambda_7$ field and **nowhere else**. Gas density is constant across $\lambda_{1,3}$, and gas pressure is constant across $\lambda_2$.
+
+That makes sampling the Godunov state cheap. Assume the subsonic configuration $S_L < \bar u < S_R$, and $\lambda_1 < \lambda_2 = 0 < \lambda_3$ always holds — so the interface state is fixed by the **sign of $\lambda_7 = \bar u$ alone**. No entropy fix needed either. This is where the paper claims its CPU savings. The green/red badge at the bottom of the simulation above checks that subsonic condition live; push `ū` out toward ±2 and you leave the regime the paper covers.
+
+## A Riemann solver for the P-system that is two straight lines
+
+The generalized Riemann invariants across the P-system's nonlinear waves read
+
+$$
+\frac{d\rho}{0} = \frac{du}{2} = \frac{dp}{\rho(u - A)}
+$$
+
+The first equality gives $\rho = \text{const}$. The paper linearizes the surviving ODE $du/dp = 2/[\rho(u-A)]$ by **freezing the coefficient at the foot of the characteristic**. Fix $C_L = \rho_L(u_L - A_L)$ and the integration collapses to a single straight line.
+
+$$
+p_L^{*} = p_L + \tfrac12 C_L\left(u^{*} - u_L\right), \qquad
+p_R^{*} = p_R + \tfrac12 C_R\left(u^{*} - u_R\right)
+$$
+
+with $C_R = \rho_R(u_R + A_R)$. Solve the two lines simultaneously and a closed form drops out, no iteration:
+
+$$
+u^{*} = \frac{2(p_R - p_L) + C_L u_L - C_R u_R}{C_L - C_R}
+$$
+
+Because $A > |u|$, you always have $C_L < 0 < C_R$. The denominator structurally cannot vanish. There is nowhere to put a divide-by-zero guard, and I never needed one.
+
+How crude the linearization is, though, you have to see for yourself. Move the left and right states below.
+
+<PSystemInvariantLinearizer />
+
+The white curves are the invariants integrated honestly with RK4; the dashed lines are the tangents the paper actually uses. Pull `p_L/p_R` down to 1.1 and the two star states agree within 2%. At the default ratio of 3 the gap is already 12%, and raising `p_L` to 40 opens it to 67%. The tangent never reaches where the curve went.
+
+## The code — a TV flux in 40 lines
+
+I reduced it to a single ideal-gas phase. One convenience: the pressure-system state never needs $\rho^*$. Since $\rho e = p/(\gamma-1)$, the third P-flux component tidies up to $\gamma/(\gamma-1)\,u^* p^*$.
+
+```python
+import numpy as np
+
+def prim(q, g):
+    rho = q[0]; u = q[1] / rho
+    return rho, u, (g - 1.0) * (q[2] - 0.5 * rho * u * u)
+
+def pressure_wave_speed(rho, u, p, g):
+    """A = sqrt(u^2 + 4h/(rho e_p)) -> sqrt(u^2 + 4a^2)   [paper eq. 9]"""
+    return np.sqrt(u * u + 4.0 * g * p / rho)
+
+def advection_flux(rho, u):
+    """A(Q): not a single pressure term in it   [paper eq. 5]"""
+    return np.array([rho * u, rho * u * u, 0.5 * rho * u ** 3])
+
+def p_system_star(rhoL, uL, pL, rhoR, uR, pR, g):
+    """linearized Riemann solver for the P-system   [paper eqs. 15, 19]"""
+    CL = rhoL * (uL - pressure_wave_speed(rhoL, uL, pL, g))   # always < 0
+    CR = rhoR * (uR + pressure_wave_speed(rhoR, uR, pR, g))   # always > 0
+    us = (2.0 * (pR - pL) + CL * uL - CR * uR) / (CL - CR)
+    return us, pL + 0.5 * CL * (us - uL)
+
+def tv_face_flux(qL, qR, g):
+    rhoL, uL, pL = prim(qL, g)
+    rhoR, uR, pR = prim(qR, g)
+    us, ps = p_system_star(rhoL, uL, pL, rhoR, uR, pR, g)
+    # A-system eigenvalues are {0, u, u} -> one velocity sign settles the upwinding
+    fa = advection_flux(rhoL, uL) if us >= 0.0 else advection_flux(rhoR, uR)
+    # P-system: rho e = p/(g-1), so rho* is never needed
+    fp = np.array([0.0, ps, g / (g - 1.0) * us * ps])
+    return fa + fp
+```
+
+## Putting it against Rusanov on Toro Test 4
+
+For the toy problem I picked Toro Test 4, two strong shocks running at each other. Left $(\rho,u,p) = (5.99924,\ 19.5975,\ 460.894)$, right $(5.99242,\ -6.19633,\ 46.0950)$, $\gamma = 1.4$, $t = 0.035$, CFL 0.9. There is no stagnation region, so the upwind direction never wavers. I coded Toro's iterative exact solver separately as reference and got $p^* = 1691.647$, $u^* = 8.6898$.
+
+| $N$ | TV split $L_1(\rho)$ | Rusanov $L_1(\rho)$ | TV rate |
+|---|---|---|---|
+| 100 | 0.9523 | 1.4303 | — |
+| 200 | 0.5936 | 0.9349 | 0.68 |
+| 400 | 0.3879 | 0.6187 | 0.61 |
+| 800 | 0.2695 | 0.4217 | 0.53 |
+
+Same first-order accuracy, same cost class, and the TV split is consistently 1.5× more accurate. The interesting part is the star-state error from earlier. The pressure ratio here is 10, and the P-system star state is 65% off the exact value. The scheme still wins. In a first-order FV method the dominant error is $O(\Delta x)$ smearing, and the P-flux only has to be consistent and dissipative — not accurate.
+
+## Where Noh splits them apart
+
+Then I moved to the Noh problem. $\gamma = 5/3$, $\rho = 1$, $u = -1$ driving into a wall; the exact answer is $\rho = 4$, $p = 4/3$, $u = 0$, with the shock standing at $x = t/3$. The entire post-shock region is a stagnation region with $u \approx 0$.
+
+The TV split died two different ways. Upwinding the advection flux on the sign of $u^*$ produced $p = -0.12$ in the second cell off the wall, on step 3, at $N = 200$. Upwinding instead on the sign of $\tfrac12(u_L + u_R)$ survives — but the density saw-tooths worse the finer the grid gets.
+
+| $N$ | TV split $\mathrm{TV}(\rho)$ | Rusanov $\mathrm{TV}(\rho)$ |
+|---|---|---|
+| 100 | 12.01 | 0.445 |
+| 200 | 14.18 | 0.194 |
+| 400 | 31.38 | 0.104 |
+| 800 | 34.45 | 0.072 |
+
+$\mathrm{TV}(\rho)$ is the total variation of density in the post-shock region. Refine the grid 8× and Rusanov drops 6-fold while the TV split climbs 3-fold. It does not converge. The mean values are fine either way — $\bar\rho = 4.11$ for TV, 3.99 for Rusanov — but the profiles are not.
+
+The cause is the split itself. The mass flux is the single first component $\rho u$ of $\mathbf{A}$, and the first component of $\mathbf{P}$ is zero. In other words, **the pressure system never touches density.** In a stagnation region, $u \to 0$ takes the mass flux to zero with it, and nothing is left to supply numerical dissipation to the density field. Whichever side you pick for the upwind gives the same answer, so odd and even cells decouple. That same advection-flux choice moved $L_1$ only from 0.594 to 0.568 on Toro Test 4. Nearly irrelevant where $u \neq 0$; decisive where $u \approx 0$.
+
+## What the paper skipped
+
+All six of the paper's test problems are Riemann problems, with a nonzero velocity across the initial discontinuity. Not one creates a stagnation region, a wall reflection, or a steady flow. The results above show that blind spot is real. It is also a shame that the paper hands the advection-system flux off to the original Toro–Vázquez article — it says only "straightforward," when in practice that choice decides whether a stagnation region lives or dies.
+
+The subsonic restriction lingers too. $S_L < \bar u < S_R$ arrives on the grounds that "many authors consider it more physically relevant," but configurations where the solid outruns the gas sound speed do show up in deflagration-to-detonation transition (DDT). And at the solid contact you still have to iterate on a nonlinear thin-layer system, which is not quite the impression "no iteration" leaves — though the paper does state it hit no convergence trouble.
+
+The efficiency numbers are convincing. The linearized solver is fastest, with the nearest competitor eight times slower; HLLEM-TV, meanwhile, is 125× more expensive and the numerical Roe variant 67×. The authors' conclusion — that the appeal of TV splitting evaporates the moment you have to evaluate eigenvectors — shows up directly in the arithmetic. To mimic this structure in an OpenFOAM-style code you would build two separate `surfaceScalarField`s and add them, and filling only the pressure half with a dedicated Riemann solver is entirely doable.
+
+## Reproducibility score
+
+**8/10.** The split definitions (eqs 3–5), the P-system eigenstructure (eqs 9–10), and the linearized relations (eqs 15, 19, 23, 26) turned into code as written, and the cross-checks held: $A/2 = a$ at $u=0$ to machine precision, and the tangent is an $O(\Delta p^2)$ approximation of the exact curve. The two lost points are that the advection-system flux is not in this paper at all, and that the thin-layer derivation at the solid contact is compressed enough that a full BN reproduction needs the original refs [1] and [4] alongside it.
+
+Next on the reading list: Toro & Vázquez (2012), *Computers & Fluids* 70, 1–12. That is where this splitting first appeared — and where the advection flux that tripped me up today actually lives.

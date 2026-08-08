@@ -1,0 +1,181 @@
+---
+title: "[論文レビュー] 移流と圧力を完全に切り離す — Baer–Nunziato flux の TV 分離"
+date: 2026-08-09
+description: "BN flux を二つに割ると、音速は圧力システムだけに残る"
+tags: ["Flux-Splitting", "Baer-Nunziato", "Riemann-Solver", "Compressible", "Multiphase", "논문리뷰"]
+locale: ja
+slug: tv-flux-splitting-baer-nunziato
+draft: false
+---
+
+import { TVSplitWaveFanBN } from '@/components/post-viz/2026-08-09-tv-flux-splitting-baer-nunziato/TVSplitWaveFanBN'
+import { PSystemInvariantLinearizer } from '@/components/post-viz/2026-08-09-tv-flux-splitting-baer-nunziato/PSystemInvariantLinearizer'
+
+Tokareva と Toro の2016年の論文は、30分で再実装が終わりそうに見えました。flux を二つに割り、それぞれ別に計算して足すだけだからです。実際、実装は40行で済みました。強い衝撃波が二つぶつかる Riemann 問題では、Rusanov flux より1.5倍正確でした。そして Noh 問題に移った途端、3ステップ目で圧力が −0.12 になりました。今日はその分離が何をしているのか、何を無償で手に入れ、どこで代金を払うのかをコードで追います。
+
+## 論文が flux を割る方法
+
+- **著者**: S. A. Tokareva, E. F. Toro
+- **題目**: A flux splitting method for the Baer–Nunziato equations of compressible two-phase flow
+- **掲載**: Journal of Computational Physics 323 (2016) 45–74
+- **DOI**: 10.1016/j.jcp.2016.07.019
+
+一行でいえば、Toro–Vázquez(TV) flux 分離を Baer–Nunziato(BN・両相にそれぞれの速度と圧力を与える7方程式モデル)方程式へ拡張し、割った部分系のうち安い圧力側だけを解いて全体の flux を組み立てる、という論文です。
+
+BN 方程式は保存形で書けません。1D x-分割形は非保存項を別に抱えています。
+
+$$
+\partial_t \mathbf{Q} + \partial_x \mathbf{F}(\mathbf{Q}) + \mathbf{T}(\mathbf{Q})\,\partial_x \bar\alpha = 0
+$$
+
+$\mathbf{Q}$ は7つの保存量、$\mathbf{F}$ は保存 flux、$\mathbf{T}\,\partial_x\bar\alpha$ は体積分率勾配に付く非保存項です。バー(¯)付きが固相、なしが気相を表します。
+
+論文の出発点は、$\mathbf{F}$ の保存部分を二つに切ることです。気相の3成分だけ書くとこうなります。
+
+$$
+\mathbf{A} = \begin{pmatrix} \alpha\rho u \\ \alpha\rho u^2 \\ \tfrac12 \alpha\rho u^3 \end{pmatrix},
+\qquad
+\mathbf{P} = \begin{pmatrix} 0 \\ \alpha p \\ \alpha u(\rho e + p) \end{pmatrix}
+$$
+
+$\mathbf{A}$ には圧力項が一つもありません。$\mathbf{P}$ には $\rho u$ の移流が一つもありません。二つを足せば元の Euler flux が厳密に復元されます。ここから**移流系**(A-system)と**圧力系**(P-system)が出てきます。非保存項は圧力系の側に付きます。
+
+$$
+\partial_t \mathbf{Q} + \partial_x \mathbf{A}(\mathbf{Q}) = 0, \qquad
+\partial_t \mathbf{Q} + \partial_x \mathbf{P}(\mathbf{Q}) + \mathbf{T}(\mathbf{Q})\,\partial_x \bar\alpha = 0
+$$
+
+## 割ったあと、音速は片側にしか残らない
+
+割った甲斐は、各部分系の特性速度を見ると現れます。移流系の Jacobian は第3列がゼロなので、固有値は $\{0, u, u\}$ です。音速がありません。圧力系は原始変数 $(\rho, u, p)$ に対して
+
+$$
+\lambda_{1,3} = \tfrac12\left(u \mp A\right), \quad \lambda_2 = 0,
+\qquad A = \sqrt{u^2 + \frac{4h}{\rho e_p}}
+$$
+
+$h$ は比エンタルピー、$e_p = \partial e/\partial p$ です。理想気体を入れると $\rho e_p = 1/(\gamma-1)$ なので $h/(\rho e_p) = \gamma p/\rho = a^2$、つまり $A = \sqrt{u^2 + 4a^2}$ になります。固相の stiffened EOS も同じように $\bar A = \sqrt{\bar u^2 + 4\bar a^2}$ へ整理されます。
+
+$u = 0$ を入れると $\lambda_{1,3} = \mp a$ です。音速が圧力系にまるごと入っているということです。時間刻みを縛るのは移流系ではありません。
+
+下のシミュレーションで四つのパラメータを直接動かしてみてください。
+
+<TVSplitWaveFanBN />
+
+`a` を 0.1 から 2.0 へ引き上げると、中央パネル(移流系)の扇はまったく開かず、右パネル(圧力系)だけが広がります。各パネル下の `|λ|max` バーを併せて見れば、音響 CFL 制約がどちら側から来るのかが一目で分かります。
+
+## BN が加えるのは λ₇ = ū 一つだけ
+
+気相・固相それぞれ3つで6つ、そこに7番目の固有値 $\lambda_7 = \bar u$ が加わります。論文が固有ベクトルを展開して得た結論が、実務上重要です。体積分率 $\bar\alpha$ は $\lambda_7$ 場を横切るときに**だけ**跳びます。気相密度は $\lambda_{1,3}$ を横切っても変わらず、気相圧力は $\lambda_2$ で一定です。
+
+おかげで Godunov 状態のサンプリングが安くなります。亜音速配置 $S_L < \bar u < S_R$ を仮定すれば $\lambda_1 < \lambda_2 = 0 < \lambda_3$ が常に成り立つので、界面状態は $\lambda_7 = \bar u$ の**符号だけ**で決まります。エントロピー修正も不要です。論文が CPU 時間を節約したと述べる箇所です。上のシミュレーション下部の緑/赤バッジがこの亜音速条件をリアルタイムで検査します。`ū` を ±2 まで押すと、論文が扱わない領域へ出ます。
+
+## 直線二本で終わる P-system Riemann solver
+
+圧力系の非線形波にかかる一般化 Riemann 不変量はこうです。
+
+$$
+\frac{d\rho}{0} = \frac{du}{2} = \frac{dp}{\rho(u - A)}
+$$
+
+最初の等式が $\rho = \text{const}$ を与えます。残る ODE $du/dp = 2/[\rho(u-A)]$ を、論文は**特性曲線の足で係数を凍結して**線形化します。$C_L = \rho_L(u_L - A_L)$ に固定すれば、積分は直線一本で終わります。
+
+$$
+p_L^{*} = p_L + \tfrac12 C_L\left(u^{*} - u_L\right), \qquad
+p_R^{*} = p_R + \tfrac12 C_R\left(u^{*} - u_R\right)
+$$
+
+$C_R = \rho_R(u_R + A_R)$ です。二本の直線を連立すれば、反復なしで閉じた解が出ます。
+
+$$
+u^{*} = \frac{2(p_R - p_L) + C_L u_L - C_R u_R}{C_L - C_R}
+$$
+
+$A > |u|$ なので $C_L < 0 < C_R$ が常に成り立ちます。分母がゼロになる場合が構造的にありません。ゼロ除算のガードを入れる場所がないということで、実際に入れずに済みました。
+
+ただしこの線形化がどれほど粗いかは、自分で見る必要があります。下で左右の状態を動かしてみてください。
+
+<PSystemInvariantLinearizer />
+
+白い曲線が不変量を RK4 で正直に積分したもの、破線が論文が実際に使う接線です。`p_L/p_R` を 1.1 まで下げると、二つの星状態は2%以内で重なります。既定値の3ですでに12%、`p_L` を40まで上げると67%まで開きます。接線は曲線が行った先に届きません。
+
+## コード — 40行で終わる TV flux
+
+理想気体1相に縮めて実装しました。圧力系の状態で $\rho^*$ が要らないのが楽です。$\rho e = p/(\gamma-1)$ なので、P-flux の第3成分が $\gamma/(\gamma-1)\,u^* p^*$ に整理されるからです。
+
+```python
+import numpy as np
+
+def prim(q, g):
+    rho = q[0]; u = q[1] / rho
+    return rho, u, (g - 1.0) * (q[2] - 0.5 * rho * u * u)
+
+def pressure_wave_speed(rho, u, p, g):
+    """A = sqrt(u^2 + 4h/(rho e_p)) -> sqrt(u^2 + 4a^2)   [論文 eq. 9]"""
+    return np.sqrt(u * u + 4.0 * g * p / rho)
+
+def advection_flux(rho, u):
+    """A(Q): 圧力項が一つもない   [論文 eq. 5]"""
+    return np.array([rho * u, rho * u * u, 0.5 * rho * u ** 3])
+
+def p_system_star(rhoL, uL, pL, rhoR, uR, pR, g):
+    """圧力系の線形化 Riemann solver   [論文 eq. 15, 19]"""
+    CL = rhoL * (uL - pressure_wave_speed(rhoL, uL, pL, g))   # 常に < 0
+    CR = rhoR * (uR + pressure_wave_speed(rhoR, uR, pR, g))   # 常に > 0
+    us = (2.0 * (pR - pL) + CL * uL - CR * uR) / (CL - CR)
+    return us, pL + 0.5 * CL * (us - uL)
+
+def tv_face_flux(qL, qR, g):
+    rhoL, uL, pL = prim(qL, g)
+    rhoR, uR, pR = prim(qR, g)
+    us, ps = p_system_star(rhoL, uL, pL, rhoR, uR, pR, g)
+    # 移流系の固有値は {0, u, u} -> 速度の符号一つで風上化が終わる
+    fa = advection_flux(rhoL, uL) if us >= 0.0 else advection_flux(rhoR, uR)
+    # 圧力系: rho e = p/(g-1) なので rho* を知る必要がない
+    fp = np.array([0.0, ps, g / (g - 1.0) * us * ps])
+    return fa + fp
+```
+
+## Toro Test 4 で Rusanov と当ててみた
+
+トイ問題は、強い衝撃波が二つ向かい合って走る Toro Test 4 を選びました。左 $(\rho,u,p) = (5.99924,\ 19.5975,\ 460.894)$、右 $(5.99242,\ -6.19633,\ 46.0950)$、$\gamma = 1.4$、$t = 0.035$、CFL 0.9 です。停滞領域がないので風上方向がぶれません。厳密解は Toro の反復解法を別に実装し、$p^* = 1691.647$、$u^* = 8.6898$ を得ました。
+
+| $N$ | TV 分離 $L_1(\rho)$ | Rusanov $L_1(\rho)$ | TV 収束率 |
+|---|---|---|---|
+| 100 | 0.9523 | 1.4303 | — |
+| 200 | 0.5936 | 0.9349 | 0.68 |
+| 400 | 0.3879 | 0.6187 | 0.61 |
+| 800 | 0.2695 | 0.4217 | 0.53 |
+
+同じ1次精度、同じコスト帯で、TV 分離が一貫して1.5倍正確です。面白いのは先ほど見た星状態の誤差です。この条件の圧力比は10で、圧力系の星状態は厳密値から65%ずれています。それでもスキームは勝ちます。1次 FV では支配誤差が $O(\Delta x)$ の潰れであり、P-flux は正確である必要がなく、整合的で散逸的であれば足りるからです。
+
+## Noh 問題で分かれた場所
+
+Noh 問題へ移りました。$\gamma = 5/3$、$\rho = 1$、$u = -1$ が壁へ押し寄せ、厳密解は $\rho = 4$、$p = 4/3$、$u = 0$、衝撃波が $x = t/3$ に立ちます。後方領域全体が $u \approx 0$ の停滞領域です。
+
+TV 分離は二通りに死にました。移流 flux を $u^*$ の符号で風上化すると、$N = 200$ で3ステップ目、壁から2番目のセルに $p = -0.12$ が出ました。代わりに $\tfrac12(u_L + u_R)$ の符号で風上化すると生き残りますが、密度が格子を細かくするほどひどく鋸歯を作ります。
+
+| $N$ | TV 分離 $\mathrm{TV}(\rho)$ | Rusanov $\mathrm{TV}(\rho)$ |
+|---|---|---|
+| 100 | 12.01 | 0.445 |
+| 200 | 14.18 | 0.194 |
+| 400 | 31.38 | 0.104 |
+| 800 | 34.45 | 0.072 |
+
+$\mathrm{TV}(\rho)$ は後方領域の密度の全変動です。格子を8倍にすると Rusanov は6倍減るのに、TV 分離は3倍増えます。収束しません。平均値自体は $\bar\rho = 4.11$、Rusanov は 3.99 でどちらも合っていますが、プロファイルが違います。
+
+原因は分離そのものにあります。質量 flux は $\mathbf{A}$ の第1成分 $\rho u$ ただ一つで、$\mathbf{P}$ の第1成分はゼロです。つまり**圧力系は密度に触りません。** 停滞領域で $u \to 0$ になれば質量 flux も一緒にゼロへ行き、密度場に残る数値散逸がなくなります。どちらの状態を風上に選んでも結果が同じになるので、偶奇のセルが分離します。同じ移流 flux の選択が Toro Test 4 では $L_1$ を 0.594 から 0.568 に変えるだけでした。$u \neq 0$ の場所ではほぼ無関係で、$u \approx 0$ の場所では決定的です。
+
+## 論文が飛ばしたこと
+
+論文の試験問題6つはすべて Riemann 問題です。初期不連続を横切って速度がゼロではありません。停滞領域を作る問題、壁反射、定常流は一つもありません。上の結果は、その死角が実際に存在することを示しています。論文が移流系 flux を Toro–Vázquez の原論文に委ねたのも残念です。「straightforward」とだけ書かれていますが、実際にはこの選択が停滞領域の生死を分けます。
+
+亜音速の制約も残ります。$S_L < \bar u < S_R$ は「多くの著者が物理的により妥当と見ている」という根拠で導入されますが、固相が気相音速を超える配置は爆燃-爆轟遷移(DDT)で実際に現れます。固相接触面では依然として薄層(thin-layer)非線形連立を反復法で解く必要がある点も、「反復なし」という印象とは違います。ただし論文は収束問題を経験しなかったと明記しています。
+
+効率の数字は説得力があります。線形化 solver が最速で、最も近い競合が8倍遅い。一方 HLLEM-TV は125倍、数値 Roe は67倍高価です。固有ベクトルを評価しなければならない瞬間に TV 分離の魅力は消えるという著者らの結論が、そのまま数字に出ています。OpenFOAM 系でこの構造を真似るなら `surfaceScalarField` を二つ別に作って足す形になりますが、圧力系の側だけを専用 Riemann solver で埋めることは十分可能です。
+
+## 再現可能性スコア
+
+**8/10。** 分離の定義(式3–5)、圧力系の固有構造(式9–10)、線形化関係式(式15・19・23・26)はそのままコードになり、検算も合いました。$u=0$ で $A/2 = a$ が機械精度で一致し、接線が厳密曲線の $O(\Delta p^2)$ 近似であることも確認できました。減点2点は、移流系 flux がこの論文の中にないこと、そして固相接触面の薄層連立の展開が圧縮されており、完全な BN 再現には原論文 [1] と [4] を併せて見る必要があることです。
+
+次に読むのは Toro & Vázquez (2012), *Computers & Fluids* 70, 1–12。この分離が最初に出たところで、今日つまずいた移流系 flux がそこにあります。

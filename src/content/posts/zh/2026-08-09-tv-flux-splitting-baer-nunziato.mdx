@@ -1,0 +1,181 @@
+---
+title: "[论文评述] 把对流和压力彻底拆开 — Baer–Nunziato flux 的 TV 分裂"
+date: 2026-08-09
+description: "把 BN flux 一分为二，声速就只留在压力系统里"
+tags: ["Flux-Splitting", "Baer-Nunziato", "Riemann-Solver", "Compressible", "Multiphase", "논문리뷰"]
+locale: zh
+slug: tv-flux-splitting-baer-nunziato
+draft: false
+---
+
+import { TVSplitWaveFanBN } from '@/components/post-viz/2026-08-09-tv-flux-splitting-baer-nunziato/TVSplitWaveFanBN'
+import { PSystemInvariantLinearizer } from '@/components/post-viz/2026-08-09-tv-flux-splitting-baer-nunziato/PSystemInvariantLinearizer'
+
+Tokareva 和 Toro 2016 年的这篇论文，看起来三十分钟就能复现完。把 flux 一分为二，各自单独计算再相加，仅此而已。实现确实只用了 40 行。在两道强激波对撞的 Riemann 问题上，它比 Rusanov flux 精确 1.5 倍。然后换到 Noh 问题，第三步压力就变成了 −0.12。今天就用代码追一遍：这个分裂究竟做了什么，白拿到了什么，又在哪里付账。
+
+## 论文如何切开 flux
+
+- **作者**: S. A. Tokareva, E. F. Toro
+- **题目**: A flux splitting method for the Baer–Nunziato equations of compressible two-phase flow
+- **出处**: Journal of Computational Physics 323 (2016) 45–74
+- **DOI**: 10.1016/j.jcp.2016.07.019
+
+一句话概括：把 Toro–Vázquez(TV) flux 分裂推广到 Baer–Nunziato(BN，给两相各自速度和压力的七方程模型)方程，只求解拆出来的廉价压力子系统，再拼出整体 flux。
+
+BN 方程写不成守恒形式。一维 x-分裂形式把非守恒项单独带在身上。
+
+$$
+\partial_t \mathbf{Q} + \partial_x \mathbf{F}(\mathbf{Q}) + \mathbf{T}(\mathbf{Q})\,\partial_x \bar\alpha = 0
+$$
+
+$\mathbf{Q}$ 是七个守恒量，$\mathbf{F}$ 是守恒 flux，$\mathbf{T}\,\partial_x\bar\alpha$ 是挂在体积分数梯度上的非守恒项。带横杠(¯)的是固相，不带的是气相。
+
+论文的起手式，是把 $\mathbf{F}$ 的守恒部分切成两块。只写气相三个分量：
+
+$$
+\mathbf{A} = \begin{pmatrix} \alpha\rho u \\ \alpha\rho u^2 \\ \tfrac12 \alpha\rho u^3 \end{pmatrix},
+\qquad
+\mathbf{P} = \begin{pmatrix} 0 \\ \alpha p \\ \alpha u(\rho e + p) \end{pmatrix}
+$$
+
+$\mathbf{A}$ 里一个压力项都没有。$\mathbf{P}$ 里一个 $\rho u$ 对流项都没有。两者相加，精确还原原来的 Euler flux。**对流系统**(A-system)与**压力系统**(P-system)由此而来，非守恒项归到压力系统一侧。
+
+$$
+\partial_t \mathbf{Q} + \partial_x \mathbf{A}(\mathbf{Q}) = 0, \qquad
+\partial_t \mathbf{Q} + \partial_x \mathbf{P}(\mathbf{Q}) + \mathbf{T}(\mathbf{Q})\,\partial_x \bar\alpha = 0
+$$
+
+## 切开之后，声速只留在一侧
+
+拆分的收益，看各子系统的特征速度就清楚了。对流系统的 Jacobian 第三列为零，因此特征值是 $\{0, u, u\}$。没有声速。压力系统对原始变量 $(\rho, u, p)$ 给出
+
+$$
+\lambda_{1,3} = \tfrac12\left(u \mp A\right), \quad \lambda_2 = 0,
+\qquad A = \sqrt{u^2 + \frac{4h}{\rho e_p}}
+$$
+
+$h$ 是比焓，$e_p = \partial e/\partial p$。代入理想气体：$\rho e_p = 1/(\gamma-1)$，于是 $h/(\rho e_p) = \gamma p/\rho = a^2$，即 $A = \sqrt{u^2 + 4a^2}$。固相的 stiffened EOS 同样化为 $\bar A = \sqrt{\bar u^2 + 4\bar a^2}$。
+
+代入 $u = 0$ 得到 $\lambda_{1,3} = \mp a$。也就是说，声速整个落在压力系统里。锁住时间步长的不是对流系统。
+
+在下面的模拟中亲自拖动四个参数。
+
+<TVSplitWaveFanBN />
+
+把 `a` 从 0.1 拉到 2.0：中间面板(对流系统)的扇形纹丝不动，只有右侧面板(压力系统)在张开。再对照每个面板下方的 `|λ|max` 条，声学 CFL 限制来自哪一侧就一目了然。
+
+## BN 只多加了一条 λ₇ = ū
+
+气相、固相各三个共六个，再加上第七个特征值 $\lambda_7 = \bar u$。论文展开特征向量得到的结论在工程上很关键：体积分数 $\bar\alpha$ **只**在穿过 $\lambda_7$ 场时跳变。气相密度穿过 $\lambda_{1,3}$ 不变，气相压力在 $\lambda_2$ 上为常数。
+
+这让 Godunov 状态的采样变便宜。假定亚声速配置 $S_L < \bar u < S_R$，则 $\lambda_1 < \lambda_2 = 0 < \lambda_3$ 恒成立，界面状态**仅由 $\lambda_7 = \bar u$ 的符号**决定。也不需要熵修正。这正是论文声称节省 CPU 时间之处。上面模拟底部的绿/红标记会实时检查该亚声速条件；把 `ū` 推到 ±2，就走出了论文覆盖的范围。
+
+## 两条直线搞定的 P-system Riemann solver
+
+压力系统非线性波上的广义 Riemann 不变量是：
+
+$$
+\frac{d\rho}{0} = \frac{du}{2} = \frac{dp}{\rho(u - A)}
+$$
+
+第一个等号给出 $\rho = \text{const}$。剩下的 ODE $du/dp = 2/[\rho(u-A)]$，论文**把系数冻结在特征线的脚上**来线性化。固定 $C_L = \rho_L(u_L - A_L)$，积分就塌缩成一条直线。
+
+$$
+p_L^{*} = p_L + \tfrac12 C_L\left(u^{*} - u_L\right), \qquad
+p_R^{*} = p_R + \tfrac12 C_R\left(u^{*} - u_R\right)
+$$
+
+其中 $C_R = \rho_R(u_R + A_R)$。两条直线联立，无需迭代即得闭式解：
+
+$$
+u^{*} = \frac{2(p_R - p_L) + C_L u_L - C_R u_R}{C_L - C_R}
+$$
+
+由于 $A > |u|$，恒有 $C_L < 0 < C_R$。分母在结构上不可能为零。也就是说没有地方需要放除零保护，实际上也确实不必放。
+
+不过这个线性化有多粗，得亲眼看。在下面拖动左右状态。
+
+<PSystemInvariantLinearizer />
+
+白色曲线是用 RK4 老老实实积分的不变量，虚线是论文真正使用的切线。把 `p_L/p_R` 降到 1.1，两个星状态在 2% 以内重合。默认比值 3 时已经是 12%，把 `p_L` 提到 40 则张开到 67%。切线到不了曲线去的地方。
+
+## 代码 — 40 行结束的 TV flux
+
+缩到理想气体单相来实现。压力系统状态不需要 $\rho^*$，这点很省事：因为 $\rho e = p/(\gamma-1)$，P-flux 第三个分量整理成 $\gamma/(\gamma-1)\,u^* p^*$。
+
+```python
+import numpy as np
+
+def prim(q, g):
+    rho = q[0]; u = q[1] / rho
+    return rho, u, (g - 1.0) * (q[2] - 0.5 * rho * u * u)
+
+def pressure_wave_speed(rho, u, p, g):
+    """A = sqrt(u^2 + 4h/(rho e_p)) -> sqrt(u^2 + 4a^2)   [论文 eq. 9]"""
+    return np.sqrt(u * u + 4.0 * g * p / rho)
+
+def advection_flux(rho, u):
+    """A(Q): 一个压力项都没有   [论文 eq. 5]"""
+    return np.array([rho * u, rho * u * u, 0.5 * rho * u ** 3])
+
+def p_system_star(rhoL, uL, pL, rhoR, uR, pR, g):
+    """压力系统的线性化 Riemann solver   [论文 eq. 15, 19]"""
+    CL = rhoL * (uL - pressure_wave_speed(rhoL, uL, pL, g))   # 恒 < 0
+    CR = rhoR * (uR + pressure_wave_speed(rhoR, uR, pR, g))   # 恒 > 0
+    us = (2.0 * (pR - pL) + CL * uL - CR * uR) / (CL - CR)
+    return us, pL + 0.5 * CL * (us - uL)
+
+def tv_face_flux(qL, qR, g):
+    rhoL, uL, pL = prim(qL, g)
+    rhoR, uR, pR = prim(qR, g)
+    us, ps = p_system_star(rhoL, uL, pL, rhoR, uR, pR, g)
+    # 对流系统特征值是 {0, u, u} -> 一个速度符号就定完迎风
+    fa = advection_flux(rhoL, uL) if us >= 0.0 else advection_flux(rhoR, uR)
+    # 压力系统: rho e = p/(g-1)，所以根本不需要 rho*
+    fp = np.array([0.0, ps, g / (g - 1.0) * us * ps])
+    return fa + fp
+```
+
+## 在 Toro Test 4 上跟 Rusanov 对打
+
+玩具问题选了两道强激波迎面对撞的 Toro Test 4。左 $(\rho,u,p) = (5.99924,\ 19.5975,\ 460.894)$，右 $(5.99242,\ -6.19633,\ 46.0950)$，$\gamma = 1.4$，$t = 0.035$，CFL 0.9。没有滞止区，迎风方向不会摇摆。精确解另外实现了 Toro 的迭代解法，得到 $p^* = 1691.647$、$u^* = 8.6898$。
+
+| $N$ | TV 分裂 $L_1(\rho)$ | Rusanov $L_1(\rho)$ | TV 收敛率 |
+|---|---|---|---|
+| 100 | 0.9523 | 1.4303 | — |
+| 200 | 0.5936 | 0.9349 | 0.68 |
+| 400 | 0.3879 | 0.6187 | 0.61 |
+| 800 | 0.2695 | 0.4217 | 0.53 |
+
+同样一阶精度、同一成本量级，TV 分裂稳定地精确 1.5 倍。有意思的是前面看到的星状态误差：此处压力比为 10，压力系统星状态偏离精确值 65%。可格式照样赢。一阶 FV 里主导误差是 $O(\Delta x)$ 抹平，而 P-flux 不需要准确，只要相容且耗散就够了。
+
+## 在 Noh 问题上分道扬镳的地方
+
+换到 Noh 问题。$\gamma = 5/3$，$\rho = 1$、$u = -1$ 向壁面涌来，精确解是 $\rho = 4$、$p = 4/3$、$u = 0$，激波立在 $x = t/3$。整个波后区域都是 $u \approx 0$ 的滞止区。
+
+TV 分裂以两种方式死掉。若按 $u^*$ 的符号对对流 flux 迎风，$N = 200$ 时第 3 步、距壁第二个单元出现 $p = -0.12$。改按 $\tfrac12(u_L + u_R)$ 的符号迎风则能活下来，但网格越细，密度锯齿越严重。
+
+| $N$ | TV 分裂 $\mathrm{TV}(\rho)$ | Rusanov $\mathrm{TV}(\rho)$ |
+|---|---|---|
+| 100 | 12.01 | 0.445 |
+| 200 | 14.18 | 0.194 |
+| 400 | 31.38 | 0.104 |
+| 800 | 34.45 | 0.072 |
+
+$\mathrm{TV}(\rho)$ 是波后区域密度的全变差。网格加密 8 倍，Rusanov 降为六分之一，TV 分裂却涨了三倍。它不收敛。平均值本身两边都对——TV 是 $\bar\rho = 4.11$，Rusanov 是 3.99——但剖面不一样。
+
+原因就在分裂本身。质量 flux 只有 $\mathbf{A}$ 的第一分量 $\rho u$ 这一项，而 $\mathbf{P}$ 的第一分量为零。也就是说，**压力系统根本不碰密度。** 滞止区里 $u \to 0$，质量 flux 也跟着归零，密度场上就没有数值耗散可留。无论迎风取哪一侧结果都相同，于是奇偶单元解耦。同样这个对流 flux 的选择，在 Toro Test 4 上只把 $L_1$ 从 0.594 改成 0.568。在 $u \neq 0$ 处几乎无关紧要，在 $u \approx 0$ 处却是生死攸关。
+
+## 论文跳过的东西
+
+论文的六个测试问题全是 Riemann 问题，跨越初始间断的速度都不为零。没有一个会制造滞止区、壁面反射或定常流动。上面的结果表明这个盲区确实存在。论文把对流系统 flux 甩给 Toro–Vázquez 原文也很遗憾——那里只写了「straightforward」，可实际上这个选择决定了滞止区的生死。
+
+亚声速限制也还在。$S_L < \bar u < S_R$ 的引入理由是「许多作者认为它在物理上更合理」，但固相超过气相声速的配置，在爆燃-爆轰转变(DDT)中确实会出现。固相接触面处仍需用迭代法求解薄层(thin-layer)非线性方程组，这一点也和「无需迭代」的印象不符——尽管论文明确表示未遇到收敛问题。
+
+效率数字很有说服力。线性化 solver 最快，最接近的竞争者慢 8 倍；而 HLLEM-TV 贵 125 倍，数值 Roe 贵 67 倍。作者的结论——一旦需要评估特征向量，TV 分裂的吸引力就荡然无存——直接体现在这组数字里。若要在 OpenFOAM 一类代码里模仿这个结构，做法是建两个独立的 `surfaceScalarField` 再相加，而只用专门的 Riemann solver 去填压力系统那一半，完全可行。
+
+## 可复现性评分
+
+**8/10。** 分裂定义(式 3–5)、压力系统特征结构(式 9–10)、线性化关系式(式 15、19、23、26)都能照写成代码，校验也对得上：$u=0$ 时 $A/2 = a$ 在机器精度上一致，切线是精确曲线的 $O(\Delta p^2)$ 近似也得到确认。扣掉的两分，一是对流系统 flux 根本不在这篇论文里，二是固相接触面的薄层推导压缩得太紧，要完整复现 BN 还得同时看原文 [1] 和 [4]。
+
+下一篇要读的是 Toro & Vázquez (2012), *Computers & Fluids* 70, 1–12。这个分裂最早就出自那里，今天绊倒我的对流 flux 也在那儿。

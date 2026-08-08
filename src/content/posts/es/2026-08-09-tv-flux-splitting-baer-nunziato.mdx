@@ -1,0 +1,181 @@
+---
+title: "[Reseña] Separar del todo advección y presión — la división TV del flux de Baer–Nunziato"
+date: 2026-08-09
+description: "Al partir en dos el flux de BN, la velocidad del sonido queda solo en el sistema de presión"
+tags: ["Flux-Splitting", "Baer-Nunziato", "Riemann-Solver", "Compressible", "Multiphase", "논문리뷰"]
+locale: es
+slug: tv-flux-splitting-baer-nunziato
+draft: false
+---
+
+import { TVSplitWaveFanBN } from '@/components/post-viz/2026-08-09-tv-flux-splitting-baer-nunziato/TVSplitWaveFanBN'
+import { PSystemInvariantLinearizer } from '@/components/post-viz/2026-08-09-tv-flux-splitting-baer-nunziato/PSystemInvariantLinearizer'
+
+El artículo de Tokareva y Toro de 2016 parecía una reimplementación de treinta minutos. Partir el flux en dos, calcular cada pieza por separado y volver a sumarlas: eso era todo. La implementación cupo de hecho en 40 líneas. En un problema de Riemann con dos ondas de choque fuertes chocando de frente, resultó 1,5 veces más preciso que un flux de Rusanov. Y al pasar al problema de Noh, la presión llegó a −0,12 en el tercer paso. Hoy toca seguir con código qué hace exactamente esa división, qué regala y dónde pasa la factura.
+
+## Cómo corta el flux el artículo
+
+- **Autores**: S. A. Tokareva, E. F. Toro
+- **Título**: A flux splitting method for the Baer–Nunziato equations of compressible two-phase flow
+- **Publicación**: Journal of Computational Physics 323 (2016) 45–74
+- **DOI**: 10.1016/j.jcp.2016.07.019
+
+En una línea: extender la división de flux de Toro–Vázquez (TV) a las ecuaciones de Baer–Nunziato (BN, el modelo de siete ecuaciones que da a cada fase su propia velocidad y presión) y construir el flux completo resolviendo únicamente la mitad barata, la de presión.
+
+Las ecuaciones BN no admiten forma de ley de conservación. La forma 1D x-dividida carga su término no conservativo por separado.
+
+$$
+\partial_t \mathbf{Q} + \partial_x \mathbf{F}(\mathbf{Q}) + \mathbf{T}(\mathbf{Q})\,\partial_x \bar\alpha = 0
+$$
+
+Aquí $\mathbf{Q}$ reúne las siete variables conservadas, $\mathbf{F}$ es el flux conservativo y $\mathbf{T}\,\partial_x\bar\alpha$ es el término no conservativo que viaja sobre el gradiente de fracción volumétrica. Los símbolos con barra (¯) son la fase sólida; los que no la llevan, la gaseosa.
+
+El primer movimiento del artículo es cortar en dos la parte conservativa de $\mathbf{F}$. Escribiendo solo las tres componentes de la fase gaseosa:
+
+$$
+\mathbf{A} = \begin{pmatrix} \alpha\rho u \\ \alpha\rho u^2 \\ \tfrac12 \alpha\rho u^3 \end{pmatrix},
+\qquad
+\mathbf{P} = \begin{pmatrix} 0 \\ \alpha p \\ \alpha u(\rho e + p) \end{pmatrix}
+$$
+
+En $\mathbf{A}$ no queda ni un término de presión. En $\mathbf{P}$ no queda ni un término de advección $\rho u$. Al sumarlos se recupera exactamente el flux de Euler. De ahí salen el **sistema de advección** (A-system) y el **sistema de presión** (P-system), con el término no conservativo adherido a este último.
+
+$$
+\partial_t \mathbf{Q} + \partial_x \mathbf{A}(\mathbf{Q}) = 0, \qquad
+\partial_t \mathbf{Q} + \partial_x \mathbf{P}(\mathbf{Q}) + \mathbf{T}(\mathbf{Q})\,\partial_x \bar\alpha = 0
+$$
+
+## Tras el corte, la velocidad del sonido queda de un solo lado
+
+La ganancia aparece al mirar las velocidades características de cada subsistema. El jacobiano del A-system tiene la tercera columna nula, así que sus autovalores son $\{0, u, u\}$. Sin velocidad del sonido. El P-system, en variables primitivas $(\rho, u, p)$, da
+
+$$
+\lambda_{1,3} = \tfrac12\left(u \mp A\right), \quad \lambda_2 = 0,
+\qquad A = \sqrt{u^2 + \frac{4h}{\rho e_p}}
+$$
+
+donde $h$ es la entalpía específica y $e_p = \partial e/\partial p$. Al sustituir gas ideal: $\rho e_p = 1/(\gamma-1)$, de modo que $h/(\rho e_p) = \gamma p/\rho = a^2$, es decir $A = \sqrt{u^2 + 4a^2}$. Una EOS stiffened para el sólido se reduce igual a $\bar A = \sqrt{\bar u^2 + 4\bar a^2}$.
+
+Con $u = 0$ queda $\lambda_{1,3} = \mp a$. La velocidad del sonido vive por completo dentro del sistema de presión. Lo que fija el paso temporal no es el sistema de advección.
+
+Conviene mover los cuatro parámetros a mano en la simulación de abajo.
+
+<TVSplitWaveFanBN />
+
+Al llevar `a` de 0,1 hasta 2,0, el abanico del panel central (A-system) no se abre en absoluto y solo se ensancha el panel derecho (P-system). Mirando a la vez las barras `|λ|max` bajo cada panel, queda a la vista de qué lado viene la restricción CFL acústica.
+
+## Lo único que añade BN es un campo más, λ₇ = ū
+
+Tres autovalores por fase hacen seis; se les suma un séptimo, $\lambda_7 = \bar u$. Lo que el artículo extrae al desarrollar los autovectores importa en la práctica: la fracción volumétrica $\bar\alpha$ salta al cruzar el campo $\lambda_7$ y **en ningún otro**. La densidad del gas es constante a través de $\lambda_{1,3}$, y la presión del gas es constante a través de $\lambda_2$.
+
+Eso abarata el muestreo del estado de Godunov. Suponiendo la configuración subsónica $S_L < \bar u < S_R$, siempre se cumple $\lambda_1 < \lambda_2 = 0 < \lambda_3$, de modo que el estado en la interfaz queda determinado **solo por el signo de $\lambda_7 = \bar u$**. Tampoco hace falta corrección de entropía. Es aquí donde el artículo reclama su ahorro de CPU. La insignia verde/roja al pie de la simulación anterior verifica esa condición subsónica en vivo; al empujar `ū` hacia ±2 se sale del régimen que cubre el artículo.
+
+## Un solver de Riemann para el P-system que son dos rectas
+
+Los invariantes de Riemann generalizados sobre las ondas no lineales del sistema de presión son:
+
+$$
+\frac{d\rho}{0} = \frac{du}{2} = \frac{dp}{\rho(u - A)}
+$$
+
+La primera igualdad da $\rho = \text{const}$. La EDO que sobrevive, $du/dp = 2/[\rho(u-A)]$, se lineariza **congelando el coeficiente en el pie de la característica**. Al fijar $C_L = \rho_L(u_L - A_L)$, la integración se reduce a una sola recta.
+
+$$
+p_L^{*} = p_L + \tfrac12 C_L\left(u^{*} - u_L\right), \qquad
+p_R^{*} = p_R + \tfrac12 C_R\left(u^{*} - u_R\right)
+$$
+
+con $C_R = \rho_R(u_R + A_R)$. Al resolver las dos rectas simultáneamente sale una forma cerrada, sin iteración:
+
+$$
+u^{*} = \frac{2(p_R - p_L) + C_L u_L - C_R u_R}{C_L - C_R}
+$$
+
+Como $A > |u|$, siempre se tiene $C_L < 0 < C_R$. El denominador no puede anularse por construcción. No hay dónde colocar una guarda contra división por cero, y nunca hizo falta.
+
+Lo burda que es la linearización, en cambio, hay que verlo. Conviene mover los estados izquierdo y derecho abajo.
+
+<PSystemInvariantLinearizer />
+
+Las curvas blancas son los invariantes integrados con honestidad mediante RK4; las líneas discontinuas son las tangentes que el artículo usa realmente. Al bajar `p_L/p_R` hasta 1,1, los dos estados estrella coinciden dentro del 2 %. Con la razón por defecto de 3 la brecha ya es del 12 %, y subir `p_L` a 40 la abre hasta el 67 %. La tangente nunca llega a donde fue la curva.
+
+## El código — un flux TV en 40 líneas
+
+Se reduce a una sola fase de gas ideal. Una comodidad: el estado del sistema de presión nunca necesita $\rho^*$. Como $\rho e = p/(\gamma-1)$, la tercera componente del P-flux se ordena en $\gamma/(\gamma-1)\,u^* p^*$.
+
+```python
+import numpy as np
+
+def prim(q, g):
+    rho = q[0]; u = q[1] / rho
+    return rho, u, (g - 1.0) * (q[2] - 0.5 * rho * u * u)
+
+def pressure_wave_speed(rho, u, p, g):
+    """A = sqrt(u^2 + 4h/(rho e_p)) -> sqrt(u^2 + 4a^2)   [art. ec. 9]"""
+    return np.sqrt(u * u + 4.0 * g * p / rho)
+
+def advection_flux(rho, u):
+    """A(Q): sin un solo termino de presion   [art. ec. 5]"""
+    return np.array([rho * u, rho * u * u, 0.5 * rho * u ** 3])
+
+def p_system_star(rhoL, uL, pL, rhoR, uR, pR, g):
+    """solver de Riemann linearizado para el P-system   [art. ecs. 15, 19]"""
+    CL = rhoL * (uL - pressure_wave_speed(rhoL, uL, pL, g))   # siempre < 0
+    CR = rhoR * (uR + pressure_wave_speed(rhoR, uR, pR, g))   # siempre > 0
+    us = (2.0 * (pR - pL) + CL * uL - CR * uR) / (CL - CR)
+    return us, pL + 0.5 * CL * (us - uL)
+
+def tv_face_flux(qL, qR, g):
+    rhoL, uL, pL = prim(qL, g)
+    rhoR, uR, pR = prim(qR, g)
+    us, ps = p_system_star(rhoL, uL, pL, rhoR, uR, pR, g)
+    # autovalores del A-system: {0, u, u} -> un signo de velocidad zanja el upwind
+    fa = advection_flux(rhoL, uL) if us >= 0.0 else advection_flux(rhoR, uR)
+    # P-system: rho e = p/(g-1), asi que rho* nunca se necesita
+    fp = np.array([0.0, ps, g / (g - 1.0) * us * ps])
+    return fa + fp
+```
+
+## Enfrentándolo a Rusanov en el Toro Test 4
+
+Como problema de juguete se eligió el Toro Test 4, dos ondas de choque fuertes corriendo una contra otra. Izquierda $(\rho,u,p) = (5{,}99924,\ 19{,}5975,\ 460{,}894)$, derecha $(5{,}99242,\ -6{,}19633,\ 46{,}0950)$, $\gamma = 1{,}4$, $t = 0{,}035$, CFL 0,9. No hay región de estancamiento, así que la dirección de upwind no vacila. La solución exacta se implementó aparte con el método iterativo de Toro, dando $p^* = 1691{,}647$ y $u^* = 8{,}6898$.
+
+| $N$ | división TV $L_1(\rho)$ | Rusanov $L_1(\rho)$ | tasa TV |
+|---|---|---|---|
+| 100 | 0,9523 | 1,4303 | — |
+| 200 | 0,5936 | 0,9349 | 0,68 |
+| 400 | 0,3879 | 0,6187 | 0,61 |
+| 800 | 0,2695 | 0,4217 | 0,53 |
+
+Mismo primer orden, misma clase de coste, y la división TV es sistemáticamente 1,5 veces más precisa. Lo interesante es el error del estado estrella visto antes: aquí la razón de presiones es 10 y el estado estrella del P-system se desvía un 65 % del valor exacto. Y el esquema gana igual. En un método FV de primer orden el error dominante es el difuminado $O(\Delta x)$, y el P-flux solo tiene que ser consistente y disipativo, no preciso.
+
+## Dónde se separan los caminos en Noh
+
+Después vino el problema de Noh. $\gamma = 5/3$, con $\rho = 1$ y $u = -1$ empujando contra una pared; la respuesta exacta es $\rho = 4$, $p = 4/3$, $u = 0$, con el choque plantado en $x = t/3$. Toda la región tras el choque es una región de estancamiento con $u \approx 0$.
+
+La división TV murió de dos formas distintas. Aplicando upwind al flux de advección según el signo de $u^*$, apareció $p = -0{,}12$ en la segunda celda desde la pared, en el paso 3, con $N = 200$. Usando en cambio el signo de $\tfrac12(u_L + u_R)$ sobrevive, pero la densidad forma dientes de sierra tanto peores cuanto más fina es la malla.
+
+| $N$ | división TV $\mathrm{TV}(\rho)$ | Rusanov $\mathrm{TV}(\rho)$ |
+|---|---|---|
+| 100 | 12,01 | 0,445 |
+| 200 | 14,18 | 0,194 |
+| 400 | 31,38 | 0,104 |
+| 800 | 34,45 | 0,072 |
+
+$\mathrm{TV}(\rho)$ es la variación total de la densidad tras el choque. Al refinar la malla 8 veces, Rusanov baja seis veces mientras la división TV sube el triple. No converge. Los valores medios están bien en ambos casos — $\bar\rho = 4{,}11$ para TV, 3,99 para Rusanov — pero los perfiles no.
+
+La causa está en la división misma. El flux de masa es la única primera componente $\rho u$ de $\mathbf{A}$, y la primera componente de $\mathbf{P}$ es cero. Es decir, **el sistema de presión no toca nunca la densidad.** En una región de estancamiento, $u \to 0$ se lleva consigo el flux de masa a cero, y no queda nada que aporte disipación numérica al campo de densidad. Se elija el lado que se elija para el upwind el resultado es el mismo, así que las celdas pares e impares se desacoplan. Esa misma elección de flux de advección movía $L_1$ apenas de 0,594 a 0,568 en el Toro Test 4. Casi irrelevante donde $u \neq 0$; decisiva donde $u \approx 0$.
+
+## Lo que el artículo dejó fuera
+
+Los seis problemas de prueba del artículo son todos problemas de Riemann, con velocidad no nula a través de la discontinuidad inicial. Ninguno crea una región de estancamiento, una reflexión en pared o un flujo estacionario. Los resultados anteriores muestran que ese punto ciego es real. También es una lástima que el artículo delegue el flux del sistema de advección al trabajo original de Toro–Vázquez: allí solo dice «straightforward», cuando en la práctica esa elección decide si una región de estancamiento vive o muere.
+
+La restricción subsónica también persiste. $S_L < \bar u < S_R$ llega con el argumento de que «muchos autores la consideran físicamente más relevante», pero las configuraciones donde el sólido supera la velocidad del sonido del gas sí aparecen en la transición deflagración-detonación (DDT). Y en el contacto sólido todavía hay que iterar sobre un sistema no lineal de capa delgada (thin-layer), lo que no encaja del todo con la impresión de «sin iteración» — aunque el artículo sí afirma no haber tenido problemas de convergencia.
+
+Las cifras de eficiencia convencen. El solver linearizado es el más rápido, con el competidor más cercano ocho veces más lento; en cambio HLLEM-TV sale 125 veces más caro y la variante Roe numérica, 67. La conclusión de los autores — que el atractivo de la división TV se evapora en cuanto hay que evaluar autovectores — aparece directamente en la aritmética. Para imitar esta estructura en un código estilo OpenFOAM habría que construir dos `surfaceScalarField` separados y sumarlos, y llenar solo la mitad de presión con un solver de Riemann dedicado es perfectamente viable.
+
+## Puntuación de reproducibilidad
+
+**8/10.** Las definiciones de la división (ecs. 3–5), la estructura característica del P-system (ecs. 9–10) y las relaciones linearizadas (ecs. 15, 19, 23, 26) se convirtieron en código tal cual, y las comprobaciones cuadraron: $A/2 = a$ con $u=0$ hasta precisión de máquina, y la tangente resulta ser una aproximación $O(\Delta p^2)$ de la curva exacta. Los dos puntos perdidos son que el flux del sistema de advección no está en este artículo en absoluto, y que la derivación de capa delgada en el contacto sólido viene tan comprimida que una reproducción completa de BN exige leer en paralelo las refs. originales [1] y [4].
+
+Siguiente lectura: Toro & Vázquez (2012), *Computers & Fluids* 70, 1–12. Ahí apareció por primera vez esta división — y ahí está el flux de advección que hoy puso la trampa.
