@@ -1,0 +1,285 @@
+---
+title: "El mismo resultado con el 18 % de las celdas — criterios de marcado AMR y reflujo coarse-fine"
+date: 2026-08-10
+description: "El sensor de Löhner, el ancho del búfer y la fuga de masa en la interfaz que solo el registro de flujos detiene"
+tags: ["AMR", "Mesh-Refinement", "Flux-Register", "Conservation", "OpenFOAM"]
+locale: es
+slug: amr-tagging-and-refluxing
+draft: false
+---
+
+import { LohnerTagBufferQuadtree } from '@/components/post-viz/2026-08-10-amr-tagging-and-refluxing/LohnerTagBufferQuadtree'
+import { FluxRegisterLedger } from '@/components/post-viz/2026-08-10-amr-tagging-and-refluxing/FluxRegisterLedger'
+
+En un cálculo de 50 millones de celdas, ¿cuántas deciden realmente el resultado? Una onda de choque, una capa de cortadura, un frente de llama. Al contarlas, suelen ser un puñado de puntos porcentuales del total. El resto son celdas que gastan tiempo resolviendo con esmero zonas que ya eran suaves. El refinamiento adaptativo de malla AMR (adaptive mesh refinement: sembrar celdas solo donde la solución las exige) ataca esa proporción de frente, y hoy tocan sus dos puntos sensibles en la práctica: el sensor que decide dónde subdividir, y la fuga de masa en la interfaz que aparece sin falta después de subdividir.
+
+## 11 mil celdas de 65 mil
+
+Conviene empezar contando la ganancia. Se toma un dominio de $256^2$ con una sola capa de cortadura de Kelvin–Helmholtz (la interfaz que se enrolla entre dos capas con diferencia de velocidad). Con malla uniforme son 65 536 celdas. Al envolver esa misma interfaz con AMR de 3 niveles, las celdas hoja quedan en 11 776. Un 18 %.
+
+Esa proporción no es casualidad: la fija la dimensión. En un dominio de $D$ dimensiones, la interfaz tiene $D-1$. Si la malla uniforme tiene $N_{\rm uni} = (L/h)^D$ celdas, las que cubren solo la interfaz son
+
+$$
+N_{\rm AMR} \sim \left(\frac{L}{h}\right)^{D-1} = N_{\rm uni}^{(D-1)/D}
+$$
+
+donde $L$ es el tamaño del dominio y $h$ el espaciamiento de la malla más fina. En 2D el exponente vale 1/2; en 3D, 2/3. Es decir: al duplicar la finura, la malla uniforme multiplica sus celdas por 8 y el AMR solo por 4. La ventaja crece con la resolución, y esa es la única razón para usar AMR.
+
+## El gradiente no sirve para decidir dónde subdividir
+
+El primer criterio de marcado que se le ocurre a cualquiera es $|\nabla \phi| > \epsilon$. Falla por una cuestión de unidades. El gradiente de presión va en Pa/m; el de densidad, en kg/m⁴. Hay que recalibrar $\epsilon$ para cada campo, para cada problema e incluso para cada nivel.
+
+El criterio que Löhner publicó en 1987 elimina el problema por normalización: divide la diferencia segunda por la suma de los valores absolutos de las diferencias primeras.
+
+$$
+E_i = \sqrt{ \sum_{d} \frac{\left(\phi_{i+e_d} - 2\phi_i + \phi_{i-e_d}\right)^2}{\Big(|\phi_{i+e_d}-\phi_i| + |\phi_i-\phi_{i-e_d}| + \varepsilon\big(|\phi_{i+e_d}| + 2|\phi_i| + |\phi_{i-e_d}|\big)\Big)^2} }
+$$
+
+$e_d$ es el vecino en la dirección $d$ y $\varepsilon$ es el filtro de ruido (típicamente 0.01–0.05). Como numerador y denominador tienen la misma dimensión, $E_i$ es adimensional y su valor queda acotado aproximadamente en $[0,1]$. Un único umbral de 0.3–0.4 funciona igual para la presión que para la densidad, y tanto en el nivel 0 como en el nivel 3.
+
+Un detalle importante: este sensor **no detecta rasgos, detecta resolución**. Si la interfaz ya está bien resuelta con 4 o 5 celdas en ese nivel, la diferencia segunda se achica y el sensor se apaga. Es una buena propiedad — subdivide solo lo necesario y se detiene solo. Pero si lo que se busca es "todo choque hasta el nivel máximo, sin discusión", este sensor por sí solo no alcanza. En ese caso, en lugar de inflar el término de filtro de ruido $\varepsilon$, se agrega con un OR un criterio físico aparte (por ejemplo, $\Delta p / p > 0.1$).
+
+## El búfer es el seguro que cubre hasta el próximo regrid
+
+Subdividir solo las celdas que encendió el sensor se rompe en el paso siguiente, porque la malla no se rehace en cada paso. El regrid corre una vez cada 4 a 20 pasos, y en ese intervalo la interfaz sigue moviéndose. Por eso las celdas marcadas se engordan en $n_{\rm buf}$ celdas.
+
+El ancho de búfer necesario sale de una cuenta directa. Si en el nivel $\ell$ se convierte a número de celdas la distancia que recorre el rasgo durante $N_{\rm regrid}$ pasos,
+
+$$
+n_{\rm buf} \;\ge\; \frac{|u|_{\max}\,\Delta t_\ell\,N_{\rm regrid}}{h_\ell} \;=\; \nu\,N_{\rm regrid}
+$$
+
+donde $\nu$ es el número de CFL de ese nivel. Con CFL 0.4 y regrid cada 10 pasos hacen falta al menos 4 celdas. La relación es independiente del nivel: con subciclado, $\Delta t_\ell$ y $h_\ell$ se reducen en la misma proporción.
+
+Conviene manipular directamente la simulación de abajo.
+
+<LohnerTagBufferQuadtree />
+
+Al bajar `n_buf` a 0 y empujar `regrid every` hasta 30, crecen celdas rojas a lo largo de la interfaz: son celdas donde el sensor dice "hay que subdividir aquí" y la malla todavía no llegó. Al subir `n_buf` a 2 el rojo desaparece, pero sube el número de celdas hoja. Ese número es exactamente el precio de ensanchar el búfer.
+
+## Bloque, celda o parche — lo que define la unidad de corte
+
+Con el mismo resultado de marcado, la unidad con la que se subdivide cambia tanto el conteo de celdas como la complejidad del código.
+
+| Enfoque | Unidad de refinamiento | Estructura de datos | Refinamiento excedente | Implementaciones típicas |
+|---|---|---|---|---|
+| Basado en bloques | Bloque de tamaño fijo ($8^3$, etc.) | Octree de bloques | Grande | PARAMESH, FLASH |
+| Basado en celdas | Una celda | Árbol por celda | Nulo | OpenFOAM `hexRef8`, RAGE |
+| Basado en parches | Parche rectangular de tamaño libre | Lista de cajas | Pequeño | Chombo, BoxLib/AMReX |
+
+El enfoque por bloques tiene la estructura de datos más simple y buena localidad de caché, pero basta una sola celda marcada para que se subdivida el bloque entero. El enfoque por celdas no genera ningún exceso, aunque cada búsqueda de vecinos implica recorrer el árbol. Ahí entra OpenFOAM: `dynamicRefineFvMesh` es el motor, `hexRef8` el cortador (un hexaedro en ocho) y `refinementHistory` el historial para poder deshacer. El enfoque por parches queda en el medio y, dentro del rectángulo, permite conservar los bucles de malla estructurada, lo que favorece la vectorización.
+
+## Una misma cara con dos respuestas distintas
+
+Acá empieza el problema de verdad. Se observa la cara donde se tocan los niveles $\ell$ y $\ell+1$. Del lado grueso esa cara es una sola; del lado fino son $r^{D-1}$ ($r$ es la razón de refinamiento, normalmente 2). Y con subciclado, además, los pasos de tiempo difieren.
+
+$$
+\Delta t_\ell = \frac{\Delta t_0}{r^{\ell}}
+$$
+
+Mientras la malla gruesa avanza un paso, la fina avanza $r$ veces. Por eso el flujo $F^c$ que la malla gruesa calculó a través de esa cara y el flujo que la malla fina realmente empujó, repartido en $r^{D-1}$ caras y $r$ subpasos, son números distintos. La diferencia entre ambos es
+
+$$
+\delta F_f = \frac{1}{r^{D}}\sum_{s=1}^{r}\sum_{f'\subset f} F^{s}_{f'} \;-\; F^{c}_{f}
+$$
+
+y eso es masa fabricada por la interfaz. Aparece masa que no existía o desaparece la que sí estaba. Ocurre incluso usando un esquema conservativo: la conservación se cumple dentro de una malla, no en el lugar donde dos mallas se encuentran.
+
+## Anotar en el libro mayor y saldar de una vez
+
+La solución es simple. Al arrancar el paso grueso se anota $F^c_f$ en un libro mayor (registro de flujos, flux register). Mientras la malla fina corre sus $r$ subpasos, se acumula en el mismo registro el flujo real. Cuando termina el paso grueso, la diferencia $\delta F_f$ se devuelve a la celda gruesa que está **por fuera** del parche.
+
+$$
+\phi_c \;\leftarrow\; \phi_c \;\mp\; \frac{\Delta t_c}{h_c}\,\delta F_f
+$$
+
+El signo lo fija el lado de la cara en que se encuentra esa celda. Las celdas interiores al parche no se tocan: ya fueron sobrescritas con el promedio de los valores finos. Esta única línea devuelve la masa de todo el dominio hasta la precisión de máquina.
+
+Conviene correr abajo, lado a lado, la versión con reflujo activado y la versión sin él.
+
+<FluxRegisterLedger />
+
+Desde el instante en que el pulso toca la cara rosada, la traza roja se despega del cero y no vuelve nunca. La verde sigue pegada al cero. Al reducir `pulse sigma` para afilar el pulso, la desviación roja se agranda, y el $\delta F$ anotado en el registro crece exactamente en la misma medida.
+
+## Conteo de celdas y deriva de masa, medidos con código
+
+Primero el marcado. Se aplica el sensor de Löhner sobre una instantánea de la capa de cortadura, se agrega el búfer, se apilan niveles por bloques y se cuentan las celdas hoja.
+
+```python
+import numpy as np
+
+N_EFF, BLOCK, MAX_LEVEL = 256, 4, 2   # resolucion equivalente 256^2, 4x4 celdas por bloque, niveles 0~2
+EPS_L, THRESH, N_BUF = 0.02, 0.35, 2  # filtro de ruido / umbral de marcado / bufer (en celdas)
+
+
+def shear_layer(n, t=1.35):
+    """Instantanea del enrollamiento de Kelvin-Helmholtz: sin solver, solo un campo."""
+    x = (np.arange(n) + 0.5) / n
+    xx, yy = np.meshgrid(x, x, indexing='ij')
+    warp = 0.06 * np.sin(2 * np.pi * xx + t) + 0.025 * np.sin(4 * np.pi * xx - 2 * t)
+    return np.tanh((yy - 0.5 - warp) / 0.012)
+
+
+def shift(a, d, ax):
+    """Acceso a vecinos: x periodico, y de gradiente nulo; sin saltos falsos en la pared."""
+    return np.roll(a, d, ax) if ax == 0 else np.pad(a, 1, mode='edge')[1:-1, 1 + d:a.shape[1] + 1 + d]
+
+
+def lohner_sensor(f):
+    """Diferencia segunda normalizada. Al ser adimensional, un solo umbral sirve para todos los niveles."""
+    e2 = np.zeros_like(f)
+    for ax in (0, 1):
+        p, m = shift(f, -1, ax), shift(f, 1, ax)
+        num = np.abs(p - 2.0 * f + m)
+        den = np.abs(p - f) + np.abs(f - m) + EPS_L * (np.abs(p) + 2 * np.abs(f) + np.abs(m))
+        e2 += (num / np.maximum(den, 1e-30)) ** 2
+    return np.sqrt(e2)
+
+
+def grow(mask, width):
+    """Bufer: impide que el rasgo salga del parche antes del proximo regrid."""
+    for _ in range(width):
+        out = mask.copy()
+        for ax in (0, 1):
+            out |= shift(mask, 1, ax) | shift(mask, -1, ax)
+        mask = out
+    return mask
+
+
+def tag_blocks(f, thresh, n_buf):
+    """Sensor por celda -> bufer por celda -> se refina todo bloque con al menos una celda marcada."""
+    tagged = grow(lohner_sensor(f) > thresh, n_buf)
+    nb = f.shape[0] // BLOCK
+    return tagged.reshape(nb, BLOCK, nb, BLOCK).any(axis=(1, 3))
+
+
+def leaf_cells(field):
+    """Recorre desde el nivel grueso hacia abajo y cuenta solo las celdas que realmente se resuelven."""
+    counts, live = [], None
+    for lev in range(MAX_LEVEL + 1):
+        n = N_EFF >> (MAX_LEVEL - lev)
+        f = field.reshape(n, N_EFF // n, n, N_EFF // n).mean(axis=(1, 3))
+        nb = n // BLOCK
+        child = np.zeros((nb, nb), bool) if lev == MAX_LEVEL else tag_blocks(f, THRESH, N_BUF)
+        live = np.ones((nb, nb), bool) if live is None else live
+        counts.append(int((live & ~child).sum()) * BLOCK * BLOCK)
+        live = np.kron(live & child, np.ones((2, 2), bool))
+    return counts
+
+
+counts = leaf_cells(shear_layer(N_EFF))
+total, uniform = sum(counts), N_EFF * N_EFF
+for lev, c in enumerate(counts):
+    print(f'  level {lev}  h = 1/{N_EFF >> (MAX_LEVEL - lev):<3d}  leaf cells = {c:6d}')
+print(f'  AMR total     = {total}')
+print(f'  uniform 256^2 = {uniform}  ->  {100 * total / uniform:.1f} % of the cells')
+```
+
+La salida es esta.
+
+```text
+  level 0  h = 1/64   leaf cells =   3280
+  level 1  h = 1/128  leaf cells =   1520
+  level 2  h = 1/256  leaf cells =   6976
+  AMR total     = 11776
+  uniform 256^2 = 65536  ->  18.0 % of the cells
+```
+
+Al cambiar `N_BUF` a 0, 1, 2 y 4, el total se mueve de 9616 a 10 864, luego 11 776 y finalmente 14 224. El búfer de 2 celdas cuesta 2160 celdas, es decir 3.3 puntos porcentuales respecto de la malla uniforme.
+
+Ahora el reflujo. Se montan dos niveles sobre una advección escalar 2D, se agrega subciclado y se mide la masa total.
+
+```python
+import numpy as np
+
+NC, R, CFL, NSTEP = 48, 2, 0.4, 60   # malla gruesa / razon de refinamiento / CFL / pasos gruesos
+BOX = (12, 28, 16, 32)               # esquinas del parche (en indices de la malla gruesa)
+U, V = 1.0, 0.6
+
+
+def upwind_faces(f, dx, dy):
+    """Flujo donor-cell en todas las caras x e y del bloque periodico. Devuelve (Fx, Fy)."""
+    fx = U * (f if U > 0 else np.roll(f, -1, 0))          # la cara i esta a la izquierda de la celda i
+    fy = V * (f if V > 0 else np.roll(f, -1, 1))
+    return np.roll(fx, 1, 0), np.roll(fy, 1, 1)
+
+
+def march_block(f, fx, fy, dt, dx, dy):
+    return f - dt / dx * (np.roll(fx, -1, 0) - fx) - dt / dy * (np.roll(fy, -1, 1) - fy)
+
+
+def gaussian_patch(n, x0, y0, s):
+    c = (np.arange(n) + 0.5) / n
+    xx, yy = np.meshgrid(c, c, indexing='ij')
+    return np.exp(-((xx - x0) ** 2 + (yy - y0) ** 2) / s ** 2)
+
+
+def two_level_run(reflux):
+    i0, i1, j0, j1 = BOX
+    dx, dxf = 1.0 / NC, 1.0 / NC / R
+    dt = CFL * dx / (abs(U) + abs(V))
+    dtf = dt / R
+
+    coarse = gaussian_patch(NC, 0.32, 0.42, 0.09)
+    fine = np.kron(coarse[i0:i1, j0:j1], np.ones((R, R)))   # el parche arranca consistente con el valor grueso
+
+    for _ in range(NSTEP):
+        cfx, cfy = upwind_faces(coarse, dx, dx)
+        # el flujo que la malla gruesa "creyo" mover a traves del borde del parche
+        edge_c = {'lo_x': cfx[i0, j0:j1].copy(), 'hi_x': cfx[i1, j0:j1].copy(),
+                  'lo_y': cfy[i0:i1, j0].copy(), 'hi_y': cfy[i0:i1, j1].copy()}
+        coarse = march_block(coarse, cfx, cfy, dt, dx, dx)
+
+        edge_f = {k: np.zeros_like(v) for k, v in edge_c.items()}
+        for _ in range(R):                                   # subciclado: R pasos finos por cada paso grueso
+            g = np.zeros((fine.shape[0] + 2, fine.shape[1] + 2))
+            g[1:-1, 1:-1] = fine
+            g[0, 1:-1] = np.repeat(coarse[i0 - 1, j0:j1], R)  # ghost: valor grueso inyectado como constante a trozos
+            g[-1, 1:-1] = np.repeat(coarse[i1, j0:j1], R)
+            g[1:-1, 0] = np.repeat(coarse[i0:i1, j0 - 1], R)
+            g[1:-1, -1] = np.repeat(coarse[i0:i1, j1], R)
+            gfx, gfy = upwind_faces(g, dxf, dxf)
+            fine = march_block(g, gfx, gfy, dtf, dxf, dxf)[1:-1, 1:-1]
+            for k, s in (('lo_x', gfx[1, 1:-1]), ('hi_x', gfx[-1, 1:-1]),
+                         ('lo_y', gfy[1:-1, 1]), ('hi_y', gfy[1:-1, -1])):
+                edge_f[k] += s.reshape(-1, R).mean(axis=1) / R   # promedio en la cara y en el tiempo
+
+        coarse[i0:i1, j0:j1] = fine.reshape(i1 - i0, R, j1 - j0, R).mean(axis=(1, 3))
+
+        if reflux:                                            # liquidacion del libro mayor
+            coarse[i0 - 1, j0:j1] -= dt / dx * (edge_f['lo_x'] - edge_c['lo_x'])
+            coarse[i1, j0:j1] += dt / dx * (edge_f['hi_x'] - edge_c['hi_x'])
+            coarse[i0:i1, j0 - 1] -= dt / dx * (edge_f['lo_y'] - edge_c['lo_y'])
+            coarse[i0:i1, j1] += dt / dx * (edge_f['hi_y'] - edge_c['hi_y'])
+
+    mask = np.ones((NC, NC), bool)
+    mask[i0:i1, j0:j1] = False
+    return (coarse * mask).sum() * dx * dx + fine.sum() * dxf * dxf
+
+
+m0 = gaussian_patch(NC, 0.32, 0.42, 0.09).sum() / NC ** 2
+for tag, on in (('reflux off', False), ('reflux on ', True)):
+    m = two_level_run(on)
+    print(f'  {tag}:  mass = {m:.12f}   drift = {(m - m0) / m0:+.3e}')
+```
+
+```text
+  reflux off:  mass = 0.025702960114   drift = +1.006e-02
+  reflux on :  mass = 0.025446894886   drift = +0.000e+00
+```
+
+Un 1 % en 60 pasos. Y ese valor tampoco crece de forma monótona: a los 15 pasos era −1.3 %, a los 30 pasos −0.77 % y a los 60 pasos +1.0 %. El signo cambia cada vez que el blob entra o sale del parche. Ver una curva así durante un estudio de convergencia lleva a sospechar del esquema, cuando el culpable es una interfaz sin reflujo.
+
+## Balanceo de carga — una curva que pone los bloques en fila
+
+Correr AMR en paralelo trae un problema nuevo: en cada regrid, el número de bloques por procesador cambia. El rango que quedó con la interfaz encima multiplica sus celdas por cinco, mientras que el que solo tiene zona suave se queda igual.
+
+La receta estándar es la curva de llenado de espacio SFC (space-filling curve: una curva que recorre en una sola fila una malla multidimensional). Con una curva de Morton (orden Z) o de Hilbert se asigna un índice unidimensional a cada bloque hoja y esa fila se parte en tantos tramos iguales como rangos haya. Gracias a la localidad de la curva, los índices contiguos suelen ser también vecinos en el espacio, así que una partición equitativa resulta además una partición de poca comunicación. Así trabajan p4est y AMReX. Un particionador de grafos (ParMETIS, Zoltan, Scotch) da mejor calidad de partición, pero hay que volver a ejecutarlo en cada regrid, con un costo muy superior al de la SFC. Como en AMR la malla cambia seguido, la SFC suele ganar.
+
+## Tres decisiones antes de activar AMR
+
+**Uno.** El criterio de marcado se construye adimensional. Con la diferencia segunda normalizada, un único umbral sirve para todos los campos y todos los niveles. Con el gradiente crudo, en cambio, hay que sintonizar nivel por nivel.
+
+**Dos.** El ancho del búfer se calcula como $\nu N_{\rm regrid}$ y se aplica. Poner 1 celda a ojo y hacer regrid cada 20 pasos deja la mitad del cálculo corriendo con el rasgo ya escapado fuera del parche.
+
+**Tres.** El reflujo no es opcional. Aunque el esquema sea conservativo, la interfaz coarse-fine rompe la conservación. En problemas donde la masa es la respuesta misma —combustión, flujo multifásico—, ninguna curva de convergencia obtenida sin registro de flujos es confiable.

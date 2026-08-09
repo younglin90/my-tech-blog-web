@@ -1,0 +1,285 @@
+---
+title: "セルの18%で同じ答えを出す — AMR タグ付け基準と coarse-fine リフラックス"
+date: 2026-08-10
+description: "Löhner センサーとバッファ幅、そして flux register が塞ぐ界面の質量漏れ"
+tags: ["AMR", "Mesh-Refinement", "Flux-Register", "Conservation", "OpenFOAM"]
+locale: ja
+slug: amr-tagging-and-refluxing
+draft: false
+---
+
+import { LohnerTagBufferQuadtree } from '@/components/post-viz/2026-08-10-amr-tagging-and-refluxing/LohnerTagBufferQuadtree'
+import { FluxRegisterLedger } from '@/components/post-viz/2026-08-10-amr-tagging-and-refluxing/FluxRegisterLedger'
+
+5千万セルの解析で、答えを実際に決めているセルは何個でしょうか。衝撃波が一枚、せん断層が一層、火炎面が一枚。数えてみると、たいてい全体の数パーセントです。残りは、滑らかな領域を滑らかに計算するために回っているセルです。Adaptive mesh refinement(AMR・解が要求する場所にだけ格子を敷く手法)はこの比率を直接いじる手法で、今日はその実務上の急所を二つ扱います。どこを割るかを決めるセンサー、そして割った後に必ずついてくる界面の質量漏れです。
+
+## 6万5千セルのうち、1万1千セル
+
+まず得られるものから数えます。Kelvin–Helmholtz せん断層(速度差のある二層の間で巻き上がる界面)を一枚だけ含む $256^2$ のドメインを取ります。均一格子なら 65,536 セルです。同じ界面を3レベルの AMR で包むと、leaf セルは 11,776 個。18% です。
+
+この比率は偶然ではなく、次元が決めています。$D$ 次元のドメインで界面は $D-1$ 次元です。均一格子のセル数が $N_{\rm uni} = (L/h)^D$ のとき、界面だけを覆うセル数は
+
+$$
+N_{\rm AMR} \sim \left(\frac{L}{h}\right)^{D-1} = N_{\rm uni}^{(D-1)/D}
+$$
+
+ここで $L$ はドメイン寸法、$h$ は最細格子間隔です。2D で指数は 1/2、3D では 2/3。つまり格子を2倍細かくすると、均一格子はセルが8倍になるのに対し AMR は4倍で済みます。解像度を上げるほど得が大きくなるということで、これが AMR を使う唯一の理由です。
+
+## どこを割るかは、勾配では決まらない
+
+まず手が伸びるタグ付け基準は $|\nabla \phi| > \epsilon$ です。これが失敗する理由は単位にあります。圧力勾配は Pa/m、密度勾配は kg/m⁴。フィールドごと、問題ごと、さらにはレベルごとに $\epsilon$ を取り直すはめになります。
+
+Löhner が1987年に出した基準は、この問題を正規化で消してしまいます。2階差分を1階差分の絶対値の和で割るのです。
+
+$$
+E_i = \sqrt{ \sum_{d} \frac{\left(\phi_{i+e_d} - 2\phi_i + \phi_{i-e_d}\right)^2}{\Big(|\phi_{i+e_d}-\phi_i| + |\phi_i-\phi_{i-e_d}| + \varepsilon\big(|\phi_{i+e_d}| + 2|\phi_i| + |\phi_{i-e_d}|\big)\Big)^2} }
+$$
+
+$e_d$ は $d$ 方向の隣接、$\varepsilon$ はノイズフィルタ(通常 0.01〜0.05)です。分子と分母が同じ次元なので $E_i$ は無次元で、値はおおむね $[0,1]$ に収まります。閾値 0.3〜0.4 の一つが、圧力にも密度にも、レベル0にもレベル3にもそのまま通用します。
+
+一点だけ注意があります。このセンサーは **feature 検出器ではなく解像度検出器** です。界面がそのレベルですでに4〜5セルに解けていれば、2階差分が小さくなってセンサーは切れます。良い性質です — 必要な分だけ割って、勝手に止まってくれます。ただし「衝撃波は問答無用で最大レベルまで」を望むなら、このセンサーだけでは足りません。その場合は $\varepsilon$ のノイズフィルタ項を大きくするのではなく、別の物理基準(例: $\Delta p / p > 0.1$)を OR で足します。
+
+## バッファは、次の regrid までかける保険
+
+センサーが立ったセルだけを割ると、次のステップで即座に破綻します。格子は毎ステップ作り直すわけではないからです。regrid は普通4〜20ステップに一度回り、その間も界面は移動し続けます。タグ付きセルを $n_{\rm buf}$ セル分だけ膨らませておく理由がこれです。
+
+必要なバッファ幅は素直に計算できます。レベル $\ell$ で $N_{\rm regrid}$ ステップの間に特徴が移動する距離をセル数に換算すると
+
+$$
+n_{\rm buf} \;\ge\; \frac{|u|_{\max}\,\Delta t_\ell\,N_{\rm regrid}}{h_\ell} \;=\; \nu\,N_{\rm regrid}
+$$
+
+$\nu$ はそのレベルの CFL 数です。CFL 0.4 で10ステップごとに regrid するなら最低4セル要ります。この関係はレベルに依りません — サブサイクリングを使えば $\Delta t_\ell$ と $h_\ell$ が同じ比率で縮むからです。
+
+下のシミュレーションで直接操作してみましょう。
+
+<LohnerTagBufferQuadtree />
+
+`n_buf` を 0 に下げ、`regrid every` を 30 まで押し上げると、界面に沿って赤いセルが増えていきます。センサーは「ここを割るべきだ」と言っているのに、格子がまだ追いついていないセルです。`n_buf` を 2 に上げると赤が消え、代わりに leaf セル数が上がります。バッファを広げる代金がちょうどこの数字です。
+
+## ブロック・セル・パッチ — 切る単位が決めるもの
+
+同じタグ結果でも、どの単位で割るかによってセル数とコードの複雑さが分かれます。
+
+| 方式 | refine 単位 | データ構造 | 過剰 refine | 代表実装 |
+|---|---|---|---|---|
+| Block-based | 固定サイズブロック($8^3$ など) | ブロック octree | 大きい | PARAMESH, FLASH |
+| Cell-based | セル1個 | セル単位 tree | なし | OpenFOAM `hexRef8`, RAGE |
+| Patch-based | 任意サイズの矩形 patch | box リスト | 小さい | Chombo, BoxLib/AMReX |
+
+ブロック方式はデータ構造が最も単純で、キャッシュ局所性も良好です。その代わり、ブロック内にタグ付きセルが一つあるだけでブロック全体が割れます。セル方式は過剰がまったくない反面、隣接探索が毎回 tree 走査になります。OpenFOAM はここに属します — `dynamicRefineFvMesh` がエンジン、`hexRef8` がカッター(六面体1個を8個に)、`refinementHistory` が巻き戻しのための履歴です。patch 方式は両者の中間で、矩形の内側では構造格子ループをそのまま回せるためベクトル化に有利です。
+
+## 界面の一つの面に、答えが二つある
+
+ここからが本題です。レベル $\ell$ と $\ell+1$ が接する面を見ます。粗いセル側ではその面は一つ、細かいセル側では $r^{D-1}$ 個です($r$ は refinement ratio、通常2)。おまけにサブサイクリングを使うと時間ステップも違います。
+
+$$
+\Delta t_\ell = \frac{\Delta t_0}{r^{\ell}}
+$$
+
+粗い格子が1ステップ進む間に、細かい格子は $r$ 回進みます。ですからその一つの面を通して粗い格子が計算した flux $F^c$ と、細かい格子が $r^{D-1}$ 個の面で $r$ 回かけて実際に押し出した flux は、別の数字になります。二つの差が
+
+$$
+\delta F_f = \frac{1}{r^{D}}\sum_{s=1}^{r}\sum_{f'\subset f} F^{s}_{f'} \;-\; F^{c}_{f}
+$$
+
+であり、これが界面の作り出した質量です。無かった質量が生まれ、有った質量が消えます。保存形スキームを使っていても同じです — 保存性は一つの格子の内側でしか成り立たず、二つの格子が接する場所では保証されません。
+
+## 帳簿に書いておいて、あとで一括清算する
+
+解決策は単純です。粗いステップを始めるときに $F^c_f$ を帳簿(flux register)に書いておきます。細かい格子を $r$ 回回しながら、実際の flux を同じ帳簿に積み上げます。粗いステップが終わったら、差額 $\delta F_f$ を patch の **外側** の粗いセルに戻します。
+
+$$
+\phi_c \;\leftarrow\; \phi_c \;\mp\; \frac{\Delta t_c}{h_c}\,\delta F_f
+$$
+
+符号は、そのセルが面のどちら側にあるかで決まります。patch の内側のセルには手を付けません — すでに細かい格子の値を平均して上書きしているからです。この一行が、ドメイン全体の質量を機械精度まで戻します。
+
+下でリフラックスを入れた側と切った側を並べて回してみましょう。
+
+<FluxRegisterLedger />
+
+パルスがピンク色の面に触れた瞬間から、赤いトレースが0から離れていき、二度と戻ってきません。緑はずっと0に貼り付いたままです。`pulse sigma` を下げてパルスを鋭くすると赤の逸脱幅が大きくなりますが、帳簿に記録される $\delta F$ もちょうど同じだけ大きくなります。
+
+## コードで数えたセル数と質量ドリフト
+
+まずタグ付けから。せん断層のスナップショット一枚に Löhner センサーをかけ、バッファを与えてからブロック単位でレベルを積み、leaf セルを数えます。
+
+```python
+import numpy as np
+
+N_EFF, BLOCK, MAX_LEVEL = 256, 4, 2   # 256^2 相当の解像度、ブロックあたり 4x4 セル、レベル 0〜2
+EPS_L, THRESH, N_BUF = 0.02, 0.35, 2  # ノイズフィルタ / タグ閾値 / バッファ(セル単位)
+
+
+def shear_layer(n, t=1.35):
+    """Kelvin-Helmholtz 巻き上がりのスナップショット — ソルバなしでフィールドだけ作る。"""
+    x = (np.arange(n) + 0.5) / n
+    xx, yy = np.meshgrid(x, x, indexing='ij')
+    warp = 0.06 * np.sin(2 * np.pi * xx + t) + 0.025 * np.sin(4 * np.pi * xx - 2 * t)
+    return np.tanh((yy - 0.5 - warp) / 0.012)
+
+
+def shift(a, d, ax):
+    """隣接参照: x は周期、y は zero-gradient — 壁で偽のジャンプを作らない。"""
+    return np.roll(a, d, ax) if ax == 0 else np.pad(a, 1, mode='edge')[1:-1, 1 + d:a.shape[1] + 1 + d]
+
+
+def lohner_sensor(f):
+    """正規化された2階差分。無次元なので閾値一つが全レベルに通用する。"""
+    e2 = np.zeros_like(f)
+    for ax in (0, 1):
+        p, m = shift(f, -1, ax), shift(f, 1, ax)
+        num = np.abs(p - 2.0 * f + m)
+        den = np.abs(p - f) + np.abs(f - m) + EPS_L * (np.abs(p) + 2 * np.abs(f) + np.abs(m))
+        e2 += (num / np.maximum(den, 1e-30)) ** 2
+    return np.sqrt(e2)
+
+
+def grow(mask, width):
+    """バッファ: 次の regrid までに特徴が patch の外へ出ないようにする。"""
+    for _ in range(width):
+        out = mask.copy()
+        for ax in (0, 1):
+            out |= shift(mask, 1, ax) | shift(mask, -1, ax)
+        mask = out
+    return mask
+
+
+def tag_blocks(f, thresh, n_buf):
+    """セルセンサー -> セル単位バッファ -> タグ付きセルを一つでも含むブロックは refine。"""
+    tagged = grow(lohner_sensor(f) > thresh, n_buf)
+    nb = f.shape[0] // BLOCK
+    return tagged.reshape(nb, BLOCK, nb, BLOCK).any(axis=(1, 3))
+
+
+def leaf_cells(field):
+    """粗いレベルから下へ辿り、実際に解かれるセルだけを数える。"""
+    counts, live = [], None
+    for lev in range(MAX_LEVEL + 1):
+        n = N_EFF >> (MAX_LEVEL - lev)
+        f = field.reshape(n, N_EFF // n, n, N_EFF // n).mean(axis=(1, 3))
+        nb = n // BLOCK
+        child = np.zeros((nb, nb), bool) if lev == MAX_LEVEL else tag_blocks(f, THRESH, N_BUF)
+        live = np.ones((nb, nb), bool) if live is None else live
+        counts.append(int((live & ~child).sum()) * BLOCK * BLOCK)
+        live = np.kron(live & child, np.ones((2, 2), bool))
+    return counts
+
+
+counts = leaf_cells(shear_layer(N_EFF))
+total, uniform = sum(counts), N_EFF * N_EFF
+for lev, c in enumerate(counts):
+    print(f'  level {lev}  h = 1/{N_EFF >> (MAX_LEVEL - lev):<3d}  leaf cells = {c:6d}')
+print(f'  AMR total     = {total}')
+print(f'  uniform 256^2 = {uniform}  ->  {100 * total / uniform:.1f} % of the cells')
+```
+
+出力はこうなります。
+
+```text
+  level 0  h = 1/64   leaf cells =   3280
+  level 1  h = 1/128  leaf cells =   1520
+  level 2  h = 1/256  leaf cells =   6976
+  AMR total     = 11776
+  uniform 256^2 = 65536  ->  18.0 % of the cells
+```
+
+`N_BUF` を 0, 1, 2, 4 と変えると、合計は 9,616 → 10,864 → 11,776 → 14,224 と動きます。バッファ2セルの値段はセル2,160個、均一格子比で 3.3%p です。
+
+次はリフラックスです。2D スカラー移流に二つのレベルを載せ、サブサイクリングまで入れてから全体質量を測ります。
+
+```python
+import numpy as np
+
+NC, R, CFL, NSTEP = 48, 2, 0.4, 60   # 粗い格子 / refinement ratio / CFL / 粗いステップ数
+BOX = (12, 28, 16, 32)               # patch の角(粗い格子インデックス基準)
+U, V = 1.0, 0.6
+
+
+def upwind_faces(f, dx, dy):
+    """周期ブロックの全 x・y 面での donor-cell flux。(Fx, Fy) を返す。"""
+    fx = U * (f if U > 0 else np.roll(f, -1, 0))          # 面 i はセル i の左側
+    fy = V * (f if V > 0 else np.roll(f, -1, 1))
+    return np.roll(fx, 1, 0), np.roll(fy, 1, 1)
+
+
+def march_block(f, fx, fy, dt, dx, dy):
+    return f - dt / dx * (np.roll(fx, -1, 0) - fx) - dt / dy * (np.roll(fy, -1, 1) - fy)
+
+
+def gaussian_patch(n, x0, y0, s):
+    c = (np.arange(n) + 0.5) / n
+    xx, yy = np.meshgrid(c, c, indexing='ij')
+    return np.exp(-((xx - x0) ** 2 + (yy - y0) ** 2) / s ** 2)
+
+
+def two_level_run(reflux):
+    i0, i1, j0, j1 = BOX
+    dx, dxf = 1.0 / NC, 1.0 / NC / R
+    dt = CFL * dx / (abs(U) + abs(V))
+    dtf = dt / R
+
+    coarse = gaussian_patch(NC, 0.32, 0.42, 0.09)
+    fine = np.kron(coarse[i0:i1, j0:j1], np.ones((R, R)))   # patch は粗い値と整合するように始める
+
+    for _ in range(NSTEP):
+        cfx, cfy = upwind_faces(coarse, dx, dx)
+        # 粗い格子が patch 境界を通ると「思い込んだ」flux
+        edge_c = {'lo_x': cfx[i0, j0:j1].copy(), 'hi_x': cfx[i1, j0:j1].copy(),
+                  'lo_y': cfy[i0:i1, j0].copy(), 'hi_y': cfy[i0:i1, j1].copy()}
+        coarse = march_block(coarse, cfx, cfy, dt, dx, dx)
+
+        edge_f = {k: np.zeros_like(v) for k, v in edge_c.items()}
+        for _ in range(R):                                   # サブサイクリング: 粗い1ステップにつき細かい R ステップ
+            g = np.zeros((fine.shape[0] + 2, fine.shape[1] + 2))
+            g[1:-1, 1:-1] = fine
+            g[0, 1:-1] = np.repeat(coarse[i0 - 1, j0:j1], R)  # ghost: 粗い値を区分定数で注入
+            g[-1, 1:-1] = np.repeat(coarse[i1, j0:j1], R)
+            g[1:-1, 0] = np.repeat(coarse[i0:i1, j0 - 1], R)
+            g[1:-1, -1] = np.repeat(coarse[i0:i1, j1], R)
+            gfx, gfy = upwind_faces(g, dxf, dxf)
+            fine = march_block(g, gfx, gfy, dtf, dxf, dxf)[1:-1, 1:-1]
+            for k, s in (('lo_x', gfx[1, 1:-1]), ('hi_x', gfx[-1, 1:-1]),
+                         ('lo_y', gfy[1:-1, 1]), ('hi_y', gfy[1:-1, -1])):
+                edge_f[k] += s.reshape(-1, R).mean(axis=1) / R   # 面方向・時間方向の平均
+
+        coarse[i0:i1, j0:j1] = fine.reshape(i1 - i0, R, j1 - j0, R).mean(axis=(1, 3))
+
+        if reflux:                                            # 帳簿の清算
+            coarse[i0 - 1, j0:j1] -= dt / dx * (edge_f['lo_x'] - edge_c['lo_x'])
+            coarse[i1, j0:j1] += dt / dx * (edge_f['hi_x'] - edge_c['hi_x'])
+            coarse[i0:i1, j0 - 1] -= dt / dx * (edge_f['lo_y'] - edge_c['lo_y'])
+            coarse[i0:i1, j1] += dt / dx * (edge_f['hi_y'] - edge_c['hi_y'])
+
+    mask = np.ones((NC, NC), bool)
+    mask[i0:i1, j0:j1] = False
+    return (coarse * mask).sum() * dx * dx + fine.sum() * dxf * dxf
+
+
+m0 = gaussian_patch(NC, 0.32, 0.42, 0.09).sum() / NC ** 2
+for tag, on in (('reflux off', False), ('reflux on ', True)):
+    m = two_level_run(on)
+    print(f'  {tag}:  mass = {m:.12f}   drift = {(m - m0) / m0:+.3e}')
+```
+
+```text
+  reflux off:  mass = 0.025702960114   drift = +1.006e-02
+  reflux on :  mass = 0.025446894886   drift = +0.000e+00
+```
+
+60ステップで1%です。しかもこの値は単調に増えるわけでもありません。15ステップでは −1.3%、30ステップで −0.77%、60ステップで +1.0% でした。ブロブが patch を出入りするたびに符号が変わります。収束試験を回していてこんなグラフを見るとスキームを疑いたくなりますが、犯人はリフラックスを入れていない界面です。
+
+## ロードバランシング — 曲線一本でブロックを並ばせる
+
+AMR を並列で回すと新しい問題が出ます。regrid のたびにブロック数がプロセッサごとに変わるのです。界面を抱えていたランクはセルが5倍になり、滑らかな領域しか持たないランクは変わりません。
+
+標準的な処方は space-filling curve(SFC・多次元格子を一本線で辿る曲線)です。Morton(Z-order)や Hilbert 曲線で全 leaf ブロックに1次元インデックスを振り、その列をランク数だけ均等分割します。曲線の局所性のおかげで、隣り合うインデックスはおおむね空間的にも隣接するので、均等分割がそのまま通信量の小さい分割になります。p4est と AMReX がこの方式です。グラフ分割器(ParMETIS, Zoltan, Scotch)を使えば分割品質はさらに良くなりますが、regrid のたびに回し直す必要があるためコストは SFC よりずっと大きくなります。AMR は格子が頻繁に変わる側なので、たいてい SFC が勝ちます。
+
+## AMR を入れる前に決めておく3つのこと
+
+**一つ。** タグ付け基準は無次元にします。正規化された2階差分なら、閾値一つで全フィールド・全レベルに通用します。生の勾配を使うと、レベルごとにチューニングするはめになります。
+
+**二つ。** バッファ幅は $\nu N_{\rm regrid}$ で計算して入れます。勘で1セル入れて regrid を20ステップごとにすると、計算の半分は特徴が patch の外へ漏れ出た状態で回ります。
+
+**三つ。** リフラックスはオプションではありません。保存形スキームを使っていても、coarse-fine 界面は保存を壊します。燃焼や多相流のように質量そのものが答えである問題では、flux register なしで出てきた収束グラフは信用できません。

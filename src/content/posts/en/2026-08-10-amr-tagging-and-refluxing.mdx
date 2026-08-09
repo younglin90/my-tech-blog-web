@@ -1,0 +1,285 @@
+---
+title: "Same Answer From 18% of the Cells — AMR Tagging Criteria and Coarse-Fine Refluxing"
+date: 2026-08-10
+description: "The Löhner sensor, buffer width, and the interface mass leak a flux register stops"
+tags: ["AMR", "Mesh-Refinement", "Flux-Register", "Conservation", "OpenFOAM"]
+locale: en
+slug: amr-tagging-and-refluxing
+draft: false
+---
+
+import { LohnerTagBufferQuadtree } from '@/components/post-viz/2026-08-10-amr-tagging-and-refluxing/LohnerTagBufferQuadtree'
+import { FluxRegisterLedger } from '@/components/post-viz/2026-08-10-amr-tagging-and-refluxing/FluxRegisterLedger'
+
+In a 50-million-cell run, how many cells actually decide the answer? One shock, one shear layer, one flame front. Count them and it's usually a few percent of the total. The rest are cells spending their time computing smooth regions smoothly. Adaptive mesh refinement (AMR — putting grid only where the solution asks for it) attacks that ratio directly, and today we go after its two practical sore spots. The sensor that decides where to split, and the interface mass leak that always follows once you have split.
+
+## 11,000 Cells Out of 65,000
+
+Start by counting what you gain. Take a $256^2$ domain holding one Kelvin–Helmholtz shear layer (the interface rolling up between two streams with a velocity difference). A uniform grid there is 65,536 cells. Wrap the same interface in 3-level AMR and the leaf cell count is 11,776. That's 18%.
+
+The ratio isn't luck — dimensionality sets it. In a $D$-dimensional domain, an interface is $D-1$ dimensional. If the uniform cell count is $N_{\rm uni} = (L/h)^D$, the count of cells that only cover the interface is
+
+$$
+N_{\rm AMR} \sim \left(\frac{L}{h}\right)^{D-1} = N_{\rm uni}^{(D-1)/D}
+$$
+
+where $L$ is the domain size and $h$ the finest spacing. The exponent is 1/2 in 2D, 2/3 in 3D. So doubling the resolution multiplies uniform cells by 8 but AMR cells by only 4. The gain grows the finer you go, and that is the one and only reason to use AMR.
+
+## Gradients Don't Decide Where to Split
+
+The first tagging criterion anyone reaches for is $|\nabla \phi| > \epsilon$. It fails because of units. A pressure gradient is Pa/m, a density gradient is kg/m⁴. You end up re-picking $\epsilon$ per field, per problem, even per level.
+
+The criterion Löhner published in 1987 kills that problem with normalization. Divide the second difference by a sum of absolute first differences.
+
+$$
+E_i = \sqrt{ \sum_{d} \frac{\left(\phi_{i+e_d} - 2\phi_i + \phi_{i-e_d}\right)^2}{\Big(|\phi_{i+e_d}-\phi_i| + |\phi_i-\phi_{i-e_d}| + \varepsilon\big(|\phi_{i+e_d}| + 2|\phi_i| + |\phi_{i-e_d}|\big)\Big)^2} }
+$$
+
+Here $e_d$ is the neighbor in direction $d$ and $\varepsilon$ is a noise filter (typically 0.01–0.05). Numerator and denominator carry the same dimensions, so $E_i$ is dimensionless and stays roughly inside $[0,1]$. A single threshold of 0.3–0.4 works for pressure, for density, at level 0 and at level 3 alike.
+
+One caveat. This sensor is **a resolution detector, not a feature detector**. Once the interface is already resolved over 4–5 cells at that level, the second difference shrinks and the sensor switches off. That's a good property — it refines only as much as needed and stops on its own. But if what you want is "shocks always go to the max level," this sensor alone won't do it. In that case, instead of inflating the $\varepsilon$ noise-filter term, OR in a separate physical criterion (say $\Delta p / p > 0.1$).
+
+## The Buffer Is Insurance Until the Next Regrid
+
+Refine only the cells the sensor lit up and the next step breaks it. The grid is not rebuilt every step. A regrid typically runs once every 4–20 steps, and the interface keeps moving in between. That's why tagged cells get inflated by $n_{\rm buf}$ cells.
+
+The required buffer width just falls out of arithmetic. Convert the distance a feature travels over $N_{\rm regrid}$ steps at level $\ell$ into cell counts:
+
+$$
+n_{\rm buf} \;\ge\; \frac{|u|_{\max}\,\Delta t_\ell\,N_{\rm regrid}}{h_\ell} \;=\; \nu\,N_{\rm regrid}
+$$
+
+$\nu$ is the CFL number at that level. At CFL 0.4 with a regrid every 10 steps you need at least 4 cells. The relation is level-independent — with subcycling, $\Delta t_\ell$ and $h_\ell$ shrink by the same factor.
+
+Try it hands-on in the simulation below.
+
+<LohnerTagBufferQuadtree />
+
+Drop `n_buf` to 0 and push `regrid every` out to 30, and red cells grow along the interface. Those are cells where the sensor says "refine here" but the grid hasn't caught up. Raise `n_buf` to 2 and the red disappears while the leaf cell count climbs. That number is exactly what a wider buffer costs.
+
+## Blocks, Cells, Patches — What the Unit of Cutting Decides
+
+Given identical tags, the unit you refine in decides both the cell count and the code complexity.
+
+| Approach | Refinement unit | Data structure | Over-refinement | Representative codes |
+|---|---|---|---|---|
+| Block-based | Fixed-size block ($8^3$, etc.) | Block octree | Large | PARAMESH, FLASH |
+| Cell-based | A single cell | Per-cell tree | None | OpenFOAM `hexRef8`, RAGE |
+| Patch-based | Arbitrary rectangular patch | Box list | Small | Chombo, BoxLib/AMReX |
+
+Block-based has the simplest data structure and the best cache locality. The price is that one tagged cell splits the entire block. Cell-based has zero over-refinement, but every neighbor lookup is a tree traversal. OpenFOAM lives here — `dynamicRefineFvMesh` is the engine, `hexRef8` is the cutter (one hexahedron into eight), and `refinementHistory` is the ledger for unrefining. Patch-based sits in between, and inside a rectangle you can run plain structured-grid loops, which helps vectorization.
+
+## One Interface Face, Two Answers
+
+This is where the real problem starts. Look at the face where levels $\ell$ and $\ell+1$ meet. On the coarse side that face is one face; on the fine side it is $r^{D-1}$ faces ($r$ is the refinement ratio, usually 2). And with subcycling, the time steps differ too.
+
+$$
+\Delta t_\ell = \frac{\Delta t_0}{r^{\ell}}
+$$
+
+While the coarse grid takes one step, the fine grid takes $r$. So the flux $F^c$ the coarse grid computed through that one face and the flux the fine grid actually pushed through $r^{D-1}$ faces over $r$ substeps are different numbers. The difference between the two,
+
+$$
+\delta F_f = \frac{1}{r^{D}}\sum_{s=1}^{r}\sum_{f'\subset f} F^{s}_{f'} \;-\; F^{c}_{f}
+$$
+
+is mass manufactured by the interface. Mass appears that wasn't there, or mass that was there disappears. This happens even with a conservative scheme — conservation holds within a single grid, not at the seam where two grids meet.
+
+## Write It in the Ledger, Settle Up Once
+
+The fix is simple. At the start of a coarse step, record $F^c_f$ in a ledger (the flux register). While the fine grid runs its $r$ substeps, accumulate the actual fluxes into the same ledger. When the coarse step ends, pay the difference $\delta F_f$ back into the coarse cell **outside** the patch.
+
+$$
+\phi_c \;\leftarrow\; \phi_c \;\mp\; \frac{\Delta t_c}{h_c}\,\delta F_f
+$$
+
+The sign follows from which side of the face that cell sits on. Cells inside the patch are left alone — they were already overwritten with the averaged fine values. This one line restores domain-wide mass to machine precision.
+
+Below, run the refluxing-on and refluxing-off cases side by side.
+
+<FluxRegisterLedger />
+
+From the moment the pulse touches the pink face, the red trace peels away from zero and never comes back. The green one stays pinned at zero. Shrink `pulse sigma` to sharpen the pulse and the red excursion grows — and the $\delta F$ written into the ledger grows by exactly the same amount.
+
+## Counting Cells and Mass Drift in Code
+
+Tagging first. Run the Löhner sensor on a single shear-layer snapshot, add a buffer, stack levels block by block, and count leaf cells.
+
+```python
+import numpy as np
+
+N_EFF, BLOCK, MAX_LEVEL = 256, 4, 2   # 256^2 equivalent resolution, 4x4 cells per block, levels 0-2
+EPS_L, THRESH, N_BUF = 0.02, 0.35, 2  # noise filter / tag threshold / buffer (in cells)
+
+
+def shear_layer(n, t=1.35):
+    """Kelvin-Helmholtz roll-up snapshot - just one field, no solver."""
+    x = (np.arange(n) + 0.5) / n
+    xx, yy = np.meshgrid(x, x, indexing='ij')
+    warp = 0.06 * np.sin(2 * np.pi * xx + t) + 0.025 * np.sin(4 * np.pi * xx - 2 * t)
+    return np.tanh((yy - 0.5 - warp) / 0.012)
+
+
+def shift(a, d, ax):
+    """Neighbor access: x is periodic, y is zero-gradient - no fake jumps at the walls."""
+    return np.roll(a, d, ax) if ax == 0 else np.pad(a, 1, mode='edge')[1:-1, 1 + d:a.shape[1] + 1 + d]
+
+
+def lohner_sensor(f):
+    """Normalized second difference. Dimensionless, so one threshold works at every level."""
+    e2 = np.zeros_like(f)
+    for ax in (0, 1):
+        p, m = shift(f, -1, ax), shift(f, 1, ax)
+        num = np.abs(p - 2.0 * f + m)
+        den = np.abs(p - f) + np.abs(f - m) + EPS_L * (np.abs(p) + 2 * np.abs(f) + np.abs(m))
+        e2 += (num / np.maximum(den, 1e-30)) ** 2
+    return np.sqrt(e2)
+
+
+def grow(mask, width):
+    """Buffer: keeps the feature from leaving the patch before the next regrid."""
+    for _ in range(width):
+        out = mask.copy()
+        for ax in (0, 1):
+            out |= shift(mask, 1, ax) | shift(mask, -1, ax)
+        mask = out
+    return mask
+
+
+def tag_blocks(f, thresh, n_buf):
+    """Cell sensor -> per-cell buffer -> refine any block holding at least one tagged cell."""
+    tagged = grow(lohner_sensor(f) > thresh, n_buf)
+    nb = f.shape[0] // BLOCK
+    return tagged.reshape(nb, BLOCK, nb, BLOCK).any(axis=(1, 3))
+
+
+def leaf_cells(field):
+    """Sweep down from the coarsest level and count only the cells actually solved."""
+    counts, live = [], None
+    for lev in range(MAX_LEVEL + 1):
+        n = N_EFF >> (MAX_LEVEL - lev)
+        f = field.reshape(n, N_EFF // n, n, N_EFF // n).mean(axis=(1, 3))
+        nb = n // BLOCK
+        child = np.zeros((nb, nb), bool) if lev == MAX_LEVEL else tag_blocks(f, THRESH, N_BUF)
+        live = np.ones((nb, nb), bool) if live is None else live
+        counts.append(int((live & ~child).sum()) * BLOCK * BLOCK)
+        live = np.kron(live & child, np.ones((2, 2), bool))
+    return counts
+
+
+counts = leaf_cells(shear_layer(N_EFF))
+total, uniform = sum(counts), N_EFF * N_EFF
+for lev, c in enumerate(counts):
+    print(f'  level {lev}  h = 1/{N_EFF >> (MAX_LEVEL - lev):<3d}  leaf cells = {c:6d}')
+print(f'  AMR total     = {total}')
+print(f'  uniform 256^2 = {uniform}  ->  {100 * total / uniform:.1f} % of the cells')
+```
+
+The output:
+
+```text
+  level 0  h = 1/64   leaf cells =   3280
+  level 1  h = 1/128  leaf cells =   1520
+  level 2  h = 1/256  leaf cells =   6976
+  AMR total     = 11776
+  uniform 256^2 = 65536  ->  18.0 % of the cells
+```
+
+Change `N_BUF` to 0, 1, 2, 4 and the total moves 9,616 → 10,864 → 11,776 → 14,224. A 2-cell buffer costs 2,160 cells, or 3.3 percentage points against the uniform grid.
+
+Now refluxing. Put two levels on 2D scalar advection, add subcycling, and measure total mass.
+
+```python
+import numpy as np
+
+NC, R, CFL, NSTEP = 48, 2, 0.4, 60   # coarse grid / refinement ratio / CFL / number of coarse steps
+BOX = (12, 28, 16, 32)               # patch corners (in coarse-grid indices)
+U, V = 1.0, 0.6
+
+
+def upwind_faces(f, dx, dy):
+    """Donor-cell flux on every x and y face of a periodic block. Returns (Fx, Fy)."""
+    fx = U * (f if U > 0 else np.roll(f, -1, 0))          # face i is the left face of cell i
+    fy = V * (f if V > 0 else np.roll(f, -1, 1))
+    return np.roll(fx, 1, 0), np.roll(fy, 1, 1)
+
+
+def march_block(f, fx, fy, dt, dx, dy):
+    return f - dt / dx * (np.roll(fx, -1, 0) - fx) - dt / dy * (np.roll(fy, -1, 1) - fy)
+
+
+def gaussian_patch(n, x0, y0, s):
+    c = (np.arange(n) + 0.5) / n
+    xx, yy = np.meshgrid(c, c, indexing='ij')
+    return np.exp(-((xx - x0) ** 2 + (yy - y0) ** 2) / s ** 2)
+
+
+def two_level_run(reflux):
+    i0, i1, j0, j1 = BOX
+    dx, dxf = 1.0 / NC, 1.0 / NC / R
+    dt = CFL * dx / (abs(U) + abs(V))
+    dtf = dt / R
+
+    coarse = gaussian_patch(NC, 0.32, 0.42, 0.09)
+    fine = np.kron(coarse[i0:i1, j0:j1], np.ones((R, R)))   # patch starts consistent with the coarse values
+
+    for _ in range(NSTEP):
+        cfx, cfy = upwind_faces(coarse, dx, dx)
+        # the flux the coarse grid "thinks" crosses the patch boundary
+        edge_c = {'lo_x': cfx[i0, j0:j1].copy(), 'hi_x': cfx[i1, j0:j1].copy(),
+                  'lo_y': cfy[i0:i1, j0].copy(), 'hi_y': cfy[i0:i1, j1].copy()}
+        coarse = march_block(coarse, cfx, cfy, dt, dx, dx)
+
+        edge_f = {k: np.zeros_like(v) for k, v in edge_c.items()}
+        for _ in range(R):                                   # subcycling: R fine steps per coarse step
+            g = np.zeros((fine.shape[0] + 2, fine.shape[1] + 2))
+            g[1:-1, 1:-1] = fine
+            g[0, 1:-1] = np.repeat(coarse[i0 - 1, j0:j1], R)  # ghost: inject coarse values piecewise-constant
+            g[-1, 1:-1] = np.repeat(coarse[i1, j0:j1], R)
+            g[1:-1, 0] = np.repeat(coarse[i0:i1, j0 - 1], R)
+            g[1:-1, -1] = np.repeat(coarse[i0:i1, j1], R)
+            gfx, gfy = upwind_faces(g, dxf, dxf)
+            fine = march_block(g, gfx, gfy, dtf, dxf, dxf)[1:-1, 1:-1]
+            for k, s in (('lo_x', gfx[1, 1:-1]), ('hi_x', gfx[-1, 1:-1]),
+                         ('lo_y', gfy[1:-1, 1]), ('hi_y', gfy[1:-1, -1])):
+                edge_f[k] += s.reshape(-1, R).mean(axis=1) / R   # average over face area and over time
+
+        coarse[i0:i1, j0:j1] = fine.reshape(i1 - i0, R, j1 - j0, R).mean(axis=(1, 3))
+
+        if reflux:                                            # settle the ledger
+            coarse[i0 - 1, j0:j1] -= dt / dx * (edge_f['lo_x'] - edge_c['lo_x'])
+            coarse[i1, j0:j1] += dt / dx * (edge_f['hi_x'] - edge_c['hi_x'])
+            coarse[i0:i1, j0 - 1] -= dt / dx * (edge_f['lo_y'] - edge_c['lo_y'])
+            coarse[i0:i1, j1] += dt / dx * (edge_f['hi_y'] - edge_c['hi_y'])
+
+    mask = np.ones((NC, NC), bool)
+    mask[i0:i1, j0:j1] = False
+    return (coarse * mask).sum() * dx * dx + fine.sum() * dxf * dxf
+
+
+m0 = gaussian_patch(NC, 0.32, 0.42, 0.09).sum() / NC ** 2
+for tag, on in (('reflux off', False), ('reflux on ', True)):
+    m = two_level_run(on)
+    print(f'  {tag}:  mass = {m:.12f}   drift = {(m - m0) / m0:+.3e}')
+```
+
+```text
+  reflux off:  mass = 0.025702960114   drift = +1.006e-02
+  reflux on :  mass = 0.025446894886   drift = +0.000e+00
+```
+
+One percent in 60 steps. And the value doesn't even grow monotonically. It was −1.3% at step 15, −0.77% at step 30, +1.0% at step 60. The sign flips every time the blob moves in or out of the patch. See a plot like that during a convergence study and you start doubting the scheme — but the culprit is the interface you never refluxed.
+
+## Load Balancing — One Curve Lines the Blocks Up
+
+Run AMR in parallel and a new problem shows up. Every regrid leaves a different block count on each processor. The rank holding the interface sees its cell count grow fivefold; the rank with only smooth flow stays put.
+
+The standard prescription is a space-filling curve (SFC — a curve that threads a multidimensional grid into a single line). Give every leaf block a 1D index along a Morton (Z-order) or Hilbert curve, then split that line into equal pieces, one per rank. Thanks to the curve's locality, neighboring indices are mostly neighbors in space too, so an equal split is also a low-communication split. p4est and AMReX work this way. Graph partitioners (ParMETIS, Zoltan, Scotch) give better partition quality, but they have to rerun on every regrid, which costs far more than an SFC. AMR is the regime where the grid changes often, so the SFC usually wins.
+
+## Three Things to Settle Before Turning AMR On
+
+**One.** Make the tagging criterion dimensionless. With a normalized second difference, one threshold covers every field and every level. Use raw gradients and you'll be tuning per level.
+
+**Two.** Compute the buffer width as $\nu N_{\rm regrid}$ and put it in. Guess 1 cell and regrid every 20 steps, and half your run happens with the feature already leaked outside the patch.
+
+**Three.** Refluxing is not optional. Even with a conservative scheme, coarse-fine interfaces break conservation. In problems where mass is the answer — combustion, multiphase flow — you cannot trust a convergence plot produced without a flux register.
