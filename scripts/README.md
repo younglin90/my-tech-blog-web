@@ -80,12 +80,37 @@ API 방식 자동 포스트 생성 스크립트 — 현재 사용 안 함 (Claud
 
 ## prompts/
 
-Claude Code 자동 포스트 생성에 사용되는 프롬프트.
+**폐기됨.** `generate_post.py`(API 파이프라인)용 템플릿이었다. 내용은 전부
+`.claude/rules/daily-post.md`로 이관됐고, 파일은 `tests/test_generate.py`가 존재를
+확인하므로 스텁만 남겨 뒀다. **읽지 말 것** — 규칙의 단일 출처는 rule 파일이다.
 
-- `cfd_technique.txt` — 월/수/금 (CFD 기법)
-- `fluid_mechanics.txt` — 화/목 (유체역학 이론)
-- `paper_review.txt` — 토/일 (논문 리뷰)
-- `_viz_components.txt` — 시각화 컴포넌트 가이드 (모든 프롬프트에서 참조)
-- `_multilingual.txt` — 5개 locale 동시 작성 지침 (모든 프롬프트에서 참조)
+## daily-context.mjs
 
-자세한 동작은 `CLAUDE.md` 참고.
+매일 포스트 루틴의 컨텍스트 수집을 **호출 1번**으로 끝낸다.
+
+```bash
+node scripts/daily-context.mjs             # 오늘(KST)
+node scripts/daily-context.mjs 2026-08-10  # 날짜 지정
+```
+
+출력(50줄 이내): KST 날짜·요일·그룹 / 날짜 중복(`ALREADY_EXISTS`) / 소스 후보 선택
+(미사용 우선 → 오래된 순, ALT 4개 포함) / 최근 10개 포스트의 제목·태그·`##` 섹션·viz
+이름·코드 시그니처·도입부 + `USED_VIZ`·`USED_SIGS` 집합.
+
+이 스크립트가 생기기 전에는 같은 정보를 bash 8~10회 왕복으로 캤고, 중간 산출물
+(파일 목록 136줄 등)이 그대로 컨텍스트에 쌓였다.
+
+## verify-post-set.mjs
+
+5개 locale 포스트 세트를 ko 기준으로 대조 검증. push 전 게이트.
+
+```bash
+node scripts/verify-post-set.mjs 2026-08-10-amr-tagging-and-refluxing
+node scripts/verify-post-set.mjs <slug> --run   # python 코드블록 실제 실행 + ko와 출력 대조
+```
+
+검사 항목: 5 locale 존재 / 블록 수식 일치 / 코드펜스 언어 일치 / ` ```text ` 출력 블록 일치 /
+import 구문 일치 / viz 태그 일치·0개 아님 / `##` 개수 일치 / tags·date·slug·locale·`draft:false` /
+CRLF / post-viz `.tsx` 실재 여부. 실패 시 exit 1.
+
+번역 Worker에게 각자 검증 스크립트를 짜게 하면 그 비용이 locale 수만큼 곱해진다. 검증은 여기서 한 번만.

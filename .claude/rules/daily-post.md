@@ -1,206 +1,147 @@
 ---
-description: Daily CFD blog post generation routine, source selection, and writing rules (글 규칙)
+description: Daily CFD blog post routine — source selection, writing rules, 5-locale output, verification
 paths:
   - "src/content/posts/**"
   - "source-docs/**"
-  - "scripts/prompts/**"
   - "src/components/post-viz/**"
 ---
 
-## 포스트 생성 방법 (핵심)
+# 매일 포스트 루틴
 
-### API 없이 Claude Code가 직접 생성 (현재 방식)
-GitHub Actions + Anthropic API 방식은 크레딧 문제로 사용 안 함.
-대신 Claude Code 예약 작업(Scheduled Task)이 매일 오전 10:05 자동 실행.
+트리거: "오늘 포스트 만들어줘" / `/daily-post` / 예약작업 `cfd-daily-post`(월~금 10:05).
+목표: 오늘 날짜로 포스트 1개를 **5개 locale 동시** 작성 → `main`에 push (Cloudflare 자동 배포).
 
-**수동 트리거:** "오늘 포스트 만들어줘" / "월요일 포스트 만들어줘" / "/daily-post"
+**이 파일 하나로 충분하다.** `scripts/prompts/*.txt`는 폐기된 API 파이프라인 잔재 — 읽지 말 것.
+탐색·검증은 아래 스크립트로만. ad-hoc bash 왕복으로 같은 정보를 다시 캐지 않는다.
 
----
-
-## 매일 루틴 지침 (Scheduled Task / 수동 모두 동일)
-
-### 목표
-오늘 날짜로 CFD 블로그 포스트 **1개를 자동 생성 → main branch에 push** (Cloudflare Pages 자동 배포).
-
-### 요일 → 주제 폴더 매핑
-| 요일 | 주제 | 소스 폴더 | 프롬프트 파일 |
-|------|------|-----------|---------------|
-| 월/수/금 | CFD 기법 + 알고리즘 구현 | `source-docs/cfd-technique/` | `scripts/prompts/cfd_technique.txt` |
-| 화/목 | 유체역학 이론 + 유동 현상 | `source-docs/fluid-mechanics/` | `scripts/prompts/fluid_mechanics.txt` |
-| 토/일 | 논문 리뷰 + 구현 재현 | `source-docs/paper-review/` | `scripts/prompts/paper_review.txt` |
-
-모든 그룹은 **인터랙티브 시각화 컴포넌트 1~2개를 필수 포함**한다. 물리적으로 정확한 "실제 시뮬레이션"이 아니라, **그 포스트의 현상·개념을 독자가 직관적으로 이해하도록 돕는, 사용자와 상호작용되는 동적 애니메이션**이 목표다 (원칙: 5a / 구현 참고: `scripts/prompts/_viz_components.txt`).
-
-### 실행 순서
-
-1. **중복 체크 (날짜)** — `src/content/posts/YYYY-MM-DD-*.mdx`가 이미 있으면 "이미 있음" 한 줄 출력 후 종료.
-
-2. **소스 문서 선택** — 오늘 요일에 해당하는 주제 폴더에서 파일을 선택한다.
-   - `source-docs/index.yaml`의 `last_used` 딕셔너리를 로드한다. 값은 `"YYYY-MM-DD"` 문자열(구 스키마) 또는 `[{date, sections[]}, ...]` 목록(신 스키마) 둘 다 지원 — 문자열이면 `[{date, sections: []}]`로 정규화해 처리한다.
-   - 해당 폴더 전체의 `.md` / `.txt` 파일 목록을 재귀적으로 수집한다.
-   - 우선순위:
-     1. `last_used`에 **없는(미사용) 파일**
-     2. **30일 이상 사용 이력 없는 파일**
-     3. 최신 사용일이 가장 오래된 파일
-   - 상위 후보 중 **랜덤으로 1개** 선택.
-   - 해당 폴더가 비어있으면: "건너뜀 — `{폴더명}`에 소스 파일 없음" 한 줄 출력 후 종료.
-     - `paper-review/`는 현재 60개 이상의 논문 요약 파일이 있으므로 토·일 포스팅이 정상 동작한다.
-
-2a. **중복 체크 (주제)** — 선택한 파일의 제목·키워드가 기존 포스트와 겹치는지 확인한다.
-   - `src/content/posts/*.mdx` 전체의 `title`과 `tags` frontmatter를 읽는다.
-   - 선택 파일명·첫 줄 제목의 핵심 키워드가 기존 포스트와 중복이면 다음 후보를 선택한다 (최대 3회).
-   - 3회 모두 중복이면: "건너뜀 — 주제 중복 없는 문서 없음" 한 줄 출력 후 종료.
-
-3. **소스 읽기** — 선택된 파일을 아래 규칙으로 읽는다.
-   - **200줄 이하**: 파일 전체 읽기.
-   - **200줄 초과**: 앞 150줄 + `##` 섹션 헤딩 목록을 읽어 핵심 섹션 1~2개를 추가 로드 (총 300줄 이내).
-     - 해당 파일이 과거에 사용된 이력이 있으면 `last_used[...].sections`에 기록된 섹션은 **제외**하고 다른 섹션을 선택한다.
-
-4. **프롬프트 로드 + 치환** — 그룹별 프롬프트 파일에서:
-   - `{VIZ_COMPONENTS}` → `scripts/prompts/_viz_components.txt` 내용
-   - `{MULTILINGUAL}` → `scripts/prompts/_multilingual.txt` 내용 (5개 locale 동시 작성 지침)
-   - `{SOURCE_CONTENT}` → 읽어온 소스 내용
-   - `{DATE}` → 오늘 날짜 (`YYYY-MM-DD`)
-   - `{RECENT_POSTS}` → 아래 4b에서 빌드한 YAML 블록
-   - `{USED_VIZ_COMPONENTS}` → 최근 10개에서 쓰인 viz 컴포넌트 이름 (쉼표 구분)
-   - `{USED_CODE_SIGNATURES}` → 최근 10개에서 쓰인 클래스/함수 시그니처 (쉼표 구분)
-
-4b. **최근 포스트 컨텍스트 빌드** — `src/content/posts/*.mdx`를 `date` 내림차순으로 정렬해 **최근 10개**를 로드한다. 각 포스트에서 아래만 추출(본문 전체 주입 금지):
-   - `title`, `tags`
-   - 본문의 `##` 섹션 헤딩 전체 목록
-   - 사용된 viz 컴포넌트 이름 (`<(VelocityField|StreamLine|NumericalScheme|PressureContour|BoundaryCondition|NumericalDungeon|MachArchitect)` 매칭)
-   - 코드블록 첫 줄 시그니처 (예: `class RigidBody:`, `def quaternion_multiply(q1, q2):`)
-   - 도입부 첫 문장
-   다음 YAML 형식으로 포맷:
-   ```yaml
-   recent_posts:
-     - date: "2026-04-21"
-       title: "..."
-       tags: ["CFD", ...]
-       viz: ["VelocityField", "StreamLine"]
-       sections: ["도입", "수식", "코드", ...]
-       code_signatures: ["def reynolds(U, L, nu)"]
-       opening: "박테리아는 수영을 할 수 없다. ..."
-     - ...
-   ```
-   이 블록이 `{RECENT_POSTS}` 토큰에 그대로 주입된다.
-
-5a. **포스트 전용 viz 컴포넌트 생성 (권장, 기본 경로)** — 오늘 포스트 내용에 **정확히 맞는** custom React 컴포넌트 1~2개를 `src/components/post-viz/{오늘 slug}/{ComponentName}.tsx`에 **즉석에서 작성**한다.
-
-   **viz의 목표 — 물리적 정확성보다 "독자 이해"가 먼저다**: 목표는 물리적으로 정밀한 "실제 시뮬레이션"을 재현하는 것이 **아니다**. 그 포스트가 설명하는 현상·개념을, 보는 사람이 직관적으로 이해하도록 돕는 **사용자와 상호작용되는 동적 애니메이션/시뮬레이션**을 만드는 것이 목표다.
-   - **정확한 수치해석 솔버일 필요는 없다.** 개념을 또렷하게 전달하는 도식적(schematic) 애니메이션이, 물리적으로는 더 정확하지만 무슨 일이 일어나는지 안 보이는 무거운 솔버보다 **낫다**. 필요하면 근사·과장·단순화해서라도 "핵심 메시지"가 눈에 보이게 한다.
-   - **단, 단순함을 넘어설 것.** 정지 그림 1장, 상호작용 없는 자동 재생 루프, 슬라이더가 값만 바꾸고 그림은 그대로인 것 → 모두 실패. 독자가 **슬라이더·버튼·드래그·토글로 파라미터를 바꾸면 화면이 실시간으로 반응**해서, "이 값을 이렇게 바꾸면 저 현상이 이렇게 변하는구나"를 눈으로 확인할 수 있어야 한다.
-   - **그 포스트의 핵심 메시지 1개를 "조작 가능한 형태"로** 보여준다. 본문의 수식·현상과 1:1로 연결되어야 한다. (예: 발달 길이 포스트 → Re 슬라이더로 입구 발달 구간이 늘어나는 것을 직접 관찰 / 분산 관계 포스트 → 파장 슬라이더로 위상·군속도가 갈라지는 것을 관찰)
-   - **이해를 돕는 장치**를 곁들인다: 축·범례·단위 라벨, 현재 값 표시, "무엇을 보라"는 짧은 주석, 상태별 색 구분 등. 독자가 설명 없이도 무엇을 조작하고 무엇을 관찰하는지 알 수 있게.
-
-   **구현 규칙**:
-   - 파일 첫 줄: `'use client'`
-   - 외부 라이브러리 추가 금지 (이미 설치된 `react`, 내장 Canvas/SVG API, `@/lib/*`만 사용)
-   - Props는 최소화. 내부 state(`useState`) + 슬라이더/버튼 등으로 파라미터 조작 UI 구성 (조작 UI는 **필수** — 상호작용 없는 viz는 실패)
-   - 애니메이션/실시간 반응은 `requestAnimationFrame` + cleanup in useEffect — 60fps 유지, gridSize 100 이하 권장. (연속 애니메이션이 불필요한 주제라면 최소한 슬라이더 조작에 즉시 다시 그리기)
-   - 컴포넌트 이름은 **주제 반영 + 전역 유일**(예: `RiemannShockTube1D`, `BernoulliJetDemo`, `LBMBGKCollision`, `KarmanStreetCanvas`)
-   - 각 파일은 독립적. 같은 slug 폴더에 2개까지.
-   - 하위 호환: `src/components/post-viz/` 폴더가 없으면 먼저 만든다.
-
-5b. **MDX 포스트 작성 + import** — 프롬프트 지침 + **글 규칙** 준수.
-   - frontmatter 바로 아래에 `import { ... } from '@/components/post-viz/{slug}/ComponentName'` 라인 추가
-   - 본문에서 `<ComponentName />` 사용
-   - **다음은 실패 — 재작성한다: viz 0개 / 상호작용 없는 viz(못 만지는 정지 그림·자동 루프) / 본문과 겉도는 범용 데모.** (custom 1개 이상 권장)
-   - 예시:
-     ```mdx
-     ---
-     title: "..."
-     date: 2026-04-22
-     ...
-     ---
-
-     import { RiemannShockTube1D } from '@/components/post-viz/2026-04-22-riemann-shock/RiemannShockTube1D'
-
-     (본문 서두)
-
-     <RiemannShockTube1D />
-     ```
-
-5c. **fallback (특수 경우에만)** — 포스트 주제가 `_viz_components.txt`의 주제→컴포넌트 매핑 표와 **정확히** 일치하고, custom 제작 비용이 큰 경우 pre-built 7개 중 하나를 **대안으로** 사용 가능. 단 `{USED_VIZ_COMPONENTS}` 중복 회피 규칙은 동일하게 적용. 주제가 조금이라도 벗어나면 pre-built 대신 custom 작성이 원칙.
-
-6. **저장 (5개 locale 동시)** — 동일 slug로 5개 파일을 작성한다:
-   - `src/content/posts/ko/YYYY-MM-DD-{영문-slug}.mdx` (한국어, primary)
-   - `src/content/posts/en/YYYY-MM-DD-{영문-slug}.mdx` (English)
-   - `src/content/posts/ja/YYYY-MM-DD-{영문-slug}.mdx` (日本語)
-   - `src/content/posts/zh/YYYY-MM-DD-{영문-slug}.mdx` (简体中文)
-   - `src/content/posts/es/YYYY-MM-DD-{영문-slug}.mdx` (Español)
-
-   각 파일 frontmatter에 `locale`(ko/en/ja/zh/es)과 `slug`(공통 영문) 필드 포함. **`draft: false`**. post-viz 컴포넌트는 단 1번만 작성하고 5개 locale 모두 같은 import 경로 사용.
-
-7. **인덱스 업데이트** — `source-docs/index.yaml`의 `last_used`에 다음 형식으로 갱신한다.
-   ```yaml
-   last_used:
-     {상대경로}:
-       - date: "YYYY-MM-DD"
-         sections: ["오늘 쓴 섹션1", "오늘 쓴 섹션2"]   # 3단계에서 읽은 섹션 이름들
-   ```
-   기존 entry가 있으면 목록에 append한다.
-
-8. **git 커밋/푸시** — `main` 브랜치에 바로 push. 5개 locale + post-viz + index.yaml을 한 커밋으로:
-   ```bash
-   git add \
-     src/content/posts/{ko,en,ja,zh,es}/YYYY-MM-DD-*.mdx \
-     src/components/post-viz/YYYY-MM-DD-*/ \
-     source-docs/index.yaml
-   git commit -m "post: {요일} 자동 생성 [5 locales] - {ko 제목}"
-   git push origin main
-   ```
-
-9. **결과 보고** — 파일 경로 + 제목 한 줄.
-
-### 글 규칙
-- **분량**: 4~7분 읽기 = 한국어 **1,000~1,700단어** (공백 제외 약 2,500~4,500자). 코드·수식은 카운트 제외.
-- **도입부**: 첫 3~5문장 안에 "이 포스트가 무엇을 다루고, 독자가 무엇을 얻을지"를 모두 밝힌다.
-  - **첫 문장 금지 클리셰**: "~는 필수적이다", "~를 살펴본다", "~의 기본이 된다", "~는 빠질 수 없는", "~의 핵심은 ~이다" — 이들 표현으로 첫 문장을 시작하면 안 된다.
-  - 프롬프트의 "도입부 5종 템플릿"(역사 일화 / 실패 이야기 / 직관 질문 / 실무 문제 / 반직관 관찰) 중 하나를 선택하되, `{RECENT_POSTS}`에서 최근에 쓰인 템플릿은 피한다.
-- **문장**: 짧게. 평균 40자 이하 지향. 접속사("~하며, ~하고")로 묶지 말고 마침표로 자른다.
-- **문단**: 한 문단 = 한 주제, **최대 5문장**. 길어지면 섹션(`##`)을 나눈다.
-- **기술 용어**: 처음 등장 시 괄호 안에 한 줄 풀이 (예: "Reynolds 수(관성력/점성력 비)").
-- **수식**: KaTeX — 인라인 `$...$`, 블록 `$$...$$`. 수식 뒤 한 줄로 각 기호 의미 명시.
-  - **멀티라인 블록 수식 규칙**: `$$`는 반드시 **독립 라인**에 위치. 같은 줄에 수식 내용을 쓰면 remark-math 파싱 오류.
-    ```
-    $$
-    \int ... d\Omega \\
-    + \oint ... d\Gamma
-    $$
-    ```
-    단일라인은 `$$E = mc^2$$` 형태도 허용.
-- **코드 블록**: 언어 명시 필수 (` ```python `, ` ```cpp `, ` ```fortran `). 입력→처리→결과 출력까지 **실제 돌아가는 코드** 작성.
-  - **중복 금지**: `{USED_CODE_SIGNATURES}`에 나열된 클래스/함수명과 동일한 이름은 쓰지 않는다. (예: 최근 `class RigidBody`가 있었다면 오늘은 다른 이름 선택)
-  - **토이 문제 다양화**: 프롬프트의 토이 문제 풀(8개 이상) 중 **최근 10개 포스트에서 쓰지 않은 것** 우선 선택.
-- **인터랙티브 시각화**: 본문에 **1~2개 필수** 삽입 (기본은 5a의 custom 컴포넌트). 다음은 모두 **실패 조건 — 재작성한다**:
-  - viz 0개.
-  - **상호작용이 없는 viz** (정지 그림, 자동 재생만 되고 독자가 못 만지는 루프, 슬라이더가 있어도 화면이 안 바뀌는 것).
-  - **본문 내용과 겉도는 viz** (포스트의 현상·수식과 1:1로 연결되지 않는 범용 데모).
-  - 목표는 "물리적으로 정확한 실제 시뮬레이션"이 아니라 **그 현상을 독자가 직관적으로 이해하게 돕는, 조작 가능한 동적 애니메이션**이다. 정확성보다 이해가 우선 (자세히는 5a 참고).
-  - `{USED_VIZ_COMPONENTS}`에 이미 있는 컴포넌트는 피하고, **미사용 / 덜 쓰인 것 우선**.
-  - 삽입 전 1문장 안내: "아래 시뮬레이션에서 직접 조작해보자."
-  - 삽입 후 1~2문장 관찰 포인트: "Reynolds를 200까지 올리면 ~" — **무엇을 조작하고 무엇을 관찰하는지** 명시.
-- **섹션 구조**: `{RECENT_POSTS}`의 최근 10개 포스트와 `##` 섹션 헤딩이 **4개 이상 겹치면 실패**로 간주하고 다른 구조를 선택한다.
-  - 프롬프트의 "섹션 구조 5종"(개념→수식→코드→검증 / 문제→원인→해결 / 역사→유도→현대 / Q&A 5문항 / 비교 매트릭스) 중 오늘 하나 선택.
-- **결론**: 마지막 섹션은 "핵심 3줄 요약" 또는 "기억할 점"으로 마무리.
-
-### 실패 처리
-어느 단계에서 멈추든 명시적으로 어떤 단계에서 왜 실패했는지 보고한다. 부분 결과물이 남았다면 파일 경로를 알려준다.
-
-### MDX frontmatter 템플릿
-```yaml
----
-title: "구체적이고 검색 친화적인 제목"
-date: YYYY-MM-DD
-description: "한 문장 요약 (50자 이내)"
-tags: ["CFD", "그룹태그", "세부태그"]
-draft: false
----
+## 0. 브랜치
+이 루틴은 `main`에서 직접 작업·push할 권한이 있다. 자동 생성된 `claude/...` 브랜치는 무시.
+```bash
+git fetch origin main && git checkout main && git pull --ff-only origin main
 ```
 
-## MDX 기타 규정
-- 수식: KaTeX — 인라인 `$수식$`, 블록 `$$수식$$`
-- 코드블록: 언어 명시 필수 (` ```python `, ` ```cpp `, ` ```fortran `)
-- `draft: false` 로 즉시 공개 (Cloudflare Pages가 main push 감지 → 자동 배포)
-- 한 포스트에 인터랙티브 시각화 컴포넌트 **1~2개 필수** — 물리적 정확성보다 **독자 이해**가 우선인, **사용자 조작형 동적 애니메이션**(정지 그림·비상호작용 루프는 불가)
+## 1. 컨텍스트 수집 — 호출 1번
+```bash
+node scripts/daily-context.mjs
+```
+KST 날짜·요일·그룹, 날짜 중복 체크, 소스 후보 선택(미사용 우선 → 오래된 순), 최근 10개 포스트의
+제목·태그·`##` 섹션·viz 이름·코드 시그니처·도입부를 한 번에 출력한다. 이 출력이 곧 중복 회피 기준이다.
+- `ALREADY_EXISTS` → "이미 있음" 한 줄 출력 후 종료.
+- `SKIP` → 해당 사유 출력 후 종료.
+- 요일→그룹: 월수금 `cfd-technique` / 화목 `fluid-mechanics` / 토일 `paper-review`.
+- PICK의 주제가 최근 10개와 70% 이상 겹치면 ALT 후보로 이동 (최대 3회).
+
+## 2. 소스 읽기
+- 200줄 이하 → 전체. 초과 → 앞 150줄 + `##` 헤딩 목록에서 핵심 1~2개 추가 (총 300줄 이내).
+- `index.yaml`에 그 파일의 기록이 있으면 `sections[]`에 적힌 섹션은 **제외**하고 다른 섹션을 읽는다.
+- 실제로 읽은 섹션 제목은 7단계 기록용으로 보관.
+
+## 3. post-viz 컴포넌트 (1~2개, 필수)
+`src/components/post-viz/{DATE}-{slug}/{ComponentName}.tsx`에 **매번 새로 작성**한다.
+
+목표는 정확한 시뮬레이션이 아니라 **독자가 개념을 이해하게 돕는 조작형 동적 애니메이션**이다.
+근사·과장·단순화해도 좋다. 핵심 메시지가 눈에 보이는 것이 우선.
+
+- 실패 조건(재작성): viz 0개 / 못 만지는 정지 그림·자동 루프 / 슬라이더가 값만 바꾸고 화면은 그대로 /
+  본문 수식·현상과 1:1로 연결되지 않는 범용 데모.
+- 첫 줄 `'use client'`. 외부 라이브러리 금지 (react + Canvas/SVG + `@/lib/*`만).
+- `useState` + 슬라이더/버튼/토글로 조작 UI 필수. `requestAnimationFrame` + useEffect cleanup, 60fps.
+- 축·범례·단위·현재값·상태별 색을 넣어 설명 없이도 조작·관찰 포인트가 드러나게.
+- React state를 매 프레임 갱신하지 말 것(리렌더 폭주). 캔버스에 그리고 state는 10~15프레임마다.
+- 이름은 PascalCase + 주제 반영 + 전역 유일. `USED_VIZ`에 있는 이름 재사용 금지.
+- 격자 100 이하 권장. 무거운 3D/WebGL 지양.
+- fallback(주제가 정확히 맞고 custom 비용이 과할 때만): `BoundaryCondition type=` /
+  `NumericalScheme scheme= order=` / `PressureContour levels= colormap=` / `NumericalDungeon` /
+  `MachArchitect` / `StreamLine particles= speed= obstacle=` / `VelocityField reynolds= animated= gridSize=`.
+  존재하지 않는 prop을 쓰면 빌드가 깨진다.
+
+## 4. MDX 5개 작성
+`src/content/posts/{ko,en,ja,zh,es}/{DATE}-{영문-slug}.mdx` — 같은 slug, 같은 date, 같은 섹션 구조.
+post-viz는 1번만 작성하고 5개 파일이 같은 import 경로를 공유한다. viz 내부 UI 문자열은 영어로 통일.
+
+```yaml
+---
+title: "구체적·검색 친화적 제목"
+date: YYYY-MM-DD
+description: "한 문장 요약 (50자 이내)"
+tags: ["구체태그", "...", "..."]   # 3~5개, 5 locale 공통(영문), 첫 태그가 가장 구체적
+locale: ko                          # 파일별 ko/en/ja/zh/es
+slug: {공통 영문 slug}
+draft: false                        # 항상 false
+---
+```
+frontmatter 바로 아래 `import { X } from '@/components/post-viz/{DATE}-{slug}/X'`.
+
+**태그**: "CFD"는 진짜 일반론일 때만. FVM/FEM/DGM/LBM/IBM/Riemann/TVD/WENO/SIMPLE/Multigrid/AMR/
+Krylov/Multiphase/Turbulence/Combustion/Heat-Transfer/Compressible/Incompressible/OpenFOAM 등 우선.
+
+### 글 규칙
+- 분량 4~7분: 한국어 1,000~1,700단어(공백 제외 2,500~4,500자). 코드·수식 제외.
+- 문장 평균 40자 이하. 접속사로 잇지 말고 마침표로 자른다. 한 문단 = 한 주제, 최대 5문장.
+- 기술 용어는 첫 등장 시 괄호로 한 줄 풀이.
+- 도입부: 첫 3~5문장 안에 "무엇을 다루고 독자가 무엇을 얻는지". 템플릿 5종 중
+  최근에 안 쓴 것 — 역사 일화 / 실패 이야기 / 직관 질문 / 실무 문제 / 반직관 관찰.
+- 첫 문장 금지 클리셰 — ko: "~는 필수적이다", "~를 살펴본다", "~의 기본이 된다", "~는 빠질 수 없는",
+  "~의 핵심은 ~이다" · en: "It is essential to", "Let us examine", "It is well-known that" ·
+  ja: 「〜は不可欠である」「〜について見てみよう」 · zh: "...是必不可少的", "让我们来看看..." ·
+  es: "Es esencial...", "Vamos a ver...".
+- 섹션 구조 5종 중 최근에 안 쓴 것 — 개념→수식→코드→검증 / 문제→원인→해결 / 역사→유도→현대 /
+  Q&A 5문항 / 비교 매트릭스. 최근 10개와 `##` 헤딩이 4개 이상 겹치면 실패.
+- 마지막 섹션 헤딩은 매번 다르게. "핵심 3줄 요약"·"기억할 점"·"실무 체크리스트"는 과다 사용 — 금지.
+- 수식: 인라인 `$...$`, 블록 `$$...$$`. **멀티라인 `$$`는 단독 줄에서 시작·종료** (같은 줄에 내용을
+  쓰면 이후 모든 수식이 깨진다). 단일라인 `$$E=mc^2$$`는 허용. 수식 뒤 한 줄로 각 기호 설명.
+- 코드: 언어 명시 필수. 입력→반복→결과 출력까지 **실제로 돌아가는 코드**. 돌려서 나온 출력을
+  ` ```text ` 블록에 그대로 싣는다(지어내지 말 것). `USED_SIGS`에 있는 함수·클래스명 재사용 금지.
+- 토이 문제는 최근에 안 쓴 것 우선: 1D Burgers / 2D vorticity-streamfunction / Taylor–Green /
+  Kelvin–Helmholtz / Rayleigh–Taylor / Shu–Osher / Double Mach reflection / Karman street /
+  Hagen–Poiseuille 진입영역 / Couette / Rayleigh–Bénard / BFS / 2D Riemann.
+- viz 삽입 직전 1문장 안내("아래 시뮬레이션에서 직접 조작해보자"), 직후 1~2문장 관찰 포인트
+  (무엇을 조작하고 무엇을 관찰하는지).
+
+### locale별 문체
+직역 금지, 각 언어 모국어 화자에게 자연스럽게. 수식·코드·import는 5개 파일 동일, **코드 주석만 번역**.
+분량은 ko 대비 ±20%. en 미국 표기(color/behavior)·직접적 톤 / ja です・ます체 /
+zh 간체(zh-CN)·중립 / es 중립 LATAM·tú·usted 회피(비인칭).
+
+**번역 위임**: 4개 언어를 subagent에 맡길 때는 **2 locale씩 2개 Worker**로 묶는다(고정 오버헤드 절반).
+Worker에게 검증 스크립트를 짜게 하지 말 것 — 검증은 6단계에서 한 번만 한다.
+
+## 5. 인덱스 갱신
+`source-docs/index.yaml`의 `last_used[{상대경로}]`에 append (기존 문자열 값은 목록으로 정규화):
+```yaml
+  "{상대경로}":
+    - date: "YYYY-MM-DD"
+      sections: ["오늘 읽은 섹션1", "..."]
+```
+
+## 6. 검증 — push 전 게이트
+```bash
+node scripts/verify-post-set.mjs {DATE}-{slug} --run   # 5 locale 정합 + 코드블록 실제 실행
+npm run build 2>&1 | tail -20                          # KaTeX/MDX/TS 에러 0이어야 함
+```
+둘 다 통과해야 push. 실패하면 고치고 재실행. **깨진 상태로 main push 절대 금지.**
+
+## 7. 커밋 & 푸시
+```bash
+git add src/content/posts/{ko,en,ja,zh,es}/{DATE}-*.mdx src/components/post-viz/{DATE}-*/ \
+        source-docs/index.yaml src/lib/*.json src/lib/viz-registry.tsx public/*-index.json
+git commit -m "post: {요일} 자동 생성 [5 locales] - {ko 제목}"
+git push origin main
+```
+
+## 8. 보고 (3~5줄)
+5개 파일 경로 + ko 제목 + viz 경로 + 검증 결과(스크립트 출력 근거).
+
+## 실패 처리
+```
+FAILED at Step N: {단계}
+이유: {한 줄}
+현재 상태: {파일 저장/커밋 여부}
+권고: {다음 조치}
+```
+작성된 MDX·tsx가 있으면 지우지 말고 경로만 알린다.
+
+## 절대 금지
+`draft: true` / main 외 브랜치 push·PR·`--force`·`--no-verify` / 빌드 실패 상태 push /
+import만 넣고 post-viz 파일 없음 / 상호작용 없는 viz / post-viz에 새 npm 패키지 /
+하드코딩 날짜 / `source-docs/` 밖의 개인 자료 / ko 1개만 만들고 종료.
