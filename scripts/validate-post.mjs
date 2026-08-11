@@ -22,7 +22,7 @@
  *   6. 섹션(`##`) 헤딩 1개 이상
  */
 
-import { readFileSync, statSync } from 'node:fs'
+import { readFileSync, statSync, readdirSync } from 'node:fs'
 import { execSync } from 'node:child_process'
 import { glob } from 'node:fs/promises'  // node 22+ 지원, 미지원 시 폴백 아래 readdir 사용
 import { join, basename } from 'node:path'
@@ -77,6 +77,22 @@ const VIZ_NAMES = ['VelocityField', 'StreamLine', 'NumericalScheme', 'PressureCo
 let totalFailed = 0
 const allErrors = []
 let skipped = 0
+const warnings = []
+
+// 본문 링크 검사를 위한 유효 slug 집합 (draft 제외)
+const VALID_SLUGS = new Set()
+try {
+  for (const loc of ['ko', 'en', 'ja', 'zh', 'es']) {
+    for (const n of readdirSync(`src/content/posts/${loc}`)) {
+      if (!n.endsWith('.mdx')) continue
+      const raw = readFileSync(`src/content/posts/${loc}/${n}`, 'utf-8')
+      if (/^draft:\s*true/m.test(raw)) continue
+      VALID_SLUGS.add(n.replace(/\.mdx$/, ''))
+    }
+  }
+} catch (e) {
+  console.warn(`⚠️  slug 목록 수집 실패 (${e.message}) — 링크 존재 검사는 건너뜁니다`)
+}
 
 for (const file of files) {
   const errors = []
@@ -106,6 +122,45 @@ for (const file of files) {
   if (/^draft:\s*true\s*$/m.test(fm)) {
     skipped++
     continue
+  }
+
+  // --- 태그 위생 (객관적 검사만 hard fail) ---
+  const tagLine = fm.match(/^tags:\s*\[(.*)\]\s*$/m)
+  if (tagLine) {
+    const tagList = tagLine[1]
+      .split(',')
+      .map((x) => x.trim().replace(/^["']|["']$/g, ''))
+      .filter(Boolean)
+    for (const tg of tagList) {
+      if (/[^\x00-\x7F]/.test(tg)) errors.push(`태그에 비ASCII 문자: "${tg}" — 영문 하이픈 표기로 (daily-post.md 참고)`)
+      else if (/\s/.test(tg)) errors.push(`태그에 공백: "${tg}" — 하이픈으로 연결할 것`)
+    }
+  }
+
+  // --- 본문 내부 링크 ---
+  // 형식이 틀린 링크는 실제로 404가 나므로 hard fail. 개수 부족은 기존 글 127편이
+  // 전부 걸리므로 경고로만 둔다(신규 글은 daily-post.md 규칙으로 강제).
+  const fileLocale = file.match(/posts\/(ko|en|ja|zh|es)\//)?.[1]
+  const bodyOnly = body.replace(/```[\s\S]*?```/g, '')
+  let internalLinks = 0
+  for (const m of bodyOnly.matchAll(/\]\((\/[^)\s]*)\)/g)) {
+    const href = m[1]
+    if (!href.includes('/posts/')) continue
+    internalLinks++
+    const pm = href.match(/^\/(ko|en|ja|zh|es)\/posts\/([^/?#]+)\/$/)
+    if (!pm) {
+      errors.push(`본문 링크 형식 오류: ${href} — /{locale}/posts/{slug}/ 형태여야 함 (locale·끝 슬래시 필수)`)
+      continue
+    }
+    if (fileLocale && pm[1] !== fileLocale) {
+      errors.push(`본문 링크 locale 불일치: ${href} — 이 파일은 ${fileLocale} 이므로 /${fileLocale}/... 이어야 함`)
+    }
+    if (VALID_SLUGS.size > 0 && !VALID_SLUGS.has(pm[2])) {
+      errors.push(`본문 링크가 없는 글을 가리킴: ${href}`)
+    }
+  }
+  if (internalLinks < 2) {
+    warnings.push(`${file}: 본문 내부 링크 ${internalLinks}개 (2개 이상 권장 — daily-post.md)`)
   }
 
   for (const required of ['title', 'date', 'description']) {
@@ -181,6 +236,11 @@ for (const file of files) {
 // ── 결과 ──────────────────────────────────────────────
 if (totalFailed === 0) {
   console.log(`✅ 검증 통과 — ${files.length - skipped}개 파일${skipped ? ` (draft ${skipped}개 건너뜀)` : ''}`)
+  if (warnings.length > 0) {
+    console.log(`⚠️  경고 ${warnings.length}건 (빌드는 통과):`)
+    for (const w of warnings.slice(0, 10)) console.log(`  - ${w}`)
+    if (warnings.length > 10) console.log(`  ... 외 ${warnings.length - 10}건`)
+  }
   process.exit(0)
 }
 

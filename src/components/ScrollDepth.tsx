@@ -16,11 +16,16 @@ export function ScrollDepth({ postId }: ScrollDepthProps) {
     fired.current = new Set()
     const thresholds = [25, 50, 75, 100]
 
-    const handler = () => {
-      const scrollTop = window.scrollY
+    // scrollHeight/innerHeight를 읽는 것은 레이아웃 강제 계산이다. scroll 이벤트마다
+    // 하면 스크롤 내내 스타일 재계산이 걸리므로 rAF로 프레임당 1회로 묶는다.
+    let ticking = false
+    let raf = 0
+
+    const measure = () => {
+      ticking = false
       const docHeight = document.documentElement.scrollHeight - window.innerHeight
       if (docHeight <= 0) return
-      const pct = Math.min(100, Math.round((scrollTop / docHeight) * 100))
+      const pct = Math.min(100, Math.round((window.scrollY / docHeight) * 100))
 
       for (const t of thresholds) {
         if (pct >= t && !fired.current.has(t)) {
@@ -28,11 +33,23 @@ export function ScrollDepth({ postId }: ScrollDepthProps) {
           trackEvent('read-progress', { postId, pct: t })
         }
       }
+      if (fired.current.size === thresholds.length) {
+        window.removeEventListener('scroll', handler)
+      }
+    }
+
+    const handler = () => {
+      if (ticking) return
+      ticking = true
+      raf = requestAnimationFrame(measure)
     }
 
     window.addEventListener('scroll', handler, { passive: true })
-    handler()
-    return () => window.removeEventListener('scroll', handler)
+    measure()
+    return () => {
+      window.removeEventListener('scroll', handler)
+      cancelAnimationFrame(raf)
+    }
   }, [postId])
 
   return null

@@ -69,13 +69,22 @@ description: "한 문장 요약 (50자 이내)"
 tags: ["구체태그", "...", "..."]   # 3~5개, 5 locale 공통(영문), 첫 태그가 가장 구체적
 locale: ko                          # 파일별 ko/en/ja/zh/es
 slug: {공통 영문 slug}
+takeaway: "이 글의 답 한 문장"       # description과 다른 문장. 본문 상단에 노출된다.
 draft: false                        # 항상 false
 ---
 ```
+`description`은 검색 결과 스니펫이다. 짧게 쓰면 빌드가 본문 첫 문장을 이어 붙여 채우지만
+(contentlayer `seoDescription`), 직접 쓴 문장이 항상 낫다. ko/ja/zh는 60~80자,
+en/es는 120~155자를 목표로. `takeaway`는 스니펫이 아니라 독자가 처음 보는 한 문장이다.
 frontmatter 바로 아래 `import { X } from '@/components/post-viz/{DATE}-{slug}/X'`.
 
 **태그**: "CFD"는 진짜 일반론일 때만. FVM/FEM/DGM/LBM/IBM/Riemann/TVD/WENO/SIMPLE/Multigrid/AMR/
 Krylov/Multiphase/Turbulence/Combustion/Heat-Transfer/Compressible/Incompressible/OpenFOAM 등 우선.
+- **ASCII 영문 하이픈만.** 한글·공백 금지 (`논문리뷰` ✗ → `Paper-Review` ✓). 5 locale 동일.
+- **새 태그는 포스트당 최대 2개.** 나머지는 기존 태그를 재사용한다. 이 상한이 없으면
+  포스트 1개짜리 태그가 계속 쌓인다 — 그런 태그 페이지는 색인에서 제외된다
+  (`src/lib/tags.ts`의 `TAG_INDEX_MIN`). 기존 태그 목록은 `daily-context.mjs`가 출력한다.
+- 대소문자도 URL을 가른다. 기존 태그와 철자·대소문자를 정확히 맞출 것.
 
 ### 글 규칙
 - 분량 4~7분: 한국어 1,000~1,700단어(공백 제외 2,500~4,500자). 코드·수식 제외.
@@ -99,6 +108,10 @@ Krylov/Multiphase/Turbulence/Combustion/Heat-Transfer/Compressible/Incompressibl
   Hagen–Poiseuille 진입영역 / Couette / Rayleigh–Bénard / BFS / 2D Riemann.
 - viz 삽입 직전 1문장 안내("아래 시뮬레이션에서 직접 조작해보자"), 직후 1~2문장 관찰 포인트
   (무엇을 조작하고 무엇을 관찰하는지).
+- **첫 viz는 본문 앞 1/4 안에.** 뒤쪽에만 있으면 대부분의 방문자는 보지 못하고 이탈한다.
+- **본문 내부 링크 2개 이상 필수.** 형식은 `[텍스트](/{그 파일의 locale}/posts/{slug}/)` —
+  locale 세그먼트와 끝 슬래시를 모두 붙인다. ja 파일은 `/ja/posts/...`로 쓴다(ko URL 복사 금지).
+  연결할 글 후보는 `daily-context.mjs`가 출력한다.
 
 ### locale별 문체
 직역 금지, 각 언어 모국어 화자에게 자연스럽게. 수식·코드·import는 5개 파일 동일, **코드 주석만 번역**.
@@ -146,4 +159,5 @@ FAILED at Step N: {단계}
 ## 절대 금지
 `draft: true` / main 외 브랜치 push·PR·`--force`·`--no-verify` / 빌드 실패 상태 push /
 import만 넣고 post-viz 파일 없음 / 상호작용 없는 viz / post-viz에 새 npm 패키지 /
-하드코딩 날짜 / `source-docs/` 밖의 개인 자료 / ko 1개만 만들고 종료.
+하드코딩 날짜 / `source-docs/` 밖의 개인 자료 / ko 1개만 만들고 종료 /
+비ASCII·공백 태그 / locale 세그먼트 없는 본문 링크 / 본문 내부 링크 0개.
