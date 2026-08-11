@@ -6,6 +6,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
+import { KatexStyles } from '@/components/KatexStyles'
 import Link from 'next/link'
 import { format } from 'date-fns'
 import { getDynamicPost, type DynamicPost } from '@/lib/dynamic-posts'
@@ -97,6 +98,7 @@ function ReadContent() {
         )}
       </div>
       <div className="prose prose-zinc dark:prose-invert max-w-none">
+        <KatexStyles />
         <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]}>
           {post.content}
         </ReactMarkdown>

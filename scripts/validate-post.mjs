@@ -76,6 +76,7 @@ const VIZ_NAMES = ['VelocityField', 'StreamLine', 'NumericalScheme', 'PressureCo
 // ── 검사 ──────────────────────────────────────────────
 let totalFailed = 0
 const allErrors = []
+let skipped = 0
 
 for (const file of files) {
   const errors = []
@@ -99,6 +100,13 @@ for (const file of files) {
   }
   const fm = fmMatch[1]
   const body = fmMatch[2]
+
+  // draft는 발행물이 아니다. viz 개수·섹션 구조 같은 발행 기준을 적용하지 않는다.
+  // (contentlayer가 draft: true를 라우트에서 제외하므로 배포에도 나가지 않는다.)
+  if (/^draft:\s*true\s*$/m.test(fm)) {
+    skipped++
+    continue
+  }
 
   for (const required of ['title', 'date', 'description']) {
     if (!new RegExp(`^${required}:`, 'm').test(fm)) {
@@ -172,11 +180,11 @@ for (const file of files) {
 
 // ── 결과 ──────────────────────────────────────────────
 if (totalFailed === 0) {
-  console.log(`✅ 검증 통과 — ${files.length}개 파일`)
+  console.log(`✅ 검증 통과 — ${files.length - skipped}개 파일${skipped ? ` (draft ${skipped}개 건너뜀)` : ''}`)
   process.exit(0)
 }
 
-console.error(`\n❌ ${totalFailed}/${files.length}개 파일 실패\n`)
+console.error(`\n❌ ${totalFailed}/${files.length - skipped}개 파일 실패\n`)
 for (const { file, errors } of allErrors) {
   console.error(`  ${file}`)
   for (const e of errors) console.error(`    - ${e}`)

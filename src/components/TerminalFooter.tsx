@@ -31,6 +31,7 @@ export function TerminalFooter() {
         <span>{t(locale, 'footer.copyright')}</span>
       </div>
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2" style={{ color: 'var(--text-faint)' }}>
+        <Link href={`/${locale}/posts`} className="link-hover-text inline-flex min-h-11 items-center">{t(locale, 'nav.archive').toLowerCase()}</Link>
         <Link href={`/${locale}/tags`} className="link-hover-text inline-flex min-h-11 items-center">{t(locale, 'nav.tags').toLowerCase()}</Link>
         <Link href={`/${locale}/series`} className="link-hover-text inline-flex min-h-11 items-center">{t(locale, 'nav.series').toLowerCase()}</Link>
         <Link href={`/${locale}/tools`} className="link-hover-text inline-flex min-h-11 items-center">{t(locale, 'nav.tools').toLowerCase()}</Link>

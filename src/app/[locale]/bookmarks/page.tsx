@@ -4,6 +4,7 @@ import { notFound } from 'next/navigation'
 import type { Metadata } from 'next'
 import { BookmarksClient } from '@/components/BookmarksClient'
 import { LOCALES, isLocale, t, type Locale } from '@/lib/i18n'
+import { SITE_URL } from '@/lib/site'
 
 interface BookmarksProps {
   params: Promise<{ locale: string }>
@@ -13,10 +14,18 @@ export async function generateStaticParams() {
   return LOCALES.map((locale) => ({ locale }))
 }
 
-export const metadata: Metadata = {
-  title: 'Bookmarks',
-  description: "Your saved Younglin's CFD Blog posts.",
-  robots: { index: false },
+// 북마크는 localStorage 기반 개인 페이지라 색인 대상이 아니다. 다만 링크는 따라가게 두어
+// 여기서 나가는 포스트 링크가 크롤 경로로 남게 한다.
+// canonical을 직접 지정하면 상위 layout이 물려주던 홈 hreflang 클러스터를 함께 끊는다.
+export async function generateMetadata({ params }: BookmarksProps): Promise<Metadata> {
+  const { locale } = await params
+  const loc = isLocale(locale) ? (locale as Locale) : 'ko'
+  return {
+    title: t(loc, 'bookmarks.title'),
+    description: t(loc, 'bookmarks.subtitle'),
+    robots: { index: false, follow: true },
+    alternates: { canonical: `${SITE_URL}/${loc}/bookmarks` },
+  }
 }
 
 export default async function BookmarksPage({ params }: BookmarksProps) {
