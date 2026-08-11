@@ -1,0 +1,190 @@
+---
+title: "Más delgado y más rígido — bloqueo por cortante en elementos lámina y el amarre MITC"
+date: 2026-08-12
+description: "Un elemento lámina lineal se vuelve más rígido, no más flexible, al adelgazarse. La causa es una sola: la deformación cortante sale de derivar el desplazamiento."
+tags: ["MITC", "Shell-Element", "FEM", "Structural-Analysis", "FSI"]
+locale: es
+slug: 2026-08-12-mitc-shell-shear-locking
+takeaway: "El bloqueo no viene de un elemento débil, sino de obtener la deformación cortante por derivación. MITC la lee en puntos de amarre y la vuelve a interpolar."
+draft: false
+---
+
+import { ShearLockingBeamBench } from '@/components/post-viz/2026-08-12-mitc-shell-shear-locking/ShearLockingBeamBench'
+import { MitcTyingBoard } from '@/components/post-viz/2026-08-12-mitc-shell-shear-locking/MitcTyingBoard'
+
+Escribí un solver de láminas para un estudio de acoplamiento fluido-estructura y lo verifiqué con una viga en voladizo. Con un espesor de 0,2 m la flecha coincidía con la teoría hasta la tercera cifra decimal. Al bajar el espesor a 2 mm, la flecha resultó ser el 0,5% del valor teórico. La carga, la malla y las propiedades del material seguían siendo las mismas. Este artículo trata de dónde sale ese factor 200 y qué línea del código cambia MITC (Mixed Interpolation of Tensorial Components, interpolación mixta de componentes tensoriales) para eliminarlo.
+
+## El elemento se hizo delgado y la respuesta se congeló
+
+Primero el síntoma. En la simulación de abajo conviene mover el deslizador de esbeltez y observar.
+
+<ShearLockingBeamBench />
+
+La viga roja usa integración completa (full integration). Al llevar $L/t$ hasta 100 prácticamente no se flexiona a escala visible. La viga azul lee la deformación cortante en un único punto en el centro de cada elemento, y su forma no cambia por mucho que se aumente la esbeltez. En las barras de energía de abajo a la derecha, la zona roja es energía de cortante.
+
+Este fenómeno se llama bloqueo por cortante (shear locking). El problema no es que el elemento sea débil: al contrario, aparece una rigidez que no debería existir y frena la estructura. Refinar la malla lo alivia, pero no lo cura. Pasar de 4 a 32 elementos deja todavía un 1,3% de la respuesta correcta cuando $L/t = 500$.
+
+## La razón entre las dos energías crece con el cuadrado de la esbeltez
+
+La teoría de láminas de Reissner–Mindlin supone que la fibra en el espesor (el director) permanece recta tras la deformación, pero no necesariamente normal a la superficie media. En la energía de deformación quedan entonces dos términos.
+
+$$
+\Pi = \frac{1}{2}\int_A \left( D\,\kappa^{2} + k\,G\,t\,\gamma^{2} \right) dA, \qquad D = \frac{E\,t^{3}}{12(1-\nu^{2})}
+$$
+
+Aquí $\kappa$ es la curvatura de flexión, $\gamma$ la deformación cortante transversal, $D$ la rigidez a flexión y $k = 5/6$ el factor de corrección por cortante. La rigidez a flexión escala con el cubo del espesor y la de cortante con la primera potencia. Conviene mirar el cociente.
+
+$$
+\frac{k\,G\,t}{D} = \frac{6\,k\,(1-\nu)}{t^{2}}
+$$
+
+Con $\nu = 0,3$ y $k = 5/6$ el coeficiente es $3.5/t^{2}$. Adimensionalizado con la longitud del elemento, ese valor crece como $(L/t)^2$. Es decir, el término de cortante es una penalización enorme colocada delante del término de flexión.
+
+En la teoría continua eso no molesta. Cuando el espesor baja, $\gamma$ tiende a cero a la misma velocidad y el producto queda finito. Ese es el límite de Kirchhoff. La cuestión es si un elemento discreto puede representar $\gamma = 0$.
+
+## Un elemento lineal no puede producir deformación cortante nula
+
+Reducido a una dimensión, la causa cabe en una línea. Tomemos un elemento de dos nodos que interpola la flecha $w$ y el giro de la sección $\phi$ con las mismas funciones de forma lineales. La deformación cortante transversal se define así:
+
+$$
+\gamma(r) = \frac{\partial w}{\partial r} - \phi
+$$
+
+Impongamos ahora un estado de flexión pura sobre los nodos. Una flexión de curvatura $\kappa$ significa $w = \tfrac{1}{2}\kappa r^{2}$ y $\phi = \kappa r$. Los nodos están en $r = \pm 1$, así que ambas flechas nodales valen $\kappa/2$. Interpolar linealmente dos valores iguales da una constante.
+
+$$
+w_h(r) = \frac{\kappa}{2}, \qquad \phi_h(r) = \kappa r \;\;\Longrightarrow\;\; \gamma_h(r) = 0 - \kappa r = -\kappa r
+$$
+
+El giro es lineal y se reproduce de forma exacta; la flecha es cuadrática y no. Todo ese desajuste desemboca en $\gamma_h$. La $\gamma$ real vale cero, el elemento carga con $-\kappa r$, y ese valor queda multiplicado por una penalización de $3.5/t^2$. En un [elemento finito de celosía](/es/posts/2026-07-10-direct-stiffness-method-truss-fem/) solo hay deformación axial, de modo que no existe tal emparejamiento. El bloqueo aparece cuando conviven varias deformaciones y una de ellas debe anularse.
+
+Hay una observación importante aquí. $\gamma_h = -\kappa r$ es exactamente cero en $r = 0$. El valor equivocado no está repartido de manera uniforme por el elemento: hay un punto donde sí es correcto.
+
+## Una lámina tiene tres sistemas de coordenadas — dónde intervenir
+
+En una viga unidimensional basta con decir "se lee en el centro del elemento". En una lámina curva hay que decidir primero en qué sistema de coordenadas está escrita esa frase. Un elemento lámina tiene tres. Las coordenadas naturales $(r, s, t)$ aplanan el elemento sobre el cubo $[-1,1]^3$ para el cálculo. Las locales forman un sistema de placa tangente a la superficie media, y las globales $(x, y, z)$ son donde viven el ensamblaje y las cargas.
+
+Las deformaciones se retocan en el sistema natural. Las componentes covariantes medidas contra los vectores base $\mathbf{g}_i = \partial \mathbf{x}/\partial \xi^i$ conservan el mismo significado físico con independencia de la geometría del elemento.
+
+$$
+\varepsilon_{ij} = \frac{1}{2}\left( \mathbf{g}_i \cdot \frac{\partial \mathbf{u}}{\partial \xi^{j}} + \mathbf{g}_j \cdot \frac{\partial \mathbf{u}}{\partial \xi^{i}} \right)
+$$
+
+Aunque el elemento se distorsione, $\varepsilon_{rt}$ sigue siendo «el cambio de ángulo entre una línea en dirección $r$ y la fibra del espesor». Hacer el mismo amarre en coordenadas globales cambia lo que se está amarrando según la forma del elemento.
+
+La ley constitutiva y la matriz $B$, en cambio, hacen falta en coordenadas globales. Eso añade una transformación más, y ahí hay una trampa frecuente. Las componentes 4, 5 y 6 de la notación de Voigt llevan un factor dos por el convenio de deformación cortante ingenieril. Al llevar $B$ de coordenadas naturales a globales hay que desplegar primero el vector de Voigt en un tensor simétrico 3×3 (dividiendo por dos los términos de cortante), rotarlo y volver a plegarlo. Multiplicar directamente por una matriz de rotación 6×6 deja las filas de cortante con un factor 2 o 4 de error. Es un fallo más silencioso que el bloqueo, y justo por eso sobrevive más tiempo.
+
+## MITC — leer la deformación en un punto y volver a interpolarla
+
+La solución cabe en una frase. **No obtener la deformación cortante transversal derivando el campo de desplazamientos, sino leerla en puntos de amarre (tying points) prescritos e interpolar esos valores.** En MITC4, $\gamma_r$ se lee en $A(0,-1)$ y $C(0,+1)$, y $\gamma_s$ en $B(1,0)$ y $D(-1,0)$.
+
+$$
+\gamma_r^{\text{MITC}}(r,s) = \frac{1-s}{2}\,\gamma_r(0,-1) + \frac{1+s}{2}\,\gamma_r(0,+1)
+$$
+
+Lo esencial es que $r$ no aparece en el lado derecho. El $-\kappa r$ de antes era lineal en $r$, y esta interpolación no tiene sitio donde alojar un término así. Conviene cambiar de modo abajo y comprobarlo directamente.
+
+<MitcTyingBoard />
+
+En `pure bending` la superficie media queda plana mientras los directores se abren como un abanico. El ángulo de cada cuña roja entre ambos es deformación cortante que el elemento se inventó, y la cuña solo se cierra en $r = 0$. Al pasar a `true shear`, la curva azul de MITC cae exactamente sobre la roja. El amarre borra la deformación falsa y deja intacta la real.
+
+Es fácil confundirlo con la integración reducida, pero ambos coinciden solo en el caso particular unidimensional. La integración reducida quita puntos de integración para ablandar la matriz de rigidez, lo que invita a modos de energía nula (hourglass). MITC deja la integración como está y cambia el propio espacio de interpolación de deformaciones. La rigidez se sigue integrando de forma exacta y no aparece deficiencia de rango.
+
+## Dónde colocan sus puntos MITC3+ y MITC4
+
+Para el cuadrilátero MITC4, esos dos pares lo resuelven todo. Con triángulos la cosa empeora. No hay una disposición de amarre evidente que trate las tres aristas con simetría y mantenga la isotropía, y el MITC3 original convergía mal en mallas distorsionadas.
+
+MITC3+ añade un grado de libertad burbuja (bubble) al campo de giros en el centro del elemento y desplaza los puntos de amarre hacia dentro, lejos de los puntos medios de las aristas. A cambio de ese grado de libertad extra logra convergencia uniformemente óptima —independiente del espesor— incluso en mallas triangulares distorsionadas. En la práctica, donde hay que cubrir superficies curvas arbitrarias con triángulos, esa diferencia pesa.
+
+## El factor de bloqueo contado con Python
+
+Metí ambas formulaciones en el mismo código y comparé la flecha en el extremo libre del voladizo con el valor teórico. Solo cambia una línea: la regla de cortante.
+
+```python
+import numpy as np
+
+E, NU, KS, B = 210e9, 0.3, 5.0 / 6.0, 1.0        # modulo, Poisson, factor de cortante, ancho
+G = E / (2 * (1 + NU))
+GAUSS = (-3 ** -0.5, 3 ** -0.5)
+
+
+def strain_operators(h, tied):
+    """Matrices B de un elemento lineal de 2 nodos. tied=True lee el cortante solo en xi=0."""
+    Bb = np.array([0.0, -1 / h, 0.0, 1 / h])                      # phi'
+    if tied:                                                      # amarre MITC
+        rules = [(np.array([-1 / h, -0.5, 1 / h, -0.5]), h)]
+    else:                                                         # Gauss de 2 puntos: exacta
+        rules = [(np.array([-1 / h, -(1 - x) / 2, 1 / h, -(1 + x) / 2]), h / 2)
+                 for x in GAUSS]
+    return Bb, rules
+
+
+def solve_tip(L, t, nel, tied, P=1.0):
+    EI, GA = E * B * t ** 3 / 12, KS * G * B * t
+    h, ndof = L / nel, 2 * (nel + 1)
+    Bb, rules = strain_operators(h, tied)
+    Ke = EI * h * np.outer(Bb, Bb) + sum(GA * w * np.outer(Bs, Bs) for Bs, w in rules)
+    K = np.zeros((ndof, ndof))
+    for e in range(nel):
+        idx = [2 * e, 2 * e + 1, 2 * e + 2, 2 * e + 3]
+        K[np.ix_(idx, idx)] += Ke
+    f = np.zeros(ndof)
+    f[-2] = P                                                     # carga transversal en el extremo
+    u = np.zeros(ndof)
+    free = np.arange(2, ndof)                                     # empotramiento w0 = phi0 = 0
+    u[free] = np.linalg.solve(K[np.ix_(free, free)], f[free])
+    Ub = sum(0.5 * EI * h * (Bb @ u[2 * e:2 * e + 4]) ** 2 for e in range(nel))
+    Us = sum(0.5 * GA * w * (Bs @ u[2 * e:2 * e + 4]) ** 2
+             for e in range(nel) for Bs, w in rules)
+    return u[-2], Us / (Ub + Us)
+
+
+def exact_tip(L, t, P=1.0):
+    EI, GA = E * B * t ** 3 / 12, KS * G * B * t
+    return P * L ** 3 / (3 * EI) + P * L / GA                     # flexion + cortante
+
+
+def sweep_slenderness(nel):
+    print(f"nel = {nel:2d}    w_fem / w_exact          shear energy fraction")
+    print("  L/t       full        tied            full      tied")
+    for ratio in (5, 20, 100, 500, 2000):
+        L, t = 1.0, 1.0 / ratio
+        ex = exact_tip(L, t)
+        wf, ff = solve_tip(L, t, nel, tied=False)
+        wm, fm = solve_tip(L, t, nel, tied=True)
+        print(f"{ratio:5d}   {wf / ex:10.5f}   {wm / ex:10.5f}"
+              f"      {ff:8.4f}   {fm:.4f}")
+
+
+sweep_slenderness(4)
+print()
+sweep_slenderness(32)
+```
+
+```text
+nel =  4    w_fem / w_exact          shear energy fraction
+  L/t       full        tied            full      tied
+    5      0.66631      0.98485        0.3639   0.0307
+   20      0.11095      0.98441        0.8910   0.0020
+  100      0.00497      0.98438        0.9951   0.0001
+  500      0.00020      0.98438        0.9998   0.0000
+ 2000      0.00001      0.98438        1.0000   0.0000
+
+nel = 32    w_fem / w_exact          shear energy fraction
+  L/t       full        tied            full      tied
+    5      0.99224      0.99976        0.0380   0.0303
+   20      0.88873      0.99976        0.1132   0.0019
+  100      0.24213      0.99976        0.7579   0.0001
+  500      0.01262      0.99976        0.9874   0.0000
+ 2000      0.00080      0.99976        0.9992   0.0000
+```
+
+Se leen tres cosas. Primero, la columna de integración completa cae aproximadamente a la centésima parte cada vez que $L/t$ se multiplica por diez: la penalización $(L/t)^2$ a la vista. Segundo, la columna con amarre queda fijada en 0,98438 con independencia del espesor. El 1,5% restante no es bloqueo, sino el error de discretización de una malla de cuatro elementos; con 32 pasa a 0,99976. Tercero, la fracción de energía de cortante cierra el diagnóstico. En $L/t = 2000$ el elemento con integración completa gasta el 100% de su energía en cortante. Un problema de flexión sostenido enteramente por cortante.
+
+Vale la pena mirar también la tabla de 32 elementos. Con una malla ocho veces más fina, en $L/t = 500$ queda todavía un 1,3% de la respuesta correcta. El bloqueo no es un error que se gane refinando.
+
+## Antes de montar una lámina sobre un solver acoplado
+
+En CFD, las láminas aparecen casi siempre en análisis acoplado. Una placa o membrana delgada oscila arrastrada por el flujo y su desplazamiento vuelve a la malla o a los [marcadores de frontera inmersa](/es/posts/2026-05-15-peskin-ibm-direct-forcing-discrete-delta/). Ahí el bloqueo da respuestas equivocadas en silencio. Una estructura más rígida de la cuenta empuja hacia arriba sus frecuencias propias, y con ellas se desplazan la velocidad de inicio de flameo y los efectos de masa añadida. El residuo baja igual y la iteración converge igual. Lo que está mal es la matriz de rigidez.
+
+Por eso hay tres cosas que comprobar antes de acoplar elementos lámina. ¿Se mantiene la flecha normalizada al multiplicar la esbeltez por diez? ¿Aguanta ese valor cuando los elementos se distorsionan a propósito? Y si hace falta gran deformación, ¿el término de tensión inicial (rigidez geométrica) sigue las mismas reglas de transformación de coordenadas? Las dos primeras se resuelven en media hora con un solo voladizo. Saltárselas significa acabar buscando la causa del lado del fluido.

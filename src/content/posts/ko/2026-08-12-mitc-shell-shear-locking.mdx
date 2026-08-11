@@ -1,0 +1,190 @@
+---
+title: "얇게 만들수록 굳어버린다 — 쉘 요소의 전단 잠김과 MITC 타잉"
+date: 2026-08-12
+description: "선형 쉘 요소는 두께가 줄수록 부정확하게 뻣뻣해진다. 원인은 전단 변형률을 변위에서 미분한다는 사실 하나다."
+tags: ["MITC", "Shell-Element", "FEM", "Structural-Analysis", "FSI"]
+locale: ko
+slug: 2026-08-12-mitc-shell-shear-locking
+takeaway: "잠김은 요소가 약해서가 아니라 전단 변형률을 미분으로 얻기 때문에 생긴다. MITC는 그 값을 타잉점에서 읽어 다시 보간한다."
+draft: false
+---
+
+import { ShearLockingBeamBench } from '@/components/post-viz/2026-08-12-mitc-shell-shear-locking/ShearLockingBeamBench'
+import { MitcTyingBoard } from '@/components/post-viz/2026-08-12-mitc-shell-shear-locking/MitcTyingBoard'
+
+유동-구조 연성 해석에 쓸 쉘 코드를 짜고 캔틸레버로 검증했다. 두께 0.2 m에서는 이론값과 소수점 셋째 자리까지 맞는다. 두께를 2 mm로 줄이자 처짐이 이론값의 0.5%로 나왔다. 하중도, 격자도, 물성도 그대로다. 이 글은 그 200배의 간극이 어디서 오는지, 그리고 MITC(Mixed Interpolation of Tensorial Components, 텐서 성분 혼합 보간)가 코드의 어느 한 줄을 바꿔 그것을 없애는지를 다룬다.
+
+## 요소를 얇게 했더니 답이 굳었다
+
+먼저 증상부터 보자. 아래 시뮬레이션에서 세장비 슬라이더를 직접 밀어보자.
+
+<ShearLockingBeamBench />
+
+빨간 보는 완전적분(full integration) 요소다. $L/t$를 100까지 올리면 눈에 보일 정도로는 아예 휘지 않는다. 파란 보는 전단 변형률을 요소 중앙 한 점에서만 읽은 것이고, 세장비를 아무리 올려도 모양이 변하지 않는다. 오른쪽 아래 에너지 막대에서 빨간 영역이 전단 에너지다.
+
+이 현상을 전단 잠김(shear locking)이라 부른다. 요소가 약해서 생기는 문제가 아니다. 반대로 있어서는 안 될 강성이 생겨 구조물을 붙잡는다. 격자를 촘촘히 하면 완화되지만 사라지지는 않는다. 요소를 4개에서 32개로 늘려도 $L/t = 500$에서는 여전히 정답의 1.3%다.
+
+## 에너지 두 개의 비율은 세장비 제곱으로 벌어진다
+
+Reissner–Mindlin 쉘 이론은 두께 방향 섬유(director, 디렉터)가 변형 후에도 직선이지만 중립면에 수직일 필요는 없다고 놓는다. 그 결과 변형 에너지에 항이 두 개 남는다.
+
+$$
+\Pi = \frac{1}{2}\int_A \left( D\,\kappa^{2} + k\,G\,t\,\gamma^{2} \right) dA, \qquad D = \frac{E\,t^{3}}{12(1-\nu^{2})}
+$$
+
+$\kappa$는 굽힘 곡률, $\gamma$는 횡전단 변형률, $D$는 굽힘 강성, $k = 5/6$은 전단 보정계수다. 굽힘 강성은 두께의 세제곱, 전단 강성은 두께의 1제곱에 비례한다. 둘의 비를 보자.
+
+$$
+\frac{k\,G\,t}{D} = \frac{6\,k\,(1-\nu)}{t^{2}}
+$$
+
+$\nu = 0.3$, $k = 5/6$이면 계수는 $3.5/t^{2}$다. 요소 길이로 무차원화하면 이 값은 $(L/t)^2$로 커진다. 즉 전단 항은 굽힘 항 앞에 붙은 거대한 벌점(penalty)이다.
+
+이론에서는 문제가 안 된다. 두께가 얇아지면 $\gamma$가 그만큼 빠르게 0으로 가서 곱이 유한하게 남는다. 이것이 Kirchhoff 극한이다. 문제는 이산 요소가 $\gamma = 0$을 표현할 수 있느냐다.
+
+## 선형 요소는 전단 변형률 0을 만들지 못한다
+
+1차원으로 줄여 보면 원인이 한 줄에 드러난다. 처짐 $w$와 단면 회전 $\phi$를 같은 선형 형상함수로 보간하는 2절점 요소를 생각하자. 횡전단 변형률의 정의는 다음과 같다.
+
+$$
+\gamma(r) = \frac{\partial w}{\partial r} - \phi
+$$
+
+순수 굽힘 상태를 절점에 그대로 얹어 보자. 곡률 $\kappa$인 굽힘은 $w = \tfrac{1}{2}\kappa r^{2}$, $\phi = \kappa r$이다. 요소 절점은 $r = \pm 1$에 있으므로 절점 처짐은 둘 다 $\kappa/2$로 같다. 선형 보간의 결과는 상수다.
+
+$$
+w_h(r) = \frac{\kappa}{2}, \qquad \phi_h(r) = \kappa r \;\;\Longrightarrow\;\; \gamma_h(r) = 0 - \kappa r = -\kappa r
+$$
+
+회전은 1차 함수라 정확히 재현되는데 처짐은 2차라 재현되지 못한다. 그 불일치가 전부 $\gamma_h$로 흘러 들어간다. 실제 $\gamma$는 0인데 요소는 $-\kappa r$을 들고 있고, 그 값이 $3.5/t^2$짜리 벌점을 곱해 받는다. [트러스 유한요소](/ko/posts/2026-07-10-direct-stiffness-method-truss-fem/)에서는 축변형 하나뿐이라 이런 짝이 생기지 않는다. 잠김은 변형률이 여러 개이고 그중 하나가 사라져야 할 때 나타난다.
+
+여기서 중요한 관찰이 하나 있다. $\gamma_h = -\kappa r$은 $r = 0$에서 정확히 0이다. 잘못된 값이 요소 전체에 퍼져 있는 게 아니라, 딱 한 점만은 맞다.
+
+## 쉘에는 좌표계가 셋 있다 — 어디서 손대야 하는가
+
+1차원 보에서는 "요소 중앙에서 읽는다"로 끝난다. 곡면 쉘에서는 그 문장을 어느 좌표계에서 쓸지부터 정해야 한다. 쉘 요소에는 좌표계가 셋 있다. 자연좌표 $(r, s, t)$는 요소를 $[-1,1]^3$ 정육면체로 펴 놓은 계산용 좌표다. 국소좌표는 중립면에 접하는 판 좌표계이고, 전역좌표 $(x, y, z)$는 조립과 하중이 사는 곳이다.
+
+변형률을 손대는 자리는 자연좌표다. 자연좌표의 기저벡터 $\mathbf{g}_i = \partial \mathbf{x}/\partial \xi^i$로 잰 공변(covariant) 성분이 요소의 기하와 무관하게 같은 물리적 의미를 갖기 때문이다.
+
+$$
+\varepsilon_{ij} = \frac{1}{2}\left( \mathbf{g}_i \cdot \frac{\partial \mathbf{u}}{\partial \xi^{j}} + \mathbf{g}_j \cdot \frac{\partial \mathbf{u}}{\partial \xi^{i}} \right)
+$$
+
+요소가 찌그러져도 $\varepsilon_{rt}$는 여전히 "$r$ 방향 선과 두께 방향 섬유 사이의 각도 변화"다. 전역좌표에서 같은 일을 하면 요소 모양에 따라 무엇을 묶는지가 달라진다.
+
+구성방정식과 $B$ 행렬은 반대로 전역좌표에서 필요하다. 그래서 변환이 한 번 더 들어가는데, 여기에 흔한 함정이 있다. Voigt 표기의 4·5·6번 성분에는 공학 전단 변형률 관례로 2가 곱해져 있다. $B$를 자연좌표에서 전역좌표로 옮길 때는 Voigt 벡터를 먼저 3×3 대칭 텐서로 되돌리고(전단 항을 절반으로 나누고) 회전시킨 뒤 다시 접어야 한다. 6×6 회전 행렬을 그냥 곱하면 전단 행이 2배 또는 4배로 틀어진다. 잠김만큼 눈에 띄지 않아서 더 오래 살아남는 버그다.
+
+## MITC — 변형률을 점에서 읽고 다시 보간한다
+
+해법의 문장은 짧다. **횡전단 변형률을 변위에서 미분해 얻지 말고, 정해진 타잉점(tying point)에서 읽어 그 값들을 다시 보간한다.** MITC4의 경우 $\gamma_r$은 $A(0,-1)$과 $C(0,+1)$ 두 점에서, $\gamma_s$는 $B(1,0)$과 $D(-1,0)$ 두 점에서 읽는다.
+
+$$
+\gamma_r^{\text{MITC}}(r,s) = \frac{1-s}{2}\,\gamma_r(0,-1) + \frac{1+s}{2}\,\gamma_r(0,+1)
+$$
+
+$r$이 오른쪽 식에 아예 없다는 점이 핵심이다. 앞서 본 $-\kappa r$은 $r$에 대해 1차였고, 이 보간은 그런 항을 담을 자리가 없다. 아래에서 모드를 바꿔가며 직접 확인해보자.
+
+<MitcTyingBoard />
+
+`pure bending`에서는 중립면이 평평한데 디렉터만 부채처럼 벌어진다. 그 사이의 빨간 쐐기 각도가 요소가 지어낸 전단 변형률이고, $r = 0$에서만 쐐기가 닫힌다. `true shear`로 바꾸면 파란 MITC 곡선이 빨간 곡선 위에 정확히 포개진다. 타잉은 가짜 변형률만 지우고 진짜는 건드리지 않는다.
+
+축소적분(reduced integration)과 헷갈리기 쉬운데 결과가 같아지는 것은 1차원의 특수한 경우뿐이다. 축소적분은 적분점을 줄여 강성 행렬을 무르게 만드는 조작이라 영에너지 모드(hourglass)를 부르기 쉽다. MITC는 적분을 그대로 두고 변형률 보간 공간 자체를 바꾼다. 강성은 여전히 정확적분되고, 랭크 결손도 생기지 않는다.
+
+## MITC3+와 MITC4가 점을 놓는 자리
+
+사각형 요소인 MITC4는 앞의 두 쌍이면 끝난다. 삼각형은 사정이 나쁘다. 세 변을 대칭으로 다루면서 등방성을 유지하는 타잉 배치가 자명하지 않아, 초기 MITC3은 왜곡된 격자에서 수렴이 나빴다.
+
+MITC3+는 회전장에 요소 중앙 버블(bubble) 자유도를 하나 더 얹고, 타잉점을 세 변의 중점이 아니라 안쪽으로 당긴 세 점에 놓는다. 자유도가 하나 늘어난 대신, 왜곡된 삼각 격자에서도 두께에 무관한(uniformly optimal) 수렴을 얻는다. 임의 형상의 곡면을 삼각형으로 덮어야 하는 실무에서는 이 차이가 크다.
+
+## Python으로 세어본 잠김 계수
+
+두 정식화를 같은 코드에 넣고 캔틸레버 자유단 처짐을 이론값과 비교했다. 전단 규칙 한 줄만 다르다.
+
+```python
+import numpy as np
+
+E, NU, KS, B = 210e9, 0.3, 5.0 / 6.0, 1.0        # 탄성계수, 푸아송비, 전단보정계수, 폭
+G = E / (2 * (1 + NU))
+GAUSS = (-3 ** -0.5, 3 ** -0.5)
+
+
+def strain_operators(h, tied):
+    """2절점 선형 요소의 B 행렬. tied=True 면 전단을 xi=0 한 점에서만 읽는다."""
+    Bb = np.array([0.0, -1 / h, 0.0, 1 / h])                      # phi'
+    if tied:                                                      # MITC 타잉
+        rules = [(np.array([-1 / h, -0.5, 1 / h, -0.5]), h)]
+    else:                                                         # 2점 가우스: 정확적분
+        rules = [(np.array([-1 / h, -(1 - x) / 2, 1 / h, -(1 + x) / 2]), h / 2)
+                 for x in GAUSS]
+    return Bb, rules
+
+
+def solve_tip(L, t, nel, tied, P=1.0):
+    EI, GA = E * B * t ** 3 / 12, KS * G * B * t
+    h, ndof = L / nel, 2 * (nel + 1)
+    Bb, rules = strain_operators(h, tied)
+    Ke = EI * h * np.outer(Bb, Bb) + sum(GA * w * np.outer(Bs, Bs) for Bs, w in rules)
+    K = np.zeros((ndof, ndof))
+    for e in range(nel):
+        idx = [2 * e, 2 * e + 1, 2 * e + 2, 2 * e + 3]
+        K[np.ix_(idx, idx)] += Ke
+    f = np.zeros(ndof)
+    f[-2] = P                                                     # 자유단 횡하중
+    u = np.zeros(ndof)
+    free = np.arange(2, ndof)                                     # 고정단 w0 = phi0 = 0
+    u[free] = np.linalg.solve(K[np.ix_(free, free)], f[free])
+    Ub = sum(0.5 * EI * h * (Bb @ u[2 * e:2 * e + 4]) ** 2 for e in range(nel))
+    Us = sum(0.5 * GA * w * (Bs @ u[2 * e:2 * e + 4]) ** 2
+             for e in range(nel) for Bs, w in rules)
+    return u[-2], Us / (Ub + Us)
+
+
+def exact_tip(L, t, P=1.0):
+    EI, GA = E * B * t ** 3 / 12, KS * G * B * t
+    return P * L ** 3 / (3 * EI) + P * L / GA                     # 굽힘 + 전단
+
+
+def sweep_slenderness(nel):
+    print(f"nel = {nel:2d}    w_fem / w_exact          shear energy fraction")
+    print("  L/t       full        tied            full      tied")
+    for ratio in (5, 20, 100, 500, 2000):
+        L, t = 1.0, 1.0 / ratio
+        ex = exact_tip(L, t)
+        wf, ff = solve_tip(L, t, nel, tied=False)
+        wm, fm = solve_tip(L, t, nel, tied=True)
+        print(f"{ratio:5d}   {wf / ex:10.5f}   {wm / ex:10.5f}"
+              f"      {ff:8.4f}   {fm:.4f}")
+
+
+sweep_slenderness(4)
+print()
+sweep_slenderness(32)
+```
+
+```text
+nel =  4    w_fem / w_exact          shear energy fraction
+  L/t       full        tied            full      tied
+    5      0.66631      0.98485        0.3639   0.0307
+   20      0.11095      0.98441        0.8910   0.0020
+  100      0.00497      0.98438        0.9951   0.0001
+  500      0.00020      0.98438        0.9998   0.0000
+ 2000      0.00001      0.98438        1.0000   0.0000
+
+nel = 32    w_fem / w_exact          shear energy fraction
+  L/t       full        tied            full      tied
+    5      0.99224      0.99976        0.0380   0.0303
+   20      0.88873      0.99976        0.1132   0.0019
+  100      0.24213      0.99976        0.7579   0.0001
+  500      0.01262      0.99976        0.9874   0.0000
+ 2000      0.00080      0.99976        0.9992   0.0000
+```
+
+세 가지를 읽을 수 있다. 첫째, 정확적분 열은 $L/t$가 10배가 될 때마다 대략 100분의 1로 줄어든다. $(L/t)^2$ 벌점이 그대로 보인다. 둘째, MITC 열은 두께와 무관하게 0.98438로 고정된다. 남은 1.5%는 잠김이 아니라 요소 4개짜리 격자의 이산화 오차이고, 32개로 늘리면 0.99976이 된다. 셋째, 전단 에너지 비율이 원인을 확정한다. $L/t = 2000$에서 정확적분 요소는 에너지의 100%를 전단에 쓰고 있다. 굽힘 문제인데 전단으로만 버티고 있다는 뜻이다.
+
+요소를 32개로 늘린 표도 같이 보자. 격자를 8배 촘촘히 해도 $L/t = 500$에서는 정답의 1.3%다. 잠김은 격자로 이길 수 있는 오차가 아니다.
+
+## 유동-구조 연성 코드에 쉘을 얹기 전에
+
+CFD 쪽에서 쉘을 건드리는 자리는 대개 연성 해석이다. 얇은 판이나 막이 유동에 실려 흔들리고, 그 변위가 다시 격자나 [가상경계 마커](/ko/posts/2026-05-15-peskin-ibm-direct-forcing-discrete-delta/)로 넘어간다. 이때 잠김은 조용히 틀린 답을 준다. 구조가 필요 이상으로 뻣뻣해지면 고유진동수가 위로 밀리고, 플러터 시작 속도나 부가질량 효과가 전부 함께 어긋난다. 잔차는 잘 떨어지고 반복도 수렴한다. 틀린 곳은 강성 행렬이다.
+
+그래서 쉘 요소를 붙이기 전에 확인할 것은 세 가지다. 세장비를 10배 올렸을 때 정규화된 처짐이 유지되는지, 요소를 의도적으로 찌그러뜨렸을 때도 그 값이 버티는지, 그리고 대변형이 필요하면 초기응력(기하강성) 항까지 같은 좌표변환 규칙을 따르는지. 앞의 두 개는 캔틸레버 하나로 30분이면 끝난다. 그걸 건너뛰면 나중에 유동 쪽에서 원인을 찾게 된다.

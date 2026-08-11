@@ -1,0 +1,190 @@
+---
+title: "Thinner Means Stiffer — Shear Locking in Shell Elements and the MITC Tying Fix"
+date: 2026-08-12
+description: "A linear shell element gets stiffer, not weaker, as it thins out. The cause is one line: shear strain obtained by differentiating displacements."
+tags: ["MITC", "Shell-Element", "FEM", "Structural-Analysis", "FSI"]
+locale: en
+slug: 2026-08-12-mitc-shell-shear-locking
+takeaway: "Locking is not weakness in the element. It comes from computing shear strain by differentiation, and MITC reads that strain at tying points instead."
+draft: false
+---
+
+import { ShearLockingBeamBench } from '@/components/post-viz/2026-08-12-mitc-shell-shear-locking/ShearLockingBeamBench'
+import { MitcTyingBoard } from '@/components/post-viz/2026-08-12-mitc-shell-shear-locking/MitcTyingBoard'
+
+I wrote a shell solver for a fluid-structure coupling study and checked it against a cantilever. At a thickness of 0.2 m the tip deflection matched theory to three decimals. At 2 mm it came out as 0.5% of the theoretical value. Same load, same mesh, same material. This post is about where that factor of 200 comes from, and which single line MITC (Mixed Interpolation of Tensorial Components) changes to make it disappear.
+
+## The Element Got Thin and the Answer Froze
+
+Start with the symptom. Push the slenderness slider in the simulation below and watch what happens.
+
+<ShearLockingBeamBench />
+
+The red beam uses full integration. By $L/t = 100$ it barely moves at all. The blue beam reads the transverse shear strain at a single point in the middle of each element, and its shape is unchanged no matter how slender you make it. In the energy bars at the bottom right, the red portion is shear energy.
+
+This is shear locking. The element is not too weak — it is too stiff, holding the structure back with a stiffness that should not exist. Refining the mesh helps but never cures it. Going from 4 elements to 32 still leaves you at 1.3% of the correct answer when $L/t = 500$.
+
+## The Ratio Between Two Energies Grows With Slenderness Squared
+
+Reissner–Mindlin shell theory assumes the through-thickness fibre (the director) stays straight after deformation but need not stay normal to the mid-surface. Two terms survive in the strain energy.
+
+$$
+\Pi = \frac{1}{2}\int_A \left( D\,\kappa^{2} + k\,G\,t\,\gamma^{2} \right) dA, \qquad D = \frac{E\,t^{3}}{12(1-\nu^{2})}
+$$
+
+Here $\kappa$ is bending curvature, $\gamma$ is transverse shear strain, $D$ is bending stiffness, and $k = 5/6$ is the shear correction factor. Bending stiffness scales with thickness cubed; shear stiffness scales with thickness to the first power. Take the ratio.
+
+$$
+\frac{k\,G\,t}{D} = \frac{6\,k\,(1-\nu)}{t^{2}}
+$$
+
+With $\nu = 0.3$ and $k = 5/6$ the coefficient is $3.5/t^{2}$. Nondimensionalized by the element length, it grows like $(L/t)^2$. The shear term is a huge penalty sitting in front of the bending term.
+
+That is harmless in the continuous theory. As the thickness drops, $\gamma$ goes to zero just as fast, and the product stays finite. That is the Kirchhoff limit. The question is whether a discrete element can represent $\gamma = 0$ at all.
+
+## A Linear Element Cannot Produce Zero Shear Strain
+
+Reduce the problem to one dimension and the cause fits on one line. Take a two-node element that interpolates deflection $w$ and section rotation $\phi$ with the same linear shape functions. The transverse shear strain is defined as
+
+$$
+\gamma(r) = \frac{\partial w}{\partial r} - \phi
+$$
+
+Now impose a state of pure bending on the nodes. Bending with curvature $\kappa$ means $w = \tfrac{1}{2}\kappa r^{2}$ and $\phi = \kappa r$. The nodes sit at $r = \pm 1$, so both nodal deflections equal $\kappa/2$. Linear interpolation of two equal values is a constant.
+
+$$
+w_h(r) = \frac{\kappa}{2}, \qquad \phi_h(r) = \kappa r \;\;\Longrightarrow\;\; \gamma_h(r) = 0 - \kappa r = -\kappa r
+$$
+
+The rotation is linear, so it is reproduced exactly. The deflection is quadratic, so it is not. The entire mismatch drains into $\gamma_h$. The true $\gamma$ is zero, the element carries $-\kappa r$, and that value gets multiplied by a penalty of $3.5/t^2$. In a [truss finite element](/en/posts/2026-07-10-direct-stiffness-method-truss-fem/) there is only axial strain, so no such pairing exists. Locking shows up when several strain measures coexist and one of them has to vanish.
+
+One observation matters here. $\gamma_h = -\kappa r$ is exactly zero at $r = 0$. The wrong value is not spread uniformly over the element — there is one point where it is right.
+
+## A Shell Has Three Coordinate Systems, and Only One Is the Right Place to Intervene
+
+For a one-dimensional beam, "read it at the element centre" is the whole story. On a curved shell you first have to decide which coordinate system that sentence is written in. A shell element carries three. The natural coordinates $(r, s, t)$ flatten the element onto the $[-1,1]^3$ cube for computation. The local coordinates form a plate frame tangent to the mid-surface, and the global coordinates $(x, y, z)$ are where assembly and loading live.
+
+Strains get modified in the natural system. Covariant components measured against the natural base vectors $\mathbf{g}_i = \partial \mathbf{x}/\partial \xi^i$ keep the same physical meaning regardless of element geometry.
+
+$$
+\varepsilon_{ij} = \frac{1}{2}\left( \mathbf{g}_i \cdot \frac{\partial \mathbf{u}}{\partial \xi^{j}} + \mathbf{g}_j \cdot \frac{\partial \mathbf{u}}{\partial \xi^{i}} \right)
+$$
+
+Distort the element and $\varepsilon_{rt}$ is still "the change in angle between an $r$-direction line and the through-thickness fibre." Do the same tying in global coordinates and what you are tying changes with the element shape.
+
+The constitutive law and the $B$ matrix, on the other hand, are needed in global coordinates. That means one more transformation, and there is a common trap in it. Voigt components 4, 5 and 6 carry a factor of two by the engineering shear strain convention. Moving $B$ from natural to global coordinates means unfolding the Voigt vector back into a symmetric 3×3 tensor (halving the shear entries), rotating it, then folding it again. Multiplying by a 6×6 rotation matrix directly leaves the shear rows off by a factor of two or four. It is a quieter bug than locking, which is exactly why it survives longer.
+
+## MITC — Read the Strain at a Point, Then Interpolate It Again
+
+The fix is one sentence. **Do not obtain transverse shear strain by differentiating the displacement field; read it at prescribed tying points and interpolate those values instead.** For MITC4, $\gamma_r$ is read at $A(0,-1)$ and $C(0,+1)$, and $\gamma_s$ at $B(1,0)$ and $D(-1,0)$.
+
+$$
+\gamma_r^{\text{MITC}}(r,s) = \frac{1-s}{2}\,\gamma_r(0,-1) + \frac{1+s}{2}\,\gamma_r(0,+1)
+$$
+
+The key detail is that $r$ does not appear on the right-hand side at all. The spurious $-\kappa r$ was linear in $r$, and this interpolation has nowhere to put such a term. Switch between modes below and check it directly.
+
+<MitcTyingBoard />
+
+In `pure bending` the mid-surface stays flat while the directors fan out. The angle of each red wedge between them is shear strain the element invented, and the wedge closes only at $r = 0$. Switch to `true shear` and the blue MITC curve lands exactly on the red one. Tying erases the fake strain and leaves the real one alone.
+
+It is easy to confuse this with reduced integration, but the two agree only in the special one-dimensional case. Reduced integration drops integration points to soften the stiffness matrix, which invites zero-energy (hourglass) modes. MITC leaves the integration alone and changes the strain interpolation space itself. The stiffness is still integrated exactly, and no rank deficiency appears.
+
+## Where MITC3+ and MITC4 Put Their Points
+
+For the quadrilateral MITC4, those two pairs are the whole story. Triangles are harder. There is no obvious tying layout that treats three edges symmetrically while staying isotropic, and the original MITC3 converged poorly on distorted meshes.
+
+MITC3+ adds one bubble degree of freedom to the rotation field at the element centre and moves the tying points inward, away from the edge midpoints. In exchange for that extra degree of freedom, it achieves uniformly optimal convergence — independent of thickness — even on distorted triangular meshes. That difference matters in practice, where arbitrary curved surfaces have to be covered with triangles.
+
+## Counting the Locking Factor in Python
+
+I put both formulations in the same code and compared the cantilever tip deflection against theory. Only the shear rule differs, by one line.
+
+```python
+import numpy as np
+
+E, NU, KS, B = 210e9, 0.3, 5.0 / 6.0, 1.0        # modulus, Poisson ratio, shear factor, width
+G = E / (2 * (1 + NU))
+GAUSS = (-3 ** -0.5, 3 ** -0.5)
+
+
+def strain_operators(h, tied):
+    """B matrices of a 2-node linear element. tied=True reads shear only at xi=0."""
+    Bb = np.array([0.0, -1 / h, 0.0, 1 / h])                      # phi'
+    if tied:                                                      # MITC tying
+        rules = [(np.array([-1 / h, -0.5, 1 / h, -0.5]), h)]
+    else:                                                         # 2-point Gauss: exact
+        rules = [(np.array([-1 / h, -(1 - x) / 2, 1 / h, -(1 + x) / 2]), h / 2)
+                 for x in GAUSS]
+    return Bb, rules
+
+
+def solve_tip(L, t, nel, tied, P=1.0):
+    EI, GA = E * B * t ** 3 / 12, KS * G * B * t
+    h, ndof = L / nel, 2 * (nel + 1)
+    Bb, rules = strain_operators(h, tied)
+    Ke = EI * h * np.outer(Bb, Bb) + sum(GA * w * np.outer(Bs, Bs) for Bs, w in rules)
+    K = np.zeros((ndof, ndof))
+    for e in range(nel):
+        idx = [2 * e, 2 * e + 1, 2 * e + 2, 2 * e + 3]
+        K[np.ix_(idx, idx)] += Ke
+    f = np.zeros(ndof)
+    f[-2] = P                                                     # transverse tip load
+    u = np.zeros(ndof)
+    free = np.arange(2, ndof)                                     # clamped end w0 = phi0 = 0
+    u[free] = np.linalg.solve(K[np.ix_(free, free)], f[free])
+    Ub = sum(0.5 * EI * h * (Bb @ u[2 * e:2 * e + 4]) ** 2 for e in range(nel))
+    Us = sum(0.5 * GA * w * (Bs @ u[2 * e:2 * e + 4]) ** 2
+             for e in range(nel) for Bs, w in rules)
+    return u[-2], Us / (Ub + Us)
+
+
+def exact_tip(L, t, P=1.0):
+    EI, GA = E * B * t ** 3 / 12, KS * G * B * t
+    return P * L ** 3 / (3 * EI) + P * L / GA                     # bending + shear
+
+
+def sweep_slenderness(nel):
+    print(f"nel = {nel:2d}    w_fem / w_exact          shear energy fraction")
+    print("  L/t       full        tied            full      tied")
+    for ratio in (5, 20, 100, 500, 2000):
+        L, t = 1.0, 1.0 / ratio
+        ex = exact_tip(L, t)
+        wf, ff = solve_tip(L, t, nel, tied=False)
+        wm, fm = solve_tip(L, t, nel, tied=True)
+        print(f"{ratio:5d}   {wf / ex:10.5f}   {wm / ex:10.5f}"
+              f"      {ff:8.4f}   {fm:.4f}")
+
+
+sweep_slenderness(4)
+print()
+sweep_slenderness(32)
+```
+
+```text
+nel =  4    w_fem / w_exact          shear energy fraction
+  L/t       full        tied            full      tied
+    5      0.66631      0.98485        0.3639   0.0307
+   20      0.11095      0.98441        0.8910   0.0020
+  100      0.00497      0.98438        0.9951   0.0001
+  500      0.00020      0.98438        0.9998   0.0000
+ 2000      0.00001      0.98438        1.0000   0.0000
+
+nel = 32    w_fem / w_exact          shear energy fraction
+  L/t       full        tied            full      tied
+    5      0.99224      0.99976        0.0380   0.0303
+   20      0.88873      0.99976        0.1132   0.0019
+  100      0.24213      0.99976        0.7579   0.0001
+  500      0.01262      0.99976        0.9874   0.0000
+ 2000      0.00080      0.99976        0.9992   0.0000
+```
+
+Three things stand out. First, the full-integration column drops by roughly a factor of 100 every time $L/t$ grows tenfold — the $(L/t)^2$ penalty, visible directly. Second, the tied column is pinned at 0.98438 regardless of thickness. The remaining 1.5% is not locking but the discretization error of a four-element mesh; with 32 elements it becomes 0.99976. Third, the shear energy fraction settles the diagnosis. At $L/t = 2000$ the fully integrated element spends 100% of its energy on shear. A bending problem is being carried entirely by shear.
+
+Look at the 32-element table too. Even with an eightfold finer mesh, $L/t = 500$ leaves you at 1.3% of the right answer. Locking is not an error you can out-refine.
+
+## Before Bolting a Shell Onto a Coupled Solver
+
+In CFD, shells usually appear in coupled analysis. A thin plate or membrane rides the flow, and its displacement feeds back into the mesh or into [immersed boundary markers](/en/posts/2026-05-15-peskin-ibm-direct-forcing-discrete-delta/). Locking gives quietly wrong answers here. An over-stiff structure pushes its natural frequencies up, and flutter onset velocity and added-mass effects all shift with them. The residual still drops, the iteration still converges. The wrong part is the stiffness matrix.
+
+So there are three things to check before attaching shell elements. Does the normalized deflection hold when you increase slenderness tenfold? Does it hold when you deliberately distort the elements? And if you need large deformation, does the initial-stress (geometric stiffness) term follow the same coordinate transformation rules? The first two take thirty minutes with a single cantilever. Skip them, and you will end up hunting for the cause on the fluid side.

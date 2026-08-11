@@ -1,0 +1,190 @@
+---
+title: "越薄反而越硬 — 壳单元的剪切闭锁与MITC绑定"
+date: 2026-08-12
+description: "线性壳单元越薄就越不合理地变硬。原因只有一个：剪切应变是从位移场求导得来的。"
+tags: ["MITC", "Shell-Element", "FEM", "Structural-Analysis", "FSI"]
+locale: zh
+slug: 2026-08-12-mitc-shell-shear-locking
+takeaway: "闭锁不是单元太弱，而是因为剪切应变由求导得到。MITC 改为在绑定点上读取该应变再重新插值。"
+draft: false
+---
+
+import { ShearLockingBeamBench } from '@/components/post-viz/2026-08-12-mitc-shell-shear-locking/ShearLockingBeamBench'
+import { MitcTyingBoard } from '@/components/post-viz/2026-08-12-mitc-shell-shear-locking/MitcTyingBoard'
+
+为流固耦合分析写了一段壳单元代码，用悬臂梁做验证。厚度 0.2 m 时，挠度与理论值吻合到小数点后三位。把厚度降到 2 mm，挠度变成理论值的 0.5%。载荷、网格、材料参数都没有动。本文讨论这个 200 倍的差距从何而来，以及 MITC（Mixed Interpolation of Tensorial Components，张量分量混合插值）改动了代码的哪一行来消除它。
+
+## 单元变薄之后，答案僵住了
+
+先看现象。在下面的模拟中拖动细长比滑块。
+
+<ShearLockingBeamBench />
+
+红色梁是完全积分（full integration）单元。把 $L/t$ 提到 100，它在肉眼尺度上几乎不弯曲。蓝色梁只在单元中央一点读取剪切应变，无论细长比多大，形状都不变。右下角能量条中的红色区域就是剪切能量。
+
+这种现象叫剪切闭锁（shear locking）。问题不是单元太弱，恰恰相反：出现了本不该存在的刚度，把结构拽住了。加密网格能缓解，但不能消除。把单元从 4 个增加到 32 个，在 $L/t = 500$ 时仍然只有正确答案的 1.3%。
+
+## 两种能量之比按细长比的平方拉开
+
+Reissner–Mindlin 壳理论假设厚度方向的纤维（director，法向纤维）变形后仍保持直线，但不必垂直于中面。于是应变能中留下两项。
+
+$$
+\Pi = \frac{1}{2}\int_A \left( D\,\kappa^{2} + k\,G\,t\,\gamma^{2} \right) dA, \qquad D = \frac{E\,t^{3}}{12(1-\nu^{2})}
+$$
+
+$\kappa$ 是弯曲曲率，$\gamma$ 是横向剪切应变，$D$ 是弯曲刚度，$k = 5/6$ 是剪切修正系数。弯曲刚度与厚度的三次方成正比，剪切刚度与厚度的一次方成正比。看两者之比。
+
+$$
+\frac{k\,G\,t}{D} = \frac{6\,k\,(1-\nu)}{t^{2}}
+$$
+
+取 $\nu = 0.3$、$k = 5/6$，系数是 $3.5/t^{2}$。用单元长度无量纲化后，这个值按 $(L/t)^2$ 增长。也就是说，剪切项是压在弯曲项前面的一个巨大罚项。
+
+在连续理论里这不成问题。厚度变小时 $\gamma$ 以同样的速度趋于零，乘积保持有限。这就是 Kirchhoff 极限。问题在于离散单元能否表示 $\gamma = 0$。
+
+## 线性单元做不出零剪切应变
+
+降到一维，原因一行就能看清。考虑一个用同样线性形函数插值挠度 $w$ 和截面转角 $\phi$ 的两节点单元。横向剪切应变的定义是
+
+$$
+\gamma(r) = \frac{\partial w}{\partial r} - \phi
+$$
+
+把纯弯曲状态直接加到节点上。曲率为 $\kappa$ 的弯曲意味着 $w = \tfrac{1}{2}\kappa r^{2}$、$\phi = \kappa r$。单元节点在 $r = \pm 1$，所以两个节点挠度都等于 $\kappa/2$。对两个相等值做线性插值，结果是常数。
+
+$$
+w_h(r) = \frac{\kappa}{2}, \qquad \phi_h(r) = \kappa r \;\;\Longrightarrow\;\; \gamma_h(r) = 0 - \kappa r = -\kappa r
+$$
+
+转角是一次函数，能被精确再现；挠度是二次的，再现不了。这个不匹配全部流进 $\gamma_h$。真实的 $\gamma$ 是零，单元却带着 $-\kappa r$，而这个值还要乘上 $3.5/t^2$ 的罚项。在[桁架有限元](/zh/posts/2026-07-10-direct-stiffness-method-truss-fem/)里只有一个轴向应变，不会出现这种配对。闭锁出现在应变有多个、其中一个必须消失的时候。
+
+这里有一个关键观察。$\gamma_h = -\kappa r$ 在 $r = 0$ 处恰好为零。错误的值并非均匀地铺满整个单元，而是有一个点是对的。
+
+## 壳有三套坐标系 — 该在哪里动手
+
+一维梁只要说"在单元中央读取"就够了。曲面壳则要先确定这句话写在哪套坐标系里。壳单元有三套坐标系。自然坐标 $(r, s, t)$ 把单元展平成 $[-1,1]^3$ 立方体，供计算使用。局部坐标是与中面相切的板坐标系，整体坐标 $(x, y, z)$ 则是装配和加载所在的地方。
+
+动应变的地方是自然坐标。用自然坐标的基向量 $\mathbf{g}_i = \partial \mathbf{x}/\partial \xi^i$ 度量的协变（covariant）分量，与单元几何无关地保持同一个物理含义。
+
+$$
+\varepsilon_{ij} = \frac{1}{2}\left( \mathbf{g}_i \cdot \frac{\partial \mathbf{u}}{\partial \xi^{j}} + \mathbf{g}_j \cdot \frac{\partial \mathbf{u}}{\partial \xi^{i}} \right)
+$$
+
+即使单元被压扁，$\varepsilon_{rt}$ 仍然是"$r$ 方向的线与厚度方向纤维之间的夹角变化"。在整体坐标里做同样的绑定，绑定的对象会随单元形状而改变。
+
+反过来，本构关系和 $B$ 矩阵需要在整体坐标下使用。于是又多一次变换，而这里有个常见陷阱。按工程剪应变的约定，Voigt 记法的第 4、5、6 个分量上乘了 2。把 $B$ 从自然坐标搬到整体坐标时，必须先把 Voigt 向量还原成 3×3 对称张量（剪切项减半），旋转之后再折回去。直接乘一个 6×6 旋转矩阵，剪切行会差 2 倍或 4 倍。它不像闭锁那样显眼，所以能活得更久。
+
+## MITC — 在点上读取应变，再重新插值
+
+解法只有一句话。**不要用位移场求导来得到横向剪切应变，而是在指定的绑定点（tying point）上读取，再对这些值做插值。** 对 MITC4，$\gamma_r$ 在 $A(0,-1)$ 和 $C(0,+1)$ 两点读取，$\gamma_s$ 在 $B(1,0)$ 和 $D(-1,0)$ 两点读取。
+
+$$
+\gamma_r^{\text{MITC}}(r,s) = \frac{1-s}{2}\,\gamma_r(0,-1) + \frac{1+s}{2}\,\gamma_r(0,+1)
+$$
+
+关键在于右端根本没有出现 $r$。前面那个 $-\kappa r$ 关于 $r$ 是一次的，而这个插值里没有地方装这样的项。在下面切换模式，直接验证一下。
+
+<MitcTyingBoard />
+
+在 `pure bending` 模式下，中面是平的，法向纤维却像扇子一样张开。它们之间红色楔形的角度就是单元凭空造出的剪切应变，只有在 $r = 0$ 处楔形闭合。切到 `true shear`，蓝色 MITC 曲线正好压在红色曲线上。绑定只抹掉假的应变，不碰真的。
+
+它容易和减缩积分（reduced integration）混淆，但两者结果一致只发生在一维这个特例上。减缩积分靠减少积分点让刚度矩阵变软，因此容易招来零能模式（沙漏模式）。MITC 保持积分不变，改的是应变插值空间本身。刚度仍然被精确积分，也不会出现秩亏。
+
+## MITC3+ 和 MITC4 把点放在哪里
+
+四边形的 MITC4 到这两对就结束了。三角形要麻烦得多。既要对称处理三条边又要保持各向同性的绑定布置并不显然，早期的 MITC3 在畸变网格上收敛很差。
+
+MITC3+ 在转角场上增加一个位于单元中心的气泡（bubble）自由度，并把绑定点从三条边的中点向内收。代价是多一个自由度，换来的是在畸变三角网格上也能得到与厚度无关的（uniformly optimal）收敛。在必须用三角形覆盖任意曲面的工程实践中，这个差别很大。
+
+## 用 Python 数出的闭锁系数
+
+把两种格式放进同一段代码，把悬臂梁自由端挠度与理论值对比。区别只有剪切规则那一行。
+
+```python
+import numpy as np
+
+E, NU, KS, B = 210e9, 0.3, 5.0 / 6.0, 1.0        # 弹性模量、泊松比、剪切修正系数、宽度
+G = E / (2 * (1 + NU))
+GAUSS = (-3 ** -0.5, 3 ** -0.5)
+
+
+def strain_operators(h, tied):
+    """两节点线性单元的B矩阵。tied=True 时只在 xi=0 一点读取剪切。"""
+    Bb = np.array([0.0, -1 / h, 0.0, 1 / h])                      # phi'
+    if tied:                                                      # MITC绑定
+        rules = [(np.array([-1 / h, -0.5, 1 / h, -0.5]), h)]
+    else:                                                         # 两点高斯：精确积分
+        rules = [(np.array([-1 / h, -(1 - x) / 2, 1 / h, -(1 + x) / 2]), h / 2)
+                 for x in GAUSS]
+    return Bb, rules
+
+
+def solve_tip(L, t, nel, tied, P=1.0):
+    EI, GA = E * B * t ** 3 / 12, KS * G * B * t
+    h, ndof = L / nel, 2 * (nel + 1)
+    Bb, rules = strain_operators(h, tied)
+    Ke = EI * h * np.outer(Bb, Bb) + sum(GA * w * np.outer(Bs, Bs) for Bs, w in rules)
+    K = np.zeros((ndof, ndof))
+    for e in range(nel):
+        idx = [2 * e, 2 * e + 1, 2 * e + 2, 2 * e + 3]
+        K[np.ix_(idx, idx)] += Ke
+    f = np.zeros(ndof)
+    f[-2] = P                                                     # 自由端横向载荷
+    u = np.zeros(ndof)
+    free = np.arange(2, ndof)                                     # 固定端 w0 = phi0 = 0
+    u[free] = np.linalg.solve(K[np.ix_(free, free)], f[free])
+    Ub = sum(0.5 * EI * h * (Bb @ u[2 * e:2 * e + 4]) ** 2 for e in range(nel))
+    Us = sum(0.5 * GA * w * (Bs @ u[2 * e:2 * e + 4]) ** 2
+             for e in range(nel) for Bs, w in rules)
+    return u[-2], Us / (Ub + Us)
+
+
+def exact_tip(L, t, P=1.0):
+    EI, GA = E * B * t ** 3 / 12, KS * G * B * t
+    return P * L ** 3 / (3 * EI) + P * L / GA                     # 弯曲 + 剪切
+
+
+def sweep_slenderness(nel):
+    print(f"nel = {nel:2d}    w_fem / w_exact          shear energy fraction")
+    print("  L/t       full        tied            full      tied")
+    for ratio in (5, 20, 100, 500, 2000):
+        L, t = 1.0, 1.0 / ratio
+        ex = exact_tip(L, t)
+        wf, ff = solve_tip(L, t, nel, tied=False)
+        wm, fm = solve_tip(L, t, nel, tied=True)
+        print(f"{ratio:5d}   {wf / ex:10.5f}   {wm / ex:10.5f}"
+              f"      {ff:8.4f}   {fm:.4f}")
+
+
+sweep_slenderness(4)
+print()
+sweep_slenderness(32)
+```
+
+```text
+nel =  4    w_fem / w_exact          shear energy fraction
+  L/t       full        tied            full      tied
+    5      0.66631      0.98485        0.3639   0.0307
+   20      0.11095      0.98441        0.8910   0.0020
+  100      0.00497      0.98438        0.9951   0.0001
+  500      0.00020      0.98438        0.9998   0.0000
+ 2000      0.00001      0.98438        1.0000   0.0000
+
+nel = 32    w_fem / w_exact          shear energy fraction
+  L/t       full        tied            full      tied
+    5      0.99224      0.99976        0.0380   0.0303
+   20      0.88873      0.99976        0.1132   0.0019
+  100      0.24213      0.99976        0.7579   0.0001
+  500      0.01262      0.99976        0.9874   0.0000
+ 2000      0.00080      0.99976        0.9992   0.0000
+```
+
+可以读出三点。第一，完全积分那一列，每当 $L/t$ 增大十倍就大约缩小到百分之一，$(L/t)^2$ 的罚项直接显形。第二，绑定那一列不随厚度变化，固定在 0.98438。剩下的 1.5% 不是闭锁，而是四单元网格的离散误差，加到 32 个单元就变成 0.99976。第三，剪切能量占比坐实了原因。$L/t = 2000$ 时，完全积分单元把 100% 的能量都花在剪切上。明明是弯曲问题，却全靠剪切在撑。
+
+再看 32 单元的那张表。网格加密八倍，$L/t = 500$ 时仍只有正确答案的 1.3%。闭锁不是靠加密网格能赢的误差。
+
+## 把壳装进流固耦合代码之前
+
+在 CFD 这一侧，壳通常出现在耦合分析里。薄板或薄膜随流动摆动，其位移再传回网格或[浸没边界标记点](/zh/posts/2026-05-15-peskin-ibm-direct-forcing-discrete-delta/)。这时闭锁会安静地给出错误答案。结构过硬会把固有频率推高，颤振起始速度和附加质量效应也会随之一起偏移。残差照样下降，迭代照样收敛，出错的是刚度矩阵。
+
+所以在接入壳单元之前有三件事要确认。细长比提高十倍时，归一化挠度能否保持？故意把单元弄畸变后，这个值还站得住吗？如果需要大变形，初始应力（几何刚度）项是否也遵循同一套坐标变换规则？前两件用一根悬臂梁半小时就能做完。跳过它们，之后就会到流体那一侧去找原因。
