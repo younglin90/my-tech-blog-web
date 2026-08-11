@@ -321,7 +321,7 @@ export default async function PostPage({ params }: PostProps) {
               </span>
             )}
             {post.wordCount && (
-              <span>
+              <span className="hidden sm:inline">
                 WORDS <span className="tabular" style={{ color: 'var(--text)' }}>{post.wordCount.toLocaleString()}</span>
               </span>
             )}
@@ -349,7 +349,7 @@ export default async function PostPage({ params }: PostProps) {
       <h1
         className="display"
         style={{
-          fontSize: 38,
+          fontSize: 'clamp(1.75rem, 7vw, 38px)',
           fontWeight: 700,
           letterSpacing: '-0.025em',
           lineHeight: 1.15,
@@ -360,13 +360,18 @@ export default async function PostPage({ params }: PostProps) {
         {post.title}
       </h1>
 
-      {post.description && (() => {
+      {(() => {
+        // 데크는 독자가 처음 읽는 한 문장이다. description은 SERP 스니펫이라
+        // 검색으로 들어온 사람에게는 방금 본 문장을 그대로 반복하는 셈이 된다.
+        // takeaway가 있으면 그걸 쓴다 (신규 글부터 — daily-post.md 참고).
+        const dek = (post as unknown as { takeaway?: string }).takeaway || post.description
+        if (!dek) return null
         const day = dayMeta(post.date)
         return (
           <p
             className="display"
             style={{
-              fontSize: 19,
+              fontSize: 'clamp(1rem, 4.4vw, 19px)',
               fontStyle: 'italic',
               color: 'var(--text)',
               lineHeight: 1.6,
@@ -376,7 +381,7 @@ export default async function PostPage({ params }: PostProps) {
               borderLeft: `2px solid ${day.colorVar}`,
             }}
           >
-            {post.description}
+            {dek}
           </p>
         )
       })()}
@@ -390,20 +395,6 @@ export default async function PostPage({ params }: PostProps) {
       <ReadingPosition postId={post.slug} />
       <QuoteShare />
       <LinkPreview />
-
-      <div className="mt-12 flex flex-wrap items-center justify-between gap-3 border-t pt-6" style={{ borderColor: 'var(--border)' }}>
-        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{t(loc, 'post.share')}</p>
-        <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:justify-end">
-          <ReadingFontSize />
-          <ReadingFocusMode />
-          <CiteButton title={post.title} date={post.date} slug={post.slug} />
-          <BookmarkButton postId={post.slug} />
-          <PrintButton />
-          <ShareButton title={post.title} />
-        </div>
-      </div>
-
-      <PostSourceLinks locale={loc} slug={post.slug} />
 
       {related.length > 0 && (
         <div className="mt-10">
@@ -482,6 +473,20 @@ export default async function PostPage({ params }: PostProps) {
           </Link>
         ) : <div />}
       </nav>
+
+      <div className="mt-12 flex flex-wrap items-center justify-between gap-3 border-t pt-6" style={{ borderColor: 'var(--border)' }}>
+        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{t(loc, 'post.share')}</p>
+        <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:justify-end">
+          <ReadingFontSize />
+          <ReadingFocusMode />
+          <CiteButton title={post.title} date={post.date} slug={post.slug} />
+          <BookmarkButton postId={post.slug} />
+          <PrintButton />
+          <ShareButton title={post.title} />
+        </div>
+      </div>
+
+      <PostSourceLinks locale={loc} slug={post.slug} />
 
       <PostFeedback postId={post.slug} />
 
