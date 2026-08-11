@@ -4,6 +4,7 @@ import { LOCALES, isLocale, t, type Locale } from '@/lib/i18n'
 import { CALCULATORS } from '@/lib/calculators'
 import { ToolsCatalog } from '@/components/ToolsCatalog'
 import { SITE_URL } from '@/lib/site'
+import { ogFallbackImages } from '@/lib/og'
 
 interface Props { params: Promise<{ locale: string }> }
 
@@ -33,6 +34,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
       url,
       siteName: "Younglin's CFD Blog",
       type: 'website',
+      images: ogFallbackImages(SITE_URL, loc),
     },
     twitter: {
       card: 'summary_large_image',

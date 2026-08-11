@@ -5,6 +5,7 @@ import { notFound } from 'next/navigation'
 import type { Metadata } from 'next'
 import { LOCALES, isLocale, t, SITE_NAMES, hreflangAlternates, type Locale } from '@/lib/i18n'
 import { SITE_URL } from '@/lib/site'
+import { ogFallbackImages } from '@/lib/og'
 import { jsonLdHtml, WEBSITE_ID } from '@/lib/jsonld'
 import { postsForLocale, isTagIndexable } from '@/lib/tags'
 
@@ -36,7 +37,7 @@ export async function generateMetadata({ params }: TagPageProps): Promise<Metada
       canonical: url,
       languages: hreflangAlternates(`/tags/${tag}`),
     },
-    openGraph: { title, description, url, siteName: SITE_NAMES[loc], type: 'website' },
+    openGraph: { title, description, url, siteName: SITE_NAMES[loc], type: 'website', images: ogFallbackImages(SITE_URL, loc) },
     twitter: { card: 'summary_large_image', title, description },
   }
 }

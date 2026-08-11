@@ -35,6 +35,10 @@ export async function generateMetadata({ params }: LocaleLayoutProps): Promise<M
       siteName,
       locale: OG_LOCALE[loc],
       type: 'website',
+      // 자식 라우트가 자기 opengraph-image를 갖고 있지 않으면 이걸 물려받는다.
+      // 태그 상세 약 1,970개마다 카드를 굽는 건 빌드 시간·파일 수 대비 이득이 없고,
+      // 대부분 noindex 대상이다. 공유될 때 빈 카드로 나가지 않게만 보장한다.
+      images: [{ url: `${SITE_URL}/${loc}/opengraph-image`, width: 1200, height: 630 }],
     },
     twitter: {
       card: 'summary_large_image',

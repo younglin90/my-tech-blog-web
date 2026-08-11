@@ -4,6 +4,7 @@ import { format, parseISO, compareDesc } from 'date-fns'
 import type { Metadata } from 'next'
 import { LOCALES, isLocale, t, type Locale } from '@/lib/i18n'
 import { SITE_URL } from '@/lib/site'
+import { ogFallbackImages } from '@/lib/og'
 import { postsForLocale } from '@/lib/tags'
 import { dayMeta } from '@/lib/day-meta'
 
@@ -40,7 +41,7 @@ export async function generateMetadata({ params }: ArchiveProps): Promise<Metada
         'x-default': `${SITE_URL}/en/posts`,
       },
     },
-    openGraph: { title, description, url, type: 'website' },
+    openGraph: { title, description, url, type: 'website', images: ogFallbackImages(SITE_URL, loc) },
     twitter: { card: 'summary_large_image', title, description },
   }
 }

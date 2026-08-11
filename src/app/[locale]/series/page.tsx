@@ -4,6 +4,7 @@ import type { Metadata } from 'next'
 import { LOCALES, isLocale, t, SITE_NAMES, hreflangAlternates, type Locale } from '@/lib/i18n'
 import { listAllSeries } from '@/lib/series'
 import { SITE_URL } from '@/lib/site'
+import { ogFallbackImages } from '@/lib/og'
 
 interface Props {
   params: Promise<{ locale: string }>
@@ -32,6 +33,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
       url,
       siteName: SITE_NAMES[loc],
       type: 'website',
+      images: ogFallbackImages(SITE_URL, loc),
     },
     twitter: {
       card: 'summary_large_image',
