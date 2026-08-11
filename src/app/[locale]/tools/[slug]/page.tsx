@@ -1,13 +1,14 @@
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
 import type { Metadata } from 'next'
-import { LOCALES, isLocale, t, type Locale } from '@/lib/i18n'
+import { LOCALES, isLocale, t, SITE_NAMES, type Locale } from '@/lib/i18n'
 import { CALCULATORS, getCategoryLabel } from '@/lib/calculators'
 import { CALCULATOR_COMPONENTS } from '@/components/calculators'
 import { ToolFormula } from '@/components/ToolFormula'
 import { ToolInsightPanel } from '@/components/ToolInsightPanel'
 import { ToolViewTracker } from '@/components/ToolViewTracker'
 import { SITE_URL } from '@/lib/site'
+import { jsonLdHtml, PERSON_ID, ORG_ID, WEBSITE_ID } from '@/lib/jsonld'
 
 interface Props {
   params: Promise<{ locale: string; slug: string }>
@@ -73,43 +74,46 @@ export default async function CalculatorPage({ params }: Props) {
     .filter((entry) => entry.score > 0)
     .sort((a, b) => b.score - a.score)
     .slice(0, 4)
+  const toolUrl = `${SITE_URL}/${loc}/tools/${meta.slug}/`
   const jsonLd = {
     '@context': 'https://schema.org',
     '@type': 'WebApplication',
+    '@id': `${toolUrl}#app`,
     name: meta.title[loc] ?? meta.title.en,
     description: meta.desc[loc] ?? meta.desc.en,
     applicationCategory: 'DeveloperApplication',
+    applicationSubCategory: getCategoryLabel(meta.category, loc),
     operatingSystem: 'Any',
     browserRequirements: 'Requires JavaScript',
-    url: `${SITE_URL}/${loc}/tools/${meta.slug}`,
+    url: toolUrl,
     inLanguage: loc,
+    keywords: meta.tags.join(', '),
+    isPartOf: { '@id': WEBSITE_ID },
+    publisher: { '@id': ORG_ID },
+    author: { '@id': PERSON_ID },
     offers: {
       '@type': 'Offer',
       price: '0',
       priceCurrency: 'USD',
     },
-    breadcrumb: {
-      '@type': 'BreadcrumbList',
-      itemListElement: [
-        {
-          '@type': 'ListItem',
-          position: 1,
-          name: t(loc, 'nav.tools'),
-          item: `${SITE_URL}/${loc}/tools`,
-        },
-        {
-          '@type': 'ListItem',
-          position: 2,
-          name: meta.title[loc] ?? meta.title.en,
-          item: `${SITE_URL}/${loc}/tools/${meta.slug}`,
-        },
-      ],
-    },
+  }
+
+  // BreadcrumbList는 최상위 노드여야 Google이 브레드크럼 리치 결과로 인식한다.
+  // 예전에는 WebApplication의 breadcrumb 속성 안에 중첩돼 있었고 사이트 루트도 빠져 있었다.
+  const breadcrumbJsonLd = {
+    '@context': 'https://schema.org',
+    '@type': 'BreadcrumbList',
+    itemListElement: [
+      { '@type': 'ListItem', position: 1, name: SITE_NAMES[loc], item: `${SITE_URL}/${loc}/` },
+      { '@type': 'ListItem', position: 2, name: t(loc, 'nav.tools'), item: `${SITE_URL}/${loc}/tools/` },
+      { '@type': 'ListItem', position: 3, name: meta.title[loc] ?? meta.title.en, item: toolUrl },
+    ],
   }
 
   return (
     <div>
-      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }} />
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: jsonLdHtml(jsonLd) }} />
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: jsonLdHtml(breadcrumbJsonLd) }} />
       <ToolViewTracker slug={meta.slug} />
       <Link href={`/${loc}/tools`} className="mono mb-3 inline-block" style={{ fontSize: 12, color: 'var(--text-muted)' }}>
         <span style={{ color: 'var(--accent)' }}>$</span> cd ..
