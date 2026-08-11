@@ -25,9 +25,10 @@ import { getSeriesContext } from '@/lib/series'
 import { PrintButton } from '@/components/PrintButton'
 import { BookmarkButton } from '@/components/BookmarkButton'
 import { dayMeta } from '@/lib/day-meta'
-import { LOCALES, isLocale, t, type Locale } from '@/lib/i18n'
+import { LOCALES, isLocale, t, SITE_NAMES, OG_LOCALE, HREFLANG, hreflangAlternates, type Locale } from '@/lib/i18n'
 import type { Metadata } from 'next'
 import { SITE_URL } from '@/lib/site'
+import { jsonLdHtml, PERSON_ID, ORG_ID, WEBSITE_ID, titleFromSlug } from '@/lib/jsonld'
 
 interface PostProps {
   params: Promise<{ locale: string; slug: string }>
@@ -56,14 +57,61 @@ function getPublishedPostsForLocale(locale: Locale) {
   return Array.from(bySlug.values()).sort((a, b) => compareDesc(parseISO(a.date), parseISO(b.date)))
 }
 
+/**
+ * 관련 글 추천.
+ *
+ * 예전 구현은 공유 태그 "개수"만 셌다. 그러면 CFD·Multiphase 같은 흔한 태그가 희귀 태그와
+ * 같은 무게를 갖고, 동점이면 JS의 안정 정렬이 항상 최신 글에 몰아준다. 그 결과 최근 40편은
+ * 평균 5.67개의 인바운드를 받고 오래된 40편은 1.32개, 28편은 0개였다.
+ *
+ * IDF 가중 코사인 유사도로 바꾸고, 동점은 (같은 시리즈 → 발행일 근접 → slug) 순으로
+ * 결정론적으로 깬다. 이미 많이 참조된 글에는 작은 페널티를 준다. 그리고 유사한 글이
+ * 부족하면 시리즈 → 시간적 이웃 → 인바운드가 가장 적은 글 순으로 반드시 3개를 채운다.
+ */
 function getRelatedPosts(locale: Locale, slug: string, tags: string[], limit = 3) {
-  return getPublishedPostsForLocale(locale)
+  const all = getPublishedPostsForLocale(locale)
+  const N = all.length
+
+  const df = new Map<string, number>()
+  for (const p of all) for (const tg of p.tags ?? []) df.set(tg, (df.get(tg) ?? 0) + 1)
+  const idf = (tg: string) => Math.log(1 + N / (df.get(tg) ?? 1))
+
+  // 각 글이 현재 몇 번이나 남의 추천 목록에 뽑히는지를 근사 — 흔한 태그를 많이 단 글일수록 높다
+  const pull = (p: (typeof all)[number]) => (p.tags ?? []).reduce((a, tg) => a + (df.get(tg) ?? 1), 0)
+  const maxPull = Math.max(1, ...all.map(pull))
+
+  const self = new Set(tags)
+  const selfNorm = Math.sqrt([...self].reduce((a, tg) => a + idf(tg) ** 2, 0)) || 1
+  const here = all.find((p) => p.slug === slug)
+  const hereTime = here ? parseISO(here.date).getTime() : 0
+  const hereSeries = (here as unknown as { series?: string } | undefined)?.series
+
+  const scored = all
     .filter((p) => p.slug !== slug)
-    .map((p) => ({ post: p, score: (p.tags ?? []).filter((t) => tags.includes(t)).length }))
-    .filter(({ score }) => score > 0)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, limit)
-    .map(({ post }) => post)
+    .map((p) => {
+      const pt = p.tags ?? []
+      const norm = Math.sqrt(pt.reduce((a, tg) => a + idf(tg) ** 2, 0)) || 1
+      const dot = pt.filter((tg) => self.has(tg)).reduce((a, tg) => a + idf(tg) ** 2, 0)
+      const sim = dot / (selfNorm * norm)
+      const sameSeries = hereSeries && (p as unknown as { series?: string }).series === hereSeries
+      return {
+        post: p,
+        score: sim + (sameSeries ? 0.35 : 0) - 0.08 * (pull(p) / maxPull),
+        dt: Math.abs(parseISO(p.date).getTime() - hereTime),
+      }
+    })
+    .sort((a, b) => b.score - a.score || a.dt - b.dt || a.post.slug.localeCompare(b.post.slug))
+
+  const out = scored.filter((x) => x.score > 0).slice(0, limit).map((x) => x.post)
+
+  // 항상 3개를 채운다 — 태그가 겹치지 않는 글도 발행일이 가까운 이웃은 읽을 만하다
+  if (out.length < limit) {
+    for (const x of scored) {
+      if (out.length >= limit) break
+      if (!out.includes(x.post)) out.push(x.post)
+    }
+  }
+  return out
 }
 
 export async function generateStaticParams() {
@@ -77,31 +125,38 @@ export async function generateMetadata({ params }: PostProps): Promise<Metadata>
   const found = findPost(locale as Locale, slug)
   if (!found) return {}
   const { post } = found
+  const loc = locale as Locale
+  // 빌드 시 계산된 SERP 설명. frontmatter description은 ko 중앙값 41자로 스니펫 예산의
+  // 절반밖에 못 쓴다 (contentlayer.config.ts의 seoDescription 참고).
+  const seo = post.seoDescription || post.description
+
   return {
-    title: post.title,
-    description: post.description,
+    // absolute — " | Younglin's CFD Blog" 접미사(16~21자)를 붙이지 않는다.
+    // ko 제목 중앙값이 42자라 접미사까지 붙으면 100%가 SERP에서 잘린다.
+    title: { absolute: post.title },
+    description: seo,
     keywords: post.tags ?? [],
     alternates: {
-      canonical: `${SITE_URL}/${locale}/posts/${slug}`,
-      languages: {
-        ...Object.fromEntries(LOCALES.map((l) => [l, `${SITE_URL}/${l}/posts/${slug}`])),
-        'x-default': `${SITE_URL}/en/posts/${slug}`,
-      },
+      canonical: `${SITE_URL}/${locale}/posts/${slug}/`,
+      languages: hreflangAlternates(`/posts/${slug}`),
     },
     openGraph: {
       title: post.title,
-      description: post.description,
+      description: seo,
       type: 'article',
       publishedTime: post.date,
-      url: `${SITE_URL}/${locale}/posts/${slug}`,
-      authors: [`${SITE_URL}/${locale}/about`],
+      modifiedTime: (post as unknown as { updated?: string }).updated ?? post.date,
+      url: `${SITE_URL}/${locale}/posts/${slug}/`,
+      siteName: SITE_NAMES[loc],
+      authors: [`${SITE_URL}/${locale}/about/`],
       tags: post.tags,
-      locale: locale,
+      locale: OG_LOCALE[loc],
+      alternateLocale: LOCALES.filter((l) => l !== loc).map((l) => OG_LOCALE[l]),
     },
     twitter: {
       card: 'summary_large_image',
       title: post.title,
-      description: post.description,
+      description: seo,
     },
   }
 }
@@ -121,29 +176,68 @@ export default async function PostPage({ params }: PostProps) {
   const related = getRelatedPosts(loc, slug, post.tags ?? [])
 
   const updatedRaw = (post as unknown as { updated?: string }).updated
+  const seriesCtx = getSeriesContext(loc, post.slug)
+  const postUrl = `${SITE_URL}/${loc}/posts/${slug}/`
+  const readMinutes = parseInt(post.readingTime ?? '0', 10)
+
+  // 브레드크럼 중간 단계: 시리즈가 있으면 시리즈, 없으면 가장 희귀한(=가장 구체적인) 태그.
+  // Google은 마크업이 화면에 보이는 것과 일치할 것을 요구하므로 아래 시각 브레드크럼도 같이 바꾼다.
+  const rarestTag = (() => {
+    const all = posts
+    const df = new Map<string, number>()
+    for (const p of all) for (const tg of p.tags ?? []) df.set(tg, (df.get(tg) ?? 0) + 1)
+    return (post.tags ?? []).slice().sort((a, b) => (df.get(a) ?? 0) - (df.get(b) ?? 0))[0]
+  })()
+  const mid = seriesCtx
+    ? {
+        name: titleFromSlug(seriesCtx.series.slug),
+        url: `${SITE_URL}/${loc}/series/${seriesCtx.series.slug}/`,
+        href: `/${loc}/series/${seriesCtx.series.slug}`,
+      }
+    : rarestTag
+      ? {
+          name: `#${rarestTag}`,
+          url: `${SITE_URL}/${loc}/tags/${encodeURIComponent(rarestTag)}/`,
+          href: `/${loc}/tags/${encodeURIComponent(rarestTag)}`,
+        }
+      : null
+
   const articleJsonLd = {
     '@context': 'https://schema.org',
     '@type': 'TechArticle',
+    '@id': `${postUrl}#article`,
     headline: post.title,
-    description: post.description,
+    description: post.seoDescription || post.description,
     datePublished: post.date,
-    ...(updatedRaw ? { dateModified: updatedRaw } : {}),
-    inLanguage: loc,
+    dateModified: updatedRaw ?? post.date,
+    inLanguage: HREFLANG[loc],
     keywords: (post.tags ?? []).join(', '),
+    about: post.tags ?? [],
+    articleSection: dayMeta(post.date).label,
     wordCount: post.wordCount,
-    author: { '@type': 'Person', name: "Younglin's CFD Blog", url: `${SITE_URL}/${loc}/about` },
-    publisher: { '@type': 'Organization', name: "Younglin's CFD Blog", url: `${SITE_URL}/${loc}` },
-    url: `${SITE_URL}/${loc}/posts/${slug}`,
-    mainEntityOfPage: { '@type': 'WebPage', '@id': `${SITE_URL}/${loc}/posts/${slug}` },
-    image: [`${SITE_URL}/${loc}/posts/${slug}/opengraph-image`],
+    ...(readMinutes > 0 ? { timeRequired: `PT${readMinutes}M` } : {}),
+    author: { '@id': PERSON_ID },
+    publisher: { '@id': ORG_ID },
+    isPartOf: { '@id': WEBSITE_ID },
+    url: postUrl,
+    mainEntityOfPage: { '@type': 'WebPage', '@id': postUrl },
+    image: [
+      {
+        '@type': 'ImageObject',
+        url: `${SITE_URL}/${loc}/posts/${slug}/opengraph-image`,
+        width: 1200,
+        height: 630,
+      },
+    ],
   }
 
   const breadcrumbJsonLd = {
     '@context': 'https://schema.org',
     '@type': 'BreadcrumbList',
     itemListElement: [
-      { '@type': 'ListItem', position: 1, name: "Younglin's CFD Blog", item: `${SITE_URL}/${loc}` },
-      { '@type': 'ListItem', position: 2, name: post.title, item: `${SITE_URL}/${loc}/posts/${slug}` },
+      { '@type': 'ListItem', position: 1, name: SITE_NAMES[loc], item: `${SITE_URL}/${loc}/` },
+      ...(mid ? [{ '@type': 'ListItem', position: 2, name: mid.name, item: mid.url }] : []),
+      { '@type': 'ListItem', position: mid ? 3 : 2, name: post.title, item: postUrl },
     ],
   }
 
@@ -151,14 +245,14 @@ export default async function PostPage({ params }: PostProps) {
 
   return (
     <article className="py-6">
-      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(articleJsonLd) }} />
-      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(breadcrumbJsonLd) }} />
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: jsonLdHtml(articleJsonLd) }} />
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: jsonLdHtml(breadcrumbJsonLd) }} />
       <ReadingProgress />
       <PostNavShortcuts prevUrl={prevPost ? `/${loc}/posts/${prevPost.slug}` : undefined} nextUrl={nextPost ? `/${loc}/posts/${nextPost.slug}` : undefined} />
       <MarkAsRead id={post.slug} />
       <ScrollDepth postId={post.slug} />
 
-      <nav aria-label="Breadcrumb" className="mb-6">
+      <nav aria-label="Breadcrumb" className="mb-6 flex flex-wrap items-center gap-x-2">
         <Link
           href={`/${loc}`}
           className="mono inline-flex min-h-11 items-center transition-colors duration-100"
@@ -166,6 +260,15 @@ export default async function PostPage({ params }: PostProps) {
         >
           <span style={{ color: 'var(--accent)' }}>$</span> cd ..
         </Link>
+        {mid && (
+          <Link
+            href={mid.href}
+            className="mono link-hover-text-accent inline-flex min-h-11 items-center"
+            style={{ fontSize: 12, color: 'var(--text-faint)' }}
+          >
+            / {mid.name}
+          </Link>
+        )}
       </nav>
 
       {isFallback && (
@@ -278,7 +381,7 @@ export default async function PostPage({ params }: PostProps) {
         )
       })()}
 
-      <SeriesNav locale={loc} ctx={getSeriesContext(loc, post.slug)} />
+      <SeriesNav locale={loc} ctx={seriesCtx} />
 
       <TableOfContents />
 

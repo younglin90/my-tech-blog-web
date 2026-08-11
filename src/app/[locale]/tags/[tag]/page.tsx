@@ -3,8 +3,10 @@ import Link from 'next/link'
 import { format, parseISO, compareDesc } from 'date-fns'
 import { notFound } from 'next/navigation'
 import type { Metadata } from 'next'
-import { LOCALES, isLocale, t, type Locale } from '@/lib/i18n'
+import { LOCALES, isLocale, t, SITE_NAMES, hreflangAlternates, type Locale } from '@/lib/i18n'
 import { SITE_URL } from '@/lib/site'
+import { jsonLdHtml, WEBSITE_ID } from '@/lib/jsonld'
+import { postsForLocale, isTagIndexable } from '@/lib/tags'
 
 interface TagPageProps {
   params: Promise<{ locale: string; tag: string }>
@@ -12,32 +14,30 @@ interface TagPageProps {
 
 export async function generateMetadata({ params }: TagPageProps): Promise<Metadata> {
   const { locale, tag } = await params
+  const loc = isLocale(locale) ? (locale as Locale) : 'ko'
   const decoded = decodeURIComponent(tag)
-  const title = `#${decoded}`
-  const description = `Posts tagged "${decoded}"`
-  const url = `${SITE_URL}/${locale}/tags/${tag}`
+  const tagged = postsForLocale(loc).filter((p) => p.tags?.includes(decoded))
+  const count = String(tagged.length)
+
+  // 예전에는 5개 locale 전부 영어 `Posts tagged "X"` 였다. 약 2,000개 페이지의
+  // SERP 스니펫이 본문 언어와 다른 언어로 나가던 셈이다.
+  const title = t(loc, 'tags.metaTitle', { tag: decoded, count })
+  const samples = tagged.slice(0, 3).map((p) => p.title).join(' · ')
+  const description = t(loc, 'tags.metaDescription', { tag: decoded, count, samples })
+
+  const url = `${SITE_URL}/${locale}/tags/${tag}/`
   return {
-    title,
+    title: { absolute: `${title} | ${SITE_NAMES[loc]}` },
     description,
+    // 포스트 1개짜리 태그 페이지는 자체 본문이 없는 얇은 페이지다. 링크는 살리고 색인만 막는다.
+    // 임계값은 src/lib/tags.ts 한 곳에서만 정의되며 sitemap.ts도 같은 값을 쓴다.
+    robots: isTagIndexable(loc, decoded) ? undefined : { index: false, follow: true },
     alternates: {
       canonical: url,
-      languages: {
-        ...Object.fromEntries(LOCALES.map((l) => [l, `${SITE_URL}/${l}/tags/${tag}`])),
-        'x-default': `${SITE_URL}/en/tags/${tag}`,
-      },
+      languages: hreflangAlternates(`/tags/${tag}`),
     },
-    openGraph: {
-      title,
-      description,
-      url,
-      siteName: "Younglin's CFD Blog",
-      type: 'website',
-    },
-    twitter: {
-      card: 'summary_large_image',
-      title,
-      description,
-    },
+    openGraph: { title, description, url, siteName: SITE_NAMES[loc], type: 'website' },
+    twitter: { card: 'summary_large_image', title, description },
   }
 }
 
@@ -82,10 +82,30 @@ export default async function TagPage({ params }: TagPageProps) {
     '@context': 'https://schema.org',
     '@type': 'BreadcrumbList',
     itemListElement: [
-      { '@type': 'ListItem', position: 1, name: "Younglin's CFD Blog", item: `${SITE_URL}/${loc}` },
-      { '@type': 'ListItem', position: 2, name: 'Tags', item: `${SITE_URL}/${loc}/tags` },
-      { '@type': 'ListItem', position: 3, name: `#${decoded}`, item: `${SITE_URL}/${loc}/tags/${tag}` },
+      { '@type': 'ListItem', position: 1, name: SITE_NAMES[loc], item: `${SITE_URL}/${loc}/` },
+      { '@type': 'ListItem', position: 2, name: t(loc, 'tags.title'), item: `${SITE_URL}/${loc}/tags/` },
+      { '@type': 'ListItem', position: 3, name: `#${decoded}`, item: `${SITE_URL}/${loc}/tags/${tag}/` },
     ],
+  }
+
+  const collectionJsonLd = {
+    '@context': 'https://schema.org',
+    '@type': 'CollectionPage',
+    '@id': `${SITE_URL}/${loc}/tags/${tag}/#webpage`,
+    url: `${SITE_URL}/${loc}/tags/${tag}/`,
+    name: `#${decoded}`,
+    inLanguage: loc,
+    isPartOf: { '@id': WEBSITE_ID },
+    mainEntity: {
+      '@type': 'ItemList',
+      numberOfItems: posts.length,
+      itemListElement: posts.slice(0, 50).map((p, i) => ({
+        '@type': 'ListItem',
+        position: i + 1,
+        url: `${SITE_URL}/${loc}/posts/${p.slug}/`,
+        name: p.title,
+      })),
+    },
   }
 
   const relatedTagCounts: Record<string, number> = {}
@@ -101,7 +121,8 @@ export default async function TagPage({ params }: TagPageProps) {
 
   return (
     <div>
-      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(breadcrumbJsonLd) }} />
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: jsonLdHtml(breadcrumbJsonLd) }} />
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: jsonLdHtml(collectionJsonLd) }} />
       <div className="mb-8">
         <Link
           href={`/${loc}/tags`}

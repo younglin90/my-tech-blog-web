@@ -2,8 +2,9 @@ import { allPosts } from 'contentlayer/generated'
 import { notFound } from 'next/navigation'
 import type { Metadata } from 'next'
 import { TagsClient } from './TagsClient'
-import { LOCALES, isLocale } from '@/lib/i18n'
+import { LOCALES, isLocale, t, SITE_NAMES, hreflangAlternates, type Locale } from '@/lib/i18n'
 import { SITE_URL } from '@/lib/site'
+import { tagFrequency } from '@/lib/tags'
 
 interface TagsPageProps {
   params: Promise<{ locale: string }>
@@ -15,31 +16,19 @@ export async function generateStaticParams() {
 
 export async function generateMetadata({ params }: TagsPageProps): Promise<Metadata> {
   const { locale } = await params
-  const title = 'Tags'
-  const description = 'All tags on the blog — browse posts by topic.'
-  const url = `${SITE_URL}/${locale}/tags`
+  const loc = isLocale(locale) ? (locale as Locale) : 'ko'
+  const title = t(loc, 'tags.title')
+  const description = t(loc, 'tags.metaHubDescription', { count: String(tagFrequency(loc).size) })
+  const url = `${SITE_URL}/${locale}/tags/`
   return {
     title,
     description,
     alternates: {
       canonical: url,
-      languages: {
-        ...Object.fromEntries(LOCALES.map((l) => [l, `${SITE_URL}/${l}/tags`])),
-        'x-default': `${SITE_URL}/en/tags`,
-      },
+      languages: hreflangAlternates('/tags'),
     },
-    openGraph: {
-      title,
-      description,
-      url,
-      siteName: "Younglin's CFD Blog",
-      type: 'website',
-    },
-    twitter: {
-      card: 'summary_large_image',
-      title,
-      description,
-    },
+    openGraph: { title, description, url, siteName: SITE_NAMES[loc], type: 'website' },
+    twitter: { card: 'summary_large_image', title, description },
   }
 }
 

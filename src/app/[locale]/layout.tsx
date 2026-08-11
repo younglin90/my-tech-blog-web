@@ -1,4 +1,5 @@
-import { LOCALES, isLocale, t, HREFLANG, type Locale } from '@/lib/i18n'
+import { LOCALES, isLocale, t, SITE_NAMES, OG_LOCALE, hreflangAlternates, type Locale } from '@/lib/i18n'
+import { jsonLdHtml, PERSON_ID, ORG_ID, WEBSITE_ID } from '@/lib/jsonld'
 import { notFound } from 'next/navigation'
 import type { Metadata } from 'next'
 import { SITE_URL } from '@/lib/site'
@@ -10,22 +11,6 @@ export async function generateStaticParams() {
 interface LocaleLayoutProps {
   children: React.ReactNode
   params: Promise<{ locale: string }>
-}
-
-const SITE_NAMES: Record<Locale, string> = {
-  ko: "영린's CFD Blog",
-  en: "Younglin's CFD Blog",
-  ja: "Younglin's CFD Blog",
-  zh: "Younglin's CFD Blog",
-  es: "Younglin's CFD Blog",
-}
-
-const OG_LOCALE: Record<Locale, string> = {
-  ko: 'ko_KR',
-  en: 'en_US',
-  ja: 'ja_JP',
-  zh: 'zh_CN',
-  es: 'es_ES',
 }
 
 export async function generateMetadata({ params }: LocaleLayoutProps): Promise<Metadata> {
@@ -41,10 +26,7 @@ export async function generateMetadata({ params }: LocaleLayoutProps): Promise<M
     description,
     alternates: {
       canonical: url,
-      languages: {
-        ...Object.fromEntries(LOCALES.map((l) => [HREFLANG[l], `${SITE_URL}/${l}`])),
-        'x-default': `${SITE_URL}/en`,
-      },
+      languages: hreflangAlternates(''),
     },
     openGraph: {
       title: siteName,
@@ -67,15 +49,18 @@ export default async function LocaleLayout({ children, params }: LocaleLayoutPro
   if (!isLocale(locale)) notFound()
   const loc = locale as Locale
 
-  // 사이트 전역 구조화 데이터 (모든 페이지에 inject) — Person + Organization
+  // 사이트 전역 구조화 데이터. Person / Organization / WebSite를 고정 @id로 묶어
+  // 하나의 엔티티 그래프로 만든다 (예전에는 서로를 참조하지 않는 섬이었다).
+  // locale이 달라도 엔티티는 하나이므로 노드 내용은 locale-invariant로 둔다.
   const personJsonLd = {
     '@context': 'https://schema.org',
     '@type': 'Person',
-    '@id': `${SITE_URL}/#person`,
-    name: SITE_NAMES[loc],
-    url: `${SITE_URL}/${loc}/about`,
+    '@id': PERSON_ID,
+    name: 'Younglin',
+    alternateName: ['영린'],
+    url: `${SITE_URL}/en/about/`,
     sameAs: ['https://github.com/younglin90'],
-    knowsLanguage: ['ko', 'en', 'ja', 'zh', 'es'],
+    knowsLanguage: [...LOCALES],
     knowsAbout: [
       'Computational Fluid Dynamics',
       'Compressible Multiphase Flow',
@@ -91,17 +76,36 @@ export default async function LocaleLayout({ children, params }: LocaleLayoutPro
   const organizationJsonLd = {
     '@context': 'https://schema.org',
     '@type': 'Organization',
-    '@id': `${SITE_URL}/#organization`,
-    name: SITE_NAMES[loc],
-    url: `${SITE_URL}/${loc}`,
-    logo: `${SITE_URL}/icon-512.png`,
-    founder: { '@id': `${SITE_URL}/#person` },
+    '@id': ORG_ID,
+    name: "Younglin's CFD Blog",
+    alternateName: ["영린's CFD Blog"],
+    url: `${SITE_URL}/`,
+    logo: {
+      '@type': 'ImageObject',
+      url: `${SITE_URL}/icon-512.png`,
+      width: 512,
+      height: 512,
+    },
+    founder: { '@id': PERSON_ID },
+  }
+
+  // WebSite 노드는 사이트에 하나뿐이다. 하나의 @id가 다섯 언어를 동시에 뜻할 수 없으므로
+  // inLanguage는 붙이지 않는다 (locale별 언어 선언은 각 페이지의 inLanguage가 담당).
+  const websiteJsonLd = {
+    '@context': 'https://schema.org',
+    '@type': 'WebSite',
+    '@id': WEBSITE_ID,
+    url: `${SITE_URL}/`,
+    name: "Younglin's CFD Blog",
+    alternateName: ["영린's CFD Blog", 'cfdblog.cc'],
+    publisher: { '@id': ORG_ID },
   }
 
   return (
     <>
-      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(personJsonLd) }} />
-      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(organizationJsonLd) }} />
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: jsonLdHtml(personJsonLd) }} />
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: jsonLdHtml(organizationJsonLd) }} />
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: jsonLdHtml(websiteJsonLd) }} />
       {children}
     </>
   )

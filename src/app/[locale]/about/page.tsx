@@ -5,8 +5,9 @@ import { notFound } from 'next/navigation'
 import type { Metadata } from 'next'
 import { ReadingStats } from '@/components/ReadingStats'
 import { TopPosts } from '@/components/TopPosts'
-import { LOCALES, isLocale, t, type Locale } from '@/lib/i18n'
+import { LOCALES, isLocale, t, hreflangAlternates, type Locale } from '@/lib/i18n'
 import { SITE_URL } from '@/lib/site'
+import { jsonLdHtml, PERSON_ID, WEBSITE_ID } from '@/lib/jsonld'
 
 interface AboutProps {
   params: Promise<{ locale: string }>
@@ -19,18 +20,15 @@ export async function generateStaticParams() {
 export async function generateMetadata({ params }: AboutProps): Promise<Metadata> {
   const { locale } = await params
   const loc = isLocale(locale) ? locale : 'en'
-  const title = 'About'
+  const title = t(loc, 'about.title')
   const description = t(loc, 'about.intro')
   const url = `${SITE_URL}/${locale}/about`
   return {
     title,
     description,
     alternates: {
-      canonical: url,
-      languages: {
-        ...Object.fromEntries(LOCALES.map((l) => [l, `${SITE_URL}/${l}/about`])),
-        'x-default': `${SITE_URL}/en/about`,
-      },
+      canonical: `${url}/`,
+      languages: hreflangAlternates('/about'),
     },
     openGraph: {
       title,
@@ -47,25 +45,22 @@ export async function generateMetadata({ params }: AboutProps): Promise<Metadata
   }
 }
 
-const personJsonLd = {
-  '@context': 'https://schema.org',
-  '@type': 'Person',
-  name: "Younglin's CFD Blog",
-  url: SITE_URL,
-  sameAs: ['https://github.com/younglin90'],
-  knowsAbout: [
-    'Computational Fluid Dynamics',
-    'Compressible Multiphase Flow',
-    'Riemann Solvers',
-    'OpenFOAM',
-    'Numerical Methods',
-  ],
-}
-
 export default async function AboutPage({ params }: AboutProps) {
   const { locale } = await params
   if (!isLocale(locale)) notFound()
   const loc = locale as Locale
+
+  // 저자 정보는 [locale]/layout.tsx의 Person 노드 하나뿐이다. 여기서는 그것을 가리키는
+  // ProfilePage만 선언한다 (예전에는 @id 없는 두 번째 Person이 url까지 다르게 들고 있었다).
+  const profileJsonLd = {
+    '@context': 'https://schema.org',
+    '@type': 'ProfilePage',
+    '@id': `${SITE_URL}/${loc}/about/#webpage`,
+    url: `${SITE_URL}/${loc}/about/`,
+    inLanguage: loc,
+    isPartOf: { '@id': WEBSITE_ID },
+    mainEntity: { '@id': PERSON_ID },
+  }
 
   // ko 베이스로 통계 (모든 locale 동일 통계 노출)
   const published = allPosts
@@ -102,7 +97,7 @@ export default async function AboutPage({ params }: AboutProps) {
 
   return (
     <div className="max-w-none">
-      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(personJsonLd) }} />
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: jsonLdHtml(profileJsonLd) }} />
       <div className="mono mb-2" style={{ fontSize: 12, color: 'var(--text-muted)' }}>
         <span style={{ color: 'var(--accent)' }}>$</span> whoami
       </div>

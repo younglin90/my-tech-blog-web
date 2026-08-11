@@ -1,7 +1,7 @@
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
 import type { Metadata } from 'next'
-import { LOCALES, isLocale, t, type Locale } from '@/lib/i18n'
+import { LOCALES, isLocale, t, SITE_NAMES, hreflangAlternates, type Locale } from '@/lib/i18n'
 import { listAllSeries } from '@/lib/series'
 import { SITE_URL } from '@/lib/site'
 
@@ -15,24 +15,22 @@ export async function generateStaticParams() {
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const { locale } = await params
-  const title = 'Series'
-  const description = 'Multi-part article series organized by topic.'
-  const url = `${SITE_URL}/${locale}/series`
+  const loc = isLocale(locale) ? (locale as Locale) : 'ko'
+  const title = t(loc, 'series.title')
+  const description = t(loc, 'series.metaHubDescription', { count: String(listAllSeries(loc).length) })
+  const url = `${SITE_URL}/${locale}/series/`
   return {
     title,
     description,
     alternates: {
       canonical: url,
-      languages: {
-        ...Object.fromEntries(LOCALES.map((l) => [l, `${SITE_URL}/${l}/series`])),
-        'x-default': `${SITE_URL}/en/series`,
-      },
+      languages: hreflangAlternates('/series'),
     },
     openGraph: {
       title,
       description,
       url,
-      siteName: "Younglin's CFD Blog",
+      siteName: SITE_NAMES[loc],
       type: 'website',
     },
     twitter: {

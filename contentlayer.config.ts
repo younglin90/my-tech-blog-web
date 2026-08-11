@@ -4,6 +4,7 @@ import remarkGfm from 'remark-gfm'
 import rehypeKatex from 'rehype-katex'
 import rehypePrettyCode from 'rehype-pretty-code'
 import readingTime from 'reading-time'
+import { seoDescription } from './scripts/lib/clean-body.mjs'
 
 const LOCALE_RE = /^(ko|en|ja|zh|es)\//
 const extractLocale = (raw: string): string => raw.match(LOCALE_RE)?.[1] ?? 'ko'
@@ -57,6 +58,9 @@ export const Post = defineDocumentType(() => ({
     series: { type: 'string' },             // 시리즈 slug (예: "riemann", "compressible-multiphase")
     seriesOrder: { type: 'number' },        // 시리즈 내 순번 (1부터)
     updated: { type: 'date', required: false },  // 최종 수정 날짜 (있으면 sitemap lastmod / JSON-LD dateModified 갱신)
+    // 이 글의 답을 한 문장으로. description(검색 스니펫)과 달리 본문 상단에 노출된다.
+    // 반드시 optional — required로 두면 기존 645개 문서가 한꺼번에 resolution 실패한다.
+    takeaway: { type: 'string', required: false },
   },
   // locale·slug는 폴더(ko/en/...)와 파일명에서 자동 추출.
   // frontmatter에 명시적으로 적어도 contentlayer가 fields에 정의 안 했으면 무시되므로 안전.
@@ -83,6 +87,14 @@ export const Post = defineDocumentType(() => ({
       type: 'number',
       resolve: (post) =>
         localeAwareReadingTime(post.body.raw, extractLocale(post._raw.flattenedPath)).words,
+    },
+    // 검색 스니펫용 설명. frontmatter description은 중앙값이 ko 41자로 SERP 예산의
+    // 절반밖에 못 쓴다. 모자라면 본문 첫 문장들을 온전한 문장 단위로 이어 붙이고,
+    // 넘치면 문장 단위로만 줄인다. 645개 MDX를 손으로 다시 쓰지 않아도 되도록 빌드 시 계산.
+    seoDescription: {
+      type: 'string',
+      resolve: (post) =>
+        seoDescription(post.description, post.body.raw, extractLocale(post._raw.flattenedPath)),
     },
   },
 }))

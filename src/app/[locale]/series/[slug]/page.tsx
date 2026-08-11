@@ -2,9 +2,10 @@ import Link from 'next/link'
 import { notFound } from 'next/navigation'
 import { format, parseISO } from 'date-fns'
 import type { Metadata } from 'next'
-import { LOCALES, isLocale, t, type Locale } from '@/lib/i18n'
+import { LOCALES, isLocale, t, SITE_NAMES, hreflangAlternates, type Locale } from '@/lib/i18n'
 import { listAllSeries, getSeries } from '@/lib/series'
 import { SITE_URL } from '@/lib/site'
+import { jsonLdHtml, WEBSITE_ID, titleFromSlug } from '@/lib/jsonld'
 
 interface Props {
   params: Promise<{ locale: string; slug: string }>
@@ -25,31 +26,25 @@ export async function generateStaticParams() {
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const { locale, slug } = await params
-  const title = `${slug} series`
-  const description = `Multi-part series: ${slug}`
-  const url = `${SITE_URL}/${locale}/series/${slug}`
+  const loc = isLocale(locale) ? (locale as Locale) : 'ko'
+  const series = getSeries(loc, slug)
+  // 예전에는 `${slug} series` / `Multi-part series: ${slug}` 였다 — 5개 locale 모두
+  // 영어에다 사람이 읽을 수 없는 raw slug가 제목에 그대로 들어갔다.
+  const name = titleFromSlug(slug)
+  const count = String(series?.count ?? 0)
+  const samples = (series?.posts ?? []).slice(0, 3).map((p) => p.title).join(' · ')
+  const title = t(loc, 'series.metaTitle', { title: name, count })
+  const description = t(loc, 'series.metaDescription', { title: name, count, samples })
+  const url = `${SITE_URL}/${locale}/series/${slug}/`
   return {
-    title,
+    title: { absolute: `${title} | ${SITE_NAMES[loc]}` },
     description,
     alternates: {
       canonical: url,
-      languages: {
-        ...Object.fromEntries(LOCALES.map((l) => [l, `${SITE_URL}/${l}/series/${slug}`])),
-        'x-default': `${SITE_URL}/en/series/${slug}`,
-      },
+      languages: hreflangAlternates(`/series/${slug}`),
     },
-    openGraph: {
-      title,
-      description,
-      url,
-      siteName: "Younglin's CFD Blog",
-      type: 'website',
-    },
-    twitter: {
-      card: 'summary_large_image',
-      title,
-      description,
-    },
+    openGraph: { title, description, url, siteName: SITE_NAMES[loc], type: 'website' },
+    twitter: { card: 'summary_large_image', title, description },
   }
 }
 
