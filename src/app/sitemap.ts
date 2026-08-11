@@ -3,6 +3,7 @@ import type { MetadataRoute } from 'next'
 import { SITE_URL } from '@/lib/site'
 import { CALCULATORS } from '@/lib/calculators'
 import { listAllSeries } from '@/lib/series'
+import { TAG_INDEX_MIN } from '@/lib/tags'
 import type { Locale } from '@/lib/i18n'
 
 export const dynamic = 'force-static'
@@ -31,16 +32,27 @@ export default async function sitemap({ id }: SitemapProps): Promise<MetadataRou
   }
   const posts = Array.from(bySlug.values())
   const slugs = posts.map((p) => p.slug)
-  const tags = Array.from(new Set(posts.flatMap((p) => p.tags ?? [])))
+  // 태그별 문서 빈도. 포스트 1개짜리 태그는 본문이 없는 얇은 페이지라 색인 대상에서 뺀다
+  // (394개 중 306개가 여기 해당). tags/[tag]/page.tsx의 noindex 임계값과 반드시 같아야 한다.
+  const tagDf = new Map<string, number>()
+  for (const tg of posts.flatMap((p) => p.tags ?? [])) tagDf.set(tg, (tagDf.get(tg) ?? 0) + 1)
+  const tags = Array.from(tagDf.keys()).filter((tg) => (tagDf.get(tg) ?? 0) >= TAG_INDEX_MIN)
 
-  // hreflang alternates: 각 URL에 대해 5개 locale 모두 매핑
-  const alternateLanguages = (path: string) =>
-    Object.fromEntries(LOCALES.map((l) => [l, `${SITE_URL}/${l}${path}`]))
+  // next.config.ts의 trailingSlash: true 때문에 각 페이지가 스스로 선언하는 canonical은
+  // 항상 슬래시로 끝난다. sitemap의 <loc>도 바이트 단위로 같아야 하므로 여기서 맞춘다.
+  const u = (path: string) => `${SITE_URL}/${locale}${path}/`
+
+  // hreflang alternates: 각 URL에 대해 5개 locale 전부 + x-default.
+  // 자기 자신도 포함해야(self-referential) Google이 클러스터를 인정한다.
+  const alternateLanguages = (path: string) => ({
+    ...Object.fromEntries(LOCALES.map((l) => [l, `${SITE_URL}/${l}${path}/`])),
+    'x-default': `${SITE_URL}/en${path}/`,
+  })
 
   const entries: MetadataRoute.Sitemap = []
 
   entries.push({
-    url: `${SITE_URL}/${locale}`,
+    url: u(''),
     lastModified: new Date(),
     changeFrequency: 'daily',
     priority: 1.0,
@@ -48,23 +60,23 @@ export default async function sitemap({ id }: SitemapProps): Promise<MetadataRou
   })
 
   entries.push({
-    url: `${SITE_URL}/${locale}/about`,
+    url: u('/about'),
     changeFrequency: 'monthly',
     priority: 0.5,
     alternates: { languages: alternateLanguages('/about') },
   })
 
   entries.push({
-    url: `${SITE_URL}/${locale}/tags`,
+    url: u('/tags'),
     changeFrequency: 'weekly',
     priority: 0.6,
     alternates: { languages: alternateLanguages('/tags') },
   })
 
   // 정적 허브 페이지 — 검색엔진이 발견하도록 명시
-  for (const path of ['/tools', '/viz', '/glossary', '/series'] as const) {
+  for (const path of ['/posts', '/tools', '/viz', '/glossary', '/series'] as const) {
     entries.push({
-      url: `${SITE_URL}/${locale}${path}`,
+      url: u(path),
       changeFrequency: 'weekly',
       priority: 0.6,
       alternates: { languages: alternateLanguages(path) },
@@ -75,7 +87,7 @@ export default async function sitemap({ id }: SitemapProps): Promise<MetadataRou
   for (const tool of CALCULATORS) {
     const toolPath = `/tools/${tool.slug}`
     entries.push({
-      url: `${SITE_URL}/${locale}${toolPath}`,
+      url: u(toolPath),
       changeFrequency: 'monthly',
       priority: 0.5,
       alternates: { languages: alternateLanguages(toolPath) },
@@ -86,7 +98,7 @@ export default async function sitemap({ id }: SitemapProps): Promise<MetadataRou
   for (const series of listAllSeries(locale as Locale)) {
     const seriesPath = `/series/${series.slug}`
     entries.push({
-      url: `${SITE_URL}/${locale}${seriesPath}`,
+      url: u(seriesPath),
       changeFrequency: 'monthly',
       priority: 0.5,
       alternates: { languages: alternateLanguages(seriesPath) },
@@ -99,7 +111,7 @@ export default async function sitemap({ id }: SitemapProps): Promise<MetadataRou
     const updatedRaw = (post as unknown as { updated?: string })?.updated
     const lastMod = updatedRaw ? new Date(updatedRaw) : post ? new Date(post.date) : new Date()
     entries.push({
-      url: `${SITE_URL}/${locale}/posts/${slug}`,
+      url: u(`/posts/${slug}`),
       lastModified: lastMod,
       changeFrequency: 'monthly',
       priority: 0.8,
@@ -112,7 +124,7 @@ export default async function sitemap({ id }: SitemapProps): Promise<MetadataRou
   for (const tag of tags) {
     const tagPath = `/tags/${encodeURIComponent(tag)}`
     entries.push({
-      url: `${SITE_URL}/${locale}${tagPath}`,
+      url: u(tagPath),
       changeFrequency: 'weekly',
       priority: 0.5,
       alternates: { languages: alternateLanguages(tagPath) },

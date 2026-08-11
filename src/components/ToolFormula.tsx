@@ -1,6 +1,7 @@
 import ReactMarkdown from 'react-markdown'
 import rehypeKatex from 'rehype-katex'
 import remarkMath from 'remark-math'
+import { KatexStyles } from '@/components/KatexStyles'
 
 interface ToolFormulaProps {
   formula: string
@@ -18,6 +19,7 @@ export function ToolFormula({ formula, label }: ToolFormulaProps) {
         border: '1px solid var(--border)',
       }}
     >
+      <KatexStyles />
       <div
         className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3"
         style={{ borderColor: 'var(--border)' }}

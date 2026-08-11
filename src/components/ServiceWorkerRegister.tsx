@@ -11,6 +11,11 @@ export function ServiceWorkerRegister() {
     if (!('serviceWorker' in navigator)) return
     if (process.env.NODE_ENV !== 'production') return
 
+    // 최초 방문인지(=아직 이 페이지를 제어하는 SW가 없는지)를 등록 전에 기록해 둔다.
+    // sw.js가 activate에서 clients.claim()을 부르므로 최초 설치에서도 controllerchange가
+    // 발생한다. 이걸 구분하지 않으면 처음 온 방문자가 1.5초 뒤 페이지를 통째로 리로드당한다.
+    const hadController = !!navigator.serviceWorker.controller
+
     const id = setTimeout(async () => {
       try {
         const reg = await navigator.serviceWorker.register('/sw.js', { updateViaCache: 'none' })
@@ -30,10 +35,11 @@ export function ServiceWorkerRegister() {
           next?.addEventListener('statechange', () => promote(next))
         })
 
-        // controller가 바뀌면(=새 SW 활성화) 1회 새로고침해 최신 HTML 적용
+        // controller가 바뀌면(=새 SW 활성화) 1회 새로고침해 최신 HTML 적용.
+        // 단 최초 설치는 제외한다 — 이미 최신 HTML을 보고 있는 사람을 리로드할 이유가 없다.
         let didReload = false
         navigator.serviceWorker.addEventListener('controllerchange', () => {
-          if (didReload) return
+          if (!hadController || didReload) return
           didReload = true
           window.location.reload()
         })

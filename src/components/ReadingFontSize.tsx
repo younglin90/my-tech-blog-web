@@ -35,7 +35,9 @@ export function ReadingFontSize() {
       if (raw && SCALES.some((s) => s.id === raw)) stored = raw
     } catch {}
     setActive(stored)
-    applyScale(stored)
+    // applyScale은 여기서 부르지 않는다 — 루트 layout의 pre-paint 스크립트가
+    // 이미 첫 페인트 전에 --reading-scale을 세팅했다. 여기서 또 부르면 의미는 같지만
+    // hydration 시점에 한 번 더 스타일을 건드려 본문 리플로우를 유발한다.
   }, [])
 
   const select = (id: ScaleId) => {

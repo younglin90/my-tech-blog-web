@@ -152,6 +152,7 @@ const registrySource = `'use client'
 
 import dynamic from 'next/dynamic'
 import type { ComponentType } from 'react'
+import { VizMount } from '@/components/VizMount'
 
 function VizLoading() {
   return (
@@ -161,8 +162,17 @@ function VizLoading() {
   )
 }
 
+// 각 viz는 뷰포트 300px 앞에 올 때까지 마운트하지 않는다. post-viz는 전부
+// 조건 없는 requestAnimationFrame 루프를 돌기 때문에, 그냥 두면 페이지 로드 즉시
+// 캔버스 루프가 hydration·첫 입력과 메인 스레드를 놓고 경쟁한다. (src/components/VizMount.tsx)
+function lazyViz(load: () => Promise<{ default: ComponentType }>): ComponentType {
+  const Inner = dynamic(load, { ssr: false, loading: VizLoading })
+  const Wrapped = () => <VizMount Component={Inner} />
+  return Wrapped
+}
+
 export const VIZ_COMPONENTS: Record<string, ComponentType> = {
-${registry.map(({ component, importPath }) => `  ${JSON.stringify(component)}: dynamic(() => import(${JSON.stringify(importPath)}).then((m) => ({ default: m.${component} })), { ssr: false, loading: VizLoading }),`).join('\n')}
+${registry.map(({ component, importPath }) => `  ${JSON.stringify(component)}: lazyViz(() => import(${JSON.stringify(importPath)}).then((m) => ({ default: m.${component} }))),`).join('\n')}
 }
 `
 

@@ -52,12 +52,22 @@ export function LanguageSwitcher({ current }: { current?: string }) {
     return () => document.removeEventListener('mousedown', onClick)
   }, [open])
 
-  const switchTo = (next: Locale) => {
-    document.cookie = `locale=${next}; path=/; max-age=31536000; samesite=lax`
+  // 실제 <a href>로 렌더한다. 예전에는 button + router.push라 5개 locale 트리 사이에
+  // 크롤 가능한 링크가 하나도 없었다 — 검색엔진이 보는 연결고리가 hreflang 주석뿐이었다.
+  // 클릭은 그대로 가로채 쿠키를 심고 SPA 전환을 하되, href는 항상 유효하게 둔다.
+  const hrefFor = (next: Locale) => {
     const target = withLocale(next, pathname)
+    return target.endsWith('/') ? target : `${target}/`
+  }
+
+  const switchTo = (e: React.MouseEvent, next: Locale) => {
+    // 새 탭/새 창으로 여는 건 브라우저에 맡긴다
+    if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return
+    e.preventDefault()
+    document.cookie = `locale=${next}; path=/; max-age=31536000; samesite=lax`
     setOpen(false)
     trackEvent('language-switch', { from: detected, to: next })
-    router.push(target)
+    router.push(hrefFor(next))
   }
 
   return (
@@ -74,14 +84,17 @@ export function LanguageSwitcher({ current }: { current?: string }) {
         <span className="hidden sm:inline">{LOCALE_LABELS[detected]}</span>
         <span className="sm:hidden uppercase">{detected}</span>
       </button>
-      {open && (
-        <ul
+      {/* 목록은 닫혀 있어도 DOM에 남긴다. {open && ...}로 조건부 렌더하면 초기 HTML에
+          링크가 없어서, 크롤러 입장에서 locale 트리 사이에 연결이 하나도 없게 된다. */}
+      <ul
           role="listbox"
+          hidden={!open}
           className="absolute right-0 top-full z-50 mt-1 min-w-[140px] overflow-hidden rounded-md py-1 text-xs"
           style={{
             background: 'var(--surface)',
             border: '1px solid var(--border)',
             boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+            display: open ? undefined : 'none',
           }}
         >
           {LOCALES.map((loc) => {
@@ -89,8 +102,10 @@ export function LanguageSwitcher({ current }: { current?: string }) {
             const isFallback = availableLocales !== null && !availableLocales.has(loc) && loc !== 'ko'
             return (
               <li key={loc} role="option" aria-selected={active}>
-                <button
-                  onClick={() => switchTo(loc)}
+                <a
+                  href={hrefFor(loc)}
+                  hrefLang={loc}
+                  onClick={(e) => switchTo(e, loc)}
                   className="flex min-h-11 w-full items-center justify-between gap-3 px-3 py-1.5 text-left transition-colors"
                   style={{
                     color: active ? 'var(--accent)' : isFallback ? 'var(--text-faint)' : 'var(--text)',
@@ -109,12 +124,11 @@ export function LanguageSwitcher({ current }: { current?: string }) {
                     )}
                   </span>
                   {active && <Check className="h-3 w-3" />}
-                </button>
+                </a>
               </li>
             )
           })}
         </ul>
-      )}
     </div>
   )
 }

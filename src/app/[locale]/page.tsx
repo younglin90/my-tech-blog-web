@@ -4,11 +4,12 @@ import { QuoteHero } from '@/components/QuoteHero'
 import { ContinueReading } from '@/components/ContinueReading'
 import { TopPosts } from '@/components/TopPosts'
 import { DAY_META, getDayLabel } from '@/lib/day-meta'
-import { LOCALES, isLocale, t, type Locale } from '@/lib/i18n'
+import { LOCALES, isLocale, t, hreflangAlternates, type Locale } from '@/lib/i18n'
 import postIndex from '@/lib/post-index.json'
 import { dedupePostsForLocale } from '@/lib/post-index'
 import type { Metadata } from 'next'
 import { SITE_URL } from '@/lib/site'
+import { jsonLdHtml, PERSON_ID, WEBSITE_ID } from '@/lib/jsonld'
 
 interface HomeProps {
   params: Promise<{ locale: string }>
@@ -26,11 +27,8 @@ export async function generateMetadata({ params }: HomeProps): Promise<Metadata>
     title: { absolute: homeTitle },
     description: subtitle,
     alternates: {
-      canonical: `${SITE_URL}/${locale}`,
-      languages: {
-        ...Object.fromEntries(LOCALES.map((l) => [l, `${SITE_URL}/${l}`])),
-        'x-default': `${SITE_URL}/en`,
-      },
+      canonical: `${SITE_URL}/${locale}/`,
+      languages: hreflangAlternates(''),
     },
     openGraph: {
       type: 'website',
@@ -71,18 +69,23 @@ export default async function Home({ params }: HomeProps) {
     }))
   const initialPosts = posts.slice(0, HOME_INITIAL_POSTS)
 
+  // CollectionPage — locale별 홈은 "글 목록"이지 별개의 WebSite가 아니다.
+  // WebSite 노드는 [locale]/layout.tsx에 하나만 있고 여기서 그 @id를 참조한다.
   const jsonLd = {
     '@context': 'https://schema.org',
-    '@type': 'WebSite',
-    name: "Younglin's CFD Blog",
+    '@type': 'CollectionPage',
+    '@id': `${SITE_URL}/${loc}/#webpage`,
+    url: `${SITE_URL}/${loc}/`,
+    name: `Younglin's CFD Blog — ${t(loc, 'home.subtitle')}`,
     description: t(loc, 'home.subtitle'),
-    url: `${SITE_URL}/${loc}`,
     inLanguage: loc,
+    isPartOf: { '@id': WEBSITE_ID },
+    about: { '@id': PERSON_ID },
   }
 
   return (
     <div>
-      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }} />
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: jsonLdHtml(jsonLd) }} />
 
       <QuoteHero />
 

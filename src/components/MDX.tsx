@@ -1,6 +1,7 @@
 'use client'
 
 import { useMDXComponent } from 'next-contentlayer2/hooks'
+import { KatexStyles } from '@/components/KatexStyles'
 import { useState, useCallback, useEffect, isValidElement } from 'react'
 import dynamic from 'next/dynamic'
 import Link from 'next/link'
@@ -341,6 +342,7 @@ export function Mdx({ code }: MdxProps) {
 
   return (
     <MDXErrorBoundary>
+      <KatexStyles />
       <div className="mdx prose prose-zinc dark:prose-invert max-w-none">
         <Component components={components} />
       </div>

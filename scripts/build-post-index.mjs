@@ -69,6 +69,44 @@ for (const locale of LOCALES) {
 
 items.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0))
 
+// --- 불변식 검사 ---------------------------------------------------------
+// 여기서 막지 않으면 posts/[slug]/page.tsx의 ko fallback이 조용히 동작해서,
+// 한국어 본문이 5개 URL에 각각 다른 언어를 선언한 채 색인된다.
+{
+  const LOCALES = ['ko', 'en', 'ja', 'zh', 'es']
+  const bySlug = new Map()
+  for (const it of items) {
+    if (!bySlug.has(it.slug)) bySlug.set(it.slug, new Set())
+    bySlug.get(it.slug).add(it.locale)
+  }
+  const gaps = []
+  for (const [slug, locs] of bySlug) {
+    const missing = LOCALES.filter((l) => !locs.has(l))
+    if (missing.length) gaps.push(`  ${slug}: ${missing.join(', ')} 누락`)
+  }
+
+  // 태그 정규화(scripts/normalize-tags.mjs)를 되돌리지 못하게 고정한다.
+  const badTags = new Set()
+  for (const it of items) {
+    for (const tg of it.tags ?? []) {
+      if (/[^\x00-\x7F]/.test(tg) || /\s/.test(tg)) badTags.add(tg)
+    }
+  }
+
+  if (gaps.length || badTags.size) {
+    console.error('❌ post index 불변식 위반:')
+    if (gaps.length) {
+      console.error(`  locale 누락 ${gaps.length}건 — 5개 locale이 모두 있어야 합니다`)
+      for (const g of gaps.slice(0, 10)) console.error(g)
+    }
+    if (badTags.size) {
+      console.error(`  비ASCII/공백 태그: ${[...badTags].join(', ')}`)
+      console.error('  → node scripts/normalize-tags.mjs 로 정규화하세요')
+    }
+    process.exit(1)
+  }
+}
+
 const out = {
   meta: {
     generatedAt: new Date().toISOString(),

@@ -6,7 +6,6 @@ import { MobileNav } from '@/components/MobileNav'
 import { KeyboardShortcuts } from '@/components/KeyboardShortcuts'
 import { TerminalHeader } from '@/components/TerminalHeader'
 import { TerminalFooter } from '@/components/TerminalFooter'
-import { LocaleHtmlLang } from '@/components/LocaleHtmlLang'
 import { ServiceWorkerRegister } from '@/components/ServiceWorkerRegister'
 import type { Metadata, Viewport } from 'next'
 import { SITE_URL } from '@/lib/site'
@@ -59,7 +58,7 @@ export const metadata: Metadata = {
   },
   description: 'Field notes from a compressible multiphase CFD researcher — Riemann solvers, interface capturing, paper reviews.',
   metadataBase: new URL(SITE_URL),
-  authors: [{ name: "Younglin's CFD Blog", url: `${SITE_URL}/about` }],
+  authors: [{ name: "Younglin's CFD Blog", url: `${SITE_URL}/en/about/` }],
   creator: "Younglin's CFD Blog",
   category: 'technology',
   openGraph: {
@@ -74,10 +73,6 @@ export const metadata: Metadata = {
     card: 'summary_large_image',
     title: "Younglin's CFD Blog",
     description: 'Field notes from a compressible multiphase CFD researcher',
-  },
-  robots: {
-    index: true,
-    follow: true,
   },
   // Search Console 인증: 환경변수 NEXT_PUBLIC_GOOGLE_VERIFICATION 등에 등록하면 자동 inject
   ...(process.env.NEXT_PUBLIC_GOOGLE_VERIFICATION ||
@@ -114,10 +109,6 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <head>
-        <link rel="preconnect" href="https://fonts.googleapis.com" crossOrigin="anonymous" />
-        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
-        {/* KaTeX self-host (scripts/copy-katex.mjs가 빌드 시 public/katex/로 복사) */}
-        <link rel="stylesheet" href="/katex/katex.min.css" />
         <link rel="alternate" type="application/rss+xml" hrefLang="ko" title="영린's CFD Blog RSS" href="/feed.xml" />
         <link rel="alternate" type="application/feed+json" hrefLang="ko" title="영린's CFD Blog JSON Feed" href="/feed.json" />
         <link rel="alternate" type="application/rss+xml" hrefLang="en" title="Younglin's CFD Blog RSS (EN)" href="/feed-en.xml" />
@@ -139,8 +130,17 @@ export default function RootLayout({
         className={`${fraunces.variable} ${geist.variable} ${jetbrainsMono.variable} min-h-screen antialiased`}
         style={{ fontFamily: 'var(--font-body, system-ui, sans-serif)' }}
       >
+        {/* 글자 크기 선호를 첫 페인트 전에 적용한다. hydration 후에 적용하면
+            'large'를 고른 재방문자는 본문 전체가 1.0 → 1.2로 리플로우되는 걸 보게 된다. */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html:
+              "try{var s=localStorage.getItem('cfd-lab-reading-scale');" +
+              "var f={sm:'1',md:'1.1',lg:'1.2'}[s];" +
+              "if(f)document.documentElement.style.setProperty('--reading-scale',f)}catch(e){}",
+          }}
+        />
         <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
-          <LocaleHtmlLang />
           <ServiceWorkerRegister />
           <a
             href="#main-content"

@@ -96,5 +96,14 @@ export const onRequest: PagesFunction = async (ctx) => {
   } else {
     target.pathname = `/${locale}${url.pathname}`
   }
-  return Response.redirect(target.toString(), 302)
+  // 이 302는 cookie / Accept-Language / CF-IPCountry에 따라 목적지가 달라진다.
+  // Vary가 없으면 공유 캐시가 한 방문자의 locale 결과를 다른 방문자에게 그대로 준다.
+  return new Response(null, {
+    status: 302,
+    headers: {
+      Location: target.toString(),
+      Vary: 'Cookie, Accept-Language, CF-IPCountry',
+      'Cache-Control': 'no-store',
+    },
+  })
 }
