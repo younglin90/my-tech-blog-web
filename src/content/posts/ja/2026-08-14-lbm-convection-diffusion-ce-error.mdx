@@ -1,0 +1,240 @@
+---
+title: "速度を上げたら拡散が27%減った — LBM移流拡散モデルの余分なフラックス"
+date: 2026-08-14
+description: "LBMの移流拡散モデルはτでDを合わせてもD(1−u²/cs²)でしか広がりません。Chapman–Enskogが落とす余分なフラックスと、それを消す源項。"
+tags: ["LBM", "Chapman-Enskog", "Convection-Diffusion", "Advection", "Diffuse-Interface"]
+locale: ja
+slug: lbm-convection-diffusion-ce-error
+takeaway: "τで合わせた拡散係数が正しいのは u = 0 のときだけです。流れがつくと u²/cs² の分が静かに消えます。"
+draft: false
+---
+
+import { LatticeDriftDiffusionScope } from '@/components/post-viz/2026-08-14-lbm-convection-diffusion-ce-error/LatticeDriftDiffusionScope'
+import { GhostFluxCancelBench } from '@/components/post-viz/2026-08-14-lbm-convection-diffusion-ce-error/GhostFluxCancelBench'
+
+格子ボルツマン法では拡散係数が緩和時間ひとつで決まります。$D = c_s^2(\tau - 1/2)\delta t$、覚えるほどのものでもない一行です。ところがこの式には速度が入っていません。流れをオンにしても同じ $D$ が出てくるのでしょうか。本記事の答えは「いいえ」です。一様な移流速度 $u$ のもとで実際の拡散係数は $D(1 - u^2/c_s^2)$ まで落ち、$u = 0.3$ なら27%が消えます。Chapman–Enskog 展開のどこでその項が落ちるのか、源項ひとつでどう取り戻すのかまで追います。
+
+これが一番痛いのは phase-field 多相流です。Cahn–Hilliard や Allen–Cahn を格子ボルツマンで解くとき、界面厚さは移動度と直結しています。移動度が27%ずれれば界面厚さがずれ、界面厚さがずれれば表面張力係数がずれます。
+
+## 拡散係数は合わせたのに界面が薄くなる
+
+まず目で確かめましょう。以下は1次元の移流拡散方程式
+
+$$
+\partial_t \phi + \partial_x(u\phi) = D\,\partial_{xx}\phi
+$$
+
+を D1Q3 格子ボルツマンで解いたものです。初期条件はガウス分布ひとつ、厳密解もガウス分布で、幅は $\sigma^2(t) = \sigma_0^2 + 2Dt$ で育ちます。下のシミュレーションで直接操作してみてください。
+
+<LatticeDriftDiffusionScope />
+
+`u` スライダーを0.30まで上げると、実線（計算）が破線（厳密解）より鋭く高くそびえます。下段の $\sigma^2$ 曲線も破線の傾きに追いつきません。`tau` をどう動かしても欠損の比率は動きません。この頑固さが本記事の全体像です。
+
+## D1Q3 が守るべきモーメントは3つだけ
+
+Navier–Stokes を解く LBM と違い、スカラー輸送用の分布関数 $g_i$ が満たすべきモーメントは少なくて済みます。Guo が2009年の非線形移流拡散方程式モデルで使った平衡分布はこれです。
+
+$$
+g_i^{eq} = w_i\,\phi\left(1 + \frac{\mathbf{c}_i\cdot\mathbf{u}}{c_s^2}\right)
+$$
+
+$w_i$ は格子重み、$\mathbf{c}_i$ は格子速度、$c_s^2 = 1/3$ は格子音速の二乗です。この分布が満たすモーメントは3つあります。
+
+$$
+\sum_i g_i^{eq} = \phi, \qquad \sum_i \mathbf{c}_i g_i^{eq} = \phi\mathbf{u}, \qquad \sum_i \mathbf{c}_i\mathbf{c}_i g_i^{eq} = c_s^2\phi\,\mathbf{I}
+$$
+
+流れ用の平衡分布と決定的に分かれるのが3番目です。ここには $\phi\mathbf{u}\mathbf{u}$ 項がありません。速度の2次項を最初から入れていないということです。なぜ入れなくてよいのかは[平衡分布を Hermite 多項式で切り落とす話](/ja/posts/2026-05-25-lbm-equilibrium-hermite-d2q9/)で扱いました。要するにスカラー方程式には応力テンソルがないので、2次モーメントに等方成分さえあれば足ります。だからこそ格子も D2Q9 ではなく D2Q5 で済みます。
+
+十分に見えますし、$u = 0$ なら実際に完璧です。問題は、切り落とした分がただではないことです。
+
+## Chapman-Enskog が置いていく4番目の項
+
+BGK 格子ボルツマン方程式に源項 $S_i$ をつけて書きます。
+
+$$
+g_i(\mathbf{x}+\mathbf{c}_i\delta t,\, t+\delta t) - g_i(\mathbf{x},t) = -\frac{1}{\tau}\left(g_i - g_i^{eq}\right) + \delta t\, S_i
+$$
+
+$g_i = g_i^{(0)} + \varepsilon g_i^{(1)} + \varepsilon^2 g_i^{(2)}$ と展開し、時間微分を $\partial_t = \varepsilon\partial_{t_1} + \varepsilon^2\partial_{t_2}$ に分けます。$\varepsilon$ 次の0次モーメントは目標方程式の移流部分をそのまま返します。
+
+$$
+\partial_{t_1}\phi + \nabla\cdot(\phi\mathbf{u}) = 0
+$$
+
+同じ $\varepsilon$ 次の式の**1次モーメント**が核心です。ここで $g^{(1)}$ が運ぶフラックスが決まります。
+
+$$
+\sum_i \mathbf{c}_i g_i^{(1)} = -\tau\delta t\left[\partial_{t_1}(\phi\mathbf{u}) + c_s^2\nabla\phi - \sum_i \mathbf{c}_i S_i\right]
+$$
+
+括弧内の2番目の項 $c_s^2\nabla\phi$ が求めていた拡散フラックスです。ところが1番目の項が一緒に入っています。流れの LBM では平衡分布の2次モーメントに $\rho\mathbf{u}\mathbf{u}$ があってこの項がほぼ相殺されますが、スカラーモデルにはその項がありません。だから残ります。
+
+$\varepsilon^2$ 次の0次モーメントまで合わせると最終形になります。
+
+$$
+\partial_t \phi + \nabla\cdot(\phi\mathbf{u}) = \nabla\cdot(D\nabla\phi) + \nabla\cdot\left[\left(\tau-\tfrac{1}{2}\right)\delta t\,\partial_t(\phi\mathbf{u})\right] - \nabla\cdot\left[\tau\delta t\sum_i \mathbf{c}_i S_i\right]
+$$
+
+$D = c_s^2(\tau - 1/2)\delta t$ は予想どおりです。右辺の2番目の項が、誰も注文していない余分なフラックスです。定常状態で $u$ が時間的に一定、$\phi$ も変化しなければ消えます。しかし $\phi$ が動いている限り、つまり計算が進んでいる限り $\partial_t(\phi\mathbf{u})$ はゼロではありません。
+
+## 一様な $u$ ではその項の正体は負の拡散です
+
+$u$ が空間・時間について定数という最も単純な場合を見ます。すると $\partial_t(\phi u) = u\,\partial_t\phi$ であり、先行次数で $\partial_t\phi \simeq -u\,\partial_x\phi$ です。代入すると
+
+$$
+\partial_x\left[\left(\tau-\tfrac{1}{2}\right)\delta t\,\partial_t(\phi u)\right] = -\left(\tau-\tfrac{1}{2}\right)\delta t\, u^2\,\partial_{xx}\phi
+$$
+
+拡散項と符号が逆の拡散項です。物理拡散項と合わせると
+
+$$
+\left(\tau-\tfrac{1}{2}\right)\delta t\left(c_s^2 - u^2\right)\partial_{xx}\phi = D\left(1 - \frac{u^2}{c_s^2}\right)\partial_{xx}\phi
+$$
+
+$$
+D_{\text{eff}} = D\left(1 - \frac{u^2}{c_s^2}\right)
+$$
+
+ここから3つが一度に読み取れます。第一に、欠損は $u^2$ に比例するので低速では目立ちません。$u = 0.05$ なら0.75%です。第二に、$(\tau - 1/2)$ が両辺にあるので**比率は $\tau$ に依存しません**。$\tau$ を上げて拡散を増やせば余分な項も同じ倍率で育ちます。第三に、$u \to c_s$ で $D_{\text{eff}}$ がゼロを越えて負になります。そこから先は答えが間違っている程度では済まず、発散します。
+
+2つのフラックスが実際にどう重なるか見てみましょう。
+
+<GhostFluxCancelBench />
+
+`alpha = 0` では赤い余分フラックスが青い物理フラックスを上下反転した形で敷かれます。`u` を上げると赤い側だけが $u^2$ で育ち、青い側はそのままです。`alpha` を1まで引くと緑が赤の上にぴたりと重なり、黄色い合計線が青い線に戻ります。
+
+## また現れる $1 - 1/(2\tau)$
+
+源項 $S_i$ の係数を決めます。上の最終方程式で余分な項と源項が互いに消えるには
+
+$$
+\tau\delta t\sum_i \mathbf{c}_i S_i = \left(\tau-\tfrac{1}{2}\right)\delta t\,\partial_t(\phi\mathbf{u})
+$$
+
+$$
+\sum_i \mathbf{c}_i S_i = \left(1 - \frac{1}{2\tau}\right)\partial_t(\phi\mathbf{u})
+$$
+
+この条件を満たしつつ $\sum_i S_i = 0$ となる最も簡単な形はひとつだけです。
+
+$$
+S_i = w_i\left(1 - \frac{1}{2\tau}\right)\frac{\mathbf{c}_i\cdot\partial_t(\phi\mathbf{u})}{c_s^2}
+$$
+
+$1 - 1/(2\tau)$ がまた出てきました。この係数は[forcing スキームで力の半分が消える話](/ja/posts/2026-07-27-lbm-forcing-term-guo-shan-chen-edm/)で見たものと同じ根から出ています。離散時間の格子では源項が2回、一度は $g^{(1)}$ を通して、もう一度は Taylor 展開の2次項を通して効きます。係数 $1/2$ の差はそこで生まれます。
+
+係数を落として $\sum_i \mathbf{c}_i S_i = \partial_t(\phi\mathbf{u})$ とするとどうなるでしょうか。$\tau = 1$ でちょうど2倍が入り、27%不足だった拡散が27%過剰になります。誤差の絶対値は変わらないので、対数スケールで収束次数を測っても気づきにくいのです。
+
+$\partial_t(\phi\mathbf{u})$ はコード上、前の時間ステップの $\phi u$ を保存しておいて後退差分で求めれば済みます。配列がひとつ増えるだけがコストの全部です。
+
+## Python 60行で測った $D_{\text{eff}}$
+
+言葉で終わらせず測りましょう。ガウス分布を流しながら2次モーメント $\sigma^2$ の増加傾きを最小二乗で取り出せば、それが $2D_{\text{eff}}$ です。
+
+```python
+import numpy as np
+
+CS2 = 1.0 / 3.0
+C = np.array([0, 1, -1])
+W = np.array([2 / 3, 1 / 6, 1 / 6])
+
+
+def d1q3_equilibrium(phi, u):
+    """g_i^eq = w_i phi (1 + c_i u / cs^2) — モーメント3つだけ合わせた平衡分布"""
+    return np.stack([W[i] * phi * (1.0 + C[i] * u / CS2) for i in range(3)])
+
+
+def gaussian_moments(x, phi):
+    m0 = phi.sum()
+    mean = (x * phi).sum() / m0
+    return mean, (((x - mean) ** 2) * phi).sum() / m0
+
+
+def run_cde_lbm(L, steps, tau, u, sigma0, x0, corrected):
+    x = np.arange(L, dtype=float)
+    phi = np.exp(-((x - x0) ** 2) / (2 * sigma0**2))
+    g = d1q3_equilibrium(phi, u)
+    phi_old = phi.copy()
+    hist = []
+    for n in range(steps + 1):
+        if n % 100 == 0:
+            hist.append((n, gaussian_moments(x, phi)[1]))
+        src = np.zeros_like(g)
+        if corrected and n > 0:
+            # S_i = w_i (1 - 1/(2 tau)) c_i d_t(phi u) / cs^2,  dt = 1
+            dt_phiu = (1.0 - 1.0 / (2 * tau)) * u * (phi - phi_old)
+            for i in range(3):
+                src[i] = W[i] * C[i] * dt_phiu / CS2
+        geq = d1q3_equilibrium(phi, u)
+        g = g - (g - geq) / tau + src          # 衝突
+        for i in range(3):
+            g[i] = np.roll(g[i], C[i])         # 並進
+        phi_old = phi
+        phi = g.sum(axis=0)
+    return np.array(hist)
+
+
+def fit_diffusivity(hist):
+    """sigma^2 = sigma0^2 + 2 D_eff t の傾きから D_eff を読む"""
+    return np.polyfit(hist[:, 0], hist[:, 1], 1)[0] / 2.0
+
+
+L, STEPS, SIG0, X0 = 800, 1600, 10.0, 80.0
+
+tau = 1.0
+D = CS2 * (tau - 0.5)
+print(f"tau = {tau},  D = cs^2 (tau-1/2) = {D:.6f},  cs^2 = {CS2:.6f}")
+print(f"{'u':>6} {'u^2/cs^2':>9} | {'D_eff (no src)':>14} {'ratio':>7} {'1-u^2/cs^2':>11} |"
+      f" {'D_eff (src)':>12} {'ratio':>7}")
+for u in [0.05, 0.10, 0.20, 0.30]:
+    d_raw = fit_diffusivity(run_cde_lbm(L, STEPS, tau, u, SIG0, X0, False))
+    d_fix = fit_diffusivity(run_cde_lbm(L, STEPS, tau, u, SIG0, X0, True))
+    print(f"{u:>6.2f} {u * u / CS2:>9.4f} | {d_raw:>14.6f} {d_raw / D:>7.4f} {1 - u * u / CS2:>11.4f} |"
+          f" {d_fix:>12.6f} {d_fix / D:>7.4f}")
+
+u = 0.25
+print(f"\nu = {u} fixed, tau sweep   (theory: ratio = 1 - u^2/cs^2 = {1 - u * u / CS2:.4f}, tau-independent)")
+print(f"{'tau':>6} {'D':>10} | {'D_eff (no src)':>14} {'ratio':>7} | {'D_eff (src)':>12} {'ratio':>7}")
+for tau in [0.6, 0.8, 1.0, 1.5]:
+    D = CS2 * (tau - 0.5)
+    d_raw = fit_diffusivity(run_cde_lbm(L, STEPS, tau, u, SIG0, X0, False))
+    d_fix = fit_diffusivity(run_cde_lbm(L, STEPS, tau, u, SIG0, X0, True))
+    print(f"{tau:>6.1f} {D:>10.6f} | {d_raw:>14.6f} {d_raw / D:>7.4f} | {d_fix:>12.6f} {d_fix / D:>7.4f}")
+```
+
+出力はこうなります。
+
+```text
+tau = 1.0,  D = cs^2 (tau-1/2) = 0.166667,  cs^2 = 0.333333
+     u  u^2/cs^2 | D_eff (no src)   ratio  1-u^2/cs^2 |  D_eff (src)   ratio
+  0.05    0.0075 |       0.165417  0.9925      0.9925 |     0.166666  1.0000
+  0.10    0.0300 |       0.161667  0.9700      0.9700 |     0.166666  1.0000
+  0.20    0.1200 |       0.146667  0.8800      0.8800 |     0.166663  1.0000
+  0.30    0.2700 |       0.121667  0.7300      0.7300 |     0.166658  0.9999
+
+u = 0.25 fixed, tau sweep   (theory: ratio = 1 - u^2/cs^2 = 0.8125, tau-independent)
+   tau          D | D_eff (no src)   ratio |  D_eff (src)   ratio
+   0.6   0.033333 |       0.027096  0.8129 |     0.033345  1.0004
+   0.8   0.100000 |       0.081258  0.8126 |     0.100006  1.0001
+   1.0   0.166667 |       0.135417  0.8125 |     0.166661  1.0000
+   1.5   0.333333 |       0.270794  0.8124 |     0.333275  0.9998
+```
+
+1つ目の表の `ratio` 列と `1-u^2/cs^2` 列が小数第4位まで一致しています。予測が近似ではなく厳密な先行次数だという意味です。源項をオンにすると4つの速度すべてが1.0000に戻ります。
+
+2つ目の表のほうが手厳しいです。$\tau$ を0.6から1.5まで、$D$ を10倍動かしても欠損比率は0.8129から0.8124までしか動きません。拡散を大きく取って誤差を埋めようとする試みが通用しないということです。$D$ を10倍にすれば消える量も10倍になります。
+
+## 格子速度の予算はすでに使われていました
+
+$u^2/c_s^2$ という形をもう一度見てください。これは格子マッハ数の二乗です。LBM で $u < 0.1$ という慣行を守る理由は、通常は圧縮性誤差だと説明されます。スカラー輸送にはもうひとつ理由があるわけです。同じ格子速度の予算を流れとスカラーが分け合っていて、スカラー側の請求書のほうがずっと早く届きます。
+
+実務で区別すべき場合は3つです。
+
+- **$u \le 0.05$ の低速拡散問題。** 欠損1%未満。源項なしでも格子誤差に埋もれます。
+- **$u \sim 0.1{-}0.2$ の一般的な計算。** 3〜12%の欠損。界面厚さや Sherwood 数を定量的に報告する予定ならオンにすべきです。
+- **phase-field 多相流。** $u$ が界面近傍で局所的に跳ね、しかも $\partial_t u$ もゼロではありません。上の導出で $\partial_t(\phi u)$ の2項のうち $\phi\,\partial_t u$ まで生き残ります。源項は選択肢ではなくなります。
+
+3番目の場合にはもうひとつ確認事項があります。余分な項は $\partial_t(\phi\mathbf{u})$ 全体であって $u^2$ の形ではありません。$u^2/c_s^2$ は一様・定常な $u$ でのみ成り立つ特殊解です。多相流コードに入れる前に $\partial_t(\phi\mathbf{u})$ をそのまま差分して入れる必要がありますし、[MRT のように緩和時間をモーメントごとに分ける場合](/ja/posts/2026-06-26-mrt-lbm-moment-space-collision/)には $1 - 1/(2\tau)$ の $\tau$ が1次モーメントに対応する緩和時間だという点も押さえておくべきです。
+
+界面がやたらと薄くなったり厚くなったりするのに、移動度の計算を何度見直しても正しいなら、電卓の外を見る番です。$\tau$ は合っていて、消えた分は流れが持っていきました。

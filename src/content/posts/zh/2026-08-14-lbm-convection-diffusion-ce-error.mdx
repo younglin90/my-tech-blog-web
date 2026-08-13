@@ -1,0 +1,240 @@
+---
+title: "速度调高后扩散少了27% — LBM对流扩散模型中多出来的通量"
+date: 2026-08-14
+description: "LBM对流扩散模型即便用τ标定了D，实际仍以D(1−u²/cs²)扩散。Chapman–Enskog漏下的多余通量，以及消除它的源项。"
+tags: ["LBM", "Chapman-Enskog", "Convection-Diffusion", "Advection", "Diffuse-Interface"]
+locale: zh
+slug: lbm-convection-diffusion-ce-error
+takeaway: "用τ标定的扩散系数只在 u = 0 时正确。流动一旦出现，u²/cs² 的那一份就悄悄消失了。"
+draft: false
+---
+
+import { LatticeDriftDiffusionScope } from '@/components/post-viz/2026-08-14-lbm-convection-diffusion-ce-error/LatticeDriftDiffusionScope'
+import { GhostFluxCancelBench } from '@/components/post-viz/2026-08-14-lbm-convection-diffusion-ce-error/GhostFluxCancelBench'
+
+在格子玻尔兹曼方法中，扩散系数由一个松弛时间决定：$D = c_s^2(\tau - 1/2)\delta t$，一行式子，没什么需要记的。但请注意这行里缺了什么——速度。把流动打开之后，还会得到同一个 $D$ 吗？本文的答案是否定的。在均匀对流速度 $u$ 下，实际扩散系数降到 $D(1 - u^2/c_s^2)$，$u = 0.3$ 时有27%消失了。我们会追踪 Chapman–Enskog 展开究竟在哪里漏掉这一项，以及如何用一个源项把它找回来。
+
+这件事在 phase-field 多相流里最疼。用格子玻尔兹曼求解 Cahn–Hilliard 或 Allen–Cahn 时，界面厚度与迁移率直接挂钩。迁移率差27%，界面厚度就差；界面厚度差了，表面张力系数也就跟着差。
+
+## 扩散系数标定好了，界面却越来越薄
+
+先用眼睛看。下面是一维对流扩散方程
+
+$$
+\partial_t \phi + \partial_x(u\phi) = D\,\partial_{xx}\phi
+$$
+
+用 D1Q3 格子玻尔兹曼求解的结果。初始条件是一个高斯分布，精确解也是高斯分布，宽度按 $\sigma^2(t) = \sigma_0^2 + 2Dt$ 增长。在下面的模拟中亲手操作一下。
+
+<LatticeDriftDiffusionScope />
+
+把 `u` 滑块推到0.30，实线（计算）就比虚线（精确解）更尖更高。下方的 $\sigma^2$ 曲线也追不上虚线的斜率。无论怎么调 `tau`，亏损比例都纹丝不动——这份固执正是本文要讲的全部内容。
+
+## D1Q3 需要满足的矩只有三个
+
+与求解 Navier–Stokes 的 LBM 不同，用于标量输运的分布函数 $g_i$ 需要满足的矩要少得多。Guo 在2009年非线性对流扩散方程模型中使用的平衡分布是这样的：
+
+$$
+g_i^{eq} = w_i\,\phi\left(1 + \frac{\mathbf{c}_i\cdot\mathbf{u}}{c_s^2}\right)
+$$
+
+其中 $w_i$ 是格子权重，$\mathbf{c}_i$ 是格子速度，$c_s^2 = 1/3$ 是格子声速的平方。这个分布满足三个矩条件。
+
+$$
+\sum_i g_i^{eq} = \phi, \qquad \sum_i \mathbf{c}_i g_i^{eq} = \phi\mathbf{u}, \qquad \sum_i \mathbf{c}_i\mathbf{c}_i g_i^{eq} = c_s^2\phi\,\mathbf{I}
+$$
+
+与流动平衡分布分道扬镳的关键在第三个：这里没有 $\phi\mathbf{u}\mathbf{u}$ 项。也就是说，速度的二次项从一开始就没放进去。为什么可以不放，[把平衡分布用 Hermite 多项式截断的那篇](/zh/posts/2026-05-25-lbm-equilibrium-hermite-d2q9/)讲过。简而言之，标量方程没有应力张量，二阶矩只要有各向同性部分就够了。正因如此，格子也可以用 D2Q5 代替 D2Q9。
+
+看上去够用，而且 $u = 0$ 时确实完美。问题在于，截掉的那部分不是免费的。
+
+## Chapman-Enskog 留下的第四项
+
+给 BGK 格子玻尔兹曼方程加上源项 $S_i$：
+
+$$
+g_i(\mathbf{x}+\mathbf{c}_i\delta t,\, t+\delta t) - g_i(\mathbf{x},t) = -\frac{1}{\tau}\left(g_i - g_i^{eq}\right) + \delta t\, S_i
+$$
+
+按 $g_i = g_i^{(0)} + \varepsilon g_i^{(1)} + \varepsilon^2 g_i^{(2)}$ 展开，并把时间导数拆成 $\partial_t = \varepsilon\partial_{t_1} + \varepsilon^2\partial_{t_2}$。$\varepsilon$ 阶的零阶矩原样给出目标方程的对流部分。
+
+$$
+\partial_{t_1}\phi + \nabla\cdot(\phi\mathbf{u}) = 0
+$$
+
+同一个 $\varepsilon$ 阶方程的**一阶矩**才是核心，因为 $g^{(1)}$ 携带的通量在这里被确定下来。
+
+$$
+\sum_i \mathbf{c}_i g_i^{(1)} = -\tau\delta t\left[\partial_{t_1}(\phi\mathbf{u}) + c_s^2\nabla\phi - \sum_i \mathbf{c}_i S_i\right]
+$$
+
+括号里第二项 $c_s^2\nabla\phi$ 正是我们想要的扩散通量。可第一项也跟着挤了进来。在流动 LBM 中，平衡分布二阶矩里的 $\rho\mathbf{u}\mathbf{u}$ 会把它抵消掉大半，而标量模型没有那一项，所以它留了下来。
+
+把 $\varepsilon^2$ 阶的零阶矩也合并进来，就得到最终形式。
+
+$$
+\partial_t \phi + \nabla\cdot(\phi\mathbf{u}) = \nabla\cdot(D\nabla\phi) + \nabla\cdot\left[\left(\tau-\tfrac{1}{2}\right)\delta t\,\partial_t(\phi\mathbf{u})\right] - \nabla\cdot\left[\tau\delta t\sum_i \mathbf{c}_i S_i\right]
+$$
+
+$D = c_s^2(\tau - 1/2)\delta t$ 一如预期。右端第二项则是谁也没有订购的多余通量。在真正的定常态下，$u$ 不随时间变化、$\phi$ 也不再变化时，它会消失。但只要 $\phi$ 还在动，也就是只要计算还在进行，$\partial_t(\phi\mathbf{u})$ 就不是零。
+
+## 均匀 $u$ 下这一项的真身是负扩散
+
+取最简单的情形：$u$ 在空间和时间上都是常数。于是 $\partial_t(\phi u) = u\,\partial_t\phi$，而在主导阶上 $\partial_t\phi \simeq -u\,\partial_x\phi$。代入得
+
+$$
+\partial_x\left[\left(\tau-\tfrac{1}{2}\right)\delta t\,\partial_t(\phi u)\right] = -\left(\tau-\tfrac{1}{2}\right)\delta t\, u^2\,\partial_{xx}\phi
+$$
+
+这是一个与扩散项符号相反的扩散项。与物理扩散项合并后
+
+$$
+\left(\tau-\tfrac{1}{2}\right)\delta t\left(c_s^2 - u^2\right)\partial_{xx}\phi = D\left(1 - \frac{u^2}{c_s^2}\right)\partial_{xx}\phi
+$$
+
+$$
+D_{\text{eff}} = D\left(1 - \frac{u^2}{c_s^2}\right)
+$$
+
+三件事一次性读了出来。第一，亏损与 $u^2$ 成正比，所以在低速下并不显眼，$u = 0.05$ 时只有0.75%。第二，$(\tau - 1/2)$ 在两边都有，因此**比例与 $\tau$ 无关**。调大 $\tau$ 来增加扩散，多余项也按同样倍数长大。第三，当 $u \to c_s$ 时 $D_{\text{eff}}$ 会越过零变成负值。过了那个点，结果就不只是错，而是发散。
+
+来看这两个通量实际上如何叠在一起。
+
+<GhostFluxCancelBench />
+
+在 `alpha = 0` 时，红色的多余通量像上下翻转的镜像一样铺在蓝色物理通量之下。调大 `u`，只有红色那侧按 $u^2$ 长大，蓝色纹丝不动。把 `alpha` 拉到1，绿色会精确地盖在红色之上，黄色的合计线回到蓝线上。
+
+## $1 - 1/(2\tau)$ 又出现了
+
+现在来定源项 $S_i$ 的系数。要让上面最终方程中的多余项与源项互相抵消，需要
+
+$$
+\tau\delta t\sum_i \mathbf{c}_i S_i = \left(\tau-\tfrac{1}{2}\right)\delta t\,\partial_t(\phi\mathbf{u})
+$$
+
+$$
+\sum_i \mathbf{c}_i S_i = \left(1 - \frac{1}{2\tau}\right)\partial_t(\phi\mathbf{u})
+$$
+
+在满足这个条件的同时还保证 $\sum_i S_i = 0$ 的最简单形式只有一个。
+
+$$
+S_i = w_i\left(1 - \frac{1}{2\tau}\right)\frac{\mathbf{c}_i\cdot\partial_t(\phi\mathbf{u})}{c_s^2}
+$$
+
+$1 - 1/(2\tau)$ 又来了。这个系数与[forcing 格式中力少了一半的那篇](/zh/posts/2026-07-27-lbm-forcing-term-guo-shan-chen-edm/)里见到的出自同一个根源。在离散时间的格子上，源项会作用两次：一次通过 $g^{(1)}$，一次通过 Taylor 展开的二阶项。系数 $1/2$ 的差别就产生于此。
+
+如果漏掉这个系数，直接取 $\sum_i \mathbf{c}_i S_i = \partial_t(\phi\mathbf{u})$ 会怎样？在 $\tau = 1$ 时恰好加倍，原本亏损27%的扩散变成过量27%。误差的绝对值没变，所以在对数坐标上测收敛阶也很难察觉。
+
+$\partial_t(\phi\mathbf{u})$ 在代码里只需保存上一时间步的 $\phi u$ 并做后向差分即可。多一个数组就是全部代价。
+
+## 用60行 Python 量出的 $D_{\text{eff}}$
+
+不要停在嘴上，量一量。让高斯分布随流走，用最小二乘拟合其二阶矩 $\sigma^2$ 的增长斜率，这个斜率就是 $2D_{\text{eff}}$。
+
+```python
+import numpy as np
+
+CS2 = 1.0 / 3.0
+C = np.array([0, 1, -1])
+W = np.array([2 / 3, 1 / 6, 1 / 6])
+
+
+def d1q3_equilibrium(phi, u):
+    """g_i^eq = w_i phi (1 + c_i u / cs^2) — 只满足三个矩的平衡分布"""
+    return np.stack([W[i] * phi * (1.0 + C[i] * u / CS2) for i in range(3)])
+
+
+def gaussian_moments(x, phi):
+    m0 = phi.sum()
+    mean = (x * phi).sum() / m0
+    return mean, (((x - mean) ** 2) * phi).sum() / m0
+
+
+def run_cde_lbm(L, steps, tau, u, sigma0, x0, corrected):
+    x = np.arange(L, dtype=float)
+    phi = np.exp(-((x - x0) ** 2) / (2 * sigma0**2))
+    g = d1q3_equilibrium(phi, u)
+    phi_old = phi.copy()
+    hist = []
+    for n in range(steps + 1):
+        if n % 100 == 0:
+            hist.append((n, gaussian_moments(x, phi)[1]))
+        src = np.zeros_like(g)
+        if corrected and n > 0:
+            # S_i = w_i (1 - 1/(2 tau)) c_i d_t(phi u) / cs^2,  dt = 1
+            dt_phiu = (1.0 - 1.0 / (2 * tau)) * u * (phi - phi_old)
+            for i in range(3):
+                src[i] = W[i] * C[i] * dt_phiu / CS2
+        geq = d1q3_equilibrium(phi, u)
+        g = g - (g - geq) / tau + src          # 碰撞
+        for i in range(3):
+            g[i] = np.roll(g[i], C[i])         # 迁移
+        phi_old = phi
+        phi = g.sum(axis=0)
+    return np.array(hist)
+
+
+def fit_diffusivity(hist):
+    """从 sigma^2 = sigma0^2 + 2 D_eff t 的斜率读出 D_eff"""
+    return np.polyfit(hist[:, 0], hist[:, 1], 1)[0] / 2.0
+
+
+L, STEPS, SIG0, X0 = 800, 1600, 10.0, 80.0
+
+tau = 1.0
+D = CS2 * (tau - 0.5)
+print(f"tau = {tau},  D = cs^2 (tau-1/2) = {D:.6f},  cs^2 = {CS2:.6f}")
+print(f"{'u':>6} {'u^2/cs^2':>9} | {'D_eff (no src)':>14} {'ratio':>7} {'1-u^2/cs^2':>11} |"
+      f" {'D_eff (src)':>12} {'ratio':>7}")
+for u in [0.05, 0.10, 0.20, 0.30]:
+    d_raw = fit_diffusivity(run_cde_lbm(L, STEPS, tau, u, SIG0, X0, False))
+    d_fix = fit_diffusivity(run_cde_lbm(L, STEPS, tau, u, SIG0, X0, True))
+    print(f"{u:>6.2f} {u * u / CS2:>9.4f} | {d_raw:>14.6f} {d_raw / D:>7.4f} {1 - u * u / CS2:>11.4f} |"
+          f" {d_fix:>12.6f} {d_fix / D:>7.4f}")
+
+u = 0.25
+print(f"\nu = {u} fixed, tau sweep   (theory: ratio = 1 - u^2/cs^2 = {1 - u * u / CS2:.4f}, tau-independent)")
+print(f"{'tau':>6} {'D':>10} | {'D_eff (no src)':>14} {'ratio':>7} | {'D_eff (src)':>12} {'ratio':>7}")
+for tau in [0.6, 0.8, 1.0, 1.5]:
+    D = CS2 * (tau - 0.5)
+    d_raw = fit_diffusivity(run_cde_lbm(L, STEPS, tau, u, SIG0, X0, False))
+    d_fix = fit_diffusivity(run_cde_lbm(L, STEPS, tau, u, SIG0, X0, True))
+    print(f"{tau:>6.1f} {D:>10.6f} | {d_raw:>14.6f} {d_raw / D:>7.4f} | {d_fix:>12.6f} {d_fix / D:>7.4f}")
+```
+
+输出如下。
+
+```text
+tau = 1.0,  D = cs^2 (tau-1/2) = 0.166667,  cs^2 = 0.333333
+     u  u^2/cs^2 | D_eff (no src)   ratio  1-u^2/cs^2 |  D_eff (src)   ratio
+  0.05    0.0075 |       0.165417  0.9925      0.9925 |     0.166666  1.0000
+  0.10    0.0300 |       0.161667  0.9700      0.9700 |     0.166666  1.0000
+  0.20    0.1200 |       0.146667  0.8800      0.8800 |     0.166663  1.0000
+  0.30    0.2700 |       0.121667  0.7300      0.7300 |     0.166658  0.9999
+
+u = 0.25 fixed, tau sweep   (theory: ratio = 1 - u^2/cs^2 = 0.8125, tau-independent)
+   tau          D | D_eff (no src)   ratio |  D_eff (src)   ratio
+   0.6   0.033333 |       0.027096  0.8129 |     0.033345  1.0004
+   0.8   0.100000 |       0.081258  0.8126 |     0.100006  1.0001
+   1.0   0.166667 |       0.135417  0.8125 |     0.166661  1.0000
+   1.5   0.333333 |       0.270794  0.8124 |     0.333275  0.9998
+```
+
+第一张表的 `ratio` 列与 `1-u^2/cs^2` 列小数点后四位完全一致。这说明预测不是近似，而是精确的主导阶。打开源项后，四个速度全部回到1.0000。
+
+第二张表更刺人。$\tau$ 从0.6扫到1.5，$D$ 变了十倍，亏损比例却只从0.8129挪到0.8124。想靠把扩散取大来掩盖误差是行不通的：$D$ 放大十倍，消失的量也放大十倍。
+
+## 格子速度的预算早已被占用
+
+再看一眼 $u^2/c_s^2$ 这个形式。它就是格子马赫数的平方。LBM 中遵守 $u < 0.1$ 惯例的理由，通常被解释为压缩性误差。标量输运则又添了一条理由：流动和标量在分用同一份格子速度预算，而标量那一侧的账单来得早得多。
+
+实践中需要区分三种情形。
+
+- **$u \le 0.05$ 的低速扩散问题。** 亏损不到1%，会被离散误差淹没，不加源项也说得过去。
+- **$u \sim 0.1{-}0.2$ 的常规计算。** 3–12% 的亏损。如果打算定量报告界面厚度或 Sherwood 数，就该打开。
+- **phase-field 多相流。** $u$ 会在界面附近局部跳变，而且 $\partial_t u$ 也不为零。上面推导中 $\partial_t(\phi u)$ 的两项里，$\phi\,\partial_t u$ 那一半也会存活下来。源项不再是可选项。
+
+第三种情形还有一点要确认。多余项是完整的 $\partial_t(\phi\mathbf{u})$，而不是 $u^2$ 的形式。$u^2/c_s^2$ 只是均匀定常 $u$ 下成立的特解。放进多相流代码之前，应当直接对 $\partial_t(\phi\mathbf{u})$ 做差分；而[像 MRT 那样把松弛时间按矩拆开时](/zh/posts/2026-06-26-mrt-lbm-moment-space-collision/)，还要留意 $1 - 1/(2\tau)$ 里的 $\tau$ 指的是对应一阶矩的那个松弛时间。
+
+所以，如果界面老是变薄或变厚，而迁移率的计算怎么复核都没错，那就该看看计算器之外了。$\tau$ 是对的，消失的那部分被流动带走了。

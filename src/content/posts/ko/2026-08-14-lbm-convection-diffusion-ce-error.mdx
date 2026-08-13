@@ -1,0 +1,240 @@
+---
+title: "속도를 올렸더니 확산이 27% 줄었다 — LBM 대류-확산 모델의 여분 플럭스"
+date: 2026-08-14
+description: "LBM 대류-확산 모델은 D를 τ로 맞춰도 실제로는 D(1−u²/cs²)로 퍼진다. Chapman–Enskog가 남긴 여분 플럭스와 그것을 지우는 소스 항."
+tags: ["LBM", "Chapman-Enskog", "Convection-Diffusion", "Advection", "Diffuse-Interface"]
+locale: ko
+slug: lbm-convection-diffusion-ce-error
+takeaway: "τ로 맞춘 확산계수는 u = 0에서만 맞다. 유동이 붙는 순간 u²/cs² 만큼이 조용히 사라진다."
+draft: false
+---
+
+import { LatticeDriftDiffusionScope } from '@/components/post-viz/2026-08-14-lbm-convection-diffusion-ce-error/LatticeDriftDiffusionScope'
+import { GhostFluxCancelBench } from '@/components/post-viz/2026-08-14-lbm-convection-diffusion-ce-error/GhostFluxCancelBench'
+
+격자 볼츠만에서 확산계수는 완화시간 $\tau$ 하나로 정해진다. $D = c_s^2(\tau - 1/2)\delta t$, 외울 것도 없는 한 줄이다. 그런데 이 식에는 속도가 없다. 유동을 켜도 같은 $D$가 나올까? 이 글은 그 질문에 아니라고 답한다. 균일한 이류 속도 $u$에서 실제 확산계수는 $D(1 - u^2/c_s^2)$로 줄어들고, $u = 0.3$이면 27%가 사라진다. Chapman–Enskog 전개가 어디에서 그 항을 흘리는지, 소스 항 하나로 어떻게 되돌리는지까지 따라간다.
+
+이것은 phase-field 다상유동에서 특히 아픈 문제다. Cahn–Hilliard나 Allen–Cahn 방정식을 격자 볼츠만으로 풀 때, 계면 두께는 이동도(mobility)와 직결된다. 이동도가 27% 틀리면 계면 두께가 틀리고, 계면 두께가 틀리면 표면장력 계수가 틀린다.
+
+## 확산계수를 맞췄는데 계면이 얇아진다
+
+먼저 눈으로 보자. 아래는 1차원 대류-확산 방정식
+
+$$
+\partial_t \phi + \partial_x(u\phi) = D\,\partial_{xx}\phi
+$$
+
+을 D1Q3 격자 볼츠만으로 푼 것이다. 초기조건은 가우시안 하나, 정확해도 가우시안이다. 폭은 $\sigma^2(t) = \sigma_0^2 + 2Dt$로 자란다. 아래 시뮬레이션에서 직접 조작해보자.
+
+<LatticeDriftDiffusionScope />
+
+`u` 슬라이더를 0.30까지 올려 보면 실선(계산)이 점선(정확해)보다 뾰족하게 솟는다. 아래 패널의 $\sigma^2$ 곡선도 점선 기울기를 따라가지 못한다. `tau`를 아무리 바꿔도 결손 비율은 그대로다 — 이것이 이 글에서 설명할 전부다.
+
+## D1Q3가 지켜야 하는 모멘트는 셋뿐이다
+
+Navier–Stokes를 푸는 LBM과 달리, 스칼라 수송 방정식용 분포함수 $g_i$는 지킬 모멘트가 적다. Guo가 2009년 비선형 대류-확산 방정식 모델에서 쓴 평형분포는 이렇다.
+
+$$
+g_i^{eq} = w_i\,\phi\left(1 + \frac{\mathbf{c}_i\cdot\mathbf{u}}{c_s^2}\right)
+$$
+
+$w_i$는 격자 가중치, $\mathbf{c}_i$는 격자 속도, $c_s^2 = 1/3$은 격자 음속의 제곱이다. 이 분포가 만족하는 모멘트는 셋이다.
+
+$$
+\sum_i g_i^{eq} = \phi, \qquad \sum_i \mathbf{c}_i g_i^{eq} = \phi\mathbf{u}, \qquad \sum_i \mathbf{c}_i\mathbf{c}_i g_i^{eq} = c_s^2\phi\,\mathbf{I}
+$$
+
+유동용 평형분포와 결정적으로 다른 지점이 세 번째다. 여기에는 $\phi\mathbf{u}\mathbf{u}$ 항이 없다. 속도의 2차항을 처음부터 넣지 않았다는 뜻이다. 왜 넣지 않는가는 [평형분포를 Hermite 다항식으로 잘라내는 이야기](/ko/posts/2026-05-25-lbm-equilibrium-hermite-d2q9/)에서 다뤘다. 요약하면 스칼라 방정식에는 응력 텐서가 없으므로 2차 모멘트에 등방 성분만 있으면 충분하다. 격자도 D2Q9 대신 D2Q5로 줄일 수 있다.
+
+충분해 보인다. 실제로 $u = 0$이면 완벽하다. 문제는 잘라낸 자리가 공짜가 아니라는 것이다.
+
+## Chapman–Enskog가 남기고 가는 네 번째 항
+
+BGK 격자 볼츠만 방정식에 소스 $S_i$를 붙여 쓰자.
+
+$$
+g_i(\mathbf{x}+\mathbf{c}_i\delta t,\, t+\delta t) - g_i(\mathbf{x},t) = -\frac{1}{\tau}\left(g_i - g_i^{eq}\right) + \delta t\, S_i
+$$
+
+$g_i = g_i^{(0)} + \varepsilon g_i^{(1)} + \varepsilon^2 g_i^{(2)}$로 전개하고 시간 도함수를 $\partial_t = \varepsilon\partial_{t_1} + \varepsilon^2\partial_{t_2}$로 쪼갠다. $\varepsilon$차의 0차 모멘트는 목표 방정식의 이류 부분을 그대로 준다.
+
+$$
+\partial_{t_1}\phi + \nabla\cdot(\phi\mathbf{u}) = 0
+$$
+
+같은 $\varepsilon$차 식의 **1차 모멘트**가 핵심이다. 여기에서 $g^{(1)}$이 나른 플럭스가 결정된다.
+
+$$
+\sum_i \mathbf{c}_i g_i^{(1)} = -\tau\delta t\left[\partial_{t_1}(\phi\mathbf{u}) + c_s^2\nabla\phi - \sum_i \mathbf{c}_i S_i\right]
+$$
+
+괄호 안 두 번째 항 $c_s^2\nabla\phi$가 우리가 원한 확산 플럭스다. 그런데 첫 번째 항이 같이 들어 있다. 유동 LBM에서는 평형분포의 2차 모멘트에 $\rho\mathbf{u}\mathbf{u}$가 있어서 이 항이 대부분 상쇄되지만, 스칼라 모델에는 그 항이 없다. 남는다.
+
+$\varepsilon^2$차 0차 모멘트까지 합치면 최종 형태가 나온다.
+
+$$
+\partial_t \phi + \nabla\cdot(\phi\mathbf{u}) = \nabla\cdot(D\nabla\phi) + \nabla\cdot\left[\left(\tau-\tfrac{1}{2}\right)\delta t\,\partial_t(\phi\mathbf{u})\right] - \nabla\cdot\left[\tau\delta t\sum_i \mathbf{c}_i S_i\right]
+$$
+
+$D = c_s^2(\tau - 1/2)\delta t$는 예상대로다. 우변 두 번째 항이 아무도 주문하지 않은 여분 플럭스다. 정상 상태에서 $u$가 시간에 대해 일정하고 $\phi$도 변하지 않으면 사라진다. 하지만 $\phi$가 움직이는 한, 즉 계산이 진행되는 한 $\partial_t(\phi\mathbf{u})$는 0이 아니다.
+
+## 균일한 $u$에서 그 항의 정체는 음의 확산이다
+
+$u$가 공간·시간에 대해 상수인 가장 단순한 경우를 보자. 그러면 $\partial_t(\phi u) = u\,\partial_t\phi$이고, 선행 차수에서 $\partial_t\phi \simeq -u\,\partial_x\phi$다. 대입하면
+
+$$
+\partial_x\left[\left(\tau-\tfrac{1}{2}\right)\delta t\,\partial_t(\phi u)\right] = -\left(\tau-\tfrac{1}{2}\right)\delta t\, u^2\,\partial_{xx}\phi
+$$
+
+확산항과 부호가 반대인 확산항이다. 물리 확산항과 합치면
+
+$$
+\left(\tau-\tfrac{1}{2}\right)\delta t\left(c_s^2 - u^2\right)\partial_{xx}\phi = D\left(1 - \frac{u^2}{c_s^2}\right)\partial_{xx}\phi
+$$
+
+$$
+D_{\text{eff}} = D\left(1 - \frac{u^2}{c_s^2}\right)
+$$
+
+세 가지가 한꺼번에 읽힌다. 첫째, 결손은 $u^2$에 비례하므로 저속에서는 눈에 띄지 않는다. $u = 0.05$면 0.75%다. 둘째, $(\tau - 1/2)$가 양변에 모두 있으므로 **비율은 $\tau$와 무관하다.** $\tau$를 키워 확산을 늘리면 여분 항도 같은 비율로 커진다. 셋째, $u \to c_s$에서 $D_{\text{eff}}$가 0을 지나 음수가 된다. 그 지점에서는 결과가 틀린 정도가 아니라 발산한다.
+
+두 플럭스가 실제로 어떻게 겹치는지 보자.
+
+<GhostFluxCancelBench />
+
+`alpha = 0`에서 붉은 여분 플럭스가 파란 물리 플럭스를 위아래로 뒤집은 모양으로 깔린다. `u`를 올리면 붉은 쪽만 $u^2$로 자라고 파란 쪽은 그대로다. `alpha`를 1까지 끌면 초록이 붉은 것 위에 정확히 포개지고 노란 합계선이 파란 선으로 돌아온다.
+
+## 다시 나타난 $1 - 1/(2\tau)$
+
+이제 소스 항 $S_i$의 계수를 정할 차례다. 위 최종 방정식에서 여분 항과 소스 항이 서로 지워지려면
+
+$$
+\tau\delta t\sum_i \mathbf{c}_i S_i = \left(\tau-\tfrac{1}{2}\right)\delta t\,\partial_t(\phi\mathbf{u})
+$$
+
+$$
+\sum_i \mathbf{c}_i S_i = \left(1 - \frac{1}{2\tau}\right)\partial_t(\phi\mathbf{u})
+$$
+
+이 조건을 만족하면서 $\sum_i S_i = 0$인 가장 간단한 형태는 하나뿐이다.
+
+$$
+S_i = w_i\left(1 - \frac{1}{2\tau}\right)\frac{\mathbf{c}_i\cdot\partial_t(\phi\mathbf{u})}{c_s^2}
+$$
+
+$1 - 1/(2\tau)$가 또 나왔다. 이 계수는 [forcing 스킴에서 힘의 절반이 사라지는 이야기](/ko/posts/2026-07-27-lbm-forcing-term-guo-shan-chen-edm/)에서 봤던 것과 같은 뿌리에서 나온다. 이산 시간 격자에서 소스는 한 번은 $g^{(1)}$을 통해, 한 번은 Taylor 전개의 2차 항을 통해 두 번 작용한다. 계수 $1/2$의 차이가 여기에서 생긴다.
+
+계수를 빼먹고 $\sum_i \mathbf{c}_i S_i = \partial_t(\phi\mathbf{u})$로 두면 어떻게 되는가. $\tau = 1$에서 정확히 2배가 들어가서, 27% 부족하던 확산이 27% 과잉이 된다. 오차의 절댓값이 그대로라 로그 스케일로 수렴 차수를 재면 눈치채기 어렵다.
+
+$\partial_t(\phi\mathbf{u})$는 코드에서 이전 시간 단계의 $\phi u$를 저장해 두고 후방 차분으로 구하면 된다. 배열 하나 더 드는 것이 비용의 전부다.
+
+## Python 60줄로 재본 $D_{\text{eff}}$
+
+말로 끝내지 말고 재자. 가우시안을 흘려보내면서 2차 모멘트 $\sigma^2$의 증가 기울기를 최소제곱으로 뽑으면 그것이 $2D_{\text{eff}}$다.
+
+```python
+import numpy as np
+
+CS2 = 1.0 / 3.0
+C = np.array([0, 1, -1])
+W = np.array([2 / 3, 1 / 6, 1 / 6])
+
+
+def d1q3_equilibrium(phi, u):
+    """g_i^eq = w_i phi (1 + c_i u / cs^2) — 모멘트 3개만 맞춘 평형분포"""
+    return np.stack([W[i] * phi * (1.0 + C[i] * u / CS2) for i in range(3)])
+
+
+def gaussian_moments(x, phi):
+    m0 = phi.sum()
+    mean = (x * phi).sum() / m0
+    return mean, (((x - mean) ** 2) * phi).sum() / m0
+
+
+def run_cde_lbm(L, steps, tau, u, sigma0, x0, corrected):
+    x = np.arange(L, dtype=float)
+    phi = np.exp(-((x - x0) ** 2) / (2 * sigma0**2))
+    g = d1q3_equilibrium(phi, u)
+    phi_old = phi.copy()
+    hist = []
+    for n in range(steps + 1):
+        if n % 100 == 0:
+            hist.append((n, gaussian_moments(x, phi)[1]))
+        src = np.zeros_like(g)
+        if corrected and n > 0:
+            # S_i = w_i (1 - 1/(2 tau)) c_i d_t(phi u) / cs^2,  dt = 1
+            dt_phiu = (1.0 - 1.0 / (2 * tau)) * u * (phi - phi_old)
+            for i in range(3):
+                src[i] = W[i] * C[i] * dt_phiu / CS2
+        geq = d1q3_equilibrium(phi, u)
+        g = g - (g - geq) / tau + src          # 충돌
+        for i in range(3):
+            g[i] = np.roll(g[i], C[i])         # 전파
+        phi_old = phi
+        phi = g.sum(axis=0)
+    return np.array(hist)
+
+
+def fit_diffusivity(hist):
+    """sigma^2 = sigma0^2 + 2 D_eff t 의 기울기에서 D_eff 를 읽는다"""
+    return np.polyfit(hist[:, 0], hist[:, 1], 1)[0] / 2.0
+
+
+L, STEPS, SIG0, X0 = 800, 1600, 10.0, 80.0
+
+tau = 1.0
+D = CS2 * (tau - 0.5)
+print(f"tau = {tau},  D = cs^2 (tau-1/2) = {D:.6f},  cs^2 = {CS2:.6f}")
+print(f"{'u':>6} {'u^2/cs^2':>9} | {'D_eff (no src)':>14} {'ratio':>7} {'1-u^2/cs^2':>11} |"
+      f" {'D_eff (src)':>12} {'ratio':>7}")
+for u in [0.05, 0.10, 0.20, 0.30]:
+    d_raw = fit_diffusivity(run_cde_lbm(L, STEPS, tau, u, SIG0, X0, False))
+    d_fix = fit_diffusivity(run_cde_lbm(L, STEPS, tau, u, SIG0, X0, True))
+    print(f"{u:>6.2f} {u * u / CS2:>9.4f} | {d_raw:>14.6f} {d_raw / D:>7.4f} {1 - u * u / CS2:>11.4f} |"
+          f" {d_fix:>12.6f} {d_fix / D:>7.4f}")
+
+u = 0.25
+print(f"\nu = {u} fixed, tau sweep   (theory: ratio = 1 - u^2/cs^2 = {1 - u * u / CS2:.4f}, tau-independent)")
+print(f"{'tau':>6} {'D':>10} | {'D_eff (no src)':>14} {'ratio':>7} | {'D_eff (src)':>12} {'ratio':>7}")
+for tau in [0.6, 0.8, 1.0, 1.5]:
+    D = CS2 * (tau - 0.5)
+    d_raw = fit_diffusivity(run_cde_lbm(L, STEPS, tau, u, SIG0, X0, False))
+    d_fix = fit_diffusivity(run_cde_lbm(L, STEPS, tau, u, SIG0, X0, True))
+    print(f"{tau:>6.1f} {D:>10.6f} | {d_raw:>14.6f} {d_raw / D:>7.4f} | {d_fix:>12.6f} {d_fix / D:>7.4f}")
+```
+
+출력은 이렇다.
+
+```text
+tau = 1.0,  D = cs^2 (tau-1/2) = 0.166667,  cs^2 = 0.333333
+     u  u^2/cs^2 | D_eff (no src)   ratio  1-u^2/cs^2 |  D_eff (src)   ratio
+  0.05    0.0075 |       0.165417  0.9925      0.9925 |     0.166666  1.0000
+  0.10    0.0300 |       0.161667  0.9700      0.9700 |     0.166666  1.0000
+  0.20    0.1200 |       0.146667  0.8800      0.8800 |     0.166663  1.0000
+  0.30    0.2700 |       0.121667  0.7300      0.7300 |     0.166658  0.9999
+
+u = 0.25 fixed, tau sweep   (theory: ratio = 1 - u^2/cs^2 = 0.8125, tau-independent)
+   tau          D | D_eff (no src)   ratio |  D_eff (src)   ratio
+   0.6   0.033333 |       0.027096  0.8129 |     0.033345  1.0004
+   0.8   0.100000 |       0.081258  0.8126 |     0.100006  1.0001
+   1.0   0.166667 |       0.135417  0.8125 |     0.166661  1.0000
+   1.5   0.333333 |       0.270794  0.8124 |     0.333275  0.9998
+```
+
+첫 표의 `ratio` 열과 `1-u^2/cs^2` 열이 소수점 넷째 자리까지 같다. 예측이 근사가 아니라 정확한 선행 차수라는 뜻이다. 소스 항을 켜면 네 속도 모두 1.0000으로 돌아온다.
+
+두 번째 표가 더 매섭다. $\tau$를 0.6에서 1.5까지, $D$를 10배 바꿔도 결손 비율은 0.8129에서 0.8124까지만 움직인다. 확산을 크게 잡아 오차를 묻어 보려는 시도가 통하지 않는다는 뜻이다. $D$를 10배로 키우면 사라지는 양도 10배가 된다.
+
+## 격자 속도가 이미 예산을 쓰고 있었다
+
+$u^2/c_s^2$라는 형태를 다시 보자. 이것은 격자 마하수의 제곱이다. LBM에서 $u < 0.1$ 관행을 지키는 이유는 보통 압축성 오차 때문이라고 설명된다. 스칼라 수송에는 그 이유가 하나 더 있는 셈이다. 같은 격자 속도 예산을 유동과 스칼라가 나눠 쓰고 있고, 스칼라 쪽 청구서가 훨씬 먼저 도착한다.
+
+실무에서 구분해야 할 경우는 셋이다.
+
+- **$u \le 0.05$의 저속 확산 문제.** 결손 1% 미만. 소스 항 없이 가도 격자 오차에 묻힌다.
+- **$u \sim 0.1{-}0.2$의 일반적 계산.** 3–12% 결손. 계면 두께나 Sherwood 수를 정량적으로 보고할 계획이라면 켜야 한다.
+- **phase-field 다상유동.** $u$가 계면 근처에서 국소적으로 튀고, 게다가 $\partial_t u$도 0이 아니다. 위 유도에서 $\partial_t(\phi u)$의 두 항 중 $\phi\,\partial_t u$까지 살아난다. 소스 항은 선택이 아니다.
+
+세 번째 경우에는 확인할 것이 하나 더 있다. 여분 항은 $\partial_t(\phi\mathbf{u})$ 전체이지 $u^2$ 형태가 아니다. $u^2/c_s^2$는 균일·정상 $u$에서만 성립하는 특수해다. 다상유동 코드에 넣기 전에 $\partial_t(\phi\mathbf{u})$를 그대로 차분해서 넣어야 하며, [MRT처럼 완화시간을 모멘트별로 쪼개는 경우](/ko/posts/2026-06-26-mrt-lbm-moment-space-collision/)에는 $1 - 1/(2\tau)$의 $\tau$가 1차 모멘트에 대응하는 완화시간이라는 점도 짚고 넘어가야 한다.
+
+계면이 자꾸 얇아지거나 두꺼워지는데 이동도 계산을 아무리 검토해도 맞다면, 계산기 밖을 볼 차례다. $\tau$는 맞았고, 사라진 것은 유동이 가져갔다.

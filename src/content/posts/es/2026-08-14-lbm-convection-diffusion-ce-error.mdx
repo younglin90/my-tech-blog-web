@@ -1,0 +1,240 @@
+---
+title: "Subir la velocidad cuesta el 27% de la difusión — el flujo sobrante del modelo de convección-difusión en LBM"
+date: 2026-08-14
+description: "Aunque D se ajuste mediante tau, el modelo de convección-difusión en lattice Boltzmann difunde como D(1−u²/cs²). Dónde pierde Chapman–Enskog el flujo sobrante y qué término fuente lo borra."
+tags: ["LBM", "Chapman-Enskog", "Convection-Diffusion", "Advection", "Diffuse-Interface"]
+locale: es
+slug: lbm-convection-diffusion-ce-error
+takeaway: "La difusividad ajustada mediante tau solo es correcta en u = 0. En cuanto aparece el flujo, u²/cs² de ella desaparece en silencio."
+draft: false
+---
+
+import { LatticeDriftDiffusionScope } from '@/components/post-viz/2026-08-14-lbm-convection-diffusion-ce-error/LatticeDriftDiffusionScope'
+import { GhostFluxCancelBench } from '@/components/post-viz/2026-08-14-lbm-convection-diffusion-ce-error/GhostFluxCancelBench'
+
+En lattice Boltzmann la difusividad queda fijada por un solo tiempo de relajación: $D = c_s^2(\tau - 1/2)\delta t$. Una línea que no hace falta memorizar. Pero conviene notar qué falta en ella: la velocidad. ¿Sale el mismo $D$ una vez encendido el flujo? Este artículo responde que no. Bajo una velocidad de advección uniforme $u$, la difusividad real cae a $D(1 - u^2/c_s^2)$, y con $u = 0.3$ eso significa un 27% perdido. Se rastrea dónde exactamente pierde el término la expansión de Chapman–Enskog y cómo un único término fuente lo devuelve.
+
+Donde más duele es en flujo multifásico con phase-field. Cuando Cahn–Hilliard o Allen–Cahn se resuelven sobre un núcleo de lattice Boltzmann, el espesor de la interfaz está atado directamente a la movilidad. Una movilidad con un 27% de error da un espesor de interfaz erróneo, y ese espesor erróneo da un coeficiente de tensión superficial erróneo.
+
+## La difusividad está ajustada y aun así la interfaz adelgaza
+
+Conviene mirarlo primero. Abajo está la ecuación de convección-difusión unidimensional
+
+$$
+\partial_t \phi + \partial_x(u\phi) = D\,\partial_{xx}\phi
+$$
+
+resuelta con un esquema lattice Boltzmann D1Q3. La condición inicial es una única gaussiana; la solución exacta también es una gaussiana y su anchura crece como $\sigma^2(t) = \sigma_0^2 + 2Dt$. Conviene manipularlo directamente en la simulación siguiente.
+
+<LatticeDriftDiffusionScope />
+
+Al llevar el deslizador `u` hasta 0.30, la curva sólida (calculada) se eleva por encima de la punteada (exacta), más alta y más aguda. La traza de $\sigma^2$ del panel inferior tampoco alcanza la pendiente objetivo punteada. Y da igual dónde se mueva `tau`: la razón de déficit no se inmuta. Esa terquedad es el artículo entero.
+
+## D1Q3 solo tiene tres momentos que respetar
+
+A diferencia de un LBM que resuelve Navier–Stokes, una distribución $g_i$ construida para transporte escalar tiene menos momentos que satisfacer. El equilibrio que usó Guo en su modelo de 2009 para ecuaciones de convección-difusión no lineales es este:
+
+$$
+g_i^{eq} = w_i\,\phi\left(1 + \frac{\mathbf{c}_i\cdot\mathbf{u}}{c_s^2}\right)
+$$
+
+donde $w_i$ son los pesos de la red, $\mathbf{c}_i$ las velocidades de la red y $c_s^2 = 1/3$ el cuadrado de la velocidad del sonido reticular. Esta distribución cumple tres condiciones de momento.
+
+$$
+\sum_i g_i^{eq} = \phi, \qquad \sum_i \mathbf{c}_i g_i^{eq} = \phi\mathbf{u}, \qquad \sum_i \mathbf{c}_i\mathbf{c}_i g_i^{eq} = c_s^2\phi\,\mathbf{I}
+$$
+
+El tercero es donde esto se separa de un equilibrio de flujo: no hay término $\phi\mathbf{u}\mathbf{u}$. El término de segundo orden en la velocidad nunca se incluyó. Por qué puede omitirse es el tema de [recortar el equilibrio con polinomios de Hermite](/es/posts/2026-05-25-lbm-equilibrium-hermite-d2q9/). En resumen: una ecuación escalar no tiene tensor de esfuerzos, así que basta con la parte isótropa del segundo momento. Por eso mismo D2Q5 puede sustituir a D2Q9 aquí.
+
+Parece suficiente, y con $u = 0$ lo es exactamente. El problema es que el truncamiento no sale gratis.
+
+## El cuarto término que Chapman-Enskog deja atrás
+
+Escribamos la ecuación de lattice Boltzmann BGK con una fuente $S_i$ añadida:
+
+$$
+g_i(\mathbf{x}+\mathbf{c}_i\delta t,\, t+\delta t) - g_i(\mathbf{x},t) = -\frac{1}{\tau}\left(g_i - g_i^{eq}\right) + \delta t\, S_i
+$$
+
+Se expande $g_i = g_i^{(0)} + \varepsilon g_i^{(1)} + \varepsilon^2 g_i^{(2)}$ y se separa la derivada temporal como $\partial_t = \varepsilon\partial_{t_1} + \varepsilon^2\partial_{t_2}$. El momento de orden cero a orden $\varepsilon$ devuelve intacta la parte advectiva de la ecuación objetivo.
+
+$$
+\partial_{t_1}\phi + \nabla\cdot(\phi\mathbf{u}) = 0
+$$
+
+El **primer momento** de esa misma ecuación de orden $\varepsilon$ es donde se decide todo, porque fija el flujo que transporta $g^{(1)}$.
+
+$$
+\sum_i \mathbf{c}_i g_i^{(1)} = -\tau\delta t\left[\partial_{t_1}(\phi\mathbf{u}) + c_s^2\nabla\phi - \sum_i \mathbf{c}_i S_i\right]
+$$
+
+El segundo término del corchete, $c_s^2\nabla\phi$, es el flujo difusivo que se pedía. El primero viaja con él de polizón. En un esquema de flujo, el término $\rho\mathbf{u}\mathbf{u}$ del segundo momento del equilibrio lo cancela casi por completo; el modelo escalar no tiene ese término. Así que sobrevive.
+
+Reuniendo el momento de orden cero a orden $\varepsilon^2$ se obtiene la forma final.
+
+$$
+\partial_t \phi + \nabla\cdot(\phi\mathbf{u}) = \nabla\cdot(D\nabla\phi) + \nabla\cdot\left[\left(\tau-\tfrac{1}{2}\right)\delta t\,\partial_t(\phi\mathbf{u})\right] - \nabla\cdot\left[\tau\delta t\sum_i \mathbf{c}_i S_i\right]
+$$
+
+$D = c_s^2(\tau - 1/2)\delta t$ aparece como se esperaba. El segundo término de la derecha es un flujo que nadie encargó. Se anula en un estado estacionario genuino, con $u$ constante en el tiempo y $\phi$ ya sin cambiar. Pero mientras $\phi$ siga moviéndose —mientras el cálculo siga corriendo— $\partial_t(\phi\mathbf{u})$ no es cero.
+
+## Con $u$ uniforme ese término es difusión negativa
+
+Tomemos el caso más simple: $u$ constante en espacio y tiempo. Entonces $\partial_t(\phi u) = u\,\partial_t\phi$ y, a orden dominante, $\partial_t\phi \simeq -u\,\partial_x\phi$. Sustituyendo,
+
+$$
+\partial_x\left[\left(\tau-\tfrac{1}{2}\right)\delta t\,\partial_t(\phi u)\right] = -\left(\tau-\tfrac{1}{2}\right)\delta t\, u^2\,\partial_{xx}\phi
+$$
+
+Un término de difusión con el signo invertido. Sumado al físico,
+
+$$
+\left(\tau-\tfrac{1}{2}\right)\delta t\left(c_s^2 - u^2\right)\partial_{xx}\phi = D\left(1 - \frac{u^2}{c_s^2}\right)\partial_{xx}\phi
+$$
+
+$$
+D_{\text{eff}} = D\left(1 - \frac{u^2}{c_s^2}\right)
+$$
+
+De aquí salen tres cosas a la vez. Primera: el déficit escala como $u^2$, así que se esconde a baja velocidad — con $u = 0.05$ es del 0.75%. Segunda: $(\tau - 1/2)$ está a ambos lados, de modo que **la razón no depende de $\tau$**. Si se sube $\tau$ para tener más difusión, el término espurio crece en la misma proporción. Tercera: $D_{\text{eff}}$ cruza el cero y se vuelve negativo cuando $u \to c_s$. Pasado ese punto el resultado no es simplemente incorrecto: diverge.
+
+Así es como se superponen realmente los dos flujos.
+
+<GhostFluxCancelBench />
+
+Con `alpha = 0`, el lóbulo rosa queda bajo el azul como una imagen especular: el flujo fantasma apunta en la dirección equivocada en todas partes. Al subir `u` solo crece el lado rosa, como $u^2$, mientras el azul se queda quieto. Al arrastrar `alpha` hasta 1, el verde aterriza exactamente sobre el rosa y la suma ámbar vuelve a la curva azul.
+
+## $1 - 1/(2\tau)$ vuelve a aparecer
+
+Toca fijar el coeficiente de $S_i$. Para que el término espurio y el término fuente se cancelen en la ecuación anterior,
+
+$$
+\tau\delta t\sum_i \mathbf{c}_i S_i = \left(\tau-\tfrac{1}{2}\right)\delta t\,\partial_t(\phi\mathbf{u})
+$$
+
+$$
+\sum_i \mathbf{c}_i S_i = \left(1 - \frac{1}{2\tau}\right)\partial_t(\phi\mathbf{u})
+$$
+
+Solo hay una forma simple que cumpla esto manteniendo además $\sum_i S_i = 0$.
+
+$$
+S_i = w_i\left(1 - \frac{1}{2\tau}\right)\frac{\mathbf{c}_i\cdot\partial_t(\phi\mathbf{u})}{c_s^2}
+$$
+
+Ahí está otra vez $1 - 1/(2\tau)$. Este factor brota de la misma raíz que el de [dónde va la mitad de la fuerza en los esquemas de forcing de LBM](/es/posts/2026-07-27-lbm-forcing-term-guo-shan-chen-edm/). En una red de tiempo discreto una fuente actúa dos veces —una a través de $g^{(1)}$ y otra a través del término de segundo orden de la expansión de Taylor— y el factor $1/2$ es el residuo de esa doble contabilidad.
+
+¿Qué pasa si se omite el coeficiente y se pone $\sum_i \mathbf{c}_i S_i = \partial_t(\phi\mathbf{u})$? Con $\tau = 1$ se aplica exactamente el doble de corrección, y un déficit del 27% se convierte en un exceso del 27%. La magnitud del error no cambia, así que una gráfica log-log de convergencia no lo delata.
+
+Calcular $\partial_t(\phi\mathbf{u})$ en código consiste en guardar $\phi u$ del paso anterior y hacer una diferencia hacia atrás. Un arreglo extra es todo el coste.
+
+## Midiendo $D_{\text{eff}}$ en 60 líneas de Python
+
+En lugar de argumentar, conviene medir. Se deja advectar una gaussiana, se ajusta por mínimos cuadrados la pendiente de crecimiento de su segundo momento $\sigma^2$, y esa pendiente es $2D_{\text{eff}}$.
+
+```python
+import numpy as np
+
+CS2 = 1.0 / 3.0
+C = np.array([0, 1, -1])
+W = np.array([2 / 3, 1 / 6, 1 / 6])
+
+
+def d1q3_equilibrium(phi, u):
+    """g_i^eq = w_i phi (1 + c_i u / cs^2) — equilibrio que solo fija tres momentos"""
+    return np.stack([W[i] * phi * (1.0 + C[i] * u / CS2) for i in range(3)])
+
+
+def gaussian_moments(x, phi):
+    m0 = phi.sum()
+    mean = (x * phi).sum() / m0
+    return mean, (((x - mean) ** 2) * phi).sum() / m0
+
+
+def run_cde_lbm(L, steps, tau, u, sigma0, x0, corrected):
+    x = np.arange(L, dtype=float)
+    phi = np.exp(-((x - x0) ** 2) / (2 * sigma0**2))
+    g = d1q3_equilibrium(phi, u)
+    phi_old = phi.copy()
+    hist = []
+    for n in range(steps + 1):
+        if n % 100 == 0:
+            hist.append((n, gaussian_moments(x, phi)[1]))
+        src = np.zeros_like(g)
+        if corrected and n > 0:
+            # S_i = w_i (1 - 1/(2 tau)) c_i d_t(phi u) / cs^2,  dt = 1
+            dt_phiu = (1.0 - 1.0 / (2 * tau)) * u * (phi - phi_old)
+            for i in range(3):
+                src[i] = W[i] * C[i] * dt_phiu / CS2
+        geq = d1q3_equilibrium(phi, u)
+        g = g - (g - geq) / tau + src          # colisión
+        for i in range(3):
+            g[i] = np.roll(g[i], C[i])         # propagación
+        phi_old = phi
+        phi = g.sum(axis=0)
+    return np.array(hist)
+
+
+def fit_diffusivity(hist):
+    """lee D_eff en la pendiente de sigma^2 = sigma0^2 + 2 D_eff t"""
+    return np.polyfit(hist[:, 0], hist[:, 1], 1)[0] / 2.0
+
+
+L, STEPS, SIG0, X0 = 800, 1600, 10.0, 80.0
+
+tau = 1.0
+D = CS2 * (tau - 0.5)
+print(f"tau = {tau},  D = cs^2 (tau-1/2) = {D:.6f},  cs^2 = {CS2:.6f}")
+print(f"{'u':>6} {'u^2/cs^2':>9} | {'D_eff (no src)':>14} {'ratio':>7} {'1-u^2/cs^2':>11} |"
+      f" {'D_eff (src)':>12} {'ratio':>7}")
+for u in [0.05, 0.10, 0.20, 0.30]:
+    d_raw = fit_diffusivity(run_cde_lbm(L, STEPS, tau, u, SIG0, X0, False))
+    d_fix = fit_diffusivity(run_cde_lbm(L, STEPS, tau, u, SIG0, X0, True))
+    print(f"{u:>6.2f} {u * u / CS2:>9.4f} | {d_raw:>14.6f} {d_raw / D:>7.4f} {1 - u * u / CS2:>11.4f} |"
+          f" {d_fix:>12.6f} {d_fix / D:>7.4f}")
+
+u = 0.25
+print(f"\nu = {u} fixed, tau sweep   (theory: ratio = 1 - u^2/cs^2 = {1 - u * u / CS2:.4f}, tau-independent)")
+print(f"{'tau':>6} {'D':>10} | {'D_eff (no src)':>14} {'ratio':>7} | {'D_eff (src)':>12} {'ratio':>7}")
+for tau in [0.6, 0.8, 1.0, 1.5]:
+    D = CS2 * (tau - 0.5)
+    d_raw = fit_diffusivity(run_cde_lbm(L, STEPS, tau, u, SIG0, X0, False))
+    d_fix = fit_diffusivity(run_cde_lbm(L, STEPS, tau, u, SIG0, X0, True))
+    print(f"{tau:>6.1f} {D:>10.6f} | {d_raw:>14.6f} {d_raw / D:>7.4f} | {d_fix:>12.6f} {d_fix / D:>7.4f}")
+```
+
+La salida:
+
+```text
+tau = 1.0,  D = cs^2 (tau-1/2) = 0.166667,  cs^2 = 0.333333
+     u  u^2/cs^2 | D_eff (no src)   ratio  1-u^2/cs^2 |  D_eff (src)   ratio
+  0.05    0.0075 |       0.165417  0.9925      0.9925 |     0.166666  1.0000
+  0.10    0.0300 |       0.161667  0.9700      0.9700 |     0.166666  1.0000
+  0.20    0.1200 |       0.146667  0.8800      0.8800 |     0.166663  1.0000
+  0.30    0.2700 |       0.121667  0.7300      0.7300 |     0.166658  0.9999
+
+u = 0.25 fixed, tau sweep   (theory: ratio = 1 - u^2/cs^2 = 0.8125, tau-independent)
+   tau          D | D_eff (no src)   ratio |  D_eff (src)   ratio
+   0.6   0.033333 |       0.027096  0.8129 |     0.033345  1.0004
+   0.8   0.100000 |       0.081258  0.8126 |     0.100006  1.0001
+   1.0   0.166667 |       0.135417  0.8125 |     0.166661  1.0000
+   1.5   0.333333 |       0.270794  0.8124 |     0.333275  0.9998
+```
+
+En la primera tabla la columna `ratio` coincide con `1-u^2/cs^2` hasta la cuarta cifra decimal. La predicción no es una estimación: es el orden dominante exacto. Al activar el término fuente, las cuatro velocidades vuelven a 1.0000.
+
+La segunda tabla muerde más fuerte. Barrer $\tau$ de 0.6 a 1.5 cambia $D$ en un factor de diez, y la razón de déficit apenas se mueve de 0.8129 a 0.8124. Intentar enterrar el error bajo una difusividad mayor no funciona: si $D$ se multiplica por diez, la cantidad que desaparece también.
+
+## El presupuesto de velocidad reticular ya estaba gastado
+
+Vale la pena mirar de nuevo la forma $u^2/c_s^2$. Es el cuadrado del número de Mach reticular. La justificación habitual para mantener $u < 0.1$ en LBM es el error de compresibilidad. El transporte escalar aporta una segunda razón. Flujo y escalar consumen el mismo presupuesto de velocidad reticular, y la factura del lado escalar llega mucho antes.
+
+En la práctica conviene separar tres regímenes.
+
+- **Difusión a baja velocidad, $u \le 0.05$.** Déficit por debajo del 1%, enterrado en el error de discretización. Correr sin el término fuente es defendible.
+- **Cálculos ordinarios, $u \sim 0.1{-}0.2$.** Un déficit del 3 al 12%. Si se piensa reportar cuantitativamente un espesor de interfaz o un número de Sherwood, hay que activarlo.
+- **Multifásico con phase-field.** $u$ se dispara localmente cerca de la interfaz, y $\partial_t u$ tampoco es cero. De las dos piezas de $\partial_t(\phi u)$, también sobrevive la mitad $\phi\,\partial_t u$. El término fuente deja de ser opcional.
+
+Ese tercer caso trae una advertencia adicional. El término espurio es el $\partial_t(\phi\mathbf{u})$ completo, no algo de la forma $u^2$. La expresión $u^2/c_s^2$ es una solución particular válida solo para $u$ uniforme y estacionaria. Antes de llevar esto a un código multifásico hay que diferenciar $\partial_t(\phi\mathbf{u})$ directamente, y conviene notar que [cuando los tiempos de relajación se separan por momento como en MRT](/es/posts/2026-06-26-mrt-lbm-moment-space-collision/), el $\tau$ dentro de $1 - 1/(2\tau)$ es el que corresponde al primer momento.
+
+Así que si la interfaz sigue adelgazando o engrosando y el cálculo de la movilidad da correcto por muchas veces que se revise, toca mirar fuera de la calculadora. $\tau$ estaba bien. El resto se lo llevó el flujo.

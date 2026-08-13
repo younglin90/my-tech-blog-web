@@ -1,0 +1,240 @@
+---
+title: "Raise the Velocity, Lose 27% of Your Diffusion — The Extra Flux in LBM Convection-Diffusion"
+date: 2026-08-14
+description: "Set D through tau in a lattice Boltzmann convection-diffusion model and it still spreads at D(1-u²/cs²). Where Chapman-Enskog drops the extra flux, and the source term that erases it."
+tags: ["LBM", "Chapman-Enskog", "Convection-Diffusion", "Advection", "Diffuse-Interface"]
+locale: en
+slug: lbm-convection-diffusion-ce-error
+takeaway: "The diffusivity you tuned through tau is only correct at u = 0. The moment flow appears, u²/cs² of it quietly disappears."
+draft: false
+---
+
+import { LatticeDriftDiffusionScope } from '@/components/post-viz/2026-08-14-lbm-convection-diffusion-ce-error/LatticeDriftDiffusionScope'
+import { GhostFluxCancelBench } from '@/components/post-viz/2026-08-14-lbm-convection-diffusion-ce-error/GhostFluxCancelBench'
+
+In lattice Boltzmann, the diffusivity is fixed by a single relaxation time: $D = c_s^2(\tau - 1/2)\delta t$. Nothing to memorize. But notice what is missing from that line — velocity. Does the same $D$ come out once the flow is switched on? This post answers no. Under a uniform advection velocity $u$, the actual diffusivity drops to $D(1 - u^2/c_s^2)$, and at $u = 0.3$ that is 27% gone. We trace exactly where the Chapman–Enskog expansion drops the term, and how one source term brings it back.
+
+The sting lands hardest in phase-field multiphase work. When Cahn–Hilliard or Allen–Cahn is solved on a lattice Boltzmann kernel, the interface thickness is tied directly to the mobility. A mobility that is 27% off gives an interface thickness that is off, and that in turn gives a surface tension coefficient that is off.
+
+## The diffusivity is set, yet the interface keeps thinning
+
+Start by looking at it. Below is the one-dimensional convection-diffusion equation
+
+$$
+\partial_t \phi + \partial_x(u\phi) = D\,\partial_{xx}\phi
+$$
+
+solved with a D1Q3 lattice Boltzmann scheme. The initial condition is a single Gaussian; the exact solution is also a Gaussian, widening as $\sigma^2(t) = \sigma_0^2 + 2Dt$. Try it directly in the simulation below.
+
+<LatticeDriftDiffusionScope />
+
+Push the `u` slider to 0.30 and the solid curve (computed) rises above the dashed one (exact), sharper and taller. The $\sigma^2$ trace in the lower panel falls short of the dashed target slope. Drag `tau` anywhere you like and the deficit ratio refuses to move — that stubbornness is the whole story of this post.
+
+## D1Q3 has only three moments to honor
+
+Unlike a Navier–Stokes lattice Boltzmann scheme, a distribution $g_i$ built for scalar transport has fewer moments to satisfy. The equilibrium Guo used in his 2009 nonlinear convection-diffusion model is this:
+
+$$
+g_i^{eq} = w_i\,\phi\left(1 + \frac{\mathbf{c}_i\cdot\mathbf{u}}{c_s^2}\right)
+$$
+
+Here $w_i$ are the lattice weights, $\mathbf{c}_i$ the lattice velocities, and $c_s^2 = 1/3$ the squared lattice sound speed. It satisfies three moment constraints.
+
+$$
+\sum_i g_i^{eq} = \phi, \qquad \sum_i \mathbf{c}_i g_i^{eq} = \phi\mathbf{u}, \qquad \sum_i \mathbf{c}_i\mathbf{c}_i g_i^{eq} = c_s^2\phi\,\mathbf{I}
+$$
+
+The third one is where this parts ways with a flow equilibrium: there is no $\phi\mathbf{u}\mathbf{u}$ term. The second-order term in velocity was never included. Why it can be dropped is the subject of [cutting the equilibrium down to Hermite polynomials](/en/posts/2026-05-25-lbm-equilibrium-hermite-d2q9/). In short, a scalar equation has no stress tensor, so an isotropic second moment is enough — which is also why D2Q5 can replace D2Q9 here.
+
+That looks sufficient, and at $u = 0$ it is exact. The catch is that the truncation is not free.
+
+## The fourth term Chapman-Enskog leaves behind
+
+Write the BGK lattice Boltzmann equation with a source $S_i$ attached:
+
+$$
+g_i(\mathbf{x}+\mathbf{c}_i\delta t,\, t+\delta t) - g_i(\mathbf{x},t) = -\frac{1}{\tau}\left(g_i - g_i^{eq}\right) + \delta t\, S_i
+$$
+
+Expand $g_i = g_i^{(0)} + \varepsilon g_i^{(1)} + \varepsilon^2 g_i^{(2)}$ and split the time derivative as $\partial_t = \varepsilon\partial_{t_1} + \varepsilon^2\partial_{t_2}$. The zeroth moment at order $\varepsilon$ hands back the advective part of the target equation unchanged.
+
+$$
+\partial_{t_1}\phi + \nabla\cdot(\phi\mathbf{u}) = 0
+$$
+
+The **first moment** of that same order-$\varepsilon$ equation is where everything is decided, because it fixes the flux carried by $g^{(1)}$.
+
+$$
+\sum_i \mathbf{c}_i g_i^{(1)} = -\tau\delta t\left[\partial_{t_1}(\phi\mathbf{u}) + c_s^2\nabla\phi - \sum_i \mathbf{c}_i S_i\right]
+$$
+
+The second term in the bracket, $c_s^2\nabla\phi$, is the diffusive flux we asked for. The first one is riding along with it. In a flow scheme the $\rho\mathbf{u}\mathbf{u}$ term in the equilibrium second moment cancels most of it; the scalar model has no such term. So it survives.
+
+Collecting the zeroth moment at order $\varepsilon^2$ gives the final form.
+
+$$
+\partial_t \phi + \nabla\cdot(\phi\mathbf{u}) = \nabla\cdot(D\nabla\phi) + \nabla\cdot\left[\left(\tau-\tfrac{1}{2}\right)\delta t\,\partial_t(\phi\mathbf{u})\right] - \nabla\cdot\left[\tau\delta t\sum_i \mathbf{c}_i S_i\right]
+$$
+
+$D = c_s^2(\tau - 1/2)\delta t$ appears as expected. The second term on the right is a flux nobody ordered. It vanishes in a genuine steady state, where $u$ is constant in time and $\phi$ has stopped changing. But as long as $\phi$ is still moving — as long as the computation is running — $\partial_t(\phi\mathbf{u})$ is not zero.
+
+## Under uniform $u$ that term is negative diffusion
+
+Take the simplest case, $u$ constant in space and time. Then $\partial_t(\phi u) = u\,\partial_t\phi$, and to leading order $\partial_t\phi \simeq -u\,\partial_x\phi$. Substituting,
+
+$$
+\partial_x\left[\left(\tau-\tfrac{1}{2}\right)\delta t\,\partial_t(\phi u)\right] = -\left(\tau-\tfrac{1}{2}\right)\delta t\, u^2\,\partial_{xx}\phi
+$$
+
+A diffusion term with the sign reversed. Adding it to the physical one,
+
+$$
+\left(\tau-\tfrac{1}{2}\right)\delta t\left(c_s^2 - u^2\right)\partial_{xx}\phi = D\left(1 - \frac{u^2}{c_s^2}\right)\partial_{xx}\phi
+$$
+
+$$
+D_{\text{eff}} = D\left(1 - \frac{u^2}{c_s^2}\right)
+$$
+
+Three things fall out at once. First, the deficit scales as $u^2$, so it hides at low speed — at $u = 0.05$ it is 0.75%. Second, $(\tau - 1/2)$ sits on both sides, so **the ratio is independent of $\tau$.** Turn up $\tau$ to get more diffusion and the spurious term grows by the same factor. Third, $D_{\text{eff}}$ crosses zero and goes negative as $u \to c_s$. Past that point the answer is not merely wrong, it blows up.
+
+Here is how the two fluxes actually overlap.
+
+<GhostFluxCancelBench />
+
+At `alpha = 0` the rose lobe lies under the blue one like a mirror image: the ghost flux points the wrong way everywhere. Raise `u` and only the rose side grows, as $u^2$, while blue holds still. Drag `alpha` to 1 and green lands exactly on top of rose, returning the amber sum to the blue curve.
+
+## $1 - 1/(2\tau)$ shows up again
+
+Now fix the coefficient of $S_i$. For the spurious term and the source term to cancel in the equation above,
+
+$$
+\tau\delta t\sum_i \mathbf{c}_i S_i = \left(\tau-\tfrac{1}{2}\right)\delta t\,\partial_t(\phi\mathbf{u})
+$$
+
+$$
+\sum_i \mathbf{c}_i S_i = \left(1 - \frac{1}{2\tau}\right)\partial_t(\phi\mathbf{u})
+$$
+
+Only one simple form satisfies this while also keeping $\sum_i S_i = 0$.
+
+$$
+S_i = w_i\left(1 - \frac{1}{2\tau}\right)\frac{\mathbf{c}_i\cdot\partial_t(\phi\mathbf{u})}{c_s^2}
+$$
+
+There is $1 - 1/(2\tau)$ again. This factor grows from the same root as the one in [where half the force goes in LBM forcing schemes](/en/posts/2026-07-27-lbm-forcing-term-guo-shan-chen-edm/). On a discrete-time lattice a source acts twice — once through $g^{(1)}$, once through the second-order term of the Taylor expansion — and the factor of $1/2$ is the residue of that double counting.
+
+What happens if you drop the coefficient and set $\sum_i \mathbf{c}_i S_i = \partial_t(\phi\mathbf{u})$? At $\tau = 1$ you apply exactly twice the correction, and a 27% deficit becomes a 27% excess. The magnitude of the error is unchanged, so a log-log convergence plot will not catch it.
+
+Computing $\partial_t(\phi\mathbf{u})$ in code means storing $\phi u$ from the previous step and taking a backward difference. One extra array is the entire cost.
+
+## Measuring $D_{\text{eff}}$ in 60 lines of Python
+
+Rather than argue, measure. Advect a Gaussian, fit the growth slope of its second moment $\sigma^2$ by least squares, and that slope is $2D_{\text{eff}}$.
+
+```python
+import numpy as np
+
+CS2 = 1.0 / 3.0
+C = np.array([0, 1, -1])
+W = np.array([2 / 3, 1 / 6, 1 / 6])
+
+
+def d1q3_equilibrium(phi, u):
+    """g_i^eq = w_i phi (1 + c_i u / cs^2) — an equilibrium fixing only three moments"""
+    return np.stack([W[i] * phi * (1.0 + C[i] * u / CS2) for i in range(3)])
+
+
+def gaussian_moments(x, phi):
+    m0 = phi.sum()
+    mean = (x * phi).sum() / m0
+    return mean, (((x - mean) ** 2) * phi).sum() / m0
+
+
+def run_cde_lbm(L, steps, tau, u, sigma0, x0, corrected):
+    x = np.arange(L, dtype=float)
+    phi = np.exp(-((x - x0) ** 2) / (2 * sigma0**2))
+    g = d1q3_equilibrium(phi, u)
+    phi_old = phi.copy()
+    hist = []
+    for n in range(steps + 1):
+        if n % 100 == 0:
+            hist.append((n, gaussian_moments(x, phi)[1]))
+        src = np.zeros_like(g)
+        if corrected and n > 0:
+            # S_i = w_i (1 - 1/(2 tau)) c_i d_t(phi u) / cs^2,  dt = 1
+            dt_phiu = (1.0 - 1.0 / (2 * tau)) * u * (phi - phi_old)
+            for i in range(3):
+                src[i] = W[i] * C[i] * dt_phiu / CS2
+        geq = d1q3_equilibrium(phi, u)
+        g = g - (g - geq) / tau + src          # collision
+        for i in range(3):
+            g[i] = np.roll(g[i], C[i])         # streaming
+        phi_old = phi
+        phi = g.sum(axis=0)
+    return np.array(hist)
+
+
+def fit_diffusivity(hist):
+    """read D_eff off the slope of sigma^2 = sigma0^2 + 2 D_eff t"""
+    return np.polyfit(hist[:, 0], hist[:, 1], 1)[0] / 2.0
+
+
+L, STEPS, SIG0, X0 = 800, 1600, 10.0, 80.0
+
+tau = 1.0
+D = CS2 * (tau - 0.5)
+print(f"tau = {tau},  D = cs^2 (tau-1/2) = {D:.6f},  cs^2 = {CS2:.6f}")
+print(f"{'u':>6} {'u^2/cs^2':>9} | {'D_eff (no src)':>14} {'ratio':>7} {'1-u^2/cs^2':>11} |"
+      f" {'D_eff (src)':>12} {'ratio':>7}")
+for u in [0.05, 0.10, 0.20, 0.30]:
+    d_raw = fit_diffusivity(run_cde_lbm(L, STEPS, tau, u, SIG0, X0, False))
+    d_fix = fit_diffusivity(run_cde_lbm(L, STEPS, tau, u, SIG0, X0, True))
+    print(f"{u:>6.2f} {u * u / CS2:>9.4f} | {d_raw:>14.6f} {d_raw / D:>7.4f} {1 - u * u / CS2:>11.4f} |"
+          f" {d_fix:>12.6f} {d_fix / D:>7.4f}")
+
+u = 0.25
+print(f"\nu = {u} fixed, tau sweep   (theory: ratio = 1 - u^2/cs^2 = {1 - u * u / CS2:.4f}, tau-independent)")
+print(f"{'tau':>6} {'D':>10} | {'D_eff (no src)':>14} {'ratio':>7} | {'D_eff (src)':>12} {'ratio':>7}")
+for tau in [0.6, 0.8, 1.0, 1.5]:
+    D = CS2 * (tau - 0.5)
+    d_raw = fit_diffusivity(run_cde_lbm(L, STEPS, tau, u, SIG0, X0, False))
+    d_fix = fit_diffusivity(run_cde_lbm(L, STEPS, tau, u, SIG0, X0, True))
+    print(f"{tau:>6.1f} {D:>10.6f} | {d_raw:>14.6f} {d_raw / D:>7.4f} | {d_fix:>12.6f} {d_fix / D:>7.4f}")
+```
+
+The output:
+
+```text
+tau = 1.0,  D = cs^2 (tau-1/2) = 0.166667,  cs^2 = 0.333333
+     u  u^2/cs^2 | D_eff (no src)   ratio  1-u^2/cs^2 |  D_eff (src)   ratio
+  0.05    0.0075 |       0.165417  0.9925      0.9925 |     0.166666  1.0000
+  0.10    0.0300 |       0.161667  0.9700      0.9700 |     0.166666  1.0000
+  0.20    0.1200 |       0.146667  0.8800      0.8800 |     0.166663  1.0000
+  0.30    0.2700 |       0.121667  0.7300      0.7300 |     0.166658  0.9999
+
+u = 0.25 fixed, tau sweep   (theory: ratio = 1 - u^2/cs^2 = 0.8125, tau-independent)
+   tau          D | D_eff (no src)   ratio |  D_eff (src)   ratio
+   0.6   0.033333 |       0.027096  0.8129 |     0.033345  1.0004
+   0.8   0.100000 |       0.081258  0.8126 |     0.100006  1.0001
+   1.0   0.166667 |       0.135417  0.8125 |     0.166661  1.0000
+   1.5   0.333333 |       0.270794  0.8124 |     0.333275  0.9998
+```
+
+In the first table the `ratio` column matches `1-u^2/cs^2` to four decimal places. The prediction is not an estimate; it is the exact leading order. Switch the source term on and all four velocities return to 1.0000.
+
+The second table bites harder. Sweeping $\tau$ from 0.6 to 1.5 changes $D$ by a factor of ten, and the deficit ratio moves only from 0.8129 to 0.8124. Trying to bury the error under a larger diffusivity does not work: raise $D$ tenfold and the amount that disappears rises tenfold too.
+
+## The lattice velocity budget was already spent
+
+Look at the shape $u^2/c_s^2$ once more. That is the squared lattice Mach number. The usual justification for keeping $u < 0.1$ in LBM is compressibility error. Scalar transport supplies a second reason. Flow and scalar are drawing on the same lattice velocity budget, and the scalar side's bill arrives much earlier.
+
+Three regimes are worth separating in practice.
+
+- **Low-speed diffusion, $u \le 0.05$.** Under 1% deficit, buried in the discretization error. Running without the source term is defensible.
+- **Ordinary computations, $u \sim 0.1{-}0.2$.** A 3–12% deficit. If you plan to report an interface thickness or a Sherwood number quantitatively, turn it on.
+- **Phase-field multiphase.** $u$ spikes locally near the interface, and $\partial_t u$ is not zero either. Of the two pieces of $\partial_t(\phi u)$, the $\phi\,\partial_t u$ half survives as well. The source term stops being optional.
+
+That third case carries one more caveat. The spurious term is the full $\partial_t(\phi\mathbf{u})$, not something of the form $u^2$. The expression $u^2/c_s^2$ is a special solution valid only for uniform, steady $u$. Before dropping this into a multiphase code, difference $\partial_t(\phi\mathbf{u})$ directly, and note that [when relaxation times are split per moment as in MRT](/en/posts/2026-06-26-mrt-lbm-moment-space-collision/), the $\tau$ inside $1 - 1/(2\tau)$ is the one belonging to the first moment.
+
+So if the interface keeps thinning or thickening and the mobility calculation checks out no matter how many times you review it, look outside the calculator. $\tau$ was right. The flow took the rest.
