@@ -1,0 +1,216 @@
+---
+title: "[논문 리뷰] 모세관 족쇄를 끊었더니 CFL 0.05가 남았다 — VOF 계면 이류의 진짜 상한"
+date: 2026-08-16
+description: "표면장력을 음함수로 풀어 모세관 시간 제약을 넘어도, 색함수를 나르는 압축 스킴이 CFL 0.05에서 시간 스텝을 다시 붙잡는다."
+tags: ["Interface-Capturing", "VOF", "THINC", "CFL", "Paper-Review"]
+locale: ko
+slug: vof-interface-advection-cfl-limit
+takeaway: "압축 스킴이 계면을 세울 때 쓰는 값은 Courant 수로 나눈 몫이다. Δt를 키우면 그 몫이 가장 먼저 사라진다."
+draft: false
+---
+
+import { NvdCourantWindow } from '@/components/post-viz/2026-08-16-vof-interface-advection-cfl-limit/NvdCourantWindow'
+import { StepBudgetRaceTrack } from '@/components/post-viz/2026-08-16-vof-interface-advection-cfl-limit/StepBudgetRaceTrack'
+
+Janodet 등의 2025년 논문 결론부에 이런 문장이 있다. "제안한 알고리즘은 모세관 시간 스텝 제약보다 큰 시간 스텝으로 실제 기액 유동을 계산할 수 있다 — **다른 시간 스텝 제약이 만족되는 한**." 강조는 내가 붙였다. 표면장력을 음함수로 만들어 족쇄 하나를 끊었는데, 논문이 실제로 돌릴 수 있었던 최대 CFL 수는 0.05였다. 색함수를 나르는 스킴이 시간 스텝을 대신 붙잡고 있었기 때문이다. 이 글은 그 상한이 어디에서 오는지 NVD 상자 위에서 보이고, 소용돌이 이류 실험으로 그 대가를 숫자로 잰다.
+
+모세관 제약 자체와 그것을 음함수로 끊는 방법은 [표면장력을 음함수로 푼 논문](/ko/posts/2026-06-28-implicit-surface-tension-capillary-timestep/)에서 이미 다뤘다. 여기서는 그 다음 이야기만 한다.
+
+## 계면을 세우는 값은 다운윈드에서 온다
+
+대수적 VOF(algebraic VOF, 계면을 재구성하지 않고 색함수를 직접 이류시키는 방식)에서 계면이 두꺼워지는 이유는 하나다. 업윈드 면값은 항상 계면을 뭉갠다. 그래서 압축 스킴은 면값을 **다운윈드 쪽으로 끌어당긴다**. 극단적으로 다운윈드 값을 그대로 쓰면 계단은 한 셀 안에 갇힌다.
+
+문제는 다운윈드 값이 유계성(boundedness)을 보장하지 않는다는 것이다. 색함수가 0 아래로, 1 위로 튀어나가면 밀도가 음수가 되고 계산이 끝난다. 그래서 얼마나 끌어당겨도 되는지를 정하는 규칙이 필요하다. 그 규칙이 Courant 수를 인자로 갖는다는 점이 이 글의 전부다.
+
+아래 시뮬레이션에서 직접 조작해보자.
+
+<NvdCourantWindow />
+
+`Courant C`를 0.05에 두면 왼쪽의 노란 허용 영역이 상자를 거의 다 채우고, 오른쪽 슬래브는 두 셀짜리 모서리를 유지한다. C를 0.9로 끌어올리면 천장이 점선 대각선(=업윈드) 위로 내려앉는다. 분홍 점들이 앉을 자리가 없어지고, 슬래브는 시간이 갈수록 번진다. 스킴도 격자도 그대로다. 시간 스텝만 커졌을 뿐이다.
+
+## NVD 상자 위에서 Courant 수가 천장을 내린다
+
+정규화 변수 다이어그램(NVD)은 면 하나를 기준으로 업윈드 셀 $U$, 도너 셀 $D$, 억셉터 셀 $A$의 값을 다음처럼 규격화한다.
+
+$$
+\tilde{\phi}_D = \frac{\phi_D - \phi_U}{\phi_A - \phi_U}, \qquad \tilde{\phi}_f = \frac{\phi_f - \phi_U}{\phi_A - \phi_U}
+$$
+
+$\tilde{\phi}_D$는 도너 셀이 업윈드와 억셉터 사이 어디쯤에 있는지, $\tilde{\phi}_f$는 면값이 어디쯤 놓이는지를 나타낸다. $\tilde{\phi}_f = \tilde{\phi}_D$가 업윈드, $\tilde{\phi}_f = 1$이 다운윈드다.
+
+Leonard의 대류 유계성 조건(CBC, Convection Boundedness Criterion)은 명시적 시간 전진에서 면값이 있어야 할 곳을 이렇게 못박는다.
+
+$$
+\tilde{\phi}_D \le \tilde{\phi}_f \le \min\!\left(1,\ \frac{\tilde{\phi}_D}{C}\right), \qquad 0 \le \tilde{\phi}_D \le 1
+$$
+
+여기서 $C = u\,\Delta t/\Delta x$는 그 면의 Courant 수다. 천장 $\tilde{\phi}_D/C$의 의미는 직관적이다. 한 스텝에 도너 셀에서 $C$ 만큼의 부피가 빠져나가는데, 그 부피에 담긴 색함수 양이 셀에 원래 있던 양보다 많으면 셀이 음수가 된다. $C \cdot \tilde{\phi}_f \le \tilde{\phi}_D$가 그 조건이고, 정리하면 위 부등식이다.
+
+$C$가 0.05면 천장은 $20\,\tilde{\phi}_D$다. $\tilde{\phi}_D$가 0.05만 넘어도 면값을 1까지 올릴 수 있다. $C$가 0.8이면 천장은 $1.25\,\tilde{\phi}_D$다. 대각선 바로 위 얇은 띠만 남는다. **압축 여유는 $1/C$에 비례한다.**
+
+## CICSAM이 0.01, THINC/QQ가 0.05인 이유
+
+CICSAM은 이 상자 안에서 두 곡선을 섞는다. 하나는 천장을 그대로 타는 HYPER-C, 다른 하나는 완만한 ULTIMATE-QUICKEST다. 섞는 가중치 $\gamma_f$는 계면 법선과 면 벡터가 이루는 각으로 정해진다. 계면이 면에 수직이면 HYPER-C 쪽으로, 비스듬하면 UQ 쪽으로 간다. 비스듬한 계면을 압축하면 계단 모양의 인공 주름이 생기기 때문이다.
+
+위 시뮬레이션의 `CICSAM blend` 버튼과 `blend gamma_f` 슬라이더가 그 혼합이다. $\gamma_f$를 낮추면 곡선이 천장에서 내려오고 슬래브가 즉시 두꺼워진다. 1차원 정렬 계면에서는 $\gamma_f = 1$이라 CICSAM이 사실상 HYPER-C로 붕괴한다는 점도 함께 보인다.
+
+CICSAM의 실사용 CFL 상한이 0.01 언저리인 이유가 여기 있다. $\gamma_f$가 0과 1 사이를 오가는 실제 3차원 계면에서는, HYPER-C 쪽 성분만 CBC를 만족하고 UQ 성분은 별도로 다시 한정해야 한다. 두 곡선을 섞은 결과가 천장을 넘지 않으려면 $C$가 작아야 한다. 논문은 이 제약을 피하려고 CICSAM 대신 THINC/QQ를 썼다.
+
+## tanh 하나로 셀 안에 계면을 다시 그린다
+
+THINC(Tangent of Hyperbola for INterface Capturing)는 면값을 고르는 대신 셀 내부 분포를 아예 그려버린다. 셀을 $[0,1]$로 규격화한 좌표 $\tilde{x}$에서
+
+$$
+\Phi(\tilde{x}) = \frac{1}{2}\left[1 + \gamma \tanh\!\big(\beta(\tilde{x} - \tilde{x}_c)\big)\right]
+$$
+
+로 두는 것이다. $\beta$는 계면 날카로움(보통 2 근처), $\gamma = \pm 1$은 이웃 셀에서 읽은 계면 방향, $\tilde{x}_c$는 tanh 도약이 놓이는 위치다. $\tilde{x}_c$는 셀 평균 $\bar{\phi}$를 정확히 재현하도록 정해지고, 닫힌 형태로 풀린다.
+
+$$
+\tilde{x}_c = \frac{1}{\beta}\,\mathrm{artanh}\!\left(\frac{\cosh\beta - e^{\beta\gamma(2\bar{\phi}-1)}}{\sinh\beta}\right)
+$$
+
+면을 통과하는 양은 이 곡선을 출발 영역 위에서 적분해 얻는다.
+
+$$
+F_{i+1/2} = \int_{1-C}^{1} \Phi(\tilde{x})\,\mathrm{d}\tilde{x}
+$$
+
+THINC/QQ는 여기에 2차 곡면(quadratic surface) 재구성을 더해 곡률 있는 계면을 더 잘 잡는다. 충격파 쪽에서 같은 tanh를 쓰는 방식은 [TENO-THINC 재구성](/ko/posts/2026-06-13-teno-thinc-shock-resolving-reconstruction/)에서 다뤘다.
+
+핵심은 이 적분이 $C$를 명시적으로 품고 있다는 것이다. $C$가 커지면 적분 구간이 셀 폭에 가까워지고, 결국 셀 평균 하나만 나르는 것과 같아진다. tanh는 다운윈드를 쓰지 않으므로 CBC를 자동으로 만족하지만, 압축력이 $C$에 따라 줄어드는 성질은 똑같다.
+
+## 시간 스텝 예산에는 항목이 셋 있다
+
+이제 예산 전체를 본다. 모세관파를 명시적으로 풀 때의 제약은
+
+$$
+\Delta t_\sigma = \sqrt{\frac{(\rho_A + \rho_B)\,\Delta x^3}{2\pi\sigma}}
+$$
+
+이고, 여기에 유동의 CFL 제약 $\Delta t_{\text{CFL}} = C_{\max}\Delta x / U$가 붙는다. 논문이 한 일은 첫 항목을 예산에서 지운 것이다. 남은 것은 계면 이류 스킴이 허용하는 $C_{\max}$다.
+
+아래에서 두 솔버를 같은 물리 시간까지 경주시켜 보자.
+
+<StepBudgetRaceTrack />
+
+`U`를 작게 두면(모세관이 주도하는 유동) A 레인은 $\Delta t_\sigma$에 묶이고 B 레인이 앞서 나간다. 이것이 논문의 판매 문구다. 이제 `interface CFL cap`을 0.01까지 내려보면, 표면장력이 여전히 음함수인데도 B가 A 옆으로 되돌아온다. 반대로 0.5까지 올리면 아래쪽 부피 오차 표시가 대가를 알려준다.
+
+## 소용돌이 하나로 재본 부피 오차
+
+$C$를 키울 때 실제로 무엇이 나빠지는가. 방향 분할(directional splitting) 이류에서는 각 방향 스윕이 비발산 속도장을 보지 못하므로, 팽창 보정항을 넣어야 한다.
+
+$$
+\phi^{*}_{i} = \phi^{n}_{i} - \left(F_{i+1/2} - F_{i-1/2}\right) + \phi^{n}_{i}\left(C_{i+1/2} - C_{i-1/2}\right)
+$$
+
+균일한 $\phi = 1$ 영역이 스윕 하나로 깨지지 않게 해 주는 항이다. 하지만 계면 셀에서는 $\phi^n_i$가 스윕 도중의 실제 값과 다르고, 그 차이가 부피 오차로 남는다. Rider–Kothe 단일 소용돌이(시간 역전 포함, $T=2$)에 THINC 이류를 얹어 재봤다.
+
+```python
+from math import atanh, cos, cosh, exp, log, log1p, pi, sin, sinh
+
+N, BETA, EPS = 40, 2.0, 1e-6
+H = 1.0 / N
+
+
+def lncosh(z):
+    a = abs(z)
+    return a + log1p(exp(-2.0 * a)) - log(2.0)
+
+
+def thinc_slab(pbar, g, a, b):
+    """도너 셀의 tanh 재구성을 [a, b] 구간에서 적분한다."""
+    s = g * (2.0 * pbar - 1.0)
+    r = max(-0.999999, min(0.999999, (cosh(BETA) - exp(BETA * s)) / sinh(BETA)))
+    xc = atanh(r) / BETA
+    return 0.5 * ((b - a) + (g / BETA) * (lncosh(BETA * (b - xc)) - lncosh(BETA * (a - xc))))
+
+
+def face_flux(pm, p0, pp, c):
+    """면을 통과하는 색함수 양. p0이 도너 셀, c가 그 면의 Courant 수."""
+    if abs(c) < 1e-14:
+        return 0.0
+    g = 1.0 if pp > pm else (-1.0 if pp < pm else 0.0)
+    if g == 0.0 or p0 < EPS or p0 > 1.0 - EPS:
+        return c * p0
+    return thinc_slab(p0, g, 1.0 - c, 1.0) if c > 0 else -thinc_slab(p0, g, 0.0, -c)
+
+
+def line(col, vel, k):
+    """주기 경계 1차원 스윕 한 번. 팽창 보정항 포함."""
+    n, out = len(col), [0.0] * len(col)
+    for i in range(n):
+        cw, ce = vel[i] * k, vel[i + 1] * k
+        fw = face_flux(col[(i - 2) % n], col[(i - 1) % n], col[i], cw) if cw > 0 else \
+            face_flux(col[(i - 1) % n], col[i], col[(i + 1) % n], cw)
+        fe = face_flux(col[(i - 1) % n], col[i], col[(i + 1) % n], ce) if ce > 0 else \
+            face_flux(col[i], col[(i + 1) % n], col[(i + 2) % n], ce)
+        out[i] = col[i] - (fe - fw) + col[i] * (ce - cw)
+    return out
+
+
+def run(courant, tend=2.0):
+    uf = [[-sin(pi * i * H) ** 2 * sin(2 * pi * (j + .5) * H) for i in range(N + 1)] for j in range(N)]
+    vf = [[sin(pi * j * H) ** 2 * sin(2 * pi * (i + .5) * H) for i in range(N)] for j in range(N + 1)]
+    nstep = max(1, int(tend * max(abs(x) for r in uf for x in r) / (courant * H)))
+    dt = tend / nstep
+    f = [[1.0 if ((i + .5) * H - .5) ** 2 + ((j + .5) * H - .75) ** 2 < .15 ** 2 else 0.0
+          for i in range(N)] for j in range(N)]
+    f0, m0 = [r[:] for r in f], sum(sum(r) for r in f)
+    for n in range(nstep):
+        w = cos(pi * (n + .5) * dt / tend)          # Rider-Kothe 시간 역전
+        for ax in ((0, 1) if n % 2 == 0 else (1, 0)):
+            if ax == 0:
+                f = [line(f[j], [x * w for x in uf[j]], dt / H) for j in range(N)]
+            else:
+                cols = [[f[j][i] for j in range(N)] for i in range(N)]
+                vv = [[vf[j][i] * w for j in range(N + 1)] for i in range(N)]
+                cols = [line(cols[i], vv[i], dt / H) for i in range(N)]
+                f = [[cols[i][j] for i in range(N)] for j in range(N)]
+    lo = min(min(r) for r in f)
+    hi = max(max(r) for r in f)
+    dm = (sum(sum(r) for r in f) - m0) / m0
+    err = sum(abs(f[j][i] - f0[j][i]) for j in range(N) for i in range(N)) / m0
+    return nstep, lo, hi, dm, err
+
+
+print("   C   steps    min(f)     max(f)-1     dM/M    (dM/M)/C   shape err")
+for c in (0.05, 0.1, 0.2, 0.4, 0.8):
+    ns, lo, hi, dm, err = run(c)
+    print(f"{c:5.2f} {ns:6d}  {lo:9.2e}  {hi - 1.0:9.2e}  {dm:8.2e}  {dm / c:8.4f}   {err:8.3e}")
+```
+
+```text
+   C   steps    min(f)     max(f)-1     dM/M    (dM/M)/C   shape err
+ 0.05   1595   2.23e-29  -6.03e-07  2.94e-03    0.0588   1.988e-01
+ 0.10    797  -6.51e-07  -6.33e-07  5.87e-03    0.0587   2.119e-01
+ 0.20    398  -1.62e-06  -5.27e-07  1.16e-02    0.0580   1.850e-01
+ 0.40    199  -3.87e-06   1.38e-07  2.33e-02    0.0583   1.771e-01
+ 0.80     99  -3.20e-06   1.43e-06  4.62e-02    0.0577   2.214e-01
+```
+
+읽을 것이 두 가지다. 첫째, 유계성은 멀쩡하다. 언더슈트가 $10^{-6}$ 수준이니 THINC는 약속을 지켰다. 둘째, 부피 오차가 $C$에 정확히 비례한다. 네 번째 열을 $C$로 나눈 다섯 번째 열이 0.058 근처에 못박혀 있다. $C$를 16배 늘리는 동안 계수가 2% 안쪽으로 유지된다.
+
+$C = 0.05$에서 0.3%였던 부피 오차가 $C = 0.8$에서 4.6%가 된다. 2차원 면적이므로 액적 지름으로 환산하면 2.3%다. 표면장력을 다루는 계산에서 이건 치명적이다. 곡률이 반지름의 역수이므로 Laplace 압력 점프가 그대로 2.3% 틀린다.
+
+반면 마지막 열의 형상 오차는 $C$와 무관하게 0.18~0.22를 오간다. 그쪽은 격자 해상도가 정한다.
+
+## 격자를 조밀하게 하면 되는가
+
+계수 0.058이 어디에서 오는지 확인하려고 $40^2$을 $60^2$으로 바꿔 $C = 0.2$를 다시 돌렸다. 계수는 0.0580에서 0.0384로 떨어진다. 비율 0.66은 격자 간격 비율 $40/60$과 거의 같다. 즉
+
+$$
+\frac{\Delta M}{M} \approx 2.3\,C\,\Delta x \propto U\,\Delta t
+$$
+
+부피 오차는 시간 1차다. 격자를 조밀하게 하면서 $C$를 그대로 두면 오차는 $\Delta x$에 비례해 줄어든다. 하지만 $\Delta t$를 고정한 채 격자만 조밀하게 하면 $C$가 그만큼 커져 오차는 제자리다. 계면 이류에서 시간 스텝을 키우는 것은 공짜가 아니고, 그 값은 정확히 $\Delta t$에 비례해 청구된다.
+
+이 청구서가 [기생 전류](/ko/posts/2026-07-19-parasitic-currents-surface-tension/) 문제와 겹치면 상황이 나빠진다. 부피가 0.5% 틀리면 곡률이 틀리고, 틀린 곡률은 균형을 못 맞추는 표면장력 힘이 되어 다시 속도장을 오염시킨다.
+
+## 0.05를 0.5로 올리려면 무엇이 바뀌어야 하는가
+
+논문 자신이 결론에서 두 가지를 지목한다. 첫째는 음함수 높이함수(height function)의 강건성이다. 미해상 계면에서 높이함수가 실패하면 곡률이 통째로 무너진다. 둘째가 계면 이류 스킴이다. 논문의 표현으로 "더 큰 CFL 수를 쓸 수 있게 하는 이류 스킴의 개선이 이 접근법의 성능을 크게 끌어올릴 잠재력을 갖는다".
+
+방향은 세 갈래로 보인다. 이류 자체를 음함수로 만들어 CBC의 $1/C$ 천장에서 벗어나거나, 기하학적 VOF(PLIC)의 비분할 이류로 갈아타 팽창 보정항을 없애거나, 계면 재구성을 [안티확산 샤프닝](/ko/posts/2026-07-25-interface-sharpening-anti-diffusion/)처럼 이류와 분리하는 것이다. 셋 다 대수적 VOF의 값싼 계산 비용을 일부 포기한다.
+
+정리하면 이 논문이 준 것은 새 상한이 아니라 **새 병목**이다. 모세관 제약이 사라진 자리에 계면 이류 CFL이 들어앉았고, 그것은 $\Delta t_\sigma$처럼 $\Delta x^{3/2}$로 줄지 않고 $\Delta x$로 줄어든다. 격자를 조밀하게 할수록 상대적으로 유리해진다는 뜻이다. 다음 병목을 고를 때 쓸 만한 정보다.

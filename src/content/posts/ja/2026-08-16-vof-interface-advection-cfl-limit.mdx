@@ -1,0 +1,216 @@
+---
+title: "[論文レビュー] 毛細管の足枷を外したらCFL 0.05が残った — VOF界面移流の本当の上限"
+date: 2026-08-16
+description: "表面張力を陰的に解いて毛細管時間刻み制約を破っても、色関数を運ぶ圧縮スキームがCFL 0.05で時間刻みを掴み直します。"
+tags: ["Interface-Capturing", "VOF", "THINC", "CFL", "Paper-Review"]
+locale: ja
+slug: vof-interface-advection-cfl-limit
+takeaway: "圧縮スキームが界面を立てるために使う値は、Courant数で割った商です。時間刻みを大きくすると、その商が真っ先に消えます。"
+draft: false
+---
+
+import { NvdCourantWindow } from '@/components/post-viz/2026-08-16-vof-interface-advection-cfl-limit/NvdCourantWindow'
+import { StepBudgetRaceTrack } from '@/components/post-viz/2026-08-16-vof-interface-advection-cfl-limit/StepBudgetRaceTrack'
+
+Janodetらの2025年の論文の結論部に、こんな一文があります。「提案アルゴリズムは毛細管時間刻み制約より大きな時間刻みで現実的な気液流れを計算できる — **他の時間刻み制約が満たされる限り**」。強調は筆者によるものです。表面張力を陰的にして足枷をひとつ外したのに、論文が実際に回せた最大CFL数は0.05でした。色関数を運ぶスキームが、代わりに時間刻みを掴んでいたからです。この記事では、その上限がどこから来るのかをNVD図の上で示し、渦移流の実験でその代償を数値にします。
+
+毛細管制約そのものと、それを陰的に破る方法は[表面張力を陰的に解いた論文](/ja/posts/2026-06-28-implicit-surface-tension-capillary-timestep/)で既に扱いました。ここではその続きだけを書きます。
+
+## 界面を立てる値はダウンウィンドから来る
+
+代数的VOF（界面を再構成せず色関数を直接移流させる方式）で界面が厚くなる理由はひとつです。アップウィンドの面値は必ず界面を潰します。そこで圧縮スキームは面値を**ダウンウィンド側へ引っ張ります**。極端にダウンウィンド値をそのまま使えば、階段は一セルの中に閉じ込められます。
+
+問題は、ダウンウィンド値が有界性（boundedness）を保証しないことです。色関数が0を下回り1を上回れば密度が負になり、計算はそこで終わります。だからどこまで引っ張ってよいかを決める規則が要ります。その規則がCourant数を引数に持つ、というのがこの記事の全部です。
+
+下のシミュレーションで実際に操作してみましょう。
+
+<NvdCourantWindow />
+
+`Courant C`を0.05に置くと、左の黄色い許容領域が箱をほぼ埋め、右のスラブは二セル分の縁を保ちます。Cを0.9まで上げると、天井が破線の対角線（＝アップウィンド）まで降りてきます。ピンクの点が座る場所を失い、スラブは時間とともに滲みます。スキームも格子もそのままです。時間刻みだけが大きくなりました。
+
+## NVDの箱の上でCourant数が天井を下げる
+
+正規化変数線図（NVD）は、面ひとつを基準にアップウィンドセル$U$、ドナーセル$D$、アクセプタセル$A$の値を次のように規格化します。
+
+$$
+\tilde{\phi}_D = \frac{\phi_D - \phi_U}{\phi_A - \phi_U}, \qquad \tilde{\phi}_f = \frac{\phi_f - \phi_U}{\phi_A - \phi_U}
+$$
+
+$\tilde{\phi}_D$はドナーセルがアップウィンドとアクセプタの間のどこにいるか、$\tilde{\phi}_f$は面値がどこに置かれるかを表します。$\tilde{\phi}_f = \tilde{\phi}_D$がアップウィンド、$\tilde{\phi}_f = 1$がダウンウィンドです。
+
+Leonardの対流有界性条件（CBC, Convection Boundedness Criterion）は、陽的な時間前進で面値があるべき場所をこう釘付けにします。
+
+$$
+\tilde{\phi}_D \le \tilde{\phi}_f \le \min\!\left(1,\ \frac{\tilde{\phi}_D}{C}\right), \qquad 0 \le \tilde{\phi}_D \le 1
+$$
+
+ここで$C = u\,\Delta t/\Delta x$はその面のCourant数です。天井$\tilde{\phi}_D/C$の意味は素直です。一ステップでドナーセルから$C$だけの体積が抜けますが、その体積に含まれる色関数の量がセルに元々あった量を超えると、セルは負になります。$C \cdot \tilde{\phi}_f \le \tilde{\phi}_D$がその条件で、整理すると上の不等式になります。
+
+$C$が0.05なら天井は$20\,\tilde{\phi}_D$です。$\tilde{\phi}_D$が0.05を少し超えるだけで面値を1まで上げられます。$C$が0.8なら天井は$1.25\,\tilde{\phi}_D$で、対角線のすぐ上の薄い帯しか残りません。**圧縮の余地は$1/C$に比例します。**
+
+## CICSAMが0.01、THINC/QQが0.05である理由
+
+CICSAMはこの箱の中で二つの曲線を混ぜます。ひとつは天井をそのまま辿るHYPER-C、もうひとつは緩やかなULTIMATE-QUICKESTです。混合の重み$\gamma_f$は、界面法線と面ベクトルのなす角で決まります。界面が面に垂直ならHYPER-C寄りに、斜めならUQ寄りに動きます。斜めの界面を圧縮すると階段状の人工的な皺が出るからです。
+
+上のシミュレーションの`CICSAM blend`ボタンと`blend gamma_f`スライダーがその混合です。$\gamma_f$を下げると曲線が天井から降り、スラブがすぐ厚くなります。一次元の整列した界面では$\gamma_f = 1$となり、CICSAMが事実上HYPER-Cに潰れることも同時に見えます。
+
+CICSAMの実用CFL上限が0.01付近である理由はここにあります。$\gamma_f$が0と1の間を行き来する実際の三次元界面では、HYPER-C成分だけがCBCを満たし、UQ成分は別途あらためて制限し直す必要があります。混ぜた結果が天井を越えないためには$C$が小さくなければなりません。論文はこの制約を避けるため、CICSAMではなくTHINC/QQを使いました。
+
+## tanhひとつでセルの中に界面を描き直す
+
+THINC（Tangent of Hyperbola for INterface Capturing）は面値を選ぶ代わりに、セル内部の分布そのものを描いてしまいます。セルを$[0,1]$に規格化した座標$\tilde{x}$で
+
+$$
+\Phi(\tilde{x}) = \frac{1}{2}\left[1 + \gamma \tanh\!\big(\beta(\tilde{x} - \tilde{x}_c)\big)\right]
+$$
+
+と置きます。$\beta$は界面の鋭さ（通常2付近）、$\gamma = \pm 1$は隣接セルから読んだ界面の向き、$\tilde{x}_c$はtanhの跳びが置かれる位置です。$\tilde{x}_c$はセル平均$\bar{\phi}$を正確に再現するように定まり、閉じた形で解けます。
+
+$$
+\tilde{x}_c = \frac{1}{\beta}\,\mathrm{artanh}\!\left(\frac{\cosh\beta - e^{\beta\gamma(2\bar{\phi}-1)}}{\sinh\beta}\right)
+$$
+
+面を通過する量は、この曲線を出発領域の上で積分して得ます。
+
+$$
+F_{i+1/2} = \int_{1-C}^{1} \Phi(\tilde{x})\,\mathrm{d}\tilde{x}
+$$
+
+THINC/QQはここに二次曲面（quadratic surface）再構成を加え、曲率のある界面をより良く捉えます。衝撃波側で同じtanhを使う方式は[TENO-THINC再構成](/ja/posts/2026-06-13-teno-thinc-shock-resolving-reconstruction/)で扱いました。
+
+肝心なのは、この積分が$C$を明示的に含んでいることです。$C$が大きくなると積分区間がセル幅に近づき、結局セル平均ひとつを運ぶのと同じになります。tanhはダウンウィンドを使わないのでCBCは自動的に満たされますが、圧縮力が$C$とともに落ちる性質は同じです。
+
+## 時間刻みの予算には項目が三つある
+
+ここで予算全体を見ます。毛細管波を陽的に解くときの制約は
+
+$$
+\Delta t_\sigma = \sqrt{\frac{(\rho_A + \rho_B)\,\Delta x^3}{2\pi\sigma}}
+$$
+
+で、これに流れのCFL制約$\Delta t_{\text{CFL}} = C_{\max}\Delta x / U$が並びます。論文がしたのは、最初の項目を予算から消すことでした。残るのは界面移流スキームが許す$C_{\max}$です。
+
+下で二つのソルバを同じ物理時間まで競走させてみましょう。
+
+<StepBudgetRaceTrack />
+
+`U`を小さく置くと（毛細管が主導する流れ）、Aレーンは$\Delta t_\sigma$に縛られ、Bレーンが先へ出ます。これが論文の売り文句です。次に`interface CFL cap`を0.01まで下げると、表面張力が依然として陰的であるにもかかわらず、BがAの隣まで戻ってきます。逆に0.5まで上げると、下の体積誤差の表示が代償を教えてくれます。
+
+## 渦ひとつで測った体積誤差
+
+$C$を大きくすると実際に何が悪くなるのか。方向分割（directional splitting）移流では、各方向のスイープが非発散な速度場を見られないので、膨張補正項を入れる必要があります。
+
+$$
+\phi^{*}_{i} = \phi^{n}_{i} - \left(F_{i+1/2} - F_{i-1/2}\right) + \phi^{n}_{i}\left(C_{i+1/2} - C_{i-1/2}\right)
+$$
+
+一様な$\phi = 1$の領域がスイープひとつで壊れないようにする項です。しかし界面セルでは$\phi^n_i$がスイープ途中の実際の値と異なり、その差が体積誤差として残ります。Rider–Kotheの単一渦（時間反転あり、$T=2$）にTHINC移流を載せて測りました。
+
+```python
+from math import atanh, cos, cosh, exp, log, log1p, pi, sin, sinh
+
+N, BETA, EPS = 40, 2.0, 1e-6
+H = 1.0 / N
+
+
+def lncosh(z):
+    a = abs(z)
+    return a + log1p(exp(-2.0 * a)) - log(2.0)
+
+
+def thinc_slab(pbar, g, a, b):
+    """ドナーセルのtanh再構成を[a, b]区間で積分する。"""
+    s = g * (2.0 * pbar - 1.0)
+    r = max(-0.999999, min(0.999999, (cosh(BETA) - exp(BETA * s)) / sinh(BETA)))
+    xc = atanh(r) / BETA
+    return 0.5 * ((b - a) + (g / BETA) * (lncosh(BETA * (b - xc)) - lncosh(BETA * (a - xc))))
+
+
+def face_flux(pm, p0, pp, c):
+    """面を通過する色関数の量。p0がドナーセル、cがその面のCourant数。"""
+    if abs(c) < 1e-14:
+        return 0.0
+    g = 1.0 if pp > pm else (-1.0 if pp < pm else 0.0)
+    if g == 0.0 or p0 < EPS or p0 > 1.0 - EPS:
+        return c * p0
+    return thinc_slab(p0, g, 1.0 - c, 1.0) if c > 0 else -thinc_slab(p0, g, 0.0, -c)
+
+
+def line(col, vel, k):
+    """周期境界の一次元スイープ一回。膨張補正項を含む。"""
+    n, out = len(col), [0.0] * len(col)
+    for i in range(n):
+        cw, ce = vel[i] * k, vel[i + 1] * k
+        fw = face_flux(col[(i - 2) % n], col[(i - 1) % n], col[i], cw) if cw > 0 else \
+            face_flux(col[(i - 1) % n], col[i], col[(i + 1) % n], cw)
+        fe = face_flux(col[(i - 1) % n], col[i], col[(i + 1) % n], ce) if ce > 0 else \
+            face_flux(col[i], col[(i + 1) % n], col[(i + 2) % n], ce)
+        out[i] = col[i] - (fe - fw) + col[i] * (ce - cw)
+    return out
+
+
+def run(courant, tend=2.0):
+    uf = [[-sin(pi * i * H) ** 2 * sin(2 * pi * (j + .5) * H) for i in range(N + 1)] for j in range(N)]
+    vf = [[sin(pi * j * H) ** 2 * sin(2 * pi * (i + .5) * H) for i in range(N)] for j in range(N + 1)]
+    nstep = max(1, int(tend * max(abs(x) for r in uf for x in r) / (courant * H)))
+    dt = tend / nstep
+    f = [[1.0 if ((i + .5) * H - .5) ** 2 + ((j + .5) * H - .75) ** 2 < .15 ** 2 else 0.0
+          for i in range(N)] for j in range(N)]
+    f0, m0 = [r[:] for r in f], sum(sum(r) for r in f)
+    for n in range(nstep):
+        w = cos(pi * (n + .5) * dt / tend)          # Rider-Kotheの時間反転
+        for ax in ((0, 1) if n % 2 == 0 else (1, 0)):
+            if ax == 0:
+                f = [line(f[j], [x * w for x in uf[j]], dt / H) for j in range(N)]
+            else:
+                cols = [[f[j][i] for j in range(N)] for i in range(N)]
+                vv = [[vf[j][i] * w for j in range(N + 1)] for i in range(N)]
+                cols = [line(cols[i], vv[i], dt / H) for i in range(N)]
+                f = [[cols[i][j] for i in range(N)] for j in range(N)]
+    lo = min(min(r) for r in f)
+    hi = max(max(r) for r in f)
+    dm = (sum(sum(r) for r in f) - m0) / m0
+    err = sum(abs(f[j][i] - f0[j][i]) for j in range(N) for i in range(N)) / m0
+    return nstep, lo, hi, dm, err
+
+
+print("   C   steps    min(f)     max(f)-1     dM/M    (dM/M)/C   shape err")
+for c in (0.05, 0.1, 0.2, 0.4, 0.8):
+    ns, lo, hi, dm, err = run(c)
+    print(f"{c:5.2f} {ns:6d}  {lo:9.2e}  {hi - 1.0:9.2e}  {dm:8.2e}  {dm / c:8.4f}   {err:8.3e}")
+```
+
+```text
+   C   steps    min(f)     max(f)-1     dM/M    (dM/M)/C   shape err
+ 0.05   1595   2.23e-29  -6.03e-07  2.94e-03    0.0588   1.988e-01
+ 0.10    797  -6.51e-07  -6.33e-07  5.87e-03    0.0587   2.119e-01
+ 0.20    398  -1.62e-06  -5.27e-07  1.16e-02    0.0580   1.850e-01
+ 0.40    199  -3.87e-06   1.38e-07  2.33e-02    0.0583   1.771e-01
+ 0.80     99  -3.20e-06   1.43e-06  4.62e-02    0.0577   2.214e-01
+```
+
+読むべきは二つです。第一に、有界性は無事です。アンダーシュートが$10^{-6}$の水準なので、THINCは約束を守りました。第二に、体積誤差が$C$に正確に比例します。四列目を$C$で割った五列目が0.058付近に釘付けになっています。$C$を16倍にする間、係数は2%以内に保たれます。
+
+$C = 0.05$で0.3%だった体積誤差が、$C = 0.8$では4.6%になります。二次元の面積なので、液滴直径に換算すると2.3%です。表面張力を扱う計算でこれは致命的です。曲率は半径の逆数なので、Laplace圧力跳びがそのまま2.3%ずれます。
+
+一方、最終列の形状誤差は$C$と無関係に0.18〜0.22を行き来します。そちらは格子解像度が決めています。
+
+## 格子を細かくすれば済むのか
+
+係数0.058がどこから来るのかを確かめるため、$40^2$を$60^2$に変えて$C = 0.2$を回し直しました。係数は0.0580から0.0384に落ちます。比0.66は格子間隔の比$40/60$とほぼ同じです。つまり、
+
+$$
+\frac{\Delta M}{M} \approx 2.3\,C\,\Delta x \propto U\,\Delta t
+$$
+
+体積誤差は時間について一次です。$C$を保ったまま格子を細かくすれば誤差は$\Delta x$に比例して減ります。しかし$\Delta t$を固定したまま格子だけ細かくすると$C$がその分大きくなり、誤差はそのままです。界面移流で時間刻みを大きくするのは無料ではなく、その代金はきっちり$\Delta t$に比例して請求されます。
+
+この請求書が[寄生電流](/ja/posts/2026-07-19-parasitic-currents-surface-tension/)の問題と重なると事態は悪化します。体積が0.5%ずれれば曲率がずれ、ずれた曲率は釣り合わない表面張力の力となって、再び速度場を汚します。
+
+## 0.05を0.5にするには何が変わるべきか
+
+論文自身が結論で二つを指しています。第一は陰的な高さ関数（height function）の頑健性です。未解像の界面で高さ関数が失敗すれば、曲率が丸ごと崩れます。第二が界面移流スキームです。論文の表現では「より大きなCFL数を使えるようにする移流スキームの改良が、この手法の性能を大きく引き上げる潜在力を持つ」。
+
+方向は三つに見えます。移流そのものを陰的にしてCBCの$1/C$の天井から抜け出すか、幾何学的VOF（PLIC）の非分割移流に乗り換えて膨張補正項をなくすか、界面再構成を[反拡散シャープニング](/ja/posts/2026-07-25-interface-sharpening-anti-diffusion/)のように移流から切り離すか。三つとも代数的VOFの安い計算コストを一部手放します。
+
+まとめると、この論文が与えたのは新しい上限ではなく**新しいボトルネック**です。毛細管制約が去った席に界面移流のCFLが座り、それは$\Delta t_\sigma$のように$\Delta x^{3/2}$では減らず、$\Delta x$で減ります。格子を細かくするほど相対的に有利になるという意味です。次のボトルネックを選ぶときに使える情報です。

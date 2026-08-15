@@ -1,0 +1,216 @@
+---
+title: "[论文评述] 毛细枷锁解开后，CFL 0.05 还在 — VOF 界面对流的真正上限"
+date: 2026-08-16
+description: "把表面张力做成隐式便可越过毛细时间步长约束，但输运色函数的压缩格式又在 CFL 0.05 处按住了时间步长。"
+tags: ["Interface-Capturing", "VOF", "THINC", "CFL", "Paper-Review"]
+locale: zh
+slug: vof-interface-advection-cfl-limit
+takeaway: "压缩格式用来立起界面的那个值，是被 Courant 数除过的商。时间步长一大，最先消失的就是这个商。"
+draft: false
+---
+
+import { NvdCourantWindow } from '@/components/post-viz/2026-08-16-vof-interface-advection-cfl-limit/NvdCourantWindow'
+import { StepBudgetRaceTrack } from '@/components/post-viz/2026-08-16-vof-interface-advection-cfl-limit/StepBudgetRaceTrack'
+
+Janodet 等人 2025 年论文的结论部分有这样一句话："所提出的算法可以用大于毛细时间步长约束的时间步长计算真实的气液流动 — **只要其他时间步长约束得到满足**。"着重是我加的。把表面张力改成隐式解开了一道枷锁，可论文实际能跑的最大 CFL 数是 0.05。因为输运色函数的格式转而按住了时间步长。本文在 NVD 图上给出这个上限的来源，再用涡对流实验把代价折算成数字。
+
+毛细约束本身以及用隐式方法打破它的做法，已在[把表面张力做成隐式的那篇论文](/zh/posts/2026-06-28-implicit-surface-tension-capillary-timestep/)里讲过。这里只写后续。
+
+## 立起界面的那个值来自下风
+
+代数 VOF（不重构界面、直接对流色函数的做法）里界面变厚只有一个原因：迎风面值总会把界面抹平。于是压缩格式把面值**朝下风单元拉**。极端地直接取下风值，阶跃就被关进一个单元里。
+
+麻烦在于下风值不保证有界性（boundedness）。色函数一旦跌破 0 或越过 1，密度就变成负数，计算到此为止。所以需要一条规则来规定能拉到多远。那条规则以 Courant 数为自变量，这就是本文的全部内容。
+
+在下面的模拟中亲手操作一下。
+
+<NvdCourantWindow />
+
+把 `Courant C` 放在 0.05，左侧琥珀色的可行区域几乎填满整个方框，右侧的方块保持两个单元宽的边缘。把 C 推到 0.9，天花板就塌到虚线对角线（即迎风）上。粉色的点无处落脚，方块随时间不断洇开。格式没变，网格没变，变大的只有时间步长。
+
+## 在 NVD 方框上，Courant 数把天花板压低
+
+归一化变量图（NVD）以一个面为基准，把迎风单元 $U$、施主单元 $D$、受主单元 $A$ 的值这样规格化。
+
+$$
+\tilde{\phi}_D = \frac{\phi_D - \phi_U}{\phi_A - \phi_U}, \qquad \tilde{\phi}_f = \frac{\phi_f - \phi_U}{\phi_A - \phi_U}
+$$
+
+$\tilde{\phi}_D$ 表示施主单元位于迎风与受主之间的何处，$\tilde{\phi}_f$ 表示面值落在何处。$\tilde{\phi}_f = \tilde{\phi}_D$ 是迎风，$\tilde{\phi}_f = 1$ 是下风。
+
+Leonard 的对流有界性判据（CBC, Convection Boundedness Criterion）钉死了显式时间推进下面值必须待的位置。
+
+$$
+\tilde{\phi}_D \le \tilde{\phi}_f \le \min\!\left(1,\ \frac{\tilde{\phi}_D}{C}\right), \qquad 0 \le \tilde{\phi}_D \le 1
+$$
+
+其中 $C = u\,\Delta t/\Delta x$ 是该面的 Courant 数。天花板 $\tilde{\phi}_D/C$ 的含义很直接：一步之内从施主单元抽走体积 $C$，若这份体积里携带的色函数量超过单元原有的量，单元就变成负值。这个条件就是 $C \cdot \tilde{\phi}_f \le \tilde{\phi}_D$，整理后即上面的不等式。
+
+$C$ 取 0.05 时天花板是 $20\,\tilde{\phi}_D$。$\tilde{\phi}_D$ 刚过 0.05 就能把面值抬到 1。$C$ 取 0.8 时天花板是 $1.25\,\tilde{\phi}_D$，只剩紧贴对角线的一条窄带。**可用的压缩量正比于 $1/C$。**
+
+## CICSAM 停在 0.01、THINC/QQ 停在 0.05 的原因
+
+CICSAM 在这个方框里混合两条曲线：一条是紧贴天花板的 HYPER-C，另一条是较平缓的 ULTIMATE-QUICKEST。混合权重 $\gamma_f$ 由界面法向与面向量的夹角决定。界面垂直于面就偏向 HYPER-C，倾斜就偏向 UQ。因为压缩倾斜界面会产生阶梯状的人为褶皱。
+
+上面模拟中的 `CICSAM blend` 按钮和 `blend gamma_f` 滑块就是这个混合。调低 $\gamma_f$，曲线从天花板下滑，方块立刻变厚。同时也能看到，一维对齐界面上 $\gamma_f = 1$，CICSAM 实际上退化成了 HYPER-C。
+
+CICSAM 的实用 CFL 上限落在 0.01 附近，原因正在于此。在 $\gamma_f$ 于 0 和 1 之间来回摆动的真实三维界面上，只有 HYPER-C 分量自身满足 CBC，UQ 分量必须另行再限制一次。要让混合结果不越过天花板，$C$ 就得足够小。论文为了避开这个约束，用 THINC/QQ 取代了 CICSAM。
+
+## 一个 tanh 在单元内部重画界面
+
+THINC（Tangent of Hyperbola for INterface Capturing）不去挑选面值，而是干脆把单元内部的分布画出来。在把单元规格化到 $[0,1]$ 的坐标 $\tilde{x}$ 上，令
+
+$$
+\Phi(\tilde{x}) = \frac{1}{2}\left[1 + \gamma \tanh\!\big(\beta(\tilde{x} - \tilde{x}_c)\big)\right]
+$$
+
+其中 $\beta$ 是界面锐度（通常取 2 附近），$\gamma = \pm 1$ 是从相邻单元读出的界面朝向，$\tilde{x}_c$ 是 tanh 跳变所在的位置。$\tilde{x}_c$ 由精确复现单元平均 $\bar{\phi}$ 的要求确定，并且有闭式解。
+
+$$
+\tilde{x}_c = \frac{1}{\beta}\,\mathrm{artanh}\!\left(\frac{\cosh\beta - e^{\beta\gamma(2\bar{\phi}-1)}}{\sinh\beta}\right)
+$$
+
+穿过面的量由这条曲线在出发区域上的积分给出。
+
+$$
+F_{i+1/2} = \int_{1-C}^{1} \Phi(\tilde{x})\,\mathrm{d}\tilde{x}
+$$
+
+THINC/QQ 在此基础上再加一层二次曲面（quadratic surface）重构，对有曲率的界面抓得更准。在激波一侧使用同一个 tanh 的做法，见 [TENO-THINC 重构](/zh/posts/2026-06-13-teno-thinc-shock-resolving-reconstruction/)。
+
+关键在于这个积分显式地含有 $C$。$C$ 变大，积分区间就逼近整个单元宽度，最终等同于只输运一个单元平均值。tanh 不使用下风值，所以 CBC 自动满足，但压缩力随 $C$ 衰减这一性质完全相同。
+
+## 时间步长预算里有三个条目
+
+现在看整份预算。显式求解毛细波的约束是
+
+$$
+\Delta t_\sigma = \sqrt{\frac{(\rho_A + \rho_B)\,\Delta x^3}{2\pi\sigma}}
+$$
+
+旁边还并列着流动的 CFL 约束 $\Delta t_{\text{CFL}} = C_{\max}\Delta x / U$。论文做的事，是把第一个条目从预算里划掉。剩下的是界面对流格式允许的 $C_{\max}$。
+
+下面让两个求解器赛跑到同一个物理时刻。
+
+<StepBudgetRaceTrack />
+
+把 `U` 调小（毛细主导的流动），A 道被 $\Delta t_\sigma$ 拴住，B 道一路领先，这正是论文的卖点。接着把 `interface CFL cap` 拉到 0.01：表面张力依旧是隐式的，B 却退回到 A 的旁边。反过来推到 0.5，下方的体积误差读数会告诉你代价。
+
+## 用一个涡量出的体积误差
+
+$C$ 变大时究竟什么在变坏？在方向分裂（directional splitting）对流中，每个方向的扫掠看不到无散的速度场，因此必须加入膨胀修正项。
+
+$$
+\phi^{*}_{i} = \phi^{n}_{i} - \left(F_{i+1/2} - F_{i-1/2}\right) + \phi^{n}_{i}\left(C_{i+1/2} - C_{i-1/2}\right)
+$$
+
+这一项保证均匀的 $\phi = 1$ 区域不会被一次扫掠破坏。但在界面单元里，$\phi^n_i$ 与扫掠过程中的实际值并不相同，这个差额便以体积误差的形式留下。我把 THINC 对流放到 Rider–Kothe 单涡（含时间反转，$T=2$）上做了测量。
+
+```python
+from math import atanh, cos, cosh, exp, log, log1p, pi, sin, sinh
+
+N, BETA, EPS = 40, 2.0, 1e-6
+H = 1.0 / N
+
+
+def lncosh(z):
+    a = abs(z)
+    return a + log1p(exp(-2.0 * a)) - log(2.0)
+
+
+def thinc_slab(pbar, g, a, b):
+    """把施主单元的 tanh 重构在 [a, b] 区间上积分。"""
+    s = g * (2.0 * pbar - 1.0)
+    r = max(-0.999999, min(0.999999, (cosh(BETA) - exp(BETA * s)) / sinh(BETA)))
+    xc = atanh(r) / BETA
+    return 0.5 * ((b - a) + (g / BETA) * (lncosh(BETA * (b - xc)) - lncosh(BETA * (a - xc))))
+
+
+def face_flux(pm, p0, pp, c):
+    """穿过面的色函数量。p0 是施主单元，c 是该面的 Courant 数。"""
+    if abs(c) < 1e-14:
+        return 0.0
+    g = 1.0 if pp > pm else (-1.0 if pp < pm else 0.0)
+    if g == 0.0 or p0 < EPS or p0 > 1.0 - EPS:
+        return c * p0
+    return thinc_slab(p0, g, 1.0 - c, 1.0) if c > 0 else -thinc_slab(p0, g, 0.0, -c)
+
+
+def line(col, vel, k):
+    """周期边界上的一次一维扫掠，含膨胀修正项。"""
+    n, out = len(col), [0.0] * len(col)
+    for i in range(n):
+        cw, ce = vel[i] * k, vel[i + 1] * k
+        fw = face_flux(col[(i - 2) % n], col[(i - 1) % n], col[i], cw) if cw > 0 else \
+            face_flux(col[(i - 1) % n], col[i], col[(i + 1) % n], cw)
+        fe = face_flux(col[(i - 1) % n], col[i], col[(i + 1) % n], ce) if ce > 0 else \
+            face_flux(col[i], col[(i + 1) % n], col[(i + 2) % n], ce)
+        out[i] = col[i] - (fe - fw) + col[i] * (ce - cw)
+    return out
+
+
+def run(courant, tend=2.0):
+    uf = [[-sin(pi * i * H) ** 2 * sin(2 * pi * (j + .5) * H) for i in range(N + 1)] for j in range(N)]
+    vf = [[sin(pi * j * H) ** 2 * sin(2 * pi * (i + .5) * H) for i in range(N)] for j in range(N + 1)]
+    nstep = max(1, int(tend * max(abs(x) for r in uf for x in r) / (courant * H)))
+    dt = tend / nstep
+    f = [[1.0 if ((i + .5) * H - .5) ** 2 + ((j + .5) * H - .75) ** 2 < .15 ** 2 else 0.0
+          for i in range(N)] for j in range(N)]
+    f0, m0 = [r[:] for r in f], sum(sum(r) for r in f)
+    for n in range(nstep):
+        w = cos(pi * (n + .5) * dt / tend)          # Rider-Kothe 时间反转
+        for ax in ((0, 1) if n % 2 == 0 else (1, 0)):
+            if ax == 0:
+                f = [line(f[j], [x * w for x in uf[j]], dt / H) for j in range(N)]
+            else:
+                cols = [[f[j][i] for j in range(N)] for i in range(N)]
+                vv = [[vf[j][i] * w for j in range(N + 1)] for i in range(N)]
+                cols = [line(cols[i], vv[i], dt / H) for i in range(N)]
+                f = [[cols[i][j] for i in range(N)] for j in range(N)]
+    lo = min(min(r) for r in f)
+    hi = max(max(r) for r in f)
+    dm = (sum(sum(r) for r in f) - m0) / m0
+    err = sum(abs(f[j][i] - f0[j][i]) for j in range(N) for i in range(N)) / m0
+    return nstep, lo, hi, dm, err
+
+
+print("   C   steps    min(f)     max(f)-1     dM/M    (dM/M)/C   shape err")
+for c in (0.05, 0.1, 0.2, 0.4, 0.8):
+    ns, lo, hi, dm, err = run(c)
+    print(f"{c:5.2f} {ns:6d}  {lo:9.2e}  {hi - 1.0:9.2e}  {dm:8.2e}  {dm / c:8.4f}   {err:8.3e}")
+```
+
+```text
+   C   steps    min(f)     max(f)-1     dM/M    (dM/M)/C   shape err
+ 0.05   1595   2.23e-29  -6.03e-07  2.94e-03    0.0588   1.988e-01
+ 0.10    797  -6.51e-07  -6.33e-07  5.87e-03    0.0587   2.119e-01
+ 0.20    398  -1.62e-06  -5.27e-07  1.16e-02    0.0580   1.850e-01
+ 0.40    199  -3.87e-06   1.38e-07  2.33e-02    0.0583   1.771e-01
+ 0.80     99  -3.20e-06   1.43e-06  4.62e-02    0.0577   2.214e-01
+```
+
+有两点要读。第一，有界性完好。下冲只在 $10^{-6}$ 量级，THINC 守住了承诺。第二，体积误差与 $C$ 精确成正比。第四列除以 $C$ 得到的第五列被钉在 0.058 附近。$C$ 扩大 16 倍的过程中，系数保持在 2% 以内。
+
+$C = 0.05$ 时 0.3% 的体积误差，到 $C = 0.8$ 变成 4.6%。因为这是二维面积，折算成液滴直径是 2.3%。在处理表面张力的计算里这是致命的：曲率是半径的倒数，Laplace 压力跳跃会同样偏差 2.3%。
+
+反观最后一列的形状误差，与 $C$ 无关地在 0.18 到 0.22 之间徘徊。那一项由网格分辨率决定。
+
+## 把网格加密就够了吗
+
+为了弄清系数 0.058 从何而来，我把 $40^2$ 换成 $60^2$ 重跑了 $C = 0.2$。系数从 0.0580 降到 0.0384。比值 0.66 几乎就是网格间距之比 $40/60$。也就是说，
+
+$$
+\frac{\Delta M}{M} \approx 2.3\,C\,\Delta x \propto U\,\Delta t
+$$
+
+体积误差在时间上是一阶的。保持 $C$ 不变去加密网格，误差按 $\Delta x$ 成比例下降。但固定 $\Delta t$ 只加密网格，$C$ 会同比例变大，误差原地不动。在界面对流里加大时间步长不是免费的，账单严格按 $\Delta t$ 比例开出。
+
+这张账单若与[寄生流](/zh/posts/2026-07-19-parasitic-currents-surface-tension/)问题叠加，情况会更糟。体积偏差 0.5% 会让曲率偏差，偏差的曲率变成无法平衡的表面张力，再次污染速度场。
+
+## 要把 0.05 提到 0.5，需要改变什么
+
+论文自己在结论里点了两件事。第一是隐式高度函数（height function）的稳健性：在欠分辨的界面上高度函数一旦失效，曲率就整个塌掉。第二就是界面对流格式。论文的原话是，能"支持更大 CFL 数的对流格式改进，具有大幅提升该方法性能的潜力"。
+
+方向看起来有三条。把对流本身做成隐式，摆脱 CBC 的 $1/C$ 天花板；改用几何 VOF（PLIC）的非分裂对流，彻底去掉膨胀修正项；或者像[反扩散锐化](/zh/posts/2026-07-25-interface-sharpening-anti-diffusion/)那样把界面重构与对流分开。三条路都要交出代数 VOF 一部分低廉的计算成本。
+
+归纳起来，这篇论文给出的不是一个新上限，而是一个**新瓶颈**。毛细约束腾出的位置由界面对流的 CFL 坐了上去，而后者不像 $\Delta t_\sigma$ 那样按 $\Delta x^{3/2}$ 缩小，它按 $\Delta x$ 缩小。这意味着网格越细，它相对越有利。这是挑选下一个瓶颈时用得上的信息。
