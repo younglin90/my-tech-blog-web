@@ -1,0 +1,245 @@
+---
+title: "Sesgar el elemento 45° multiplica la rigidez por 2.5 — tensor métrico y transformación del tensor constitutivo"
+date: 2026-08-17
+description: "Si en coordenadas curvilíneas la deformación se escribe con componentes covariantes, el tensor constitutivo también debe transformarse. Omitir ese paso arruina la rigidez de todo elemento distorsionado."
+tags: ["Tensor-Algebra", "Curvilinear", "Grid-Metrics", "Shell-Element", "FEM"]
+locale: es
+slug: curvilinear-constitutive-tensor-transform
+takeaway: "En una base ortonormal, las componentes covariantes y contravariantes son los mismos números. En cuanto esa coincidencia se rompe, el código que reutiliza la matriz C cartesiana empieza a mentir."
+draft: false
+---
+
+import { MetricTensorBasisDial } from '@/components/post-viz/2026-08-17-curvilinear-constitutive-tensor-transform/MetricTensorBasisDial'
+import { ConstitutiveSkewEnergyBench } from '@/components/post-viz/2026-08-17-curvilinear-constitutive-tensor-transform/ConstitutiveSkewEnergyBench'
+
+Hay situaciones donde medir la misma deformación dos veces da dos respuestas distintas. El elemento no cambió, el material tampoco, y la deformación física que ocurrió es la misma. Lo único que se cambió fue el sistema de coordenadas en el que se anotó esa deformación. Y aun así la energía de deformación sale 2.5 veces mayor. Este artículo rastrea de dónde viene ese factor 2.5, apoyándose en las bases covariante y contravariante y en el tensor métrico, y luego verifica en Python cómo transformar el tensor constitutivo de cuarto orden para que los números vuelvan a su sitio.
+
+## La deformación no se movió y la energía creció 2.5 veces
+
+La matriz de rigidez de un elemento de lámina se ensambla casi siempre así: en cada punto de Gauss se construye la matriz deformación-desplazamiento $\mathbf{B}$, se multiplica por la matriz constitutiva $\mathbf{C}$ y se integra $\mathbf{B}^{\mathsf T}\mathbf{C}\mathbf{B}$. El problema es que esas dos matrices nacen en sistemas de coordenadas distintos.
+
+$\mathbf{C}$ es una propiedad del material. Por eso queda definida en el marco donde se hicieron los ensayos, es decir, el **sistema cartesiano ortogonal local** pegado a la superficie de la lámina. En cambio $\mathbf{B}$ sale de derivar las funciones de forma. Esas funciones están escritas en el **sistema de coordenadas naturales** del elemento $(r^1, r^2, r^3)$, y en cuanto el elemento se curva o se distorsiona, ese sistema deja de ser ortogonal y deja de estar normalizado.
+
+Existe un caso en que ambos marcos coinciden por casualidad: elemento rectangular sobre superficie plana. Correr la prueba de parcela solo con modelos planos equivale a validar únicamente esa casualidad. Al montar el elemento sobre una superficie curva, la casualidad se rompe.
+
+## Si la base no es ortogonal, aparecen dos juegos de componentes
+
+La dirección en que se mueve la posición física $\mathbf{x}$ cuando cambia la coordenada natural $r^i$ es la base covariante.
+
+$$
+\mathbf{g}_i = \frac{\partial \mathbf{x}}{\partial r^i}
+$$
+
+Aquí $\mathbf{x}$ es el vector de posición cartesiano y $r^i$ son las coordenadas naturales del elemento. Estos tres vectores no son ortogonales entre sí y su longitud no es 1.
+
+Sobre una base no ortogonal hay dos maneras de escribir un vector en componentes. Primera: descomponerlo a lo largo de los vectores base con la regla del paralelogramo; esos coeficientes son las componentes contravariantes $v^i$. Segunda: proyectarlo perpendicularmente sobre cada vector base; esas proyecciones son las componentes covariantes $v_i$.
+
+$$
+\mathbf{v} = v^i \mathbf{g}_i, \qquad v_i = \mathbf{v}\cdot\mathbf{g}_i
+$$
+
+En una base ortonormal ambas construcciones llegan al mismo punto. Por eso la distinción es invisible para quien solo ha trabajado en coordenadas cartesianas. Conviene manipular la simulación de abajo directamente.
+
+<MetricTensorBasisDial />
+
+Con `skew` en 0 y `|g_2|` en 1.00, el paralelogramo azul y las perpendiculares amarillas se encuentran en el mismo punto y `max | v^i - v_i |` se pone verde. Basta mover un poco cualquiera de los deslizadores para que las dos filas de números se separen. La clave al manipular es no perder de vista que la flecha blanca sigue siendo siempre el mismo vector.
+
+## El tensor métrico devuelve la longitud perdida
+
+Lo que enlaza ambos juegos de componentes es el tensor métrico.
+
+$$
+g_{ij} = \mathbf{g}_i \cdot \mathbf{g}_j, \qquad v_i = g_{ij}\, v^j
+$$
+
+$g_{ij}$ empaqueta en una sola matriz las longitudes de los vectores base y los ángulos entre ellos. Las componentes diagonales $g_{11}, g_{22}, g_{33}$ son los cuadrados de las longitudes; las de fuera de la diagonal son el coseno del ángulo incluido multiplicado por esas longitudes.
+
+Para medir una longitud hay que pasar obligatoriamente por esta matriz.
+
+$$
+|\mathbf{v}|^2 = g_{ij}\, v^i v^j = v_i v^i
+$$
+
+La segunda igualdad es la útil. Al **emparejar** una componente covariante con una contravariante, la métrica se cancela sola. En cambio, elevar al cuadrado las componentes contravariantes y sumarlas ($v^i v^i$) no da una longitud. La última línea de la visualización muestra ese valor en rojo.
+
+Aquí está la razón por la que la mecánica del continuo usa componentes contravariantes para la tensión y covariantes para la deformación. El trabajo virtual tiene que ser un escalar, y solo el emparejamiento de las componentes contravariantes del segundo tensor de Piola-Kirchhoff $S^{ij}$ con las covariantes de Green-Lagrange $E_{ij}$ hace que $S^{ij}E_{ij}$ sea independiente del marco. Es el mismo trabajo que hacen las métricas de malla en un solver de flujo: el jacobiano tratado en [transformación de coordenadas curvilíneas y métricas de malla](/es/posts/2026-06-17-curvilinear-coordinate-transformation-grid-metrics/) es aquí, literalmente, el conjunto de vectores base.
+
+## La base contravariante son las filas del jacobiano inverso
+
+Para devolver componentes covariantes a contravariantes hace falta $g^{ij} = [g_{ij}]^{-1}$, y la base construida con esa matriz es la base contravariante.
+
+$$
+\mathbf{g}^i = g^{ij}\mathbf{g}_j, \qquad \mathbf{g}^i \cdot \mathbf{g}_j = \delta^i_j
+$$
+
+$\delta^i_j$ es la delta de Kronecker. Es decir, $\mathbf{g}^1$ es el vector perpendicular a $\mathbf{g}_2$ y a $\mathbf{g}_3$ a la vez, escalado para que su producto escalar con $\mathbf{g}_1$ valga exactamente 1.
+
+En la implementación no hacen falta dos inversiones. Apilando los vectores base covariantes como **columnas** de una matriz $\mathbf{J}$,
+
+$$
+\mathbf{J} = [\,\mathbf{g}_1\;\mathbf{g}_2\;\mathbf{g}_3\,], \qquad \mathbf{g}^i = \big(\mathbf{J}^{-1}\big)_{i\bullet}
+$$
+
+$\big(\mathbf{J}^{-1}\big)_{i\bullet}$ denota la fila $i$ de $\mathbf{J}^{-1}$.
+
+$\mathbf{J}$ es el jacobiano de coordenadas naturales a físicas. Es la misma matriz que ya se calcula en cada punto de integración para obtener $\det\mathbf{J}$. La base contravariante sale de regalo.
+
+## Un tensor de cuarto orden lleva cuatro cosenos directores
+
+Ahora lo central. Se traslada el tensor constitutivo $C^{pqrs}$, definido sobre la base cartesiana local $\mathbf{e}_p$, al sistema de coordenadas naturales. Si trasladar un tensor de segundo orden costaba dos cosenos directores, uno de cuarto orden cuesta cuatro.
+
+$$
+\tilde{C}^{ijkl} = (\mathbf{g}^i\!\cdot\mathbf{e}_p)(\mathbf{g}^j\!\cdot\mathbf{e}_q)(\mathbf{g}^k\!\cdot\mathbf{e}_r)(\mathbf{g}^l\!\cdot\mathbf{e}_s)\, C^{pqrs}
+$$
+
+Los índices $i,j,k,l$ viven en coordenadas naturales y $p,q,r,s$ en las cartesianas locales. Del lado de la deformación la dirección es la opuesta.
+
+$$
+\tilde{\varepsilon}_{ij} = (\mathbf{g}_i\!\cdot\mathbf{e}_p)(\mathbf{g}_j\!\cdot\mathbf{e}_q)\,\varepsilon_{pq}
+$$
+
+Al tensor constitutivo se le pega $\mathbf{J}^{-1}$ y a la deformación $\mathbf{J}$. Por eso, al contraerlos, los jacobianos se cancelan exactamente y la energía queda invariante. Dicho al revés: si solo se transforma la deformación y el tensor constitutivo se deja intacto, sobreviven cuatro copias de $\mathbf{J}$. Esas cuatro copias son la identidad del error que se mide más abajo.
+
+<ConstitutiveSkewEnergyBench />
+
+Al mover `skew` y `|g_2|`, la forma deformada del elemento de la izquierda no se altera y solo crece la barra roja de la derecha. El punto de observación es alternar entre `stretch`, `shear` y `mixed` y ver cómo cambia la forma de la curva de error de arriba: en el modo de cortante el error crece más rápido.
+
+## Energía por ángulo de sesgo, medida en Python
+
+Se fijó un estado de deformación sobre un material isótropo en tensión plana y, torciendo únicamente el sistema de coordenadas, se calculó la energía de deformación por dos vías. Las constantes del material son las mismas del documento original ($E = 2.1\times10^6$, $\nu = 0.3$).
+
+```python
+import numpy as np
+
+def natural_basis(skew_deg, stretch=1.0):
+    """Jacobiano J cuyas columnas son los vectores base covariantes g_i = dx/dr^i"""
+    a = np.deg2rad(skew_deg)
+    g1 = np.array([1.0, 0.0])
+    g2 = stretch * np.array([np.sin(a), np.cos(a)])
+    return np.column_stack([g1, g2])
+
+def plane_stress_tensor(E=2.1e6, nu=0.3):
+    """Tensor isotropo de cuarto orden C^{pqrs} en tension plana, base cartesiana local"""
+    lam = E * nu / (1.0 - nu**2)
+    mu = E / (2.0 * (1.0 + nu))
+    d = np.eye(2)
+    return (lam * np.einsum('pq,rs->pqrs', d, d)
+            + mu * (np.einsum('pr,qs->pqrs', d, d) + np.einsum('ps,qr->pqrs', d, d)))
+
+def rotate_fourth_order(C, Jinv):
+    """C^{ijkl} = (g^i.e_p)(g^j.e_q)(g^k.e_r)(g^l.e_s) C^{pqrs}, g^i = fila i de J^-1"""
+    return np.einsum('ip,jq,kr,ls,pqrs->ijkl', Jinv, Jinv, Jinv, Jinv, C)
+
+def strain_energy(C, eps):
+    return 0.5 * np.einsum('pqrs,pq,rs->', C, eps, eps)
+
+def to_voigt2d(C):
+    """Voigt 2D: (00,11,01) -> 3x3"""
+    idx = [(0, 0), (1, 1), (0, 1)]
+    return np.array([[C[p, q, r, s] for (r, s) in idx] for (p, q) in idx])
+
+# Un estado fisico de deformacion (componentes cartesianas locales).
+# Este tensor no cambia, se elijan como se elijan las coordenadas.
+eps_cart = np.array([[1.0e-3, 4.0e-4],
+                     [4.0e-4, -6.0e-4]])
+C_cart = plane_stress_tensor()
+U_ref = strain_energy(C_cart, eps_cart)
+
+print("skew   g11     g12     g22    | U_correct     U_naive      err%")
+print("-" * 68)
+for skew in [0, 5, 10, 15, 20, 30, 40, 45]:
+    J = natural_basis(skew)
+    g = J.T @ J                       # tensor metrico g_ij
+    Jinv = np.linalg.inv(J)           # filas = base contravariante g^i
+    eps_nat = J.T @ eps_cart @ J      # componentes covariantes de la deformacion
+    C_nat = rotate_fourth_order(C_cart, Jinv)
+    U_ok = strain_energy(C_nat, eps_nat)
+    U_bad = strain_energy(C_cart, eps_nat)   # codigo que olvido la transformacion
+    err = 100.0 * (U_bad - U_ok) / U_ok
+    print(f"{skew:3d}   {g[0,0]:.3f}  {g[0,1]:+.3f}  {g[1,1]:.3f} |"
+          f" {U_ok:.6e}  {U_bad:.6e}  {err:+8.2f}")
+
+print()
+print("orthogonal (skew=0), only |g2| stretched")
+for st in [1.0, 1.5, 2.0]:
+    J = natural_basis(0, stretch=st)
+    Jinv = np.linalg.inv(J)
+    eps_nat = J.T @ eps_cart @ J
+    U_ok = strain_energy(rotate_fourth_order(C_cart, Jinv), eps_nat)
+    U_bad = strain_energy(C_cart, eps_nat)
+    print(f"  stretch={st:.1f}  g22={(J.T@J)[1,1]:.2f}  err% = {100*(U_bad-U_ok)/U_ok:+9.2f}")
+
+print()
+print(f"Cartesian reference U_ref   = {U_ref:.6e}")
+J = natural_basis(30)
+Jinv = np.linalg.inv(J)
+C_nat = rotate_fourth_order(C_cart, Jinv)
+eps_nat = J.T @ eps_cart @ J
+print(f"skew=30 after transform     = {strain_energy(C_nat, eps_nat):.6e}  (invariant)")
+
+# Al plegar a Voigt, sale el mismo valor?
+Cv = to_voigt2d(C_nat)
+ev = np.array([eps_nat[0, 0], eps_nat[1, 1], 2.0 * eps_nat[0, 1]])
+print(f"skew=30 via Voigt 3x3       = {0.5 * ev @ Cv @ ev:.6e}")
+
+# Matriz A de transformacion de deformaciones en espacio Voigt: e_v(nat) = A e_v(cart)
+def voigt_map(J):
+    cols = []
+    for e in (np.array([[1, 0], [0, 0]]), np.array([[0, 0], [0, 1]]), np.array([[0, .5], [.5, 0]])):
+        n = J.T @ e @ J
+        cols.append([n[0, 0], n[1, 1], 2 * n[0, 1]])
+    return np.array(cols).T
+
+A = voigt_map(J)
+Cv_cart = to_voigt2d(C_cart)
+Ai = np.linalg.inv(A)
+print("Voigt congruence C_nat = A^-T C_cart A^-1  residual =",
+      f"{np.max(np.abs(Ai.T @ Cv_cart @ Ai - Cv)):.3e}")
+```
+
+```text
+skew   g11     g12     g22    | U_correct     U_naive      err%
+--------------------------------------------------------------------
+  0   1.000  +0.000  1.000 | 1.412308e+00  1.412308e+00     +0.00
+  5   1.000  +0.087  1.000 | 1.412308e+00  1.486003e+00     +5.22
+ 10   1.000  +0.174  1.000 | 1.412308e+00  1.585621e+00    +12.27
+ 15   1.000  +0.259  1.000 | 1.412308e+00  1.722495e+00    +21.96
+ 20   1.000  +0.342  1.000 | 1.412308e+00  1.906550e+00    +35.00
+ 30   1.000  +0.500  1.000 | 1.412308e+00  2.437219e+00    +72.57
+ 40   1.000  +0.643  1.000 | 1.412308e+00  3.163176e+00   +123.97
+ 45   1.000  +0.707  1.000 | 1.412308e+00  3.567692e+00   +152.61
+
+orthogonal (skew=0), only |g2| stretched
+  stretch=1.0  g22=1.00  err% =     +0.00
+  stretch=1.5  g22=2.25  err% =   +105.60
+  stretch=2.0  g22=4.00  err% =   +407.84
+
+Cartesian reference U_ref   = 1.412308e+00
+skew=30 after transform     = 1.412308e+00  (invariant)
+skew=30 via Voigt 3x3       = 1.412308e+00
+Voigt congruence C_nat = A^-T C_cart A^-1  residual = 9.313e-10
+```
+
+Hay tres cosas que leer.
+
+Primera: en la fila `skew=0` el error es exactamente cero. Una batería de validación hecha solo con elementos rectangulares jamás atrapará este fallo. Segunda: con 15 grados de sesgo el error ya es del 22%, un ángulo perfectamente corriente en una malla curva real. Tercera: sin sesgo alguno, estirar $|\mathbf{g}_2|$ a 1.5 da un 105%. El culpable no es la distorsión, sino **que la métrica no sea la identidad**.
+
+## Plegado a Voigt queda una sola matriz 6×6
+
+Nadie arrastra un arreglo de cuatro índices por el código de producción. Los tensores de tensión y deformación son simétricos, así que solo sobreviven seis componentes independientes y el tensor de cuarto orden se pliega en una matriz $6\times6$ (el código de arriba es 2D, de ahí el $3\times3$).
+
+La transformación sobrevive al plegado. Si el vector de Voigt de deformaciones cambia como $\tilde{\boldsymbol\varepsilon}_v = \mathbf{A}\,\boldsymbol\varepsilon_v$, la invariancia de la energía obliga a una transformación de congruencia sobre la matriz constitutiva.
+
+$$
+\tilde{\mathbf{C}}_v = \mathbf{A}^{-\mathsf T}\,\mathbf{C}_v\,\mathbf{A}^{-1}
+$$
+
+Las entradas de $\mathbf{A}$ son productos de cosenos directores. El residuo $9.3\times10^{-10}$ de la última línea de la salida confirma que esta vía coincide con la contracción del tensor de cuarto orden. Esa es la matriz `T` que aparece en los códigos de lámina reales, y el factor de corrección de cortante 5/6 junto con la hipótesis de tensión plana ($\sigma_{33}=0$) entran primero en $\mathbf{C}_v$, en el marco cartesiano local. No conviene invertir el orden: la condición de tensión plana solo significa algo en el marco donde está definida la dirección del espesor.
+
+## Dónde aparece el mismo error en volúmenes finitos
+
+Este error no pertenece solo a los códigos estructurales. La misma estructura surge cuando un solver de volúmenes finitos en malla curvilínea calcula el tensor de tensiones viscosas. Si el tensor de velocidad de deformación se obtiene de derivadas en coordenadas naturales y luego se aplica la ley de viscosidad de Newton $\tau = 2\mu \mathbf{D}$ en su forma cartesiana, se reproduce exactamente la columna de error de la tabla.
+
+Bastan tres comprobaciones. Una: las componentes tensoriales que se tienen en la mano, ¿son componentes físicas o covariantes/contravariantes? Dos: al contraer, ¿cada índice superior se empareja con uno inferior? Tres: ¿hay en la batería de validación al menos un elemento distorsionado?
+
+La tercera es la que más pesa en la práctica. Como ya ocurría en [la corrección de flujo difusivo no ortogonal](/es/posts/2026-07-01-non-orthogonal-diffusion-correction/), los errores que nacen de la no ortogonalidad solo asoman después de que las pruebas en malla ortogonal pasan al 100%. Si [el bloqueo por cortante y el atado MITC en elementos de lámina](/es/posts/2026-08-12-mitc-shell-shear-locking/) trataba de arreglar la *formulación* del elemento, este artículo trata de en qué sistema de coordenadas se lee esa formulación. Con cualquiera de los dos mal, la prueba de parcela plana sigue pasando.

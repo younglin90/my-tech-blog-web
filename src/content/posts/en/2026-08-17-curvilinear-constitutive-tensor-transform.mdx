@@ -1,0 +1,245 @@
+---
+title: "Skew the Element 45° and the Stiffness Grows 2.5x — Metric Tensors and Constitutive Tensor Transformation"
+date: 2026-08-17
+description: "In curvilinear coordinates, writing strain as covariant components means the constitutive tensor has to move too. Skip that step and every skewed element reports the wrong stiffness."
+tags: ["Tensor-Algebra", "Curvilinear", "Grid-Metrics", "Shell-Element", "FEM"]
+locale: en
+slug: curvilinear-constitutive-tensor-transform
+takeaway: "On an orthonormal basis, covariant and contravariant components are the same numbers. The moment that coincidence breaks, code that reuses the Cartesian C matrix starts lying."
+draft: false
+---
+
+import { MetricTensorBasisDial } from '@/components/post-viz/2026-08-17-curvilinear-constitutive-tensor-transform/MetricTensorBasisDial'
+import { ConstitutiveSkewEnergyBench } from '@/components/post-viz/2026-08-17-curvilinear-constitutive-tensor-transform/ConstitutiveSkewEnergyBench'
+
+Measure the same deformation twice and get two different answers. The element is unchanged, the material is unchanged, the physical strain that occurred is unchanged. The only thing you swapped is the coordinate system you wrote the strain down in. And the strain energy comes out 2.5 times larger. This post traces where that factor of 2.5 comes from, using covariant and contravariant bases and the metric tensor, then shows in Python how to transform the fourth-order constitutive tensor so the numbers snap back into place.
+
+## The deformation held still and the energy grew 2.5x
+
+A shell stiffness matrix is usually assembled like this. At each Gauss point you build the strain-displacement matrix $\mathbf{B}$, multiply by the constitutive matrix $\mathbf{C}$, and integrate $\mathbf{B}^{\mathsf T}\mathbf{C}\mathbf{B}$. The trouble is that these two matrices are born in different coordinate systems.
+
+$\mathbf{C}$ is a material property. It is defined in the frame where the material tests were run: the **local orthogonal Cartesian system** glued to the shell surface. $\mathbf{B}$, by contrast, comes from differentiating shape functions. Shape functions are written in the element's **natural coordinate system** $(r^1, r^2, r^3)$, and once the element bends or distorts, that system is neither orthogonal nor normalized.
+
+There is one case where the two frames happen to coincide: a rectangular element on a flat surface. Run your patch test on a planar model only and you validate nothing but that coincidence. Wrap the element onto a curved surface and the coincidence is gone.
+
+## A non-orthogonal basis gives every vector two sets of components
+
+The direction the physical position $\mathbf{x}$ moves when the natural coordinate $r^i$ changes — that is the covariant basis.
+
+$$
+\mathbf{g}_i = \frac{\partial \mathbf{x}}{\partial r^i}
+$$
+
+Here $\mathbf{x}$ is the Cartesian position vector and $r^i$ are the element's natural coordinates. These three vectors are not mutually orthogonal, and their lengths are not 1.
+
+On a non-orthogonal basis there are two ways to write one vector in components. First, decompose it along the base vectors with the parallelogram rule; those coefficients are the contravariant components $v^i$. Second, drop it perpendicularly onto each base vector; those projections are the covariant components $v_i$.
+
+$$
+\mathbf{v} = v^i \mathbf{g}_i, \qquad v_i = \mathbf{v}\cdot\mathbf{g}_i
+$$
+
+On an orthonormal basis both constructions land on the same point. That is why the distinction is invisible to anyone who has only ever worked in Cartesian coordinates. Try the simulation below and move things yourself.
+
+<MetricTensorBasisDial />
+
+Set `skew` to 0 and `|g_2|` to 1.00: the blue parallelogram and the yellow perpendiculars meet at the same point, and `max | v^i - v_i |` turns green. Nudge either slider and the two rows of numbers split apart. The point to watch while you drag is that the white arrow never changes.
+
+## The metric tensor gives back the length that was lost
+
+What links the two sets of components is the metric tensor.
+
+$$
+g_{ij} = \mathbf{g}_i \cdot \mathbf{g}_j, \qquad v_i = g_{ij}\, v^j
+$$
+
+$g_{ij}$ packs the lengths of the base vectors and the angles between them into one matrix. The diagonal entries $g_{11}, g_{22}, g_{33}$ are the squared lengths; the off-diagonal entries are the cosine of the included angle times those lengths.
+
+To measure a length you must go through this matrix.
+
+$$
+|\mathbf{v}|^2 = g_{ij}\, v^i v^j = v_i v^i
+$$
+
+The second equality is the useful one. **Pair** a covariant component with a contravariant one and the metric cancels itself out. Square the contravariant components and add them up ($v^i v^i$) and you do not get a length. The bottom line of the visualization shows that value in red.
+
+This is exactly why continuum mechanics uses contravariant components for stress and covariant components for strain. Virtual work has to be a scalar, and only the pairing of the second Piola-Kirchhoff contravariant components $S^{ij}$ with the Green-Lagrange covariant components $E_{ij}$ makes $S^{ij}E_{ij}$ independent of the frame. Grid metrics do the same job in flow solvers — the Jacobian covered in [curvilinear coordinate transformation and grid metrics](/en/posts/2026-06-17-curvilinear-coordinate-transformation-grid-metrics/) is, here, literally the collection of base vectors.
+
+## The contravariant basis is the rows of the inverse Jacobian
+
+To convert covariant components back to contravariant ones you need $g^{ij} = [g_{ij}]^{-1}$, and the basis built from that matrix is the contravariant basis.
+
+$$
+\mathbf{g}^i = g^{ij}\mathbf{g}_j, \qquad \mathbf{g}^i \cdot \mathbf{g}_j = \delta^i_j
+$$
+
+$\delta^i_j$ is the Kronecker delta. So $\mathbf{g}^1$ is the vector perpendicular to both $\mathbf{g}_2$ and $\mathbf{g}_3$, scaled so that its dot product with $\mathbf{g}_1$ is exactly 1.
+
+In code you never need two matrix inversions. Stack the covariant base vectors as the **columns** of a matrix $\mathbf{J}$:
+
+$$
+\mathbf{J} = [\,\mathbf{g}_1\;\mathbf{g}_2\;\mathbf{g}_3\,], \qquad \mathbf{g}^i = \big(\mathbf{J}^{-1}\big)_{i\bullet}
+$$
+
+$\big(\mathbf{J}^{-1}\big)_{i\bullet}$ denotes the $i$-th row of $\mathbf{J}^{-1}$.
+
+$\mathbf{J}$ is the Jacobian from natural to physical coordinates. It is the same matrix you already compute at every integration point to get $\det\mathbf{J}$. The contravariant basis comes for free.
+
+## A fourth-order tensor takes four direction cosines
+
+Now the main event. Move the constitutive tensor $C^{pqrs}$, defined on the local Cartesian basis $\mathbf{e}_p$, into the natural coordinate system. A second-order tensor picks up two direction cosines; a fourth-order tensor picks up four.
+
+$$
+\tilde{C}^{ijkl} = (\mathbf{g}^i\!\cdot\mathbf{e}_p)(\mathbf{g}^j\!\cdot\mathbf{e}_q)(\mathbf{g}^k\!\cdot\mathbf{e}_r)(\mathbf{g}^l\!\cdot\mathbf{e}_s)\, C^{pqrs}
+$$
+
+Indices $i,j,k,l$ live in natural coordinates, $p,q,r,s$ in local Cartesian ones. The strain side runs the other way.
+
+$$
+\tilde{\varepsilon}_{ij} = (\mathbf{g}_i\!\cdot\mathbf{e}_p)(\mathbf{g}_j\!\cdot\mathbf{e}_q)\,\varepsilon_{pq}
+$$
+
+The constitutive tensor picks up $\mathbf{J}^{-1}$, the strain picks up $\mathbf{J}$. Contract them and the Jacobians cancel exactly, leaving the energy invariant. Turn that around: transform only the strain and leave the constitutive tensor alone, and four copies of $\mathbf{J}$ survive. Those four copies are the error you are about to measure.
+
+<ConstitutiveSkewEnergyBench />
+
+As you drag `skew` and `|g_2|`, the deformed shape of the element on the left stays put while only the red bar on the right climbs. Switch between `stretch`, `shear`, and `mixed` and watch how the shape of the error curve above changes — the shear mode blows up fastest.
+
+## Energy per skew angle, measured in Python
+
+I fixed one strain state on an isotropic plane-stress material, then twisted only the coordinate system and computed the strain energy two ways. The material constants match the source notes ($E = 2.1\times10^6$, $\nu = 0.3$).
+
+```python
+import numpy as np
+
+def natural_basis(skew_deg, stretch=1.0):
+    """Jacobian J whose columns are the covariant base vectors g_i = dx/dr^i"""
+    a = np.deg2rad(skew_deg)
+    g1 = np.array([1.0, 0.0])
+    g2 = stretch * np.array([np.sin(a), np.cos(a)])
+    return np.column_stack([g1, g2])
+
+def plane_stress_tensor(E=2.1e6, nu=0.3):
+    """Isotropic plane-stress fourth-order tensor C^{pqrs} in local Cartesian coordinates"""
+    lam = E * nu / (1.0 - nu**2)
+    mu = E / (2.0 * (1.0 + nu))
+    d = np.eye(2)
+    return (lam * np.einsum('pq,rs->pqrs', d, d)
+            + mu * (np.einsum('pr,qs->pqrs', d, d) + np.einsum('ps,qr->pqrs', d, d)))
+
+def rotate_fourth_order(C, Jinv):
+    """C^{ijkl} = (g^i.e_p)(g^j.e_q)(g^k.e_r)(g^l.e_s) C^{pqrs}, g^i = i-th row of J^-1"""
+    return np.einsum('ip,jq,kr,ls,pqrs->ijkl', Jinv, Jinv, Jinv, Jinv, C)
+
+def strain_energy(C, eps):
+    return 0.5 * np.einsum('pqrs,pq,rs->', C, eps, eps)
+
+def to_voigt2d(C):
+    """2D Voigt: (00,11,01) -> 3x3"""
+    idx = [(0, 0), (1, 1), (0, 1)]
+    return np.array([[C[p, q, r, s] for (r, s) in idx] for (p, q) in idx])
+
+# One physical strain state (local Cartesian components). This tensor never changes,
+# no matter how the coordinates are chosen.
+eps_cart = np.array([[1.0e-3, 4.0e-4],
+                     [4.0e-4, -6.0e-4]])
+C_cart = plane_stress_tensor()
+U_ref = strain_energy(C_cart, eps_cart)
+
+print("skew   g11     g12     g22    | U_correct     U_naive      err%")
+print("-" * 68)
+for skew in [0, 5, 10, 15, 20, 30, 40, 45]:
+    J = natural_basis(skew)
+    g = J.T @ J                       # metric tensor g_ij
+    Jinv = np.linalg.inv(J)           # rows = contravariant basis g^i
+    eps_nat = J.T @ eps_cart @ J      # covariant strain components
+    C_nat = rotate_fourth_order(C_cart, Jinv)
+    U_ok = strain_energy(C_nat, eps_nat)
+    U_bad = strain_energy(C_cart, eps_nat)   # code that forgot the transform
+    err = 100.0 * (U_bad - U_ok) / U_ok
+    print(f"{skew:3d}   {g[0,0]:.3f}  {g[0,1]:+.3f}  {g[1,1]:.3f} |"
+          f" {U_ok:.6e}  {U_bad:.6e}  {err:+8.2f}")
+
+print()
+print("orthogonal (skew=0), only |g2| stretched")
+for st in [1.0, 1.5, 2.0]:
+    J = natural_basis(0, stretch=st)
+    Jinv = np.linalg.inv(J)
+    eps_nat = J.T @ eps_cart @ J
+    U_ok = strain_energy(rotate_fourth_order(C_cart, Jinv), eps_nat)
+    U_bad = strain_energy(C_cart, eps_nat)
+    print(f"  stretch={st:.1f}  g22={(J.T@J)[1,1]:.2f}  err% = {100*(U_bad-U_ok)/U_ok:+9.2f}")
+
+print()
+print(f"Cartesian reference U_ref   = {U_ref:.6e}")
+J = natural_basis(30)
+Jinv = np.linalg.inv(J)
+C_nat = rotate_fourth_order(C_cart, Jinv)
+eps_nat = J.T @ eps_cart @ J
+print(f"skew=30 after transform     = {strain_energy(C_nat, eps_nat):.6e}  (invariant)")
+
+# Does folding into Voigt form give the same number?
+Cv = to_voigt2d(C_nat)
+ev = np.array([eps_nat[0, 0], eps_nat[1, 1], 2.0 * eps_nat[0, 1]])
+print(f"skew=30 via Voigt 3x3       = {0.5 * ev @ Cv @ ev:.6e}")
+
+# Strain transformation matrix A in Voigt space: e_v(nat) = A e_v(cart)
+def voigt_map(J):
+    cols = []
+    for e in (np.array([[1, 0], [0, 0]]), np.array([[0, 0], [0, 1]]), np.array([[0, .5], [.5, 0]])):
+        n = J.T @ e @ J
+        cols.append([n[0, 0], n[1, 1], 2 * n[0, 1]])
+    return np.array(cols).T
+
+A = voigt_map(J)
+Cv_cart = to_voigt2d(C_cart)
+Ai = np.linalg.inv(A)
+print("Voigt congruence C_nat = A^-T C_cart A^-1  residual =",
+      f"{np.max(np.abs(Ai.T @ Cv_cart @ Ai - Cv)):.3e}")
+```
+
+```text
+skew   g11     g12     g22    | U_correct     U_naive      err%
+--------------------------------------------------------------------
+  0   1.000  +0.000  1.000 | 1.412308e+00  1.412308e+00     +0.00
+  5   1.000  +0.087  1.000 | 1.412308e+00  1.486003e+00     +5.22
+ 10   1.000  +0.174  1.000 | 1.412308e+00  1.585621e+00    +12.27
+ 15   1.000  +0.259  1.000 | 1.412308e+00  1.722495e+00    +21.96
+ 20   1.000  +0.342  1.000 | 1.412308e+00  1.906550e+00    +35.00
+ 30   1.000  +0.500  1.000 | 1.412308e+00  2.437219e+00    +72.57
+ 40   1.000  +0.643  1.000 | 1.412308e+00  3.163176e+00   +123.97
+ 45   1.000  +0.707  1.000 | 1.412308e+00  3.567692e+00   +152.61
+
+orthogonal (skew=0), only |g2| stretched
+  stretch=1.0  g22=1.00  err% =     +0.00
+  stretch=1.5  g22=2.25  err% =   +105.60
+  stretch=2.0  g22=4.00  err% =   +407.84
+
+Cartesian reference U_ref   = 1.412308e+00
+skew=30 after transform     = 1.412308e+00  (invariant)
+skew=30 via Voigt 3x3       = 1.412308e+00
+Voigt congruence C_nat = A^-T C_cart A^-1  residual = 9.313e-10
+```
+
+Three things to read off.
+
+First, the error in the `skew=0` row is exactly zero. A validation suite built only from rectangular elements will never catch this bug. Second, at 15 degrees of skew the error is already 22% — a completely ordinary angle on a real curved mesh. Third, with no skew at all, stretching $|\mathbf{g}_2|$ to 1.5 gives 105%. The culprit is not distortion; it is **the metric not being the identity**.
+
+## Folded into Voigt form it becomes a single 6x6 matrix
+
+Nobody carries a four-index array around in production code. Stress and strain tensors are symmetric, so only six independent components survive and the fourth-order tensor folds into a $6\times6$ matrix (the code above is 2D, so $3\times3$).
+
+The transformation survives the folding. If the Voigt strain vector maps as $\tilde{\boldsymbol\varepsilon}_v = \mathbf{A}\,\boldsymbol\varepsilon_v$, then energy invariance forces a congruence transformation on the constitutive matrix.
+
+$$
+\tilde{\mathbf{C}}_v = \mathbf{A}^{-\mathsf T}\,\mathbf{C}_v\,\mathbf{A}^{-1}
+$$
+
+The entries of $\mathbf{A}$ are products of direction cosines. The residual $9.3\times10^{-10}$ on the last line of the output confirms that this route agrees with the fourth-order contraction. That is the `T` matrix you see in real shell codes, and the shear correction factor of 5/6 plus the plane-stress assumption ($\sigma_{33}=0$) go into $\mathbf{C}_v$ first, in the local Cartesian frame. Do not reverse the order — the plane-stress condition only means something in the frame where the thickness direction is defined.
+
+## Where the same mistake shows up in finite volume solvers
+
+This is not a structural-code-only mistake. The same structure appears when a curvilinear finite volume solver computes the viscous stress tensor. Obtain the strain-rate tensor from derivatives in natural coordinates, then apply Newton's viscosity law $\tau = 2\mu \mathbf{D}$ in its Cartesian form, and you reproduce the error column above exactly.
+
+Three checks settle it. One: are the tensor components you are holding physical components, or covariant/contravariant ones? Two: when you contract, does every upper index pair with a lower one? Three: does your validation suite contain even a single distorted element?
+
+The third one matters most in practice. As in [non-orthogonal diffusion flux correction](/en/posts/2026-07-01-non-orthogonal-diffusion-correction/), errors born of non-orthogonality only appear after the orthogonal-grid tests have passed at 100%. Where [shear locking and MITC tying in shell elements](/en/posts/2026-08-12-mitc-shell-shear-locking/) was about fixing the element's *formulation*, this post is about which coordinate system you read that formulation in. Get either one wrong and the planar patch test still passes.
