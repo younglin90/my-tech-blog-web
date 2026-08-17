@@ -1,0 +1,238 @@
+---
+title: "La onda de choque nunca salió de la línea de partida — dónde se separan la forma conservativa y la primitiva"
+date: 2026-08-18
+description: "Escribir la misma ecuación como divergencia de flujo o como velocidad por gradiente cambia la velocidad de choque calculada. Refinar la malla ocho veces converge al valor equivocado."
+tags: ["Conservative-Form", "Rankine-Hugoniot", "Shock-Capturing", "Burgers", "Conservation"]
+locale: es
+slug: conservative-vs-primitive-shock-speed
+takeaway: "Dos formas idénticas bajo la regla de la cadena resuelven física distinta al cruzar una discontinuidad. Solo la que conserva la forma en que fue deducida acierta la velocidad."
+draft: false
+---
+
+import { ShockSpeedFormSplitTrack } from '@/components/post-viz/2026-08-18-conservative-vs-primitive-shock-speed/ShockSpeedFormSplitTrack'
+import { MachDensityBudgetGauge } from '@/components/post-viz/2026-08-18-conservative-vs-primitive-shock-speed/MachDensityBudgetGauge'
+
+Hubo una vez dos versiones de un solver de Burgers en 1D corriendo lado a lado. Una diferenciaba flujos; la otra multiplicaba una velocidad por un gradiente. Sobre el papel, ambas formas se convierten entre sí con una sola aplicación de la regla de la cadena. Al meter un problema de Riemann, una de las ondas de choque no se movió en absoluto. Este artículo rastrea ese estancamiento hasta la deducción por volumen de control y muestra en Python que refinar la malla ocho veces no lo arregla.
+
+## La onda de choque nunca salió de la línea de partida
+
+La misma ecuación admite dos escrituras. La forma conservativa junta una tasa de cambio con una divergencia de flujo.
+
+$$
+\frac{\partial u}{\partial t} + \frac{\partial}{\partial x}\left(\frac{u^2}{2}\right) = 0
+$$
+
+La forma primitiva (no conservativa) desarrolla la derivada como velocidad por gradiente.
+
+$$
+\frac{\partial u}{\partial t} + u\,\frac{\partial u}{\partial x} = 0
+$$
+
+Donde $u$ es suave, $\partial_x(u^2/2) = u\,\partial_x u$, así que ambas son la misma ecuación. Lo dice la regla del producto.
+
+Ahora entra un problema de Riemann: $u_L = 1$ a la izquierda, $u_R = 0$ a la derecha. La solución exacta es un choque que viaja a la derecha con velocidad $0.5$. El esquema conservativo de Godunov devolvió $0.5006$. La diferencia upwind primitiva devolvió $0.0000$. El choque se quedó exactamente donde empezó.
+
+Conviene manipularlo en la simulación de abajo.
+
+<ShockSpeedFormSplitTrack />
+
+El verde de arriba es la vía conservativa, el rosa de abajo la primitiva, y la línea blanca discontinua marca la posición exacta del choque. Al bajar `u_R` a 0.00 el frente rosa se congela por completo; subir `grid N` hasta 320 lo deja igual de quieto, en la misma celda.
+
+## La ecuación salió del volumen de control ya en forma de flujo
+
+¿Por qué la forma de flujo es la original? La deducción lo revela.
+
+Se toma una caja pequeña $dx\,dy\,dz$ y se cuenta la masa que cruza cada cara. Lo que pasa por una cara es el producto de la densidad en el centro de la cara, la velocidad normal a ella y el área: $\dot m = \rho V_n A$. Los valores en el centro de cada cara vienen de un desarrollo de Taylor alrededor del centro de la celda, descartando el segundo orden en adelante. Sumando las seis caras y dividiendo entre $dx\,dy\,dz$ aparece la continuidad.
+
+$$
+\frac{\partial \rho}{\partial t} + \frac{\partial (\rho u_j)}{\partial x_j} = 0
+$$
+
+El momento sigue la misma receta: momento transportado por las caras, más fuerzas de volumen, más fuerzas de superficie.
+
+$$
+\frac{\partial (\rho u_i)}{\partial t} + \frac{\partial (\rho u_i u_j + p\,\delta_{ij})}{\partial x_j} = \frac{\partial \tau_{ij}}{\partial x_j}
+$$
+
+Aquí $\rho$ es la densidad, $u_i$ las componentes de velocidad, $p$ la presión y $\tau_{ij}$ el tensor de esfuerzos viscosos: el esfuerzo desviador, lineal en los gradientes de velocidad bajo la hipótesis de fluido newtoniano.
+
+Lo decisivo no es el aspecto de estas ecuaciones sino su origen. **Cada término está definido como algo que cruzó una cara.** La forma divergencia no es una elección de estilo; es lo que produjo la deducción.
+
+La forma primitiva da un paso más. Se desarrolla la derivada del producto, se resta la continuidad multiplicada por $u_i$ y se divide entre $\rho$. Suponiendo $\rho = \text{const}$ queda $\partial u_i / \partial x_i = 0$ junto con
+
+$$
+\frac{\partial u_i}{\partial t} + \frac{\partial (u_i u_j)}{\partial x_j} = -\frac{1}{\rho}\frac{\partial p}{\partial x_i} + \nu\,\frac{\partial^2 u_i}{\partial x_j \partial x_j}
+$$
+
+Todas esas manipulaciones suponen diferenciabilidad. Sobre una discontinuidad no hay nada que suponer.
+
+## Una división borró la suma telescópica
+
+En el nivel discreto la pérdida se ve mejor. La actualización de volúmenes finitos en forma conservativa es
+
+$$
+u_i^{n+1} = u_i^{n} - \frac{\Delta t}{\Delta x}\left(f_{i+1/2} - f_{i-1/2}\right)
+$$
+
+Al sumar sobre todas las celdas, un flujo de cara interior $f_{i+1/2}$ se resta en la celda $i$ y se suma en la celda $i+1$. Los signos son opuestos, así que se cancela exactamente. Esa es la suma telescópica, y solo sobreviven los flujos en los dos extremos del dominio.
+
+$$
+\Delta \sum_i u_i \Delta x = -\Delta t \left(f_{N+1/2} - f_{1/2}\right)
+$$
+
+El cambio del total iguala lo que cruzó las fronteras, sin más excepción que el redondeo.
+
+La forma primitiva se rompe aquí. El término $u_i \cdot (u_i - u_{i-1})/\Delta x$ lleva delante un coeficiente $u_i$ distinto en cada celda. Las contribuciones vecinas tienen magnitudes diferentes y ya no se cancelan. El residuo se acumula en cada paso.
+
+El código de abajo lo mide. En el segundo problema de Riemann ($u_L = 1$, $u_R = 0.4$) la cantidad que debía entrar al dominio es $+0.168000$. El esquema conservativo reproduce ese valor con seis decimales. El primitivo entrega $+0.152765$: pierde cerca del 9%.
+
+La misma clase de fuga apareció en [criterios de etiquetado AMR y reflujo coarse-fine](/es/posts/2026-08-10-amr-tagging-and-refluxing/), donde la causa era la existencia de dos flujos de cara distintos en la frontera de refinamiento. El principio es idéntico: si el libro contable de lo que cruzó las caras no cuadra, el total se escapa.
+
+## Rankine–Hugoniot solo responde al flujo
+
+¿De dónde sale la velocidad del choque? De aplicar la ley de conservación a un volumen de control delgado que envuelve la discontinuidad.
+
+$$
+s\,(u_L - u_R) = f(u_L) - f(u_R)
+$$
+
+Aquí $s$ es la velocidad de propagación de la discontinuidad y $f$ es el flujo. Para Burgers, $f = u^2/2$, lo que da
+
+$$
+s = \frac{u_L^2/2 - u_R^2/2}{u_L - u_R} = \frac{u_L + u_R}{2}
+$$
+
+En esa relación solo aparece $f$. La expresión $u\,\partial_x u$ no figura, y no podría figurar. En una discontinuidad $\partial_x u$ es una función delta, y multiplicarla por un $u$ que salta es una operación sin definición en teoría de distribuciones. A un término así se le llama producto no conservativo.
+
+El teorema de Lax–Wendroff protege exactamente esa frontera. Si la solución numérica de un esquema conservativo converge, el límite es necesariamente una solución débil de la ley de conservación y por tanto satisface Rankine–Hugoniot. Los esquemas no conservativos no ofrecen esa garantía. Lo que mostraron Hou y LeFloch es peor: sí convergen, pero a la velocidad equivocada.
+
+## Midiendo la velocidad y el total en Python
+
+Misma malla, mismo CFL, mismos datos iniciales, dos esquemas. Solo biblioteca estándar.
+
+```python
+def riemann_setup(nx, ul, ur, xs=0.3):
+    dx = 1.0 / nx
+    return dx, [ul if (i + 0.5) * dx < xs else ur for i in range(nx)]
+
+def godunov_flux(a, b):
+    if a > b:                                  # choque: se toma el lado upwind
+        return 0.5 * a * a if a + b >= 0 else 0.5 * b * b
+    if a >= 0:
+        return 0.5 * a * a
+    return 0.5 * b * b if b <= 0 else 0.0      # rarefaccion transonica
+
+def step_conservative(u, dx, dt):              # u_t + (u^2/2)_x = 0
+    n = len(u)
+    f = [0.5 * u[0] ** 2] + [godunov_flux(u[i], u[i + 1]) for i in range(n - 1)] \
+        + [0.5 * u[-1] ** 2]
+    return [u[i] - dt / dx * (f[i + 1] - f[i]) for i in range(n)]
+
+def step_primitive(u, dx, dt):                 # u_t + u u_x = 0
+    n, out = len(u), []
+    for i in range(n):
+        im, ip = max(i - 1, 0), min(i + 1, n - 1)
+        g = (u[i] - u[im]) / dx if u[i] >= 0 else (u[ip] - u[i]) / dx
+        out.append(u[i] - dt * u[i] * g)
+    return out
+
+def shock_locate(u, dx, level):
+    for i in range(1, len(u)):
+        if u[i] < level <= u[i - 1]:
+            return (i - 0.5) * dx + dx * (u[i - 1] - level) / (u[i - 1] - u[i])
+    return float("nan")
+
+def march_burgers(nx, ul, ur, tend, step):
+    dx, u = riemann_setup(nx, ul, ur)
+    t = 0.0
+    while t < tend - 1e-12:
+        dt = min(0.4 * dx / max(max(abs(v) for v in u), 1e-12), tend - t)
+        u = step(u, dx, dt)
+        t += dt
+    return dx, u
+
+T, XS = 0.4, 0.3
+for ul, ur in ((1.0, 0.0), (1.0, 0.4)):
+    s = 0.5 * (ul + ur)
+    influx = (0.5 * ul ** 2 - 0.5 * ur ** 2) * T        # flujo neto exacto hacia el dominio
+    print("uL=%.1f uR=%.1f | Rankine-Hugoniot speed = %.3f" % (ul, ur, s))
+    print("    N   conservative   primitive")
+    for nx in (100, 200, 400, 800):
+        v = []
+        for step in (step_conservative, step_primitive):
+            dx, u = march_burgers(nx, ul, ur, T, step)
+            v.append((shock_locate(u, dx, s) - XS) / T)
+        print("%5d      %7.4f     %7.4f" % (nx, v[0], v[1]))
+    for name, step in (("conservative", step_conservative), ("primitive  ", step_primitive)):
+        dx, u = march_burgers(400, ul, ur, T, step)
+        dx0, u0 = riemann_setup(400, ul, ur)
+        print("  N=400 %s : d(int u dx) = %+.6f  (exact %+.6f)"
+              % (name, sum(u) * dx - sum(u0) * dx0, influx))
+    print()
+```
+
+```text
+uL=1.0 uR=0.0 | Rankine-Hugoniot speed = 0.500
+    N   conservative   primitive
+  100       0.5006      0.0000
+  200       0.5003      0.0000
+  400       0.5002      0.0000
+  800       0.5001      0.0000
+  N=400 conservative : d(int u dx) = +0.200000  (exact +0.200000)
+  N=400 primitive   : d(int u dx) = +0.000000  (exact +0.200000)
+
+uL=1.0 uR=0.4 | Rankine-Hugoniot speed = 0.700
+    N   conservative   primitive
+  100       0.7009      0.6263
+  200       0.7005      0.6330
+  400       0.7002      0.6363
+  800       0.7001      0.6379
+  N=400 conservative : d(int u dx) = +0.168000  (exact +0.168000)
+  N=400 primitive   : d(int u dx) = +0.152765  (exact +0.168000)
+```
+
+El primer caso es el extremo. Con $u_R = 0$, el término $u\,\partial_x u$ se anula por completo en cada celda a la derecha del salto. No hay nada que actualizar, así que el frente nunca arranca. El cambio total también es exactamente cero: el $0.2$ que entró por la frontera izquierda no aparece en ninguna parte.
+
+## ¿Basta con refinar la malla?
+
+El segundo caso es el peligroso en la práctica. La velocidad primitiva recorre $0.6263 \to 0.6330 \to 0.6363 \to 0.6379$. Al refinar ocho veces el valor se asienta. Parece convergencia.
+
+El problema es hacia dónde converge. La respuesta correcta es $0.700$ y esta sucesión apunta a unos $0.639$, cerca de un 8.7% por debajo. Un estudio honesto de convergencia de malla no atrapa ese error. Se comprueba que los valores en tres mallas se acercan entre sí, se escribe "convergido" y se pasa al siguiente punto.
+
+El esquema conservativo va de $0.7009$ a $0.7001$, pegándose al valor exacto con un error proporcional a $\Delta x$. La diferencia entre ambas sucesiones no es de precisión, sino de qué ecuación se está resolviendo.
+
+Nada de esto asoma mientras la solución permanece suave. Un código validado solo con casos como Taylor–Green pasa sin mancha. En cuanto se forma la primera discontinuidad, un código correcto hasta ese momento empieza a resolver otra física en silencio. Ese instante es el cruce de características descrito en [características de las ecuaciones de Euler y ondas sonoras](/es/posts/2026-07-24-euler-characteristics-sound-waves/).
+
+## Dónde sigue perteneciendo la forma primitiva — la caducidad de $\rho=\text{const}$
+
+Nada de esto convierte a la forma primitiva en un error. Casi todos los solvers incompresibles la usan, y por buenas razones.
+
+Primero, bajan las incógnitas. El flujo compresible bidimensional arrastra $\rho, u, v, p, T$: cinco incógnitas que necesitan masa, dos componentes de momento, energía y una ecuación de estado. El incompresible congela $\rho$ y se lleva por delante la ecuación de energía y la relación de estado. Solo quedan $u, v, p$.
+
+Segundo, la presión deja de ser una variable termodinámica y pasa a ser el multiplicador de Lagrange que impone la restricción de divergencia, razón por la cual se resuelve aparte mediante una ecuación de Poisson. Esa estructura es el tema de [el método de proyección de Chorin y el avance fraccionado en el tiempo](/es/posts/2026-07-03-chorin-projection-fractional-step/).
+
+Tercero, los flujos incompresibles no tienen ondas de choque. No existe discontinuidad que Rankine–Hugoniot deba gobernar, de modo que el fallo anterior nunca aparece.
+
+La caducidad la fija el número de Mach. La relación isentrópica da la variación de densidad como
+
+$$
+\frac{\rho}{\rho_0} = \left(1 + \frac{\gamma-1}{2}M^2\right)^{-\frac{1}{\gamma-1}}
+$$
+
+donde $\rho_0$ es la densidad de estancamiento, $\gamma$ la razón de calores específicos y $M$ el número de Mach. Desarrollada para $M$ pequeño, la variación de densidad crece como $M^2/2$: alrededor del 2% en $M = 0.2$ y del 4.5% en $M = 0.3$. La regla práctica de $M < 0.2$ sale de ese número.
+
+<MachDensityBudgetGauge />
+
+Al arrastrar `exit Mach` desde 0.05 hacia arriba, se abre el espaciado entre los marcadores verdes (densidad libre de variar) y los rosas (densidad congelada). Por debajo de 0.2 ambas filas se siguen; pasado 0.3 el punto amarillo se despega de la curva discontinua $M^2/2$.
+
+## Cuando el choque llega tarde, mirar primero aquí
+
+Cuando un solver planta el choque en el lugar equivocado, hay un orden para las comprobaciones.
+
+Se empieza por verificar si el avance temporal es una diferencia de flujos de cara. El cambio de $\sum_i u_i \Delta x$ debe coincidir dígito a dígito con el flujo de frontera. Si no coincide, hay que arreglar eso antes de mirar cualquier otra cosa.
+
+Después, los términos que se movieron al término fuente. Al reordenar términos curvilíneos o axisimétricos es fácil desplazar hacia el lado derecho algo que pertenece dentro de la divergencia. Nada ocurre mientras la solución es suave; la velocidad se tuerce en la primera discontinuidad.
+
+Por último, se buscan productos no conservativos supervivientes. Términos como $\alpha\,\partial_x p$ en modelos multifásicos son no conservativos por principio y requieren una interpretación propia por integral de camino. Si hay alguno presente, conviene saber de antemano que refinar la malla no lo salvará.
+
+En el momento en que el refinamiento deja el choque inmóvil, lo que hay que dudar no es la precisión: es la forma.

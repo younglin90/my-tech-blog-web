@@ -1,0 +1,238 @@
+---
+title: "The Shock Never Left the Starting Line — Where Conservative and Primitive Forms Split"
+date: 2026-08-18
+description: "Writing the same equation as a flux divergence or as a velocity times a gradient changes the shock speed you compute. Refining the grid eight-fold converges to the wrong answer."
+tags: ["Conservative-Form", "Rankine-Hugoniot", "Shock-Capturing", "Burgers", "Conservation"]
+locale: en
+slug: conservative-vs-primitive-shock-speed
+takeaway: "Two forms identical under the chain rule solve different physics across a discontinuity. Only the one that keeps the shape it was derived in gets the speed right."
+draft: false
+---
+
+import { ShockSpeedFormSplitTrack } from '@/components/post-viz/2026-08-18-conservative-vs-primitive-shock-speed/ShockSpeedFormSplitTrack'
+import { MachDensityBudgetGauge } from '@/components/post-viz/2026-08-18-conservative-vs-primitive-shock-speed/MachDensityBudgetGauge'
+
+I once wrote two versions of a 1D Burgers solver and ran them side by side. One differenced fluxes; the other multiplied a velocity by a gradient. On paper the two forms convert into each other with a single application of the chain rule. Then I fed them a Riemann problem, and one shock refused to move at all. This post traces that stall back to the control-volume derivation and shows, in Python, that refining the grid eight-fold does not fix it.
+
+## The shock never left the starting line
+
+The same equation admits two writings. The conservative form pairs a rate of change with a flux divergence.
+
+$$
+\frac{\partial u}{\partial t} + \frac{\partial}{\partial x}\left(\frac{u^2}{2}\right) = 0
+$$
+
+The primitive (non-conservative) form expands the derivative into a velocity times a gradient.
+
+$$
+\frac{\partial u}{\partial t} + u\,\frac{\partial u}{\partial x} = 0
+$$
+
+Where $u$ is smooth, $\partial_x(u^2/2) = u\,\partial_x u$, so the two are the same equation. The product rule says so.
+
+Now hand them a Riemann problem: $u_L = 1$ on the left, $u_R = 0$ on the right. The exact answer is a shock traveling right at speed $0.5$. The conservative Godunov scheme returned $0.5006$. The primitive upwind difference returned $0.0000$. The shock stayed exactly where it started.
+
+Try it yourself in the simulation below.
+
+<ShockSpeedFormSplitTrack />
+
+Green on top is the conservative track, pink below is the primitive one, and the white dashed line marks the exact shock position. Drop `u_R` to 0.00 and the pink front freezes solid; push `grid N` to 320 and it stays frozen in the same cell.
+
+## The equation came out of a control volume already in flux form
+
+Why is the flux form the original? Retrace the derivation and it shows.
+
+Take a small box $dx\,dy\,dz$ and count the mass crossing each face. What passes through one face is the density at the face center, the velocity normal to it, and the area, multiplied together: $\dot m = \rho V_n A$. Face-center values come from a Taylor expansion about the cell center with second order and beyond dropped. Sum all six faces, divide by $dx\,dy\,dz$, and continuity falls out.
+
+$$
+\frac{\partial \rho}{\partial t} + \frac{\partial (\rho u_j)}{\partial x_j} = 0
+$$
+
+Momentum follows the same recipe: momentum carried through the faces, plus body forces, plus surface forces.
+
+$$
+\frac{\partial (\rho u_i)}{\partial t} + \frac{\partial (\rho u_i u_j + p\,\delta_{ij})}{\partial x_j} = \frac{\partial \tau_{ij}}{\partial x_j}
+$$
+
+Here $\rho$ is density, $u_i$ the velocity components, $p$ the pressure, and $\tau_{ij}$ the viscous stress tensor — the deviatoric stress, linear in the velocity gradients under the Newtonian-fluid assumption.
+
+What matters is not the shape of these equations but their origin. **Every term is defined as something that crossed a face.** The divergence form is not a stylistic choice; it is what the derivation produced.
+
+The primitive form takes one further step. Expand the product derivative, subtract the continuity equation times $u_i$, and divide through by $\rho$. Assume $\rho = \text{const}$ and you get $\partial u_i / \partial x_i = 0$ along with
+
+$$
+\frac{\partial u_i}{\partial t} + \frac{\partial (u_i u_j)}{\partial x_j} = -\frac{1}{\rho}\frac{\partial p}{\partial x_i} + \nu\,\frac{\partial^2 u_i}{\partial x_j \partial x_j}
+$$
+
+Every one of those manipulations assumes differentiability. Across a discontinuity there is none to assume.
+
+## One division erased the telescoping sum
+
+At the discrete level the loss is easier to see. The finite-volume update in conservative form reads
+
+$$
+u_i^{n+1} = u_i^{n} - \frac{\Delta t}{\Delta x}\left(f_{i+1/2} - f_{i-1/2}\right)
+$$
+
+Sum this over all cells. An interior face flux $f_{i+1/2}$ is subtracted in cell $i$ and added in cell $i+1$. The signs are opposite, so it cancels exactly. That is the telescoping sum, and only the fluxes at the two domain ends survive it.
+
+$$
+\Delta \sum_i u_i \Delta x = -\Delta t \left(f_{N+1/2} - f_{1/2}\right)
+$$
+
+The change in the total equals what crossed the boundaries, with no exceptions beyond round-off.
+
+The primitive form breaks here. The term $u_i \cdot (u_i - u_{i-1})/\Delta x$ carries a different coefficient $u_i$ in front of every cell. Neighboring contributions have different magnitudes and no longer cancel. The leftover accumulates every step.
+
+The code below measures it. In the second Riemann problem ($u_L = 1$, $u_R = 0.4$) the amount that should have entered the domain is $+0.168000$. The conservative scheme reproduces that to six decimals. The primitive one gives $+0.152765$, losing roughly 9%.
+
+The same kind of leak appeared in [AMR tagging criteria and coarse-fine refluxing](/en/posts/2026-08-10-amr-tagging-and-refluxing/), where the cause was two distinct face fluxes at a refinement boundary. The principle is identical: when the ledger of what crossed the faces does not balance, the total drifts.
+
+## Rankine–Hugoniot answers only to the flux
+
+Where does the shock speed come from? Apply the conservation law to a thin control volume wrapped around the discontinuity.
+
+$$
+s\,(u_L - u_R) = f(u_L) - f(u_R)
+$$
+
+Here $s$ is the propagation speed of the discontinuity and $f$ is the flux. For Burgers, $f = u^2/2$, which gives
+
+$$
+s = \frac{u_L^2/2 - u_R^2/2}{u_L - u_R} = \frac{u_L + u_R}{2}
+$$
+
+Only $f$ appears in that relation. The expression $u\,\partial_x u$ never shows up, and it could not. At a discontinuity $\partial_x u$ is a delta function, and multiplying it by a $u$ that jumps is undefined in distribution theory. Such a term is called a non-conservative product.
+
+The Lax–Wendroff theorem guards exactly this boundary. If the numerical solution of a conservative scheme converges, the limit is necessarily a weak solution of the conservation law, and therefore satisfies Rankine–Hugoniot. Non-conservative schemes carry no such guarantee. What Hou and LeFloch showed is worse: they do converge, but to the wrong speed.
+
+## Measuring the speed and the total in Python
+
+Same grid, same CFL, same initial data, two schemes. Standard library only.
+
+```python
+def riemann_setup(nx, ul, ur, xs=0.3):
+    dx = 1.0 / nx
+    return dx, [ul if (i + 0.5) * dx < xs else ur for i in range(nx)]
+
+def godunov_flux(a, b):
+    if a > b:                                  # shock: pick the upwind side
+        return 0.5 * a * a if a + b >= 0 else 0.5 * b * b
+    if a >= 0:
+        return 0.5 * a * a
+    return 0.5 * b * b if b <= 0 else 0.0      # transonic rarefaction
+
+def step_conservative(u, dx, dt):              # u_t + (u^2/2)_x = 0
+    n = len(u)
+    f = [0.5 * u[0] ** 2] + [godunov_flux(u[i], u[i + 1]) for i in range(n - 1)] \
+        + [0.5 * u[-1] ** 2]
+    return [u[i] - dt / dx * (f[i + 1] - f[i]) for i in range(n)]
+
+def step_primitive(u, dx, dt):                 # u_t + u u_x = 0
+    n, out = len(u), []
+    for i in range(n):
+        im, ip = max(i - 1, 0), min(i + 1, n - 1)
+        g = (u[i] - u[im]) / dx if u[i] >= 0 else (u[ip] - u[i]) / dx
+        out.append(u[i] - dt * u[i] * g)
+    return out
+
+def shock_locate(u, dx, level):
+    for i in range(1, len(u)):
+        if u[i] < level <= u[i - 1]:
+            return (i - 0.5) * dx + dx * (u[i - 1] - level) / (u[i - 1] - u[i])
+    return float("nan")
+
+def march_burgers(nx, ul, ur, tend, step):
+    dx, u = riemann_setup(nx, ul, ur)
+    t = 0.0
+    while t < tend - 1e-12:
+        dt = min(0.4 * dx / max(max(abs(v) for v in u), 1e-12), tend - t)
+        u = step(u, dx, dt)
+        t += dt
+    return dx, u
+
+T, XS = 0.4, 0.3
+for ul, ur in ((1.0, 0.0), (1.0, 0.4)):
+    s = 0.5 * (ul + ur)
+    influx = (0.5 * ul ** 2 - 0.5 * ur ** 2) * T        # exact net flux into the domain
+    print("uL=%.1f uR=%.1f | Rankine-Hugoniot speed = %.3f" % (ul, ur, s))
+    print("    N   conservative   primitive")
+    for nx in (100, 200, 400, 800):
+        v = []
+        for step in (step_conservative, step_primitive):
+            dx, u = march_burgers(nx, ul, ur, T, step)
+            v.append((shock_locate(u, dx, s) - XS) / T)
+        print("%5d      %7.4f     %7.4f" % (nx, v[0], v[1]))
+    for name, step in (("conservative", step_conservative), ("primitive  ", step_primitive)):
+        dx, u = march_burgers(400, ul, ur, T, step)
+        dx0, u0 = riemann_setup(400, ul, ur)
+        print("  N=400 %s : d(int u dx) = %+.6f  (exact %+.6f)"
+              % (name, sum(u) * dx - sum(u0) * dx0, influx))
+    print()
+```
+
+```text
+uL=1.0 uR=0.0 | Rankine-Hugoniot speed = 0.500
+    N   conservative   primitive
+  100       0.5006      0.0000
+  200       0.5003      0.0000
+  400       0.5002      0.0000
+  800       0.5001      0.0000
+  N=400 conservative : d(int u dx) = +0.200000  (exact +0.200000)
+  N=400 primitive   : d(int u dx) = +0.000000  (exact +0.200000)
+
+uL=1.0 uR=0.4 | Rankine-Hugoniot speed = 0.700
+    N   conservative   primitive
+  100       0.7009      0.6263
+  200       0.7005      0.6330
+  400       0.7002      0.6363
+  800       0.7001      0.6379
+  N=400 conservative : d(int u dx) = +0.168000  (exact +0.168000)
+  N=400 primitive   : d(int u dx) = +0.152765  (exact +0.168000)
+```
+
+The first case is the extreme one. With $u_R = 0$, the term $u\,\partial_x u$ vanishes identically in every cell to the right of the jump. There is nothing to update, so the front never starts moving. The total change is exactly zero as well: the $0.2$ that entered through the left boundary shows up nowhere.
+
+## Does refining the grid rescue it?
+
+The second case is the dangerous one in practice. The primitive speed walks through $0.6263 \to 0.6330 \to 0.6363 \to 0.6379$. Refine eight-fold and the value settles down. It looks like convergence.
+
+The problem is where it converges. The right answer is $0.700$, and this sequence is heading for roughly $0.639$ — about 8.7% low. An honest grid convergence study will not catch that. You confirm the values on three grids are approaching each other, write "converged," and move on.
+
+The conservative scheme runs $0.7009 \to 0.7001$, closing on the exact value with an error proportional to $\Delta x$. The gap between the two sequences is not a difference in accuracy but a difference in which equation is being solved.
+
+None of this shows up when the solution stays smooth. A code validated only on cases like Taylor–Green passes clean. The moment the first discontinuity forms, a code that had been right until then quietly begins solving different physics. That moment is the crossing of characteristics described in [characteristics of the Euler equations and sound waves](/en/posts/2026-07-24-euler-characteristics-sound-waves/).
+
+## Where the primitive form still belongs — the shelf life of $\rho=\text{const}$
+
+None of this makes the primitive form wrong. Nearly all incompressible solvers use it, for good reasons.
+
+First, the unknown count drops. Two-dimensional compressible flow carries $\rho, u, v, p, T$ — five unknowns needing mass, two momentum components, energy, and an equation of state. Incompressible flow freezes $\rho$ and drops the energy equation and the state relation with it. Only $u, v, p$ remain.
+
+Second, pressure stops being a thermodynamic variable and becomes the Lagrange multiplier enforcing the divergence constraint, which is why it is solved separately through a pressure Poisson equation. That structure is the subject of [Chorin's projection method and fractional stepping](/en/posts/2026-07-03-chorin-projection-fractional-step/).
+
+Third, incompressible flows have no shocks. There is no discontinuity for Rankine–Hugoniot to govern, so the failure above never arises.
+
+The shelf life is set by the Mach number. The isentropic relation gives the density variation as
+
+$$
+\frac{\rho}{\rho_0} = \left(1 + \frac{\gamma-1}{2}M^2\right)^{-\frac{1}{\gamma-1}}
+$$
+
+where $\rho_0$ is the stagnation density, $\gamma$ the ratio of specific heats, and $M$ the Mach number. Expanded for small $M$, the density change goes as $M^2/2$: about 2% at $M = 0.2$ and about 4.5% at $M = 0.3$. The familiar $M < 0.2$ rule of thumb is that number.
+
+<MachDensityBudgetGauge />
+
+Drag `exit Mach` up from 0.05 and the spacing between the green markers (density allowed to vary) and the pink ones (density frozen) opens up. Below 0.2 the two rows track each other; past 0.3 the yellow dot pulls away from the $M^2/2$ dashed curve.
+
+## When the shock arrives late, look here first
+
+When a solver plants a shock in the wrong place, there is an order to the checks.
+
+Start with whether the time update is a difference of face fluxes. The change in $\sum_i u_i \Delta x$ must match the boundary flux digit for digit. If it does not, stop and fix that before looking at anything else.
+
+Next, look at terms that were moved into the source. Rearranging curvilinear or axisymmetric terms, it is easy to shift something that belongs inside the divergence over to the right-hand side. Nothing happens while the solution is smooth; the speed goes wrong at the first discontinuity.
+
+Last, check for surviving non-conservative products. Terms like $\alpha\,\partial_x p$ in multiphase models are non-conservative in principle and need a path-integral interpretation of their own. If one is present, know in advance that grid refinement will not save you.
+
+The moment refinement leaves the shock sitting still, the thing to doubt is not the accuracy — it is the form.

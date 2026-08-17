@@ -1,0 +1,238 @@
+---
+title: "衝撃波がスタート地点から動かなかった — 保存形と原始形が分かれる場所"
+date: 2026-08-18
+description: "同じ方程式をフラックス発散で書くか速度と勾配の積で書くかで衝撃波速度が変わる。格子を8倍にしても誤った値に収束する。"
+tags: ["Conservative-Form", "Rankine-Hugoniot", "Shock-Capturing", "Burgers", "Conservation"]
+locale: ja
+slug: conservative-vs-primitive-shock-speed
+takeaway: "連鎖律の上では同一の二つの式が、不連続をまたぐと別の物理を解く。導出時の形を保った側だけが正しい速度を出します。"
+draft: false
+---
+
+import { ShockSpeedFormSplitTrack } from '@/components/post-viz/2026-08-18-conservative-vs-primitive-shock-speed/ShockSpeedFormSplitTrack'
+import { MachDensityBudgetGauge } from '@/components/post-viz/2026-08-18-conservative-vs-primitive-shock-speed/MachDensityBudgetGauge'
+
+1次元Burgersソルバーを2通り書いて並べたことがあります。一方はフラックス差分、もう一方は速度に勾配を掛けた形です。紙の上では連鎖律ひとつで互いに移り変わります。ところがリーマン問題を入れた途端、片方の衝撃波がまったく動きませんでした。この記事ではその停止の原因を検査体積の導出まで遡り、格子を8倍にしても回復しないことをPythonで確かめます。
+
+## 衝撃波がスタート地点から動かなかった
+
+同じ方程式には二通りの書き方があります。保存形（conservative form）は時間変化率とフラックス発散で書きます。
+
+$$
+\frac{\partial u}{\partial t} + \frac{\partial}{\partial x}\left(\frac{u^2}{2}\right) = 0
+$$
+
+原始形（primitive form、非保存形）は微分を展開し、速度に勾配を掛けます。
+
+$$
+\frac{\partial u}{\partial t} + u\,\frac{\partial u}{\partial x} = 0
+$$
+
+$u$ が滑らかなら $\partial_x(u^2/2) = u\,\partial_x u$ ですから、二つは同じ式です。積の微分則がそう言っています。
+
+ここでリーマン問題を入れます。左が $u_L = 1$、右が $u_R = 0$。厳密解は速度 $0.5$ で右に進む衝撃波です。保存形のGodunovスキームは $0.5006$ を返しました。原始形の風上差分は $0.0000$ を返しました。衝撃波が出発点に立ったままです。
+
+下のシミュレーションで実際に操作してみてください。
+
+<ShockSpeedFormSplitTrack />
+
+上段の緑が保存形、下段のピンクが原始形で、白い破線が厳密な衝撃波位置です。`u_R` を0.00まで下げるとピンクの前線は完全に止まり、`grid N` を320まで上げても同じセルから動きません。
+
+## 検査体積から出てきた式は最初からフラックス形だった
+
+なぜフラックス形が原型なのか。導出を辿ると見えてきます。
+
+微小な直方体 $dx\,dy\,dz$ を取り、各面を通る質量流量を数えます。ある面を通過する量は、面中心の密度と面に垂直な速度と面積の積、すなわち $\dot m = \rho V_n A$ です。面中心の値はセル中心からのテイラー展開で求め、2次以上を落とします。6面すべてを足して $dx\,dy\,dz$ で割ると連続の式が出ます。
+
+$$
+\frac{\partial \rho}{\partial t} + \frac{\partial (\rho u_j)}{\partial x_j} = 0
+$$
+
+運動量も手順は同じです。面を通って出入りした運動量、体積力、表面力を足します。
+
+$$
+\frac{\partial (\rho u_i)}{\partial t} + \frac{\partial (\rho u_i u_j + p\,\delta_{ij})}{\partial x_j} = \frac{\partial \tau_{ij}}{\partial x_j}
+$$
+
+ここで $\rho$ は密度、$u_i$ は速度成分、$p$ は圧力、$\tau_{ij}$ は粘性応力テンソル（ニュートン流体の仮定のもとで速度勾配に線形な偏差応力）です。
+
+重要なのは式の見た目ではなく出自です。**すべての項が「面を通って行き来した量」として定義されています。** 発散形なのは趣味ではなく、導出そのものがその形だからです。
+
+原始形はここからもう一歩進みます。積の微分を展開し、連続の式に $u_i$ を掛けて引き、$\rho$ で割ります。$\rho = \text{const}$ を仮定すれば $\partial u_i / \partial x_i = 0$ とともに次が残ります。
+
+$$
+\frac{\partial u_i}{\partial t} + \frac{\partial (u_i u_j)}{\partial x_j} = -\frac{1}{\rho}\frac{\partial p}{\partial x_i} + \nu\,\frac{\partial^2 u_i}{\partial x_j \partial x_j}
+$$
+
+これらの操作はすべて微分可能性を前提にしています。不連続の上には前提にできるものがありません。
+
+## 割り算ひとつが消した望遠鏡和
+
+離散のレベルで見るとさらに明快です。保存形の有限体積法の更新式はこうなります。
+
+$$
+u_i^{n+1} = u_i^{n} - \frac{\Delta t}{\Delta x}\left(f_{i+1/2} - f_{i-1/2}\right)
+$$
+
+全セルについて和を取ります。内部の面フラックス $f_{i+1/2}$ はセル $i$ で引かれ、セル $i+1$ で足されます。符号が逆なので厳密に打ち消し合います。これが望遠鏡和（telescoping sum）で、残るのは領域両端のフラックスだけです。
+
+$$
+\Delta \sum_i u_i \Delta x = -\Delta t \left(f_{N+1/2} - f_{1/2}\right)
+$$
+
+総量の変化は境界を出入りした量と厳密に一致します。丸め誤差を除けば例外はありません。
+
+原始形はここが壊れます。$u_i \cdot (u_i - u_{i-1})/\Delta x$ にはセルごとに異なる係数 $u_i$ が前に付きます。隣り合う項の大きさが違うため打ち消し合いません。残りかすが毎ステップ積み上がります。
+
+コードで測った結果が下にあります。二つ目のリーマン問題（$u_L = 1$、$u_R = 0.4$）で領域に入るべき量は $+0.168000$ です。保存形は小数第6位までその値を出します。原始形は $+0.152765$ で、約9%を失っています。
+
+同種の漏れは[AMRのタグ付け基準とcoarse-fineリフラックス](/ja/posts/2026-08-10-amr-tagging-and-refluxing/)でも扱いました。あのときは格子レベル境界で面フラックスが二つ存在することが原因でした。原理は同じです。面を通った量の帳簿が合わなければ総量は漏れます。
+
+## Rankine–Hugoniotはフラックスにしか答えない
+
+衝撃波速度はどこから来るのか。不連続を薄く包む検査体積に保存則を適用すると出てきます。
+
+$$
+s\,(u_L - u_R) = f(u_L) - f(u_R)
+$$
+
+$s$ は不連続の伝播速度、$f$ はフラックスです。Burgersでは $f = u^2/2$ なので次になります。
+
+$$
+s = \frac{u_L^2/2 - u_R^2/2}{u_L - u_R} = \frac{u_L + u_R}{2}
+$$
+
+この関係式に入っているのは $f$ だけです。$u\,\partial_x u$ という表現は登場しませんし、登場できません。不連続では $\partial_x u$ はデルタ関数であり、そこに跳ぶ $u$ を掛ける演算は超関数の理論で定義されていません。これを非保存積（non-conservative product）と呼びます。
+
+Lax–Wendroffの定理が保証しているのもまさにこの点です。保存形スキームの数値解が収束すれば、その極限は必ず保存則の弱解であり、したがってRankine–Hugoniotを満たします。非保存形にはその保証がありません。HouとLeFlochが示したのはもっと悪い事実です。非保存形も収束はしますが、誤った速度に収束します。
+
+## Pythonで測った伝播速度と総量
+
+同じ格子、同じCFL、同じ初期条件で二つのスキームを回しました。標準ライブラリのみを使います。
+
+```python
+def riemann_setup(nx, ul, ur, xs=0.3):
+    dx = 1.0 / nx
+    return dx, [ul if (i + 0.5) * dx < xs else ur for i in range(nx)]
+
+def godunov_flux(a, b):
+    if a > b:                                  # 衝撃波: 風上側を選ぶ
+        return 0.5 * a * a if a + b >= 0 else 0.5 * b * b
+    if a >= 0:
+        return 0.5 * a * a
+    return 0.5 * b * b if b <= 0 else 0.0      # 音速をまたぐ膨張波
+
+def step_conservative(u, dx, dt):              # u_t + (u^2/2)_x = 0
+    n = len(u)
+    f = [0.5 * u[0] ** 2] + [godunov_flux(u[i], u[i + 1]) for i in range(n - 1)] \
+        + [0.5 * u[-1] ** 2]
+    return [u[i] - dt / dx * (f[i + 1] - f[i]) for i in range(n)]
+
+def step_primitive(u, dx, dt):                 # u_t + u u_x = 0
+    n, out = len(u), []
+    for i in range(n):
+        im, ip = max(i - 1, 0), min(i + 1, n - 1)
+        g = (u[i] - u[im]) / dx if u[i] >= 0 else (u[ip] - u[i]) / dx
+        out.append(u[i] - dt * u[i] * g)
+    return out
+
+def shock_locate(u, dx, level):
+    for i in range(1, len(u)):
+        if u[i] < level <= u[i - 1]:
+            return (i - 0.5) * dx + dx * (u[i - 1] - level) / (u[i - 1] - u[i])
+    return float("nan")
+
+def march_burgers(nx, ul, ur, tend, step):
+    dx, u = riemann_setup(nx, ul, ur)
+    t = 0.0
+    while t < tend - 1e-12:
+        dt = min(0.4 * dx / max(max(abs(v) for v in u), 1e-12), tend - t)
+        u = step(u, dx, dt)
+        t += dt
+    return dx, u
+
+T, XS = 0.4, 0.3
+for ul, ur in ((1.0, 0.0), (1.0, 0.4)):
+    s = 0.5 * (ul + ur)
+    influx = (0.5 * ul ** 2 - 0.5 * ur ** 2) * T        # 領域に入るべき正味フラックス
+    print("uL=%.1f uR=%.1f | Rankine-Hugoniot speed = %.3f" % (ul, ur, s))
+    print("    N   conservative   primitive")
+    for nx in (100, 200, 400, 800):
+        v = []
+        for step in (step_conservative, step_primitive):
+            dx, u = march_burgers(nx, ul, ur, T, step)
+            v.append((shock_locate(u, dx, s) - XS) / T)
+        print("%5d      %7.4f     %7.4f" % (nx, v[0], v[1]))
+    for name, step in (("conservative", step_conservative), ("primitive  ", step_primitive)):
+        dx, u = march_burgers(400, ul, ur, T, step)
+        dx0, u0 = riemann_setup(400, ul, ur)
+        print("  N=400 %s : d(int u dx) = %+.6f  (exact %+.6f)"
+              % (name, sum(u) * dx - sum(u0) * dx0, influx))
+    print()
+```
+
+```text
+uL=1.0 uR=0.0 | Rankine-Hugoniot speed = 0.500
+    N   conservative   primitive
+  100       0.5006      0.0000
+  200       0.5003      0.0000
+  400       0.5002      0.0000
+  800       0.5001      0.0000
+  N=400 conservative : d(int u dx) = +0.200000  (exact +0.200000)
+  N=400 primitive   : d(int u dx) = +0.000000  (exact +0.200000)
+
+uL=1.0 uR=0.4 | Rankine-Hugoniot speed = 0.700
+    N   conservative   primitive
+  100       0.7009      0.6263
+  200       0.7005      0.6330
+  400       0.7002      0.6363
+  800       0.7001      0.6379
+  N=400 conservative : d(int u dx) = +0.168000  (exact +0.168000)
+  N=400 primitive   : d(int u dx) = +0.152765  (exact +0.168000)
+```
+
+一つ目が極端な例です。$u_R = 0$ なら不連続の右側のセルで $u\,\partial_x u$ が丸ごとゼロになります。更新するものがないので前線は動き出せません。総量の変化も厳密にゼロです。左境界から入った $0.2$ がどこにも現れません。
+
+## 格子を細かくすれば済むのか
+
+実務で危ないのは二つ目です。原始形の速度が $0.6263 \to 0.6330 \to 0.6363 \to 0.6379$ と動きます。格子を8倍にすると値が落ち着きます。収束しているように見えます。
+
+問題は収束先です。正解は $0.700$ ですが、この数列は概ね $0.639$ へ向かいます。約8.7%低い値です。格子収束検証（grid convergence study）を正直に回してもこの誤差は捕まりません。三つの格子で値が近づくのを確認し、「収束した」と書いて終わりです。
+
+保存形は $0.7009 \to 0.7001$ と正解に張り付きます。誤差が $\Delta x$ に比例して減ります。二つの数列の差は精度の差ではなく、解いている方程式の差です。
+
+滑らかな解しかない問題ではこの差は表に出ません。だからTaylor–Greenのような検証ケースだけを回したコードは無事に通ります。不連続が初めて生じた瞬間、そこまで正しかったコードが静かに別の物理を解き始めます。[Euler方程式の特性曲線と音波](/ja/posts/2026-07-24-euler-characteristics-sound-waves/)で見た特性線の交差が、まさにその瞬間です。
+
+## それでも原始形が居場所を持つ理由 — $\rho=\text{const}$ の有効期限
+
+とはいえ原始形が誤った形というわけではありません。非圧縮性解析はほぼすべて原始形です。理由があります。
+
+第一に未知数が減ります。2次元圧縮性では $\rho, u, v, p, T$ の5つを、質量・運動量2成分・エネルギー・状態方程式の5式で解きます。非圧縮性は $\rho$ を定数にし、エネルギー式と状態方程式を外します。残るのは $u, v, p$ だけです。
+
+第二に、圧力が熱力学量ではなく発散拘束のラグランジュ乗数になります。だからこそ圧力Poisson方程式で別に解きます。この構造は[Chorinの投影法と分数時間前進](/ja/posts/2026-07-03-chorin-projection-fractional-step/)で扱いました。
+
+第三に、非圧縮性流れには衝撃波がありません。Rankine–Hugoniotが支配すべき不連続がそもそも存在せず、上の問題は起きません。
+
+有効期限を決めるのはマッハ数です。等エントロピー関係から密度はこう変わります。
+
+$$
+\frac{\rho}{\rho_0} = \left(1 + \frac{\gamma-1}{2}M^2\right)^{-\frac{1}{\gamma-1}}
+$$
+
+$\rho_0$ はよどみ点密度、$\gamma$ は比熱比、$M$ はマッハ数です。小さな $M$ で展開すると密度変化は $M^2/2$ で進みます。$M = 0.2$ で約2%、$M = 0.3$ で約4.5%です。よく使われる $M < 0.2$ の目安はここから出た数字です。
+
+<MachDensityBudgetGauge />
+
+`exit Mach` を0.05から上げていくと、上の緑の点（密度変化を反映）と下のピンクの点（密度固定）の間隔が開きます。0.2以下では二列がほぼ重なり、0.3を超えると右の黄色い点が $M^2/2$ の破線から離れていきます。
+
+## 衝撃波が遅れて着いたとき最初に見る場所
+
+ソルバーが衝撃波を見当違いの場所に立てたら、確認する順番があります。
+
+まず時間前進式が面フラックスの差分になっているかを見ます。$\sum_i u_i \Delta x$ の変化が境界フラックスと桁まで一致していなければなりません。一致しないなら、他を見る前にここからです。
+
+次にソース項へ移した項です。曲線座標や軸対称の項を整理していると、発散の中にあるべきものが右辺へ渡ってしまうことがあります。滑らかな解では何も起きず、不連続で速度がずれます。
+
+最後に非保存積が残っていないかを見ます。多相流の $\alpha\,\partial_x p$ のような項は原理的に非保存で、経路積分による解釈が別途必要です。そうした項があるなら、格子細分化では解決しないと先に知っておく必要があります。
+
+細かくしても衝撃波の位置が動かない瞬間、疑うべきは精度ではなく形です。

@@ -1,0 +1,238 @@
+---
+title: "激波停在了起跑线上 —— 守恒形式与原始形式的分岔口"
+date: 2026-08-18
+description: "同一个方程写成通量散度还是速度乘梯度，算出的激波速度就不同。网格加密八倍，仍然收敛到错误的值。"
+tags: ["Conservative-Form", "Rankine-Hugoniot", "Shock-Capturing", "Burgers", "Conservation"]
+locale: zh
+slug: conservative-vs-primitive-shock-speed
+takeaway: "链式法则下完全相同的两个式子，跨过间断就在解不同的物理。只有保持推导原貌的那一个能给出正确的速度。"
+draft: false
+---
+
+import { ShockSpeedFormSplitTrack } from '@/components/post-viz/2026-08-18-conservative-vs-primitive-shock-speed/ShockSpeedFormSplitTrack'
+import { MachDensityBudgetGauge } from '@/components/post-viz/2026-08-18-conservative-vs-primitive-shock-speed/MachDensityBudgetGauge'
+
+我曾经写过两版一维Burgers求解器并排对比。一版做通量差分，另一版把速度乘上梯度。在纸面上，两个式子用一次链式法则就能互相转换。可是把黎曼问题喂进去，其中一个的激波完全没有移动。这篇文章把这次停滞追溯到控制体推导，并用Python验证：网格加密八倍也救不回来。
+
+## 激波停在了起跑线上
+
+同一个方程有两种写法。守恒形式（conservative form）用时间变化率加通量散度来写。
+
+$$
+\frac{\partial u}{\partial t} + \frac{\partial}{\partial x}\left(\frac{u^2}{2}\right) = 0
+$$
+
+原始形式（primitive form，非守恒形式）把导数展开，写成速度乘梯度。
+
+$$
+\frac{\partial u}{\partial t} + u\,\frac{\partial u}{\partial x} = 0
+$$
+
+只要 $u$ 光滑，$\partial_x(u^2/2) = u\,\partial_x u$，两者就是同一个方程。乘积求导法则就是这么说的。
+
+现在放入黎曼问题：左侧 $u_L = 1$，右侧 $u_R = 0$。精确解是以速度 $0.5$ 向右传播的激波。守恒形式的Godunov格式给出 $0.5006$。原始形式的迎风差分给出 $0.0000$。激波原地未动。
+
+在下面的模拟中亲手试一试。
+
+<ShockSpeedFormSplitTrack />
+
+上排绿色是守恒形式，下排粉色是原始形式，白色虚线标出精确的激波位置。把 `u_R` 降到0.00，粉色波前彻底冻住；把 `grid N` 推到320，它仍停在同一个网格里。
+
+## 从控制体推出来的方程本来就是通量形式
+
+为什么通量形式才是原型？把推导重走一遍就明白了。
+
+取一个微小六面体 $dx\,dy\,dz$，数一数穿过每个面的质量流量。通过一个面的量是该面中心的密度、垂直于面的速度与面积的乘积，即 $\dot m = \rho V_n A$。面心值由单元中心作泰勒展开得到，二阶以上项舍去。把六个面全部相加再除以 $dx\,dy\,dz$，连续性方程就出来了。
+
+$$
+\frac{\partial \rho}{\partial t} + \frac{\partial (\rho u_j)}{\partial x_j} = 0
+$$
+
+动量方程的做法相同：穿过面进出的动量，加体积力，加表面力。
+
+$$
+\frac{\partial (\rho u_i)}{\partial t} + \frac{\partial (\rho u_i u_j + p\,\delta_{ij})}{\partial x_j} = \frac{\partial \tau_{ij}}{\partial x_j}
+$$
+
+其中 $\rho$ 是密度，$u_i$ 是速度分量，$p$ 是压力，$\tau_{ij}$ 是粘性应力张量——在牛顿流体假设下对速度梯度呈线性的偏应力。
+
+关键不在方程长什么样，而在它的出身。**每一项都被定义为"穿过面来回的量"。** 散度形式不是风格选择，而是推导本身就长这样。
+
+原始形式从这里再往前一步：展开乘积导数，减去连续性方程乘 $u_i$，再除以 $\rho$。若假设 $\rho = \text{const}$，则连同 $\partial u_i / \partial x_i = 0$ 一起，剩下
+
+$$
+\frac{\partial u_i}{\partial t} + \frac{\partial (u_i u_j)}{\partial x_j} = -\frac{1}{\rho}\frac{\partial p}{\partial x_i} + \nu\,\frac{\partial^2 u_i}{\partial x_j \partial x_j}
+$$
+
+这些操作全都以可微性为前提。而在间断上，没有这个前提可用。
+
+## 一次除法抹掉的望远镜求和
+
+在离散层面看得更清楚。守恒形式有限体积法的更新式是
+
+$$
+u_i^{n+1} = u_i^{n} - \frac{\Delta t}{\Delta x}\left(f_{i+1/2} - f_{i-1/2}\right)
+$$
+
+对所有单元求和。内部面通量 $f_{i+1/2}$ 在单元 $i$ 中被减去，在单元 $i+1$ 中被加上。符号相反，正好抵消。这就是望远镜求和（telescoping sum），最后只剩下计算域两端的通量。
+
+$$
+\Delta \sum_i u_i \Delta x = -\Delta t \left(f_{N+1/2} - f_{1/2}\right)
+$$
+
+总量的变化与边界上进出的量精确相等，除舍入误差外没有例外。
+
+原始形式在这里断掉。$u_i \cdot (u_i - u_{i-1})/\Delta x$ 前面带着每个单元各不相同的系数 $u_i$。相邻项大小不等，不再抵消。残渣每一步都在累积。
+
+代码测出的结果在下面。第二个黎曼问题（$u_L = 1$，$u_R = 0.4$）中，本应进入计算域的量是 $+0.168000$。守恒形式精确到小数点后六位。原始形式给出 $+0.152765$，丢了大约9%。
+
+同一类泄漏在[AMR加密判据与coarse-fine重通量](/zh/posts/2026-08-10-amr-tagging-and-refluxing/)中也出现过。当时的原因是网格层级边界上存在两个面通量。原理相同：穿过面的量对不上账，总量就会漏。
+
+## Rankine–Hugoniot只认通量
+
+激波速度从哪里来？把守恒律应用到紧包间断的薄控制体上就得到了。
+
+$$
+s\,(u_L - u_R) = f(u_L) - f(u_R)
+$$
+
+$s$ 是间断的传播速度，$f$ 是通量。对Burgers方程 $f = u^2/2$，于是
+
+$$
+s = \frac{u_L^2/2 - u_R^2/2}{u_L - u_R} = \frac{u_L + u_R}{2}
+$$
+
+这个关系式里只有 $f$。$u\,\partial_x u$ 这个表达式没有出现，也不可能出现。在间断处 $\partial_x u$ 是delta函数，再乘上一个跳跃的 $u$，这个运算在分布理论中没有定义。这类项称为非守恒乘积（non-conservative product）。
+
+Lax–Wendroff定理守住的正是这条界线。守恒格式的数值解一旦收敛，其极限必然是守恒律的弱解，因而满足Rankine–Hugoniot。非守恒格式没有这个保证。Hou与LeFloch给出的结论更糟：它也收敛，但收敛到错误的速度。
+
+## 用Python量出的传播速度与总量
+
+同样的网格、同样的CFL、同样的初始条件，跑两套格式。只用标准库。
+
+```python
+def riemann_setup(nx, ul, ur, xs=0.3):
+    dx = 1.0 / nx
+    return dx, [ul if (i + 0.5) * dx < xs else ur for i in range(nx)]
+
+def godunov_flux(a, b):
+    if a > b:                                  # 激波：取迎风一侧
+        return 0.5 * a * a if a + b >= 0 else 0.5 * b * b
+    if a >= 0:
+        return 0.5 * a * a
+    return 0.5 * b * b if b <= 0 else 0.0      # 跨声速膨胀波
+
+def step_conservative(u, dx, dt):              # u_t + (u^2/2)_x = 0
+    n = len(u)
+    f = [0.5 * u[0] ** 2] + [godunov_flux(u[i], u[i + 1]) for i in range(n - 1)] \
+        + [0.5 * u[-1] ** 2]
+    return [u[i] - dt / dx * (f[i + 1] - f[i]) for i in range(n)]
+
+def step_primitive(u, dx, dt):                 # u_t + u u_x = 0
+    n, out = len(u), []
+    for i in range(n):
+        im, ip = max(i - 1, 0), min(i + 1, n - 1)
+        g = (u[i] - u[im]) / dx if u[i] >= 0 else (u[ip] - u[i]) / dx
+        out.append(u[i] - dt * u[i] * g)
+    return out
+
+def shock_locate(u, dx, level):
+    for i in range(1, len(u)):
+        if u[i] < level <= u[i - 1]:
+            return (i - 0.5) * dx + dx * (u[i - 1] - level) / (u[i - 1] - u[i])
+    return float("nan")
+
+def march_burgers(nx, ul, ur, tend, step):
+    dx, u = riemann_setup(nx, ul, ur)
+    t = 0.0
+    while t < tend - 1e-12:
+        dt = min(0.4 * dx / max(max(abs(v) for v in u), 1e-12), tend - t)
+        u = step(u, dx, dt)
+        t += dt
+    return dx, u
+
+T, XS = 0.4, 0.3
+for ul, ur in ((1.0, 0.0), (1.0, 0.4)):
+    s = 0.5 * (ul + ur)
+    influx = (0.5 * ul ** 2 - 0.5 * ur ** 2) * T        # 应当进入计算域的净通量
+    print("uL=%.1f uR=%.1f | Rankine-Hugoniot speed = %.3f" % (ul, ur, s))
+    print("    N   conservative   primitive")
+    for nx in (100, 200, 400, 800):
+        v = []
+        for step in (step_conservative, step_primitive):
+            dx, u = march_burgers(nx, ul, ur, T, step)
+            v.append((shock_locate(u, dx, s) - XS) / T)
+        print("%5d      %7.4f     %7.4f" % (nx, v[0], v[1]))
+    for name, step in (("conservative", step_conservative), ("primitive  ", step_primitive)):
+        dx, u = march_burgers(400, ul, ur, T, step)
+        dx0, u0 = riemann_setup(400, ul, ur)
+        print("  N=400 %s : d(int u dx) = %+.6f  (exact %+.6f)"
+              % (name, sum(u) * dx - sum(u0) * dx0, influx))
+    print()
+```
+
+```text
+uL=1.0 uR=0.0 | Rankine-Hugoniot speed = 0.500
+    N   conservative   primitive
+  100       0.5006      0.0000
+  200       0.5003      0.0000
+  400       0.5002      0.0000
+  800       0.5001      0.0000
+  N=400 conservative : d(int u dx) = +0.200000  (exact +0.200000)
+  N=400 primitive   : d(int u dx) = +0.000000  (exact +0.200000)
+
+uL=1.0 uR=0.4 | Rankine-Hugoniot speed = 0.700
+    N   conservative   primitive
+  100       0.7009      0.6263
+  200       0.7005      0.6330
+  400       0.7002      0.6363
+  800       0.7001      0.6379
+  N=400 conservative : d(int u dx) = +0.168000  (exact +0.168000)
+  N=400 primitive   : d(int u dx) = +0.152765  (exact +0.168000)
+```
+
+第一个例子最极端。$u_R = 0$ 时，间断右侧每个单元里的 $u\,\partial_x u$ 整体为零。没有东西可更新，波前也就动不起来。总量变化同样精确为零：从左边界进来的 $0.2$ 在任何地方都找不到。
+
+## 把网格加密就能解决吗
+
+实际工作中更危险的是第二个例子。原始形式的速度依次走过 $0.6263 \to 0.6330 \to 0.6363 \to 0.6379$。网格加密八倍后数值稳定下来，看起来像是收敛了。
+
+问题在于收敛到哪里。正确答案是 $0.700$，而这个数列大致奔向 $0.639$，低了约8.7%。就算老老实实做网格收敛性验证（grid convergence study）也抓不到这个误差。确认三套网格上的数值彼此接近，写下"已收敛"，然后就结束了。
+
+守恒形式则是 $0.7009 \to 0.7001$，紧贴正确值，误差按 $\Delta x$ 成比例下降。两个数列的差别不是精度之差，而是所解方程之差。
+
+只有光滑解的问题里，这个差别根本不露面。所以只跑过Taylor–Green之类验证算例的代码能顺利通过。间断第一次形成的那一刻，此前一直正确的代码开始悄悄解另一套物理。[Euler方程的特征线与声波](/zh/posts/2026-07-24-euler-characteristics-sound-waves/)中看到的特征线相交，正是那个瞬间。
+
+## 原始形式仍然有它的位置 —— $\rho=\text{const}$ 的保质期
+
+这并不意味着原始形式是错的形式。不可压缩计算几乎全部采用原始形式，理由充分。
+
+第一，未知量变少。二维可压缩要解 $\rho, u, v, p, T$ 五个未知量，对应质量、两个动量分量、能量与状态方程五个式子。不可压缩把 $\rho$ 固定为常数，顺带去掉能量方程与状态方程，只剩 $u, v, p$。
+
+第二，压力不再是热力学量，而成为散度约束的拉格朗日乘子，因此要通过压力Poisson方程单独求解。这一结构在[Chorin投影法与分步时间推进](/zh/posts/2026-07-03-chorin-projection-fractional-step/)中讨论过。
+
+第三，不可压缩流动里没有激波。根本不存在需要Rankine–Hugoniot管辖的间断，上面的问题也就不会发生。
+
+保质期由马赫数决定。等熵关系给出的密度变化是
+
+$$
+\frac{\rho}{\rho_0} = \left(1 + \frac{\gamma-1}{2}M^2\right)^{-\frac{1}{\gamma-1}}
+$$
+
+其中 $\rho_0$ 是滞止密度，$\gamma$ 是比热比，$M$ 是马赫数。对小 $M$ 展开，密度变化按 $M^2/2$ 增长：$M = 0.2$ 时约2%，$M = 0.3$ 时约4.5%。常用的 $M < 0.2$ 经验界限就是这么来的。
+
+<MachDensityBudgetGauge />
+
+把 `exit Mach` 从0.05往上拖，上排绿点（允许密度变化）与下排粉点（密度冻结）之间的间距会拉开。在0.2以下两排基本重合；越过0.3，右侧的黄点就从 $M^2/2$ 虚线上脱开。
+
+## 激波来晚了，先看这几处
+
+求解器把激波摆错位置时，检查是有顺序的。
+
+先看时间推进式是不是面通量的差分。$\sum_i u_i \Delta x$ 的变化必须与边界通量逐位吻合。不吻合，就先修这里，别看别的。
+
+其次看被挪进源项的项。整理曲线坐标或轴对称项时，很容易把本该待在散度里的东西挪到右端。解光滑时什么也不会发生，遇到间断速度就偏了。
+
+最后看是否还留着非守恒乘积。多相流里 $\alpha\,\partial_x p$ 这类项原则上就是非守恒的，需要另行给出路径积分意义下的解释。若存在这类项，要事先知道加密网格救不了。
+
+当加密之后激波位置纹丝不动时，该怀疑的不是精度，而是形式。
