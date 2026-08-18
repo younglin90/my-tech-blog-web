@@ -1,0 +1,247 @@
+---
+title: "적분점 하나를 뺐더니 해가 발산했다 — DG의 쿼드러쳐 하한과 테일러 기저"
+date: 2026-08-19
+description: "DG 셀 적분의 최소 가우스 점 수는 격자가 아니라 피적분 다항식의 차수가 정한다. 3점을 2점으로 줄이면 아무 일도 없고, 1점으로 줄이면 발산한다."
+tags: ["Discontinuous-Galerkin", "Quadrature", "FEM", "Unstructured-Grid", "High-Order"]
+locale: ko
+slug: 2026-08-19-dg-taylor-basis-quadrature-order
+takeaway: "DG의 체적적분은 차수 $2p-1$짜리 다항식이다. 가우스 $n$점은 $2n-1$까지 정확하므로 하한은 $n = p$이고, 그 아래로 내려가면 정확도가 낮아지는 게 아니라 스킴이 무너진다."
+draft: false
+---
+
+import { GaussPointExactnessDial } from '@/components/post-viz/2026-08-19-dg-taylor-basis-quadrature-order/GaussPointExactnessDial'
+import { DgUnderIntegrationRunway } from '@/components/post-viz/2026-08-19-dg-taylor-basis-quadrature-order/DgUnderIntegrationRunway'
+
+## 적분점 하나를 뺐더니 해가 통째로 날아갔다
+
+불연속 갈러킨(DG, Discontinuous Galerkin — 셀마다 독립적인 다항식을 두고 면에서 flux로 잇는 고차 기법) 코드의 셀 적분을 가우스 3점에서 2점으로 줄인 적이 있다. 셀당 적분 비용이 3분의 1 줄어드는 계산이었다. 돌려보니 L2 오차가 소수점 13자리까지 그대로였다. 욕심이 나서 1점으로 더 내렸다. 이번에는 정확도가 한 차수 떨어진 게 아니라, 해가 한 바퀴도 못 돌고 발산했다.
+
+경계선은 격자 크기에도 CFL에도 없었다. 피적분 함수의 다항식 차수에 있었다. 이 글은 그 경계선이 정확히 어디이고, 왜 거기이며, 임의 격자에서 그 선을 지키려면 기저함수를 어떻게 잡아야 하는지를 다룬다. 근거는 1차원 DG-P2 솔버와 질량행렬 조건수 계산 두 개다.
+
+아래 시뮬레이션에서 직접 조작해보자.
+
+<GaussPointExactnessDial />
+
+`DG order p`와 `Gauss points n`을 따로 움직여 보라. $n \ge p$인 동안에는 배지가 초록이고 오차 막대가 비어 있다. `u_h shape`를 아무리 흔들어도 그렇다. $n$을 하나 더 내리는 순간 빨간색으로 바뀐다.
+
+## Q1. DG는 유한요소인가, 유한체적인가
+
+둘 다다. 셀 하나만 보면 유한요소이고, 셀 경계만 보면 유한체적이다.
+
+보존형 방정식에 시험함수 $\phi_i$를 곱하고 셀 $\Omega_e$ 위에서 적분한 뒤 부분적분하면 이렇게 된다.
+
+$$
+\int_{\Omega_e} \frac{\partial U_h}{\partial t}\,\phi_i \, d\Omega
+- \int_{\Omega_e} \mathbf{F}(U_h)\cdot\nabla\phi_i \, d\Omega
++ \oint_{\partial\Omega_e} \phi_i\, \hat{\mathbf{F}}(U_h^-, U_h^+)\cdot\mathbf{n}\, dS = 0
+$$
+
+$U_h$는 셀 내부의 근사해, $\mathbf{F}$는 대류 flux, $\hat{\mathbf{F}}$는 두 셀의 값 $U_h^-, U_h^+$로 만든 수치 flux, $\mathbf{n}$은 면의 법선이다. 점성 flux와 소스 항은 각각 항 하나씩 더 붙지만 구조는 같다.
+
+식이 두 덩어리로 갈라진다는 점이 중요하다. **체적적분**은 셀 안에서만 닫히고, **면적분**만이 이웃과 통신한다. 면적분에 들어가는 것은 리만 솔버가 만든 단일 값 flux다. 유한체적법이 셀 평균 하나로 하던 일을 DG는 다항식 계수 여러 개로 할 뿐이다. 그래서 [보존형과 원시형이 갈라지는 자리](/ko/posts/2026-08-18-conservative-vs-primitive-shock-speed/)에서 본 얘기가 그대로 적용된다. flux 차분 구조를 잃으면 DG도 충격파 속도를 틀린다.
+
+근사해를 기저함수의 선형결합으로 쓰면
+
+$$
+U_h(\mathbf{x}, t) = \sum_{k=1}^{K} U_k(t)\, b_k(\mathbf{x})
+$$
+
+이고, 시간항은 질량행렬 $M_{ik} = \int_{\Omega_e} b_i b_k \, d\Omega$가 된다. 셀마다 크기 $K \times K$의 작은 행렬 하나. 이웃과 섞이지 않으므로 셀별로 미리 역행렬을 구해 둘 수 있다. 이것이 DG가 병렬화에 유리한 이유다.
+
+## Q2. 적분은 몇 차까지 정확해야 하는가
+
+체적적분의 피적분 함수 차수를 세어 보면 답이 나온다.
+
+$p$차 다항식 공간을 쓴다고 하자. $U_h$는 차수 $p$, 시험함수 $\phi_i$도 최대 차수 $p$이므로 $\nabla\phi_i$는 $p-1$이다. 선형 flux라면 곱의 차수는 이렇게 된다.
+
+$$
+\deg\left(\mathbf{F}(U_h)\cdot\nabla\phi_i\right) = p + (p-1) = 2p - 1
+$$
+
+가우스-르장드르 $n$점 공식은 차수 $2n-1$까지 정확하다. 두 식을 붙이면 하한이 떨어진다.
+
+$$
+2n - 1 \ge 2p - 1 \quad \Longrightarrow \quad n \ge p
+$$
+
+원문의 "최소 $2K-1$ 오더의 적분을 수행해야 차수가 감소하지 않는다"는 문장이 이것이다. 격자를 아무리 조밀하게 해도 이 부등식은 바뀌지 않는다. 다항식의 차수는 셀 크기와 무관하기 때문이다.
+
+주의할 곳이 두 군데 있다. 질량행렬의 피적분 함수는 $b_i b_k$라서 차수가 $2p$이고, 하한이 $n \ge p+1$로 하나 높다. 그리고 flux가 비선형이면 $\mathbf{F}(U_h)$는 애초에 다항식이 아니다. Cockburn과 Shu가 체적 $2p$차·면 $2p+1$차를 권한 이유가 그것이다. 실무에서는 곡면 요소의 야코비안까지 곱해지므로 여유를 더 둔다.
+
+## Q3. 한 점으로 줄이면 무엇이 무너지는가
+
+직접 재보는 게 빠르다. 주기 영역 $[0, 2\pi]$에서 $u_t + u_x = 0$을 DG-P2로 푼다. 기저는 르장드르, 시간전진은 SSP-RK3, 면 flux는 업윈드다. 질량행렬은 해석적으로 넣어 두어 체적적분의 점 수만 변수로 남긴다.
+
+```python
+from math import pi, sin, exp, log, sqrt, ceil
+
+GAUSS = {                                   # Gauss-Legendre on [-1,1]: exact to degree 2n-1
+    1: ([0.0], [2.0]),
+    2: ([-0.5773502691896257, 0.5773502691896257], [1.0, 1.0]),
+    3: ([-0.7745966692414834, 0.0, 0.7745966692414834], [5/9, 8/9, 5/9]),
+    6: ([-0.9324695142031521, -0.6612093864662645, -0.2386191860831969,
+          0.2386191860831969,  0.6612093864662645,  0.9324695142031521],
+        [0.1713244923791704, 0.3607615730481386, 0.4679139345726910,
+         0.4679139345726910, 0.3607615730481386, 0.1713244923791704]),
+}
+PHI  = [lambda s: 1.0, lambda s: s,   lambda s: 1.5*s*s - 0.5]   # 르장드르 모드, p = 2
+DPHI = [lambda s: 0.0, lambda s: 1.0, lambda s: 3.0*s]
+K = 3
+
+def dg_rhs(U, h, nq):
+    """u_t + u_x = 0의 DG 반이산 잔차. 면은 업윈드 flux."""
+    xq, wq = GAUSS[nq]
+    N = len(U)
+    uR = [sum(U[j][i]*PHI[i](1.0) for i in range(K)) for j in range(N)]   # 오른쪽 트레이스
+    R  = []
+    for j in range(N):
+        fR = uR[j]                       # a = 1 > 0이므로 면은 왼쪽 셀 값을 취한다
+        fL = uR[j-1]
+        row = []
+        for i in range(K):
+            vol = 0.0
+            for xk, wk in zip(xq, wq):
+                uh = sum(U[j][m]*PHI[m](xk) for m in range(K))
+                vol += wk*DPHI[i](xk)*uh
+            surf = PHI[i](1.0)*fR - PHI[i](-1.0)*fL
+            row.append((vol - surf)*(2*i+1)/h)                # M_ii = h/(2i+1)
+        R.append(row)
+    return R
+
+def run_dg(N, nq, T=1.0, cfl=0.05):
+    h  = 2*pi/N
+    xc = [h*(j + 0.5) for j in range(N)]
+    xg, wg = GAUSS[6]
+    u0 = lambda x: exp(sin(x))
+    U  = [[(2*i+1)/2*sum(w*PHI[i](s)*u0(xc[j] + h/2*s) for s, w in zip(xg, wg))
+           for i in range(K)] for j in range(N)]
+    nt = int(ceil(T/(cfl*h/5))); dt = T/nt
+    for _ in range(nt):                                        # SSP-RK3
+        R0 = dg_rhs(U, h, nq)
+        U1 = [[U[j][i] + dt*R0[j][i] for i in range(K)] for j in range(N)]
+        R1 = dg_rhs(U1, h, nq)
+        U2 = [[0.75*U[j][i] + 0.25*(U1[j][i] + dt*R1[j][i]) for i in range(K)] for j in range(N)]
+        R2 = dg_rhs(U2, h, nq)
+        U  = [[(U[j][i] + 2*(U2[j][i] + dt*R2[j][i]))/3 for i in range(K)] for j in range(N)]
+    e2 = 0.0
+    for j in range(N):
+        for s, w in zip(xg, wg):
+            uh = sum(U[j][i]*PHI[i](s) for i in range(K))
+            e2 += w*(uh - u0(xc[j] + h/2*s - T))**2*h/2
+    return sqrt(e2)
+
+print("nq  exact-to-deg |   N=10       N=20       N=40    | order")
+for nq in (1, 2, 3):
+    e = [run_dg(N, nq) for N in (10, 20, 40)]
+    print(f" {nq}       {2*nq-1}      | {e[0]:.3e}  {e[1]:.3e}  {e[2]:.3e} |  {log(e[1]/e[2], 2):.2f}")
+```
+
+```text
+nq  exact-to-deg |   N=10       N=20       N=40    | order
+ 1       1      | 1.170e+01  1.302e+01  1.186e+01 |  0.13
+ 2       3      | 5.989e-03  7.369e-04  9.211e-05 |  3.00
+ 3       5      | 5.989e-03  7.369e-04  9.211e-05 |  3.00
+```
+
+세 줄을 차례로 읽어 보자. $n=2$와 $n=3$은 세 격자 모두에서 표시된 자리까지 동일하다. 실제로는 13번째 유효숫자에서 갈라지고, 그 차이는 반올림 오차다. 피적분 함수가 차수 3이므로 2점 공식이 이미 **정확한** 값을 내기 때문이다. 점을 더 쓴다고 얻을 것이 없다.
+
+$n=1$ 줄은 성격이 다르다. 오차가 $10^1$ 규모이고 격자를 4배로 조밀하게 해도 줄지 않는다. 수렴 차수 0.13은 "1차로 떨어졌다"가 아니라 "수렴하지 않는다"는 뜻이다. 부족적분(under-integration)은 매 스텝 잘못된 체적항을 먹이고, 그 오차가 시간에 대해 증폭된다. 다음 시뮬레이션이 그 과정을 그대로 보여준다.
+
+<DgUnderIntegrationRunway />
+
+`Gauss points`를 3에서 2로 내려도 L2 오차 표시가 꿈쩍하지 않는 것을 먼저 확인하라. 그 다음 1로 내리면 셀마다의 포물선이 한 바퀴도 못 돌고 찢어진다. `cells N`을 키우면 더 빨리 터진다.
+
+## Q4. 왜 하필 테일러 기저인가
+
+여기까지는 1차원이라 편했다. 실제 격자에는 테트라·헥사·프리즘·피라미드·폴리헤드론이 섞여 있다. 표준 유한요소는 각 형상마다 레퍼런스 요소로 매핑하고 그 위에서 형상함수를 정의한다. [메트릭 텐서와 구성 텐서 좌표변환](/ko/posts/2026-08-17-curvilinear-constitutive-tensor-transform/)에서 본 야코비안 작업이 형상마다 한 벌씩 필요하다는 뜻이다. 폴리헤드론에는 레퍼런스 요소가 아예 없다.
+
+Luo 등이 제안한 테일러 기저는 매핑을 건너뛴다. 셀 중심 $\mathbf{x}_c$에서 그냥 테일러 전개한다.
+
+$$
+U_h = \bar{U} + \left.\frac{\partial U}{\partial x}\right|_c (x - x_c)
++ \left.\frac{\partial U}{\partial y}\right|_c (y - y_c)
++ \left.\frac{\partial^2 U}{\partial x^2}\right|_c \frac{(x - x_c)^2}{2} + \cdots
+$$
+
+각 항에서 그 항의 셀 평균을 빼 두면 첫 계수 $\bar{U}$가 정확히 셀 평균이 된다. 이 성질이 실무에서 크다. $p=0$으로 두면 DG가 유한체적법과 완전히 같아지고, 유한체적용 리미터를 그대로 얹을 수 있다. [Barth–Jespersen·Venkatakrishnan 리미터](/ko/posts/2026-07-06-unstructured-slope-limiter-barth-jespersen/)가 DG 코드에서 재사용되는 통로가 이것이다. 셀 형상을 따지지 않으므로 하이브리드 격자에서 코드가 한 벌로 끝난다.
+
+대신 대가가 하나 있다. $(x-x_c)^k$를 그대로 쓰면 질량행렬 성분이 $h^{k+l+1}$로 스케일된다. 조건수가 셀 크기에 따라 폭주한다. 경계층 격자처럼 $h$가 $10^{-3}$ 수준이면 어떻게 되는지 재보자.
+
+```python
+from math import factorial, sqrt
+
+def taylor_mass(h, K, scale):
+    """폭 h인 셀 위에서 테일러 기저 b_k = ((x-xc)/scale)^k / k! 의 질량행렬."""
+    M = [[0.0]*K for _ in range(K)]
+    for i in range(K):
+        for j in range(K):
+            n = i + j
+            if n % 2:                                   # 중심 기준 홀수 모멘트는 0
+                continue
+            M[i][j] = (h/scale)**n * h / (2**n * (n+1) * factorial(i) * factorial(j))
+    return M
+
+def jacobi_eig(A, sweeps=60):
+    """대칭행렬 고유값 — 순환 야코비 회전."""
+    K = len(A); A = [row[:] for row in A]
+    for _ in range(sweeps):
+        for p in range(K-1):
+            for q in range(p+1, K):
+                if abs(A[p][q]) < 1e-300:
+                    continue
+                th = 0.5*(A[q][q]-A[p][p])/A[p][q]
+                t  = (1 if th >= 0 else -1)/(abs(th)+sqrt(th*th+1))
+                c  = 1/sqrt(t*t+1); s = t*c
+                for k in range(K):
+                    akp, akq = A[k][p], A[k][q]
+                    A[k][p], A[k][q] = c*akp - s*akq, s*akp + c*akq
+                for k in range(K):
+                    apk, aqk = A[p][k], A[q][k]
+                    A[p][k], A[q][k] = c*apk - s*aqk, s*apk + c*aqk
+    return [A[k][k] for k in range(K)]
+
+print(" h        raw Taylor      normalized")
+for h in (1.0, 1e-1, 1e-2, 1e-3):
+    out = []
+    for scale in (1.0, h):
+        ev = [abs(v) for v in jacobi_eig(taylor_mass(h, 3, scale))]
+        out.append(max(ev)/min(ev))
+    print(f" {h:<8.0e} {out[0]:.3e}       {out[1]:.3e}")
+```
+
+```text
+ h        raw Taylor      normalized
+ 1e+00    7.225e+02       7.225e+02
+ 1e-01    7.200e+06       7.225e+02
+ 1e-02    7.200e+10       7.225e+02
+ 1e-03    7.200e+14       7.225e+02
+```
+
+$h$가 10분의 1이 될 때마다 조건수가 $10^4$배가 된다. $p=2$에서 지수는 $2p$다. $h = 10^{-3}$이면 $7.2 \times 10^{14}$로, 배정밀도의 $10^{16}$ 한계를 거의 다 쓴다. 셀 크기로 정규화한 오른쪽 열은 $h$와 무관하게 722를 유지한다. 셀 하나에서 $\Delta x$로 나누는 한 줄이 그 차이를 만든다. $p=3$이면 지수가 6이 되므로 정규화 없이는 실용 격자에서 쓸 수 없다.
+
+## Q5. 무엇을 미리 메모리에 넣어야 하는가
+
+DG 코드의 초기화 단계는 사실상 표를 만드는 일이다. 순서는 이렇다.
+
+1. 셀을 형상별로 분류한다 — 테트라/헥사/프리즘/피라미드/폴리헤드론.
+2. 면을 형상별로 분류한다 — 삼각/사각/폴리곤.
+3. 형상마다 필요한 차수의 가우스 쿼드러쳐 규칙을 준비한다.
+4. 각 가우스 점에서 기저함수 값과 그 기울기를 계산해 저장한다.
+
+3차원에서 $p$차 완전 다항식 공간의 자유도는 $\binom{p+3}{3}$이다.
+
+| $p$ | 0 | 1 | 2 | 3 | 4 |
+|---|---|---|---|---|---|
+| 셀당 모드 수 $K$ | 1 | 4 | 10 | 20 | 35 |
+
+원문에 적힌 `(1,4,10,20,35)`가 이 줄이고, `*3`이 붙은 쪽은 각 모드의 기울기 세 성분이다. 압축성 3차원 해석에서 보존변수는 5개이므로, $p=2$ 헥사 격자의 상태 벡터만 셀당 $5 \times 10 \times 8 = 400$바이트다. 여기에 가우스 점별 기저값이 더 붙는다. $p=2$ 헥사에서 체적 쿼드러쳐를 $3^3 = 27$점으로 잡으면 셀당 $27 \times 10$개의 실수가 더 필요하다.
+
+이 표를 셀마다 따로 들고 있을 필요는 없다. 레퍼런스 좌표에서의 기저값은 형상이 같으면 동일하기 때문이다. 형상별로 한 벌만 만들고, 셀에는 야코비안과 셀 중심·크기만 붙여 두면 된다. 폴리헤드론만 예외적으로 자기 표를 갖는다.
+
+## P1에서 P2로 올릴 때 값을 치르는 곳
+
+$p$를 1에서 2로 올리면 3차원에서 셀당 모드 수가 4에서 10으로 늘어난다. 메모리는 2.5배다. 여기까지는 예상 범위다.
+
+예상 밖의 비용은 세 군데에서 나온다. 첫째, 체적 쿼드러쳐 점 수의 하한이 $n \ge p$를 따라 함께 오른다. 3차원 텐서곱이면 $n^3$이라 점 수가 8배가 된다. 둘째, 명시적 시간전진의 안정 CFL이 대략 $1/(2p+1)$로 줄어 시간 스텝이 3분의 5만큼 짧아진다. 셋째, 테일러 기저를 쓴다면 정규화 상수 $\Delta x^k$의 지수가 커져 조건수 관리가 필수가 된다.
+
+세 비용을 다 치를 값어치가 있는지는 문제가 정한다. 매끄러운 해가 넓게 퍼진 문제라면 $p$를 올리는 쪽이 격자를 조밀하게 하는 쪽보다 싸다. 오차가 $h^{p+1}$로 줄기 때문이다. 충격파가 지배하는 문제라면 리미터가 $p$의 이득을 대부분 깎아먹는다. 어느 쪽이든, 쿼드러쳐 점 수를 아끼려다 $n < p$로 내려가는 것만은 이득이 아니다. 그 아래에서는 정확도가 조금 나빠지는 게 아니라 스킴이 다른 방정식을 푼다.

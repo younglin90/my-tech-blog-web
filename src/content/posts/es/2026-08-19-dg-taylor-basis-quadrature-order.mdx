@@ -1,0 +1,247 @@
+---
+title: "Un punto de cuadratura menos y la solución explotó — el piso de integración de DG y la base de Taylor"
+date: 2026-08-19
+description: "El número mínimo de puntos de Gauss en la integral de celda de DG lo fija el grado del integrando, no la malla. Pasar de tres puntos a dos no cambia nada; bajar a uno destruye el esquema."
+tags: ["Discontinuous-Galerkin", "Quadrature", "FEM", "Unstructured-Grid", "High-Order"]
+locale: es
+slug: 2026-08-19-dg-taylor-basis-quadrature-order
+takeaway: "El término de volumen de DG es un polinomio de grado $2p-1$. Una regla de Gauss de $n$ puntos es exacta hasta $2n-1$, así que el piso es $n = p$: por debajo no se pierde un orden, se pierde el esquema."
+draft: false
+---
+
+import { GaussPointExactnessDial } from '@/components/post-viz/2026-08-19-dg-taylor-basis-quadrature-order/GaussPointExactnessDial'
+import { DgUnderIntegrationRunway } from '@/components/post-viz/2026-08-19-dg-taylor-basis-quadrature-order/DgUnderIntegrationRunway'
+
+## Faltó un punto de cuadratura y la respuesta desapareció entera
+
+Hubo una vez en que recorté la integración de celda de un código de Galerkin discontinuo (DG, Discontinuous Galerkin — método de alto orden que coloca un polinomio independiente en cada celda y las cose mediante flujos de cara) de tres puntos de Gauss a dos. Sobre el papel eso elimina un tercio del costo de integración por celda. Al correrlo, el error L2 coincidía hasta la decimotercera cifra decimal. Envalentonado, bajé a un solo punto. Esta vez la precisión no cayó un orden: la solución divergió antes de completar una sola vuelta.
+
+La frontera no estaba en el tamaño de malla ni en el número CFL. Estaba en el grado polinómico del integrando. Este artículo determina dónde queda esa frontera, por qué queda ahí y cómo hay que elegir la base para sostenerla en mallas arbitrarias. La evidencia son un solver DG-P2 unidimensional y un cálculo del número de condición de la matriz de masa.
+
+Conviene probarlo directamente en la simulación siguiente.
+
+<GaussPointExactnessDial />
+
+Mueve `DG order p` y `Gauss points n` por separado. Mientras $n \ge p$, la insignia permanece verde y la barra de error queda vacía, por más que se agite `u_h shape`. Un escalón más abajo en $n$ y se pone roja.
+
+## Q1. ¿DG es elementos finitos o volúmenes finitos?
+
+Ambos. Mirando una sola celda es elementos finitos; mirando únicamente la frontera de la celda es volúmenes finitos.
+
+Multiplicando la ley de conservación por una función de prueba $\phi_i$, integrando sobre la celda $\Omega_e$ e integrando por partes:
+
+$$
+\int_{\Omega_e} \frac{\partial U_h}{\partial t}\,\phi_i \, d\Omega
+- \int_{\Omega_e} \mathbf{F}(U_h)\cdot\nabla\phi_i \, d\Omega
++ \oint_{\partial\Omega_e} \phi_i\, \hat{\mathbf{F}}(U_h^-, U_h^+)\cdot\mathbf{n}\, dS = 0
+$$
+
+Aquí $U_h$ es la solución aproximada dentro de la celda, $\mathbf{F}$ el flujo convectivo, $\hat{\mathbf{F}}$ un flujo numérico construido con las dos trazas $U_h^-, U_h^+$, y $\mathbf{n}$ la normal de la cara. El flujo viscoso y el término fuente agregan un término cada uno, pero la estructura no cambia.
+
+Lo relevante es que la ecuación se parte en dos bloques. La **integral de volumen** se cierra dentro de la celda; solo la **integral de superficie** habla con los vecinos, y lo que lleva es un flujo de valor único producido por un solver de Riemann. Lo que el método de volúmenes finitos hace con un promedio de celda, DG lo hace con varios coeficientes polinómicos. Por eso sigue valiendo todo lo visto en [dónde se separan la forma conservativa y la primitiva](/es/posts/2026-08-18-conservative-vs-primitive-shock-speed/): si se pierde la estructura de diferencia de flujos, DG también equivoca la velocidad del choque.
+
+Escribiendo la solución aproximada como combinación lineal de funciones base,
+
+$$
+U_h(\mathbf{x}, t) = \sum_{k=1}^{K} U_k(t)\, b_k(\mathbf{x})
+$$
+
+el término temporal se convierte en la matriz de masa $M_{ik} = \int_{\Omega_e} b_i b_k \, d\Omega$. Es una matriz pequeña de $K \times K$ por celda. Nunca se acopla con los vecinos, de modo que puede invertirse una vez y guardarse. Buena parte de la aptitud de DG para paralelizar viene de ahí.
+
+## Q2. ¿Hasta qué grado tiene que ser exacta la integración?
+
+Basta contar el grado del integrando de volumen y la respuesta cae sola.
+
+Sea un espacio polinómico de grado $p$. Entonces $U_h$ tiene grado $p$, la función de prueba $\phi_i$ tiene grado a lo sumo $p$, y por tanto $\nabla\phi_i$ tiene grado $p-1$. Con flujo lineal, el grado del producto es:
+
+$$
+\deg\left(\mathbf{F}(U_h)\cdot\nabla\phi_i\right) = p + (p-1) = 2p - 1
+$$
+
+Una regla de Gauss–Legendre de $n$ puntos es exacta hasta grado $2n-1$. Uniendo ambas cosas aparece el piso:
+
+$$
+2n - 1 \ge 2p - 1 \quad \Longrightarrow \quad n \ge p
+$$
+
+Eso es lo que dice la nota original al exigir "integración de orden al menos $2K-1$ o el orden de convergencia se degrada". Refinar la malla no mueve esta desigualdad, porque el grado polinómico nada tiene que ver con el tamaño de celda.
+
+Hay dos advertencias. El integrando de la matriz de masa es $b_i b_k$, de grado $2p$, así que su propio piso queda un escalón más arriba, en $n \ge p+1$. Y si el flujo es no lineal, $\mathbf{F}(U_h)$ ni siquiera es un polinomio: por eso Cockburn y Shu recomiendan grado $2p$ en el volumen y $2p+1$ en las caras. En producción, los elementos curvos añaden el jacobiano al producto, de modo que el margen se amplía todavía más.
+
+## Q3. ¿Qué se rompe exactamente con un solo punto?
+
+Medir es más rápido que discutir. Se resuelve $u_t + u_x = 0$ en el dominio periódico $[0, 2\pi]$ con DG-P2: base de Legendre, avance temporal SSP-RK3 y flujo de cara upwind. La matriz de masa se introduce de forma analítica para que la única variable restante sea el número de puntos de cuadratura de volumen.
+
+```python
+from math import pi, sin, exp, log, sqrt, ceil
+
+GAUSS = {                                   # Gauss-Legendre on [-1,1]: exact to degree 2n-1
+    1: ([0.0], [2.0]),
+    2: ([-0.5773502691896257, 0.5773502691896257], [1.0, 1.0]),
+    3: ([-0.7745966692414834, 0.0, 0.7745966692414834], [5/9, 8/9, 5/9]),
+    6: ([-0.9324695142031521, -0.6612093864662645, -0.2386191860831969,
+          0.2386191860831969,  0.6612093864662645,  0.9324695142031521],
+        [0.1713244923791704, 0.3607615730481386, 0.4679139345726910,
+         0.4679139345726910, 0.3607615730481386, 0.1713244923791704]),
+}
+PHI  = [lambda s: 1.0, lambda s: s,   lambda s: 1.5*s*s - 0.5]   # modos de Legendre, p = 2
+DPHI = [lambda s: 0.0, lambda s: 1.0, lambda s: 3.0*s]
+K = 3
+
+def dg_rhs(U, h, nq):
+    """Residuo semidiscreto DG de u_t + u_x = 0 con flujo de cara upwind."""
+    xq, wq = GAUSS[nq]
+    N = len(U)
+    uR = [sum(U[j][i]*PHI[i](1.0) for i in range(K)) for j in range(N)]   # traza derecha
+    R  = []
+    for j in range(N):
+        fR = uR[j]                       # a = 1 > 0, la cara toma el estado izquierdo
+        fL = uR[j-1]
+        row = []
+        for i in range(K):
+            vol = 0.0
+            for xk, wk in zip(xq, wq):
+                uh = sum(U[j][m]*PHI[m](xk) for m in range(K))
+                vol += wk*DPHI[i](xk)*uh
+            surf = PHI[i](1.0)*fR - PHI[i](-1.0)*fL
+            row.append((vol - surf)*(2*i+1)/h)                # M_ii = h/(2i+1)
+        R.append(row)
+    return R
+
+def run_dg(N, nq, T=1.0, cfl=0.05):
+    h  = 2*pi/N
+    xc = [h*(j + 0.5) for j in range(N)]
+    xg, wg = GAUSS[6]
+    u0 = lambda x: exp(sin(x))
+    U  = [[(2*i+1)/2*sum(w*PHI[i](s)*u0(xc[j] + h/2*s) for s, w in zip(xg, wg))
+           for i in range(K)] for j in range(N)]
+    nt = int(ceil(T/(cfl*h/5))); dt = T/nt
+    for _ in range(nt):                                        # SSP-RK3
+        R0 = dg_rhs(U, h, nq)
+        U1 = [[U[j][i] + dt*R0[j][i] for i in range(K)] for j in range(N)]
+        R1 = dg_rhs(U1, h, nq)
+        U2 = [[0.75*U[j][i] + 0.25*(U1[j][i] + dt*R1[j][i]) for i in range(K)] for j in range(N)]
+        R2 = dg_rhs(U2, h, nq)
+        U  = [[(U[j][i] + 2*(U2[j][i] + dt*R2[j][i]))/3 for i in range(K)] for j in range(N)]
+    e2 = 0.0
+    for j in range(N):
+        for s, w in zip(xg, wg):
+            uh = sum(U[j][i]*PHI[i](s) for i in range(K))
+            e2 += w*(uh - u0(xc[j] + h/2*s - T))**2*h/2
+    return sqrt(e2)
+
+print("nq  exact-to-deg |   N=10       N=20       N=40    | order")
+for nq in (1, 2, 3):
+    e = [run_dg(N, nq) for N in (10, 20, 40)]
+    print(f" {nq}       {2*nq-1}      | {e[0]:.3e}  {e[1]:.3e}  {e[2]:.3e} |  {log(e[1]/e[2], 2):.2f}")
+```
+
+```text
+nq  exact-to-deg |   N=10       N=20       N=40    | order
+ 1       1      | 1.170e+01  1.302e+01  1.186e+01 |  0.13
+ 2       3      | 5.989e-03  7.369e-04  9.211e-05 |  3.00
+ 3       5      | 5.989e-03  7.369e-04  9.211e-05 |  3.00
+```
+
+Conviene leer las tres filas por turno. Las de $n=2$ y $n=3$ coinciden en las tres mallas hasta las cifras impresas; en realidad se separan en la decimotercera cifra significativa, y esa diferencia es ruido de redondeo. El integrando tiene grado 3, así que la regla de dos puntos ya devuelve el valor **exacto**. Añadir puntos no compra nada.
+
+La fila $n=1$ es de otra naturaleza. El error se queda en el orden de $10^1$ y se niega a encogerse aunque la malla se refine cuatro veces. Un orden observado de 0.13 no significa "cayó a primer orden", significa "no converge". La subintegración alimenta al esquema con un término de volumen equivocado en cada paso, y ese error se amplifica en el tiempo. La siguiente simulación muestra el proceso tal como ocurre.
+
+<DgUnderIntegrationRunway />
+
+Primero conviene comprobar que bajar `Gauss points` de 3 a 2 deja la lectura L2 intacta. Después hay que bajarlo a 1: las parábolas de cada celda se desgarran antes de completar una vuelta. Subir `cells N` solo hace que ocurra antes.
+
+## Q4. ¿Por qué precisamente una base de Taylor?
+
+Todo lo anterior resultó cómodo porque era unidimensional. Las mallas reales mezclan tetraedros, hexaedros, prismas, pirámides y poliedros. Los elementos finitos estándar mapean cada forma a un elemento de referencia y definen allí las funciones de forma, lo que significa un juego completo de la maquinaria jacobiana de [la transformación del tensor métrico y el constitutivo](/es/posts/2026-08-17-curvilinear-constitutive-tensor-transform/) por cada forma. Los poliedros directamente no tienen elemento de referencia.
+
+La base de Taylor propuesta por Luo y colaboradores se salta el mapeo. Simplemente desarrolla en serie alrededor del centroide de celda $\mathbf{x}_c$:
+
+$$
+U_h = \bar{U} + \left.\frac{\partial U}{\partial x}\right|_c (x - x_c)
++ \left.\frac{\partial U}{\partial y}\right|_c (y - y_c)
++ \left.\frac{\partial^2 U}{\partial x^2}\right|_c \frac{(x - x_c)^2}{2} + \cdots
+$$
+
+Si a cada término se le resta su propio promedio de celda, el coeficiente principal $\bar{U}$ pasa a ser exactamente el promedio de celda. Esa propiedad pesa mucho en la práctica. Con $p=0$, DG colapsa exactamente sobre el método de volúmenes finitos, de modo que los limitadores de volúmenes finitos se montan sin adaptación. Esa es la vía por la que [los limitadores de Barth–Jespersen y Venkatakrishnan](/es/posts/2026-07-06-unstructured-slope-limiter-barth-jespersen/) se reutilizan dentro de códigos DG. Como nada depende de la forma de celda, un solo camino de código cubre una malla híbrida.
+
+Hay un precio. Usar $(x-x_c)^k$ en crudo hace que las entradas de la matriz de masa escalen como $h^{k+l+1}$, y el número de condición se dispara con el tamaño de celda. Las celdas de capa límite rondan $h = 10^{-3}$; conviene medir qué ocurre ahí.
+
+```python
+from math import factorial, sqrt
+
+def taylor_mass(h, K, scale):
+    """Matriz de masa de la base de Taylor b_k = ((x-xc)/scale)^k / k! en una celda de ancho h."""
+    M = [[0.0]*K for _ in range(K)]
+    for i in range(K):
+        for j in range(K):
+            n = i + j
+            if n % 2:                                   # los momentos impares respecto al centroide se anulan
+                continue
+            M[i][j] = (h/scale)**n * h / (2**n * (n+1) * factorial(i) * factorial(j))
+    return M
+
+def jacobi_eig(A, sweeps=60):
+    """Valores propios simetricos por rotaciones ciclicas de Jacobi."""
+    K = len(A); A = [row[:] for row in A]
+    for _ in range(sweeps):
+        for p in range(K-1):
+            for q in range(p+1, K):
+                if abs(A[p][q]) < 1e-300:
+                    continue
+                th = 0.5*(A[q][q]-A[p][p])/A[p][q]
+                t  = (1 if th >= 0 else -1)/(abs(th)+sqrt(th*th+1))
+                c  = 1/sqrt(t*t+1); s = t*c
+                for k in range(K):
+                    akp, akq = A[k][p], A[k][q]
+                    A[k][p], A[k][q] = c*akp - s*akq, s*akp + c*akq
+                for k in range(K):
+                    apk, aqk = A[p][k], A[q][k]
+                    A[p][k], A[q][k] = c*apk - s*aqk, s*apk + c*aqk
+    return [A[k][k] for k in range(K)]
+
+print(" h        raw Taylor      normalized")
+for h in (1.0, 1e-1, 1e-2, 1e-3):
+    out = []
+    for scale in (1.0, h):
+        ev = [abs(v) for v in jacobi_eig(taylor_mass(h, 3, scale))]
+        out.append(max(ev)/min(ev))
+    print(f" {h:<8.0e} {out[0]:.3e}       {out[1]:.3e}")
+```
+
+```text
+ h        raw Taylor      normalized
+ 1e+00    7.225e+02       7.225e+02
+ 1e-01    7.200e+06       7.225e+02
+ 1e-02    7.200e+10       7.225e+02
+ 1e-03    7.200e+14       7.225e+02
+```
+
+Cada factor diez en $h$ cuesta un factor $10^4$ en número de condición; con $p=2$ el exponente es $2p$. En $h = 10^{-3}$ el valor llega a $7.2 \times 10^{14}$, que consume casi todo el margen de $10^{16}$ de la doble precisión. La columna normalizada de la derecha se mantiene en 722 sin importar $h$. Una sola división por $\Delta x$ dentro de la celda es toda la diferencia. Con $p=3$ el exponente pasa a 6, así que sin normalización la base resulta inservible en cualquier malla práctica.
+
+## Q5. ¿Qué hay que tabular de antemano?
+
+La etapa de inicialización de un código DG es esencialmente construir tablas, en este orden:
+
+1. Clasificar celdas por forma — tetraedro, hexaedro, prisma, pirámide, poliedro.
+2. Clasificar caras por forma — triángulo, cuadrilátero, polígono.
+3. Preparar una regla de cuadratura de Gauss del orden requerido para cada forma.
+4. Evaluar las funciones base y sus gradientes en cada punto de Gauss y almacenarlos.
+
+En tres dimensiones, el número de grados de libertad del espacio polinómico completo de grado $p$ es $\binom{p+3}{3}$.
+
+| $p$ | 0 | 1 | 2 | 3 | 4 |
+|---|---|---|---|---|---|
+| modos por celda $K$ | 1 | 4 | 10 | 20 | 35 |
+
+Esa fila es el `(1,4,10,20,35)` de la nota original; la entrada marcada `*3` corresponde a las tres componentes del gradiente de cada modo. Un solver compresible tridimensional lleva cinco variables conservadas, así que en una malla hexaédrica con $p=2$ solo el vector de estado ocupa $5 \times 10 \times 8 = 400$ bytes por celda, antes de los valores base almacenados en los puntos de cuadratura. Tomando $3^3 = 27$ puntos de volumen para un hexaedro con $p=2$ se añaden otros $27 \times 10$ reales por celda.
+
+Nada de esto hay que guardarlo por celda. Los valores base en coordenadas de referencia son idénticos para formas idénticas, de modo que basta una tabla por forma; la celda solo necesita su jacobiano, su centroide y su tamaño. Los poliedros son la única excepción y deben cargar su propia tabla.
+
+## Dónde llega la factura al pasar de P1 a P2
+
+Subir $p$ de 1 a 2 lleva los modos por celda en 3D de 4 a 10: 2.5 veces la memoria. Hasta ahí, lo previsto.
+
+Los costos imprevistos asoman en tres lugares. Primero, el piso de puntos de cuadratura de volumen sube con $n \ge p$, y en una regla de producto tensorial eso es $n^3$, así que el conteo de puntos crece ocho veces. Segundo, el CFL estable explícito cae aproximadamente como $1/(2p+1)$, acortando el paso de tiempo en un factor de cinco tercios. Tercero, si la base es de Taylor, el exponente de la normalización $\Delta x^k$ crece y el acondicionamiento pasa de ser algo ignorable a algo que hay que administrar.
+
+Si vale la pena pagar los tres lo decide el problema. Para una solución suave repartida en una región amplia, subir $p$ sale más barato que refinar la malla, porque el error cae como $h^{p+1}$. Para un problema dominado por choques, el limitador se come casi todo lo que $p$ había comprado. En cualquiera de los dos casos, ahorrar puntos de cuadratura bajando por debajo de $n = p$ nunca es el intercambio correcto. Debajo de esa línea la precisión no se degrada un poco: el esquema resuelve otra ecuación.

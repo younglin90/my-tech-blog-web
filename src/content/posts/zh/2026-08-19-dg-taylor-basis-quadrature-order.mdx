@@ -1,0 +1,247 @@
+---
+title: "少取一个积分点，解就发散了 — DG 的求积下限与泰勒基"
+date: 2026-08-19
+description: "决定 DG 单元积分最少高斯点数的是被积多项式的次数，不是网格。三点降到两点毫无变化，降到一点则直接发散。"
+tags: ["Discontinuous-Galerkin", "Quadrature", "FEM", "Unstructured-Grid", "High-Order"]
+locale: zh
+slug: 2026-08-19-dg-taylor-basis-quadrature-order
+takeaway: "DG 的体积项是次数为 $2p-1$ 的多项式。高斯 $n$ 点公式精确到 $2n-1$，所以下限是 $n = p$；越过这条线，损失的不是一阶精度，而是整个格式。"
+draft: false
+---
+
+import { GaussPointExactnessDial } from '@/components/post-viz/2026-08-19-dg-taylor-basis-quadrature-order/GaussPointExactnessDial'
+import { DgUnderIntegrationRunway } from '@/components/post-viz/2026-08-19-dg-taylor-basis-quadrature-order/DgUnderIntegrationRunway'
+
+## 少取一个积分点，答案整个消失了
+
+我曾把一份间断伽辽金（DG, Discontinuous Galerkin — 在每个单元内放一个独立多项式、再用面通量把它们缝起来的高阶方法）代码的单元积分从高斯三点减到两点。按账面算，每个单元的积分开销少了三分之一。跑完一看，L2 误差在小数点后十三位都完全一致。于是我又贪心地降到一点。这次不是精度掉了一阶，而是解连一圈都没转完就发散了。
+
+分界线不在网格尺寸上，也不在 CFL 数上。它在被积函数的多项式次数上。本文要处理的是：这条线究竟在哪里，为什么在那里，以及在任意网格上要守住它该如何选取基函数。依据是一个一维 DG-P2 求解器和一次质量矩阵条件数计算。
+
+在下面的模拟里亲手操作一下。
+
+<GaussPointExactnessDial />
+
+分别拖动 `DG order p` 和 `Gauss points n`。只要 $n \ge p$，标识就保持绿色，误差条也保持为空，无论怎么摇 `u_h shape` 都一样。把 $n$ 再降一档，它立刻变红。
+
+## Q1. DG 属于有限元还是有限体积
+
+两者都是。只看一个单元，它是有限元；只看单元边界，它是有限体积。
+
+把守恒方程乘以试验函数 $\phi_i$，在单元 $\Omega_e$ 上积分并分部积分，得到：
+
+$$
+\int_{\Omega_e} \frac{\partial U_h}{\partial t}\,\phi_i \, d\Omega
+- \int_{\Omega_e} \mathbf{F}(U_h)\cdot\nabla\phi_i \, d\Omega
++ \oint_{\partial\Omega_e} \phi_i\, \hat{\mathbf{F}}(U_h^-, U_h^+)\cdot\mathbf{n}\, dS = 0
+$$
+
+其中 $U_h$ 是单元内的近似解，$\mathbf{F}$ 是对流通量，$\hat{\mathbf{F}}$ 是由两侧迹值 $U_h^-, U_h^+$ 构造的数值通量，$\mathbf{n}$ 是面法向。粘性通量和源项各自再加一项，但结构不变。
+
+关键在于这个式子分成了两块。**体积积分**在单元内部闭合，只有**面积分**才与邻居通信，而进入其中的是黎曼求解器给出的单值通量。有限体积法用一个单元平均做的事，DG 只是改用多个多项式系数来做。所以[守恒形式与原始形式分道扬镳的地方](/zh/posts/2026-08-18-conservative-vs-primitive-shock-speed/)讲过的道理照样成立：一旦丢掉通量差分结构，DG 同样会把激波速度算错。
+
+把近似解写成基函数的线性组合，
+
+$$
+U_h(\mathbf{x}, t) = \sum_{k=1}^{K} U_k(t)\, b_k(\mathbf{x})
+$$
+
+时间项就变成质量矩阵 $M_{ik} = \int_{\Omega_e} b_i b_k \, d\Omega$。每个单元一个 $K \times K$ 的小矩阵，且不与邻居耦合，因此可以逐单元预先求逆并存起来。这正是 DG 易于并行的重要原因。
+
+## Q2. 积分要精确到几次
+
+数一数体积积分被积函数的次数，答案自然出来。
+
+设使用 $p$ 次多项式空间。$U_h$ 是 $p$ 次，试验函数 $\phi_i$ 最高也是 $p$ 次，所以 $\nabla\phi_i$ 是 $p-1$ 次。若通量是线性的，乘积的次数为：
+
+$$
+\deg\left(\mathbf{F}(U_h)\cdot\nabla\phi_i\right) = p + (p-1) = 2p - 1
+$$
+
+高斯–勒让德 $n$ 点公式精确到 $2n-1$ 次。两式一拼，下限就出来了：
+
+$$
+2n - 1 \ge 2p - 1 \quad \Longrightarrow \quad n \ge p
+$$
+
+原始资料里"至少要做 $2K-1$ 阶的积分，否则精度阶会下降"说的就是这件事。网格再细，这个不等式也不会变，因为多项式次数与单元尺寸无关。
+
+有两处需要留意。质量矩阵的被积函数是 $b_i b_k$，次数为 $2p$，它自己的下限高一档，是 $n \ge p+1$。另外，若通量非线性，$\mathbf{F}(U_h)$ 根本就不是多项式。这正是 Cockburn 与 Shu 建议体积用 $2p$ 次、面用 $2p+1$ 次的原因。工程中曲面单元还要乘上雅可比，因此余量留得更多。
+
+## Q3. 降到一点，究竟坏在哪里
+
+直接测比争论快。在周期区域 $[0, 2\pi]$ 上用 DG-P2 求解 $u_t + u_x = 0$：勒让德基，时间推进用 SSP-RK3，面通量取迎风。质量矩阵按解析式给出，这样体积积分的点数就成了唯一的变量。
+
+```python
+from math import pi, sin, exp, log, sqrt, ceil
+
+GAUSS = {                                   # Gauss-Legendre on [-1,1]: exact to degree 2n-1
+    1: ([0.0], [2.0]),
+    2: ([-0.5773502691896257, 0.5773502691896257], [1.0, 1.0]),
+    3: ([-0.7745966692414834, 0.0, 0.7745966692414834], [5/9, 8/9, 5/9]),
+    6: ([-0.9324695142031521, -0.6612093864662645, -0.2386191860831969,
+          0.2386191860831969,  0.6612093864662645,  0.9324695142031521],
+        [0.1713244923791704, 0.3607615730481386, 0.4679139345726910,
+         0.4679139345726910, 0.3607615730481386, 0.1713244923791704]),
+}
+PHI  = [lambda s: 1.0, lambda s: s,   lambda s: 1.5*s*s - 0.5]   # 勒让德模态, p = 2
+DPHI = [lambda s: 0.0, lambda s: 1.0, lambda s: 3.0*s]
+K = 3
+
+def dg_rhs(U, h, nq):
+    """u_t + u_x = 0 的 DG 半离散残差，面上取迎风通量。"""
+    xq, wq = GAUSS[nq]
+    N = len(U)
+    uR = [sum(U[j][i]*PHI[i](1.0) for i in range(K)) for j in range(N)]   # 右迹值
+    R  = []
+    for j in range(N):
+        fR = uR[j]                       # a = 1 > 0，所以面取左单元的值
+        fL = uR[j-1]
+        row = []
+        for i in range(K):
+            vol = 0.0
+            for xk, wk in zip(xq, wq):
+                uh = sum(U[j][m]*PHI[m](xk) for m in range(K))
+                vol += wk*DPHI[i](xk)*uh
+            surf = PHI[i](1.0)*fR - PHI[i](-1.0)*fL
+            row.append((vol - surf)*(2*i+1)/h)                # M_ii = h/(2i+1)
+        R.append(row)
+    return R
+
+def run_dg(N, nq, T=1.0, cfl=0.05):
+    h  = 2*pi/N
+    xc = [h*(j + 0.5) for j in range(N)]
+    xg, wg = GAUSS[6]
+    u0 = lambda x: exp(sin(x))
+    U  = [[(2*i+1)/2*sum(w*PHI[i](s)*u0(xc[j] + h/2*s) for s, w in zip(xg, wg))
+           for i in range(K)] for j in range(N)]
+    nt = int(ceil(T/(cfl*h/5))); dt = T/nt
+    for _ in range(nt):                                        # SSP-RK3
+        R0 = dg_rhs(U, h, nq)
+        U1 = [[U[j][i] + dt*R0[j][i] for i in range(K)] for j in range(N)]
+        R1 = dg_rhs(U1, h, nq)
+        U2 = [[0.75*U[j][i] + 0.25*(U1[j][i] + dt*R1[j][i]) for i in range(K)] for j in range(N)]
+        R2 = dg_rhs(U2, h, nq)
+        U  = [[(U[j][i] + 2*(U2[j][i] + dt*R2[j][i]))/3 for i in range(K)] for j in range(N)]
+    e2 = 0.0
+    for j in range(N):
+        for s, w in zip(xg, wg):
+            uh = sum(U[j][i]*PHI[i](s) for i in range(K))
+            e2 += w*(uh - u0(xc[j] + h/2*s - T))**2*h/2
+    return sqrt(e2)
+
+print("nq  exact-to-deg |   N=10       N=20       N=40    | order")
+for nq in (1, 2, 3):
+    e = [run_dg(N, nq) for N in (10, 20, 40)]
+    print(f" {nq}       {2*nq-1}      | {e[0]:.3e}  {e[1]:.3e}  {e[2]:.3e} |  {log(e[1]/e[2], 2):.2f}")
+```
+
+```text
+nq  exact-to-deg |   N=10       N=20       N=40    | order
+ 1       1      | 1.170e+01  1.302e+01  1.186e+01 |  0.13
+ 2       3      | 5.989e-03  7.369e-04  9.211e-05 |  3.00
+ 3       5      | 5.989e-03  7.369e-04  9.211e-05 |  3.00
+```
+
+逐行来读。$n=2$ 与 $n=3$ 在三套网格上打印出的位数完全相同。实际上它们在第十三位有效数字才分开，那点差别是舍入误差。原因是被积函数只有三次，两点公式给出的已经是**精确**值，多加点数没有任何收益。
+
+$n=1$ 这一行性质完全不同。误差停在 $10^1$ 量级，网格加密四倍也不见缩小。收敛阶 0.13 不是"掉到一阶"，而是"不收敛"。欠积分（under-integration）每一步都喂给格式一个错误的体积项，这个误差会随时间放大。下面的模拟把这个过程原样呈现出来。
+
+<DgUnderIntegrationRunway />
+
+先确认把 `Gauss points` 从 3 降到 2 时 L2 误差读数纹丝不动。然后降到 1：每个单元的抛物线还没转完一圈就撕裂了。把 `cells N` 调大，崩得更快。
+
+## Q4. 为什么偏偏用泰勒基
+
+前面之所以轻松，是因为只有一维。真实网格里四面体、六面体、棱柱、金字塔和多面体是混在一起的。标准有限元要把每种形状映射到参考单元，并在其上定义形函数——也就是说，[度量张量与本构张量的坐标变换](/zh/posts/2026-08-17-curvilinear-constitutive-tensor-transform/)里那套雅可比工作，每种形状都要来一遍。而多面体压根没有参考单元。
+
+Luo 等人提出的泰勒基跳过了映射，直接在单元中心 $\mathbf{x}_c$ 做泰勒展开：
+
+$$
+U_h = \bar{U} + \left.\frac{\partial U}{\partial x}\right|_c (x - x_c)
++ \left.\frac{\partial U}{\partial y}\right|_c (y - y_c)
++ \left.\frac{\partial^2 U}{\partial x^2}\right|_c \frac{(x - x_c)^2}{2} + \cdots
+$$
+
+把每一项各自的单元平均减掉，首项系数 $\bar{U}$ 就恰好是单元平均。这个性质在工程上分量很重。取 $p=0$，DG 与有限体积法完全重合，有限体积用的限制器可以直接搬过来。[Barth–Jespersen 与 Venkatakrishnan 限制器](/zh/posts/2026-07-06-unstructured-slope-limiter-barth-jespersen/)进入 DG 代码走的就是这条通道。由于不区分单元形状，混合网格上一套代码就够了。
+
+代价也有一个。若直接使用 $(x-x_c)^k$，质量矩阵元素按 $h^{k+l+1}$ 缩放，条件数随单元尺寸失控。边界层网格的 $h$ 大约是 $10^{-3}$，看看那时会怎样。
+
+```python
+from math import factorial, sqrt
+
+def taylor_mass(h, K, scale):
+    """宽度为 h 的单元上，泰勒基 b_k = ((x-xc)/scale)^k / k! 的质量矩阵。"""
+    M = [[0.0]*K for _ in range(K)]
+    for i in range(K):
+        for j in range(K):
+            n = i + j
+            if n % 2:                                   # 关于形心的奇数阶矩为零
+                continue
+            M[i][j] = (h/scale)**n * h / (2**n * (n+1) * factorial(i) * factorial(j))
+    return M
+
+def jacobi_eig(A, sweeps=60):
+    """对称矩阵特征值 — 循环雅可比旋转。"""
+    K = len(A); A = [row[:] for row in A]
+    for _ in range(sweeps):
+        for p in range(K-1):
+            for q in range(p+1, K):
+                if abs(A[p][q]) < 1e-300:
+                    continue
+                th = 0.5*(A[q][q]-A[p][p])/A[p][q]
+                t  = (1 if th >= 0 else -1)/(abs(th)+sqrt(th*th+1))
+                c  = 1/sqrt(t*t+1); s = t*c
+                for k in range(K):
+                    akp, akq = A[k][p], A[k][q]
+                    A[k][p], A[k][q] = c*akp - s*akq, s*akp + c*akq
+                for k in range(K):
+                    apk, aqk = A[p][k], A[q][k]
+                    A[p][k], A[q][k] = c*apk - s*aqk, s*apk + c*aqk
+    return [A[k][k] for k in range(K)]
+
+print(" h        raw Taylor      normalized")
+for h in (1.0, 1e-1, 1e-2, 1e-3):
+    out = []
+    for scale in (1.0, h):
+        ev = [abs(v) for v in jacobi_eig(taylor_mass(h, 3, scale))]
+        out.append(max(ev)/min(ev))
+    print(f" {h:<8.0e} {out[0]:.3e}       {out[1]:.3e}")
+```
+
+```text
+ h        raw Taylor      normalized
+ 1e+00    7.225e+02       7.225e+02
+ 1e-01    7.200e+06       7.225e+02
+ 1e-02    7.200e+10       7.225e+02
+ 1e-03    7.200e+14       7.225e+02
+```
+
+$h$ 每缩小十倍，条件数就放大 $10^4$ 倍；在 $p=2$ 时指数正是 $2p$。$h = 10^{-3}$ 时达到 $7.2 \times 10^{14}$，几乎耗尽双精度 $10^{16}$ 的余量。右边按单元尺寸归一化的一列，则与 $h$ 无关地稳定在 722。差别全部来自单元内除以 $\Delta x$ 的那一行。到了 $p=3$，指数变成 6，不做归一化在任何实用网格上都无法使用。
+
+## Q5. 需要预先放进内存的是什么
+
+DG 代码的初始化阶段本质上就是在造表，顺序如下。
+
+1. 按形状给单元分类——四面体／六面体／棱柱／金字塔／多面体。
+2. 按形状给面分类——三角形／四边形／多边形。
+3. 为每种形状准备所需阶数的高斯求积规则。
+4. 在每个高斯点上计算基函数值及其梯度并存下来。
+
+三维中 $p$ 次完全多项式空间的自由度是 $\binom{p+3}{3}$。
+
+| $p$ | 0 | 1 | 2 | 3 | 4 |
+|---|---|---|---|---|---|
+| 每单元模态数 $K$ | 1 | 4 | 10 | 20 | 35 |
+
+原始资料里的 `(1,4,10,20,35)` 就是这一行，带 `*3` 的那组是每个模态的三个梯度分量。三维可压缩计算有五个守恒变量，所以在 $p=2$ 的六面体网格上，仅状态向量每单元就是 $5 \times 10 \times 8 = 400$ 字节，之后还要加上各高斯点处的基函数值。$p=2$ 的六面体若体积求积取 $3^3 = 27$ 点，每单元还需再存 $27 \times 10$ 个实数。
+
+这张表不必逐单元各存一份。参考坐标下的基函数值只要形状相同就完全一样，所以每种形状造一套即可，单元本身只需带上雅可比、形心和尺寸。只有多面体属于例外，必须自带一张表。
+
+## 从 P1 升到 P2，账单落在哪里
+
+把 $p$ 从 1 升到 2，三维中每单元的模态数从 4 变成 10，内存是 2.5 倍。这一部分在预料之内。
+
+预料之外的开销来自三处。第一，体积求积点数的下限随 $n \ge p$ 一起抬高；三维张量积是 $n^3$，点数直接变成八倍。第二，显式时间推进的稳定 CFL 大致按 $1/(2p+1)$ 下降，时间步缩短为原来的五分之三。第三，如果用的是泰勒基，归一化常数 $\Delta x^k$ 的指数变大，条件数管理从可选变成必须。
+
+这三笔钱值不值得付，由问题本身决定。若解在大范围内光滑，提高 $p$ 比加密网格更划算，因为误差按 $h^{p+1}$ 下降。若问题由激波主导，限制器会吃掉 $p$ 带来的大部分收益。但无论哪种情形，为省求积点而把 $n$ 降到 $p$ 以下都不划算。在那条线以下，精度不是略微变差，而是格式在解另一个方程。

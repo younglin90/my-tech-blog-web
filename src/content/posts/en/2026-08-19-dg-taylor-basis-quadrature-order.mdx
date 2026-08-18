@@ -1,0 +1,247 @@
+---
+title: "One Fewer Quadrature Point and the Solution Blew Up — DG's Integration Floor and the Taylor Basis"
+date: 2026-08-19
+description: "The minimum number of Gauss points in a DG cell integral is set by the degree of the integrand, not by the mesh. Going from three points to two changes nothing; going to one destroys the scheme."
+tags: ["Discontinuous-Galerkin", "Quadrature", "FEM", "Unstructured-Grid", "High-Order"]
+locale: en
+slug: 2026-08-19-dg-taylor-basis-quadrature-order
+takeaway: "The DG volume term is a polynomial of degree $2p-1$. An $n$-point Gauss rule is exact to $2n-1$, so the floor is $n = p$ — and below it you do not lose an order, you lose the scheme."
+draft: false
+---
+
+import { GaussPointExactnessDial } from '@/components/post-viz/2026-08-19-dg-taylor-basis-quadrature-order/GaussPointExactnessDial'
+import { DgUnderIntegrationRunway } from '@/components/post-viz/2026-08-19-dg-taylor-basis-quadrature-order/DgUnderIntegrationRunway'
+
+## One quadrature point short and the whole answer vanished
+
+I once cut the cell integration in a discontinuous Galerkin (DG — a high-order method that puts an independent polynomial in every cell and stitches them together with face fluxes) code from three Gauss points down to two. On paper that removes a third of the integration cost per cell. I ran it, and the L2 error matched to thirteen decimal places. Encouraged, I went down to one point. This time the accuracy did not drop by an order: the solution diverged before completing a single revolution.
+
+The line was not in the mesh size, and not in the CFL number. It was in the polynomial degree of the integrand. This article works out where that line sits, why it sits there, and how the basis has to be chosen so it can be held on arbitrary grids. The evidence is a 1D DG-P2 solver and a mass-matrix condition-number calculation.
+
+Try it directly in the simulation below.
+
+<GaussPointExactnessDial />
+
+Move `DG order p` and `Gauss points n` independently. As long as $n \ge p$ the badge stays green and the error bar stays empty, no matter how hard you shake `u_h shape`. Drop $n$ one notch further and it turns red.
+
+## Q1. Is DG a finite element method or a finite volume method?
+
+Both. Look at a single cell and it is finite elements; look only at the cell boundary and it is finite volumes.
+
+Multiply the conservation law by a test function $\phi_i$, integrate over the cell $\Omega_e$, and integrate by parts:
+
+$$
+\int_{\Omega_e} \frac{\partial U_h}{\partial t}\,\phi_i \, d\Omega
+- \int_{\Omega_e} \mathbf{F}(U_h)\cdot\nabla\phi_i \, d\Omega
++ \oint_{\partial\Omega_e} \phi_i\, \hat{\mathbf{F}}(U_h^-, U_h^+)\cdot\mathbf{n}\, dS = 0
+$$
+
+Here $U_h$ is the local approximation, $\mathbf{F}$ the convective flux, $\hat{\mathbf{F}}$ a numerical flux built from the two traces $U_h^-, U_h^+$, and $\mathbf{n}$ the face normal. A viscous flux and a source term each add one more term, but the structure is unchanged.
+
+What matters is that the equation splits into two pieces. The **volume integral** closes inside the cell; only the **surface integral** talks to the neighbors, and what it carries is a single-valued flux from a Riemann solver. DG does with several polynomial coefficients what finite volumes do with one cell average. So everything from [where the conservative and primitive forms part ways](/en/posts/2026-08-18-conservative-vs-primitive-shock-speed/) still applies: lose the flux-difference structure and DG gets shock speeds wrong too.
+
+Writing the approximation as a linear combination of basis functions,
+
+$$
+U_h(\mathbf{x}, t) = \sum_{k=1}^{K} U_k(t)\, b_k(\mathbf{x})
+$$
+
+turns the time term into a mass matrix $M_{ik} = \int_{\Omega_e} b_i b_k \, d\Omega$. That is one small $K \times K$ matrix per cell. It never couples to neighbors, so it can be inverted once and stored. This is a large part of why DG parallelizes well.
+
+## Q2. To what degree does the integration have to be exact?
+
+Count the degree of the volume integrand and the answer falls out.
+
+Take a polynomial space of degree $p$. Then $U_h$ has degree $p$, the test function $\phi_i$ has degree at most $p$, so $\nabla\phi_i$ has degree $p-1$. For a linear flux the product is
+
+$$
+\deg\left(\mathbf{F}(U_h)\cdot\nabla\phi_i\right) = p + (p-1) = 2p - 1
+$$
+
+An $n$-point Gauss–Legendre rule is exact through degree $2n-1$. Put the two together and the floor appears:
+
+$$
+2n - 1 \ge 2p - 1 \quad \Longrightarrow \quad n \ge p
+$$
+
+That is the source note's line about needing "at least order $2K-1$ integration or the convergence rate degrades." Refining the mesh does not move this inequality, because polynomial degree has nothing to do with cell size.
+
+Two caveats. The mass-matrix integrand is $b_i b_k$, degree $2p$, so its own floor is one higher at $n \ge p+1$. And if the flux is nonlinear, $\mathbf{F}(U_h)$ is not a polynomial at all — which is why Cockburn and Shu recommend degree $2p$ in the volume and $2p+1$ on faces. Curved elements add a Jacobian to the product, so production codes keep more margin still.
+
+## Q3. What actually breaks at one point?
+
+Measuring is faster than arguing. Solve $u_t + u_x = 0$ on the periodic domain $[0, 2\pi]$ with DG-P2: Legendre basis, SSP-RK3 in time, upwind face flux. The mass matrix is supplied analytically so that the number of volume quadrature points is the only variable left.
+
+```python
+from math import pi, sin, exp, log, sqrt, ceil
+
+GAUSS = {                                   # Gauss-Legendre on [-1,1]: exact to degree 2n-1
+    1: ([0.0], [2.0]),
+    2: ([-0.5773502691896257, 0.5773502691896257], [1.0, 1.0]),
+    3: ([-0.7745966692414834, 0.0, 0.7745966692414834], [5/9, 8/9, 5/9]),
+    6: ([-0.9324695142031521, -0.6612093864662645, -0.2386191860831969,
+          0.2386191860831969,  0.6612093864662645,  0.9324695142031521],
+        [0.1713244923791704, 0.3607615730481386, 0.4679139345726910,
+         0.4679139345726910, 0.3607615730481386, 0.1713244923791704]),
+}
+PHI  = [lambda s: 1.0, lambda s: s,   lambda s: 1.5*s*s - 0.5]   # Legendre modes, p = 2
+DPHI = [lambda s: 0.0, lambda s: 1.0, lambda s: 3.0*s]
+K = 3
+
+def dg_rhs(U, h, nq):
+    """Semi-discrete DG residual for u_t + u_x = 0 with an upwind face flux."""
+    xq, wq = GAUSS[nq]
+    N = len(U)
+    uR = [sum(U[j][i]*PHI[i](1.0) for i in range(K)) for j in range(N)]   # right trace
+    R  = []
+    for j in range(N):
+        fR = uR[j]                       # a = 1 > 0, so the face takes the left state
+        fL = uR[j-1]
+        row = []
+        for i in range(K):
+            vol = 0.0
+            for xk, wk in zip(xq, wq):
+                uh = sum(U[j][m]*PHI[m](xk) for m in range(K))
+                vol += wk*DPHI[i](xk)*uh
+            surf = PHI[i](1.0)*fR - PHI[i](-1.0)*fL
+            row.append((vol - surf)*(2*i+1)/h)                # M_ii = h/(2i+1)
+        R.append(row)
+    return R
+
+def run_dg(N, nq, T=1.0, cfl=0.05):
+    h  = 2*pi/N
+    xc = [h*(j + 0.5) for j in range(N)]
+    xg, wg = GAUSS[6]
+    u0 = lambda x: exp(sin(x))
+    U  = [[(2*i+1)/2*sum(w*PHI[i](s)*u0(xc[j] + h/2*s) for s, w in zip(xg, wg))
+           for i in range(K)] for j in range(N)]
+    nt = int(ceil(T/(cfl*h/5))); dt = T/nt
+    for _ in range(nt):                                        # SSP-RK3
+        R0 = dg_rhs(U, h, nq)
+        U1 = [[U[j][i] + dt*R0[j][i] for i in range(K)] for j in range(N)]
+        R1 = dg_rhs(U1, h, nq)
+        U2 = [[0.75*U[j][i] + 0.25*(U1[j][i] + dt*R1[j][i]) for i in range(K)] for j in range(N)]
+        R2 = dg_rhs(U2, h, nq)
+        U  = [[(U[j][i] + 2*(U2[j][i] + dt*R2[j][i]))/3 for i in range(K)] for j in range(N)]
+    e2 = 0.0
+    for j in range(N):
+        for s, w in zip(xg, wg):
+            uh = sum(U[j][i]*PHI[i](s) for i in range(K))
+            e2 += w*(uh - u0(xc[j] + h/2*s - T))**2*h/2
+    return sqrt(e2)
+
+print("nq  exact-to-deg |   N=10       N=20       N=40    | order")
+for nq in (1, 2, 3):
+    e = [run_dg(N, nq) for N in (10, 20, 40)]
+    print(f" {nq}       {2*nq-1}      | {e[0]:.3e}  {e[1]:.3e}  {e[2]:.3e} |  {log(e[1]/e[2], 2):.2f}")
+```
+
+```text
+nq  exact-to-deg |   N=10       N=20       N=40    | order
+ 1       1      | 1.170e+01  1.302e+01  1.186e+01 |  0.13
+ 2       3      | 5.989e-03  7.369e-04  9.211e-05 |  3.00
+ 3       5      | 5.989e-03  7.369e-04  9.211e-05 |  3.00
+```
+
+Read the three rows in turn. The $n=2$ and $n=3$ rows agree on every mesh to the digits shown; they actually split at the thirteenth significant figure, and that gap is rounding noise. The integrand has degree 3, so the two-point rule already returns the **exact** value. Extra points buy nothing.
+
+The $n=1$ row is a different animal. The error sits at order $10^1$ and refuses to shrink when the mesh is refined fourfold. An observed rate of 0.13 does not mean "dropped to first order"; it means "does not converge." Under-integration feeds the scheme a wrong volume term every step, and that error amplifies in time. The next simulation shows the process as it happens.
+
+<DgUnderIntegrationRunway />
+
+First confirm that dropping `Gauss points` from 3 to 2 leaves the L2 readout untouched. Then drop it to 1: the per-cell parabolas tear apart before completing a lap. Raising `cells N` only makes it happen sooner.
+
+## Q4. Why a Taylor basis in particular?
+
+Everything so far was comfortable because it was one-dimensional. Real grids mix tetrahedra, hexahedra, prisms, pyramids, and polyhedra. Standard finite elements map each shape to a reference element and define shape functions there — which means one set of the Jacobian machinery from [transforming the metric and constitutive tensors](/en/posts/2026-08-17-curvilinear-constitutive-tensor-transform/) per shape. Polyhedra have no reference element at all.
+
+The Taylor basis proposed by Luo and coauthors skips the mapping. It simply expands about the cell centroid $\mathbf{x}_c$:
+
+$$
+U_h = \bar{U} + \left.\frac{\partial U}{\partial x}\right|_c (x - x_c)
++ \left.\frac{\partial U}{\partial y}\right|_c (y - y_c)
++ \left.\frac{\partial^2 U}{\partial x^2}\right|_c \frac{(x - x_c)^2}{2} + \cdots
+$$
+
+Subtract each term's own cell average from it and the leading coefficient $\bar{U}$ becomes exactly the cell average. That property pays off in practice. Set $p=0$ and DG collapses onto the finite volume method exactly, so finite volume limiters drop straight in. That is the route by which the [Barth–Jespersen and Venkatakrishnan limiters](/en/posts/2026-07-06-unstructured-slope-limiter-barth-jespersen/) get reused inside DG codes. Since nothing depends on cell shape, one code path covers a hybrid grid.
+
+There is a price. Using $(x-x_c)^k$ raw makes the mass matrix entries scale as $h^{k+l+1}$, so the condition number runs away with cell size. Boundary-layer cells sit around $h = 10^{-3}$; here is what that does.
+
+```python
+from math import factorial, sqrt
+
+def taylor_mass(h, K, scale):
+    """Mass matrix of the Taylor basis b_k = ((x-xc)/scale)^k / k! over a cell of width h."""
+    M = [[0.0]*K for _ in range(K)]
+    for i in range(K):
+        for j in range(K):
+            n = i + j
+            if n % 2:                                   # odd moments vanish about the centroid
+                continue
+            M[i][j] = (h/scale)**n * h / (2**n * (n+1) * factorial(i) * factorial(j))
+    return M
+
+def jacobi_eig(A, sweeps=60):
+    """Symmetric eigenvalues by cyclic Jacobi rotations."""
+    K = len(A); A = [row[:] for row in A]
+    for _ in range(sweeps):
+        for p in range(K-1):
+            for q in range(p+1, K):
+                if abs(A[p][q]) < 1e-300:
+                    continue
+                th = 0.5*(A[q][q]-A[p][p])/A[p][q]
+                t  = (1 if th >= 0 else -1)/(abs(th)+sqrt(th*th+1))
+                c  = 1/sqrt(t*t+1); s = t*c
+                for k in range(K):
+                    akp, akq = A[k][p], A[k][q]
+                    A[k][p], A[k][q] = c*akp - s*akq, s*akp + c*akq
+                for k in range(K):
+                    apk, aqk = A[p][k], A[q][k]
+                    A[p][k], A[q][k] = c*apk - s*aqk, s*apk + c*aqk
+    return [A[k][k] for k in range(K)]
+
+print(" h        raw Taylor      normalized")
+for h in (1.0, 1e-1, 1e-2, 1e-3):
+    out = []
+    for scale in (1.0, h):
+        ev = [abs(v) for v in jacobi_eig(taylor_mass(h, 3, scale))]
+        out.append(max(ev)/min(ev))
+    print(f" {h:<8.0e} {out[0]:.3e}       {out[1]:.3e}")
+```
+
+```text
+ h        raw Taylor      normalized
+ 1e+00    7.225e+02       7.225e+02
+ 1e-01    7.200e+06       7.225e+02
+ 1e-02    7.200e+10       7.225e+02
+ 1e-03    7.200e+14       7.225e+02
+```
+
+Every factor of ten in $h$ costs a factor of $10^4$ in condition number; at $p=2$ the exponent is $2p$. At $h = 10^{-3}$ the value reaches $7.2 \times 10^{14}$, which spends nearly all of double precision's $10^{16}$ headroom. The normalized column on the right holds at 722 regardless of $h$. One division by $\Delta x$ inside the cell is the entire difference. At $p=3$ the exponent becomes 6, so without normalization the basis is unusable on any practical grid.
+
+## Q5. What has to be tabulated up front?
+
+The initialization stage of a DG code is essentially table building, in this order:
+
+1. Classify cells by shape — tetrahedron, hexahedron, prism, pyramid, polyhedron.
+2. Classify faces by shape — triangle, quadrilateral, polygon.
+3. Prepare a Gauss quadrature rule of the required order for each shape.
+4. Evaluate the basis functions and their gradients at every Gauss point and store them.
+
+In three dimensions the number of degrees of freedom in the complete polynomial space of degree $p$ is $\binom{p+3}{3}$.
+
+| $p$ | 0 | 1 | 2 | 3 | 4 |
+|---|---|---|---|---|---|
+| modes per cell $K$ | 1 | 4 | 10 | 20 | 35 |
+
+That row is the `(1,4,10,20,35)` in the source note; the entry marked `*3` is the three gradient components of each mode. A 3D compressible solver carries five conserved variables, so on a $p=2$ hexahedral grid the state vector alone is $5 \times 10 \times 8 = 400$ bytes per cell, before the stored basis values at quadrature points. Taking $3^3 = 27$ volume points for a $p=2$ hexahedron adds another $27 \times 10$ reals per cell.
+
+None of this has to be held per cell. Basis values in reference coordinates are identical for identical shapes, so one table per shape is enough; the cell needs only its Jacobian, centroid, and size. Polyhedra are the one exception that must carry their own table.
+
+## Where the bill arrives when you go from P1 to P2
+
+Raising $p$ from 1 to 2 takes the modes per cell in 3D from 4 to 10 — 2.5 times the memory. That much is expected.
+
+The unexpected costs show up in three places. First, the floor on volume quadrature points rises with $n \ge p$, and on a tensor-product rule that is $n^3$, so the point count grows eightfold. Second, the stable explicit CFL falls roughly as $1/(2p+1)$, shortening the time step by a factor of five thirds. Third, if the basis is a Taylor basis, the exponent on the $\Delta x^k$ normalization grows and conditioning becomes something you have to manage rather than ignore.
+
+Whether all three are worth paying is decided by the problem. For a smooth solution spread over a wide region, raising $p$ is cheaper than refining the mesh, because the error falls as $h^{p+1}$. For a shock-dominated problem, the limiter eats most of what $p$ bought. Either way, saving quadrature points by going below $n = p$ is never the trade to make. Below that line the accuracy does not merely degrade — the scheme solves a different equation.
