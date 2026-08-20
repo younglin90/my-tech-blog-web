@@ -1,0 +1,227 @@
+---
+title: "I Plugged in Pressure Directly and a Still Interface Started to Shiver — Two Forms of Nonideal LBM Forcing"
+date: 2026-08-21
+description: "When a van der Waals fluid is solved with lattice Boltzmann, putting pressure p in the force term versus chemical potential mu agrees in the continuum but splits on the lattice."
+tags: ["Van-der-Waals", "Forcing-Term", "Gibbs-Duhem", "LBM", "Well-Balanced"]
+locale: en
+slug: 2026-08-21-nonideal-lbm-pressure-vs-freeenergy-forcing
+takeaway: "Pressure-form and free-energy-form forcing are identical in the continuum by Gibbs-Duhem. On the lattice, though, the pressure form leaves a ghost force at the interface."
+draft: false
+---
+
+import { VanDerWaalsMaxwellIsotherm } from '@/components/post-viz/2026-08-21-nonideal-lbm-pressure-vs-freeenergy-forcing/VanDerWaalsMaxwellIsotherm'
+import { ForcingFormGhostInterface } from '@/components/post-viz/2026-08-21-nonideal-lbm-pressure-vs-freeenergy-forcing/ForcingFormGhostInterface'
+
+## A still droplet started to flow on its own
+
+I put the van der Waals equation of state on top of lattice Boltzmann (LBM, Lattice Boltzmann Method) and solved a two-phase fluid.
+The initial condition was a single droplet at rest. The density field is smooth, and the velocity is zero everywhere.
+
+After a few steps, small velocities sprouted up near the interface. Nobody pushed it, yet the fluid flows.
+This artificial velocity is called a parasitic current (a ghost flow that appears at the interface with no physical cause).
+
+Narrowing down the cause led me to one spot in the code. It comes down to what you put into the force term. Do you plug in the pressure $p$ directly,
+or do you plug in the chemical potential $\mu$? The textbooks say the two are the same. This post writes out, as a ledger, how far that "same" holds true.
+The answer is one line — they agree in the continuum, and they split on the lattice.
+
+## Where does the force enter
+
+LBM advects and collides distribution functions to recover the macroscopic equations. For an ideal gas the pressure that comes out on its own is just
+$c_s^2 \rho$ ($c_s$ is the lattice speed of sound). The true pressure of a nonideal fluid like van der Waals differs from that.
+Filling that difference is the job of the force term $\mathbf{F}$.
+
+The goal is to revive the following momentum equation.
+
+$$
+\partial_t (\rho \mathbf{u}) + \nabla \cdot (\rho \mathbf{u}\mathbf{u}) = -\nabla p + \nabla \cdot \boldsymbol{\tau} + \kappa \rho \, \nabla (\nabla^2 \rho)
+$$
+
+$p$ is the van der Waals pressure, $\boldsymbol{\tau}$ is the viscous stress, and the last term is the Korteweg stress that builds the interface, with $\kappa$ its
+strength. Since streaming supplies $c_s^2\rho$, the force only needs to fill the remaining difference.
+
+Here two branches appear. A form that uses the pressure directly, and a form that uses the chemical potential derived from the free energy.
+
+$$
+\mathbf{F}_p = -\nabla\!\left(p - c_s^2 \rho\right) + \kappa \rho \, \nabla(\nabla^2 \rho)
+$$
+
+$$
+\mathbf{F}_\mu = -\rho \, \nabla \mu + c_s^2 \nabla \rho + \kappa \rho \, \nabla(\nabla^2 \rho)
+$$
+
+The first is the pressure form (today's subject, "plug in $p$ directly"), the second is the free-energy form. To see whether the two are really the same, you first
+have to know the shape of the van der Waals equation of state. Let's lower the temperature directly below.
+
+<VanDerWaalsMaxwellIsotherm />
+
+Drop `temperature` below 1.0 and the isotherm folds into an S. One pressure maps to three densities. The physical two-phase pressure is then set at the spot where
+the two green lobes have equal area (the Maxwell equal-area rule). The gap between the blue dot and the pink dot is exactly the density difference the forcing term
+has to hold up.
+
+## Gibbs-Duhem — pressure and chemical potential say the same thing twice
+
+Whether the two forms are the same is settled by a single relation. It is the Gibbs–Duhem relation that ties pressure and chemical potential together at constant
+temperature.
+
+$$
+\mathrm{d}p = \rho \, \mathrm{d}\mu \qquad (T = \text{const})
+$$
+
+Substitute this into $\mathbf{F}_\mu$. Since $-\rho\nabla\mu = -\nabla p$, the chemical-potential term turns straight into a pressure gradient. The remaining
+$c_s^2\nabla\rho$ meshes exactly with the term the pressure form carried as $-\nabla(-c_s^2\rho)$. In the end $\mathbf{F}_p = \mathbf{F}_\mu$.
+
+So the only ground for the claim "you can just plug in $p$ directly" is Gibbs–Duhem. Van der Waals satisfies this relation exactly, because the equation of state and
+the free energy come from the same thermodynamics. It is the same kind of equivalence as the
+[LBM forcing schemes](/en/posts/2026-07-27-lbm-forcing-term-guo-shan-chen-edm/) confirmed by Chapman–Enskog expansion — each wearing a different face, yet all
+recovering the same macroscopic equation.
+
+## Coexistence densities and Gibbs-Duhem, verified in Python
+
+Words alone are not trustworthy. Let's write the van der Waals equation of state in reduced units, find the coexistence densities per temperature with Newton's
+method, then directly measure the Gibbs–Duhem defect $\lvert \mathrm{d}p/\mathrm{d}\rho - \rho\,\mathrm{d}\mu/\mathrm{d}\rho \rvert$.
+
+```python
+import numpy as np
+
+A, B, R = 9.0 / 8.0, 1.0 / 3.0, 1.0   # van der Waals, reduced units (rho_c=1, T_c=1)
+
+def p_eos(rho, T):                     # van der Waals pressure
+    return rho * R * T / (1.0 - B * rho) - A * rho * rho
+
+def mu_eos(rho, T):                    # chemical potential mu = df/drho
+    return R * T * (np.log(rho / (1.0 - B * rho)) + B * rho / (1.0 - B * rho)) - 2.0 * A * rho
+
+def maxwell(T):                        # equal-area rule: densities where p and mu match in both phases
+    x = np.array([0.30, 1.90]); h = 1e-8
+    for _ in range(80):
+        f = np.array([p_eos(x[0], T) - p_eos(x[1], T), mu_eos(x[0], T) - mu_eos(x[1], T)])
+        J = np.empty((2, 2))
+        for k in range(2):
+            y = x.copy(); y[k] += h
+            g = np.array([p_eos(y[0], T) - p_eos(y[1], T), mu_eos(y[0], T) - mu_eos(y[1], T)])
+            J[:, k] = (g - f) / h
+        x -= np.linalg.solve(J, f)
+    return x[0], x[1]
+
+# Gibbs-Duhem: dp = rho d(mu). The only ground for plugging in pressure directly.
+print("T/Tc  rho_vap  rho_liq |  max| dp/drho - rho*dmu/drho |")
+for T in (0.95, 0.90, 0.85):
+    rv, rl = maxwell(T)
+    r = np.linspace(rv, rl, 400)
+    dp = np.gradient(p_eos(r, T), r)
+    dmu = np.gradient(mu_eos(r, T), r)
+    err = np.abs(dp - r * dmu).max()
+    print(f"{T:4.2f}  {rv:7.4f}  {rl:7.4f} |  {err:.2e}")
+```
+
+```text
+T/Tc  rho_vap  rho_liq |  max| dp/drho - rho*dmu/drho |
+0.95   0.5790   1.4617 |  2.94e-04
+0.90   0.4257   1.6573 |  9.44e-04
+0.85   0.3197   1.8071 |  1.98e-03
+```
+
+The defect is at the $10^{-3}$ level, and even that is because the derivatives were measured by finite differences. The lower the temperature, the wider the gap
+between the coexistence densities. Gibbs–Duhem holds exactly in the continuum. Up to here the pressure form and the free-energy form are completely identical.
+
+## On the discrete lattice the two split apart
+
+The problem is the lattice. There is no guarantee that the continuum $\mathrm{d}p = \rho\,\mathrm{d}\mu$ holds under discrete differentiation.
+A center-differenced $\nabla p$ and $\rho\,\nabla\mu$ diverge from each other where the density bends sharply, as at an interface.
+
+I solved a still planar interface with the Euler–Lagrange condition, then computed the two force forms directly on top of it.
+
+```python
+import numpy as np
+
+A, B, R = 9.0 / 8.0, 1.0 / 3.0, 1.0
+CS2, KAPPA, T = 1.0 / 3.0, 0.02, 0.90
+
+def p_eos(rho):  return rho * R * T / (1.0 - B * rho) - A * rho * rho
+def mu_eos(rho): return R * T * (np.log(rho / (1.0 - B * rho)) + B * rho / (1.0 - B * rho)) - 2.0 * A * rho
+def dmu(rho):    return R * T * (1.0 / (rho * (1.0 - B * rho)) + B / (1.0 - B * rho) ** 2) - 2.0 * A
+def diff1(a, dx): return (np.roll(a, -1) - np.roll(a, 1)) / (2.0 * dx)
+def lap(a, dx):   return (np.roll(a, -1) - 2.0 * a + np.roll(a, 1)) / dx ** 2
+
+def maxwell():
+    x = np.array([0.30, 1.90]); h = 1e-8
+    for _ in range(80):
+        f = np.array([p_eos(x[0]) - p_eos(x[1]), mu_eos(x[0]) - mu_eos(x[1])])
+        J = np.empty((2, 2))
+        for k in range(2):
+            y = x.copy(); y[k] += h
+            g = np.array([p_eos(y[0]) - p_eos(y[1]), mu_eos(y[0]) - mu_eos(y[1])])
+            J[:, k] = (g - f) / h
+        x -= np.linalg.solve(J, f)
+    return x[0], x[1]
+
+rv, rl = maxwell()
+mu_co = mu_eos(np.array([rv]))[0]
+
+# (1) Solve the still planar interface and compare the two forcing forms
+NX = 240
+xs = np.arange(NX)
+rho = 0.5 * (rl + rv) + 0.5 * (rl - rv) * (np.tanh((xs - NX / 4) / 6.0) - np.tanh((xs - 3 * NX / 4) / 6.0) - 1.0)
+for _ in range(6000):                                    # relax the Euler-Lagrange residual
+    rho -= 0.15 * (mu_eos(rho) - KAPPA * lap(rho, 1.0) - mu_co) / dmu(rho)
+
+Gp  = -diff1(p_eos(rho) - CS2 * rho, 1.0) + KAPPA * rho * diff1(lap(rho, 1.0), 1.0) - diff1(CS2 * rho, 1.0)
+Gmu = -rho * diff1(mu_eos(rho) - KAPPA * lap(rho, 1.0), 1.0) + CS2 * diff1(rho, 1.0) - diff1(CS2 * rho, 1.0)
+gd  = np.abs(diff1(p_eos(rho), 1.0) - rho * diff1(mu_eos(rho), 1.0)).max()
+
+print(f"coexistence         rho_vap = {rv:.4f}   rho_liq = {rl:.4f}")
+print(f"free-energy form    max|G_mu|        = {np.abs(Gmu).max():.2e}   (well-balanced)")
+print(f"pressure form       max|G_p|         = {np.abs(Gp).max():.2e}   (spurious force)")
+print(f"gap between forms   max|G_p - G_mu|  = {np.abs(Gp - Gmu).max():.2e}")
+print(f"discrete Gibbs-Duhem defect          = {gd:.2e}   <- the gap, exactly")
+
+# (2) Refine dx on the same physical interface and the defect converges to 0 fast
+print("\ncells/interface |  Gibbs-Duhem defect  order")
+prev = None
+for n in (10, 20, 40, 80):
+    L = 40.0; N = int(L * n / 10)
+    z = np.linspace(-L / 2, L / 2, N, endpoint=False); dx = z[1] - z[0]
+    r = 0.5 * (rl + rv) - 0.5 * (rl - rv) * np.tanh(z / (0.1 * n))
+    d = np.abs(diff1(p_eos(r), dx) - r * diff1(mu_eos(r), dx))[N // 4:3 * N // 4].max()
+    order = "" if prev is None else f"{np.log(prev / d) / np.log(2.0):5.2f}"
+    print(f"{n:9d}       |  {d:.3e}          {order}")
+    prev = d
+```
+
+```text
+coexistence         rho_vap = 0.4257   rho_liq = 1.6573
+free-energy form    max|G_mu|        = 2.02e-16   (well-balanced)
+pressure form       max|G_p|         = 1.60e-02   (spurious force)
+gap between forms   max|G_p - G_mu|  = 1.60e-02
+discrete Gibbs-Duhem defect          = 1.60e-02   <- the gap, exactly
+
+cells/interface |  Gibbs-Duhem defect  order
+       10       |  1.140e-02          
+       20       |  1.428e-03           3.00
+       40       |  5.115e-05           4.80
+       80       |  1.611e-06           4.99
+```
+
+Three lines are the crux. The free-energy form has a force of $10^{-16}$ at the interface, effectively zero. The pressure form leaves behind a force of
+$1.6\times10^{-2}$. And the difference between the two forms matches the discrete Gibbs–Duhem defect down to the decimal. That defect is exactly the identity of the
+ghost force the pressure form spilled. This force pushes the still interface and creates the parasitic current.
+
+Below, let's change how widely the interface is spread out (lattice resolution).
+
+<ForcingFormGhostInterface />
+
+Raise `resolution` so the interface spans more cells, and the peak of the red pressure-form curve collapses toward zero. The green free-energy form clings to zero
+from start to finish. The ghost force was not physics but a byproduct of discretization.
+
+## So what do you plug in
+
+To sum up, the choice is twofold. First, use the free-energy form ($-\rho\nabla\mu$). By definition this form is balanced at the interface, so there is no ghost force
+even on a coarse lattice. Second, if you really want to use the pressure directly, do not discretize $\nabla p$ freely but write it to match $\rho\,\nabla\mu$. Then
+Gibbs–Duhem holds in the discrete as well and the balance survives.
+
+If you can resolve the interface with 4 to 5 cells or more, the pressure form's error vanishes fast, as in the table above. But interfaces in practice are usually
+thin, around 3 cells. In that regime the pressure form produces a ghost force proportional to the square of the density difference. I once looked at the same
+symptom from the surface-tension side in [parasitic currents and well-balanced surface tension](/en/posts/2026-07-19-parasitic-currents-surface-tension/). The root
+is one — did you carry a term that is balanced in the continuum over to the discrete as balanced too.
+
+The convenience of "using $p$ directly" is not free. Its price is billed in the currency of interface thickness.

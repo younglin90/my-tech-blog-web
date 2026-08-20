@@ -1,0 +1,228 @@
+---
+title: "Metí la presión tal cual y una interfaz en reposo empezó a temblar — dos formas del forcing en LBM no ideal"
+date: 2026-08-21
+description: "Al resolver un fluido de van der Waals con lattice Boltzmann, poner la presión p en el término de fuerza o el potencial químico mu coincide en el continuo y se separa en la red."
+tags: ["Van-der-Waals", "Forcing-Term", "Gibbs-Duhem", "LBM", "Well-Balanced"]
+locale: es
+slug: 2026-08-21-nonideal-lbm-pressure-vs-freeenergy-forcing
+takeaway: "El forcing en forma de presión y en forma de energía libre son idénticos en el continuo por Gibbs-Duhem. Pero en la red, la forma de presión deja una fuerza fantasma en la interfaz."
+draft: false
+---
+
+import { VanDerWaalsMaxwellIsotherm } from '@/components/post-viz/2026-08-21-nonideal-lbm-pressure-vs-freeenergy-forcing/VanDerWaalsMaxwellIsotherm'
+import { ForcingFormGhostInterface } from '@/components/post-viz/2026-08-21-nonideal-lbm-pressure-vs-freeenergy-forcing/ForcingFormGhostInterface'
+
+## Una gota en reposo empezó a fluir sola
+
+Puse la ecuación de estado de van der Waals sobre lattice Boltzmann (LBM, Lattice Boltzmann Method) y resolví un fluido bifásico.
+La condición inicial era una sola gota en reposo. El campo de densidad es liso y la velocidad es cero en todas partes.
+
+Tras unos pasos, brotaron pequeñas velocidades cerca de la interfaz. Nadie la empujó y aun así el fluido fluye.
+A esta velocidad artificial se le llama corriente parásita (un flujo fantasma que aparece en la interfaz sin causa física).
+
+Al acotar la causa, llegué a un punto del código. Todo se reduce a qué se mete en el término de fuerza. ¿Se mete la presión $p$ tal cual,
+o se mete el potencial químico $\mu$? Los libros de texto dicen que las dos son lo mismo. Este texto anota, como un libro de cuentas, hasta dónde es cierto ese
+"lo mismo". La respuesta es una línea: coinciden en el continuo y se separan en la red.
+
+## ¿Por dónde entra la fuerza?
+
+LBM advecciona y colisiona funciones de distribución para recuperar las ecuaciones macroscópicas. En un gas ideal la presión que sale por sí sola es solo
+$c_s^2 \rho$ ($c_s$ es la velocidad del sonido en la red). La presión real de un fluido no ideal como van der Waals difiere de eso.
+Cubrir esa diferencia es la tarea del término de fuerza $\mathbf{F}$.
+
+El objetivo es recuperar la siguiente ecuación de momento.
+
+$$
+\partial_t (\rho \mathbf{u}) + \nabla \cdot (\rho \mathbf{u}\mathbf{u}) = -\nabla p + \nabla \cdot \boldsymbol{\tau} + \kappa \rho \, \nabla (\nabla^2 \rho)
+$$
+
+$p$ es la presión de van der Waals, $\boldsymbol{\tau}$ es el esfuerzo viscoso y el último término es el esfuerzo de Korteweg que levanta la interfaz, con $\kappa$
+como su intensidad. Como el streaming aporta $c_s^2\rho$, la fuerza solo tiene que rellenar la diferencia restante.
+
+Aquí surgen dos ramas. Una forma que usa la presión tal cual, y una forma que usa el potencial químico proveniente de la energía libre.
+
+$$
+\mathbf{F}_p = -\nabla\!\left(p - c_s^2 \rho\right) + \kappa \rho \, \nabla(\nabla^2 \rho)
+$$
+
+$$
+\mathbf{F}_\mu = -\rho \, \nabla \mu + c_s^2 \nabla \rho + \kappa \rho \, \nabla(\nabla^2 \rho)
+$$
+
+La primera es la forma de presión (el tema de hoy, "meter $p$ tal cual"), la segunda es la forma de energía libre. Para ver si las dos son realmente iguales,
+primero hay que conocer la forma de la ecuación de estado de van der Waals. Bajemos la temperatura directamente abajo.
+
+<VanDerWaalsMaxwellIsotherm />
+
+Baja `temperature` por debajo de 1.0 y la isoterma se pliega en forma de S. A una presión le corresponden tres densidades. La presión física bifásica queda
+entonces fijada en el punto donde los dos lóbulos verdes tienen igual área (la regla de igual área de Maxwell). El hueco entre el punto azul y el punto rosa es
+exactamente la diferencia de densidad que el término de forcing debe sostener.
+
+## Gibbs-Duhem: la presión y el potencial químico dicen lo mismo dos veces
+
+Si las dos formas son iguales lo decide una sola relación. Es la relación de Gibbs–Duhem que enlaza presión y potencial químico a temperatura constante.
+
+$$
+\mathrm{d}p = \rho \, \mathrm{d}\mu \qquad (T = \text{const})
+$$
+
+Sustituye esto en $\mathbf{F}_\mu$. Como $-\rho\nabla\mu = -\nabla p$, el término del potencial químico se convierte directamente en un gradiente de presión. El
+$c_s^2\nabla\rho$ restante engrana exactamente con el término que la forma de presión llevaba como $-\nabla(-c_s^2\rho)$. Al final $\mathbf{F}_p = \mathbf{F}_\mu$.
+
+Es decir, el único fundamento de la afirmación "se puede meter $p$ tal cual" es Gibbs–Duhem. Van der Waals satisface esta relación de forma exacta, porque la
+ecuación de estado y la energía libre salen de la misma termodinámica. Es el mismo tipo de equivalencia que los
+[esquemas de forcing de LBM](/es/posts/2026-07-27-lbm-forcing-term-guo-shan-chen-edm/) confirmados por la expansión de Chapman–Enskog: cada uno con una cara
+distinta, y aun así todos recuperan la misma ecuación macroscópica.
+
+## Densidades de coexistencia y Gibbs-Duhem, verificadas en Python
+
+Las palabras solas no son fiables. Escribamos la ecuación de estado de van der Waals en unidades reducidas, hallemos las densidades de coexistencia por temperatura
+con el método de Newton, y luego midamos directamente el defecto de Gibbs–Duhem $\lvert \mathrm{d}p/\mathrm{d}\rho - \rho\,\mathrm{d}\mu/\mathrm{d}\rho \rvert$.
+
+```python
+import numpy as np
+
+A, B, R = 9.0 / 8.0, 1.0 / 3.0, 1.0   # van der Waals, unidades reducidas (rho_c=1, T_c=1)
+
+def p_eos(rho, T):                     # presión de van der Waals
+    return rho * R * T / (1.0 - B * rho) - A * rho * rho
+
+def mu_eos(rho, T):                    # potencial químico mu = df/drho
+    return R * T * (np.log(rho / (1.0 - B * rho)) + B * rho / (1.0 - B * rho)) - 2.0 * A * rho
+
+def maxwell(T):                        # regla de igual área: densidades donde p y mu coinciden en las dos fases
+    x = np.array([0.30, 1.90]); h = 1e-8
+    for _ in range(80):
+        f = np.array([p_eos(x[0], T) - p_eos(x[1], T), mu_eos(x[0], T) - mu_eos(x[1], T)])
+        J = np.empty((2, 2))
+        for k in range(2):
+            y = x.copy(); y[k] += h
+            g = np.array([p_eos(y[0], T) - p_eos(y[1], T), mu_eos(y[0], T) - mu_eos(y[1], T)])
+            J[:, k] = (g - f) / h
+        x -= np.linalg.solve(J, f)
+    return x[0], x[1]
+
+# Gibbs-Duhem: dp = rho d(mu). El único fundamento para meter la presión tal cual.
+print("T/Tc  rho_vap  rho_liq |  max| dp/drho - rho*dmu/drho |")
+for T in (0.95, 0.90, 0.85):
+    rv, rl = maxwell(T)
+    r = np.linspace(rv, rl, 400)
+    dp = np.gradient(p_eos(r, T), r)
+    dmu = np.gradient(mu_eos(r, T), r)
+    err = np.abs(dp - r * dmu).max()
+    print(f"{T:4.2f}  {rv:7.4f}  {rl:7.4f} |  {err:.2e}")
+```
+
+```text
+T/Tc  rho_vap  rho_liq |  max| dp/drho - rho*dmu/drho |
+0.95   0.5790   1.4617 |  2.94e-04
+0.90   0.4257   1.6573 |  9.44e-04
+0.85   0.3197   1.8071 |  1.98e-03
+```
+
+El defecto está en el nivel de $10^{-3}$, y hasta eso se debe a que las derivadas se midieron con diferencias finitas. Cuanto más baja la temperatura, más se
+ensancha el hueco entre las densidades de coexistencia. Gibbs–Duhem se cumple de forma exacta en el continuo. Hasta aquí la forma de presión y la forma de energía
+libre son completamente idénticas.
+
+## En la red discreta las dos se separan
+
+El problema es la red. No hay garantía de que el $\mathrm{d}p = \rho\,\mathrm{d}\mu$ del continuo se cumpla bajo la derivación discreta.
+Un $\nabla p$ con diferencia centrada y $\rho\,\nabla\mu$ se desvían entre sí donde la densidad se dobla de forma brusca, como en una interfaz.
+
+Resolví una interfaz plana en reposo con la condición de Euler–Lagrange, y luego calculé las dos formas de fuerza directamente sobre ella.
+
+```python
+import numpy as np
+
+A, B, R = 9.0 / 8.0, 1.0 / 3.0, 1.0
+CS2, KAPPA, T = 1.0 / 3.0, 0.02, 0.90
+
+def p_eos(rho):  return rho * R * T / (1.0 - B * rho) - A * rho * rho
+def mu_eos(rho): return R * T * (np.log(rho / (1.0 - B * rho)) + B * rho / (1.0 - B * rho)) - 2.0 * A * rho
+def dmu(rho):    return R * T * (1.0 / (rho * (1.0 - B * rho)) + B / (1.0 - B * rho) ** 2) - 2.0 * A
+def diff1(a, dx): return (np.roll(a, -1) - np.roll(a, 1)) / (2.0 * dx)
+def lap(a, dx):   return (np.roll(a, -1) - 2.0 * a + np.roll(a, 1)) / dx ** 2
+
+def maxwell():
+    x = np.array([0.30, 1.90]); h = 1e-8
+    for _ in range(80):
+        f = np.array([p_eos(x[0]) - p_eos(x[1]), mu_eos(x[0]) - mu_eos(x[1])])
+        J = np.empty((2, 2))
+        for k in range(2):
+            y = x.copy(); y[k] += h
+            g = np.array([p_eos(y[0]) - p_eos(y[1]), mu_eos(y[0]) - mu_eos(y[1])])
+            J[:, k] = (g - f) / h
+        x -= np.linalg.solve(J, f)
+    return x[0], x[1]
+
+rv, rl = maxwell()
+mu_co = mu_eos(np.array([rv]))[0]
+
+# (1) Resuelve la interfaz plana en reposo y compara las dos formas de forcing
+NX = 240
+xs = np.arange(NX)
+rho = 0.5 * (rl + rv) + 0.5 * (rl - rv) * (np.tanh((xs - NX / 4) / 6.0) - np.tanh((xs - 3 * NX / 4) / 6.0) - 1.0)
+for _ in range(6000):                                    # relaja el residuo de Euler-Lagrange
+    rho -= 0.15 * (mu_eos(rho) - KAPPA * lap(rho, 1.0) - mu_co) / dmu(rho)
+
+Gp  = -diff1(p_eos(rho) - CS2 * rho, 1.0) + KAPPA * rho * diff1(lap(rho, 1.0), 1.0) - diff1(CS2 * rho, 1.0)
+Gmu = -rho * diff1(mu_eos(rho) - KAPPA * lap(rho, 1.0), 1.0) + CS2 * diff1(rho, 1.0) - diff1(CS2 * rho, 1.0)
+gd  = np.abs(diff1(p_eos(rho), 1.0) - rho * diff1(mu_eos(rho), 1.0)).max()
+
+print(f"coexistence         rho_vap = {rv:.4f}   rho_liq = {rl:.4f}")
+print(f"free-energy form    max|G_mu|        = {np.abs(Gmu).max():.2e}   (well-balanced)")
+print(f"pressure form       max|G_p|         = {np.abs(Gp).max():.2e}   (spurious force)")
+print(f"gap between forms   max|G_p - G_mu|  = {np.abs(Gp - Gmu).max():.2e}")
+print(f"discrete Gibbs-Duhem defect          = {gd:.2e}   <- the gap, exactly")
+
+# (2) Refina dx sobre la misma interfaz física y el defecto converge a 0 rápidamente
+print("\ncells/interface |  Gibbs-Duhem defect  order")
+prev = None
+for n in (10, 20, 40, 80):
+    L = 40.0; N = int(L * n / 10)
+    z = np.linspace(-L / 2, L / 2, N, endpoint=False); dx = z[1] - z[0]
+    r = 0.5 * (rl + rv) - 0.5 * (rl - rv) * np.tanh(z / (0.1 * n))
+    d = np.abs(diff1(p_eos(r), dx) - r * diff1(mu_eos(r), dx))[N // 4:3 * N // 4].max()
+    order = "" if prev is None else f"{np.log(prev / d) / np.log(2.0):5.2f}"
+    print(f"{n:9d}       |  {d:.3e}          {order}")
+    prev = d
+```
+
+```text
+coexistence         rho_vap = 0.4257   rho_liq = 1.6573
+free-energy form    max|G_mu|        = 2.02e-16   (well-balanced)
+pressure form       max|G_p|         = 1.60e-02   (spurious force)
+gap between forms   max|G_p - G_mu|  = 1.60e-02
+discrete Gibbs-Duhem defect          = 1.60e-02   <- the gap, exactly
+
+cells/interface |  Gibbs-Duhem defect  order
+       10       |  1.140e-02          
+       20       |  1.428e-03           3.00
+       40       |  5.115e-05           4.80
+       80       |  1.611e-06           4.99
+```
+
+Tres líneas son el meollo. La forma de energía libre tiene una fuerza de $10^{-16}$ en la interfaz, prácticamente cero. La forma de presión deja atrás una fuerza de
+$1.6\times10^{-2}$. Y la diferencia entre las dos formas coincide con el defecto discreto de Gibbs–Duhem hasta el decimal. Ese defecto es exactamente la identidad
+de la fuerza fantasma que derramó la forma de presión. Esta fuerza empuja la interfaz en reposo y crea la corriente parásita.
+
+Abajo, cambiemos cuán ancha se extiende la interfaz (resolución de la red).
+
+<ForcingFormGhostInterface />
+
+Sube `resolution` para que la interfaz abarque más celdas, y el pico de la curva roja de la forma de presión se desploma hacia cero. La forma verde de energía libre
+se aferra a cero de principio a fin. La fuerza fantasma no era física, sino un subproducto de la discretización.
+
+## Entonces, ¿qué se mete?
+
+En resumen, la elección es doble. Primero, usar la forma de energía libre ($-\rho\nabla\mu$). Por definición esta forma está balanceada en la interfaz, así que no hay
+fuerza fantasma ni siquiera en una red gruesa. Segundo, si de verdad se quiere usar la presión tal cual, no discretizar $\nabla p$ libremente, sino escribirlo para
+que coincida con $\rho\,\nabla\mu$. Entonces Gibbs–Duhem se cumple también en lo discreto y el balance sobrevive.
+
+Si se puede resolver la interfaz con 4 o 5 celdas o más, el error de la forma de presión desaparece rápido, como en la tabla de arriba. Pero las interfaces en la
+práctica suelen ser delgadas, en torno a 3 celdas. En ese régimen la forma de presión produce una fuerza fantasma proporcional al cuadrado de la diferencia de
+densidad. Ya vi el mismo síntoma desde el lado de la tensión superficial en
+[corrientes parásitas y tensión superficial well-balanced](/es/posts/2026-07-19-parasitic-currents-surface-tension/). La raíz es una sola: ¿trasladaste un término
+que está balanceado en el continuo a lo discreto también como balanceado?
+
+La comodidad de "usar $p$ tal cual" no es gratis. Su precio se cobra en la moneda del espesor de la interfaz.
