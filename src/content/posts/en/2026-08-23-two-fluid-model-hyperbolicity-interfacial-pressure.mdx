@@ -1,0 +1,279 @@
+---
+title: "Halving the mesh made the blow-up arrive twice as fast — complex eigenvalues in the 6-equation two-fluid model"
+date: 2026-08-23
+description: "The single-pressure six-equation two-fluid model turns complex the moment the phases slip past each other. Raising the interfacial-pressure coefficient past exactly 1.0 puts the eigenvalues back on the real axis."
+tags: ["Two-Fluid-Model", "Hyperbolicity", "Paper-Review", "Multiphase", "Compressible"]
+locale: en
+slug: 2026-08-23-two-fluid-model-hyperbolicity-interfacial-pressure
+takeaway: "Complex eigenvalues blow up sooner on finer grids. The fix belongs in the interfacial-pressure closure, not in the discretization."
+draft: false
+---
+
+import { TwoFluidEigenvalueDial } from '@/components/post-viz/2026-08-23-two-fluid-model-hyperbolicity-interfacial-pressure/TwoFluidEigenvalueDial'
+import { IllPosedMeshRaceTrack } from '@/components/post-viz/2026-08-23-two-fluid-model-hyperbolicity-interfacial-pressure/IllPosedMeshRaceTrack'
+
+## Halving the mesh made the blow-up arrive twice as fast
+
+When a solver blows up, the usual first move is to refine the mesh. If the error drops, the problem
+is in the discretization. If nothing changes, the problem is in the physical model. That is roughly
+the order most of us work through.
+
+Sometimes the needle moves the other way. Halve the cell size and the blow-up arrives exactly twice
+as early. Quadruple the cell count and it arrives four times as early. Shrinking the time step does
+nothing to the growth rate.
+
+That symptom is not a discretization bug. It says the governing equations are **ill-posed** as an
+initial-value problem — the state where a perturbation grows at a rate inversely proportional to its
+wavelength, without bound. When Pandare and Luo built a density-based finite-volume two-fluid solver
+in their 2018 AIAA paper, this was the first thing they had to deal with.
+
+This post pulls the eigenvalues of the single-pressure six-equation two-fluid model directly, to see
+where the complex pair comes from and what coefficient the interfacial-pressure term needs before
+they return to the real axis. The answer is exactly 1.
+
+## A pair of slow waves leaves the real axis
+
+The two-fluid model treats both phases as interpenetrating continua. Mass, momentum and energy are
+solved separately for each phase. Collapsing the two pressures into one ($p_g = p_l \equiv p$) leaves
+six PDEs. That is the Wallis model, also called the single-pressure six-equation model.
+
+Switch off compressibility for a moment, quasi-linearize in one dimension with the primitive
+variables $(\alpha_g, p, u_g, u_l)$, and the pair of slow waves has a closed-form eigenvalue.
+
+$$
+\lambda_\pm = \frac{\alpha_l \rho_g u_g + \alpha_g \rho_l u_l}{\alpha_l \rho_g + \alpha_g \rho_l}
+\pm \frac{\sqrt{(\sigma - 1)\, \alpha_g \alpha_l \rho_g \rho_l}\; |u_l - u_g|}{\alpha_l \rho_g + \alpha_g \rho_l}
+$$
+
+Here $\alpha_k$ is the volume fraction, $\rho_k$ the phasic density, $u_k$ the phasic velocity, and
+$\sigma$ the coefficient of the interfacial-pressure term introduced below. The first term is a
+density-weighted mean velocity; the second is how far the two waves separate.
+
+Everything hangs on what sits under the radical. For $\sigma < 1$ it goes negative and the two
+eigenvalues become a complex-conjugate pair. As long as the slip $|u_l - u_g|$ is nonzero, this
+happens without fail. The moment the phases move at different speeds, the model is ill-posed.
+
+Try it directly in the simulation below.
+
+<TwoFluidEigenvalueDial />
+
+Raise `sigma` from 0 and the two red dots in the left complex plane slide down the imaginary axis,
+meet at 1, then split along the real axis and turn green. The right panel stops growing and starts
+propagating at exactly the same instant. Drag `slip u_r` to 0 and watch the problem disappear
+altogether.
+
+## One table — seven equations, six, and six with a correction
+
+Three options compete for this spot. Standing them side by side shows what each one buys and what it
+sells.
+
+| | 7-equation (Baer–Nunziato) | Bare 6-equation (Wallis) | 6-equation + interfacial pressure |
+|---|---|---|---|
+| Pressure | one per phase | single | single |
+| Eigenvalues | always real | complex under slip | real for $\sigma \ge 1$ |
+| Unknowns | extra volume-fraction transport | minimal | minimal |
+| Price | pressure relaxation, stiffness | ill-posed | $\sigma$ has thin physical backing |
+| Valid regime | physical for dense particles/suspensions | unusable as written | engineering compromise |
+
+The seven-equation model gives the volume fraction its own transport equation. That buys
+hyperbolicity, at the cost of pressure-relaxation terms that bring stiffness with them. I laid out
+that structure in [an earlier post on flux splitting for Baer–Nunziato](/en/posts/2026-08-09-tv-flux-splitting-baer-nunziato/).
+The catch is that the model is physically justified mainly for densely packed particles and
+suspensions. It fits a stratified air-water pipe far less well.
+
+## The 4×4 eigenvalues, from Python
+
+Before trusting the closed form, solve the original system as it stands. Build $A W_t + B W_x = 0$
+with compressibility retained and take the eigenvalues of $A^{-1}B$. Air and water, $\alpha_g = 0.5$,
+with the gas running 10 m/s ahead.
+
+```python
+import numpy as np
+
+def interfacial_dp(a, rg, rl, ur, sigma):
+    """Stuhmiller correction: p_int = p - dp"""
+    return sigma * a * (1 - a) * rg * rl * ur**2 / (a * rl + (1 - a) * rg)
+
+def two_fluid_matrices(a, rg, rl, cg, cl, ug, ul, sigma):
+    """A W_t + B W_x = 0,  W = (alpha_g, p, u_g, u_l)"""
+    dp = interfacial_dp(a, rg, rl, ul - ug, sigma)
+    kg, kl = a / (rg * cg**2), (1 - a) / (rl * cl**2)
+    A = np.array([[ 1.0, kg,  0.0,    0.0],
+                  [-1.0, kl,  0.0,    0.0],
+                  [ 0.0, 0.0, a * rg, 0.0],
+                  [ 0.0, 0.0, 0.0,    (1 - a) * rl]])
+    B = np.array([[ ug,  ug * kg, a,          0.0],
+                  [-ul,  ul * kl, 0.0,        1 - a],
+                  [ dp,  a,       a * rg * ug, 0.0],
+                  [-dp,  1 - a,   0.0,        (1 - a) * rl * ul]])
+    return A, B
+
+def char_speeds(sigma, a=0.5, rg=1.2, rl=1000.0, cg=340.0, cl=1500.0, ug=10.0, ul=0.0):
+    A, B = two_fluid_matrices(a, rg, rl, cg, cl, ug, ul, sigma)
+    return np.linalg.eigvals(np.linalg.solve(A, B))
+
+print("air/water, alpha_g=0.5, u_g=10, u_l=0 m/s")
+print("sigma   max|Im lambda|   slow pair Re")
+for s in [0.0, 0.5, 0.9, 1.0, 1.1, 1.5]:
+    lam = char_speeds(s)
+    slow = np.sort(lam.real)[1:3]
+    print("%5.2f   %12.5f   %8.4f %8.4f" % (s, np.abs(lam.imag).max(), slow[0], slow[1]))
+```
+
+```text
+air/water, alpha_g=0.5, u_g=10, u_l=0 m/s
+sigma   max|Im lambda|   slow pair Re
+ 0.00        0.34614     0.0120   0.0120
+ 0.50        0.24481     0.0120   0.0120
+ 0.90        0.10967     0.0120   0.0120
+ 1.00        0.00718     0.0120   0.0120
+ 1.10        0.00000    -0.0972   0.1212
+ 1.50        0.00000    -0.2326   0.2566
+```
+
+At $\sigma = 0$ the imaginary part is 0.346 m/s. The real parts of the two slow waves sit together at
+0.0120. The gas moves at 10 m/s, yet the wave crawls at 0.012 m/s, because of density weighting:
+water is 830 times heavier than air, so the mean is dragged onto the liquid.
+
+Raising $\sigma$ shrinks the imaginary part. At 1.1 it hits zero and the pair splits to $-0.097$ and
+$0.121$. The residual 0.00718 at $\sigma = 1.0$ comes from compressibility. The closed form was
+derived in the incompressible limit, so a finite speed of sound nudges the threshold a hair above 1.
+
+## The closed form puts the threshold at exactly 1
+
+Now measure the same numbers from the closed form, and bisect for the critical $\sigma$.
+
+```python
+from math import sqrt, pi
+
+def material_pair(a, sigma, rg=1.2, rl=1000.0, ug=10.0, ul=0.0):
+    """Incompressible-limit closed form for the two slow (material) waves"""
+    al = 1.0 - a
+    den = al * rg + a * rl
+    mean = (al * rg * ug + a * rl * ul) / den
+    disc = (sigma - 1.0) * a * al * rg * rl * (ul - ug) ** 2 / den**2
+    if disc >= 0.0:
+        return (mean - sqrt(disc), mean + sqrt(disc)), 0.0
+    return (mean, mean), sqrt(-disc)
+
+print("closed form vs the 4x4 eigenvalues above")
+for s in [0.0, 0.5, 0.9, 1.1, 1.5]:
+    (r1, r2), im = material_pair(0.5, s)
+    print("sigma=%4.2f  Re = %8.4f %8.4f   |Im| = %8.5f" % (s, r1, r2, im))
+
+print()
+print("growth rate of the shortest resolved mode, L = 1 m, sigma = 0")
+_, im0 = material_pair(0.5, 0.0)
+for n in [50, 100, 200, 400, 800]:
+    k = pi * n          # k = pi / dx, dx = 1/n
+    print("N=%4d  dx=%7.5f  k=%8.1f 1/m  growth=%8.2f 1/s" % (n, 1.0 / n, k, k * im0))
+
+print()
+print("critical sigma (incompressible limit) for a few states")
+for a in [0.1, 0.5, 0.9]:
+    for ur in [1.0, 30.0]:
+        lo, hi = 0.0, 5.0
+        for _ in range(60):
+            mid = 0.5 * (lo + hi)
+            _, im = material_pair(a, mid, ug=ur)
+            if im > 0.0: lo = mid
+            else: hi = mid
+        print("alpha_g=%.1f  u_r=%4.1f  ->  sigma_c = %.6f" % (a, ur, hi))
+```
+
+```text
+closed form vs the 4x4 eigenvalues above
+sigma=0.00  Re =   0.0120   0.0120   |Im| =  0.34599
+sigma=0.50  Re =   0.0120   0.0120   |Im| =  0.24466
+sigma=0.90  Re =   0.0120   0.0120   |Im| =  0.10941
+sigma=1.10  Re =  -0.0974   0.1214   |Im| =  0.00000
+sigma=1.50  Re =  -0.2327   0.2566   |Im| =  0.00000
+
+growth rate of the shortest resolved mode, L = 1 m, sigma = 0
+N=  50  dx=0.02000  k=   157.1 1/m  growth=   54.35 1/s
+N= 100  dx=0.01000  k=   314.2 1/m  growth=  108.70 1/s
+N= 200  dx=0.00500  k=   628.3 1/m  growth=  217.40 1/s
+N= 400  dx=0.00250  k=  1256.6 1/m  growth=  434.79 1/s
+N= 800  dx=0.00125  k=  2513.3 1/m  growth=  869.58 1/s
+
+critical sigma (incompressible limit) for a few states
+alpha_g=0.1  u_r= 1.0  ->  sigma_c = 1.000000
+alpha_g=0.1  u_r=30.0  ->  sigma_c = 1.000000
+alpha_g=0.5  u_r= 1.0  ->  sigma_c = 1.000000
+alpha_g=0.5  u_r=30.0  ->  sigma_c = 1.000000
+alpha_g=0.9  u_r= 1.0  ->  sigma_c = 1.000000
+alpha_g=0.9  u_r=30.0  ->  sigma_c = 1.000000
+```
+
+The closed form matches the 4×4 eigenvalues to three decimals. Sweep the volume fraction from 0.1 to
+0.9 and the slip from 1 to 30 m/s, and the threshold stays at 1.000000. That is why the coefficient
+in Stuhmiller's correction,
+
+$$
+p_{\text{int}} = p - \sigma\, \frac{\alpha_g \alpha_l \rho_g \rho_l}{\alpha_g \rho_l + \alpha_l \rho_g}\, u_r^2
+$$
+
+is not an arbitrary tuning knob. $\sigma = 1$ is the smallest coefficient that drives the radicand to
+zero. Production codes leave some margin and use a value slightly above 1.
+
+## Instability and ill-posedness are different animals
+
+A numerically unstable scheme improves when the time step shrinks. An ill-posed problem does not,
+because the growth rate scales with the wavenumber.
+
+$$
+\text{growth}(k) = k \, |\mathrm{Im}\,\lambda|, \qquad k = \frac{\pi}{\Delta x}
+$$
+
+Halve $\Delta x$ and the shortest representable wavelength halves with it, so the growth rate
+doubles. In the output above, 54.35 1/s at $N = 50$ becomes 869.58 1/s at $N = 800$ — exactly a
+factor of 16. The finer the mesh, the faster the answer dies.
+
+<IllPosedMeshRaceTrack />
+
+Four grids start with the same perturbation at the same moment. Watch which lane reaches the blow-up
+line first, then push `sigma` above 1 and watch all four go flat **simultaneously**. One picture makes
+it clear that the repair belongs to the closure, not to the mesh.
+
+Real codes often hide the symptom. First-order upwinding contributes numerical diffusion of order
+$O(k^2 \Delta x)$, which cancels the growth well enough that the run limps along. That is why a code
+that behaves at low order explodes the moment you raise the order. The structure is the same one I
+described in [the post on conservative versus primitive form](/en/posts/2026-08-18-conservative-vs-primitive-shock-speed/):
+numerical diffusion had been quietly paying a debt the model owed.
+
+## The rest of the table — how a density-based solver survives low Mach
+
+Recovering hyperbolicity is not the end of it. Most real multiphase applications sit at very low Mach
+number, where a density-based solver is chained to the acoustic CFL and the time step collapses.
+
+That territory has traditionally belonged to pressure-based methods. Assuming a solenoidal velocity
+field erases the speed of sound from the equations, so the CFL depends only on the flow velocity. The
+price is that compressibility can never be treated rigorously. Bring in a high-temperature phenomenon
+such as boiling and the errors grow.
+
+Pandare and Luo take a different route: keep the density-based formulation but transform to the
+primitive variables $[p, v, T]$ and solve fully implicitly. Making pressure an unknown conditions the
+system far better at low Mach. Interfacial force terms such as drag and virtual mass are also treated
+implicitly, relaxing the time-step limits further.
+
+The flux side carries the same kind of compromise. When a strong shock meets a material interface,
+AUSM$^+$-up produces negative pressures. The established remedy was to call an exact Riemann solver
+just at those faces, but the Newton iterations are expensive. The paper instead adds a volume-fraction
+coupling term to the mass flux, buying the same robustness — essentially Lax–Friedrichs-type
+dissipation proportional to the volume-fraction jump. The requirement that a stationary interface must
+not be disturbed showed up under the same name in
+[the post measuring the CFL ceiling of interface-capturing schemes](/en/posts/2026-08-16-vof-interface-advection-cfl-limit/).
+
+## Find out which column you are standing in
+
+Before touching the mesh or the scheme on a fresh two-fluid solver, check three things.
+
+First, take the Jacobian eigenvalues at a state with nonzero slip. One 4×4 matrix is enough. If an
+imaginary part shows up, no amount of discretization work will fix it.
+
+Second, double the mesh resolution and time the blow-up. If it arrives twice as early, the problem is
+ill-posed; if it arrives later, the problem is in the discretization. That single experiment settles
+the diagnosis.
+
+Third, find the interfacial-pressure coefficient in the code and read its value. Anything below 1
+means the code is surviving on numerical diffusion. Raise that number before you raise the order.

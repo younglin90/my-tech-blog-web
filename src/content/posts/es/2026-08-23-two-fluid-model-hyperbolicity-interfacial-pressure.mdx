@@ -1,0 +1,291 @@
+---
+title: "Refinar la malla a la mitad adelantó el estallido al doble — autovalores complejos del modelo two-fluid de 6 ecuaciones"
+date: 2026-08-23
+description: "El modelo two-fluid de seis ecuaciones con presión única se vuelve complejo en cuanto las fases deslizan una respecto a la otra. Subir el coeficiente de presión interfacial por encima de 1 devuelve los autovalores al eje real."
+tags: ["Two-Fluid-Model", "Hyperbolicity", "Paper-Review", "Multiphase", "Compressible"]
+locale: es
+slug: 2026-08-23-two-fluid-model-hyperbolicity-interfacial-pressure
+takeaway: "Los autovalores complejos estallan antes en mallas más finas. La reparación corresponde al cierre de presión interfacial, no a la discretización."
+draft: false
+---
+
+import { TwoFluidEigenvalueDial } from '@/components/post-viz/2026-08-23-two-fluid-model-hyperbolicity-interfacial-pressure/TwoFluidEigenvalueDial'
+import { IllPosedMeshRaceTrack } from '@/components/post-viz/2026-08-23-two-fluid-model-hyperbolicity-interfacial-pressure/IllPosedMeshRaceTrack'
+
+## Refinar la malla a la mitad adelantó el estallido al doble
+
+Cuando un solver revienta, el primer movimiento habitual es refinar la malla. Si el error baja, el
+problema está en la discretización. Si nada cambia, el problema está en el modelo físico. Ese suele
+ser el orden del descarte.
+
+Pero hay un caso en que la aguja se mueve al revés. Se reduce el tamaño de celda a la mitad y el
+estallido llega exactamente el doble de rápido. Se cuadruplica el número de celdas y llega cuatro
+veces antes. Reducir el paso temporal no altera la tasa de crecimiento.
+
+Ese síntoma no es un error de discretización. Indica que las ecuaciones de gobierno son **mal
+planteadas** (ill-posed: el estado en que una perturbación crece a una tasa inversamente proporcional
+a su longitud de onda, sin cota). Cuando Pandare y Luo construyeron un solver two-fluid de volúmenes
+finitos basado en densidad en su artículo AIAA de 2018, este fue el primer punto que hubo que
+atender.
+
+Este texto extrae directamente los autovalores del modelo two-fluid de seis ecuaciones con presión
+única, para ver de dónde sale el par complejo y qué coeficiente necesita el término de presión
+interfacial para devolverlos al eje real. La respuesta es exactamente 1.
+
+## Un par de ondas lentas abandona el eje real
+
+El modelo two-fluid trata ambas fases como continuos que se interpenetran. Masa, cantidad de
+movimiento y energía se resuelven por separado para cada fase. Al colapsar las dos presiones en una
+sola ($p_g = p_l \equiv p$) quedan seis EDP. Eso es el modelo de Wallis, también llamado modelo de
+seis ecuaciones con presión única.
+
+Si se apaga por un momento la compresibilidad y se cuasi-linealiza en una dimensión con las
+variables primitivas $(\alpha_g, p, u_g, u_l)$, el par de ondas lentas tiene autovalor en forma
+cerrada.
+
+$$
+\lambda_\pm = \frac{\alpha_l \rho_g u_g + \alpha_g \rho_l u_l}{\alpha_l \rho_g + \alpha_g \rho_l}
+\pm \frac{\sqrt{(\sigma - 1)\, \alpha_g \alpha_l \rho_g \rho_l}\; |u_l - u_g|}{\alpha_l \rho_g + \alpha_g \rho_l}
+$$
+
+Aquí $\alpha_k$ es la fracción volumétrica, $\rho_k$ la densidad de fase, $u_k$ la velocidad de fase
+y $\sigma$ el coeficiente del término de presión interfacial que se describe más abajo. El primer
+término es una velocidad media ponderada por densidad; el segundo es cuánto se separan las dos ondas.
+
+Todo depende de lo que hay bajo el radical. Para $\sigma < 1$ se vuelve negativo y los dos
+autovalores forman un par complejo conjugado. Mientras el deslizamiento $|u_l - u_g|$ no sea nulo,
+esto ocurre sin falta. Es decir: en el instante en que las dos fases se mueven a velocidades
+distintas, el modelo queda mal planteado.
+
+Conviene manipularlo directamente en la simulación siguiente.
+
+<TwoFluidEigenvalueDial />
+
+Al subir `sigma` desde 0, los dos puntos rojos del plano complejo de la izquierda bajan por el eje
+imaginario, se encuentran en 1 y luego se separan sobre el eje real y pasan a verde. La perturbación
+de la derecha deja de crecer y empieza a propagarse en ese mismo instante. Bajando `slip u_r` a 0 se
+observa cómo el problema desaparece por completo.
+
+## Una tabla — siete ecuaciones, seis, y seis con corrección
+
+Hay tres opciones que compiten por este lugar. Puestas en columnas se ve qué compra y qué vende cada
+una.
+
+| | 7 ecuaciones (Baer–Nunziato) | 6 ecuaciones desnudo (Wallis) | 6 ecuaciones + presión interfacial |
+|---|---|---|---|
+| Presión | una por fase | única | única |
+| Autovalores | siempre reales | complejos con deslizamiento | reales si $\sigma \ge 1$ |
+| Incógnitas | transporte extra de fracción volumétrica | mínimas | mínimas |
+| Precio | relajación de presión, rigidez | mal planteado | $\sigma$ con base física débil |
+| Rango válido | físico en partículas densas/suspensiones | inusable tal cual | compromiso de ingeniería |
+
+El modelo de siete ecuaciones da a la fracción volumétrica su propia ecuación de transporte. Eso
+compra hiperbolicidad, a costa de términos de relajación de presión que traen rigidez consigo. Esa
+estructura quedó ordenada en
+[una entrada anterior sobre flux splitting para Baer–Nunziato](/es/posts/2026-08-09-tv-flux-splitting-baer-nunziato/).
+El inconveniente es que el modelo se justifica físicamente sobre todo para partículas densamente
+empaquetadas y suspensiones. Encaja mucho peor en una tubería con agua y aire estratificados.
+
+## Los autovalores 4×4, desde Python
+
+Antes de confiar en la forma cerrada, conviene resolver el sistema original tal cual. Se arma
+$A W_t + B W_x = 0$ con la compresibilidad retenida y se toman los autovalores de $A^{-1}B$. Aire y
+agua, $\alpha_g = 0.5$, con el gas adelantado a 10 m/s.
+
+```python
+import numpy as np
+
+def interfacial_dp(a, rg, rl, ur, sigma):
+    """Correccion de Stuhmiller: p_int = p - dp"""
+    return sigma * a * (1 - a) * rg * rl * ur**2 / (a * rl + (1 - a) * rg)
+
+def two_fluid_matrices(a, rg, rl, cg, cl, ug, ul, sigma):
+    """A W_t + B W_x = 0,  W = (alpha_g, p, u_g, u_l)"""
+    dp = interfacial_dp(a, rg, rl, ul - ug, sigma)
+    kg, kl = a / (rg * cg**2), (1 - a) / (rl * cl**2)
+    A = np.array([[ 1.0, kg,  0.0,    0.0],
+                  [-1.0, kl,  0.0,    0.0],
+                  [ 0.0, 0.0, a * rg, 0.0],
+                  [ 0.0, 0.0, 0.0,    (1 - a) * rl]])
+    B = np.array([[ ug,  ug * kg, a,          0.0],
+                  [-ul,  ul * kl, 0.0,        1 - a],
+                  [ dp,  a,       a * rg * ug, 0.0],
+                  [-dp,  1 - a,   0.0,        (1 - a) * rl * ul]])
+    return A, B
+
+def char_speeds(sigma, a=0.5, rg=1.2, rl=1000.0, cg=340.0, cl=1500.0, ug=10.0, ul=0.0):
+    A, B = two_fluid_matrices(a, rg, rl, cg, cl, ug, ul, sigma)
+    return np.linalg.eigvals(np.linalg.solve(A, B))
+
+print("air/water, alpha_g=0.5, u_g=10, u_l=0 m/s")
+print("sigma   max|Im lambda|   slow pair Re")
+for s in [0.0, 0.5, 0.9, 1.0, 1.1, 1.5]:
+    lam = char_speeds(s)
+    slow = np.sort(lam.real)[1:3]
+    print("%5.2f   %12.5f   %8.4f %8.4f" % (s, np.abs(lam.imag).max(), slow[0], slow[1]))
+```
+
+```text
+air/water, alpha_g=0.5, u_g=10, u_l=0 m/s
+sigma   max|Im lambda|   slow pair Re
+ 0.00        0.34614     0.0120   0.0120
+ 0.50        0.24481     0.0120   0.0120
+ 0.90        0.10967     0.0120   0.0120
+ 1.00        0.00718     0.0120   0.0120
+ 1.10        0.00000    -0.0972   0.1212
+ 1.50        0.00000    -0.2326   0.2566
+```
+
+En $\sigma = 0$ la parte imaginaria vale 0.346 m/s. Las partes reales de las dos ondas lentas quedan
+juntas en 0.0120. El gas corre a 10 m/s y sin embargo la onda avanza a 0.012 m/s, por el peso de la
+densidad: el agua es 830 veces más pesada que el aire, así que la media se arrastra hacia el líquido.
+
+Al subir $\sigma$ la parte imaginaria se encoge. En 1.1 llega a cero y el par se separa en $-0.097$ y
+$0.121$. El residuo de 0.00718 en $\sigma = 1.0$ proviene de la compresibilidad. La forma cerrada se
+dedujo en el límite incompresible, de modo que una velocidad del sonido finita empuja el umbral un
+pelo por encima de 1.
+
+## La forma cerrada sitúa el umbral exactamente en 1
+
+Ahora toca medir los mismos números con la forma cerrada y bisecar el $\sigma$ crítico.
+
+```python
+from math import sqrt, pi
+
+def material_pair(a, sigma, rg=1.2, rl=1000.0, ug=10.0, ul=0.0):
+    """Forma cerrada en el limite incompresible para las dos ondas lentas"""
+    al = 1.0 - a
+    den = al * rg + a * rl
+    mean = (al * rg * ug + a * rl * ul) / den
+    disc = (sigma - 1.0) * a * al * rg * rl * (ul - ug) ** 2 / den**2
+    if disc >= 0.0:
+        return (mean - sqrt(disc), mean + sqrt(disc)), 0.0
+    return (mean, mean), sqrt(-disc)
+
+print("closed form vs the 4x4 eigenvalues above")
+for s in [0.0, 0.5, 0.9, 1.1, 1.5]:
+    (r1, r2), im = material_pair(0.5, s)
+    print("sigma=%4.2f  Re = %8.4f %8.4f   |Im| = %8.5f" % (s, r1, r2, im))
+
+print()
+print("growth rate of the shortest resolved mode, L = 1 m, sigma = 0")
+_, im0 = material_pair(0.5, 0.0)
+for n in [50, 100, 200, 400, 800]:
+    k = pi * n          # k = pi / dx, dx = 1/n
+    print("N=%4d  dx=%7.5f  k=%8.1f 1/m  growth=%8.2f 1/s" % (n, 1.0 / n, k, k * im0))
+
+print()
+print("critical sigma (incompressible limit) for a few states")
+for a in [0.1, 0.5, 0.9]:
+    for ur in [1.0, 30.0]:
+        lo, hi = 0.0, 5.0
+        for _ in range(60):
+            mid = 0.5 * (lo + hi)
+            _, im = material_pair(a, mid, ug=ur)
+            if im > 0.0: lo = mid
+            else: hi = mid
+        print("alpha_g=%.1f  u_r=%4.1f  ->  sigma_c = %.6f" % (a, ur, hi))
+```
+
+```text
+closed form vs the 4x4 eigenvalues above
+sigma=0.00  Re =   0.0120   0.0120   |Im| =  0.34599
+sigma=0.50  Re =   0.0120   0.0120   |Im| =  0.24466
+sigma=0.90  Re =   0.0120   0.0120   |Im| =  0.10941
+sigma=1.10  Re =  -0.0974   0.1214   |Im| =  0.00000
+sigma=1.50  Re =  -0.2327   0.2566   |Im| =  0.00000
+
+growth rate of the shortest resolved mode, L = 1 m, sigma = 0
+N=  50  dx=0.02000  k=   157.1 1/m  growth=   54.35 1/s
+N= 100  dx=0.01000  k=   314.2 1/m  growth=  108.70 1/s
+N= 200  dx=0.00500  k=   628.3 1/m  growth=  217.40 1/s
+N= 400  dx=0.00250  k=  1256.6 1/m  growth=  434.79 1/s
+N= 800  dx=0.00125  k=  2513.3 1/m  growth=  869.58 1/s
+
+critical sigma (incompressible limit) for a few states
+alpha_g=0.1  u_r= 1.0  ->  sigma_c = 1.000000
+alpha_g=0.1  u_r=30.0  ->  sigma_c = 1.000000
+alpha_g=0.5  u_r= 1.0  ->  sigma_c = 1.000000
+alpha_g=0.5  u_r=30.0  ->  sigma_c = 1.000000
+alpha_g=0.9  u_r= 1.0  ->  sigma_c = 1.000000
+alpha_g=0.9  u_r=30.0  ->  sigma_c = 1.000000
+```
+
+La forma cerrada coincide con los autovalores 4×4 hasta la tercera cifra decimal. Barriendo la
+fracción volumétrica de 0.1 a 0.9 y el deslizamiento de 1 a 30 m/s, el umbral se queda en 1.000000.
+Por eso el coeficiente de la corrección de Stuhmiller,
+
+$$
+p_{\text{int}} = p - \sigma\, \frac{\alpha_g \alpha_l \rho_g \rho_l}{\alpha_g \rho_l + \alpha_l \rho_g}\, u_r^2
+$$
+
+no es una perilla de ajuste arbitraria. $\sigma = 1$ es el coeficiente más pequeño que lleva el
+radicando exactamente a cero. En producción se deja margen y se usa un valor algo mayor que 1.
+
+## Inestabilidad y mal planteamiento son cosas distintas
+
+Un esquema numéricamente inestable mejora al reducir el paso temporal. Un problema mal planteado no,
+porque la tasa de crecimiento escala con el número de onda.
+
+$$
+\text{growth}(k) = k \, |\mathrm{Im}\,\lambda|, \qquad k = \frac{\pi}{\Delta x}
+$$
+
+Al reducir $\Delta x$ a la mitad, la longitud de onda más corta representable también se reduce a la
+mitad y la tasa de crecimiento se duplica. En la salida anterior, 54.35 1/s en $N = 50$ pasa a
+869.58 1/s en $N = 800$: exactamente un factor 16. Cuanto más fina la malla, más rápido muere la
+respuesta.
+
+<IllPosedMeshRaceTrack />
+
+Cuatro mallas parten a la vez con la misma perturbación. Vale la pena mirar qué carril llega primero
+a la línea de blow-up y luego empujar `sigma` por encima de 1 para ver los cuatro carriles aplanarse
+**a la vez**. Una sola imagen deja claro que la reparación pertenece al cierre, no a la malla.
+
+En códigos reales el síntoma suele quedar oculto. La difusión numérica del esquema upwind de primer
+orden aporta un amortiguamiento de orden $O(k^2 \Delta x)$ que cancela el crecimiento lo bastante
+como para que la corrida siga adelante. Por eso un código que se porta bien a bajo orden revienta en
+cuanto se sube el orden. La estructura es la misma que aparecía en
+[la entrada sobre forma conservativa frente a primitiva](/es/posts/2026-08-18-conservative-vs-primitive-shock-speed/):
+la difusión numérica estaba pagando en silencio una deuda del modelo.
+
+## El resto de la tabla — cómo sobrevive un solver basado en densidad a bajo Mach
+
+Recuperar la hiperbolicidad no cierra el asunto. Casi todas las aplicaciones reales de flujo
+multifásico viven a número de Mach muy bajo, donde un solver basado en densidad queda encadenado al
+CFL acústico y el paso temporal se derrumba.
+
+Ese terreno ha pertenecido tradicionalmente a los métodos basados en presión. Suponer un campo de
+velocidad solenoidal borra la velocidad del sonido de las ecuaciones, así que el CFL depende solo de
+la velocidad del flujo. El precio es que la compresibilidad nunca se trata con rigor. Basta con
+introducir un fenómeno de alta temperatura como la ebullición para que los errores crezcan.
+
+Pandare y Luo eligen otra ruta: mantener la formulación basada en densidad pero transformar a las
+variables primitivas $[p, v, T]$ y resolver de forma totalmente implícita. Poner la presión como
+incógnita acondiciona mucho mejor el sistema a bajo Mach. Los términos de fuerza interfacial como
+arrastre y masa virtual también se tratan implícitamente, relajando aún más el límite de paso
+temporal.
+
+El lado del flujo numérico carga con un compromiso del mismo tipo. Cuando una onda de choque fuerte
+se encuentra con una interfaz material, AUSM$^+$-up produce presiones negativas. El remedio
+establecido era llamar a un solver de Riemann exacto solo en esas caras, pero las iteraciones de
+Newton salen caras. El artículo añade en su lugar un término de acoplamiento de fracción volumétrica
+al flujo de masa, que compra la misma robustez: en esencia, disipación tipo Lax–Friedrichs
+proporcional al salto de fracción volumétrica. La exigencia de no perturbar una interfaz en reposo
+apareció con el mismo nombre en
+[la entrada que midió el techo de CFL de los esquemas de captura de interfaz](/es/posts/2026-08-16-vof-interface-advection-cfl-limit/).
+
+## Averiguar en qué columna se está parado
+
+Antes de tocar la malla o el esquema en un solver two-fluid nuevo, conviene comprobar tres cosas.
+
+Primero, tomar los autovalores del jacobiano en un estado con deslizamiento no nulo. Basta con una
+matriz 4×4. Si aparece parte imaginaria, no hay trabajo de discretización que lo arregle.
+
+Segundo, duplicar la resolución de la malla y cronometrar el estallido. Si llega el doble de pronto,
+el problema es de mal planteamiento; si llega más tarde, es de discretización. Ese único experimento
+resuelve el diagnóstico.
+
+Tercero, buscar el coeficiente de presión interfacial en el código y leer su valor. Cualquier cosa
+por debajo de 1 significa que el código sobrevive gracias a la difusión numérica. Ese número hay que
+subirlo antes que el orden.

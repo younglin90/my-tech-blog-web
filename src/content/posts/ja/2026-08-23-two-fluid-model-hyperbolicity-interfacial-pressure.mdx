@@ -1,0 +1,266 @@
+---
+title: "格子を半分にしたら発散が二倍速く来た — 6方程式 two-fluid モデルの複素固有値"
+date: 2026-08-23
+description: "単一圧力の6方程式 two-fluid モデルは相間すべりがあると固有値が複素になる。界面圧力項の係数が1を超えた瞬間に実軸へ戻る。"
+tags: ["Two-Fluid-Model", "Hyperbolicity", "Paper-Review", "Multiphase", "Compressible"]
+locale: ja
+slug: 2026-08-23-two-fluid-model-hyperbolicity-interfacial-pressure
+takeaway: "複素固有値は格子を細かくするほど早く破綻します。直す場所は離散化ではなく界面圧力の閉じ式です。"
+draft: false
+---
+
+import { TwoFluidEigenvalueDial } from '@/components/post-viz/2026-08-23-two-fluid-model-hyperbolicity-interfacial-pressure/TwoFluidEigenvalueDial'
+import { IllPosedMeshRaceTrack } from '@/components/post-viz/2026-08-23-two-fluid-model-hyperbolicity-interfacial-pressure/IllPosedMeshRaceTrack'
+
+## 格子を半分にしたら発散が二倍速く来た
+
+ソルバが破綻したとき、まず格子を細かくしてみるのが定石です。誤差が減れば離散化の問題、変わらな
+ければ物理モデルの問題。だいたいこの順で絞り込みます。
+
+ところが逆に動く場合があります。セル幅を半分にしたら、発散がちょうど二倍速く来た。セル数を四倍
+にすれば四倍速く来る。時間刻みを小さくしても成長率は変わりません。
+
+この症状は離散化のバグではありません。支配方程式そのものが初期値問題として **不適切**（ill-posed、
+初期擾乱が波長に反比例して際限なく速く成長する状態）だという signal です。Pandare と Luo が2018年
+の AIAA 論文で密度ベースの有限体積 two-fluid ソルバを組んだときも、最初に手を付けたのがここでした。
+
+本稿では単一圧力6方程式 two-fluid モデルの固有値を直接取り出し、どこで複素数が生まれ、界面圧力項
+の係数がいくつなら実軸に戻るのかを数値で確かめます。答えはちょうど1です。
+
+## 遅い波の対が実軸を離れる
+
+two-fluid モデルは二つの相を互いに貫入する連続体として扱います。質量・運動量・エネルギーを相ごと
+に解きます。二相の圧力を一つにまとめると（$p_g = p_l \equiv p$）6本の PDE が残ります。これが
+Wallis モデル、あるいは単一圧力6方程式モデルです。
+
+1次元で圧縮性をいったん切り、原始変数 $(\alpha_g, p, u_g, u_l)$ で準線形化すると、遅い波の対の
+固有値が閉じた形で出てきます。
+
+$$
+\lambda_\pm = \frac{\alpha_l \rho_g u_g + \alpha_g \rho_l u_l}{\alpha_l \rho_g + \alpha_g \rho_l}
+\pm \frac{\sqrt{(\sigma - 1)\, \alpha_g \alpha_l \rho_g \rho_l}\; |u_l - u_g|}{\alpha_l \rho_g + \alpha_g \rho_l}
+$$
+
+$\alpha_k$ は体積分率、$\rho_k$ は相密度、$u_k$ は相速度です。$\sigma$ は後述する界面圧力項の
+係数です。前の項は密度で重み付けした平均速度、後ろの項が二つの波の分離幅です。
+
+根号の中がすべてを決めます。$\sigma < 1$ なら負になり、二つの固有値は共役複素数の対になります。
+すべり $|u_l - u_g|$ がゼロでない限り、これは必ず起こります。つまり二相が異なる速度で流れた瞬間に
+モデルは不適切になります。
+
+下のシミュレーションで実際に操作してみましょう。
+
+<TwoFluidEigenvalueDial />
+
+`sigma` を0から上げると、左の複素平面の赤い点が二つ、虚軸に沿って降りてきて1で出会い、そこから
+実軸上に分かれて緑に変わります。右の擾乱が成長をやめて左右に流れ始めるのが、まったく同じ瞬間です。
+`slip u_r` を0まで下げると、問題そのものが消えることも確かめてください。
+
+## 一枚の表 — 7方程式・6方程式・界面圧力の三列
+
+この場所をめぐって選択肢が三つあります。縦に並べると、それぞれが何を買い何を売るのかが見えます。
+
+| | 7方程式 (Baer–Nunziato) | 素の6方程式 (Wallis) | 6方程式 + 界面圧力 |
+|---|---|---|---|
+| 圧力 | 相ごとに二つ | 一つ | 一つ |
+| 固有値 | 常に実数 | すべりがあると複素 | $\sigma \ge 1$ なら実数 |
+| 未知数 | 体積分率の輸送式を追加 | 最小 | 最小 |
+| 代価 | 圧力緩和項、剛性 | 不適切 | $\sigma$ の物理的根拠が薄い |
+| 適用範囲 | 密充填の粒子・懸濁液で物理的 | そのままでは使えない | 工学的な折衷 |
+
+7方程式モデルは体積分率に固有の輸送方程式を一本与えます。それで双曲性は確保できますが、圧力緩和項
+が剛性を連れてきます。その構造は
+[flux splitting で Baer–Nunziato を扱った記事](/ja/posts/2026-08-09-tv-flux-splitting-baer-nunziato/)
+で整理しました。問題は、このモデルが物理的に正当化される範囲が主に密充填の粒子・懸濁液だという点
+です。水と空気が層をなして流れる配管にはあまり合いません。
+
+## Python で取り出した 4×4 の固有値
+
+閉じた形を信じる前に、元の系をそのまま解きます。圧縮性を残して $A W_t + B W_x = 0$ を立て、
+$A^{-1}B$ の固有値を取ります。空気と水、$\alpha_g = 0.5$、気相が 10 m/s で先行する状態です。
+
+```python
+import numpy as np
+
+def interfacial_dp(a, rg, rl, ur, sigma):
+    """Stuhmiller 補正: p_int = p - dp"""
+    return sigma * a * (1 - a) * rg * rl * ur**2 / (a * rl + (1 - a) * rg)
+
+def two_fluid_matrices(a, rg, rl, cg, cl, ug, ul, sigma):
+    """A W_t + B W_x = 0,  W = (alpha_g, p, u_g, u_l)"""
+    dp = interfacial_dp(a, rg, rl, ul - ug, sigma)
+    kg, kl = a / (rg * cg**2), (1 - a) / (rl * cl**2)
+    A = np.array([[ 1.0, kg,  0.0,    0.0],
+                  [-1.0, kl,  0.0,    0.0],
+                  [ 0.0, 0.0, a * rg, 0.0],
+                  [ 0.0, 0.0, 0.0,    (1 - a) * rl]])
+    B = np.array([[ ug,  ug * kg, a,          0.0],
+                  [-ul,  ul * kl, 0.0,        1 - a],
+                  [ dp,  a,       a * rg * ug, 0.0],
+                  [-dp,  1 - a,   0.0,        (1 - a) * rl * ul]])
+    return A, B
+
+def char_speeds(sigma, a=0.5, rg=1.2, rl=1000.0, cg=340.0, cl=1500.0, ug=10.0, ul=0.0):
+    A, B = two_fluid_matrices(a, rg, rl, cg, cl, ug, ul, sigma)
+    return np.linalg.eigvals(np.linalg.solve(A, B))
+
+print("air/water, alpha_g=0.5, u_g=10, u_l=0 m/s")
+print("sigma   max|Im lambda|   slow pair Re")
+for s in [0.0, 0.5, 0.9, 1.0, 1.1, 1.5]:
+    lam = char_speeds(s)
+    slow = np.sort(lam.real)[1:3]
+    print("%5.2f   %12.5f   %8.4f %8.4f" % (s, np.abs(lam.imag).max(), slow[0], slow[1]))
+```
+
+```text
+air/water, alpha_g=0.5, u_g=10, u_l=0 m/s
+sigma   max|Im lambda|   slow pair Re
+ 0.00        0.34614     0.0120   0.0120
+ 0.50        0.24481     0.0120   0.0120
+ 0.90        0.10967     0.0120   0.0120
+ 1.00        0.00718     0.0120   0.0120
+ 1.10        0.00000    -0.0972   0.1212
+ 1.50        0.00000    -0.2326   0.2566
+```
+
+$\sigma = 0$ で虚部が 0.346 m/s です。遅い二つの波の実部は 0.0120 に重なっています。気相が
+10 m/s で流れているのに波速が 0.012 m/s なのは、密度による重み付けのためです。水は空気より830倍
+重いので、平均が液相側に引き寄せられます。
+
+$\sigma$ を上げると虚部が縮み、1.1 でゼロになって二つの波が $-0.097$ と $0.121$ に分かれます。
+$\sigma = 1.0$ でまだ 0.00718 が残るのは圧縮性のためです。閉じた形は非圧縮極限で導いたので、有限
+の音速がしきい値を1よりごくわずかに押し上げます。
+
+## 閉じた形が示すしきい値はちょうど1
+
+次に同じ値を閉じた形で測り、臨界 $\sigma$ を二分法で求めます。
+
+```python
+from math import sqrt, pi
+
+def material_pair(a, sigma, rg=1.2, rl=1000.0, ug=10.0, ul=0.0):
+    """遅い（物質）波の対、非圧縮極限の閉じた形"""
+    al = 1.0 - a
+    den = al * rg + a * rl
+    mean = (al * rg * ug + a * rl * ul) / den
+    disc = (sigma - 1.0) * a * al * rg * rl * (ul - ug) ** 2 / den**2
+    if disc >= 0.0:
+        return (mean - sqrt(disc), mean + sqrt(disc)), 0.0
+    return (mean, mean), sqrt(-disc)
+
+print("closed form vs the 4x4 eigenvalues above")
+for s in [0.0, 0.5, 0.9, 1.1, 1.5]:
+    (r1, r2), im = material_pair(0.5, s)
+    print("sigma=%4.2f  Re = %8.4f %8.4f   |Im| = %8.5f" % (s, r1, r2, im))
+
+print()
+print("growth rate of the shortest resolved mode, L = 1 m, sigma = 0")
+_, im0 = material_pair(0.5, 0.0)
+for n in [50, 100, 200, 400, 800]:
+    k = pi * n          # k = pi / dx, dx = 1/n
+    print("N=%4d  dx=%7.5f  k=%8.1f 1/m  growth=%8.2f 1/s" % (n, 1.0 / n, k, k * im0))
+
+print()
+print("critical sigma (incompressible limit) for a few states")
+for a in [0.1, 0.5, 0.9]:
+    for ur in [1.0, 30.0]:
+        lo, hi = 0.0, 5.0
+        for _ in range(60):
+            mid = 0.5 * (lo + hi)
+            _, im = material_pair(a, mid, ug=ur)
+            if im > 0.0: lo = mid
+            else: hi = mid
+        print("alpha_g=%.1f  u_r=%4.1f  ->  sigma_c = %.6f" % (a, ur, hi))
+```
+
+```text
+closed form vs the 4x4 eigenvalues above
+sigma=0.00  Re =   0.0120   0.0120   |Im| =  0.34599
+sigma=0.50  Re =   0.0120   0.0120   |Im| =  0.24466
+sigma=0.90  Re =   0.0120   0.0120   |Im| =  0.10941
+sigma=1.10  Re =  -0.0974   0.1214   |Im| =  0.00000
+sigma=1.50  Re =  -0.2327   0.2566   |Im| =  0.00000
+
+growth rate of the shortest resolved mode, L = 1 m, sigma = 0
+N=  50  dx=0.02000  k=   157.1 1/m  growth=   54.35 1/s
+N= 100  dx=0.01000  k=   314.2 1/m  growth=  108.70 1/s
+N= 200  dx=0.00500  k=   628.3 1/m  growth=  217.40 1/s
+N= 400  dx=0.00250  k=  1256.6 1/m  growth=  434.79 1/s
+N= 800  dx=0.00125  k=  2513.3 1/m  growth=  869.58 1/s
+
+critical sigma (incompressible limit) for a few states
+alpha_g=0.1  u_r= 1.0  ->  sigma_c = 1.000000
+alpha_g=0.1  u_r=30.0  ->  sigma_c = 1.000000
+alpha_g=0.5  u_r= 1.0  ->  sigma_c = 1.000000
+alpha_g=0.5  u_r=30.0  ->  sigma_c = 1.000000
+alpha_g=0.9  u_r= 1.0  ->  sigma_c = 1.000000
+alpha_g=0.9  u_r=30.0  ->  sigma_c = 1.000000
+```
+
+閉じた形と 4×4 の固有値が小数第3位まで一致します。体積分率を 0.1 から 0.9 まで、すべりを 1 から
+30 m/s まで振っても、しきい値は 1.000000 のままです。Stuhmiller が提案した補正
+
+$$
+p_{\text{int}} = p - \sigma\, \frac{\alpha_g \alpha_l \rho_g \rho_l}{\alpha_g \rho_l + \alpha_l \rho_g}\, u_r^2
+$$
+
+で $\sigma = 1$ が恣意的なチューニング値でない理由はここにあります。根号の中をちょうどゼロにする
+最小の係数です。実務では余裕をとって1より少し大きい値を使います。
+
+## 不安定と不適切問題は別物です
+
+数値的に不安定なスキームは時間刻みを小さくすれば改善します。不適切問題はそうなりません。成長率が
+波数に比例するからです。
+
+$$
+\text{growth}(k) = k \, |\mathrm{Im}\,\lambda|, \qquad k = \frac{\pi}{\Delta x}
+$$
+
+$\Delta x$ を半分にすれば表現できる最短波長も半分になり、成長率は二倍になります。上の出力で
+$N = 50$ の 54.35 1/s が $N = 800$ で 869.58 1/s、ちょうど16倍になっているのがそれです。格子を
+細かくするほど答えが早く死にます。
+
+<IllPosedMeshRaceTrack />
+
+四つの格子が同じ擾乱を抱えて同時に出発します。どのレーンが先に blow-up 線へ届くか、そして
+`sigma` を1より上げたとき四つのレーンが **同時に** 平坦になるかを見てください。直す場所が格子では
+なく閉じ式であることが、図一枚で分かります。
+
+実際のコードでは症状が隠れることも多くあります。1次風上差分の数値拡散が $O(k^2 \Delta x)$ の減衰
+を与えると、成長率が相殺されて計算がどうにか回ります。だから低次では平気だったコードが、高次に
+上げた瞬間に破綻します。
+[保存形と原始形が分かれる場所を扱った記事](/ja/posts/2026-08-18-conservative-vs-primitive-shock-speed/)
+と同じ構造です。数値拡散がモデルの負債を肩代わりしていただけなのです。
+
+## 表の残りの列 — 密度ベースが低マッハ数で生き延びる方法
+
+双曲性を取り戻せば終わり、ではありません。多相流の実応用はほとんどがきわめて低いマッハ数です。
+密度ベースのソルバはこの領域で音速 CFL に縛られ、時間刻みが潰れます。
+
+伝統的にこの場所は圧力ベース法のものでした。速度場をソレノイダルと仮定して音速を方程式から消す
+ので、CFL が流速だけで決まります。代わりに圧縮性を厳密に扱えません。沸騰のような高温現象が入ると
+誤差が大きくなります。
+
+Pandare と Luo が選んだのは、密度ベースを保ったまま原始変数 $[p, v, T]$ に変換して完全陰的に解く
+道です。圧力を未知数に立てると低マッハ数で条件数が良くなります。抗力や仮想質量といった界面力項も
+陰的に扱い、時間刻みの制約をさらに緩めます。
+
+フラックス側にも同じ折衷があります。強い衝撃波が物質界面と出会うと AUSM$^+$-up が負圧を出します。
+従来の解法はその面だけ厳密リーマン解法器を呼ぶことでしたが、ニュートン反復の費用が大きい。論文は
+代わりに質量フラックスへ体積分率の結合項を一つ加え、同じ頑健性を得ます。体積分率のジャンプに比例
+した Lax–Friedrichs 型の散逸を入れる形です。静止した界面を乱してはならないという条件は、
+[界面捕捉スキームの CFL 上限を測った記事](/ja/posts/2026-08-16-vof-interface-advection-cfl-limit/)
+でも同じ名前で登場しました。
+
+## 三つの列のどこに立っているかをまず確かめる
+
+two-fluid ソルバを新しく起動するとき、格子やスキームに触れる前に確認すべきことが三つあります。
+
+一つめ。すべり速度がゼロでない状態でヤコビアンの固有値を取ります。4×4 の行列一つで足ります。虚部
+が出たら、離散化で解決する問題ではありません。
+
+二つめ。格子を二倍に細かくして発散の時刻を測ります。時刻が半分になれば不適切、遅くなれば離散化の
+問題です。この一回の実験で診断が分かれます。
+
+三つめ。コードの中の界面圧力係数を探して値を読みます。1より小さければ、そのコードは数値拡散で
+持ちこたえているだけです。高次に上げる前に、まずこの値を上げてください。

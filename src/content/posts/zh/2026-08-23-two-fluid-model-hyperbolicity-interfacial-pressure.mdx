@@ -1,0 +1,253 @@
+---
+title: "网格减半后发散来得快了一倍 — 六方程 two-fluid 模型的复数特征值"
+date: 2026-08-23
+description: "单压力六方程 two-fluid 模型只要两相有滑移，特征值就会变成复数。界面压力项系数越过1的瞬间，它们回到实轴。"
+tags: ["Two-Fluid-Model", "Hyperbolicity", "Paper-Review", "Multiphase", "Compressible"]
+locale: zh
+slug: 2026-08-23-two-fluid-model-hyperbolicity-interfacial-pressure
+takeaway: "复数特征值在越细的网格上炸得越快。要修的地方是界面压力封闭关系，不是离散格式。"
+draft: false
+---
+
+import { TwoFluidEigenvalueDial } from '@/components/post-viz/2026-08-23-two-fluid-model-hyperbolicity-interfacial-pressure/TwoFluidEigenvalueDial'
+import { IllPosedMeshRaceTrack } from '@/components/post-viz/2026-08-23-two-fluid-model-hyperbolicity-interfacial-pressure/IllPosedMeshRaceTrack'
+
+## 网格减半后发散来得快了一倍
+
+求解器炸掉时，通常先加密网格试一试。误差下降说明是离散的问题，没有变化说明是物理模型的问题。大致
+按这个顺序往下缩小范围。
+
+但有一种情况方向相反。把网格尺度减半，发散恰好提前了一倍。单元数增加四倍，就提前四倍。缩小时间步
+长对增长率毫无影响。
+
+这个症状不是离散化的 bug。它说明控制方程本身作为初值问题是 **不适定的**（ill-posed，初始扰动的增长
+速度与波长成反比且没有上界）。Pandare 与 Luo 在2018年 AIAA 论文中搭建基于密度的有限体积 two-fluid
+求解器时，最先处理的也是这个位置。
+
+本文直接取出单压力六方程 two-fluid 模型的特征值，看复数从哪里产生，界面压力项的系数要多大才能让它
+们回到实轴。答案恰好是1。
+
+## 一对慢波离开实轴
+
+two-fluid 模型把两相看作互相穿透的连续介质，分相求解质量、动量和能量。把两相压力合并为一个
+（$p_g = p_l \equiv p$）之后剩下六个 PDE，这就是 Wallis 模型，也叫单压力六方程模型。
+
+在一维中暂时关掉可压缩性，用原始变量 $(\alpha_g, p, u_g, u_l)$ 做拟线性化，慢波这一对的特征值有
+闭式解。
+
+$$
+\lambda_\pm = \frac{\alpha_l \rho_g u_g + \alpha_g \rho_l u_l}{\alpha_l \rho_g + \alpha_g \rho_l}
+\pm \frac{\sqrt{(\sigma - 1)\, \alpha_g \alpha_l \rho_g \rho_l}\; |u_l - u_g|}{\alpha_l \rho_g + \alpha_g \rho_l}
+$$
+
+$\alpha_k$ 是体积分数，$\rho_k$ 是相密度，$u_k$ 是相速度，$\sigma$ 是下文要说的界面压力项系数。前一项
+是按密度加权的平均速度，后一项是两个波分开的宽度。
+
+关键全在根号里面。$\sigma < 1$ 时它变成负数，两个特征值成为一对共轭复数。只要滑移 $|u_l - u_g|$
+不为零，这件事必然发生。也就是说两相一旦以不同速度流动，模型就不适定了。
+
+在下面的模拟中亲手操作一下。
+
+<TwoFluidEigenvalueDial />
+
+把 `sigma` 从0往上推，左侧复平面上两个红点沿虚轴下滑，在1处相遇，然后沿实轴分开并变绿。右侧的扰动
+停止增长、开始向两边传播，正是同一瞬间。再把 `slip u_r` 拉到0，看问题本身如何消失。
+
+## 一张表 — 七方程、六方程与界面压力三列
+
+围绕这个位置有三个选项。竖着排开，就能看清每一个买到了什么、又卖掉了什么。
+
+| | 七方程 (Baer–Nunziato) | 原始六方程 (Wallis) | 六方程 + 界面压力 |
+|---|---|---|---|
+| 压力 | 每相一个 | 单一 | 单一 |
+| 特征值 | 恒为实数 | 有滑移即复数 | $\sigma \ge 1$ 时为实数 |
+| 未知量 | 多一个体积分数输运方程 | 最少 | 最少 |
+| 代价 | 压力松弛项、刚性 | 不适定 | $\sigma$ 的物理依据较弱 |
+| 适用范围 | 密集颗粒／悬浮液中有物理依据 | 原样无法使用 | 工程折中 |
+
+七方程模型给体积分数单独一个输运方程，由此换来双曲性，代价是压力松弛项带来的刚性。这套结构我在
+[用 flux splitting 处理 Baer–Nunziato 的那篇](/zh/posts/2026-08-09-tv-flux-splitting-baer-nunziato/)
+里整理过。问题在于该模型物理上站得住脚的范围主要是密集颗粒与悬浮液，对水与空气分层流动的管道并不
+合适。
+
+## 用 Python 取出的 4×4 特征值
+
+在相信闭式解之前，先把原系统照原样解一遍。保留可压缩性写出 $A W_t + B W_x = 0$，取 $A^{-1}B$ 的
+特征值。空气与水，$\alpha_g = 0.5$，气相以 10 m/s 领先。
+
+```python
+import numpy as np
+
+def interfacial_dp(a, rg, rl, ur, sigma):
+    """Stuhmiller 修正: p_int = p - dp"""
+    return sigma * a * (1 - a) * rg * rl * ur**2 / (a * rl + (1 - a) * rg)
+
+def two_fluid_matrices(a, rg, rl, cg, cl, ug, ul, sigma):
+    """A W_t + B W_x = 0,  W = (alpha_g, p, u_g, u_l)"""
+    dp = interfacial_dp(a, rg, rl, ul - ug, sigma)
+    kg, kl = a / (rg * cg**2), (1 - a) / (rl * cl**2)
+    A = np.array([[ 1.0, kg,  0.0,    0.0],
+                  [-1.0, kl,  0.0,    0.0],
+                  [ 0.0, 0.0, a * rg, 0.0],
+                  [ 0.0, 0.0, 0.0,    (1 - a) * rl]])
+    B = np.array([[ ug,  ug * kg, a,          0.0],
+                  [-ul,  ul * kl, 0.0,        1 - a],
+                  [ dp,  a,       a * rg * ug, 0.0],
+                  [-dp,  1 - a,   0.0,        (1 - a) * rl * ul]])
+    return A, B
+
+def char_speeds(sigma, a=0.5, rg=1.2, rl=1000.0, cg=340.0, cl=1500.0, ug=10.0, ul=0.0):
+    A, B = two_fluid_matrices(a, rg, rl, cg, cl, ug, ul, sigma)
+    return np.linalg.eigvals(np.linalg.solve(A, B))
+
+print("air/water, alpha_g=0.5, u_g=10, u_l=0 m/s")
+print("sigma   max|Im lambda|   slow pair Re")
+for s in [0.0, 0.5, 0.9, 1.0, 1.1, 1.5]:
+    lam = char_speeds(s)
+    slow = np.sort(lam.real)[1:3]
+    print("%5.2f   %12.5f   %8.4f %8.4f" % (s, np.abs(lam.imag).max(), slow[0], slow[1]))
+```
+
+```text
+air/water, alpha_g=0.5, u_g=10, u_l=0 m/s
+sigma   max|Im lambda|   slow pair Re
+ 0.00        0.34614     0.0120   0.0120
+ 0.50        0.24481     0.0120   0.0120
+ 0.90        0.10967     0.0120   0.0120
+ 1.00        0.00718     0.0120   0.0120
+ 1.10        0.00000    -0.0972   0.1212
+ 1.50        0.00000    -0.2326   0.2566
+```
+
+$\sigma = 0$ 时虚部为 0.346 m/s。两个慢波的实部并在一起，都是 0.0120。气相以 10 m/s 流动，波速却只有
+0.012 m/s，原因在于密度加权：水比空气重830倍，平均值被拽向液相一侧。
+
+$\sigma$ 上升，虚部收缩；到 1.1 归零，两个波分开为 $-0.097$ 与 $0.121$。$\sigma = 1.0$ 处还残留
+0.00718，是可压缩性造成的。闭式解是在不可压极限下推导的，有限声速把阈值往1之上推了极小的一点。
+
+## 闭式解给出的阈值恰好是1
+
+接着用闭式解测同样的数，并用二分法找临界 $\sigma$。
+
+```python
+from math import sqrt, pi
+
+def material_pair(a, sigma, rg=1.2, rl=1000.0, ug=10.0, ul=0.0):
+    """慢（物质）波对在不可压极限下的闭式解"""
+    al = 1.0 - a
+    den = al * rg + a * rl
+    mean = (al * rg * ug + a * rl * ul) / den
+    disc = (sigma - 1.0) * a * al * rg * rl * (ul - ug) ** 2 / den**2
+    if disc >= 0.0:
+        return (mean - sqrt(disc), mean + sqrt(disc)), 0.0
+    return (mean, mean), sqrt(-disc)
+
+print("closed form vs the 4x4 eigenvalues above")
+for s in [0.0, 0.5, 0.9, 1.1, 1.5]:
+    (r1, r2), im = material_pair(0.5, s)
+    print("sigma=%4.2f  Re = %8.4f %8.4f   |Im| = %8.5f" % (s, r1, r2, im))
+
+print()
+print("growth rate of the shortest resolved mode, L = 1 m, sigma = 0")
+_, im0 = material_pair(0.5, 0.0)
+for n in [50, 100, 200, 400, 800]:
+    k = pi * n          # k = pi / dx, dx = 1/n
+    print("N=%4d  dx=%7.5f  k=%8.1f 1/m  growth=%8.2f 1/s" % (n, 1.0 / n, k, k * im0))
+
+print()
+print("critical sigma (incompressible limit) for a few states")
+for a in [0.1, 0.5, 0.9]:
+    for ur in [1.0, 30.0]:
+        lo, hi = 0.0, 5.0
+        for _ in range(60):
+            mid = 0.5 * (lo + hi)
+            _, im = material_pair(a, mid, ug=ur)
+            if im > 0.0: lo = mid
+            else: hi = mid
+        print("alpha_g=%.1f  u_r=%4.1f  ->  sigma_c = %.6f" % (a, ur, hi))
+```
+
+```text
+closed form vs the 4x4 eigenvalues above
+sigma=0.00  Re =   0.0120   0.0120   |Im| =  0.34599
+sigma=0.50  Re =   0.0120   0.0120   |Im| =  0.24466
+sigma=0.90  Re =   0.0120   0.0120   |Im| =  0.10941
+sigma=1.10  Re =  -0.0974   0.1214   |Im| =  0.00000
+sigma=1.50  Re =  -0.2327   0.2566   |Im| =  0.00000
+
+growth rate of the shortest resolved mode, L = 1 m, sigma = 0
+N=  50  dx=0.02000  k=   157.1 1/m  growth=   54.35 1/s
+N= 100  dx=0.01000  k=   314.2 1/m  growth=  108.70 1/s
+N= 200  dx=0.00500  k=   628.3 1/m  growth=  217.40 1/s
+N= 400  dx=0.00250  k=  1256.6 1/m  growth=  434.79 1/s
+N= 800  dx=0.00125  k=  2513.3 1/m  growth=  869.58 1/s
+
+critical sigma (incompressible limit) for a few states
+alpha_g=0.1  u_r= 1.0  ->  sigma_c = 1.000000
+alpha_g=0.1  u_r=30.0  ->  sigma_c = 1.000000
+alpha_g=0.5  u_r= 1.0  ->  sigma_c = 1.000000
+alpha_g=0.5  u_r=30.0  ->  sigma_c = 1.000000
+alpha_g=0.9  u_r= 1.0  ->  sigma_c = 1.000000
+alpha_g=0.9  u_r=30.0  ->  sigma_c = 1.000000
+```
+
+闭式解与 4×4 特征值在小数点后第三位上一致。把体积分数从 0.1 扫到 0.9、滑移从 1 扫到 30 m/s，阈值
+始终是 1.000000。Stuhmiller 提出的修正
+
+$$
+p_{\text{int}} = p - \sigma\, \frac{\alpha_g \alpha_l \rho_g \rho_l}{\alpha_g \rho_l + \alpha_l \rho_g}\, u_r^2
+$$
+
+中 $\sigma = 1$ 不是随手调出来的数，原因就在这里：它是让根号内恰好归零的最小系数。工程实践中会留一点
+余量，用略大于1的值。
+
+## 不稳定与不适定是两回事
+
+数值不稳定的格式，缩小时间步长就会好转。不适定问题不会，因为增长率与波数成正比。
+
+$$
+\text{growth}(k) = k \, |\mathrm{Im}\,\lambda|, \qquad k = \frac{\pi}{\Delta x}
+$$
+
+$\Delta x$ 减半，可表示的最短波长随之减半，增长率就翻倍。上面的输出里，$N = 50$ 的 54.35 1/s 到
+$N = 800$ 变成 869.58 1/s，恰好16倍。网格越细，答案死得越快。
+
+<IllPosedMeshRaceTrack />
+
+四套网格带着同一个扰动同时出发。看哪条赛道先触到 blow-up 线，再把 `sigma` 推过1，看四条赛道是否
+**同时** 变平。一张图就能说明要修的地方是封闭关系，而不是网格。
+
+真实代码里这个症状常常被掩盖。一阶迎风差分的数值扩散提供 $O(k^2 \Delta x)$ 量级的衰减，抵消掉增长率
+之后计算勉强能跑。所以低阶时安然无恙的代码，一提高阶数就炸。这和
+[保守形式与原始形式分道扬镳的那篇](/zh/posts/2026-08-18-conservative-vs-primitive-shock-speed/)
+是同一种结构：数值扩散只是在替模型还债。
+
+## 表的其余几列 — 基于密度的方法如何在低马赫数下活下来
+
+拿回双曲性并不等于结束。多相流的实际应用绝大多数处在极低马赫数，基于密度的求解器在这里被声速 CFL
+绑住，时间步长塌掉。
+
+这块地盘传统上属于基于压力的方法。假定速度场无散，把声速从方程里抹去，CFL 就只由流速决定。代价是
+无法严格处理可压缩性，一旦引入沸腾这类高温现象，误差就变大。
+
+Pandare 与 Luo 选的路是保留基于密度的框架，但变换到原始变量 $[p, v, T]$ 并做全隐式求解。把压力立为
+未知量，低马赫数下条件数会好很多。曳力、虚拟质量这类界面力项同样隐式处理，进一步放松时间步长限制。
+
+通量一侧也有同样的折中。强激波遇到物质界面时，AUSM$^+$-up 会给出负压。既有做法是只在那些面上调用
+精确黎曼解算器，但牛顿迭代代价很高。论文改为在质量通量里加一个体积分数耦合项，换来同样的鲁棒性，
+相当于加入与体积分数跳跃成正比的 Lax–Friedrichs 型耗散。静止界面不得被扰动这个条件，在
+[测量界面捕捉格式 CFL 上限的那篇](/zh/posts/2026-08-16-vof-interface-advection-cfl-limit/)
+里也以同样的名字出现过。
+
+## 先确认自己站在三列中的哪一列
+
+启动一个新的 two-fluid 求解器时，在动网格和格式之前有三件事要确认。
+
+第一，在滑移速度不为零的状态下取雅可比矩阵的特征值。一个 4×4 矩阵就够。只要出现虚部，就不是靠离散
+能解决的问题。
+
+第二，把网格加密一倍并记录发散时刻。时刻减半说明不适定，推后说明是离散问题。这一次实验就能分开
+两种诊断。
+
+第三，在代码里找到界面压力系数并读出它的值。小于1，说明这份代码是靠数值扩散撑着的。提高阶数之前，
+先把这个值提上去。
