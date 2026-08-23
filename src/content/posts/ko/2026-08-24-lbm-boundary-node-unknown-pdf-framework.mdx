@@ -1,0 +1,270 @@
+---
+title: "벽에서는 3개, 모서리에서는 5개 — LBM 경계 노드가 잃어버리는 분포함수 세기"
+date: 2026-08-24
+description: "스트리밍 뒤 비어 있는 분포함수의 개수는 노드 주변 고체 셀 수와 같다. 평벽 3개, 오목 모서리 5개, 볼록 모서리 1개."
+tags: ["Bounce-Back", "Zou-He", "Boundary-Conditions", "LBM", "Memory-Layout"]
+locale: ko
+slug: 2026-08-24-lbm-boundary-node-unknown-pdf-framework
+takeaway: "경계조건 구현의 첫 단추는 스킴 고르기가 아니라 노드마다 몇 개가 비는지 세는 일이다."
+draft: false
+---
+
+import { UnknownPdfNodeCounter } from '@/components/post-viz/2026-08-24-lbm-boundary-node-unknown-pdf-framework/UnknownPdfNodeCounter'
+import { BoundaryPdfLayoutStrider } from '@/components/post-viz/2026-08-24-lbm-boundary-node-unknown-pdf-framework/BoundaryPdfLayoutStrider'
+
+## 경계 노드는 전체의 1%인데 코드는 절반이다
+
+격자 볼츠만(LBM) 솔버를 열어보면 비율이 이상하다. 충돌 항은 열 줄이다. 스트리밍은 다섯 줄이다.
+경계조건은 수백 줄이다.
+
+계산량으로 보면 반대다. 100×100 격자에서 경계 노드는 400개 남짓이다. 전체의 4%다. 3차원으로
+가면 1% 아래로 떨어진다. 연산의 1%가 코드의 절반을 차지한다.
+
+이 불균형에는 이유가 있다. 경계조건이 어려운 게 아니라, **노드마다 풀어야 할 문제의 크기가
+다르기** 때문이다. 그 크기를 세는 규칙을 먼저 세우면 코드는 다시 짧아진다. 오늘은 그 규칙과,
+규칙이 정해지고 나서 자료구조가 어떻게 따라오는지를 본다.
+
+## 비는 자리를 정하는 것은 스킴이 아니라 형상이다
+
+스트리밍은 이웃에서 값을 끌어오는 연산이다.
+
+$$
+f_k(\mathbf{x},\, t + \Delta t) = f_k^{\star}(\mathbf{x} - \mathbf{e}_k \Delta t,\; t)
+$$
+
+여기서 $f_k$는 $k$번 방향의 분포함수, $\mathbf{e}_k$는 그 방향의 격자 속도, 별표는 충돌 직후
+값이다. 값이 오는 곳은 $\mathbf{x} - \mathbf{e}_k \Delta t$, 즉 상류 이웃이다.
+
+그 상류 이웃이 고체이면 보낼 값이 없다. 그 링크는 빈 채로 도착한다. 그러니 한 노드에서 비는
+분포함수의 개수는 아주 단순한 값이다. **그 노드의 8-이웃 중 고체인 셀의 개수와 같다.**
+
+bounce-back이든 Zou–He든 스킴은 이 개수를 바꾸지 못한다. 개수를 정하는 것은 형상뿐이다.
+스킴은 그 다음 문제, 즉 빈 자리를 무엇으로 채울지에만 답한다.
+
+아래 격자에서 노드를 직접 눌러보자.
+
+<UnknownPdfNodeCounter />
+
+바닥을 따라 눌러 보면 빨간 화살표가 계속 3개다. 계단이 바닥과 만나는 안쪽 모서리에서 5개로
+뛴다. 계단 위 바깥 모서리에서는 1개로 떨어진다. 형상만 바뀌었는데 풀어야 할 미지수의 수가
+세 배 넘게 벌어진다.
+
+## 미지수 장부 — 모멘트 3개로 덮을 수 있는 것
+
+빈 분포함수를 채우려면 조건이 필요하다. 쓸 수 있는 조건은 거시량 정의뿐이다.
+
+$$
+\rho = \sum_{k=0}^{8} f_k, \qquad \rho\, \mathbf{u} = \sum_{k=0}^{8} f_k\, \mathbf{e}_k
+$$
+
+2차원에서 이 식은 3개다. 밀도 1개, 운동량 2개다.
+
+미지수 쪽을 세어 보자. 빈 분포함수가 $|\mathcal{U}|$개다. 벽에서는 보통 속도만 주고 밀도는
+모른다. 그래서 $\rho$도 미지수다. 부족분은 이렇게 적힌다.
+
+$$
+d = |\mathcal{U}| + 1 - (D + 1), \qquad D = 2
+$$
+
+$D$는 공간 차원, $D+1$이 쓸 수 있는 모멘트 식의 개수다. 평벽이면 $|\mathcal{U}|=3$이라
+$d=1$이다. 식이 하나 모자란다. Zou–He가 비평형 bounce-back을 하나 더 얹는 자리가 바로
+여기다.
+
+$$
+f_k - f_k^{\mathrm{eq}} = f_{\bar{k}} - f_{\bar{k}}^{\mathrm{eq}}
+$$
+
+$\bar{k}$는 $k$의 반대 방향이다. 벽 법선 방향의 링크 한 쌍에 이 식을 걸면 장부가 맞는다.
+자세한 유도는 [bounce-back과 Zou–He를 나란히 놓고 비교한 글](/ko/posts/2026-07-20-lbm-bounce-back-zou-he-boundary-conditions/)에
+적어 두었다.
+
+오목 모서리에서는 $|\mathcal{U}|=5$다. $d=3$이다. 조건이 셋 모자란다. 평벽용으로 쓴 닫힘
+관계 하나를 그대로 가져다 쓰면 두 개가 뜬 채로 남는다. 그 자리에 남아 있는 값은 초기값이거나
+이전 스텝의 찌꺼기다.
+
+이것이 "코드는 도는데 모서리에서만 값이 이상하다"의 흔한 정체다. 발산하지 않는다. 조용히
+틀린다.
+
+## Python으로 격자 하나를 훑어봤다
+
+계단이 하나 있는 채널을 만들고, 모든 유체 노드에서 빈 방향을 세어 보자. 뒤에 쓸 자료구조
+이야기를 위해 캐시 라인도 같이 센다.
+
+```python
+# D2Q9: 0 정지, 1-4 축 방향, 5-8 대각 방향
+E = [(0, 0), (1, 0), (0, 1), (-1, 0), (0, -1), (1, 1), (-1, 1), (-1, -1), (1, -1)]
+NX, NY = 24, 16
+
+
+def solid_mask(nx, ny):
+    """바닥에 계단이 하나 놓인 채널."""
+    m = [[False] * ny for _ in range(nx)]
+    for i in range(nx):
+        m[i][0] = True
+        m[i][ny - 1] = True
+    for i in range(8):
+        for j in range(1, 5):
+            m[i][j] = True
+    return m
+
+
+def unknown_dirs(m, i, j):
+    """상류 이웃 (i-ex, j-ey)이 고체이거나 격자 밖인 k."""
+    nx, ny = len(m), len(m[0])
+    out = []
+    for k in range(1, 9):
+        si, sj = i - E[k][0], j - E[k][1]
+        if not (0 <= si < nx and 0 <= sj < ny) or m[si][sj]:
+            out.append(k)
+    return out
+
+
+def node_class(unk):
+    axial = [k for k in unk if k <= 4]
+    if len(axial) == 0:
+        return "convex corner"
+    if len(axial) == 1:
+        return "flat wall"
+    if len(axial) == 2:
+        return "concave corner"
+    return "slot / thin gap"
+
+
+def scan_boundary(m):
+    """분포함수를 하나라도 잃는 유체 노드 전부, 행 우선 순서로."""
+    ny = len(m[0])
+    rows = []
+    for i in range(len(m)):
+        for j in range(ny):
+            if m[i][j]:
+                continue
+            unk = unknown_dirs(m, i, j)
+            if unk:
+                rows.append((i * ny + j, node_class(unk), unk))
+    return rows
+
+
+def lines_touched(rows, n_nodes, layout):
+    """빈 분포함수를 모두 채울 때 읽게 되는 64바이트 라인(double 8개)의 수."""
+    s = set()
+    for lin, _, unk in rows:
+        for k in unk:
+            addr = k * n_nodes + lin if layout == "soa" else lin * 9 + k
+            s.add(addr // 8)
+    return len(s)
+
+
+mask = solid_mask(NX, NY)
+rows = scan_boundary(mask)
+n_nodes = NX * NY
+n_fluid = sum(1 for i in range(NX) for j in range(NY) if not mask[i][j])
+
+print("lattice %dx%d   fluid %d   boundary %d (%.1f%% of fluid)"
+      % (NX, NY, n_fluid, len(rows), 100.0 * len(rows) / n_fluid))
+print()
+print("%-16s %7s %6s %9s %9s" % ("class", "unk/node", "nodes", "unknowns", "closure"))
+groups = {}
+for lin, cls, unk in rows:
+    groups.setdefault((cls, len(unk)), 0)
+    groups[(cls, len(unk))] += 1
+for (cls, n_unk) in sorted(groups, key=lambda g: (g[1], g[0])):
+    n = groups[(cls, n_unk)]
+    gap = n_unk + 1 - 3          # 빈 분포함수 + rho 대 모멘트 3개
+    tag = "%+d" % gap if gap else "exact"
+    print("%-16s %7d %6d %9d %9s" % (cls, n_unk, n, n_unk * n, tag))
+print()
+print("total unknown PDFs           %d" % sum(len(r[2]) for r in rows))
+print("cache lines, SoA f[k][node]  %d" % lines_touched(rows, n_nodes, "soa"))
+print("cache lines, AoS f[node][k]  %d" % lines_touched(rows, n_nodes, "aos"))
+```
+
+출력은 이렇다.
+
+```text
+lattice 24x16   fluid 304   boundary 72 (23.7% of fluid)
+
+class            unk/node  nodes  unknowns   closure
+convex corner          1      1         1        -1
+flat wall              2      2         4     exact
+flat wall              3     64       192        +1
+concave corner         5      5        25        +3
+
+total unknown PDFs           222
+cache lines, SoA f[k][node]  153
+cache lines, AoS f[node][k]  84
+```
+
+계단 하나짜리 형상에서 노드 유형이 넷 나왔다. 평벽인데 빈 방향이 2개인 노드도 2개 있다.
+계단 모서리 바로 옆이라 대각 링크 하나가 살아남은 자리다. 사각형 상자만 놓고 짠 코드가
+실제 형상에서 무너지는 지점이 이렇게 생긴다.
+
+## 볼록 모서리에서는 식이 남는다
+
+표에서 눈에 걸리는 줄은 첫 줄이다. 볼록 모서리의 부족분이 $-1$이다.
+
+빈 분포함수는 대각 링크 하나뿐이다. 미지수는 그것과 $\rho$, 합쳐서 2개다. 모멘트 식은 3개다.
+식이 하나 남는다.
+
+이 자리에서 세 모멘트를 모두 강제하면 과결정이 된다. 어떤 조합을 고르든 나머지 하나는
+만족되지 않는다. 억지로 맞추면 질량이 새기 시작한다.
+
+그래서 볼록 모서리는 보통 닫힘 관계를 쓰지 않는다. 빈 링크 하나에 bounce-back을 걸고 끝낸다.
+방정식을 푸는 대신 값을 되돌려 놓는 것이다.
+
+부족분의 부호가 처방을 가른다. 양수면 조건을 더 얹어야 하고, 0이면 그대로 풀면 되고, 음수면
+푸는 것 자체를 포기해야 한다. 한 코드 안에서 이 셋이 동시에 나온다.
+
+## 방향성으로 노드를 나눈 다음에야 배열이 정해진다
+
+여기까지 오면 자료구조가 저절로 정해진다.
+
+노드를 두 기준으로 분류한다. 첫째는 **방향성**이다. 어느 쪽 이웃이 비어 있는가. 2차원이면
+면 4개와 모서리 4개, 여덟 갈래다. 둘째는 **경계조건 유형**이다. 벽인가, 속도 입구인가,
+압력 출구인가.
+
+이 두 축의 조합마다 빈 방향의 집합이 고정된다. 집합이 고정되면 분기가 사라진다. 루프 안에서
+`if`로 방향을 따지는 대신, 같은 처리를 받는 노드를 한 덩어리로 모아 두고 그 덩어리를 통째로
+돈다.
+
+그러려면 같은 갈래의 노드가 배열에서 **연속으로** 놓여야 한다. 갈래별 노드 수를 세는 배열을
+하나, 노드 인덱스를 담는 배열(`iNodeBC`)을 하나 둔다. 전처리에서 한 번 채우고, 시간 루프에서는
+읽기만 한다. 고정 형상이면 이 비용은 전체에서 한 번뿐이다.
+
+두 번째 단계는 각 경계 노드에 속한 분포함수의 인덱스를 미리 저장하는 것이다. 이때 노드 하나의
+분포함수 9개를 메모리에 붙여 두면 — 구조체 배열(AoS, Array of Structure) 배치 — 경계 루프가
+읽어 들이는 메모리가 줄어든다.
+
+## 같은 미지수, 다른 메모리
+
+위 스크립트가 센 두 숫자가 이 차이다. SoA 배치에서 153라인, AoS 배치에서 84라인이다. 읽는
+값의 개수는 222개로 똑같다. 배치만 다르다.
+
+이유는 스트리밍과 경계 루프의 접근 패턴이 반대이기 때문이다. 스트리밍은 한 방향 $k$를 잡고
+격자 전체를 훑는다. `f[k][node]` 배치가 유리하다. 경계 루프는 한 노드를 잡고 여러 방향을
+훑는다. 같은 배치에서 이 노드의 미지수들은 방향 블록 8개에 흩어져 있다.
+
+아래에서 배치를 바꿔가며 같은 스윕을 돌려보자.
+
+<BoundaryPdfLayoutStrider />
+
+`soa`로 한 바퀴 돌린 뒤 라인 수를 읽고, `aos`를 눌러 같은 스윕을 다시 보자. 켜지는 상자가
+띄엄띄엄한 여덟 줄에서 짧은 덩어리로 바뀐다. `packed`는 경계 노드를 다시 번호 매겨 붙여 놓은
+경우다. 지도가 왼쪽 위 구석으로 접힌다.
+
+주의할 점은 이 최적화가 전역 배치를 바꾸자는 말이 아니라는 것이다. 코드 전체를 AoS로 돌리면
+스트리밍과 충돌이 느려진다. [MRT 충돌을 모멘트 공간에서 다룬 글](/ko/posts/2026-06-26-mrt-lbm-moment-space-collision/)에서
+본 것처럼 충돌 루프는 방향별 연속 접근을 좋아한다. 경계조건용 지역 자료구조만 따로 두는 것이
+요점이다. 전체 노드의 몇 퍼센트라서 복사 비용도 그만큼이다.
+
+## 경계조건 버그가 스킴 탓이 아닐 때
+
+새 형상을 얹었더니 벽 근처만 이상할 때, 손대야 할 순서가 있다.
+
+먼저 노드를 세어 본다. 위 스크립트처럼 유형별 개수와 부족분을 찍어 본다. 사각형 상자에서
+`flat wall`만 나오다가 새 형상에서 `concave corner`나 `slot / thin gap`이 나타나면, 그
+줄들이 코드에서 처리되고 있는지부터 확인한다.
+
+다음은 부족분의 부호다. 양수인 줄에 닫힘 관계가 몇 개 걸려 있는지 센다. 음수인 줄에서
+모멘트를 강제하고 있지 않은지 본다.
+
+배치 문제는 마지막이다. 값이 맞은 다음에 볼 일이다. 순서를 바꾸면 빠르게 틀린 답이 나온다.

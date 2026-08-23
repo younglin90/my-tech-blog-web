@@ -1,0 +1,255 @@
+---
+title: "壁面上是3个，角上是5个 — 数一数LBM边界节点丢失的分布函数"
+date: 2026-08-24
+description: "迁移之后空缺的分布函数个数，等于该节点周围固体格子的数量：平壁3个，凹角5个，凸角1个。"
+tags: ["Bounce-Back", "Zou-He", "Boundary-Conditions", "LBM", "Memory-Layout"]
+locale: zh
+slug: 2026-08-24-lbm-boundary-node-unknown-pdf-framework
+takeaway: "实现边界条件的第一步不是挑选格式，而是数清每个节点空缺了几个分布函数。"
+draft: false
+---
+
+import { UnknownPdfNodeCounter } from '@/components/post-viz/2026-08-24-lbm-boundary-node-unknown-pdf-framework/UnknownPdfNodeCounter'
+import { BoundaryPdfLayoutStrider } from '@/components/post-viz/2026-08-24-lbm-boundary-node-unknown-pdf-framework/BoundaryPdfLayoutStrider'
+
+## 边界节点占1%，代码却占一半
+
+打开一个格子玻尔兹曼（LBM）求解器，比例会显得很奇怪。碰撞项十来行。迁移五行。边界条件却有
+好几百行。
+
+按计算量看恰好相反。100×100 的格子上，边界节点约400个，占总数的4%。到三维会掉到1%以下。
+1%的运算量占了一半的代码。
+
+这种失衡是有原因的。难的不是边界条件本身，而是**每个节点要解的问题大小不一样**。先定下衡量
+这个大小的规则，代码就会重新变短。今天要看的就是这条规则，以及规则定下之后数据结构如何随之
+确定。
+
+## 决定哪条链路空缺的是几何形状，不是格式
+
+迁移是从邻居那里取值的操作。
+
+$$
+f_k(\mathbf{x},\, t + \Delta t) = f_k^{\star}(\mathbf{x} - \mathbf{e}_k \Delta t,\; t)
+$$
+
+其中 $f_k$ 是方向 $k$ 的分布函数，$\mathbf{e}_k$ 是该方向的格子速度，星号表示碰撞后的值。
+值来自 $\mathbf{x} - \mathbf{e}_k \Delta t$，也就是上游邻居。
+
+如果那个上游邻居是固体，就没有值可送。这条链路到达时是空的。所以一个节点上空缺的分布函数个数
+是个非常朴素的量。**它等于该节点8邻域中固体格子的个数。**
+
+无论是 bounce-back 还是 Zou–He，格式都改变不了这个数字。决定它的只有几何形状。格式回答的是
+下一个问题：空位用什么填。
+
+在下面的格子上直接点击节点试试。
+
+<UnknownPdfNodeCounter />
+
+沿着底部点过去，红色箭头始终是3条。在台阶与地面相接的内角上跳到5条。在台阶上方的外角上掉到
+1条。变的只是形状，要解的未知数却拉开了三倍以上。
+
+## 未知数账本 — 三个矩能覆盖什么
+
+要填满空缺的分布函数需要条件，而可用的条件只有宏观量的定义。
+
+$$
+\rho = \sum_{k=0}^{8} f_k, \qquad \rho\, \mathbf{u} = \sum_{k=0}^{8} f_k\, \mathbf{e}_k
+$$
+
+二维下这是3个方程：密度1个，动量2个。
+
+再数另一边。空缺的分布函数有 $|\mathcal{U}|$ 个。壁面上通常给定速度而不知道密度，所以 $\rho$
+也是未知数。缺口这样写：
+
+$$
+d = |\mathcal{U}| + 1 - (D + 1), \qquad D = 2
+$$
+
+$D$ 是空间维数，$D+1$ 是可用矩方程的个数。平壁上 $|\mathcal{U}|=3$，于是 $d=1$，差一个方程。
+Zou–He 补上一条非平衡 bounce-back，正是补在这里。
+
+$$
+f_k - f_k^{\mathrm{eq}} = f_{\bar{k}} - f_{\bar{k}}^{\mathrm{eq}}
+$$
+
+$\bar{k}$ 是 $k$ 的反方向。把这个式子加在壁面法向的那一对链路上，账本就平了。详细推导写在
+[把 bounce-back 与 Zou–He 并排比较的那篇](/zh/posts/2026-07-20-lbm-bounce-back-zou-he-boundary-conditions/)里。
+
+凹角上 $|\mathcal{U}|=5$，$d=3$，差三个条件。把为平壁写的那一条闭合关系照搬过来，就有两个
+分布函数悬空。留在那里的值是初值，或者上一步的残渣。
+
+这就是"代码能跑，但只有角上不对"最常见的真身。它不会发散，它安静地算错。
+
+## 用 Python 扫一遍格子
+
+造一个带单级台阶的流道，在每个流体节点上数空缺的方向。为了后面讲数据结构，顺便数一下缓存行。
+
+```python
+# D2Q9：0 静止，1-4 轴向，5-8 对角
+E = [(0, 0), (1, 0), (0, 1), (-1, 0), (0, -1), (1, 1), (-1, 1), (-1, -1), (1, -1)]
+NX, NY = 24, 16
+
+
+def solid_mask(nx, ny):
+    """底部带一级台阶的流道。"""
+    m = [[False] * ny for _ in range(nx)]
+    for i in range(nx):
+        m[i][0] = True
+        m[i][ny - 1] = True
+    for i in range(8):
+        for j in range(1, 5):
+            m[i][j] = True
+    return m
+
+
+def unknown_dirs(m, i, j):
+    """上游邻居 (i-ex, j-ey) 为固体或落在格子外的 k。"""
+    nx, ny = len(m), len(m[0])
+    out = []
+    for k in range(1, 9):
+        si, sj = i - E[k][0], j - E[k][1]
+        if not (0 <= si < nx and 0 <= sj < ny) or m[si][sj]:
+            out.append(k)
+    return out
+
+
+def node_class(unk):
+    axial = [k for k in unk if k <= 4]
+    if len(axial) == 0:
+        return "convex corner"
+    if len(axial) == 1:
+        return "flat wall"
+    if len(axial) == 2:
+        return "concave corner"
+    return "slot / thin gap"
+
+
+def scan_boundary(m):
+    """按行优先顺序列出所有至少丢失一个分布函数的流体节点。"""
+    ny = len(m[0])
+    rows = []
+    for i in range(len(m)):
+        for j in range(ny):
+            if m[i][j]:
+                continue
+            unk = unknown_dirs(m, i, j)
+            if unk:
+                rows.append((i * ny + j, node_class(unk), unk))
+    return rows
+
+
+def lines_touched(rows, n_nodes, layout):
+    """填满所有空缺分布函数时读到的64字节缓存行（8个double）数。"""
+    s = set()
+    for lin, _, unk in rows:
+        for k in unk:
+            addr = k * n_nodes + lin if layout == "soa" else lin * 9 + k
+            s.add(addr // 8)
+    return len(s)
+
+
+mask = solid_mask(NX, NY)
+rows = scan_boundary(mask)
+n_nodes = NX * NY
+n_fluid = sum(1 for i in range(NX) for j in range(NY) if not mask[i][j])
+
+print("lattice %dx%d   fluid %d   boundary %d (%.1f%% of fluid)"
+      % (NX, NY, n_fluid, len(rows), 100.0 * len(rows) / n_fluid))
+print()
+print("%-16s %7s %6s %9s %9s" % ("class", "unk/node", "nodes", "unknowns", "closure"))
+groups = {}
+for lin, cls, unk in rows:
+    groups.setdefault((cls, len(unk)), 0)
+    groups[(cls, len(unk))] += 1
+for (cls, n_unk) in sorted(groups, key=lambda g: (g[1], g[0])):
+    n = groups[(cls, n_unk)]
+    gap = n_unk + 1 - 3          # 空缺分布函数 + rho，对上3个矩
+    tag = "%+d" % gap if gap else "exact"
+    print("%-16s %7d %6d %9d %9s" % (cls, n_unk, n, n_unk * n, tag))
+print()
+print("total unknown PDFs           %d" % sum(len(r[2]) for r in rows))
+print("cache lines, SoA f[k][node]  %d" % lines_touched(rows, n_nodes, "soa"))
+print("cache lines, AoS f[node][k]  %d" % lines_touched(rows, n_nodes, "aos"))
+```
+
+输出如下。
+
+```text
+lattice 24x16   fluid 304   boundary 72 (23.7% of fluid)
+
+class            unk/node  nodes  unknowns   closure
+convex corner          1      1         1        -1
+flat wall              2      2         4     exact
+flat wall              3     64       192        +1
+concave corner         5      5        25        +3
+
+total unknown PDFs           222
+cache lines, SoA f[k][node]  153
+cache lines, AoS f[node][k]  84
+```
+
+一级台阶就出现了四种节点类型。还有2个节点属于平壁却只空缺2个方向。它们紧挨着台阶的角，那里
+有一条对角链路存活了下来。只按矩形盒子写出来的代码，就是在这种地方塌掉的。
+
+## 凸角上方程是多余的
+
+表里最扎眼的是第一行。凸角的缺口是 $-1$。
+
+空缺的分布函数只有一条对角链路。未知数是它加上 $\rho$，一共2个。矩方程有3个。多出来一个方程。
+
+在这里强行施加三个矩就会过定。无论选哪种组合，剩下的那个都不满足。硬凑的结果是质量开始泄漏。
+
+所以凸角通常根本不用闭合关系。对那条空缺链路做 bounce-back 就结束。不是去解方程，而是把值送
+回去。
+
+缺口的符号决定了处方。正数意味着要补条件，零意味着直接解，负数意味着干脆别解。这三种情况会在
+同一份代码里同时出现。
+
+## 先按方向性分类，数组才随之确定
+
+到这一步，数据结构自己就定下来了。
+
+节点按两个标准分类。第一个是**方向性**：缺失的邻居在哪一侧。二维下就是4个面加4个角，共八类。
+第二个是**边界条件类型**：壁面、速度入口，还是压力出口。
+
+这两个轴的每种组合，都把空缺方向的集合固定住。集合固定了，分支就消失了。不必在循环里用 `if`
+判断方向，而是把接受相同处理的节点聚成一块，整块地遍历。
+
+为此，同一类的节点必须在数组里**连续**排列。准备一个记录各类节点数的数组，再准备一个存放节点
+索引的数组（`iNodeBC`）。预处理阶段填一次，时间循环里只读。对固定几何来说，这个开销全程只付
+一次。
+
+第二步是预先存好每个边界节点所属的分布函数索引。这时把一个节点的9个分布函数在内存中放在一起
+——结构体数组（AoS，Array of Structure）布局——边界循环拖进来的内存就会变少。
+
+## 同样的未知数，不同的内存
+
+上面脚本数出的两个数字就是这个差别：SoA 布局153行，AoS 布局84行。读取的值都是222个，一模一样。
+不同的只是布局。
+
+原因是迁移和边界循环的访问模式正好相反。迁移固定一个方向 $k$ 扫过整个格子，`f[k][node]` 布局
+更有利。边界循环固定一个节点扫多个方向，而在同样的布局下，这个节点的未知数散落在8个方向块里。
+
+在下面切换布局，跑同一次扫描。
+
+<BoundaryPdfLayoutStrider />
+
+先用 `soa` 跑完一圈读下行数，再按 `aos` 看同一次扫描。点亮的方块从稀疏的八条带子变成一小段
+一小段。`packed` 是先把边界节点重新连续编号的情形，整张图折进了左上角。
+
+要注意的是，这并不是说要改全局布局。整份代码都用 AoS，迁移和碰撞会变慢。正如
+[在矩空间处理MRT碰撞的那篇](/zh/posts/2026-06-26-mrt-lbm-moment-space-collision/)所示，碰撞
+循环偏爱按方向的连续访问。要点是单独为边界条件准备一份局部数据结构。它只覆盖百分之几的节点，
+复制的代价也就是百分之几。
+
+## 当边界条件的错不在格式
+
+换上新几何后只有壁面附近不对劲时，动手是有顺序的。
+
+先数节点。像上面的脚本那样，把各类的数量和缺口打印出来。如果矩形盒子里一直只出现 `flat wall`，
+而新形状里冒出了 `concave corner` 或 `slot / thin gap`，先确认这些行在代码里有没有被处理。
+
+其次看缺口的符号。正号的行上，数一数实际施加了几条闭合关系。负号的行上，看看是不是在强行施加
+矩。
+
+布局的事放到最后。那是值算对以后才该看的。顺序反过来，只会更快地得到错误答案。

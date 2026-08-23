@@ -1,0 +1,278 @@
+---
+title: "Three at a wall, five at a corner — counting the populations an LBM boundary node loses"
+date: 2026-08-24
+description: "After streaming, the number of empty populations at a lattice-Boltzmann node equals the number of solid cells around it: three on a flat wall, five in a concave corner, one on a convex corner."
+tags: ["Bounce-Back", "Zou-He", "Boundary-Conditions", "LBM", "Memory-Layout"]
+locale: en
+slug: 2026-08-24-lbm-boundary-node-unknown-pdf-framework
+takeaway: "Implementing boundary conditions starts with counting how many populations each node loses, not with picking a scheme."
+draft: false
+---
+
+import { UnknownPdfNodeCounter } from '@/components/post-viz/2026-08-24-lbm-boundary-node-unknown-pdf-framework/UnknownPdfNodeCounter'
+import { BoundaryPdfLayoutStrider } from '@/components/post-viz/2026-08-24-lbm-boundary-node-unknown-pdf-framework/BoundaryPdfLayoutStrider'
+
+## Boundary nodes are 1% of the lattice and half of the code
+
+Open a lattice Boltzmann (LBM) solver and the proportions look wrong. The collision term is ten
+lines. Streaming is five. Boundary conditions run to several hundred.
+
+The arithmetic says the opposite. On a 100×100 lattice there are about 400 boundary nodes. That is
+4% of the total. In three dimensions it drops below 1%. One percent of the work takes half of the
+code.
+
+There is a reason for the imbalance. Boundary conditions are not hard in themselves — it is that
+**the size of the problem changes from node to node**. Fix the rule that measures that size and the
+code gets short again. This post covers that rule, and what the data structure has to look like once
+the rule is settled.
+
+## Geometry decides which links come up empty, not the scheme
+
+Streaming pulls values in from neighbours.
+
+$$
+f_k(\mathbf{x},\, t + \Delta t) = f_k^{\star}(\mathbf{x} - \mathbf{e}_k \Delta t,\; t)
+$$
+
+Here $f_k$ is the population along direction $k$, $\mathbf{e}_k$ is that lattice velocity, and the
+star marks the post-collision value. The value arrives from $\mathbf{x} - \mathbf{e}_k \Delta t$,
+the upstream neighbour.
+
+If that upstream neighbour is solid, there is nothing to send. The link arrives empty. So the number
+of populations missing at a node is a very plain quantity. **It equals the number of solid cells in
+that node's own 8-neighbourhood.**
+
+Bounce-back, Zou–He — no scheme changes that count. Only the geometry sets it. The scheme answers
+the next question, which is what to put in the empty slots.
+
+Click around the lattice below.
+
+<UnknownPdfNodeCounter />
+
+Move along the floor and you get three red arrows every time. At the inside corner where the step
+meets the floor it jumps to five. On the outside corner above the step it drops to one. Nothing
+changed but the shape, and the number of unknowns spread by more than a factor of three.
+
+## The ledger — what three moments can cover
+
+Filling the empty populations takes conditions, and the only conditions available are the
+definitions of the macroscopic fields.
+
+$$
+\rho = \sum_{k=0}^{8} f_k, \qquad \rho\, \mathbf{u} = \sum_{k=0}^{8} f_k\, \mathbf{e}_k
+$$
+
+In two dimensions that is three equations: one for density, two for momentum.
+
+Now count the other side. There are $|\mathcal{U}|$ empty populations. At a wall you normally
+prescribe the velocity and do not know the density, so $\rho$ is unknown too. The shortfall reads:
+
+$$
+d = |\mathcal{U}| + 1 - (D + 1), \qquad D = 2
+$$
+
+$D$ is the spatial dimension and $D+1$ is the number of moment equations on hand. On a flat wall
+$|\mathcal{U}|=3$, so $d=1$. One equation short. That is exactly where Zou–He adds its
+non-equilibrium bounce-back.
+
+$$
+f_k - f_k^{\mathrm{eq}} = f_{\bar{k}} - f_{\bar{k}}^{\mathrm{eq}}
+$$
+
+$\bar{k}$ is the direction opposite $k$. Impose this on the link pair along the wall normal and the
+ledger balances. The derivation sits in
+[the post that put bounce-back and Zou–He side by side](/en/posts/2026-07-20-lbm-bounce-back-zou-he-boundary-conditions/).
+
+In a concave corner $|\mathcal{U}|=5$, so $d=3$. Three conditions short. Reuse the single closure
+written for flat walls and two populations stay floating. Whatever sits there is the initial value,
+or leftovers from the previous step.
+
+This is the usual identity of "the code runs, but the corners look wrong." It does not blow up. It
+is quietly wrong.
+
+## Sweeping one lattice in Python
+
+Build a channel with a single step and count the empty directions at every fluid node. Cache lines
+get counted too, for the data-structure section later on.
+
+```python
+# D2Q9: 0 rest, 1-4 axial, 5-8 diagonal
+E = [(0, 0), (1, 0), (0, 1), (-1, 0), (0, -1), (1, 1), (-1, 1), (-1, -1), (1, -1)]
+NX, NY = 24, 16
+
+
+def solid_mask(nx, ny):
+    """Channel with a single step sitting on the bottom wall."""
+    m = [[False] * ny for _ in range(nx)]
+    for i in range(nx):
+        m[i][0] = True
+        m[i][ny - 1] = True
+    for i in range(8):
+        for j in range(1, 5):
+            m[i][j] = True
+    return m
+
+
+def unknown_dirs(m, i, j):
+    """k whose upstream neighbour (i-ex, j-ey) is solid or off-lattice."""
+    nx, ny = len(m), len(m[0])
+    out = []
+    for k in range(1, 9):
+        si, sj = i - E[k][0], j - E[k][1]
+        if not (0 <= si < nx and 0 <= sj < ny) or m[si][sj]:
+            out.append(k)
+    return out
+
+
+def node_class(unk):
+    axial = [k for k in unk if k <= 4]
+    if len(axial) == 0:
+        return "convex corner"
+    if len(axial) == 1:
+        return "flat wall"
+    if len(axial) == 2:
+        return "concave corner"
+    return "slot / thin gap"
+
+
+def scan_boundary(m):
+    """Every fluid node that loses at least one population, in row-major order."""
+    ny = len(m[0])
+    rows = []
+    for i in range(len(m)):
+        for j in range(ny):
+            if m[i][j]:
+                continue
+            unk = unknown_dirs(m, i, j)
+            if unk:
+                rows.append((i * ny + j, node_class(unk), unk))
+    return rows
+
+
+def lines_touched(rows, n_nodes, layout):
+    """Distinct 64-byte lines (8 doubles) read while closing every empty population."""
+    s = set()
+    for lin, _, unk in rows:
+        for k in unk:
+            addr = k * n_nodes + lin if layout == "soa" else lin * 9 + k
+            s.add(addr // 8)
+    return len(s)
+
+
+mask = solid_mask(NX, NY)
+rows = scan_boundary(mask)
+n_nodes = NX * NY
+n_fluid = sum(1 for i in range(NX) for j in range(NY) if not mask[i][j])
+
+print("lattice %dx%d   fluid %d   boundary %d (%.1f%% of fluid)"
+      % (NX, NY, n_fluid, len(rows), 100.0 * len(rows) / n_fluid))
+print()
+print("%-16s %7s %6s %9s %9s" % ("class", "unk/node", "nodes", "unknowns", "closure"))
+groups = {}
+for lin, cls, unk in rows:
+    groups.setdefault((cls, len(unk)), 0)
+    groups[(cls, len(unk))] += 1
+for (cls, n_unk) in sorted(groups, key=lambda g: (g[1], g[0])):
+    n = groups[(cls, n_unk)]
+    gap = n_unk + 1 - 3          # empty populations + rho, against the 3 moments
+    tag = "%+d" % gap if gap else "exact"
+    print("%-16s %7d %6d %9d %9s" % (cls, n_unk, n, n_unk * n, tag))
+print()
+print("total unknown PDFs           %d" % sum(len(r[2]) for r in rows))
+print("cache lines, SoA f[k][node]  %d" % lines_touched(rows, n_nodes, "soa"))
+print("cache lines, AoS f[node][k]  %d" % lines_touched(rows, n_nodes, "aos"))
+```
+
+The output:
+
+```text
+lattice 24x16   fluid 304   boundary 72 (23.7% of fluid)
+
+class            unk/node  nodes  unknowns   closure
+convex corner          1      1         1        -1
+flat wall              2      2         4     exact
+flat wall              3     64       192        +1
+concave corner         5      5        25        +3
+
+total unknown PDFs           222
+cache lines, SoA f[k][node]  153
+cache lines, AoS f[node][k]  84
+```
+
+One step produced four node types. Two nodes are flat walls with only two empty directions — they
+sit right beside the step corner, where one diagonal link survives. This is how code written against
+a rectangular box falls over on a real geometry.
+
+## At a convex corner there are equations left over
+
+The line that catches the eye is the first one. The convex corner has a shortfall of $-1$.
+
+Only one diagonal link is empty. The unknowns are that population and $\rho$, two in total. There
+are three moment equations. One equation is left over.
+
+Impose all three moments there and the system is overdetermined. Whichever combination you pick, the
+remaining one is not satisfied. Force it anyway and mass starts leaking.
+
+So convex corners usually skip the closure entirely. Apply bounce-back to the single empty link and
+stop. Instead of solving equations, you put the value back where it came from.
+
+The sign of the shortfall picks the prescription. Positive means more conditions are needed, zero
+means solve as is, negative means do not solve at all. All three show up inside one code.
+
+## The array falls out of the classification, not the other way round
+
+From here the data structure decides itself.
+
+Classify nodes on two axes. The first is **directionality**: which side has the missing neighbours.
+In two dimensions that is four faces and four corners, eight groups. The second is the **boundary
+condition type**: wall, velocity inlet, pressure outlet.
+
+Each combination of the two fixes the set of empty directions. Once the set is fixed the branching
+disappears. Instead of testing directions with `if` inside the loop, collect the nodes that get
+identical treatment into one block and run over the block.
+
+For that, nodes of the same group have to sit **contiguously** in memory. Keep one array of per-group
+node counts and one array of node indices (`iNodeBC`). Fill them once in preprocessing and only read
+them in the time loop. For a fixed geometry that cost is paid once for the whole run.
+
+The second stage is storing, ahead of time, the population indices belonging to each boundary node.
+Keeping a node's nine populations adjacent in memory here — an array-of-structures (AoS) layout —
+cuts how much memory the boundary loop drags in.
+
+## Same unknowns, different memory
+
+That is the pair of numbers the script counted: 153 lines under SoA, 84 under AoS. The number of
+values read is identical, 222 either way. Only the layout differs.
+
+The reason is that streaming and the boundary loop walk memory in opposite directions. Streaming
+fixes one direction $k$ and sweeps the whole lattice, which favours `f[k][node]`. The boundary loop
+fixes one node and sweeps directions, and in that same layout a node's unknowns are scattered across
+eight direction blocks.
+
+Run the same sweep under different layouts below.
+
+<BoundaryPdfLayoutStrider />
+
+Let one pass finish on `soa` and read the line count, then hit `aos` and watch the same sweep. The
+lit boxes go from eight sparse bands to short runs. `packed` is the case where boundary nodes were
+renumbered contiguously first: the map folds into the top-left corner.
+
+Note that this is not an argument for changing the global layout. Run the whole code as AoS and
+streaming and collision get slower. As
+[the post on doing MRT collision in moment space](/en/posts/2026-06-26-mrt-lbm-moment-space-collision/)
+showed, the collision loop wants direction-contiguous access. The point is a separate local structure
+for boundary conditions only. It covers a few percent of the nodes, so the copy costs a few percent.
+
+## When a boundary bug is not the scheme's fault
+
+When a new geometry only misbehaves near walls, there is an order to work in.
+
+Count the nodes first. Print the per-class counts and shortfalls the way the script above does. If a
+rectangular box only ever produced `flat wall` and the new shape brings out `concave corner` or
+`slot / thin gap`, check whether those rows are handled at all.
+
+Next comes the sign of the shortfall. On positive rows, count how many closures are actually
+imposed. On negative rows, check that you are not forcing moments.
+
+Layout comes last. It is something to look at after the values are right. Reverse the order and you
+get the wrong answer faster.

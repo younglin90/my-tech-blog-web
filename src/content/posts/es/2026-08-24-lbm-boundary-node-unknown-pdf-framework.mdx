@@ -1,0 +1,283 @@
+---
+title: "Tres en la pared, cinco en la esquina — contar las poblaciones que pierde un nodo de frontera en LBM"
+date: 2026-08-24
+description: "Tras el streaming, el número de poblaciones vacías en un nodo de lattice Boltzmann es igual al número de celdas sólidas a su alrededor: tres en una pared plana, cinco en una esquina cóncava, una en una esquina convexa."
+tags: ["Bounce-Back", "Zou-He", "Boundary-Conditions", "LBM", "Memory-Layout"]
+locale: es
+slug: 2026-08-24-lbm-boundary-node-unknown-pdf-framework
+takeaway: "Implementar condiciones de frontera empieza por contar cuántas poblaciones pierde cada nodo, no por elegir un esquema."
+draft: false
+---
+
+import { UnknownPdfNodeCounter } from '@/components/post-viz/2026-08-24-lbm-boundary-node-unknown-pdf-framework/UnknownPdfNodeCounter'
+import { BoundaryPdfLayoutStrider } from '@/components/post-viz/2026-08-24-lbm-boundary-node-unknown-pdf-framework/BoundaryPdfLayoutStrider'
+
+## Los nodos de frontera son el 1% de la malla y la mitad del código
+
+Al abrir un solver de lattice Boltzmann (LBM) las proporciones parecen equivocadas. El término de
+colisión ocupa diez líneas. El streaming, cinco. Las condiciones de frontera llegan a varios
+centenares.
+
+La aritmética dice lo contrario. En una malla de 100×100 hay unos 400 nodos de frontera, el 4% del
+total. En tres dimensiones baja del 1%. Un uno por ciento del trabajo se lleva la mitad del código.
+
+El desequilibrio tiene explicación. No es que las condiciones de frontera sean difíciles en sí: es
+que **el tamaño del problema cambia de un nodo a otro**. Fijada la regla que mide ese tamaño, el
+código vuelve a ser corto. Aquí se trata esa regla y cómo queda determinada la estructura de datos
+una vez que la regla está fijada.
+
+## Lo que decide qué enlaces llegan vacíos es la geometría, no el esquema
+
+El streaming trae valores desde los vecinos.
+
+$$
+f_k(\mathbf{x},\, t + \Delta t) = f_k^{\star}(\mathbf{x} - \mathbf{e}_k \Delta t,\; t)
+$$
+
+Aquí $f_k$ es la población en la dirección $k$, $\mathbf{e}_k$ es esa velocidad de red y el
+asterisco marca el valor posterior a la colisión. El valor llega desde
+$\mathbf{x} - \mathbf{e}_k \Delta t$, el vecino aguas arriba.
+
+Si ese vecino aguas arriba es sólido, no hay nada que enviar. El enlace llega vacío. De modo que el
+número de poblaciones que faltan en un nodo es una cantidad muy sencilla. **Es igual al número de
+celdas sólidas en la vecindad de 8 de ese nodo.**
+
+Ni bounce-back ni Zou–He cambian esa cuenta. Solo la geometría la fija. El esquema responde a la
+pregunta siguiente: con qué se rellenan los huecos.
+
+Conviene hacer clic sobre los nodos de la malla de abajo.
+
+<UnknownPdfNodeCounter />
+
+Recorriendo el piso salen tres flechas rojas siempre. En la esquina interior donde el escalón se
+encuentra con el piso salta a cinco. En la esquina exterior sobre el escalón baja a una. Solo cambió
+la forma, y el número de incógnitas se abrió en más de un factor tres.
+
+## El libro de cuentas: qué alcanzan a cubrir tres momentos
+
+Rellenar las poblaciones vacías exige condiciones, y las únicas disponibles son las definiciones de
+las magnitudes macroscópicas.
+
+$$
+\rho = \sum_{k=0}^{8} f_k, \qquad \rho\, \mathbf{u} = \sum_{k=0}^{8} f_k\, \mathbf{e}_k
+$$
+
+En dos dimensiones son tres ecuaciones: una de densidad y dos de cantidad de movimiento.
+
+Toca contar el otro lado. Hay $|\mathcal{U}|$ poblaciones vacías. En una pared normalmente se
+prescribe la velocidad y no se conoce la densidad, así que $\rho$ también es incógnita. El déficit
+se escribe así:
+
+$$
+d = |\mathcal{U}| + 1 - (D + 1), \qquad D = 2
+$$
+
+$D$ es la dimensión espacial y $D+1$ el número de ecuaciones de momento disponibles. En una pared
+plana $|\mathcal{U}|=3$, luego $d=1$: falta una ecuación. Ahí es exactamente donde Zou–He agrega su
+bounce-back de la parte de no equilibrio.
+
+$$
+f_k - f_k^{\mathrm{eq}} = f_{\bar{k}} - f_{\bar{k}}^{\mathrm{eq}}
+$$
+
+$\bar{k}$ es la dirección opuesta a $k$. Impuesta sobre el par de enlaces normal a la pared, la
+cuenta cuadra. La deducción está en
+[la entrada que puso bounce-back y Zou–He lado a lado](/es/posts/2026-07-20-lbm-bounce-back-zou-he-boundary-conditions/).
+
+En una esquina cóncava $|\mathcal{U}|=5$ y $d=3$: faltan tres condiciones. Si se reutiliza la única
+relación de cierre escrita para paredes planas, dos poblaciones quedan sueltas. Lo que hay ahí es el
+valor inicial, o los restos del paso anterior.
+
+Esta es la identidad habitual del "el código corre, pero las esquinas salen mal". No revienta. Se
+equivoca en silencio.
+
+## Un barrido de la malla en Python
+
+Se construye un canal con un único escalón y se cuentan las direcciones vacías en cada nodo fluido.
+De paso se cuentan las líneas de caché, para la sección sobre estructuras de datos.
+
+```python
+# D2Q9: 0 en reposo, 1-4 axiales, 5-8 diagonales
+E = [(0, 0), (1, 0), (0, 1), (-1, 0), (0, -1), (1, 1), (-1, 1), (-1, -1), (1, -1)]
+NX, NY = 24, 16
+
+
+def solid_mask(nx, ny):
+    """Canal con un único escalón apoyado en la pared inferior."""
+    m = [[False] * ny for _ in range(nx)]
+    for i in range(nx):
+        m[i][0] = True
+        m[i][ny - 1] = True
+    for i in range(8):
+        for j in range(1, 5):
+            m[i][j] = True
+    return m
+
+
+def unknown_dirs(m, i, j):
+    """k cuyo vecino aguas arriba (i-ex, j-ey) es sólido o queda fuera de la malla."""
+    nx, ny = len(m), len(m[0])
+    out = []
+    for k in range(1, 9):
+        si, sj = i - E[k][0], j - E[k][1]
+        if not (0 <= si < nx and 0 <= sj < ny) or m[si][sj]:
+            out.append(k)
+    return out
+
+
+def node_class(unk):
+    axial = [k for k in unk if k <= 4]
+    if len(axial) == 0:
+        return "convex corner"
+    if len(axial) == 1:
+        return "flat wall"
+    if len(axial) == 2:
+        return "concave corner"
+    return "slot / thin gap"
+
+
+def scan_boundary(m):
+    """Todo nodo fluido que pierde al menos una población, en orden por filas."""
+    ny = len(m[0])
+    rows = []
+    for i in range(len(m)):
+        for j in range(ny):
+            if m[i][j]:
+                continue
+            unk = unknown_dirs(m, i, j)
+            if unk:
+                rows.append((i * ny + j, node_class(unk), unk))
+    return rows
+
+
+def lines_touched(rows, n_nodes, layout):
+    """Líneas distintas de 64 bytes (8 doubles) leídas al cerrar cada población vacía."""
+    s = set()
+    for lin, _, unk in rows:
+        for k in unk:
+            addr = k * n_nodes + lin if layout == "soa" else lin * 9 + k
+            s.add(addr // 8)
+    return len(s)
+
+
+mask = solid_mask(NX, NY)
+rows = scan_boundary(mask)
+n_nodes = NX * NY
+n_fluid = sum(1 for i in range(NX) for j in range(NY) if not mask[i][j])
+
+print("lattice %dx%d   fluid %d   boundary %d (%.1f%% of fluid)"
+      % (NX, NY, n_fluid, len(rows), 100.0 * len(rows) / n_fluid))
+print()
+print("%-16s %7s %6s %9s %9s" % ("class", "unk/node", "nodes", "unknowns", "closure"))
+groups = {}
+for lin, cls, unk in rows:
+    groups.setdefault((cls, len(unk)), 0)
+    groups[(cls, len(unk))] += 1
+for (cls, n_unk) in sorted(groups, key=lambda g: (g[1], g[0])):
+    n = groups[(cls, n_unk)]
+    gap = n_unk + 1 - 3          # poblaciones vacías + rho, frente a los 3 momentos
+    tag = "%+d" % gap if gap else "exact"
+    print("%-16s %7d %6d %9d %9s" % (cls, n_unk, n, n_unk * n, tag))
+print()
+print("total unknown PDFs           %d" % sum(len(r[2]) for r in rows))
+print("cache lines, SoA f[k][node]  %d" % lines_touched(rows, n_nodes, "soa"))
+print("cache lines, AoS f[node][k]  %d" % lines_touched(rows, n_nodes, "aos"))
+```
+
+La salida:
+
+```text
+lattice 24x16   fluid 304   boundary 72 (23.7% of fluid)
+
+class            unk/node  nodes  unknowns   closure
+convex corner          1      1         1        -1
+flat wall              2      2         4     exact
+flat wall              3     64       192        +1
+concave corner         5      5        25        +3
+
+total unknown PDFs           222
+cache lines, SoA f[k][node]  153
+cache lines, AoS f[node][k]  84
+```
+
+Un solo escalón produjo cuatro tipos de nodo. Dos de ellos son pared plana con apenas dos
+direcciones vacías: están justo al lado de la esquina del escalón, donde sobrevive un enlace
+diagonal. Así se rompe, sobre una geometría real, el código escrito pensando solo en una caja
+rectangular.
+
+## En una esquina convexa sobran ecuaciones
+
+La línea que llama la atención es la primera. La esquina convexa tiene un déficit de $-1$.
+
+Solo hay un enlace diagonal vacío. Las incógnitas son esa población y $\rho$, dos en total. Las
+ecuaciones de momento son tres. Sobra una ecuación.
+
+Imponer allí los tres momentos deja el sistema sobredeterminado. Se elija la combinación que se
+elija, la restante no se satisface. Forzarla hace que empiece a fugarse masa.
+
+Por eso en las esquinas convexas normalmente no se usa relación de cierre. Se aplica bounce-back al
+único enlace vacío y se termina. En lugar de resolver ecuaciones, se devuelve el valor.
+
+El signo del déficit elige la receta. Positivo significa agregar condiciones; cero, resolver tal
+cual; negativo, no resolver en absoluto. Los tres casos aparecen dentro de un mismo código.
+
+## El arreglo sale de la clasificación, y no al revés
+
+Llegados aquí, la estructura de datos se decide sola.
+
+Los nodos se clasifican según dos criterios. El primero es la **direccionalidad**: de qué lado están
+los vecinos que faltan. En dos dimensiones son cuatro caras y cuatro esquinas, ocho grupos. El
+segundo es el **tipo de condición de frontera**: pared, entrada de velocidad, salida de presión.
+
+Cada combinación de los dos ejes fija el conjunto de direcciones vacías. Fijado el conjunto,
+desaparecen las ramificaciones. En vez de comprobar direcciones con `if` dentro del bucle, se
+agrupan en un bloque los nodos que reciben el mismo tratamiento y se recorre el bloque entero.
+
+Para eso, los nodos de un mismo grupo tienen que quedar **contiguos** en memoria. Se lleva un arreglo
+con el conteo de nodos por grupo y otro con los índices de nodo (`iNodeBC`). Se llenan una vez en el
+preprocesado y en el bucle temporal solo se leen. Con geometría fija, ese costo se paga una sola vez
+en toda la corrida.
+
+La segunda etapa es guardar de antemano los índices de las poblaciones que pertenecen a cada nodo de
+frontera. Mantener aquí juntas en memoria las nueve poblaciones de un nodo —disposición de arreglo de
+estructuras (AoS, Array of Structure)— reduce cuánta memoria arrastra el bucle de frontera.
+
+## Las mismas incógnitas, otra memoria
+
+Ese es el par de números que contó el script: 153 líneas con SoA, 84 con AoS. La cantidad de valores
+leídos es idéntica, 222 en ambos casos. Lo único distinto es la disposición.
+
+La razón es que el streaming y el bucle de frontera recorren la memoria en sentidos opuestos. El
+streaming fija una dirección $k$ y barre toda la malla, lo que favorece a `f[k][node]`. El bucle de
+frontera fija un nodo y barre direcciones, y en esa misma disposición las incógnitas del nodo quedan
+repartidas entre ocho bloques de dirección.
+
+Abajo se puede correr el mismo barrido cambiando la disposición.
+
+<BoundaryPdfLayoutStrider />
+
+Conviene dejar que una pasada termine en `soa`, leer el conteo de líneas y luego pulsar `aos` para
+ver el mismo barrido. Las casillas encendidas pasan de ocho bandas dispersas a tramos cortos.
+`packed` es el caso en que los nodos de frontera se renumeraron contiguos primero: el mapa se pliega
+hacia la esquina superior izquierda.
+
+Conviene notar que esto no es un argumento para cambiar la disposición global. Con todo el código en
+AoS, el streaming y la colisión se vuelven más lentos. Como mostró
+[la entrada sobre hacer la colisión MRT en el espacio de momentos](/es/posts/2026-06-26-mrt-lbm-moment-space-collision/),
+el bucle de colisión prefiere el acceso contiguo por dirección. La idea es una estructura local
+aparte, solo para las condiciones de frontera. Cubre un pequeño porcentaje de los nodos, así que la
+copia cuesta ese mismo porcentaje.
+
+## Cuando el error de frontera no es culpa del esquema
+
+Cuando una geometría nueva falla solo cerca de las paredes, hay un orden para atacarla.
+
+Primero, contar los nodos. Imprimir los conteos por clase y los déficits, como hace el script de
+arriba. Si en la caja rectangular solo aparecía `flat wall` y la forma nueva saca `concave corner` o
+`slot / thin gap`, lo primero es verificar si esas filas están siendo tratadas.
+
+Después, el signo del déficit. En las filas positivas, contar cuántas relaciones de cierre se están
+imponiendo de verdad. En las negativas, revisar que no se estén forzando momentos.
+
+La disposición va al final. Es algo para mirar cuando los valores ya están bien. Invertir el orden
+solo sirve para llegar más rápido a la respuesta equivocada.
