@@ -1,0 +1,269 @@
+---
+title: "I Dropped the −1/2 and the Viscosity Came Back Six Times Too Large — the Δt/2 Left Behind by LBM's Discretisation"
+date: 2026-08-26
+description: "One trapezoidal integration and one change of variables leave a Δt/2 in three separate places: the viscosity, the velocity, and the stress. A scalar ODE and a D2Q9 lattice measure all three."
+tags: ["Trapezoidal-Rule", "LBM", "Viscosity", "Forcing-Term", "Numerical-Analysis"]
+locale: en
+slug: lbm-trapezoidal-integration-half-timestep
+takeaway: "τ − 1/2, 1 − 1/(2τ), and the τ in the stress recovery are not three separate corrections — they are the same half time step, left behind by a single trapezoidal rule."
+draft: false
+---
+
+import { TrapezoidTauShiftMarcher } from '@/components/post-viz/2026-08-26-lbm-trapezoidal-integration-half-timestep/TrapezoidTauShiftMarcher'
+import { HalfTauViscosityRuler } from '@/components/post-viz/2026-08-26-lbm-trapezoidal-integration-half-timestep/HalfTauViscosityRuler'
+
+## I edited `tau - 0.5` into `tau` in someone else's solver
+
+I inherited a lattice Boltzmann (LBM) solver and needed to match a target viscosity. The code had this line.
+
+```text
+nu = (1.0/3.0) * (tau - 0.5)
+```
+
+The continuous BGK equation says the viscosity is $\nu = c_s^2 \lambda$, where $\lambda$ is the relaxation time. There is no $-1/2$ anywhere in it. I took the term for a typo and deleted it. The channel flow rate came back six times larger.
+
+That $-1/2$ is not physics. It is a fingerprint left by the discretisation, and it does not travel alone. The prefactor $1 - 1/(2\tau)$ in front of the forcing term, and the $\tau$ you divide by when recovering strain rate from the non-equilibrium moment, come out of exactly the same place. This post locates that place, then measures all three with one scalar ODE and one D2Q9 lattice.
+
+## Integrate along a characteristic and the right-hand side lands on both ends
+
+The starting point is the Boltzmann equation with a BGK collision operator.
+
+$$
+\partial_t f_i + \mathbf{e}_i \cdot \nabla f_i = -\frac{1}{\lambda}\left(f_i - f_i^{\text{eq}}\right) + F_i
+$$
+
+Here $f_i$ is the distribution function along the discrete velocity $\mathbf{e}_i$, $\lambda$ is the relaxation time, and $F_i$ is the discrete representation of a body force.
+
+Along the characteristic $\mathbf{x}(s) = \mathbf{x} + \mathbf{e}_i s$ the left-hand side collapses into a single total derivative. Integrating from $s = 0$ to $\Delta t$ gives this.
+
+$$
+f_i(\mathbf{x} + \mathbf{e}_i \Delta t,\, t + \Delta t) - f_i(\mathbf{x}, t) = \int_0^{\Delta t} \left[ -\frac{1}{\lambda}\left(f_i - f_i^{\text{eq}}\right) + F_i \right] \mathrm{d}s
+$$
+
+Nothing has been approximated yet. The approximation starts with how you handle the integral on the right. Take the left endpoint alone and you get forward Euler, first order. Average both endpoints and you get the trapezoidal rule, second order. The price is that $f_i(\mathbf{x} + \mathbf{e}_i\Delta t, t+\Delta t)$ now appears on the right, making the update implicit. Nobody wants an LBM that solves a coupled system at every node.
+
+Play with the simulation below.
+
+<TrapezoidTauShiftMarcher />
+
+Drag the `dt` slider to the right and watch the bottom log-log panel. The orange line (Euler) drops one decade per decade of $\Delta t$; the blue line (trapezoid) drops two. The right-hand panel zooms into a single step and shows which area each rule is actually estimating.
+
+## The one-line change of variables that makes it explicit again
+
+The trick is to define a new distribution function.
+
+$$
+\bar{f}_i = f_i + \frac{\Delta t}{2\lambda}\left(f_i - f_i^{\text{eq}}\right) - \frac{\Delta t}{2} F_i
+$$
+
+The terms that made the right-hand side implicit have been absorbed into the variable in advance. Substituting into the trapezoidal update and rearranging leaves something fully explicit in $\bar{f}$.
+
+$$
+\bar{f}_i(\mathbf{x} + \mathbf{e}_i \Delta t,\, t + \Delta t) = \bar{f}_i(\mathbf{x}, t) - \frac{1}{\tau}\left(\bar{f}_i - f_i^{\text{eq}}\right) + \Delta t \left(1 - \frac{1}{2\tau}\right) F_i
+$$
+
+The definition of the $\tau$ that appeared is the whole story.
+
+$$
+\tau = \frac{\lambda}{\Delta t} + \frac{1}{2}
+$$
+
+The $\tau$ we type into the code is not the physical relaxation time. It is the physical relaxation time plus half a step. Inverting it gives $\lambda = (\tau - 1/2)\Delta t$, so $\nu = c_s^2 \lambda$ becomes $\nu = c_s^2(\tau - 1/2)$ in lattice units. That is the line in the inherited code.
+
+The same rearrangement drops $1 - 1/(2\tau)$ in front of the forcing term. The coefficient in Guo forcing is not something anyone tuned empirically — it falls out of this substitution. Which *form* the force should take is a separate question, and the way that choice can set a stationary interface in motion is covered in the [non-ideal LBM forcing post](/en/posts/2026-08-21-nonideal-lbm-pressure-vs-freeenergy-forcing/).
+
+## A single scalar confirms both second order and exact agreement
+
+There are two claims. The trapezoidal rule is second order. The change of variables is an identity, not an approximation. Neither needs a lattice — one scalar equation on a characteristic settles both.
+
+```python
+import math
+
+LAM = 0.3   # physical relaxation time lambda
+FRC = 0.5   # forcing term F (constant)
+T_END = 1.2
+
+
+def relax_exact(t):
+    """Closed form of f' = -(f - e^{-t})/LAM + FRC with f(0) = 0."""
+    a = 1.0 / LAM
+    return (a / (a - 1.0)) * (math.exp(-t) - math.exp(-a * t)) \
+        + FRC * LAM * (1.0 - math.exp(-a * t))
+
+
+def march_euler(dt):
+    """Forward Euler on the original equation: right-hand side at the left end only."""
+    f, t = 0.0, 0.0
+    while t < T_END - 1e-12:
+        f += -dt / LAM * (f - math.exp(-t)) + dt * FRC
+        t += dt
+    return f
+
+
+def march_trapezoid(dt):
+    """Trapezoidal rule: both endpoints. f^{n+1} sits on both sides, so solve directly."""
+    f, t = 0.0, 0.0
+    while t < T_END - 1e-12:
+        c = dt / (2.0 * LAM)
+        rhs = f - c * (f - math.exp(-t)) + c * math.exp(-(t + dt)) + dt * FRC
+        f = rhs / (1.0 + c)
+        t += dt
+    return f
+
+
+def march_transformed(dt):
+    """Fully explicit march after fbar = f + (dt/2 lam)(f - feq) - (dt/2) F."""
+    tau = LAM / dt + 0.5                      # shifted relaxation time
+    f0 = 0.0
+    fbar = f0 + dt / (2 * LAM) * (f0 - 1.0) - 0.5 * dt * FRC
+    t = 0.0
+    while t < T_END - 1e-12:
+        fbar += -(fbar - math.exp(-t)) / tau + dt * FRC * (1.0 - 0.5 / tau)
+        t += dt
+    # map fbar back to f
+    c = dt / (2.0 * LAM)
+    feq = math.exp(-T_END)
+    return (fbar + 0.5 * dt * FRC + c * feq) / (1.0 + c)
+
+
+ref = relax_exact(T_END)
+print(f"exact f({T_END}) = {ref:.12f}   (lambda = {LAM}, F = {FRC})")
+print()
+print("  dt        tau=lam/dt+0.5   err(Euler)    p      err(trapezoid)  p      |trapezoid - transformed|")
+prev_e = prev_t = None
+for k in range(5):
+    dt = 0.12 / 2**k
+    ee = abs(march_euler(dt) - ref)
+    et = abs(march_trapezoid(dt) - ref)
+    gap = abs(march_trapezoid(dt) - march_transformed(dt))
+    pe = f"{math.log2(prev_e / ee):.2f}" if prev_e else "  - "
+    pt = f"{math.log2(prev_t / et):.2f}" if prev_t else "  - "
+    print(f"  {dt:<9.5f} {LAM/dt+0.5:<15.4f} {ee:.3e}    {pe}   {et:.3e}     {pt}   {gap:.2e}")
+    prev_e, prev_t = ee, et
+```
+
+```text
+exact f(1.2) = 0.551364901343   (lambda = 0.3, F = 0.5)
+
+  dt        tau=lam/dt+0.5   err(Euler)    p      err(trapezoid)  p      |trapezoid - transformed|
+  0.12000   3.0000          9.198e-03      -    1.330e-03       -    0.00e+00
+  0.06000   5.5000          5.562e-03    0.73   3.333e-04     2.00   1.11e-16
+  0.03000   10.5000         2.992e-03    0.89   8.337e-05     2.00   1.11e-16
+  0.01500   20.5000         1.545e-03    0.95   2.085e-05     2.00   2.22e-16
+  0.00750   40.5000         7.845e-04    0.98   5.212e-06     2.00   2.33e-15
+```
+
+The observed order $p$ walks toward 1 for Euler and sits at exactly 2 for the trapezoidal rule. The last column matters more. The implicit trapezoidal march and the explicit transformed march differ by $10^{-16}$. The change of variables alters no value at all. It only alters the order of operations.
+
+## Where the Δt/2 lands — a moment-by-moment table
+
+What we actually store and stream is $\bar{f}_i$. The physical quantities, however, are defined as moments of $f_i$. The two distributions disagree differently at each order.
+
+Because $\sum_i(f_i - f_i^{\text{eq}}) = 0$ and $\sum_i F_i = 0$, the zeroth moment survives untouched. At first order $\sum_i \mathbf{e}_i F_i = \mathbf{F}$ survives. At second order the non-equilibrium part has been inflated by a factor $(1 + \Delta t/2\lambda)$.
+
+| Moment | What $\bar{f}$ gives | Physical quantity | If ignored |
+|---|---|---|---|
+| 0th $\sum \bar{f}_i$ | $\rho$ | $\rho$ | no correction needed |
+| 1st $\sum \mathbf{e}_i \bar{f}_i$ | $\rho\mathbf{u} - \frac{\Delta t}{2}\mathbf{F}$ | $\rho\mathbf{u}$ | velocity reads low by $\frac{\Delta t}{2\rho}\mathbf{F}$ |
+| 2nd $\sum \mathbf{e}_i\mathbf{e}_i \bar{f}_i^{\text{neq}}$ | $\frac{\tau}{\tau - 1/2}\,\Pi^{(1)}$ | $\Pi^{(1)}$ | strain rate too large by $\frac{\tau}{\tau-1/2}$ |
+| relaxation time | $\tau$ | $\lambda/\Delta t = \tau - \frac{1}{2}$ | viscosity too large by $\frac{\tau}{\tau-1/2}$ |
+
+Every factor in the table is $\tau/(\tau-1/2)$ or its reciprocal $1 - 1/(2\tau)$. That is not a coincidence — it is the same half step showing up three times. The $1 - 1/(2\tau)$ that cancelled the spurious flux in convection-diffusion LBM is [the same coefficient](/en/posts/2026-08-14-lbm-convection-diffusion-ce-error/).
+
+## Measuring viscosity and strain rate on a D2Q9 lattice
+
+The last two rows of the table can be measured directly. Seed a shear wave $u_x = U_0 \sin(ky)$ and its amplitude decays as $\exp(-\nu k^2 t)$. Invert the decay rate and you learn which viscosity the lattice is actually running at. The same run also hands over the non-equilibrium second moment for comparison against the exact strain rate.
+
+```python
+import numpy as np
+
+EX = np.array([0, 1, 0, -1, 0, 1, -1, -1, 1])
+EY = np.array([0, 0, 1, 0, -1, 1, 1, -1, -1])
+WT = np.array([4/9] + [1/9]*4 + [1/36]*4)
+CS2 = 1.0/3.0
+NY, NX, U0 = 64, 4, 0.01
+KY = 2*np.pi/NY
+
+
+def maxwell_d2q9(rho, ux, uy):
+    eu = EX[:, None, None]*ux + EY[:, None, None]*uy
+    return WT[:, None, None]*rho*(1 + eu/CS2 + eu*eu/(2*CS2**2)
+                                  - (ux*ux + uy*uy)/(2*CS2))
+
+
+def shear_decay_probe(tau, nstep):
+    """Decay of u_x = U0 sin(k y). Returns (measured viscosity, neq moment at y = 0)."""
+    yy = np.arange(NY)
+    rho = np.ones((NX, NY))
+    ux = U0*np.sin(KY*yy)[None, :]*np.ones((NX, 1))
+    f = maxwell_d2q9(rho, ux, np.zeros((NX, NY)))
+    amp, probe = [], None
+    for n in range(nstep + 1):
+        rho = f.sum(axis=0)
+        ux = (EX[:, None, None]*f).sum(axis=0)/rho
+        uy = (EY[:, None, None]*f).sum(axis=0)/rho
+        amp.append(2*np.mean(ux[0]*np.sin(KY*yy)))
+        feq = maxwell_d2q9(rho, ux, uy)
+        if n == nstep//2:
+            pxy = (EX[:, None, None]*EY[:, None, None]*(f - feq)).sum(axis=0)
+            probe = (0.5*amp[-1]*KY, pxy[0, 0], rho[0, 0])   # (exact S_xy, Pi_xy, rho)
+        f -= (f - feq)/tau
+        for i in range(9):                                   # streaming
+            f[i] = np.roll(np.roll(f[i], EX[i], axis=0), EY[i], axis=1)
+    a, b = nstep//4, nstep
+    nu = -np.log(amp[b]/amp[a])/((b - a)*KY*KY)
+    return nu, probe
+
+
+print("kinematic viscosity measured from shear-wave decay (D2Q9, 4 x 64, k = 2pi/64)")
+print("  tau     measured nu   cs^2 (tau-1/2)   cs^2 tau     ratio to measured")
+for tau in (0.6, 0.8, 1.2):
+    nu, _ = shear_decay_probe(tau, int(1.0/(CS2*(tau-0.5)*KY*KY)))
+    print(f"  {tau:<7.2f} {nu:.6f}    {CS2*(tau-0.5):.6f}         "
+          f"{CS2*tau:.6f}     {CS2*tau/nu:.2f} x")
+
+print()
+print("strain rate recovered from the non-equilibrium second moment (tau = 0.8, y = 0)")
+_, (s_ex, pxy, rho0) = shear_decay_probe(0.8, int(1.0/(CS2*0.3*KY*KY)))
+for name, denom in (("divided by tau        ", 0.8), ("divided by (tau - 1/2)", 0.3)):
+    s = -pxy/(2*rho0*CS2*denom)
+    print(f"  {name}  S_xy = {s:.6e}   error {abs(s/s_ex - 1)*100:6.2f} %")
+print(f"  exact                   S_xy = {s_ex:.6e}")
+```
+
+```text
+kinematic viscosity measured from shear-wave decay (D2Q9, 4 x 64, k = 2pi/64)
+  tau     measured nu   cs^2 (tau-1/2)   cs^2 tau     ratio to measured
+  0.60    0.033359    0.033333         0.200000     6.00 x
+  0.80    0.100051    0.100000         0.266667     2.67 x
+  1.20    0.233153    0.233333         0.400000     1.72 x
+
+strain rate recovered from the non-equilibrium second moment (tau = 0.8, y = 0)
+  divided by tau          S_xy = 2.978731e-04   error   0.05 %
+  divided by (tau - 1/2)  S_xy = 7.943282e-04   error 166.80 %
+  exact                   S_xy = 2.977199e-04
+```
+
+At $\tau = 0.6$ the lattice ran at a viscosity of $0.03336$. That matches $c_s^2(\tau - 1/2) = 0.03333$ to four decimal places. The value $c_s^2\tau$ is six times larger. Six times is exactly the flow-rate jump from the inherited code.
+
+The strain rate is interesting because it runs the other way. Here dividing by $\tau$ is correct, and dividing by the physical $\tau - 1/2$ is off by 167%. Subtract the half step for viscosity, do not subtract it for stress — the second moment of $\bar{f}$ is already inflated. Since this number feeds subgrid models and non-Newtonian viscosity updates, it is a perfect place to be quietly wrong.
+
+## When τ hugs 0.5, three cells fail at once
+
+The limit $\tau \to 1/2$ means $\lambda \to 0$, that is, zero viscosity. It is the direction every high-Reynolds-number simulation pushes toward. But the factor $\tau/(\tau-1/2)$ diverges there. Drag the slider down and watch.
+
+<HalfTauViscosityRuler />
+
+Pull `tau` from 2.0 down to 0.51 and see which dashed ruler the blue curve settles on. The green one, $c_s^2(\tau-1/2)$, keeps holding all the way; the orange one, $c_s^2\tau$, runs away as $\tau$ shrinks. At $\tau = 0.51$ the two rulers differ by a factor of 51.
+
+That divergence means three practical things. First, the closer $\tau$ sits to 0.5, the more devastating a single typo in the viscosity formula becomes. Second, the forcing prefactor $1 - 1/(2\tau)$ goes to zero, so the body force effectively disappears. Third, the relative error in the recovered stress grows, and the subgrid viscosity stops being trustworthy. Codes that run near $\tau = 0.5$ are notoriously fragile, and stability is only part of the reason. It is also easy to forget that boundary treatments such as [the Zou–He family of closures](/en/posts/2026-08-24-lbm-boundary-node-unknown-pdf-framework/) operate on this same $\bar{f}$.
+
+## Three lines to check first when you open someone else's LBM
+
+First, does the viscosity line contain `tau - 0.5`? If not, the solver does not know what viscosity it is running at.
+
+Second, for any problem with a body force, does the velocity assignment carry `+ 0.5*F/rho`, and does the forcing term carry `(1 - 0.5/tau)`? They are a pair. With only one of them present, the scheme is running half a step out of alignment.
+
+Third, if anything recovers strain rate or stress from a non-equilibrium moment, is the denominator $\tau$ or $\tau - 1/2$? Here the uncorrected $\tau$ is the right one.
+
+The three lines look like three unrelated corrections, but they have one source: the decision to integrate the right-hand side along a characteristic with the trapezoidal rule, plus the one-line definition of $\bar{f}$ that turned the implicit result explicit again. When you cannot remember which line is wrong, those two sentences will rederive all of them.

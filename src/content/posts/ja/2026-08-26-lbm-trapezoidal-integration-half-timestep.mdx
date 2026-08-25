@@ -1,0 +1,269 @@
+---
+title: "τをそのまま入れたら粘性が6倍になった — LBMの離散化が残したΔt/2の三箇所"
+date: 2026-08-26
+description: "台形則による積分一回と変数変換一行が、粘性・速度・応力の三箇所にΔt/2を残します。スカラーODEとD2Q9で三箇所すべてを測りました。"
+tags: ["Trapezoidal-Rule", "LBM", "Viscosity", "Forcing-Term", "Numerical-Analysis"]
+locale: ja
+slug: lbm-trapezoidal-integration-half-timestep
+takeaway: "τ − 1/2、1 − 1/(2τ)、そして応力復元の τ は別々の補正ではなく、一回の台形則が残した同じ半ステップです。"
+draft: false
+---
+
+import { TrapezoidTauShiftMarcher } from '@/components/post-viz/2026-08-26-lbm-trapezoidal-integration-half-timestep/TrapezoidTauShiftMarcher'
+import { HalfTauViscosityRuler } from '@/components/post-viz/2026-08-26-lbm-trapezoidal-integration-half-timestep/HalfTauViscosityRuler'
+
+## 引き継いだコードの `tau - 0.5` を `tau` に直した
+
+引き継いだ格子ボルツマン(LBM)ソルバで粘性を目標値に合わせる必要がありました。コードにはこんな行がありました。
+
+```text
+nu = (1.0/3.0) * (tau - 0.5)
+```
+
+連続系の BGK 方程式が与える粘性は $\nu = c_s^2 \lambda$ です。$\lambda$ は緩和時間です。$-1/2$ はどこにもありません。誤記だと判断して消しました。チャネル流の流量が六倍になりました。
+
+$-1/2$ は物理ではなく、離散化が残した痕跡です。しかも単独では現れません。力の項の前に付く $1 - 1/(2\tau)$ も、非平衡モーメントからひずみ速度を逆算するときに割る $\tau$ も、すべて同じ場所から出てきます。この記事ではその場所を突き止め、スカラー常微分方程式ひとつと D2Q9 格子ひとつで三箇所をそれぞれ測ります。
+
+## 特性線に沿って積分すると右辺が両端に乗る
+
+出発点は BGK 衝突項をもつボルツマン方程式です。
+
+$$
+\partial_t f_i + \mathbf{e}_i \cdot \nabla f_i = -\frac{1}{\lambda}\left(f_i - f_i^{\text{eq}}\right) + F_i
+$$
+
+$f_i$ は離散速度 $\mathbf{e}_i$ 方向の分布関数、$\lambda$ は緩和時間、$F_i$ は外力の離散表現です。
+
+左辺は特性線 $\mathbf{x}(s) = \mathbf{x} + \mathbf{e}_i s$ に沿うと全微分ひとつにまとまります。したがって $s = 0$ から $\Delta t$ まで積分すると次の形になります。
+
+$$
+f_i(\mathbf{x} + \mathbf{e}_i \Delta t,\, t + \Delta t) - f_i(\mathbf{x}, t) = \int_0^{\Delta t} \left[ -\frac{1}{\lambda}\left(f_i - f_i^{\text{eq}}\right) + F_i \right] \mathrm{d}s
+$$
+
+ここまでは近似がありません。近似は右辺の積分をどう処理するかで始まります。左端の値だけで済ませれば前進オイラーで一次精度です。両端の平均を使えば台形則で二次精度です。その代わり右端の $f_i(\mathbf{x} + \mathbf{e}_i\Delta t, t+\Delta t)$ が右辺に入り、式が陰的になります。格子ごとに連立方程式を解く LBM は誰も望んでいません。
+
+以下のシミュレーションで実際に操作してみましょう。
+
+<TrapezoidTauShiftMarcher />
+
+`dt` スライダーを右に動かしながら下段の対数-対数パネルを見てください。オレンジ(オイラー)は一桁につき一桁、青(台形則)は一桁につき二桁ずつ誤差が下がります。右のパネルは一ステップの中で二つの規則がそれぞれどの面積を測っているかを示しています。
+
+## 陰的な式を再び陽的にする変数変換一行
+
+ここで使う手は、新しい分布関数を定義することです。
+
+$$
+\bar{f}_i = f_i + \frac{\Delta t}{2\lambda}\left(f_i - f_i^{\text{eq}}\right) - \frac{\Delta t}{2} F_i
+$$
+
+右辺を陰的にしていた項をあらかじめ変数の中に吸収しています。台形則の式に代入して整理すると、$\bar{f}$ については完全な陽的形式になります。
+
+$$
+\bar{f}_i(\mathbf{x} + \mathbf{e}_i \Delta t,\, t + \Delta t) = \bar{f}_i(\mathbf{x}, t) - \frac{1}{\tau}\left(\bar{f}_i - f_i^{\text{eq}}\right) + \Delta t \left(1 - \frac{1}{2\tau}\right) F_i
+$$
+
+新しく現れた $\tau$ の定義が核心です。
+
+$$
+\tau = \frac{\lambda}{\Delta t} + \frac{1}{2}
+$$
+
+私たちがコードに入れる $\tau$ は物理的な緩和時間ではありません。物理的な緩和時間に半ステップを足した値です。逆に解くと $\lambda = (\tau - 1/2)\Delta t$ となり、$\nu = c_s^2 \lambda$ は格子単位で $\nu = c_s^2(\tau - 1/2)$ になります。引き継いだコードのあの行です。
+
+同じ整理から、力の項の前に $1 - 1/(2\tau)$ が付いてきます。Guo forcing のあの係数は誰かが経験的に合わせた値ではなく、この代入の産物です。力をどのような*形*で入れるかは別問題で、その選択が静止した界面を動かしてしまう例は[非理想 LBM の forcing の記事](/ja/posts/2026-08-21-nonideal-lbm-pressure-vs-freeenergy-forcing/)で扱いました。
+
+## スカラーひとつで確かめる二次精度と完全一致
+
+主張は二つです。台形則は二次精度である。変数変換は近似ではなく恒等変形である。格子を持ち出すまでもなく、特性線上のスカラー方程式ひとつで両方が確認できます。
+
+```python
+import math
+
+LAM = 0.3   # 物理的な緩和時間 lambda
+FRC = 0.5   # 力の項 F (定数)
+T_END = 1.2
+
+
+def relax_exact(t):
+    """f' = -(f - e^{-t})/LAM + FRC, f(0) = 0 の閉じた解。"""
+    a = 1.0 / LAM
+    return (a / (a - 1.0)) * (math.exp(-t) - math.exp(-a * t)) \
+        + FRC * LAM * (1.0 - math.exp(-a * t))
+
+
+def march_euler(dt):
+    """元の方程式に前進オイラー — 右辺を左端の値だけで積分する。"""
+    f, t = 0.0, 0.0
+    while t < T_END - 1e-12:
+        f += -dt / LAM * (f - math.exp(-t)) + dt * FRC
+        t += dt
+    return f
+
+
+def march_trapezoid(dt):
+    """台形則 — 両端の平均。f^{n+1} が両辺にあり陰的なので直接解く。"""
+    f, t = 0.0, 0.0
+    while t < T_END - 1e-12:
+        c = dt / (2.0 * LAM)
+        rhs = f - c * (f - math.exp(-t)) + c * math.exp(-(t + dt)) + dt * FRC
+        f = rhs / (1.0 + c)
+        t += dt
+    return f
+
+
+def march_transformed(dt):
+    """変数変換 fbar = f + (dt/2 lam)(f - feq) - (dt/2) F の後の完全な陽的前進。"""
+    tau = LAM / dt + 0.5                      # 移動した緩和時間
+    f0 = 0.0
+    fbar = f0 + dt / (2 * LAM) * (f0 - 1.0) - 0.5 * dt * FRC
+    t = 0.0
+    while t < T_END - 1e-12:
+        fbar += -(fbar - math.exp(-t)) / tau + dt * FRC * (1.0 - 0.5 / tau)
+        t += dt
+    # fbar から f へ戻す
+    c = dt / (2.0 * LAM)
+    feq = math.exp(-T_END)
+    return (fbar + 0.5 * dt * FRC + c * feq) / (1.0 + c)
+
+
+ref = relax_exact(T_END)
+print(f"exact f({T_END}) = {ref:.12f}   (lambda = {LAM}, F = {FRC})")
+print()
+print("  dt        tau=lam/dt+0.5   err(Euler)    p      err(trapezoid)  p      |trapezoid - transformed|")
+prev_e = prev_t = None
+for k in range(5):
+    dt = 0.12 / 2**k
+    ee = abs(march_euler(dt) - ref)
+    et = abs(march_trapezoid(dt) - ref)
+    gap = abs(march_trapezoid(dt) - march_transformed(dt))
+    pe = f"{math.log2(prev_e / ee):.2f}" if prev_e else "  - "
+    pt = f"{math.log2(prev_t / et):.2f}" if prev_t else "  - "
+    print(f"  {dt:<9.5f} {LAM/dt+0.5:<15.4f} {ee:.3e}    {pe}   {et:.3e}     {pt}   {gap:.2e}")
+    prev_e, prev_t = ee, et
+```
+
+```text
+exact f(1.2) = 0.551364901343   (lambda = 0.3, F = 0.5)
+
+  dt        tau=lam/dt+0.5   err(Euler)    p      err(trapezoid)  p      |trapezoid - transformed|
+  0.12000   3.0000          9.198e-03      -    1.330e-03       -    0.00e+00
+  0.06000   5.5000          5.562e-03    0.73   3.333e-04     2.00   1.11e-16
+  0.03000   10.5000         2.992e-03    0.89   8.337e-05     2.00   1.11e-16
+  0.01500   20.5000         1.545e-03    0.95   2.085e-05     2.00   2.22e-16
+  0.00750   40.5000         7.845e-04    0.98   5.212e-06     2.00   2.33e-15
+```
+
+収束次数 $p$ はオイラーが 1 へ、台形則がちょうど 2 へ向かいます。より重要なのは最後の列です。陰的な台形則と陽的な変換式の差が $10^{-16}$ です。変換は値をひとつも変えていません。変えたのは計算の順序だけです。
+
+## Δt/2 が座る三箇所 — モーメント次数別の対照表
+
+実際に保存してストリーミングしているのは $\bar{f}_i$ です。しかし物理量は $f_i$ のモーメントとして定義されています。二つの分布関数のモーメントは次数ごとに異なるずれ方をします。
+
+$\sum_i(f_i - f_i^{\text{eq}}) = 0$ かつ $\sum_i F_i = 0$ なので零次はそのままです。一次では $\sum_i \mathbf{e}_i F_i = \mathbf{F}$ が残ります。二次では非平衡部分が $(1 + \Delta t/2\lambda)$ 倍に膨らんでいます。
+
+| モーメント | $\bar{f}$ が与える値 | 実際の物理量 | 無視すると |
+|---|---|---|---|
+| 零次 $\sum \bar{f}_i$ | $\rho$ | $\rho$ | 補正なし |
+| 一次 $\sum \mathbf{e}_i \bar{f}_i$ | $\rho\mathbf{u} - \frac{\Delta t}{2}\mathbf{F}$ | $\rho\mathbf{u}$ | 速度が $\frac{\Delta t}{2\rho}\mathbf{F}$ だけ低く読まれる |
+| 二次 $\sum \mathbf{e}_i\mathbf{e}_i \bar{f}_i^{\text{neq}}$ | $\frac{\tau}{\tau - 1/2}\,\Pi^{(1)}$ | $\Pi^{(1)}$ | ひずみ速度が $\frac{\tau}{\tau-1/2}$ 倍の過大評価 |
+| 緩和時間 | $\tau$ | $\lambda/\Delta t = \tau - \frac{1}{2}$ | 粘性が $\frac{\tau}{\tau-1/2}$ 倍の過大評価 |
+
+三箇所の倍率はすべて $\tau/(\tau-1/2)$ かその逆数の $1 - 1/(2\tau)$ です。偶然ではなく、同じ半ステップが三度現れているだけです。対流拡散 LBM で余分なフラックスを打ち消すときに出てきた $1 - 1/(2\tau)$ も[同じ係数](/ja/posts/2026-08-14-lbm-convection-diffusion-ce-error/)です。
+
+## D2Q9 で測った粘性とひずみ速度
+
+表の最後の二行は格子上で直接測れます。$u_x = U_0 \sin(ky)$ のせん断波を置くと、振幅が $\exp(-\nu k^2 t)$ で減衰します。減衰率から $\nu$ を逆算すれば、格子が実際にどの粘性で回っているかがわかります。同じ計算から非平衡二次モーメントも取り出し、ひずみ速度と照合します。
+
+```python
+import numpy as np
+
+EX = np.array([0, 1, 0, -1, 0, 1, -1, -1, 1])
+EY = np.array([0, 0, 1, 0, -1, 1, 1, -1, -1])
+WT = np.array([4/9] + [1/9]*4 + [1/36]*4)
+CS2 = 1.0/3.0
+NY, NX, U0 = 64, 4, 0.01
+KY = 2*np.pi/NY
+
+
+def maxwell_d2q9(rho, ux, uy):
+    eu = EX[:, None, None]*ux + EY[:, None, None]*uy
+    return WT[:, None, None]*rho*(1 + eu/CS2 + eu*eu/(2*CS2**2)
+                                  - (ux*ux + uy*uy)/(2*CS2))
+
+
+def shear_decay_probe(tau, nstep):
+    """u_x = U0 sin(k y) の減衰。(測定した粘性, y=0 での非平衡二次モーメント) を返す。"""
+    yy = np.arange(NY)
+    rho = np.ones((NX, NY))
+    ux = U0*np.sin(KY*yy)[None, :]*np.ones((NX, 1))
+    f = maxwell_d2q9(rho, ux, np.zeros((NX, NY)))
+    amp, probe = [], None
+    for n in range(nstep + 1):
+        rho = f.sum(axis=0)
+        ux = (EX[:, None, None]*f).sum(axis=0)/rho
+        uy = (EY[:, None, None]*f).sum(axis=0)/rho
+        amp.append(2*np.mean(ux[0]*np.sin(KY*yy)))
+        feq = maxwell_d2q9(rho, ux, uy)
+        if n == nstep//2:
+            pxy = (EX[:, None, None]*EY[:, None, None]*(f - feq)).sum(axis=0)
+            probe = (0.5*amp[-1]*KY, pxy[0, 0], rho[0, 0])   # (厳密な S_xy, Pi_xy, rho)
+        f -= (f - feq)/tau
+        for i in range(9):                                   # streaming
+            f[i] = np.roll(np.roll(f[i], EX[i], axis=0), EY[i], axis=1)
+    a, b = nstep//4, nstep
+    nu = -np.log(amp[b]/amp[a])/((b - a)*KY*KY)
+    return nu, probe
+
+
+print("kinematic viscosity measured from shear-wave decay (D2Q9, 4 x 64, k = 2pi/64)")
+print("  tau     measured nu   cs^2 (tau-1/2)   cs^2 tau     ratio to measured")
+for tau in (0.6, 0.8, 1.2):
+    nu, _ = shear_decay_probe(tau, int(1.0/(CS2*(tau-0.5)*KY*KY)))
+    print(f"  {tau:<7.2f} {nu:.6f}    {CS2*(tau-0.5):.6f}         "
+          f"{CS2*tau:.6f}     {CS2*tau/nu:.2f} x")
+
+print()
+print("strain rate recovered from the non-equilibrium second moment (tau = 0.8, y = 0)")
+_, (s_ex, pxy, rho0) = shear_decay_probe(0.8, int(1.0/(CS2*0.3*KY*KY)))
+for name, denom in (("divided by tau        ", 0.8), ("divided by (tau - 1/2)", 0.3)):
+    s = -pxy/(2*rho0*CS2*denom)
+    print(f"  {name}  S_xy = {s:.6e}   error {abs(s/s_ex - 1)*100:6.2f} %")
+print(f"  exact                   S_xy = {s_ex:.6e}")
+```
+
+```text
+kinematic viscosity measured from shear-wave decay (D2Q9, 4 x 64, k = 2pi/64)
+  tau     measured nu   cs^2 (tau-1/2)   cs^2 tau     ratio to measured
+  0.60    0.033359    0.033333         0.200000     6.00 x
+  0.80    0.100051    0.100000         0.266667     2.67 x
+  1.20    0.233153    0.233333         0.400000     1.72 x
+
+strain rate recovered from the non-equilibrium second moment (tau = 0.8, y = 0)
+  divided by tau          S_xy = 2.978731e-04   error   0.05 %
+  divided by (tau - 1/2)  S_xy = 7.943282e-04   error 166.80 %
+  exact                   S_xy = 2.977199e-04
+```
+
+$\tau = 0.6$ で格子が実際に示した粘性は $0.03336$ です。$c_s^2(\tau - 1/2) = 0.03333$ と小数第四位まで一致します。$c_s^2\tau$ は六倍大きい値です。引き継いだコードで見た流量六倍がこれです。
+
+ひずみ速度は向きが逆である点が面白いところです。ここでは $\tau$ で割るのが正しく、物理的な $\tau - 1/2$ で割ると 167% ずれます。粘性では半ステップを引き、応力では引いてはいけません。$\bar{f}$ の二次モーメントがすでに膨らんでいるからです。この値をそのまま使う場所が LES のサブグリッドモデルと非ニュートン粘性の更新なので、静かに間違えるには格好の場所です。
+
+## τ が 0.5 に張り付くと三つのマスが同時に崩れる
+
+$\tau \to 1/2$ は $\lambda \to 0$、つまり粘性がゼロに向かう極限です。高レイノルズ数の解析で実際に押し込む方向です。ところが倍率 $\tau/(\tau-1/2)$ はこのとき発散します。以下でスライダーを実際に下げてみましょう。
+
+<HalfTauViscosityRuler />
+
+`tau` を 2.0 から 0.51 まで引き下げながら、青い曲線がどの点線の上に乗るかを見てください。緑($c_s^2(\tau-1/2)$)は最後まで張り付き、オレンジ($c_s^2\tau$)は $\tau$ が小さくなるほど手に負えないほど離れていきます。$\tau = 0.51$ では二つの目盛りの比が 51 倍です。
+
+この発散が実務で意味するところは三つです。第一に、$\tau$ が 0.5 に近いほど粘性の式の誤記ひとつが致命的に大きくなります。第二に、力の項の係数 $1 - 1/(2\tau)$ がゼロに向かうため、外力が事実上消えます。第三に、非平衡モーメントから逆算した応力の相対誤差が大きくなり、サブグリッド粘性が信頼を失います。$\tau$ を 0.5 付近で使うコードがとりわけ不安定なのには、安定性以外にもこうした理由が重なっています。境界節点で未知数を埋める [Zou–He 系の処理](/ja/posts/2026-08-24-lbm-boundary-node-unknown-pdf-framework/)も、同じ $\bar{f}$ の上で動いていることは忘れられがちです。
+
+## 他人の LBM を開いたときにまず見る三行
+
+第一に、粘性の行に `tau - 0.5` があるか。なければそのソルバは自分がどの粘性で回っているかを知りません。
+
+第二に、力のある問題なら、速度を読む行に `+ 0.5*F/rho` が付いているか。そして forcing 項に `(1 - 0.5/tau)` が掛かっているか。この二つは対です。片方だけなら半ステップずれたまま回ります。
+
+第三に、非平衡モーメントからひずみ速度や応力を取り出す箇所があるなら、分母は $\tau$ か $\tau - 1/2$ か。ここでは補正しない $\tau$ が正しい値です。
+
+三行は別々の補正に見えますが、出所はひとつです。特性線上で右辺を台形則で積分すると決めたこと、そしてその陰的な式を再び陽的に戻すために定義した $\bar{f}$ の一行です。どの行が間違っているか思い出せないときは、この二つの文からいつでも導き直せます。

@@ -1,0 +1,269 @@
+---
+title: "把 τ 直接代进去，粘度大了六倍 —— LBM 离散化留下的三处 Δt/2"
+date: 2026-08-26
+description: "一次梯形积分和一行变量替换，在粘度、速度、应力三处各留下一个 Δt/2。用标量 ODE 和 D2Q9 把三处都测了一遍。"
+tags: ["Trapezoidal-Rule", "LBM", "Viscosity", "Forcing-Term", "Numerical-Analysis"]
+locale: zh
+slug: lbm-trapezoidal-integration-half-timestep
+takeaway: "τ − 1/2、1 − 1/(2τ)，以及应力反算时除的 τ，不是三种不同的修正，而是同一次梯形积分留下的同一个半时间步。"
+draft: false
+---
+
+import { TrapezoidTauShiftMarcher } from '@/components/post-viz/2026-08-26-lbm-trapezoidal-integration-half-timestep/TrapezoidTauShiftMarcher'
+import { HalfTauViscosityRuler } from '@/components/post-viz/2026-08-26-lbm-trapezoidal-integration-half-timestep/HalfTauViscosityRuler'
+
+## 我把别人代码里的 `tau - 0.5` 改成了 `tau`
+
+接手一套格子玻尔兹曼(LBM)求解器后，需要把粘度调到目标值。代码里有这么一行。
+
+```text
+nu = (1.0/3.0) * (tau - 0.5)
+```
+
+连续 BGK 方程给出的粘度是 $\nu = c_s^2 \lambda$，其中 $\lambda$ 是弛豫时间。里面没有任何 $-1/2$。我当成笔误删掉了。通道流量变成了原来的六倍。
+
+$-1/2$ 不是物理，而是离散化留下的痕迹。而且它从不单独出现。力项前面的 $1 - 1/(2\tau)$，以及从非平衡矩反算应变率时要除的 $\tau$，都出自同一个地方。本文找出那个地方，再用一个标量常微分方程和一个 D2Q9 格子把三处分别测出来。
+
+## 沿特征线积分，右端会落在两个端点上
+
+出发点是带 BGK 碰撞项的玻尔兹曼方程。
+
+$$
+\partial_t f_i + \mathbf{e}_i \cdot \nabla f_i = -\frac{1}{\lambda}\left(f_i - f_i^{\text{eq}}\right) + F_i
+$$
+
+$f_i$ 是沿离散速度 $\mathbf{e}_i$ 的分布函数，$\lambda$ 是弛豫时间，$F_i$ 是外力的离散表示。
+
+沿特征线 $\mathbf{x}(s) = \mathbf{x} + \mathbf{e}_i s$，左端会收成一个全微分。因此从 $s = 0$ 积分到 $\Delta t$ 得到下式。
+
+$$
+f_i(\mathbf{x} + \mathbf{e}_i \Delta t,\, t + \Delta t) - f_i(\mathbf{x}, t) = \int_0^{\Delta t} \left[ -\frac{1}{\lambda}\left(f_i - f_i^{\text{eq}}\right) + F_i \right] \mathrm{d}s
+$$
+
+到这里没有任何近似。近似从如何处理右端积分开始。只取左端点就是前向欧拉，一阶精度。取两端点的平均就是梯形法则，二阶精度。代价是右端点的 $f_i(\mathbf{x} + \mathbf{e}_i\Delta t, t+\Delta t)$ 进入右端，方程变成隐式。没有人希望 LBM 在每个格点上解一个联立方程组。
+
+在下面的模拟里亲手操作一下。
+
+<TrapezoidTauShiftMarcher />
+
+把 `dt` 滑块往右拖，同时看下方的对数-对数面板。橙色(欧拉)每降一个数量级误差降一个数量级，蓝色(梯形)每降一个数量级误差降两个。右侧面板放大了单个时间步，显示两种规则各自在估计哪块面积。
+
+## 把隐式重新变回显式的一行变量替换
+
+这里用的手法是定义一个新的分布函数。
+
+$$
+\bar{f}_i = f_i + \frac{\Delta t}{2\lambda}\left(f_i - f_i^{\text{eq}}\right) - \frac{\Delta t}{2} F_i
+$$
+
+把使右端变隐式的项预先吸收进变量里。代入梯形格式并整理后，对 $\bar{f}$ 而言就是完全显式的。
+
+$$
+\bar{f}_i(\mathbf{x} + \mathbf{e}_i \Delta t,\, t + \Delta t) = \bar{f}_i(\mathbf{x}, t) - \frac{1}{\tau}\left(\bar{f}_i - f_i^{\text{eq}}\right) + \Delta t \left(1 - \frac{1}{2\tau}\right) F_i
+$$
+
+新出现的 $\tau$ 的定义才是关键。
+
+$$
+\tau = \frac{\lambda}{\Delta t} + \frac{1}{2}
+$$
+
+我们写进代码的 $\tau$ 不是物理弛豫时间，而是物理弛豫时间加上半个时间步。反解得到 $\lambda = (\tau - 1/2)\Delta t$，于是 $\nu = c_s^2 \lambda$ 在格子单位下变成 $\nu = c_s^2(\tau - 1/2)$。这正是接手代码里的那一行。
+
+同一次整理还会在力项前面留下 $1 - 1/(2\tau)$。Guo forcing 里的那个系数不是谁凭经验凑出来的，而是这次代入的产物。力应该以什么*形式*加进去是另一个问题，这种选择如何让静止界面动起来，在[非理想 LBM forcing 那篇](/zh/posts/2026-08-21-nonideal-lbm-pressure-vs-freeenergy-forcing/)里单独讨论过。
+
+## 一个标量就能确认二阶精度与完全一致
+
+结论有两条。梯形法则是二阶的。变量替换是恒等变形而不是近似。不需要动用格子，特征线上的一个标量方程就能确认两条。
+
+```python
+import math
+
+LAM = 0.3   # 物理弛豫时间 lambda
+FRC = 0.5   # 力项 F (常数)
+T_END = 1.2
+
+
+def relax_exact(t):
+    """f' = -(f - e^{-t})/LAM + FRC, f(0) = 0 的闭式解。"""
+    a = 1.0 / LAM
+    return (a / (a - 1.0)) * (math.exp(-t) - math.exp(-a * t)) \
+        + FRC * LAM * (1.0 - math.exp(-a * t))
+
+
+def march_euler(dt):
+    """对原方程用前向欧拉 —— 右端只取左端点的值积分。"""
+    f, t = 0.0, 0.0
+    while t < T_END - 1e-12:
+        f += -dt / LAM * (f - math.exp(-t)) + dt * FRC
+        t += dt
+    return f
+
+
+def march_trapezoid(dt):
+    """梯形法则 —— 两端点平均。f^{n+1} 出现在两边，是隐式的，故直接求解。"""
+    f, t = 0.0, 0.0
+    while t < T_END - 1e-12:
+        c = dt / (2.0 * LAM)
+        rhs = f - c * (f - math.exp(-t)) + c * math.exp(-(t + dt)) + dt * FRC
+        f = rhs / (1.0 + c)
+        t += dt
+    return f
+
+
+def march_transformed(dt):
+    """变量替换 fbar = f + (dt/2 lam)(f - feq) - (dt/2) F 之后的完全显式推进。"""
+    tau = LAM / dt + 0.5                      # 平移后的弛豫时间
+    f0 = 0.0
+    fbar = f0 + dt / (2 * LAM) * (f0 - 1.0) - 0.5 * dt * FRC
+    t = 0.0
+    while t < T_END - 1e-12:
+        fbar += -(fbar - math.exp(-t)) / tau + dt * FRC * (1.0 - 0.5 / tau)
+        t += dt
+    # 把 fbar 还原为 f
+    c = dt / (2.0 * LAM)
+    feq = math.exp(-T_END)
+    return (fbar + 0.5 * dt * FRC + c * feq) / (1.0 + c)
+
+
+ref = relax_exact(T_END)
+print(f"exact f({T_END}) = {ref:.12f}   (lambda = {LAM}, F = {FRC})")
+print()
+print("  dt        tau=lam/dt+0.5   err(Euler)    p      err(trapezoid)  p      |trapezoid - transformed|")
+prev_e = prev_t = None
+for k in range(5):
+    dt = 0.12 / 2**k
+    ee = abs(march_euler(dt) - ref)
+    et = abs(march_trapezoid(dt) - ref)
+    gap = abs(march_trapezoid(dt) - march_transformed(dt))
+    pe = f"{math.log2(prev_e / ee):.2f}" if prev_e else "  - "
+    pt = f"{math.log2(prev_t / et):.2f}" if prev_t else "  - "
+    print(f"  {dt:<9.5f} {LAM/dt+0.5:<15.4f} {ee:.3e}    {pe}   {et:.3e}     {pt}   {gap:.2e}")
+    prev_e, prev_t = ee, et
+```
+
+```text
+exact f(1.2) = 0.551364901343   (lambda = 0.3, F = 0.5)
+
+  dt        tau=lam/dt+0.5   err(Euler)    p      err(trapezoid)  p      |trapezoid - transformed|
+  0.12000   3.0000          9.198e-03      -    1.330e-03       -    0.00e+00
+  0.06000   5.5000          5.562e-03    0.73   3.333e-04     2.00   1.11e-16
+  0.03000   10.5000         2.992e-03    0.89   8.337e-05     2.00   1.11e-16
+  0.01500   20.5000         1.545e-03    0.95   2.085e-05     2.00   2.22e-16
+  0.00750   40.5000         7.845e-04    0.98   5.212e-06     2.00   2.33e-15
+```
+
+收敛阶 $p$ 对欧拉趋向 1，对梯形正好停在 2。更重要的是最后一列。隐式梯形推进与显式变换推进之间的差是 $10^{-16}$。变量替换没有改变任何数值，改变的只是计算顺序。
+
+## Δt/2 落在哪三处 —— 按矩的阶数对照
+
+我们真正存储和迁移的是 $\bar{f}_i$。但物理量是按 $f_i$ 的矩定义的。两个分布函数的矩在每一阶上偏差方式不同。
+
+因为 $\sum_i(f_i - f_i^{\text{eq}}) = 0$ 且 $\sum_i F_i = 0$，零阶矩原封不动。一阶矩里 $\sum_i \mathbf{e}_i F_i = \mathbf{F}$ 留了下来。二阶矩的非平衡部分被放大了 $(1 + \Delta t/2\lambda)$ 倍。
+
+| 矩 | $\bar{f}$ 给出的值 | 实际物理量 | 忽略后果 |
+|---|---|---|---|
+| 零阶 $\sum \bar{f}_i$ | $\rho$ | $\rho$ | 无需修正 |
+| 一阶 $\sum \mathbf{e}_i \bar{f}_i$ | $\rho\mathbf{u} - \frac{\Delta t}{2}\mathbf{F}$ | $\rho\mathbf{u}$ | 速度低读 $\frac{\Delta t}{2\rho}\mathbf{F}$ |
+| 二阶 $\sum \mathbf{e}_i\mathbf{e}_i \bar{f}_i^{\text{neq}}$ | $\frac{\tau}{\tau - 1/2}\,\Pi^{(1)}$ | $\Pi^{(1)}$ | 应变率高估 $\frac{\tau}{\tau-1/2}$ 倍 |
+| 弛豫时间 | $\tau$ | $\lambda/\Delta t = \tau - \frac{1}{2}$ | 粘度高估 $\frac{\tau}{\tau-1/2}$ 倍 |
+
+三处的倍率全都是 $\tau/(\tau-1/2)$ 或其倒数 $1 - 1/(2\tau)$。这不是巧合，而是同一个半时间步出现了三次。对流扩散 LBM 里用来抵消多余通量的 $1 - 1/(2\tau)$ 也是[同一个系数](/zh/posts/2026-08-14-lbm-convection-diffusion-ce-error/)。
+
+## 在 D2Q9 上量到的粘度与应变率
+
+表格最后两行可以在格子上直接测。放一个 $u_x = U_0 \sin(ky)$ 的剪切波，振幅会按 $\exp(-\nu k^2 t)$ 衰减。从衰减率反算 $\nu$，就知道格子实际在用哪个粘度运行。同一次计算还能取出非平衡二阶矩，与应变率对照。
+
+```python
+import numpy as np
+
+EX = np.array([0, 1, 0, -1, 0, 1, -1, -1, 1])
+EY = np.array([0, 0, 1, 0, -1, 1, 1, -1, -1])
+WT = np.array([4/9] + [1/9]*4 + [1/36]*4)
+CS2 = 1.0/3.0
+NY, NX, U0 = 64, 4, 0.01
+KY = 2*np.pi/NY
+
+
+def maxwell_d2q9(rho, ux, uy):
+    eu = EX[:, None, None]*ux + EY[:, None, None]*uy
+    return WT[:, None, None]*rho*(1 + eu/CS2 + eu*eu/(2*CS2**2)
+                                  - (ux*ux + uy*uy)/(2*CS2))
+
+
+def shear_decay_probe(tau, nstep):
+    """u_x = U0 sin(k y) 的衰减。返回 (测得的粘度, y=0 处的非平衡二阶矩)。"""
+    yy = np.arange(NY)
+    rho = np.ones((NX, NY))
+    ux = U0*np.sin(KY*yy)[None, :]*np.ones((NX, 1))
+    f = maxwell_d2q9(rho, ux, np.zeros((NX, NY)))
+    amp, probe = [], None
+    for n in range(nstep + 1):
+        rho = f.sum(axis=0)
+        ux = (EX[:, None, None]*f).sum(axis=0)/rho
+        uy = (EY[:, None, None]*f).sum(axis=0)/rho
+        amp.append(2*np.mean(ux[0]*np.sin(KY*yy)))
+        feq = maxwell_d2q9(rho, ux, uy)
+        if n == nstep//2:
+            pxy = (EX[:, None, None]*EY[:, None, None]*(f - feq)).sum(axis=0)
+            probe = (0.5*amp[-1]*KY, pxy[0, 0], rho[0, 0])   # (精确的 S_xy, Pi_xy, rho)
+        f -= (f - feq)/tau
+        for i in range(9):                                   # streaming
+            f[i] = np.roll(np.roll(f[i], EX[i], axis=0), EY[i], axis=1)
+    a, b = nstep//4, nstep
+    nu = -np.log(amp[b]/amp[a])/((b - a)*KY*KY)
+    return nu, probe
+
+
+print("kinematic viscosity measured from shear-wave decay (D2Q9, 4 x 64, k = 2pi/64)")
+print("  tau     measured nu   cs^2 (tau-1/2)   cs^2 tau     ratio to measured")
+for tau in (0.6, 0.8, 1.2):
+    nu, _ = shear_decay_probe(tau, int(1.0/(CS2*(tau-0.5)*KY*KY)))
+    print(f"  {tau:<7.2f} {nu:.6f}    {CS2*(tau-0.5):.6f}         "
+          f"{CS2*tau:.6f}     {CS2*tau/nu:.2f} x")
+
+print()
+print("strain rate recovered from the non-equilibrium second moment (tau = 0.8, y = 0)")
+_, (s_ex, pxy, rho0) = shear_decay_probe(0.8, int(1.0/(CS2*0.3*KY*KY)))
+for name, denom in (("divided by tau        ", 0.8), ("divided by (tau - 1/2)", 0.3)):
+    s = -pxy/(2*rho0*CS2*denom)
+    print(f"  {name}  S_xy = {s:.6e}   error {abs(s/s_ex - 1)*100:6.2f} %")
+print(f"  exact                   S_xy = {s_ex:.6e}")
+```
+
+```text
+kinematic viscosity measured from shear-wave decay (D2Q9, 4 x 64, k = 2pi/64)
+  tau     measured nu   cs^2 (tau-1/2)   cs^2 tau     ratio to measured
+  0.60    0.033359    0.033333         0.200000     6.00 x
+  0.80    0.100051    0.100000         0.266667     2.67 x
+  1.20    0.233153    0.233333         0.400000     1.72 x
+
+strain rate recovered from the non-equilibrium second moment (tau = 0.8, y = 0)
+  divided by tau          S_xy = 2.978731e-04   error   0.05 %
+  divided by (tau - 1/2)  S_xy = 7.943282e-04   error 166.80 %
+  exact                   S_xy = 2.977199e-04
+```
+
+在 $\tau = 0.6$ 下，格子实际表现出的粘度是 $0.03336$，与 $c_s^2(\tau - 1/2) = 0.03333$ 吻合到小数第四位。$c_s^2\tau$ 大了六倍。接手代码里流量变六倍就是这么来的。
+
+应变率有意思的地方在于方向相反。这里除以 $\tau$ 才对，除以物理的 $\tau - 1/2$ 会差 167%。粘度要减半步，应力不能减。因为 $\bar{f}$ 的二阶矩本身已经被放大了。这个值恰好喂给 LES 亚格子模型和非牛顿粘度更新，是悄悄出错的绝佳位置。
+
+## τ 贴近 0.5 时，三格同时塌
+
+$\tau \to 1/2$ 就是 $\lambda \to 0$，即粘度趋于零的极限，也是高雷诺数计算实际推进的方向。但倍率 $\tau/(\tau-1/2)$ 在这里发散。在下面把滑块往下拉试试。
+
+<HalfTauViscosityRuler />
+
+把 `tau` 从 2.0 拉到 0.51，看蓝色曲线落在哪条虚线上。绿色($c_s^2(\tau-1/2)$)一直贴着，橙色($c_s^2\tau$)随 $\tau$ 变小越离越远。在 $\tau = 0.51$ 时两把尺子相差 51 倍。
+
+这个发散在工程上意味着三件事。第一，$\tau$ 越靠近 0.5，粘度公式里的一个笔误就越致命。第二，力项系数 $1 - 1/(2\tau)$ 趋于零，外力实际上消失。第三，从非平衡矩反算的应力相对误差变大，亚格子粘度失去可信度。在 $\tau$ 接近 0.5 处运行的代码格外脆弱，稳定性只是其中一个原因。同样容易被忘记的是，边界节点上补未知量的 [Zou–He 类处理](/zh/posts/2026-08-24-lbm-boundary-node-unknown-pdf-framework/)也运行在同一个 $\bar{f}$ 之上。
+
+## 打开别人的 LBM 时先看的三行
+
+第一，粘度那一行里有没有 `tau - 0.5`。没有的话，这套求解器并不知道自己在用什么粘度运行。
+
+第二，如果问题带体积力，读取速度的那行有没有 `+ 0.5*F/rho`，forcing 项有没有乘 `(1 - 0.5/tau)`。这两者是一对。只有其中一个，格式就会错开半个时间步运行。
+
+第三，如果有地方从非平衡矩取应变率或应力，分母是 $\tau$ 还是 $\tau - 1/2$。这里未经修正的 $\tau$ 才是对的。
+
+三行看起来像三种互不相干的修正，但源头只有一个：决定沿特征线用梯形法则积分右端，以及为把隐式结果重新变回显式而定义 $\bar{f}$ 的那一行。哪一行写错了记不清时，靠这两句话随时可以重新推一遍。

@@ -1,0 +1,269 @@
+---
+title: "τ를 그대로 넣었더니 점성이 6배가 됐다 — LBM 이산화가 남긴 Δt/2 세 자리"
+date: 2026-08-26
+description: "사다리꼴 적분 한 번과 변수변환 한 줄이 점성·속도·응력 세 곳에 각각 Δt/2를 남긴다. 스칼라 ODE와 D2Q9로 세 자리를 모두 재봤다."
+tags: ["Trapezoidal-Rule", "LBM", "Viscosity", "Forcing-Term", "Numerical-Analysis"]
+locale: ko
+slug: lbm-trapezoidal-integration-half-timestep
+takeaway: "τ − 1/2, 1 − 1/(2τ), 그리고 응력의 τ는 서로 다른 보정이 아니라 사다리꼴 적분 하나가 남긴 같은 Δt/2다."
+draft: false
+---
+
+import { TrapezoidTauShiftMarcher } from '@/components/post-viz/2026-08-26-lbm-trapezoidal-integration-half-timestep/TrapezoidTauShiftMarcher'
+import { HalfTauViscosityRuler } from '@/components/post-viz/2026-08-26-lbm-trapezoidal-integration-half-timestep/HalfTauViscosityRuler'
+
+## 남의 코드에서 `tau - 0.5`를 `tau`로 고쳤다
+
+인수인계받은 격자 볼츠만(LBM) 솔버에서 점성을 맞춰야 했다. 코드에는 이런 줄이 있었다.
+
+```text
+nu = (1.0/3.0) * (tau - 0.5)
+```
+
+연속 BGK 방정식이 말하는 점성은 $\nu = c_s^2 \lambda$다. $\lambda$는 완화시간이다. 어디에도 $-1/2$는 없다. 오타로 보고 지웠다. 채널 유동의 유량이 여섯 배로 늘었다.
+
+$-1/2$는 물리가 아니라 이산화가 남긴 흔적이다. 그리고 혼자 오지 않는다. 힘 항 앞의 $1 - 1/(2\tau)$, 비평형 모멘트로 변형률을 역산할 때 나누는 $\tau$까지 — 서로 무관해 보이는 세 상수가 모두 같은 자리에서 나온다. 이 글은 그 자리를 찾고, 스칼라 상미분방정식 하나와 D2Q9 격자 하나로 세 곳을 각각 측정한다.
+
+## 특성선을 따라 적분하면 우변이 양 끝에 걸린다
+
+출발점은 BGK 충돌항을 가진 볼츠만 방정식이다.
+
+$$
+\partial_t f_i + \mathbf{e}_i \cdot \nabla f_i = -\frac{1}{\lambda}\left(f_i - f_i^{\text{eq}}\right) + F_i
+$$
+
+$f_i$는 속도 $\mathbf{e}_i$ 방향의 분포함수, $\lambda$는 완화시간, $F_i$는 외력의 이산 표현이다.
+
+좌변은 특성선 $\mathbf{x}(s) = \mathbf{x} + \mathbf{e}_i s$를 따라가면 전미분 하나로 접힌다. 그래서 $s = 0$부터 $\Delta t$까지 적분하면 이렇게 된다.
+
+$$
+f_i(\mathbf{x} + \mathbf{e}_i \Delta t,\, t + \Delta t) - f_i(\mathbf{x}, t) = \int_0^{\Delta t} \left[ -\frac{1}{\lambda}\left(f_i - f_i^{\text{eq}}\right) + F_i \right] \mathrm{d}s
+$$
+
+여기까지는 근사가 없다. 근사는 우변 적분을 어떻게 처리하느냐에서 시작한다. 왼쪽 끝값 하나로 때우면 전진 오일러이고 1차 정확도다. 양 끝값의 평균을 쓰면 사다리꼴 규칙이고 2차 정확도다. 대신 오른쪽 끝의 $f_i(\mathbf{x} + \mathbf{e}_i\Delta t, t+\Delta t)$가 우변에 들어와 식이 음함수가 된다. 격자 하나마다 연립방정식을 푸는 LBM은 아무도 원하지 않는다.
+
+아래 시뮬레이션에서 직접 조작해보자.
+
+<TrapezoidTauShiftMarcher />
+
+`dt` 슬라이더를 오른쪽으로 밀면서 아래 로그-로그 패널을 보면 된다. 오일러(주황)는 한 자릿수당 한 자릿수, 사다리꼴(파랑)은 한 자릿수당 두 자릿수씩 오차가 떨어진다. 오른쪽 패널은 한 스텝 안에서 두 규칙이 각각 어떤 면적을 재고 있는지 보여준다.
+
+## 음함수를 다시 양함수로 만드는 변수변환 한 줄
+
+여기서 쓰는 수법은 새 분포함수를 정의하는 것이다.
+
+$$
+\bar{f}_i = f_i + \frac{\Delta t}{2\lambda}\left(f_i - f_i^{\text{eq}}\right) - \frac{\Delta t}{2} F_i
+$$
+
+우변에서 음함수를 만들던 항을 미리 변수 안으로 흡수했다. 사다리꼴 식에 대입하고 정리하면 $\bar{f}$에 대해서는 완전한 양함수가 된다.
+
+$$
+\bar{f}_i(\mathbf{x} + \mathbf{e}_i \Delta t,\, t + \Delta t) = \bar{f}_i(\mathbf{x}, t) - \frac{1}{\tau}\left(\bar{f}_i - f_i^{\text{eq}}\right) + \Delta t \left(1 - \frac{1}{2\tau}\right) F_i
+$$
+
+새로 나타난 $\tau$의 정의가 핵심이다.
+
+$$
+\tau = \frac{\lambda}{\Delta t} + \frac{1}{2}
+$$
+
+우리가 코드에 넣는 $\tau$는 물리 완화시간이 아니다. 물리 완화시간에 반 스텝을 더한 값이다. 그래서 되돌리면 $\lambda = (\tau - 1/2)\Delta t$이고, $\nu = c_s^2 \lambda$는 격자 단위에서 $\nu = c_s^2(\tau - 1/2)$가 된다. 인수인계 코드의 그 줄이다.
+
+같은 정리에서 힘 항 앞에 $1 - 1/(2\tau)$가 따라 나온다. Guo forcing의 그 계수는 누가 경험적으로 맞춘 값이 아니라 이 대입의 산물이다. 힘을 어떤 *형태*로 넣을지는 또 다른 문제이고, 그 선택이 정지 계면을 흔드는 경우는 [비이상 LBM forcing 글](/ko/posts/2026-08-21-nonideal-lbm-pressure-vs-freeenergy-forcing/)에서 따로 다뤘다.
+
+## 스칼라 하나로 확인한 2차 정확도와 완전 일치
+
+주장이 둘이다. 사다리꼴은 2차다. 변수변환은 근사가 아니라 항등변형이다. 격자를 동원할 필요 없이 특성선 위의 스칼라 방정식 하나로 둘 다 확인된다.
+
+```python
+import math
+
+LAM = 0.3   # 물리 완화시간 lambda
+FRC = 0.5   # 힘 항 F (상수)
+T_END = 1.2
+
+
+def relax_exact(t):
+    """f' = -(f - e^{-t})/LAM + FRC, f(0) = 0 의 닫힌 해."""
+    a = 1.0 / LAM
+    return (a / (a - 1.0)) * (math.exp(-t) - math.exp(-a * t)) \
+        + FRC * LAM * (1.0 - math.exp(-a * t))
+
+
+def march_euler(dt):
+    """원래 방정식에 전진 오일러 — 우변을 왼쪽 끝값으로만 적분."""
+    f, t = 0.0, 0.0
+    while t < T_END - 1e-12:
+        f += -dt / LAM * (f - math.exp(-t)) + dt * FRC
+        t += dt
+    return f
+
+
+def march_trapezoid(dt):
+    """사다리꼴 규칙 — 양 끝값 평균. f^{n+1} 이 양변에 있어 음함수이므로 직접 푼다."""
+    f, t = 0.0, 0.0
+    while t < T_END - 1e-12:
+        c = dt / (2.0 * LAM)
+        rhs = f - c * (f - math.exp(-t)) + c * math.exp(-(t + dt)) + dt * FRC
+        f = rhs / (1.0 + c)
+        t += dt
+    return f
+
+
+def march_transformed(dt):
+    """변수변환 fbar = f + (dt/2 lam)(f - feq) - (dt/2) F 후의 완전 양함수 전진."""
+    tau = LAM / dt + 0.5                      # 이동된 완화시간
+    f0 = 0.0
+    fbar = f0 + dt / (2 * LAM) * (f0 - 1.0) - 0.5 * dt * FRC
+    t = 0.0
+    while t < T_END - 1e-12:
+        fbar += -(fbar - math.exp(-t)) / tau + dt * FRC * (1.0 - 0.5 / tau)
+        t += dt
+    # fbar -> f 로 되돌리기
+    c = dt / (2.0 * LAM)
+    feq = math.exp(-T_END)
+    return (fbar + 0.5 * dt * FRC + c * feq) / (1.0 + c)
+
+
+ref = relax_exact(T_END)
+print(f"exact f({T_END}) = {ref:.12f}   (lambda = {LAM}, F = {FRC})")
+print()
+print("  dt        tau=lam/dt+0.5   err(Euler)    p      err(trapezoid)  p      |trapezoid - transformed|")
+prev_e = prev_t = None
+for k in range(5):
+    dt = 0.12 / 2**k
+    ee = abs(march_euler(dt) - ref)
+    et = abs(march_trapezoid(dt) - ref)
+    gap = abs(march_trapezoid(dt) - march_transformed(dt))
+    pe = f"{math.log2(prev_e / ee):.2f}" if prev_e else "  - "
+    pt = f"{math.log2(prev_t / et):.2f}" if prev_t else "  - "
+    print(f"  {dt:<9.5f} {LAM/dt+0.5:<15.4f} {ee:.3e}    {pe}   {et:.3e}     {pt}   {gap:.2e}")
+    prev_e, prev_t = ee, et
+```
+
+```text
+exact f(1.2) = 0.551364901343   (lambda = 0.3, F = 0.5)
+
+  dt        tau=lam/dt+0.5   err(Euler)    p      err(trapezoid)  p      |trapezoid - transformed|
+  0.12000   3.0000          9.198e-03      -    1.330e-03       -    0.00e+00
+  0.06000   5.5000          5.562e-03    0.73   3.333e-04     2.00   1.11e-16
+  0.03000   10.5000         2.992e-03    0.89   8.337e-05     2.00   1.11e-16
+  0.01500   20.5000         1.545e-03    0.95   2.085e-05     2.00   2.22e-16
+  0.00750   40.5000         7.845e-04    0.98   5.212e-06     2.00   2.33e-15
+```
+
+수렴차수 $p$가 오일러는 1로, 사다리꼴은 정확히 2로 간다. 마지막 열이 더 중요하다. 음함수 사다리꼴과 양함수 변환식의 차이가 $10^{-16}$이다. 변환은 값을 하나도 바꾸지 않는다. 바꾼 것은 계산 순서뿐이다.
+
+## Δt/2가 앉는 세 자리 — 모멘트 차수별 대조표
+
+우리가 실제로 저장하고 스트리밍하는 것은 $\bar{f}_i$다. 하지만 물리량은 $f_i$의 모멘트로 정의되어 있다. 두 분포함수의 모멘트가 차수마다 다르게 어긋난다.
+
+$\sum_i(f_i - f_i^{\text{eq}}) = 0$이고 $\sum_i F_i = 0$이므로 0차는 그대로다. 1차에서는 $\sum_i \mathbf{e}_i F_i = \mathbf{F}$가 살아남는다. 2차에서는 비평형 부분이 $(1 + \Delta t/2\lambda)$배로 부풀어 있다.
+
+| 모멘트 | $\bar{f}$가 주는 값 | 실제 물리량 | 무시하면 |
+|---|---|---|---|
+| 0차 $\sum \bar{f}_i$ | $\rho$ | $\rho$ | 보정 없음 |
+| 1차 $\sum \mathbf{e}_i \bar{f}_i$ | $\rho\mathbf{u} - \frac{\Delta t}{2}\mathbf{F}$ | $\rho\mathbf{u}$ | 속도가 $\frac{\Delta t}{2\rho}\mathbf{F}$만큼 낮게 읽힘 |
+| 2차 $\sum \mathbf{e}_i\mathbf{e}_i \bar{f}_i^{\text{neq}}$ | $\frac{\tau}{\tau - 1/2}\,\Pi^{(1)}$ | $\Pi^{(1)}$ | 변형률이 $\frac{\tau}{\tau-1/2}$배 과대평가 |
+| 완화시간 | $\tau$ | $\lambda/\Delta t = \tau - \frac{1}{2}$ | 점성이 $\frac{\tau}{\tau-1/2}$배 과대평가 |
+
+세 칸의 배율이 전부 $\tau/(\tau-1/2)$ 또는 그 역수인 $1 - 1/(2\tau)$다. 우연이 아니라 같은 반 스텝이 세 번 나타난 것이다. 대류-확산 LBM에서 여분 플럭스를 상쇄할 때 나왔던 $1 - 1/(2\tau)$도 [같은 계수](/ko/posts/2026-08-14-lbm-convection-diffusion-ce-error/)다.
+
+## D2Q9로 재본 점성과 변형률
+
+표의 마지막 두 줄은 격자에서 직접 잴 수 있다. $u_x = U_0 \sin(ky)$인 전단파를 놓으면 진폭이 $\exp(-\nu k^2 t)$로 줄어든다. 감쇠율에서 $\nu$를 역산하면 격자가 실제로 어떤 점성으로 돌고 있는지 알 수 있다. 같은 계산에서 비평형 2차 모멘트도 뽑아 변형률과 대조한다.
+
+```python
+import numpy as np
+
+EX = np.array([0, 1, 0, -1, 0, 1, -1, -1, 1])
+EY = np.array([0, 0, 1, 0, -1, 1, 1, -1, -1])
+WT = np.array([4/9] + [1/9]*4 + [1/36]*4)
+CS2 = 1.0/3.0
+NY, NX, U0 = 64, 4, 0.01
+KY = 2*np.pi/NY
+
+
+def maxwell_d2q9(rho, ux, uy):
+    eu = EX[:, None, None]*ux + EY[:, None, None]*uy
+    return WT[:, None, None]*rho*(1 + eu/CS2 + eu*eu/(2*CS2**2)
+                                  - (ux*ux + uy*uy)/(2*CS2))
+
+
+def shear_decay_probe(tau, nstep):
+    """u_x = U0 sin(k y) 의 감쇠. (측정 점성, y=0 에서의 비평형 2차 모멘트) 반환."""
+    yy = np.arange(NY)
+    rho = np.ones((NX, NY))
+    ux = U0*np.sin(KY*yy)[None, :]*np.ones((NX, 1))
+    f = maxwell_d2q9(rho, ux, np.zeros((NX, NY)))
+    amp, probe = [], None
+    for n in range(nstep + 1):
+        rho = f.sum(axis=0)
+        ux = (EX[:, None, None]*f).sum(axis=0)/rho
+        uy = (EY[:, None, None]*f).sum(axis=0)/rho
+        amp.append(2*np.mean(ux[0]*np.sin(KY*yy)))
+        feq = maxwell_d2q9(rho, ux, uy)
+        if n == nstep//2:
+            pxy = (EX[:, None, None]*EY[:, None, None]*(f - feq)).sum(axis=0)
+            probe = (0.5*amp[-1]*KY, pxy[0, 0], rho[0, 0])   # (정확한 S_xy, Pi_xy, rho)
+        f -= (f - feq)/tau
+        for i in range(9):                                   # streaming
+            f[i] = np.roll(np.roll(f[i], EX[i], axis=0), EY[i], axis=1)
+    a, b = nstep//4, nstep
+    nu = -np.log(amp[b]/amp[a])/((b - a)*KY*KY)
+    return nu, probe
+
+
+print("kinematic viscosity measured from shear-wave decay (D2Q9, 4 x 64, k = 2pi/64)")
+print("  tau     measured nu   cs^2 (tau-1/2)   cs^2 tau     ratio to measured")
+for tau in (0.6, 0.8, 1.2):
+    nu, _ = shear_decay_probe(tau, int(1.0/(CS2*(tau-0.5)*KY*KY)))
+    print(f"  {tau:<7.2f} {nu:.6f}    {CS2*(tau-0.5):.6f}         "
+          f"{CS2*tau:.6f}     {CS2*tau/nu:.2f} x")
+
+print()
+print("strain rate recovered from the non-equilibrium second moment (tau = 0.8, y = 0)")
+_, (s_ex, pxy, rho0) = shear_decay_probe(0.8, int(1.0/(CS2*0.3*KY*KY)))
+for name, denom in (("divided by tau        ", 0.8), ("divided by (tau - 1/2)", 0.3)):
+    s = -pxy/(2*rho0*CS2*denom)
+    print(f"  {name}  S_xy = {s:.6e}   error {abs(s/s_ex - 1)*100:6.2f} %")
+print(f"  exact                   S_xy = {s_ex:.6e}")
+```
+
+```text
+kinematic viscosity measured from shear-wave decay (D2Q9, 4 x 64, k = 2pi/64)
+  tau     measured nu   cs^2 (tau-1/2)   cs^2 tau     ratio to measured
+  0.60    0.033359    0.033333         0.200000     6.00 x
+  0.80    0.100051    0.100000         0.266667     2.67 x
+  1.20    0.233153    0.233333         0.400000     1.72 x
+
+strain rate recovered from the non-equilibrium second moment (tau = 0.8, y = 0)
+  divided by tau          S_xy = 2.978731e-04   error   0.05 %
+  divided by (tau - 1/2)  S_xy = 7.943282e-04   error 166.80 %
+  exact                   S_xy = 2.977199e-04
+```
+
+$\tau = 0.6$에서 격자가 실제로 보여준 점성은 $0.03336$이다. $c_s^2(\tau - 1/2) = 0.03333$과 소수 넷째 자리까지 맞는다. $c_s^2\tau$는 여섯 배 크다. 인수인계 코드에서 봤던 유량 여섯 배가 이것이다.
+
+변형률은 방향이 반대라는 점이 재미있다. 여기서는 $\tau$로 나누는 것이 맞고, 물리 완화시간 $\tau - 1/2$로 나누면 167% 틀린다. 점성에서는 $-1/2$를 빼야 하고 응력에서는 빼면 안 된다. 같은 반 스텝이지만 $\bar{f}$의 2차 모멘트는 이미 부풀어 있기 때문이다. 이 값을 그대로 쓰는 곳이 LES 부격자 모델과 비뉴턴 점성 갱신이라 조용히 틀리기 딱 좋다.
+
+## τ가 0.5에 붙으면 세 칸이 동시에 무너진다
+
+$\tau \to 1/2$는 $\lambda \to 0$, 즉 점성이 0으로 가는 극한이다. 고레이놀즈수 해석에서 실제로 밀어붙이는 방향이다. 그런데 배율 $\tau/(\tau-1/2)$는 이때 발산한다. 아래에서 슬라이더를 직접 내려보자.
+
+<HalfTauViscosityRuler />
+
+`tau`를 2.0에서 0.51까지 끌어내리면서 파란 곡선이 어느 점선 위에 앉는지 보면 된다. 초록($c_s^2(\tau-1/2)$)은 끝까지 붙어 있고 주황($c_s^2\tau$)은 $\tau$가 작아질수록 걷잡을 수 없이 벌어진다. $\tau = 0.51$에서 두 눈금의 비는 51배다.
+
+이 발산이 실무에서 의미하는 바는 세 가지다. 첫째, $\tau$가 0.5에 가까울수록 점성 공식의 오타 하나가 치명적으로 커진다. 둘째, 힘 항 계수 $1 - 1/(2\tau)$가 0으로 가므로 외력이 사실상 사라진다. 셋째, 비평형 모멘트로 역산한 응력의 상대오차가 커져 부격자 점성이 신뢰를 잃는다. $\tau$를 0.5 근처에서 쓰는 코드가 유독 불안정한 데는 안정성 말고도 이런 이유가 겹쳐 있다. 경계 노드에서 미지수를 채우는 [Zou–He류 처리](/ko/posts/2026-08-24-lbm-boundary-node-unknown-pdf-framework/)도 같은 $\bar{f}$ 위에서 돌아간다는 점을 잊기 쉽다.
+
+## 남의 LBM 코드를 열었을 때 먼저 볼 세 줄
+
+첫째, 점성 줄에 `tau - 0.5`가 있는가. 없으면 이 솔버는 자기가 무슨 점성으로 도는지 모르고 있다.
+
+둘째, 힘이 있는 문제라면 속도를 읽는 줄에 `+ 0.5*F/rho`가 붙어 있는가. 그리고 forcing 항에 `(1 - 0.5/tau)`가 곱해져 있는가. 둘은 짝이다. 하나만 있으면 반 스텝이 어긋난 채 돈다.
+
+셋째, 비평형 모멘트로 변형률이나 응력을 뽑는 곳이 있다면 분모가 $\tau$인가 $\tau - 1/2$인가. 여기서는 보정하지 않은 $\tau$가 맞다.
+
+세 줄이 서로 다른 보정처럼 보이지만 출처는 하나다. 특성선 위에서 우변을 사다리꼴로 적분하기로 한 결정, 그리고 그 음함수를 다시 양함수로 되돌리기 위해 정의한 $\bar{f}$ 한 줄이다. 어느 줄이 틀렸는지 기억이 안 나면, 이 두 문장으로 매번 다시 유도할 수 있다.
