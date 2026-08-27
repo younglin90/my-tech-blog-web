@@ -1,0 +1,190 @@
+---
+title: "把网格佩克莱数调到2，解掉到了-0.33 — 可最小化的能量消失的地方"
+date: 2026-08-28
+description: "对流项破坏刚度矩阵的对称性，最小总势能原理也随之消失。伽辽金振荡的真正原因，以及稳定化换来的东西。"
+tags: ["SUPG", "Weighted-Residual", "FEM", "Convection-Diffusion", "Numerical-Analysis"]
+locale: zh
+slug: 2026-08-28-self-adjointness-galerkin-supg-peclet
+takeaway: "稳定化并不能找回对称性。它只是放大对称部分，换来离散极值原理。"
+draft: false
+---
+
+import { SkewGradientEnergyBasin } from '@/components/post-viz/2026-08-28-self-adjointness-galerkin-supg-peclet/SkewGradientEnergyBasin'
+import { CellPecletOscillationLab } from '@/components/post-viz/2026-08-28-self-adjointness-galerkin-supg-peclet/CellPecletOscillationLab'
+
+## 一根杆上，四种方法给出了同一个答案
+
+有限元讲义第1章把同一个杆件问题解了四遍：直接刚度法、最小总势能法、加权残差法，以及伽辽金法。四遍都得到同一个5×5刚度矩阵。讲义里这样写着：无论用哪一种，结果差别不大，都能得到准确值。
+
+但这句话附带一个条件，而这个条件藏在杆件问题内部，不会浮到表面。流动方程不满足它。本文要量的是：这个条件到底是什么，条件破裂时究竟失去哪一项保证。然后用数字确认稳定化方法归还了什么——以及什么是它永远归还不了的。
+
+## 要有可最小化的量，矩阵必须对称
+
+最小总势能法把总势能对节点未知量求导并令其为零。离散形式是这样的。
+
+$$
+\Pi(\boldsymbol{\phi}) = \frac{1}{2}\,\boldsymbol{\phi}^{T}\mathbf{K}\,\boldsymbol{\phi} - \mathbf{f}^{T}\boldsymbol{\phi}
+$$
+
+$\boldsymbol{\phi}$是节点未知量向量，$\mathbf{K}$是刚度矩阵，$\mathbf{f}$是载荷向量。现在对第$i$个分量求导。
+
+$$
+\frac{\partial \Pi}{\partial \phi_i} = \frac{1}{2}\sum_{j}\left(K_{ij} + K_{ji}\right)\phi_j - f_i
+$$
+
+注意出现的是$K_{ij} + K_{ji}$。要让这个式子变成$\mathbf{K}\boldsymbol{\phi} = \mathbf{f}$，就必须有$K_{ij} = K_{ji}$。不对称时，最小化实际求解的是对称化矩阵$\tfrac{1}{2}(\mathbf{K}+\mathbf{K}^{T})$，而那已经不是原来的方程。
+
+同一处还有一个更根本的说法。残差场$\mathbf{r}(\boldsymbol{\phi}) = \mathbf{f} - \mathbf{K}\boldsymbol{\phi}$若要是某个标量函数的梯度，它的雅可比矩阵必须对称。不对称时，势函数根本不存在。检验是否存在最快的办法是沿闭合路径走一圈：梯度场绕一圈做的功必然为零。
+
+在下面的模拟中用一个两自由度的玩具矩阵亲手确认一下。
+
+<SkewGradientEnergyBasin />
+
+把`advection a`放到0，粉色的点绕一圈回来带着0.000。灰色椭圆是等能量线，黄色小球不横穿这些线，径直向内滑落。把`a`调高，一圈的功恰好变成$2\pi a$，小球开始画螺旋，逆着等能量线往上爬。保持这个状态，把`diffusion s`推到底。一圈的功纹丝不动。
+
+## 对流项破坏的量恰好是$u$
+
+写出一维对流扩散方程$u\,\phi' = \epsilon\,\phi''$的弱形式，两项性格的差别就显出来了。
+
+$$
+a(w, \phi) = \int_0^L \left( \epsilon\,\frac{dw}{dx}\frac{d\phi}{dx} + w\,u\,\frac{d\phi}{dx} \right) dx
+$$
+
+$w$是试函数，$\epsilon$是扩散系数，$u$是对流速度。第一项交换$w$和$\phi$后不变——它是对称的。第二项分部积分后符号翻转。对于在边界上为零的试函数，$\int w\,u\,\phi'\,dx = -\int \phi\,u\,w'\,dx$，所以对流项是纯粹的反对称成分。
+
+用线性单元组装后，这个结构原样留在系数里。单元尺寸为$h$时，内部节点那一行是这样。
+
+$$
+K_{i,i-1} = -\frac{\epsilon}{h} - \frac{u}{2}, \qquad K_{i,i} = \frac{2\epsilon}{h}, \qquad K_{i,i+1} = -\frac{\epsilon}{h} + \frac{u}{2}
+$$
+
+扩散往两侧邻居放同样的值，对流则一侧放$+u/2$，另一侧放$-u/2$。所以偏离对称的量恰好是一个数。
+
+$$
+K_{i,i+1} - K_{i+1,i} = u
+$$
+
+网格加密到什么程度，这个值都是$u$，因为$h$根本没进来。只要有流动，最小总势能原理就不会回来。这和[在曲线坐标系里变换本构张量的那篇](/zh/posts/2026-08-17-curvilinear-constitutive-tensor-transform/)不同——那里正是靠对称性才能把刚度折成6×6的Voigt矩阵。
+
+## 用Python在同一套网格上立起三种方法
+
+10个单元，$u = 1$，边界条件$\phi(0)=0$与$\phi(1)=1$。用一个人工扩散系数$\beta$生成三种格式：$\epsilon_{\text{eff}} = \epsilon + \beta\,u\,h/2$，$\beta = 0$是纯伽辽金，$\beta = 1$是完全迎风，$\beta = \coth(Pe_h) - 1/Pe_h$是SUPG。
+
+```python
+import numpy as np
+
+def assemble_ad(n, vel, eps, beta):
+    """线性单元上的一维对流扩散。beta 为人工扩散系数。"""
+    h = 1.0 / n
+    eps_eff = eps + beta * vel * h / 2.0
+    kd = (eps_eff / h) * np.array([[1.0, -1.0], [-1.0, 1.0]])   # 扩散：对称
+    ka = (vel / 2.0) * np.array([[-1.0, 1.0], [-1.0, 1.0]])     # 对流：反对称
+    K = np.zeros((n + 1, n + 1))
+    for e in range(n):
+        K[e:e + 2, e:e + 2] += kd + ka
+    return K
+
+def solve_bvp(K):
+    n = K.shape[0] - 1
+    A, b = K.copy(), np.zeros(n + 1)
+    A[0, :], A[0, 0], b[0] = 0.0, 1.0, 0.0
+    A[n, :], A[n, n], b[n] = 0.0, 1.0, 1.0
+    return np.linalg.solve(A, b)
+
+def exact_ad(x, pe):
+    return (np.exp(pe * (x - 1.0)) - np.exp(-pe)) / (1.0 - np.exp(-pe))
+
+def skew_ratio(K):
+    return np.linalg.norm(K - K.T) / np.linalg.norm(K + K.T)
+
+def loop_work(K, m=20000):
+    """残差场 -K.phi 沿自由度空间单位圆绕一圈所做的功。"""
+    t = np.linspace(0.0, 2.0 * np.pi, m, endpoint=False)
+    path = np.stack([np.cos(t), np.sin(t)])          # 位置
+    tang = np.stack([-np.sin(t), np.cos(t)])         # dl / dt
+    return float(np.sum(np.sum(-(K @ path) * tang, axis=0)) * (2.0 * np.pi / m))
+
+n, vel = 10, 1.0
+x = np.linspace(0.0, 1.0, n + 1)
+print(f"{'Pe_h':>5} {'scheme':>9} {'max|err|%':>10} {'min phi':>9} {'skew/sym':>9} {'loop W':>8}")
+for pe_h in [0.5, 1.0, 2.0, 5.0]:
+    eps = vel / (2.0 * n * pe_h)
+    ex = exact_ad(x, vel / eps)
+    for name, beta in [("Galerkin", 0.0), ("upwind", 1.0),
+                       ("SUPG", 1.0 / np.tanh(pe_h) - 1.0 / pe_h)]:
+        K = assemble_ad(n, vel, eps, beta)
+        phi = solve_bvp(K)
+        print(f"{pe_h:5.1f} {name:>9} {100 * np.max(np.abs(phi - ex)):10.2f} "
+              f"{phi.min():9.4f} {skew_ratio(K):9.4f} {loop_work(K[4:6, 4:6]):8.4f}")
+
+K0 = assemble_ad(n, 0.0, 0.1, 0.0)
+print(f"\nvel = 0 : skew/sym = {skew_ratio(K0):.2e},  loop W = {loop_work(K0[4:6, 4:6]):.2e}")
+print(f"pi * u  = {np.pi * vel:.4f}")
+```
+
+```text
+ Pe_h    scheme  max|err|%   min phi  skew/sym   loop W
+  0.5  Galerkin       3.45    0.0000    0.2924   3.1416
+  0.5    upwind      13.17    0.0000    0.1954   3.1416
+  0.5      SUPG       0.00   -0.0000    0.2704   3.1416
+  1.0  Galerkin      13.53    0.0000    0.5774   3.1416
+  1.0    upwind      19.80    0.0000    0.2924   3.1416
+  1.0      SUPG       0.00   -0.0000    0.4428   3.1416
+  2.0  Galerkin      35.17   -0.3334    1.1010   3.1416
+  2.0    upwind      18.17   -0.0000    0.3885   3.1416
+  2.0      SUPG       0.00    0.0000    0.5572   3.1416
+  5.0  Galerkin      69.61   -0.6961    2.1517   3.1416
+  5.0    upwind       9.09    0.0000    0.4836   3.1416
+  5.0      SUPG       0.00    0.0000    0.5773   3.1416
+
+vel = 0 : skew/sym = 0.00e+00,  loop W = -4.29e-16
+pi * u  = 3.1416
+```
+
+边界值被钉在0和1，$Pe_h = 2$的伽辽金解却掉到$-0.3334$。$Pe_h = 5$时是$-0.6961$。这是物理上不可能出现的值。
+
+## 在$Pe_h = 1$处，一个系数改变了符号
+
+把网格佩克莱数定义为$Pe_h = u h / (2\epsilon)$，上面那一行右侧的系数就能重写成：
+
+$$
+K_{i,i+1} = \frac{\epsilon}{h}\left(Pe_h - 1\right)
+$$
+
+一旦$Pe_h > 1$，非对角元素变为正值。就在这一刻，矩阵不再是M矩阵，离散极值原理——内部解不会跑出边界值所构成区间的保证——也一同消失。表中`min phi`到$Pe_h = 1.0$为止都是零、到2.0变负，原因就在这里。
+
+下面的模拟用时间推进求解同一个系统。看着定常解成形的过程，就能看出振荡是从哪里长出来的。
+
+<CellPecletOscillationLab />
+
+把`beta`留在零，把`Pe_h`推过1。右侧的`a_E`条越到左边并变红，接下来的时间步里节点值沉到0以下。按下`SUPG`，误差降到0 %。可是右下角那行粉色字——矩阵的反对称成分——三个按钮谁都动不了它。
+
+## 稳定化并不能找回对称性
+
+这里要澄清一个常见的误读。说迎风格式或SUPG"恢复了稳定性"，并不意味着对称性和最小化原理回来了。看表里的`loop W`列：三种格式、四个$Pe_h$值，一共12行全是3.1416。这个数就是$\pi u$，里面既没有$\epsilon$也没有$\beta$。
+
+原因很简单。$\beta$放大的只是$\epsilon_{\text{eff}}$，而它属于矩阵的对称部分。反对称部分$u$没被碰过。`skew/sym`比值在$Pe_h = 5$时从2.1517降到0.4836，也不是反对称变小了，而是分母上的对称部分变大了。
+
+所以稳定化真正买到的是更弱的保证。放弃最小化原理（能量范数下的最佳逼近），换来M矩阵性质和离散极值原理。代价用精度支付。$Pe_h = 2$时迎风格式消掉了振荡，但误差是18.17 %。而SUPG只加恰好需要的那点$\beta$，在节点上是精确的。
+
+$$
+\beta_{\text{opt}} = \coth(Pe_h) - \frac{1}{Pe_h}
+$$
+
+这个值在$Pe_h \to 0$时趋于0，在$Pe_h \to \infty$时趋于1：扩散占主导就关掉稳定化，对流占主导就走向完全迎风。不过节点精确性是一维常系数问题的特权。二维需要只沿流线方向加人工扩散的原始SUPG形式，那时"精确"也就没有了。
+
+## 有限体积法在同一处使用的另一个名字
+
+上面的计算用的是有限元的语言，但结论与离散方法无关。有限体积法里中心差分的对流项造出完全相同的模板，并在完全相同的$Pe_h = 1$处改变系数符号。为此登场的是一阶迎风，它带来的数值扩散正等于$\beta = 1$时的$u h / 2$。
+
+两个世界分道扬镳的地方是守恒性。有限体积的迎风是改动面通量，总量守恒得以保持。[守恒型与原始型在激波速度上分道扬镳的那篇](/zh/posts/2026-08-18-conservative-vs-primitive-shock-speed/)在这里重演了一次。有限元的人工扩散是往刚度矩阵里加项，因此必须另行确认它到底守恒了什么。
+
+在加权残差这一族里换个选项，付的是另一种代价。最小二乘法最小化残差范数，因此总能造出对称正定矩阵——最小化原理回来了。代价是条件数被平方，而且在线性单元上，单元内部的二阶导数为零，扩散项会整个消失。正如[讨论间断伽辽金积分点下限的那篇](/zh/posts/2026-08-19-dg-taylor-basis-quadrature-order/)，这也是基函数与积分规则悄悄改变格式性质的地方。
+
+## 接手一个非对称矩阵时
+
+讲义里"用哪种方法都一样"这句话，有效范围是自伴算子。扩散、弹性、势流都在这个范围内。对流一出现，就走到了范围之外。
+
+实际工作中按顺序确认三件事就够了。第一，组装出来的矩阵对称吗。对称就能用CG族，还附带能量范数下最佳逼近的保证。不对称就得用GMRES族，那个保证没有了。第二，单元佩克莱数超过1了吗。超过了，振荡就不是bug，而是格式被定义的行为。第三，如果开了稳定化，它买到的是精度还是有界性。多半是有界性，精度是被支付的一方。
+
+当解跑出边界值区间时，加密网格不是权宜之计而是正面解法，因为$h$变小时$Pe_h$也跟着变小。只是在三维里把$Pe_h$从5降到1，单元数会变成125倍。先把这笔账算完，再去挑稳定化项更好。

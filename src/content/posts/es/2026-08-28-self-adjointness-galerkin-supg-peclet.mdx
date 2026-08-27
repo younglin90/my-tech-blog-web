@@ -1,0 +1,190 @@
+---
+title: "Subir el número de Péclet de celda a 2 llevó la solución hasta -0.33 — donde desapareció la energía a minimizar"
+date: 2026-08-28
+description: "La advección rompe la simetría de la matriz de rigidez y con ella se va el principio de mínima energía potencial. Esta es la causa real de las oscilaciones de Galerkin y lo que compra la estabilización a cambio."
+tags: ["SUPG", "Weighted-Residual", "FEM", "Convection-Diffusion", "Numerical-Analysis"]
+locale: es
+slug: 2026-08-28-self-adjointness-galerkin-supg-peclet
+takeaway: "La estabilización no devuelve la simetría. Infla la parte simétrica y compra a cambio el principio del máximo discreto."
+draft: false
+---
+
+import { SkewGradientEnergyBasin } from '@/components/post-viz/2026-08-28-self-adjointness-galerkin-supg-peclet/SkewGradientEnergyBasin'
+import { CellPecletOscillationLab } from '@/components/post-viz/2026-08-28-self-adjointness-galerkin-supg-peclet/CellPecletOscillationLab'
+
+## Cuatro métodos dieron la misma respuesta en una sola barra
+
+El capítulo 1 de unos apuntes de elementos finitos resuelve el mismo problema de barra cuatro veces: rigidez directa, mínima energía potencial total, residuos ponderados y Galerkin. Las cuatro producen la misma matriz de rigidez de 5×5. Los apuntes lo dicen sin rodeos: se use el método que se use, el resultado apenas cambia y el valor es preciso.
+
+Esa frase lleva una condición adosada, y la condición se esconde dentro del problema de barra, donde nadie tropieza con ella. Las ecuaciones del flujo no la cumplen. Este artículo mide cuál es esa condición y qué garantía se pierde exactamente cuando se rompe. Después comprueba con números qué devuelven los esquemas de estabilización — y qué no devuelven nunca.
+
+## Para poder minimizar, la matriz tiene que ser simétrica
+
+La formulación de mínima energía potencial deriva la energía potencial total respecto de las incógnitas nodales y la iguala a cero. En forma discreta queda así.
+
+$$
+\Pi(\boldsymbol{\phi}) = \frac{1}{2}\,\boldsymbol{\phi}^{T}\mathbf{K}\,\boldsymbol{\phi} - \mathbf{f}^{T}\boldsymbol{\phi}
+$$
+
+$\boldsymbol{\phi}$ es el vector de incógnitas nodales, $\mathbf{K}$ la matriz de rigidez y $\mathbf{f}$ el vector de cargas. Ahora se deriva respecto de la componente $i$.
+
+$$
+\frac{\partial \Pi}{\partial \phi_i} = \frac{1}{2}\sum_{j}\left(K_{ij} + K_{ji}\right)\phi_j - f_i
+$$
+
+Conviene fijarse en lo que apareció: $K_{ij} + K_{ji}$. Para que esta expresión se reduzca a $\mathbf{K}\boldsymbol{\phi} = \mathbf{f}$ hace falta que $K_{ij} = K_{ji}$. Sin simetría, lo que la minimización resuelve en realidad es la matriz simetrizada $\tfrac{1}{2}(\mathbf{K}+\mathbf{K}^{T})$, que ya no es la ecuación original.
+
+Hay una versión más profunda del mismo enunciado. Para que el campo de residuos $\mathbf{r}(\boldsymbol{\phi}) = \mathbf{f} - \mathbf{K}\boldsymbol{\phi}$ sea el gradiente de alguna función escalar, su jacobiano debe ser simétrico. Si no lo es, la función potencial sencillamente no existe. La forma más rápida de comprobarlo es recorrer un camino cerrado: un campo gradiente siempre devuelve trabajo cero tras una vuelta completa.
+
+Conviene probarlo abajo con una matriz de juguete de dos grados de libertad.
+
+<SkewGradientEnergyBasin />
+
+Con `advection a` en cero, el punto rosa completa la vuelta y trae 0.000. Las elipses grises son curvas de nivel de energía, y la bola ámbar se desliza hacia dentro sin cruzarlas. Al subir `a`, el trabajo de la vuelta pasa a valer exactamente $2\pi a$ y la bola empieza a girar en espiral remontando esas curvas. En ese estado conviene empujar `diffusion s` hasta el tope: el total de la vuelta no se mueve ni un poco.
+
+## La advección rompe exactamente una cantidad $u$
+
+Al escribir la forma débil de la ecuación de advección-difusión unidimensional $u\,\phi' = \epsilon\,\phi''$, los dos términos muestran caracteres distintos.
+
+$$
+a(w, \phi) = \int_0^L \left( \epsilon\,\frac{dw}{dx}\frac{d\phi}{dx} + w\,u\,\frac{d\phi}{dx} \right) dx
+$$
+
+$w$ es la función de prueba, $\epsilon$ la difusividad y $u$ la velocidad de advección. El primer término no cambia al intercambiar $w$ y $\phi$: es simétrico. El segundo invierte el signo al integrar por partes. Para funciones de prueba que se anulan en los bordes, $\int w\,u\,\phi'\,dx = -\int \phi\,u\,w'\,dx$, de modo que la advección es una contribución puramente antisimétrica.
+
+Al ensamblar con elementos lineales, esa estructura sobrevive en los coeficientes. Con tamaño de elemento $h$, una fila interior queda así.
+
+$$
+K_{i,i-1} = -\frac{\epsilon}{h} - \frac{u}{2}, \qquad K_{i,i} = \frac{2\epsilon}{h}, \qquad K_{i,i+1} = -\frac{\epsilon}{h} + \frac{u}{2}
+$$
+
+La difusión deposita el mismo valor en ambos vecinos; la advección añade $+u/2$ de un lado y $-u/2$ del otro. Por eso la desviación de la simetría es exactamente un número.
+
+$$
+K_{i,i+1} - K_{i+1,i} = u
+$$
+
+Por mucho que se refine la malla, este valor sigue siendo $u$, porque $h$ nunca entró en él. Mientras haya flujo, el principio de mínima energía potencial no va a volver. Es una situación distinta de la de [transformar el tensor constitutivo en coordenadas curvilíneas](/es/posts/2026-08-17-curvilinear-constitutive-tensor-transform/), donde fue precisamente la simetría la que permitió plegar la rigidez en una matriz de Voigt de 6×6.
+
+## Tres esquemas sobre la misma malla en Python
+
+Diez elementos, $u = 1$, condiciones de contorno $\phi(0)=0$ y $\phi(1)=1$. Un único coeficiente de difusión artificial $\beta$ genera los tres esquemas mediante $\epsilon_{\text{eff}} = \epsilon + \beta\,u\,h/2$: con $\beta = 0$ se tiene Galerkin puro, con $\beta = 1$ upwind completo y con $\beta = \coth(Pe_h) - 1/Pe_h$, SUPG.
+
+```python
+import numpy as np
+
+def assemble_ad(n, vel, eps, beta):
+    """Adveccion-difusion 1D en elementos lineales. beta = difusion artificial."""
+    h = 1.0 / n
+    eps_eff = eps + beta * vel * h / 2.0
+    kd = (eps_eff / h) * np.array([[1.0, -1.0], [-1.0, 1.0]])   # difusion: simetrica
+    ka = (vel / 2.0) * np.array([[-1.0, 1.0], [-1.0, 1.0]])     # adveccion: antisimetrica
+    K = np.zeros((n + 1, n + 1))
+    for e in range(n):
+        K[e:e + 2, e:e + 2] += kd + ka
+    return K
+
+def solve_bvp(K):
+    n = K.shape[0] - 1
+    A, b = K.copy(), np.zeros(n + 1)
+    A[0, :], A[0, 0], b[0] = 0.0, 1.0, 0.0
+    A[n, :], A[n, n], b[n] = 0.0, 1.0, 1.0
+    return np.linalg.solve(A, b)
+
+def exact_ad(x, pe):
+    return (np.exp(pe * (x - 1.0)) - np.exp(-pe)) / (1.0 - np.exp(-pe))
+
+def skew_ratio(K):
+    return np.linalg.norm(K - K.T) / np.linalg.norm(K + K.T)
+
+def loop_work(K, m=20000):
+    """Trabajo del campo residual -K.phi al recorrer el circulo unidad en el espacio de GDL."""
+    t = np.linspace(0.0, 2.0 * np.pi, m, endpoint=False)
+    path = np.stack([np.cos(t), np.sin(t)])          # posicion
+    tang = np.stack([-np.sin(t), np.cos(t)])         # dl / dt
+    return float(np.sum(np.sum(-(K @ path) * tang, axis=0)) * (2.0 * np.pi / m))
+
+n, vel = 10, 1.0
+x = np.linspace(0.0, 1.0, n + 1)
+print(f"{'Pe_h':>5} {'scheme':>9} {'max|err|%':>10} {'min phi':>9} {'skew/sym':>9} {'loop W':>8}")
+for pe_h in [0.5, 1.0, 2.0, 5.0]:
+    eps = vel / (2.0 * n * pe_h)
+    ex = exact_ad(x, vel / eps)
+    for name, beta in [("Galerkin", 0.0), ("upwind", 1.0),
+                       ("SUPG", 1.0 / np.tanh(pe_h) - 1.0 / pe_h)]:
+        K = assemble_ad(n, vel, eps, beta)
+        phi = solve_bvp(K)
+        print(f"{pe_h:5.1f} {name:>9} {100 * np.max(np.abs(phi - ex)):10.2f} "
+              f"{phi.min():9.4f} {skew_ratio(K):9.4f} {loop_work(K[4:6, 4:6]):8.4f}")
+
+K0 = assemble_ad(n, 0.0, 0.1, 0.0)
+print(f"\nvel = 0 : skew/sym = {skew_ratio(K0):.2e},  loop W = {loop_work(K0[4:6, 4:6]):.2e}")
+print(f"pi * u  = {np.pi * vel:.4f}")
+```
+
+```text
+ Pe_h    scheme  max|err|%   min phi  skew/sym   loop W
+  0.5  Galerkin       3.45    0.0000    0.2924   3.1416
+  0.5    upwind      13.17    0.0000    0.1954   3.1416
+  0.5      SUPG       0.00   -0.0000    0.2704   3.1416
+  1.0  Galerkin      13.53    0.0000    0.5774   3.1416
+  1.0    upwind      19.80    0.0000    0.2924   3.1416
+  1.0      SUPG       0.00   -0.0000    0.4428   3.1416
+  2.0  Galerkin      35.17   -0.3334    1.1010   3.1416
+  2.0    upwind      18.17   -0.0000    0.3885   3.1416
+  2.0      SUPG       0.00    0.0000    0.5572   3.1416
+  5.0  Galerkin      69.61   -0.6961    2.1517   3.1416
+  5.0    upwind       9.09    0.0000    0.4836   3.1416
+  5.0      SUPG       0.00    0.0000    0.5773   3.1416
+
+vel = 0 : skew/sym = 0.00e+00,  loop W = -4.29e-16
+pi * u  = 3.1416
+```
+
+Los valores de contorno están fijados en 0 y 1, y aun así la solución de Galerkin con $Pe_h = 2$ baja hasta $-0.3334$. Con $Pe_h = 5$ llega a $-0.6961$. Ninguno de los dos valores puede existir físicamente.
+
+## En $Pe_h = 1$ un coeficiente cambia de signo
+
+Definiendo el número de Péclet de celda como $Pe_h = u h / (2\epsilon)$, el coeficiente derecho de esa fila se reescribe así.
+
+$$
+K_{i,i+1} = \frac{\epsilon}{h}\left(Pe_h - 1\right)
+$$
+
+En cuanto $Pe_h > 1$, el término fuera de la diagonal se vuelve positivo. En ese instante la matriz deja de ser una M-matriz, y con ella se va el principio del máximo discreto: la garantía de que los valores interiores permanecen dentro del rango fijado por los contornos. Por eso `min phi` en la tabla se mantiene en cero hasta $Pe_h = 1.0$ y se vuelve negativo en 2.0.
+
+La simulación de abajo avanza el mismo sistema en el tiempo, así que se puede observar dónde crece la oscilación mientras el estado estacionario se va formando.
+
+<CellPecletOscillationLab />
+
+Conviene dejar `beta` en cero y empujar `Pe_h` más allá de 1. La barra `a_E` de la derecha cruza al otro lado y se pone roja, y en los siguientes pasos de tiempo los valores nodales se hunden por debajo de cero. Al pulsar `SUPG`, el error cae a 0 %. Pero la línea rosa de abajo a la derecha — la parte antisimétrica de la matriz — no se mueve con ninguno de los tres botones.
+
+## La estabilización no devuelve la simetría
+
+Vale la pena aclarar aquí una lectura equivocada muy común. Cuando se dice que el upwind o SUPG "recuperan la estabilidad", eso no significa que vuelvan la simetría y el principio de minimización. Basta mirar la columna `loop W`: tres esquemas y cuatro valores de $Pe_h$, y las doce filas marcan 3.1416. Ese número es $\pi u$, sin rastro de $\epsilon$ ni de $\beta$.
+
+La razón es sencilla. Lo único que $\beta$ agranda es $\epsilon_{\text{eff}}$, que vive en la parte simétrica de la matriz. La parte antisimétrica, $u$, queda intacta. Que la razón `skew/sym` baje de 2.1517 a 0.4836 con $Pe_h = 5$ no es que la parte antisimétrica encoja: es el denominador simétrico el que crece.
+
+Así que lo que la estabilización compra de verdad es una garantía más débil. Se renuncia al principio de minimización — la mejor aproximación en norma de energía — y a cambio se obtiene la propiedad de M-matriz y el principio del máximo discreto. El pago se hace en precisión. Con $Pe_h = 2$ el upwind eliminó la oscilación, pero arrastra un error del 18.17 %. SUPG, en cambio, añade solo el $\beta$ justo y resulta exacto en los nodos.
+
+$$
+\beta_{\text{opt}} = \coth(Pe_h) - \frac{1}{Pe_h}
+$$
+
+Este valor tiende a 0 cuando $Pe_h \to 0$ y a 1 cuando $Pe_h \to \infty$: si domina la difusión, se apaga la estabilización; si domina la advección, se va al upwind completo. Ahora bien, la exactitud nodal es un privilegio del problema unidimensional con coeficientes constantes. En dos dimensiones hace falta la forma original de SUPG, que añade difusión artificial solo en la dirección de la línea de corriente, y ni siquiera entonces queda nada de "exacto".
+
+## El nombre que el método de volúmenes finitos usa en el mismo sitio
+
+El cálculo anterior habló en lenguaje de elementos finitos, pero la conclusión no depende de la discretización. En volúmenes finitos, un término convectivo con diferencias centradas produce exactamente el mismo esténcil y cambia de signo exactamente en el mismo $Pe_h = 1$. Ahí es donde entra el upwind de primer orden, y la difusión numérica que introduce vale lo mismo que el $u h / 2$ correspondiente a $\beta = 1$.
+
+Los dos mundos se separan en la conservación. El upwind de volúmenes finitos modifica el flujo en la cara, así que el balance global se mantiene intacto. La historia de [cómo la forma conservativa y la primitiva se separan en la velocidad del choque](/es/posts/2026-08-18-conservative-vs-primitive-shock-speed/) se repite aquí. La difusión artificial de elementos finitos añade un término a la matriz de rigidez, de modo que hay que verificar aparte qué sigue conservando.
+
+Elegir otro miembro de la familia de residuos ponderados cuesta algo distinto. El método de mínimos cuadrados minimiza la norma del residuo, así que siempre produce una matriz simétrica definida positiva: el principio de minimización regresa. A cambio, el número de condición se eleva al cuadrado, y en elementos lineales la segunda derivada se anula dentro de cada elemento, con lo que el término difusivo desaparece por completo. Como en [el artículo sobre el mínimo de puntos de cuadratura en Galerkin discontinuo](/es/posts/2026-08-19-dg-taylor-basis-quadrature-order/), este es un lugar donde la base y la regla de integración cambian en silencio el carácter de la formulación.
+
+## Cuando llega una matriz no simétrica heredada
+
+La frase de los apuntes sobre que todos los métodos coinciden vale sobre operadores autoadjuntos. La difusión, la elasticidad y el flujo potencial viven dentro de esa región. En cuanto aparece la advección, se sale de ella.
+
+En la práctica basta con revisar tres cosas en orden. Primera: ¿es simétrica la matriz ensamblada? Si lo es, se pueden usar los solvers de la familia CG y viene incluida la mejor aproximación en norma de energía. Si no lo es, toca GMRES y esa garantía desaparece. Segunda: ¿supera el número de Péclet de celda el valor 1? Si lo supera, la oscilación no es un error de programación sino el comportamiento definido del esquema. Tercera: si la estabilización está activada, ¿compró precisión o acotación? Casi siempre acotación, y la precisión es la moneda con la que se pagó.
+
+Cuando la solución se escapa del rango de los contornos, refinar la malla no es un parche sino la vía directa, porque al reducir $h$ se reduce $Pe_h$ con él. Eso sí, en tres dimensiones bajar $Pe_h$ de 5 a 1 multiplica el número de celdas por 125. Conviene hacer esa cuenta antes de elegir el término de estabilización.
