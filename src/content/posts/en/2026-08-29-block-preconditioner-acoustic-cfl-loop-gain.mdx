@@ -1,0 +1,317 @@
+---
+title: "At acoustic CFL 10 the preconditioner multiplied the error by 100 every sweep — the one arrow a block preconditioner throws away"
+date: 2026-08-29
+description: "Block Gauss-Seidel discards a pressure-velocity feedback whose gain is exactly the acoustic CFL squared. A 1D acoustic model measures the cost."
+tags: ["Schur-Complement", "Preconditioning", "Newton-Krylov", "Low-Mach", "Paper-Review"]
+locale: en
+slug: 2026-08-29-block-preconditioner-acoustic-cfl-loop-gain
+takeaway: "When a preconditioner collapses at low Mach, the reason is not slow iteration — it is that one discarded block carries a feedback gain above one."
+draft: false
+---
+
+import { BlockCouplingLoopGainScope } from '@/components/post-viz/2026-08-29-block-preconditioner-acoustic-cfl-loop-gain/BlockCouplingLoopGainScope'
+import { AcousticStrideMachTrack } from '@/components/post-viz/2026-08-29-block-preconditioner-acoustic-cfl-loop-gain/AcousticStrideMachTrack'
+
+## Raise the time step tenfold and the preconditioners die one by one
+
+Weston and coworkers published an all-speed melt-pool solver in JCP in 2019, and the paper contains one table worth staring at.
+It records a lid-driven cavity run in which nothing changes but the time step, raised by a factor of ten four times over.
+The acoustic CFL climbs from 10.3 to 10,300.
+
+Same mesh, same nonlinear iteration, same Krylov solver (FGMRES). Only the preconditioner differs.
+And the outcome is not "some factor slower" — it is "converges or does not."
+Algebraic multigrid (AMG) applied to the fully coupled system stopped converging entirely once the acoustic CFL passed 10.
+Primitive-variable block Gauss-Seidel survived to 100 and fell apart above it.
+Element-block SOR converged everywhere but burned hundreds of FGMRES iterations per time step.
+Only the Schur complement preconditioner and a direct LU held their iteration count flat as the time step grew.
+
+A preconditioner is usually a constant-factor question. Here it was a threshold question.
+Where that threshold comes from, and why it lands on the acoustic CFL specifically, is what this post is about.
+The construction of the preconditioner itself is written up in [an earlier post on the same paper](/en/posts/2026-06-06-weston-block-preconditioner-jfnk/);
+here we look at **the single block that gets thrown away**.
+
+## There are two arrows between pressure and velocity
+
+The paper assembles the Jacobian in primitive variables $W = (P, \mathbf{v}, T)$ rather than conservative ones.
+Same physics, but the conditioning of the matrix depends on which unknowns you choose.
+The Jacobian then becomes a 3×3 block matrix grouped by unknown type.
+
+$$
+M=\begin{bmatrix} M_{PP} & M_{Pv} & M_{PT}\\ M_{vP} & M_{vv} & M_{vT}\\ M_{TP} & M_{Tv} & M_{TT}\end{bmatrix}
+$$
+
+Here $M_{Pv}$ is what velocity contributes to the pressure equation and $M_{vP}$ is what pressure contributes to momentum.
+The paper drops $M_{PT}$ and $M_{TP}$ on the grounds that pressure-temperature coupling is weak.
+What remains as the skeleton is the 2×2 pressure-velocity block.
+
+For the low-Mach compressible equations discretized in time with backward Euler, and after scaling the diagonal to identity, those two blocks look like this.
+
+$$
+A \equiv M_{Pv} \sim \rho c^{2} \Delta t\, \partial_x, \qquad B \equiv M_{vP} \sim \frac{\Delta t}{\rho}\, \partial_x
+$$
+
+$\rho$ is density, $c$ is the sound speed, $\Delta t$ is the time step.
+$A$ is the term by which velocity divergence pushes pressure up; $B$ is the term by which a pressure gradient pushes velocity.
+Together they form a two-arrow feedback loop. Go once around that loop and you get
+
+$$
+AB \sim c^{2}\Delta t^{2}\, \partial_{xx}
+$$
+
+which is the acoustic operator. Discretize with grid spacing $\Delta x$ and its magnitude is $(c\Delta t/\Delta x)^2$ — the acoustic CFL squared.
+That single number governs everything below.
+
+Try it directly in the simulation below.
+
+<BlockCouplingLoopGainScope />
+
+Drag the `CFL_a` slider while cycling through the three preconditioners.
+The red broken arrow under block Gauss-Seidel is the subject of this post,
+and the price of breaking it shows up as the sign of the slope in the residual curve on the right.
+
+## Keep only the lower triangle and the return arrow disappears
+
+Block Gauss-Seidel uses only the lower-triangular part of the matrix above. Solved in order, it reads
+
+$$
+x_P = M_{PP}^{-1} b_P, \qquad x_v = M_{vv}^{-1}(b_v - M_{vP} x_P)
+$$
+
+Pressure is solved first, and at that moment it never sees velocity at all. That means $A = M_{Pv}$ is gone wholesale.
+One arrow of the feedback loop has been cut.
+
+The cost of the cut can be computed exactly. Split $M = L + U$ and $U$ holds nothing but $A$.
+The iteration operator acting on the error $e$ is
+
+$$
+G = -L^{-1}U = \begin{bmatrix} 0 & -A \\ 0 & BA \end{bmatrix}
+$$
+
+Its eigenvalues are zero together with the eigenvalues of $BA$.
+The periodic central-difference operator $D$ has eigenvalues $i\sin\theta/\Delta x$, so the eigenvalues of $BA$ are $-\mathrm{CFL}_a^2 \sin^2\theta$, and
+
+$$
+\rho(G) = \max_{\theta}\ \mathrm{CFL}_a^{2}\sin^{2}\theta = \mathrm{CFL}_a^{2}
+$$
+
+$\rho$ is the spectral radius — the largest factor by which the error is multiplied per sweep.
+The threshold sits exactly at $\mathrm{CFL}_a = 1$. Above it the preconditioner does not shrink the error, it grows it.
+
+Element-block SOR fares somewhat better. Central differencing has a zero diagonal entry, so the diagonal blocks reduce to the identity,
+and with a relaxation factor $\omega$ the gain becomes $\sqrt{(1-\omega)^2 + \omega^2\,\mathrm{CFL}_a^2}$.
+At $\omega = 0.4$ the threshold is pushed out to $\mathrm{CFL}_a = 2$.
+Because the CFL enters linearly rather than squared, it survives much longer.
+That is the source of the ordering in the paper, where SOR was more robust than Gauss-Seidel.
+
+## Measuring the gain of all three preconditioners in Python
+
+I set up a 1D linear acoustic system with periodic boundaries in backward Euler and applied each preconditioner's error operator repeatedly, as written.
+No external libraries.
+
+```python
+import math
+
+N, L, RHO = 32, 1.0, 1.0
+dx = L / N
+
+
+def deriv(v):
+    """First derivative, central difference, periodic boundaries"""
+    return [(v[(i + 1) % N] - v[(i - 1) % N]) / (2 * dx) for i in range(N)]
+
+
+def build_ops(c, dt):
+    """M = [[I, A], [B, I]] — A is the velocity→pressure block, B the pressure→velocity block"""
+    A = lambda u: [RHO * c * c * dt * w for w in deriv(u)]
+    B = lambda p: [dt / RHO * w for w in deriv(p)]
+    return A, B
+
+
+def gain(step, warm=200, n=400):
+    """Apply the error operator repeatedly and take the geometric mean amplification per sweep"""
+    e = [math.sin(1.7 * i * i + 0.9 * i + 1.0) for i in range(2 * N)]
+    acc = 0.0
+    for k in range(warm + n):
+        f = step(e)
+        r = math.sqrt(sum(x * x for x in f)) / math.sqrt(sum(x * x for x in e))
+        if r == 0.0:
+            return 0.0
+        if k >= warm:
+            acc += math.log(r)
+        e = [x / r for x in f]
+    return math.exp(acc / n)
+
+
+def gs_step(A, B):
+    """Block Gauss-Seidel: lower triangle only, so the A block drops out wholesale"""
+    def step(e):
+        Aeu = A(e[N:])
+        return [-x for x in Aeu] + B(Aeu)
+    return step
+
+
+def sor_step(A, B, w):
+    """Point-block SOR: central differencing has a zero diagonal, so the diagonal blocks are I"""
+    def step(e):
+        ep, eu = e[:N], e[N:]
+        jp, ju = A(eu), B(ep)
+        return ([(1 - w) * ep[i] - w * jp[i] for i in range(N)]
+                + [(1 - w) * eu[i] - w * ju[i] for i in range(N)])
+    return step
+
+
+def schur_cg(A, B, rhs, tol=1e-10, cap=200):
+    """S = I - A B is symmetric positive definite — returns the conjugate gradient iteration count"""
+    S = lambda p: [p[i] - v for i, v in enumerate(A(B(p)))]
+    x, r = [0.0] * N, rhs[:]
+    d, rr = rhs[:], sum(v * v for v in rhs)
+    r0 = math.sqrt(rr)
+    for k in range(1, cap + 1):
+        Sd = S(d)
+        al = rr / sum(d[i] * Sd[i] for i in range(N))
+        x = [x[i] + al * d[i] for i in range(N)]
+        r = [r[i] - al * Sd[i] for i in range(N)]
+        rn = sum(v * v for v in r)
+        if math.sqrt(rn) < tol * r0:
+            return k
+        d = [r[i] + (rn / rr) * d[i] for i in range(N)]
+        rr = rn
+    return cap
+
+
+def sweeps_to(r, drop=1e-6):
+    """Sweeps needed to cut the error down to one millionth"""
+    return "diverge" if r >= 0.999 else str(int(math.ceil(math.log(drop) / math.log(r))))
+
+
+rhs = [1.0 if N // 3 <= i < 2 * N // 3 else 0.0 for i in range(N)]  # right-hand side mixing many modes
+
+print("CFL_a   rho(GS)    rho(SOR)   sweep(GS)  sweep(SOR) CG on S")
+for cfl in [0.1, 0.5, 1.0, 2.0, 10.0, 100.0]:
+    A, B = build_ops(1.0, cfl * dx)
+    rg, rs = gain(gs_step(A, B)), gain(sor_step(A, B, 0.4))
+    print("%-7g %-10.4g %-10.4g %-10s %-10s %d"
+          % (cfl, rg, rs, sweeps_to(rg), sweeps_to(rs), schur_cg(A, B, rhs)))
+
+print()
+print("Mach sweep  (material CFL fixed at 0.5)")
+print("Mach     CFL_a    rho(GS)    rho(SOR)   CG on S")
+for mach in [1e-2, 1e-3, 1e-4, 1e-5, 1e-6]:
+    dt = 0.5 * dx / 1.0          # the material speed |u| = 1 sets the time step
+    c = 1.0 / mach               # the Mach number sets the sound speed
+    A, B = build_ops(c, dt)
+    print("%-8.0e %-8.4g %-10.4g %-10.4g %d"
+          % (mach, c * dt / dx, gain(gs_step(A, B)), gain(sor_step(A, B, 0.4)),
+             schur_cg(A, B, rhs)))
+```
+
+```text
+CFL_a   rho(GS)    rho(SOR)   sweep(GS)  sweep(SOR) CG on S
+0.1     0.01       0.601      3          28         4
+0.5     0.25       0.6321     10         31         8
+1       1          0.721      diverge    43         9
+2       4          1          diverge    diverge    9
+10      100        4.045      diverge    diverge    9
+100     1e+04      40         diverge    diverge    9
+
+Mach sweep  (material CFL fixed at 0.5)
+Mach     CFL_a    rho(GS)    rho(SOR)   CG on S
+1e-02    50       2500       20.06      9
+1e-03    500      2.5e+05    200.3      9
+1e-04    5000     2.5e+07    2005       12
+1e-05    5e+04    2.5e+09    2.006e+04  17
+1e-06    5e+05    2.5e+11    2.006e+05  17
+```
+
+The measurements match the hand-derived formulas down to the digits.
+The Gauss-Seidel gains are 0.01, 0.25, 1, 4, 100, 10,000 — exactly $\mathrm{CFL}_a^2$.
+SOR gives 0.601, 0.632, 0.721, 1.0, 4.045, 40 — exactly $\sqrt{0.36 + 0.16\,\mathrm{CFL}_a^2}$.
+At acoustic CFL 10, Gauss-Seidel multiplies the error by 100 on every sweep.
+
+Because this is a toy model, the thresholds land cleanly on 1 and 2.
+A production code runs ten sweeps at a time and damps with $\omega = 0.4$, which pushes the failure point out toward CFL 100.
+The location moves; what moves it does not.
+
+## Lowering the Mach number is the same as raising the time step
+
+The paper's second experiment fixes the time step and raises the sound speed by factors of ten.
+In low-Mach analysis, sizing the time step by the material time scale is simply the sensible choice.
+
+$$
+\Delta t = \frac{\mathrm{CFL}_u\, \Delta x}{|u|}, \qquad c = \frac{|u|}{M} \ \Longrightarrow\ \mathrm{CFL}_a = \frac{\mathrm{CFL}_u}{M}
+$$
+
+$M$ is the Mach number. Keep the material CFL at a modest 0.5 and at $M = 10^{-6}$ the linear solver still receives an acoustic CFL of 500,000.
+The difficulty of low-Mach analysis lives in that number, not in the physics.
+The same reason drove the development of [approaches that split acoustics from convection](/en/posts/2026-07-11-acoustic-convective-splitting-lagrange-projection/) so acoustic waves need not be resolved explicitly.
+
+<AcousticStrideMachTrack />
+
+Step the `Mach` slider down one notch at a time and count how many laps the orange acoustic front makes around the domain in a single time step.
+The blue material particle keeps walking its 0.5 cells, while the three bars below cross the red line one after another from the left.
+
+The Mach sweep in the output above reproduces the same ordering as Fig. 4 of the paper.
+Block Gauss-Seidel failed to converge below $M = 10^{-3}$, element-block SOR below $10^{-4}$.
+Only the Schur complement and LU made it to $M = 10^{-6}$.
+
+## The Schur complement eliminates that arrow instead of approximating it
+
+The way to bring back the discarded $A$ is not to approximate it but to eliminate it.
+The Schur complement for pressure (the effective operator left after one block is eliminated) is
+
+$$
+S = M_{PP} - M_{Pv}M_{vv}^{-1}M_{vP} = I - AB
+$$
+
+Solve pressure with $S$, substitute into momentum, and the block LU factorization is exact.
+No iteration is needed. The error operator is zero, and in the code above it drops to roundoff in a single sweep at any CFL.
+
+That does not mean the bill goes unpaid. It only moves to a different line.
+
+$$
+S = I - c^{2}\Delta t^{2}\,\partial_{xx}
+$$
+
+This is a Helmholtz form, and since $-\partial_{xx}$ is positive definite, $S$ is symmetric positive definite.
+As the acoustic CFL grows, the $I$ is swamped and the operator approaches a pressure Poisson equation.
+The last column of the table above is the price. CG iterations rise from 4 to 9, and up to 17 in the low-Mach sweep.
+That rise is what the paper means when it notes that "the Schur preconditioner shows a mild increase in CPU time with time step."
+
+What matters is that the remaining problem is symmetric positive definite.
+AMG, which was helpless on the nonsymmetric coupled system, finds its home here.
+Recall [how GMRES builds up its subspace](/en/posts/2026-06-24-gmres-arnoldi-krylov-solver/):
+the structure plugs a well-matched inner solver underneath so the outer FGMRES finishes quickly.
+
+## What the paper actually paid — three approximation layers and a lagged Jacobian
+
+A production implementation has more layers than the derivation above.
+The paper splits preconditioning into three stages.
+First, which preconditioner rides on top of the approximate Jacobian (AMG, element-block SOR, block Gauss-Seidel, vP-vT Schur complement, LU).
+Second, how the Schur complement itself is approximated (three strategies).
+Third, which smoother solves each block (five options).
+Labels like "AMG (#1)" and "AMG-FGMRES (#3)" refer to these combinations.
+
+Assembling the Jacobian costs too. It is built by finite differences with perturbation sizes $\varepsilon_{rel} = 10^{-8}$ and $x_{min} = 10^{-7}$.
+PETSc's graph coloring was tried, but the number of residual evaluations grew excessively, and it got worse with high-order schemes and in 3D.
+The authors settled on perturbing locally element by element and assembling element Jacobians.
+That took far fewer residual evaluations and gave a more accurate approximation.
+
+They also do not rebuild the Jacobian at every Newton iteration.
+It is frozen, and reassembly switches on only when the outer FGMRES exceeds roughly 20 to 50 iterations within a single Newton step.
+The trade works because the approximate Jacobian is only for preconditioning, while the true Jacobian-vector products JFNK uses are always current.
+
+One caveat comes attached. The Schur complement preconditioner works at moderate to high Mach as well,
+but the paper states plainly that it pays for itself only in the low-Mach regime.
+
+## What "the preconditioner must know the physics" actually means
+
+The phrase "physics-based preconditioner" usually gets used vaguely.
+In this paper the meaning is narrow and clear.
+Know which block coupling grows with the time step or the Mach number, and refuse to approximate that one coupling.
+
+So when an implicit solver suddenly stops converging as you raise the time step,
+there is one question to ask before touching iteration counts or tolerances.
+Which block is the preconditioner discarding right now, and what is that block's gain proportional to?
+For acoustic coupling it is $\mathrm{CFL}_a^2$;
+[for stretched boundary-layer meshes it is the aspect ratio](/en/posts/2026-07-31-linelet-preconditioner-stretched-grid/) that takes that slot.
+The moment the answer exceeds one, that preconditioner is no longer slow — it is wrong.

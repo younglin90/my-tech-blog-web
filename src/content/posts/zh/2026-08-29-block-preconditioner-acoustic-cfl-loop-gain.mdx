@@ -1,0 +1,317 @@
+---
+title: "声速CFL为10时预处理器每次sweep把误差放大100倍 — 块预处理器丢掉的那一支箭头"
+date: 2026-08-29
+description: "块Gauss-Seidel只用下三角，丢掉的压力↔速度反馈增益恰好等于声速CFL的平方。本文用一维声学系统实测Schur补在那个位置做了什么。"
+tags: ["Schur-Complement", "Preconditioning", "Newton-Krylov", "Low-Mach", "Paper-Review"]
+locale: zh
+slug: 2026-08-29-block-preconditioner-acoustic-cfl-loop-gain
+takeaway: "低马赫下预处理器失效不是因为迭代太慢，而是因为被丢弃的那一块的反馈增益超过了1。"
+draft: false
+---
+
+import { BlockCouplingLoopGainScope } from '@/components/post-viz/2026-08-29-block-preconditioner-acoustic-cfl-loop-gain/BlockCouplingLoopGainScope'
+import { AcousticStrideMachTrack } from '@/components/post-viz/2026-08-29-block-preconditioner-acoustic-cfl-loop-gain/AcousticStrideMachTrack'
+
+## 时间步长每提高10倍，就死掉一个预处理器
+
+Weston等人2019年发表在JCP上的全速度(all-speed)熔池求解器论文里有一张表。
+记录的是顶盖驱动方腔(lid-driven cavity)问题中，只把时间步长连续提高四次、每次10倍的结果。
+于是声速CFL从10.3一路走到10,300。
+
+同样的网格、同样的非线性迭代、同样的Krylov求解器(FGMRES)。变的只有预处理器。
+但结果不是"慢了几倍"，而是"收敛还是不收敛"。
+作用在整个耦合系统上的代数多重网格(AMG)，在声速CFL超过10之后就完全不收敛了。
+原始变量块Gauss-Seidel撑到100，再往上就崩了。
+单元块SOR全部收敛，但一个时间步里要跑几百次FGMRES。
+迭代次数与时间步长无关、始终保持恒定的，只有Schur补预处理器和LU分解。
+
+预处理器通常是常数倍的问题。这里却是阈值的问题。
+这个阈值从哪里来、以及为什么偏偏是声速CFL，就是本文的内容。
+预处理器本身的构造已经写在[讨论同一篇论文的上一篇文章](/zh/posts/2026-06-06-weston-block-preconditioner-jfnk/)里，
+这里只看**被丢掉的那一块**。
+
+## 压力和速度之间有两支箭头
+
+论文不用守恒变量，而是用原始变量 $W = (P, \mathbf{v}, T)$ 组装雅可比矩阵。
+即使物理相同，未知量取什么，矩阵的条件数也会不同。
+于是雅可比矩阵成为按未知量种类分组的3×3块矩阵。
+
+$$
+M=\begin{bmatrix} M_{PP} & M_{Pv} & M_{PT}\\ M_{vP} & M_{vv} & M_{vT}\\ M_{TP} & M_{Tv} & M_{TT}\end{bmatrix}
+$$
+
+其中 $M_{Pv}$ 是速度对压力方程的贡献，$M_{vP}$ 是压力对动量方程的贡献。
+论文以压力-温度耦合较弱为由丢掉 $M_{PT}$ 和 $M_{TP}$。
+剩下的骨架就是压力-速度的2×2。
+
+在用后向Euler离散时间的低马赫可压缩方程中，把对角归一之后，这两块长成这样。
+
+$$
+A \equiv M_{Pv} \sim \rho c^{2} \Delta t\, \partial_x, \qquad B \equiv M_{vP} \sim \frac{\Delta t}{\rho}\, \partial_x
+$$
+
+$\rho$ 是密度，$c$ 是声速，$\Delta t$ 是时间步长。
+$A$ 是速度散度把压力顶起来的项，$B$ 是压力梯度推动速度的项。
+两者构成一个两支箭头的反馈回路。绕这个回路走一圈，得到
+
+$$
+AB \sim c^{2}\Delta t^{2}\, \partial_{xx}
+$$
+
+也就是声学算子。用网格间距 $\Delta x$ 离散后，量级是 $(c\Delta t/\Delta x)^2$，正是声速CFL的平方。
+这一个数字支配了下面所有的故事。
+
+在下面的模拟里亲自动手试试。
+
+<BlockCouplingLoopGainScope />
+
+拖动 `CFL_a` 滑块，再轮流点击三种预处理器就行。
+块Gauss-Seidel里那支被标红截断的箭头是本文的主角，
+截断它的代价，体现在右侧残差曲线斜率的正负号上。
+
+## 只用下三角，返回的那支箭头就消失了
+
+块Gauss-Seidel只用上面矩阵的下三角部分。按顺序求解是这样。
+
+$$
+x_P = M_{PP}^{-1} b_P, \qquad x_v = M_{vv}^{-1}(b_v - M_{vP} x_P)
+$$
+
+先解压力。此时完全不看速度。也就是说 $A = M_{Pv}$ 被整块拿掉了。
+反馈回路的一支箭头被剪断了。
+
+剪断的代价可以精确算出来。把 $M = L + U$ 拆开，$U$ 里只剩下 $A$。
+对误差 $e$ 的迭代算子是
+
+$$
+G = -L^{-1}U = \begin{bmatrix} 0 & -A \\ 0 & BA \end{bmatrix}
+$$
+
+这个矩阵的特征值只有0和 $BA$ 的特征值。
+周期边界中心差分 $D$ 的特征值为 $i\sin\theta/\Delta x$，因此 $BA$ 的特征值是 $-\mathrm{CFL}_a^2 \sin^2\theta$，于是
+
+$$
+\rho(G) = \max_{\theta}\ \mathrm{CFL}_a^{2}\sin^{2}\theta = \mathrm{CFL}_a^{2}
+$$
+
+$\rho$ 是谱半径，也就是每做一次sweep误差被乘上的最大倍率。
+阈值恰好落在 $\mathrm{CFL}_a = 1$。越过它，预处理器就不是在缩小误差，而是在放大误差。
+
+单元块SOR情况稍好。中心差分的对角元为0，所以对角块变成单位矩阵，
+引入松弛因子 $\omega$ 后增益变为 $\sqrt{(1-\omega)^2 + \omega^2\,\mathrm{CFL}_a^2}$。
+取 $\omega = 0.4$，阈值就被推到 $\mathrm{CFL}_a = 2$。
+因为对CFL是一次而不是平方，所以能撑得更久。
+论文中SOR比Gauss-Seidel更robust的次序，就是从这里来的。
+
+## 用Python实测三种预处理器的增益
+
+用后向Euler建立周期边界的一维线性声学系统，把三种预处理器的误差算子原样反复施加。
+没有使用外部库。
+
+```python
+import math
+
+N, L, RHO = 32, 1.0, 1.0
+dx = L / N
+
+
+def deriv(v):
+    """中心差分一阶导数，周期边界"""
+    return [(v[(i + 1) % N] - v[(i - 1) % N]) / (2 * dx) for i in range(N)]
+
+
+def build_ops(c, dt):
+    """M = [[I, A], [B, I]] — A是速度→压力块，B是压力→速度块"""
+    A = lambda u: [RHO * c * c * dt * w for w in deriv(u)]
+    B = lambda p: [dt / RHO * w for w in deriv(p)]
+    return A, B
+
+
+def gain(step, warm=200, n=400):
+    """反复施加误差算子，取每次sweep放大率的几何平均"""
+    e = [math.sin(1.7 * i * i + 0.9 * i + 1.0) for i in range(2 * N)]
+    acc = 0.0
+    for k in range(warm + n):
+        f = step(e)
+        r = math.sqrt(sum(x * x for x in f)) / math.sqrt(sum(x * x for x in e))
+        if r == 0.0:
+            return 0.0
+        if k >= warm:
+            acc += math.log(r)
+        e = [x / r for x in f]
+    return math.exp(acc / n)
+
+
+def gs_step(A, B):
+    """块Gauss-Seidel：只用下三角，所以A块被整个拿掉"""
+    def step(e):
+        Aeu = A(e[N:])
+        return [-x for x in Aeu] + B(Aeu)
+    return step
+
+
+def sor_step(A, B, w):
+    """点块SOR：中心差分对角为0，所以对角块是I"""
+    def step(e):
+        ep, eu = e[:N], e[N:]
+        jp, ju = A(eu), B(ep)
+        return ([(1 - w) * ep[i] - w * jp[i] for i in range(N)]
+                + [(1 - w) * eu[i] - w * ju[i] for i in range(N)])
+    return step
+
+
+def schur_cg(A, B, rhs, tol=1e-10, cap=200):
+    """S = I - A B 对称正定 — 返回共轭梯度法的迭代次数"""
+    S = lambda p: [p[i] - v for i, v in enumerate(A(B(p)))]
+    x, r = [0.0] * N, rhs[:]
+    d, rr = rhs[:], sum(v * v for v in rhs)
+    r0 = math.sqrt(rr)
+    for k in range(1, cap + 1):
+        Sd = S(d)
+        al = rr / sum(d[i] * Sd[i] for i in range(N))
+        x = [x[i] + al * d[i] for i in range(N)]
+        r = [r[i] - al * Sd[i] for i in range(N)]
+        rn = sum(v * v for v in r)
+        if math.sqrt(rn) < tol * r0:
+            return k
+        d = [r[i] + (rn / rr) * d[i] for i in range(N)]
+        rr = rn
+    return cap
+
+
+def sweeps_to(r, drop=1e-6):
+    """把误差降到百万分之一所需的sweep次数"""
+    return "diverge" if r >= 0.999 else str(int(math.ceil(math.log(drop) / math.log(r))))
+
+
+rhs = [1.0 if N // 3 <= i < 2 * N // 3 else 0.0 for i in range(N)]  # 混合了多种模态的右端项
+
+print("CFL_a   rho(GS)    rho(SOR)   sweep(GS)  sweep(SOR) CG on S")
+for cfl in [0.1, 0.5, 1.0, 2.0, 10.0, 100.0]:
+    A, B = build_ops(1.0, cfl * dx)
+    rg, rs = gain(gs_step(A, B)), gain(sor_step(A, B, 0.4))
+    print("%-7g %-10.4g %-10.4g %-10s %-10s %d"
+          % (cfl, rg, rs, sweeps_to(rg), sweeps_to(rs), schur_cg(A, B, rhs)))
+
+print()
+print("Mach sweep  (material CFL fixed at 0.5)")
+print("Mach     CFL_a    rho(GS)    rho(SOR)   CG on S")
+for mach in [1e-2, 1e-3, 1e-4, 1e-5, 1e-6]:
+    dt = 0.5 * dx / 1.0          # 物质速度 |u| = 1 决定时间步长
+    c = 1.0 / mach               # 声速由马赫数决定
+    A, B = build_ops(c, dt)
+    print("%-8.0e %-8.4g %-10.4g %-10.4g %d"
+          % (mach, c * dt / dx, gain(gs_step(A, B)), gain(sor_step(A, B, 0.4)),
+             schur_cg(A, B, rhs)))
+```
+
+```text
+CFL_a   rho(GS)    rho(SOR)   sweep(GS)  sweep(SOR) CG on S
+0.1     0.01       0.601      3          28         4
+0.5     0.25       0.6321     10         31         8
+1       1          0.721      diverge    43         9
+2       4          1          diverge    diverge    9
+10      100        4.045      diverge    diverge    9
+100     1e+04      40         diverge    diverge    9
+
+Mach sweep  (material CFL fixed at 0.5)
+Mach     CFL_a    rho(GS)    rho(SOR)   CG on S
+1e-02    50       2500       20.06      9
+1e-03    500      2.5e+05    200.3      9
+1e-04    5000     2.5e+07    2005       12
+1e-05    5e+04    2.5e+09    2.006e+04  17
+1e-06    5e+05    2.5e+11    2.006e+05  17
+```
+
+实测值与手推公式在数量级上完全吻合。
+Gauss-Seidel的增益是0.01、0.25、1、4、100、10,000 — 正好是 $\mathrm{CFL}_a^2$。
+SOR是0.601、0.632、0.721、1.0、4.045、40 — 就是 $\sqrt{0.36 + 0.16\,\mathrm{CFL}_a^2}$。
+在声速CFL为10时，Gauss-Seidel每做一次sweep就把误差放大100倍。
+
+因为是玩具模型，阈值才干净地落在1和2上。
+真实代码每次跑10轮sweep，并用 $\omega = 0.4$ 压住，所以失效点被推到CFL 100附近。
+被推到的位置不同，但把它顶上去的东西是同一个。
+
+## 降低马赫数等同于提高时间步长
+
+论文的第二个实验固定时间步长，只把声速每次提高10倍。
+在低马赫计算中，按物质时间尺度选时间步长是常识。
+
+$$
+\Delta t = \frac{\mathrm{CFL}_u\, \Delta x}{|u|}, \qquad c = \frac{|u|}{M} \ \Longrightarrow\ \mathrm{CFL}_a = \frac{\mathrm{CFL}_u}{M}
+$$
+
+$M$ 是马赫数。即使把物质CFL老老实实放在0.5，只要 $M = 10^{-6}$，线性求解器就要接下声速CFL 500,000。
+低马赫计算的难点不在物理，而在这个数字上。
+为了不显式求解声波，才出现了[把声学与对流分离的做法](/zh/posts/2026-07-11-acoustic-convective-splitting-lagrange-projection/)，原因也一样。
+
+<AcousticStrideMachTrack />
+
+把 `Mach` 滑块一格一格往下拉，数一数橙色声波前沿在一个时间步内绕计算域转了几圈。
+蓝色物质粒子始终只走0.5格，而下面三根柱子却从左到右依次越过红线。
+
+上面输出中的Mach扫描给出了与论文Fig. 4相同的次序。
+块Gauss-Seidel在 $M = 10^{-3}$ 以下、单元块SOR在 $10^{-4}$ 以下都无法收敛。
+能一路走到 $M = 10^{-6}$ 的只有Schur补和LU。
+
+## Schur补不是近似那支箭头，而是消去它
+
+让被丢掉的 $A$ 复活的办法不是近似它，而是消去它。
+对压力的Schur补(Schur complement，消去一块之后剩下的有效算子)是这样。
+
+$$
+S = M_{PP} - M_{Pv}M_{vv}^{-1}M_{vP} = I - AB
+$$
+
+用 $S$ 解压力，再把结果代入动量方程，块LU分解就是精确的。
+不需要迭代。误差算子为0，在上面的代码里，无论CFL取多少，一次sweep就掉到舍入误差量级。
+
+这并不是不付代价。只是付代价的位置变了。
+
+$$
+S = I - c^{2}\Delta t^{2}\,\partial_{xx}
+$$
+
+这是Helmholtz形式，而 $-\partial_{xx}$ 正定，所以 $S$ 对称正定。
+声速CFL越大，$I$ 越被淹没，就越接近压力Poisson方程。
+上表最后一列就是这个代价。CG迭代从4增到9，在低马赫扫描里一直增到17。
+论文写的"Schur预处理器的CPU时间随时间步长略有增加"，指的就是这个增长。
+
+反过来说，剩下的问题是对称正定，这一点很关键。
+在非对称耦合系统上使不上力的AMG，在这里遇到了自己的主场。
+回想一下[GMRES如何逐步搭建子空间](/zh/posts/2026-06-24-gmres-arnoldi-krylov-solver/)，
+这就是在内层插入一个配合得当的solver，好让外层FGMRES尽早收尾的结构。
+
+## 论文真正付出的代价 — 三级近似与雅可比延迟
+
+实际实现比上面的推导多好几层。
+论文把预处理分成三级。
+第一，在近似雅可比之上叠什么预处理器(AMG、单元块SOR、块Gauss-Seidel、vP-vT Schur补、LU)。
+第二，Schur补本身如何近似(三种策略)。
+第三，每一块用什么光滑器求解(五个选项)。
+"AMG (#1)"、"AMG-FGMRES (#3)"这类记号指的就是这些组合。
+
+组装雅可比矩阵也要花钱。用有限差分构造，扰动大小取 $\varepsilon_{rel} = 10^{-8}$、$x_{min} = 10^{-7}$。
+试过PETSc的图着色，但残差求值次数增加得过多，在高阶格式和三维下更糟。
+最后选择了按单元施加局部扰动、组装单元雅可比的做法。
+残差求值少得多，近似也更准确。
+
+而且雅可比矩阵不会每次Newton迭代都重建。
+把它冻住，等一次Newton迭代内外层FGMRES超过20~50次时，才打开重新组装。
+近似雅可比只用于预处理，而JFNK用的真实雅可比向量积始终是最新的，所以这种折中才成立。
+
+论文也附了一条限定。Schur补预处理器在中高马赫数下同样可用，
+但真正划算的是低马赫区间。
+
+## "预处理器要懂物理"这句话的实际含义
+
+"physics-based preconditioner"这个说法通常用得很含糊。
+在这篇论文里，它的含义狭窄而明确。
+知道哪一块耦合会随时间步长或马赫数一起变大，然后唯独不要去近似那一块。
+
+所以如果隐式求解器在提高时间步长时突然不收敛，
+在调迭代次数或tolerance之前，有一个问题该先问。
+现在的预处理器丢掉的是哪一块，那一块的增益又正比于什么。
+声学耦合就是 $\mathrm{CFL}_a^2$，
+[若是被拉长的边界层网格，那就是长宽比](/zh/posts/2026-07-31-linelet-preconditioner-stretched-grid/)填在那个位置。
+答案一旦超过1，那个预处理器就不再是慢，而是错了。

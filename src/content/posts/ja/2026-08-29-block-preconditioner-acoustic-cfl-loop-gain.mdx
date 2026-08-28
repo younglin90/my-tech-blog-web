@@ -1,0 +1,317 @@
+---
+title: "音速CFL 10で前処理器が誤差をsweepごとに100倍にした — ブロック前処理器が捨てた矢印一本"
+date: 2026-08-29
+description: "ブロックGauss-Seidelが下三角だけで捨てる圧力↔速度の帰還利得は、ちょうど音速CFLの二乗です。Schur補元が何をするかを1D音響系で測ります。"
+tags: ["Schur-Complement", "Preconditioning", "Newton-Krylov", "Low-Mach", "Paper-Review"]
+locale: ja
+slug: 2026-08-29-block-preconditioner-acoustic-cfl-loop-gain
+takeaway: "低マッハで前処理器が崩れるのは反復が遅いからではなく、捨てられたブロック一つの帰還利得が1を超えたからです。"
+draft: false
+---
+
+import { BlockCouplingLoopGainScope } from '@/components/post-viz/2026-08-29-block-preconditioner-acoustic-cfl-loop-gain/BlockCouplingLoopGainScope'
+import { AcousticStrideMachTrack } from '@/components/post-viz/2026-08-29-block-preconditioner-acoustic-cfl-loop-gain/AcousticStrideMachTrack'
+
+## 時間刻みを10倍ずつ上げたら前処理器が一つずつ死んだ
+
+Westonらが2019年にJCPへ出した全速度(all-speed)溶融池ソルバの論文に、表が一枚あります。
+蓋駆動キャビティ(lid-driven cavity)問題で、時間刻みだけを四回10倍ずつ上げた記録です。
+すると音速CFLは10.3から10,300まで届きます。
+
+同じ格子、同じ非線形反復、同じKrylovソルバ(FGMRES)です。変わったのは前処理器だけです。
+ところが結果は「何倍遅くなった」ではなく「収束するかしないか」で分かれました。
+結合系全体にかけた代数マルチグリッド(AMG)は、音速CFLが10を超えると収束しなくなりました。
+原始変数ブロックGauss-Seidelは100まで持ちこたえ、その上で崩れました。
+要素ブロックSORはすべて収束しましたが、1時間ステップにFGMRESを数百回まわしました。
+反復回数が時間刻みと無関係に一定だったのは、Schur補元前処理器とLU分解だけでした。
+
+前処理器は普通、定数倍の問題です。ここでは閾値の問題でした。
+その閾値がどこから来るのか、そしてなぜ音速CFLなのかが、この記事の中身です。
+前処理器そのものの構成は[同じ論文を扱った以前の記事](/ja/posts/2026-06-06-weston-block-preconditioner-jfnk/)に書いてあるので、
+ここでは**捨てられるブロック一つ**だけを見ます。
+
+## 圧力と速度のあいだには矢印が二本ある
+
+論文はヤコビアンを保存変数ではなく原始変数 $W = (P, \mathbf{v}, T)$ で組み立てます。
+同じ物理を使っても、未知数を何に取るかで行列の条件数が変わるからです。
+するとヤコビアンは未知数の種類ごとにまとまった3×3のブロック行列になります。
+
+$$
+M=\begin{bmatrix} M_{PP} & M_{Pv} & M_{PT}\\ M_{vP} & M_{vv} & M_{vT}\\ M_{TP} & M_{Tv} & M_{TT}\end{bmatrix}
+$$
+
+ここで $M_{Pv}$ は速度が圧力方程式に与える寄与、$M_{vP}$ は圧力が運動量方程式に与える寄与です。
+論文は圧力-温度の結合が弱いという理由で $M_{PT}$ と $M_{TP}$ を捨てます。
+そのあとに残る骨格が、圧力-速度の2×2です。
+
+後退Eulerで時間を離散化した低マッハ圧縮性方程式では、この二つのブロックは対角を1に揃えるとこうなります。
+
+$$
+A \equiv M_{Pv} \sim \rho c^{2} \Delta t\, \partial_x, \qquad B \equiv M_{vP} \sim \frac{\Delta t}{\rho}\, \partial_x
+$$
+
+$\rho$ は密度、$c$ は音速、$\Delta t$ は時間刻みです。
+$A$ は速度の発散が圧力を押し上げる項、$B$ は圧力勾配が速度を押す項です。
+二つは矢印二本の帰還ループを作ります。そのループを一周すると
+
+$$
+AB \sim c^{2}\Delta t^{2}\, \partial_{xx}
+$$
+
+つまり音響作用素です。格子間隔 $\Delta x$ で離散化すると大きさは $(c\Delta t/\Delta x)^2$、まさに音速CFLの二乗です。
+この数一つが、以下すべての話を支配します。
+
+下のシミュレーションで直接触ってみましょう。
+
+<BlockCouplingLoopGainScope />
+
+`CFL_a` スライダーを動かしながら、三つの前処理器を交互に押してみてください。
+ブロックGauss-Seidelで赤く切れた矢印がこの記事の主役で、
+その矢印を切った代償が、右の残差曲線の傾きの符号に現れます。
+
+## 下三角だけを使うと戻ってくる矢印が消える
+
+ブロックGauss-Seidelは上の行列の下三角部分だけを使います。順に解くとこうなります。
+
+$$
+x_P = M_{PP}^{-1} b_P, \qquad x_v = M_{vv}^{-1}(b_v - M_{vP} x_P)
+$$
+
+圧力を先に解きます。このとき速度はまったく見ません。$A = M_{Pv}$ が丸ごと抜けたということです。
+帰還ループの矢印が一本切られたわけです。
+
+切った代償はきっちり計算できます。$M = L + U$ と分けると $U$ には $A$ だけが残ります。
+誤差 $e$ に対する反復作用素は
+
+$$
+G = -L^{-1}U = \begin{bmatrix} 0 & -A \\ 0 & BA \end{bmatrix}
+$$
+
+この行列の固有値は0と $BA$ の固有値だけです。
+周期境界の中心差分 $D$ の固有値が $i\sin\theta/\Delta x$ なので $BA$ の固有値は $-\mathrm{CFL}_a^2 \sin^2\theta$ となり、
+
+$$
+\rho(G) = \max_{\theta}\ \mathrm{CFL}_a^{2}\sin^{2}\theta = \mathrm{CFL}_a^{2}
+$$
+
+$\rho$ はスペクトル半径、つまり1 sweepあたり誤差にかかる最大倍率です。
+閾値がちょうど $\mathrm{CFL}_a = 1$ に置かれます。その上では前処理器は誤差を減らすのではなく増やします。
+
+要素ブロックSORは事情が少しましです。中心差分は対角成分が0なので対角ブロックが単位行列になり、
+緩和係数 $\omega$ を使うと利得は $\sqrt{(1-\omega)^2 + \omega^2\,\mathrm{CFL}_a^2}$ になります。
+$\omega = 0.4$ なら閾値は $\mathrm{CFL}_a = 2$ まで押し出されます。
+CFLに二乗ではなく1次で効くので、より長く持ちこたえます。
+論文でSORがGauss-Seidelよりrobustだった順序が、ここから出てきます。
+
+## Pythonで三つの前処理器の利得を測ってみた
+
+周期境界の1D線形音響系を後退Eulerで立て、三つの前処理器の誤差作用素をそのまま反復適用しました。
+外部ライブラリは使っていません。
+
+```python
+import math
+
+N, L, RHO = 32, 1.0, 1.0
+dx = L / N
+
+
+def deriv(v):
+    """中心差分による1階微分、周期境界"""
+    return [(v[(i + 1) % N] - v[(i - 1) % N]) / (2 * dx) for i in range(N)]
+
+
+def build_ops(c, dt):
+    """M = [[I, A], [B, I]] — Aは速度→圧力、Bは圧力→速度のブロック"""
+    A = lambda u: [RHO * c * c * dt * w for w in deriv(u)]
+    B = lambda p: [dt / RHO * w for w in deriv(p)]
+    return A, B
+
+
+def gain(step, warm=200, n=400):
+    """誤差作用素を反復適用し、1 sweepあたりの増幅率の幾何平均を取る"""
+    e = [math.sin(1.7 * i * i + 0.9 * i + 1.0) for i in range(2 * N)]
+    acc = 0.0
+    for k in range(warm + n):
+        f = step(e)
+        r = math.sqrt(sum(x * x for x in f)) / math.sqrt(sum(x * x for x in e))
+        if r == 0.0:
+            return 0.0
+        if k >= warm:
+            acc += math.log(r)
+        e = [x / r for x in f]
+    return math.exp(acc / n)
+
+
+def gs_step(A, B):
+    """ブロックGauss-Seidel: 下三角しか使わないのでAブロックが丸ごと抜ける"""
+    def step(e):
+        Aeu = A(e[N:])
+        return [-x for x in Aeu] + B(Aeu)
+    return step
+
+
+def sor_step(A, B, w):
+    """点ブロックSOR: 中心差分は対角が0なので対角ブロックがIになる"""
+    def step(e):
+        ep, eu = e[:N], e[N:]
+        jp, ju = A(eu), B(ep)
+        return ([(1 - w) * ep[i] - w * jp[i] for i in range(N)]
+                + [(1 - w) * eu[i] - w * ju[i] for i in range(N)])
+    return step
+
+
+def schur_cg(A, B, rhs, tol=1e-10, cap=200):
+    """S = I - A B は対称正定値 — 共役勾配法の反復回数を返す"""
+    S = lambda p: [p[i] - v for i, v in enumerate(A(B(p)))]
+    x, r = [0.0] * N, rhs[:]
+    d, rr = rhs[:], sum(v * v for v in rhs)
+    r0 = math.sqrt(rr)
+    for k in range(1, cap + 1):
+        Sd = S(d)
+        al = rr / sum(d[i] * Sd[i] for i in range(N))
+        x = [x[i] + al * d[i] for i in range(N)]
+        r = [r[i] - al * Sd[i] for i in range(N)]
+        rn = sum(v * v for v in r)
+        if math.sqrt(rn) < tol * r0:
+            return k
+        d = [r[i] + (rn / rr) * d[i] for i in range(N)]
+        rr = rn
+    return cap
+
+
+def sweeps_to(r, drop=1e-6):
+    """誤差を100万分の1に減らすのに必要なsweep数"""
+    return "diverge" if r >= 0.999 else str(int(math.ceil(math.log(drop) / math.log(r))))
+
+
+rhs = [1.0 if N // 3 <= i < 2 * N // 3 else 0.0 for i in range(N)]  # 複数のモードが混ざった右辺
+
+print("CFL_a   rho(GS)    rho(SOR)   sweep(GS)  sweep(SOR) CG on S")
+for cfl in [0.1, 0.5, 1.0, 2.0, 10.0, 100.0]:
+    A, B = build_ops(1.0, cfl * dx)
+    rg, rs = gain(gs_step(A, B)), gain(sor_step(A, B, 0.4))
+    print("%-7g %-10.4g %-10.4g %-10s %-10s %d"
+          % (cfl, rg, rs, sweeps_to(rg), sweeps_to(rs), schur_cg(A, B, rhs)))
+
+print()
+print("Mach sweep  (material CFL fixed at 0.5)")
+print("Mach     CFL_a    rho(GS)    rho(SOR)   CG on S")
+for mach in [1e-2, 1e-3, 1e-4, 1e-5, 1e-6]:
+    dt = 0.5 * dx / 1.0          # 物質速度 |u| = 1 が時間刻みを決める
+    c = 1.0 / mach               # 音速はマッハ数が決める
+    A, B = build_ops(c, dt)
+    print("%-8.0e %-8.4g %-10.4g %-10.4g %d"
+          % (mach, c * dt / dx, gain(gs_step(A, B)), gain(sor_step(A, B, 0.4)),
+             schur_cg(A, B, rhs)))
+```
+
+```text
+CFL_a   rho(GS)    rho(SOR)   sweep(GS)  sweep(SOR) CG on S
+0.1     0.01       0.601      3          28         4
+0.5     0.25       0.6321     10         31         8
+1       1          0.721      diverge    43         9
+2       4          1          diverge    diverge    9
+10      100        4.045      diverge    diverge    9
+100     1e+04      40         diverge    diverge    9
+
+Mach sweep  (material CFL fixed at 0.5)
+Mach     CFL_a    rho(GS)    rho(SOR)   CG on S
+1e-02    50       2500       20.06      9
+1e-03    500      2.5e+05    200.3      9
+1e-04    5000     2.5e+07    2005       12
+1e-05    5e+04    2.5e+09    2.006e+04  17
+1e-06    5e+05    2.5e+11    2.006e+05  17
+```
+
+測定値が手で得た式と桁まで一致します。
+Gauss-Seidelの利得は0.01、0.25、1、4、100、10,000 — ちょうど $\mathrm{CFL}_a^2$ です。
+SORは0.601、0.632、0.721、1.0、4.045、40 — $\sqrt{0.36 + 0.16\,\mathrm{CFL}_a^2}$ そのままです。
+音速CFL 10でGauss-Seidelは1 sweepごとに誤差を100倍にします。
+
+トイモデルなので閾値が1と2にきれいに乗ります。
+実際のコードはsweepを10回ずつまわし $\omega = 0.4$ で抑えているので、破綻点はCFL 100付近まで押し出されます。
+押し出される位置が違うだけで、押し上げているものは同じです。
+
+## マッハ数を下げることは時間刻みを上げることと同じ
+
+論文の二つ目の実験は、時間刻みを固定して音速だけを10倍ずつ上げます。
+低マッハ解析では時間刻みを物質の時間スケールに取るのが常識です。
+
+$$
+\Delta t = \frac{\mathrm{CFL}_u\, \Delta x}{|u|}, \qquad c = \frac{|u|}{M} \ \Longrightarrow\ \mathrm{CFL}_a = \frac{\mathrm{CFL}_u}{M}
+$$
+
+$M$ はマッハ数です。物質CFLを0.5とおとなしく置いても、$M = 10^{-6}$ なら線形ソルバは音速CFL 500,000を受け取ります。
+低マッハ解析の難しさは物理ではなく、この数にあります。
+音波を陽的に解かないために[音響と対流を分離するアプローチ](/ja/posts/2026-07-11-acoustic-convective-splitting-lagrange-projection/)が出てきたのも、同じ理由です。
+
+<AcousticStrideMachTrack />
+
+`Mach` スライダーを一段ずつ下げながら、橙色の音波前線が1時間ステップのあいだに領域を何周するか数えてみましょう。
+青い物質粒子はずっと0.5マスしか歩かないのに、下の三本のバーは左から順に赤線を越えていきます。
+
+上の出力のMachスイープが、論文のFig. 4と同じ順序を与えます。
+ブロックGauss-Seidelは $M = 10^{-3}$ より下で、要素ブロックSORは $10^{-4}$ より下で収束しませんでした。
+$M = 10^{-6}$ まで到達したのはSchur補元とLUだけでした。
+
+## Schur補元はその矢印を近似せずに消去する
+
+捨てられた $A$ を復活させる方法は、それを近似することではなく消去することです。
+圧力に対するSchur補元(Schur complement、一つのブロックを消去して残る実効作用素)はこうです。
+
+$$
+S = M_{PP} - M_{Pv}M_{vv}^{-1}M_{vP} = I - AB
+$$
+
+$S$ で圧力を解き、その値を運動量に入れるとブロックLU分解が厳密になります。
+反復は要りません。誤差作用素が0で、上のコードでもどのCFLでも1 sweepで丸め誤差まで落ちます。
+
+代価を払わないわけではありません。払う場所が変わるだけです。
+
+$$
+S = I - c^{2}\Delta t^{2}\,\partial_{xx}
+$$
+
+これはHelmholtz形で、$-\partial_{xx}$ が正定値なので $S$ は対称正定値です。
+音速CFLが大きくなるほど $I$ が埋もれ、圧力Poisson方程式に近づきます。
+上の表の最後の列がその代価です。CG反復が4から9へ、低マッハスイープでは17まで増えます。
+論文が「Schur前処理器は時間刻みに応じてCPU時間がわずかに増加する」と書いたのが、この増加です。
+
+代わりに残った問題が対称正定値だという点が重要です。
+非対称の結合系では力を出せなかったAMGが、ここでは自分の領分に出会います。
+[GMRESが部分空間を積み上げる仕組み](/ja/posts/2026-06-24-gmres-arnoldi-krylov-solver/)を思い出すと、
+外側のFGMRESが短く終わるよう、内側によく噛み合うsolverを挿してやる構造です。
+
+## 論文が実際に払った代価 — 近似の三段階とヤコビアン遅延
+
+実装は上の導出より層が多いです。
+論文は前処理を三段階に分けます。
+第一に、近似ヤコビアンの上にどの前処理器を載せるか(AMG、要素ブロックSOR、ブロックGauss-Seidel、vP-vT Schur補元、LU)。
+第二に、Schur補元そのものをどう近似するか(三つの戦略)。
+第三に、各ブロックをどのスムーザで解くか(五つの選択肢)。
+「AMG (#1)」「AMG-FGMRES (#3)」といった表記が、この組み合わせを指します。
+
+ヤコビアンの組み立てにも代価がかかります。有限差分で作り、摂動の大きさは $\varepsilon_{rel} = 10^{-8}$、$x_{min} = 10^{-7}$ です。
+PETScのグラフ彩色を試しましたが残差評価の回数が過剰に増え、高次スキームと3Dでさらに悪化しました。
+結局、要素単位で局所摂動を与えて要素ヤコビアンを組み立てる方を選びました。
+残差評価がはるかに少なく、近似もより正確でした。
+
+そしてヤコビアンをNewton反復のたびに作り直しません。
+凍らせておき、一つのNewton反復のなかで外側FGMRESが20~50回を超えたら、そこで再組み立てを有効にします。
+近似ヤコビアンは前処理用でしかなく、JFNKが使う実際のヤコビアン・ベクトル積は常に最新なので成り立つ折衷です。
+
+一つ但し書きも付いています。Schur補元前処理器は中〜高マッハ数でも動作しますが、
+費用対効果があるのは低マッハ領域だと論文は明記しています。
+
+## 前処理器が物理を知るべきだという言葉の実際の意味
+
+「physics-based preconditioner」という言葉は普通、曖昧に使われます。
+この論文では意味が狭く明確です。
+どのブロック結合が時間刻みやマッハ数とともに大きくなるかを知り、その結合だけは近似するなということです。
+
+なので陰的ソルバが時間刻みを上げたときに急に収束しなくなったら、
+反復回数やtoleranceをいじる前に、聞くべきことが一つあります。
+いま前処理器が捨てているブロックは何で、そのブロックの利得は何に比例するのか。
+音響結合なら $\mathrm{CFL}_a^2$ で、
+[引き伸ばされた境界層格子ならアスペクト比](/ja/posts/2026-07-31-linelet-preconditioner-stretched-grid/)がその位置に入ります。
+答えが1を超えた瞬間、その前処理器はもはや遅いのではなく間違っているのです。
