@@ -1,0 +1,247 @@
+---
+title: "Δtを5倍にして1.9倍速くなり、10倍では変わらなかった — 陰的表面張力が開ける窓"
+date: 2026-08-30
+description: "毛管時間刻み制約を破っても上限は残る。Janodetら(2025)が密度比1000で測った安定限界と速度向上の最適点を追う。"
+tags: ["Surface-Tension", "Capillary-Wave", "VOF", "Multiphase", "Paper-Review"]
+locale: ja
+slug: 2026-08-30-implicit-surface-tension-timestep-window
+takeaway: "時間刻みを大きくして得られるのはステップ数だけです。各ステップで増えるNewton反復が、その利得を取り返す点があります。"
+draft: false
+---
+
+import { CapillaryWaveAmplitudeTracer } from '@/components/post-viz/2026-08-30-implicit-surface-tension-timestep-window/CapillaryWaveAmplitudeTracer'
+import { BreachFactorSpeedupWindow } from '@/components/post-viz/2026-08-30-implicit-surface-tension-timestep-window/BreachFactorSpeedupWindow'
+
+## 3日回り続ける液滴の前で
+
+2次元の振動液滴が3日目の計算に入っています。流速は遅く、格子も大きくありません。それなのに時間刻みは
+$10^{-6}$秒です。表面張力を陽的に扱った瞬間、時間刻みを決めるのは流速ではなく毛管波になります。
+
+ここで出てくる提案が、表面張力を陰的に(新しい時刻の値として解く形で)扱うことです。制約を破れば時間刻みを
+5倍、10倍にできると言われます。では3日が1日になるのでしょうか。
+
+答えは「5倍までなら」です。Janodet、van Wachem、Dennerが2025年に発表した完全連成アルゴリズムの論文は、
+密度比1000でこの窓の両端を実際に測っています。上からは安定限界が、下からはステップあたりの費用が窓を
+閉じます。この記事では、その二つの壁がどこに立っているのか、そして格子を細かくしても誤差がなぜ止まるのかを
+数値で追います。
+
+## 時間刻みを縛るのは流速ではなく毛管波です
+
+界面に表面張力があると、格子が分解できる最短の毛管波が一つ生まれます。波長は
+$\lambda_\sigma = 2\Delta x$ です。この波が1セルを渡る時間より大きな時間刻みを使うと、陽的な表面張力項は
+発散します。Dennerとvan Wachemが整理した形は次の通りです。
+
+$$
+\Delta t_\sigma = \sqrt{\frac{\rho_A + \rho_B}{2\pi\sigma}\,\Delta x^3} \propto \Delta x^{3/2}
+$$
+
+$\rho_A, \rho_B$ は二流体の密度、$\sigma$ は表面張力係数、$\Delta x$ は格子幅です。問題は指数の $3/2$ です。
+格子幅を半分にすると時間刻みは2.8倍小さくなります。移流CFL条件の $\Delta x^1$ より速く締まります。拡散項は
+陰的に解いて制約から外せますが、表面張力は長くそれができませんでした。この制約がなぜ生じ、どう陰的化するかは
+[毛管時間刻み制約を扱った記事](/ja/posts/2026-06-28-implicit-surface-tension-capillary-timestep/)に書きました。
+
+下のシミュレーションで実際に操作してみてください。
+
+<CapillaryWaveAmplitudeTracer />
+
+密度比1000の二流体の間の毛管波が、粘性で減衰する場面です。灰色の破線がProsperettiの解析解、青い線が離散
+ソルバーの出した振幅です。`lambda/dx` を上げると二本が近づきます。`curvature dx^0.5` が有効なときに
+`dt/dt_sigma` を0.5から8まで動かすと、誤差がほとんど動きません。それが二節先の主題です。
+
+## 一つ目の壁が倒れた場所に残る二つ目の上限
+
+表面張力を陰的に入れれば $\Delta t_\sigma$ は越えられます。ただし任意に大きな時間刻みにはなりません。
+GalusinskiとVigneauxの解析に沿ってDennerらが整理した上限は、二つの時間スケールの競合として現れます。
+
+$$
+\Delta t^{*} = \frac{a_2 \tau_{vc} + \sqrt{(a_2 \tau_{vc})^2 + 4 a_1 \tau_\sigma^2}}{2}
+$$
+
+$\tau_{vc} = \hat\mu \lambda_\sigma / \sigma$ は粘性-毛管時間スケール、
+$\tau_\sigma = \sqrt{\hat\rho \lambda_\sigma^3 / \sigma}$ は毛管時間スケールです
+($\hat\rho = \rho_A + \rho_B$、$\hat\mu = \mu_A + \mu_B$)。$a_1, a_2$ はケースごとに変わる定数で、
+$a_1 = 1/(16\pi)$、$a_2 = 0$ とすると元の $\Delta t_\sigma$ がそのまま出ます。
+
+二つのスケールの比が格子オーネゾルゲ数です。
+
+$$
+\mathrm{Oh}_{\Delta x} = \frac{\tau_{vc}}{\tau_\sigma} = \frac{\hat\mu}{\sqrt{\hat\rho \sigma \lambda_\sigma}}
+$$
+
+$\mathrm{Oh}_{\Delta x} \ll 1$ なら慣性が支配して $\Delta t^{*} \propto \tau_\sigma$、逆なら粘性が支配して
+$\Delta t^{*} \propto \tau_{vc}$ です。実務で効くのは後者です。粘度が大きいか毛管波が短ければ、上限は大きく
+開きます。
+
+数字が痛いのは密度比です。静止液滴(Laplace平衡)のケースでは、$\mathrm{Oh}_{\Delta x} \ll 1$ 領域の上限が
+密度比1000で $1.5\,\Delta t_\sigma$ でした。同じ系列のアルゴリズムが密度比1で $15\,\Delta t_\sigma$ を
+使えたことと比べると、10倍が消えたことになります。大きな $\mathrm{Oh}_{\Delta x}$ 領域でも一桁の差が出ます。
+現実的な気液密度比は窓を狭くします。
+
+## 格子を8倍細かくしても誤差は半分にしか減りませんでした
+
+論文の二つ目の検証は減衰する毛管波です。密度比も粘度比も1000、ラプラス数
+$\mathrm{La} = \rho\lambda\sigma/\mu^2 = 300$、格子 $\lambda/\Delta x = \{25, 50, 100, 200\}$、時間刻み
+$\Delta t/\Delta t_\sigma = \{0.5, 2, 8\}$。解析解との差を振幅の $L_2$ ノルムで測ります。
+
+結果の表で目を引くのは誤差の大きさではなく収束次数です。ほとんどの欄が0.46から0.95の間にあります。同じ問題を
+密度比1で解けば2次が出る場所です。格子を8倍細かくしても誤差は半分ほどしか減りません。
+
+論文が指した原因は時間離散化ではありません。界面輸送です。論理は2行です。使われる界面捕捉スキームはよくて
+2次精度です。曲率は色関数の2階微分なので精度が2段落ちます。つまり曲率は**よくて0次**です。十分細かい格子では
+振幅誤差の収束次数は結局0に向かいます。誤差が定数に居座り、それ以上減らないという意味です。
+
+## 収束次数の持ち主をPythonで確かめる
+
+この論理は減衰振動子一つに縮めて確認できます。毛管波の振幅は線形領域で
+$A'' + 2\nu k^2 A' + \omega_0^2 A = 0$ に従います。ソルバーが見るのは $\omega_0$ ではなく、曲率誤差の混じった
+$\omega_{num} = \omega_0\sqrt{1 + C(\Delta x/\lambda)^q}$ です。$q$ だけを変えて台形則で進め、解析解との
+$L_2$ ノルムと収束次数を取り出します。
+
+```python
+import math
+
+SIGMA, RHO_HAT, LAMBDA, K, LA = 1.0, 1.0, 2*math.pi, 1.0, 300.0
+MU = math.sqrt(RHO_HAT * LAMBDA * SIGMA / LA)
+NU = MU / RHO_HAT
+A0, T_END = LAMBDA / 100.0, 25.0
+
+
+def capillary_omega(dx, q, c_kappa=0.6):
+    """離散ソルバーが実際に見る振動数 — 曲率誤差は O(dx^q)"""
+    w0 = math.sqrt(SIGMA * K**3 / RHO_HAT)
+    return w0 * math.sqrt(1.0 + c_kappa * (dx / LAMBDA) ** q)
+
+
+def analytic_amplitude(t):
+    """A'' + 2*nu*k^2*A' + w0^2*A = 0 の解析解"""
+    w0 = math.sqrt(SIGMA * K**3 / RHO_HAT)
+    g = NU * K**2
+    wd = math.sqrt(w0**2 - g**2)
+    return A0 * math.exp(-g*t) * (math.cos(wd*t) + g/wd * math.sin(wd*t))
+
+
+def march_amplitude(dt, w, n_steps):
+    """[A, A'] を台形則(Crank-Nicolson)で前進させる"""
+    g = NU * K**2
+    a, v, hist = A0, 0.0, [A0]
+    for _ in range(n_steps):
+        h = 0.5 * dt
+        rhs_a, rhs_v = a + h*v, v + h*(-w**2 * a - 2*g*v)
+        det = (1 + 2*g*h) + h*h*w**2
+        a = ((1 + 2*g*h) * rhs_a + h * rhs_v) / det
+        v = (-h * w**2 * rhs_a + rhs_v) / det
+        hist.append(a)
+    return hist
+
+
+def l2_amplitude(hist, dt):
+    """振幅の L2 誤差ノルム (論文 Eq. 61)"""
+    acc = 0.0
+    for i, a in enumerate(hist):
+        w = 0.5 if i in (0, len(hist)-1) else 1.0
+        acc += w * (a - analytic_amplitude(i*dt))**2 * dt
+    return math.sqrt(acc / (len(hist)-1) / dt) / A0
+
+
+def order_of(e_coarse, e_fine):
+    return math.log(e_coarse / e_fine) / math.log(2.0)
+
+
+for label, q in [("curvature error ~ dx^2", 2.0), ("curvature error ~ dx^0.5", 0.5)]:
+    print(f"\n{label}")
+    print("lam/dx |  dt/dt_s=0.5        dt/dt_s=2          dt/dt_s=8")
+    prev = {}
+    for n in [25, 50, 100, 200]:
+        dx = LAMBDA / n
+        dt_sigma = math.sqrt(RHO_HAT * dx**3 / (2*math.pi*SIGMA))
+        w = capillary_omega(dx, q)
+        row = []
+        for s in [0.5, 2.0, 8.0]:
+            dt = s * dt_sigma
+            e = l2_amplitude(march_amplitude(dt, w, int(T_END/dt)), dt)
+            tag = "  (-- )" if s not in prev else f" ({order_of(prev[s], e):4.2f})"
+            row.append(f"{e:.3e}{tag}")
+            prev[s] = e
+        print(f"{n:6d} | " + "  ".join(row))
+```
+
+```text
+curvature error ~ dx^2
+lam/dx |  dt/dt_s=0.5        dt/dt_s=2          dt/dt_s=8
+    25 | 5.763e-04  (-- )  5.692e-04  (-- )  1.680e-02  (-- )
+    50 | 1.516e-04 (1.93)  6.731e-05 (3.08)  2.023e-03 (3.05)
+   100 | 3.885e-05 (1.96)  2.548e-05 (1.40)  2.345e-04 (3.11)
+   200 | 9.833e-06 (1.98)  8.085e-06 (1.66)  2.506e-05 (3.23)
+
+curvature error ~ dx^0.5
+lam/dx |  dt/dt_s=0.5        dt/dt_s=2          dt/dt_s=8
+    25 | 7.565e-02  (-- )  7.483e-02  (-- )  6.051e-02  (-- )
+    50 | 5.449e-02 (0.47)  5.439e-02 (0.46)  5.266e-02 (0.20)
+   100 | 3.897e-02 (0.48)  3.896e-02 (0.48)  3.874e-02 (0.44)
+   200 | 2.775e-02 (0.49)  2.775e-02 (0.49)  2.773e-02 (0.48)
+```
+
+上の表では時間刻みが小さいとき2次が出ます。$\Delta t/\Delta t_\sigma = 8$ 列の3次は、
+$\Delta t \propto \Delta x^{3/2}$ なので2次の時間誤差が $\Delta x^3$ で減るためです。
+
+下の表が論文の言う状況です。収束次数が0.5付近に固定されます。より重要なのは、三つの列の値が事実上同じだという
+点です。時間刻みを16分の1にしても誤差は変わりません。精度の底を決めているのが時間離散化ではなく曲率だという
+ことです。論文の実測収束次数0.46〜0.95は、この図と正確に重なります。
+
+この点は[界面移流のCFL上限を扱った記事](/ja/posts/2026-08-16-vof-interface-advection-cfl-limit/)と対になります。
+あちらでは時間刻みを上げてもCFL 0.05が残り、こちらでは格子を細かくしても曲率が残ります。
+
+## 5倍で1.9倍、10倍では横ばい
+
+三つ目の検証は2次元楕円液滴の減衰振動です。長半径0.15 m、短半径0.1 mから出発し、$n=2$ モードで振動して粘性で
+止まります。適用される時間刻みは二つの制約の最小値です。
+
+$$
+\Delta t = \min\left(\Delta t_{CFL},\ \Sigma\,\Delta t_\sigma\right)
+$$
+
+$\Sigma$ は毛管制約を何倍破るかを決める因子です。論文は $\Sigma \in \{2, 5, 10\}$ を回し、CFL上限は0.05に
+固定しました。
+
+まず精度です。振動周波数の誤差は $\Sigma = 2$ と $5$ で約3%でした。同じ解像度で陽的な表面張力処理から得られた
+約4.5%より小さい値です。一方 $\Sigma = 10$ は運動エネルギーの減衰を追えませんでした。表面張力が駆動する界面
+運動が時間的に分解されていないため、時間離散化の形式的な2次精度は期待できない、というのが論文の説明です。
+
+費用の数字がこの記事の題です。$\Sigma$ を2から5へ、つまり2.5倍にしたとき、全体の実時間は1.9倍短くなりました。
+ところが10まで上げるとこの利得は保たれませんでした。ステップあたりの換算計算時間が大きく増えたためです。原因は
+一つです。時間刻みが大きいほど、各ステップの非線形反復の収束が遅くなります。ステップ数は減っても、1ステップの
+費用がその分上がります。
+
+<BreachFactorSpeedupWindow />
+
+`S` スライダーが $\Sigma$ です。1から5まで上げると青いレーンが目に見えて先に終わりますが、10まで押すとほぼ
+横ばいです。`Oh_dx` を下げると赤い壁($\Delta t^{*}$)が左に来て、速いレーンがそもそも死にます。
+
+## 壁はそれぞれ違う場所に立っています
+
+このケース一つに掛かる制約と最適点を一枚の表にすると5行になります。性格はすべて違います。
+
+| 上限 | 何が決めるか | 越えると | この論文での位置 |
+|---|---|---|---|
+| $\Delta t_{CFL}$ | 移流速度と界面捕捉スキーム | 界面がなまる | CFL 0.05に固定 |
+| $\Delta t_\sigma$ | 毛管波、$\Delta x^{3/2}$ | 陽的だと発散 | 陰的化で破った |
+| $\Delta t^{*}$ | $\mathrm{Oh}_{\Delta x}$とケース定数 | 連成ソルバーも発散 | 密度比1000で $1.5\,\Delta t_\sigma$ |
+| 精度の上限 | 物理時間スケールの分解 | 答えが違う | $\Sigma = 10$でエネルギー減衰に失敗 |
+| 費用の最適 | ステップあたりNewton反復 | かえって遅くなる | $\Sigma \approx 5$ |
+
+$\Delta t_\sigma$ を破るアルゴリズムは、この表の2行目だけを消します。残りはそのままです。静止液滴で力の釣り合いが
+どう保たれるかは[寄生流を扱った記事](/ja/posts/2026-07-19-parasitic-currents-surface-tension/)で扱いました。
+
+## では $\Sigma$ はどう選ぶか
+
+論文の結論は、$\Sigma$ にはケースごとに異なる最適値があるということで、この問題では5でした。その値を見つける
+手順は三つです。
+
+まず $\mathrm{Oh}_{\Delta x}$ を計算します。この数が1よりずっと小さければ安定窓そのものが狭く、密度比が大きければ
+さらに狭くなります。$\Sigma$ を10から始める理由はありません。
+
+次に物理時間スケールを数えます。関心のある振動モードの周期を何ステップで刻んでいるかを数えれば済みます。安定で
+あることと正確であることは別です。$\Sigma = 10$ は安定でしたが、エネルギー減衰を取り逃がしました。
+
+最後に、ステップあたりの非線形反復回数をログから読みます。$\Sigma$ を上げたときに反復回数が比例して増えるなら、
+その点が窓の右端です。実時間はすでに底を過ぎています。

@@ -1,0 +1,265 @@
+---
+title: "Raising the time step 5x ran 1.9x faster; 10x ran no faster at all — the window implicit surface tension opens"
+date: 2026-08-30
+description: "Breaching the capillary time-step constraint leaves other ceilings standing. Janodet et al. (2025) measured the stability limit and the speed-up optimum at a density ratio of 1000."
+tags: ["Surface-Tension", "Capillary-Wave", "VOF", "Multiphase", "Paper-Review"]
+locale: en
+slug: 2026-08-30-implicit-surface-tension-timestep-window
+takeaway: "A bigger time step buys you fewer steps, nothing else. The Newton iterations added to each step take the gain back at a point you can find."
+draft: false
+---
+
+import { CapillaryWaveAmplitudeTracer } from '@/components/post-viz/2026-08-30-implicit-surface-tension-timestep-window/CapillaryWaveAmplitudeTracer'
+import { BreachFactorSpeedupWindow } from '@/components/post-viz/2026-08-30-implicit-surface-tension-timestep-window/BreachFactorSpeedupWindow'
+
+## Three days into one oscillating droplet
+
+A 2D oscillating droplet has been running for three days. The velocities are slow and the mesh is not large.
+The time step, however, is $10^{-6}$ s. The moment surface tension is treated explicitly, the time step
+stops being set by the flow and starts being set by capillary waves.
+
+The usual suggestion at this point is to treat surface tension implicitly — with the interface at the new
+time instance inside the linear system. Break the constraint and the time step can go up by a factor of 5,
+or 10. Does that turn three days into one?
+
+The answer is "up to about 5". The 2025 fully-coupled algorithm of Janodet, van Wachem and Denner measured
+both ends of that window at a density ratio of 1000. A stability limit closes it from above; the cost per
+step closes it from below. This article follows where those two walls stand, and why refining the mesh stops
+buying accuracy well before you expect it to.
+
+## What ties the time step is a capillary wave, not the flow speed
+
+With surface tension on the interface, there is a shortest capillary wave the mesh can resolve. Its
+wavelength is $\lambda_\sigma = 2\Delta x$. Use a time step larger than the time that wave needs to cross a
+cell, and an explicit surface-tension term blows up. Denner and van Wachem write the constraint as
+
+$$
+\Delta t_\sigma = \sqrt{\frac{\rho_A + \rho_B}{2\pi\sigma}\,\Delta x^3} \propto \Delta x^{3/2}
+$$
+
+where $\rho_A, \rho_B$ are the densities of the two fluids, $\sigma$ is the surface tension coefficient and
+$\Delta x$ is the cell size. The exponent $3/2$ is the problem. Halve the mesh spacing and the time step
+shrinks by 2.8. That closes in faster than the $\Delta x^1$ of an advective CFL condition. Diffusion terms
+can be solved implicitly and removed from the ledger; surface tension resisted that for a long time. Why the
+constraint exists and how the implicit treatment works is covered in
+[an earlier post on the capillary time-step constraint](/en/posts/2026-06-28-implicit-surface-tension-capillary-timestep/).
+
+Try the simulation below yourself.
+
+<CapillaryWaveAmplitudeTracer />
+
+This is a capillary wave between two fluids at a density ratio of 1000, decaying under viscosity. The dashed
+grey line is Prosperetti's analytical solution, the blue line is the amplitude the discrete solver produces.
+Raise `lambda/dx` and the two curves close. With `curvature dx^0.5` engaged, sweep `dt/dt_sigma` from 0.5 to
+8 and watch how little the error moves — that is the subject of the next section but one.
+
+## A second ceiling stands where the first one fell
+
+Treating surface tension implicitly does let you pass $\Delta t_\sigma$. It does not give you an arbitrarily
+large time step. Following the analysis of Galusinski and Vigneaux, Denner et al. write the remaining limit
+as a competition between two time scales.
+
+$$
+\Delta t^{*} = \frac{a_2 \tau_{vc} + \sqrt{(a_2 \tau_{vc})^2 + 4 a_1 \tau_\sigma^2}}{2}
+$$
+
+Here $\tau_{vc} = \hat\mu \lambda_\sigma / \sigma$ is the visco-capillary time scale and
+$\tau_\sigma = \sqrt{\hat\rho \lambda_\sigma^3 / \sigma}$ the capillary time scale, with
+$\hat\rho = \rho_A + \rho_B$ and $\hat\mu = \mu_A + \mu_B$. The constants $a_1, a_2$ are case dependent;
+$a_1 = 1/(16\pi)$ with $a_2 = 0$ recovers $\Delta t_\sigma$ exactly.
+
+The ratio of the two scales is the mesh Ohnesorge number.
+
+$$
+\mathrm{Oh}_{\Delta x} = \frac{\tau_{vc}}{\tau_\sigma} = \frac{\hat\mu}{\sqrt{\hat\rho \sigma \lambda_\sigma}}
+$$
+
+For $\mathrm{Oh}_{\Delta x} \ll 1$ inertia dominates and $\Delta t^{*} \propto \tau_\sigma$; for large
+$\mathrm{Oh}_{\Delta x}$ viscosity dominates and $\Delta t^{*} \propto \tau_{vc}$. The second regime is the
+one that pays: a large dynamic viscosity or a short capillary wave opens the limit considerably.
+
+The painful number is the density ratio. For the stationary droplet (Laplace equilibrium) case, the limit in
+the $\mathrm{Oh}_{\Delta x} \ll 1$ regime was $1.5\,\Delta t_\sigma$ at a density ratio of 1000. The same
+family of algorithms reached $15\,\Delta t_\sigma$ at unit density ratio. A factor of ten disappeared. In the
+large-$\mathrm{Oh}_{\Delta x}$ regime the gap is an order of magnitude as well. Realistic gas-liquid density
+ratios narrow the window.
+
+## Refining the mesh eightfold cut the error only in half
+
+The second validation case is a decaying capillary wave. Density and viscosity ratios both 1000, Laplace
+number $\mathrm{La} = \rho\lambda\sigma/\mu^2 = 300$, meshes
+$\lambda/\Delta x = \{25, 50, 100, 200\}$ and time steps $\Delta t/\Delta t_\sigma = \{0.5, 2, 8\}$. The
+distance from the analytical solution is measured as an $L_2$ norm of the amplitude.
+
+What stands out in the resulting table is not the size of the error but the order of convergence. Most
+entries sit between 0.46 and 0.95. The same problem at unit density ratio converges at second order. Refining
+the mesh by a factor of eight cuts the error roughly in half.
+
+The paper does not blame the temporal discretisation. It blames the interface transport, in two lines. The
+interface-capturing scheme in use is at best second-order accurate. Curvature is a second derivative of the
+colour function, so it loses two orders. Curvature is therefore **at best zeroth order**. On a sufficiently
+fine mesh the convergence order of the amplitude error goes to zero: the error settles on a constant and
+stops falling.
+
+## The owner of the convergence rate, in Python
+
+The argument reduces to a single damped oscillator. In the linear regime the wave amplitude obeys
+$A'' + 2\nu k^2 A' + \omega_0^2 A = 0$. What the solver sees is not $\omega_0$ but a frequency carrying the
+curvature error, $\omega_{num} = \omega_0\sqrt{1 + C(\Delta x/\lambda)^q}$. Vary $q$ alone, march with the
+trapezoidal rule, and read off the $L_2$ norm against the analytical solution together with its order.
+
+```python
+import math
+
+SIGMA, RHO_HAT, LAMBDA, K, LA = 1.0, 1.0, 2*math.pi, 1.0, 300.0
+MU = math.sqrt(RHO_HAT * LAMBDA * SIGMA / LA)
+NU = MU / RHO_HAT
+A0, T_END = LAMBDA / 100.0, 25.0
+
+
+def capillary_omega(dx, q, c_kappa=0.6):
+    """the frequency the discrete solver actually sees, curvature error O(dx^q)"""
+    w0 = math.sqrt(SIGMA * K**3 / RHO_HAT)
+    return w0 * math.sqrt(1.0 + c_kappa * (dx / LAMBDA) ** q)
+
+
+def analytic_amplitude(t):
+    """exact solution of A'' + 2*nu*k^2*A' + w0^2*A = 0"""
+    w0 = math.sqrt(SIGMA * K**3 / RHO_HAT)
+    g = NU * K**2
+    wd = math.sqrt(w0**2 - g**2)
+    return A0 * math.exp(-g*t) * (math.cos(wd*t) + g/wd * math.sin(wd*t))
+
+
+def march_amplitude(dt, w, n_steps):
+    """march [A, A'] with the trapezoidal (Crank-Nicolson) rule"""
+    g = NU * K**2
+    a, v, hist = A0, 0.0, [A0]
+    for _ in range(n_steps):
+        h = 0.5 * dt
+        rhs_a, rhs_v = a + h*v, v + h*(-w**2 * a - 2*g*v)
+        det = (1 + 2*g*h) + h*h*w**2
+        a = ((1 + 2*g*h) * rhs_a + h * rhs_v) / det
+        v = (-h * w**2 * rhs_a + rhs_v) / det
+        hist.append(a)
+    return hist
+
+
+def l2_amplitude(hist, dt):
+    """L2 error norm of the amplitude (Eq. 61 of the paper)"""
+    acc = 0.0
+    for i, a in enumerate(hist):
+        w = 0.5 if i in (0, len(hist)-1) else 1.0
+        acc += w * (a - analytic_amplitude(i*dt))**2 * dt
+    return math.sqrt(acc / (len(hist)-1) / dt) / A0
+
+
+def order_of(e_coarse, e_fine):
+    return math.log(e_coarse / e_fine) / math.log(2.0)
+
+
+for label, q in [("curvature error ~ dx^2", 2.0), ("curvature error ~ dx^0.5", 0.5)]:
+    print(f"\n{label}")
+    print("lam/dx |  dt/dt_s=0.5        dt/dt_s=2          dt/dt_s=8")
+    prev = {}
+    for n in [25, 50, 100, 200]:
+        dx = LAMBDA / n
+        dt_sigma = math.sqrt(RHO_HAT * dx**3 / (2*math.pi*SIGMA))
+        w = capillary_omega(dx, q)
+        row = []
+        for s in [0.5, 2.0, 8.0]:
+            dt = s * dt_sigma
+            e = l2_amplitude(march_amplitude(dt, w, int(T_END/dt)), dt)
+            tag = "  (-- )" if s not in prev else f" ({order_of(prev[s], e):4.2f})"
+            row.append(f"{e:.3e}{tag}")
+            prev[s] = e
+        print(f"{n:6d} | " + "  ".join(row))
+```
+
+```text
+curvature error ~ dx^2
+lam/dx |  dt/dt_s=0.5        dt/dt_s=2          dt/dt_s=8
+    25 | 5.763e-04  (-- )  5.692e-04  (-- )  1.680e-02  (-- )
+    50 | 1.516e-04 (1.93)  6.731e-05 (3.08)  2.023e-03 (3.05)
+   100 | 3.885e-05 (1.96)  2.548e-05 (1.40)  2.345e-04 (3.11)
+   200 | 9.833e-06 (1.98)  8.085e-06 (1.66)  2.506e-05 (3.23)
+
+curvature error ~ dx^0.5
+lam/dx |  dt/dt_s=0.5        dt/dt_s=2          dt/dt_s=8
+    25 | 7.565e-02  (-- )  7.483e-02  (-- )  6.051e-02  (-- )
+    50 | 5.449e-02 (0.47)  5.439e-02 (0.46)  5.266e-02 (0.20)
+   100 | 3.897e-02 (0.48)  3.896e-02 (0.48)  3.874e-02 (0.44)
+   200 | 2.775e-02 (0.49)  2.775e-02 (0.49)  2.773e-02 (0.48)
+```
+
+The upper table shows second order at small time steps. The third order in the
+$\Delta t/\Delta t_\sigma = 8$ column is not a bonus: since $\Delta t \propto \Delta x^{3/2}$, a
+second-order temporal error falls as $\Delta x^3$.
+
+The lower table is the paper's situation. The order locks near 0.5. More telling, the three columns carry
+essentially the same values. Cutting the time step by sixteen leaves the error untouched. What sets the floor
+on accuracy is the curvature, not the temporal discretisation. The measured orders of 0.46 to 0.95 in the
+paper land exactly on this picture.
+
+This pairs with [the post on the CFL ceiling of interface advection](/en/posts/2026-08-16-vof-interface-advection-cfl-limit/):
+there a larger time step ran into CFL 0.05, here a finer mesh runs into curvature.
+
+## 5x gave 1.9x, 10x gave nothing
+
+The third case is the damped oscillation of a 2D elliptical droplet. It starts with a major axis of 0.15 m
+and a minor axis of 0.1 m, oscillates in the $n=2$ mode and is damped by viscous stresses. The applied time
+step is the smaller of two constraints.
+
+$$
+\Delta t = \min\left(\Delta t_{CFL},\ \Sigma\,\Delta t_\sigma\right)
+$$
+
+$\Sigma$ is the factor by which the capillary constraint is breached. The paper ran
+$\Sigma \in \{2, 5, 10\}$ with the maximum CFL number held at 0.05.
+
+On accuracy first: the oscillation-frequency error was about 3% for $\Sigma = 2$ and $\Sigma = 5$, smaller
+than the roughly 4.5% obtained with an explicit surface-tension treatment at the same resolution.
+$\Sigma = 10$, by contrast, failed to follow the kinetic-energy decay. With the surface-tension-driven
+interface motion no longer resolved in time, the paper notes, the formal second-order accuracy of the
+temporal scheme cannot be expected.
+
+The cost numbers are this article's title. Raising $\Sigma$ from 2 to 5 — a factor of 2.5 — cut the total
+wall clock time by a factor of 1.9. Pushing on to 10 did not keep that gain. The reduced computational time
+per step rose substantially. The reason is single: the larger the time step, the more slowly the nonlinear
+procedure converges within each step. Fewer steps, more work in each.
+
+<BreachFactorSpeedupWindow />
+
+The `S` slider is $\Sigma$. Take it from 1 to 5 and the blue lane finishes visibly earlier; push on to 10 and
+it barely moves. Drag `Oh_dx` down and the red wall ($\Delta t^{*}$) slides left until the fast lane dies
+outright.
+
+## The walls stand in different places
+
+One case carries five separate limits and optima, and no two are alike.
+
+| Ceiling | Set by | Cross it and | Where it sat here |
+|---|---|---|---|
+| $\Delta t_{CFL}$ | advective speed and the capturing scheme | the interface smears | held at CFL 0.05 |
+| $\Delta t_\sigma$ | capillary waves, $\Delta x^{3/2}$ | explicit treatment diverges | broken by going implicit |
+| $\Delta t^{*}$ | $\mathrm{Oh}_{\Delta x}$ and case constants | even the coupled solver diverges | $1.5\,\Delta t_\sigma$ at density ratio 1000 |
+| accuracy limit | resolution of the physical time scale | the answer is wrong | energy decay lost at $\Sigma = 10$ |
+| cost optimum | Newton iterations per step | it gets slower again | $\Sigma \approx 5$ |
+
+An algorithm that breaks $\Delta t_\sigma$ erases exactly one row of that table. The others stay. How the
+force balance survives on a stationary droplet is covered in
+[the post on parasitic currents](/en/posts/2026-07-19-parasitic-currents-surface-tension/).
+
+## So how do you pick $\Sigma$?
+
+The paper's conclusion is that an optimal $\Sigma$ exists and is case dependent; here it was 5. Finding it
+takes three measurements.
+
+Compute $\mathrm{Oh}_{\Delta x}$ first. If it is well below 1, the stability window itself is narrow, and a
+large density ratio narrows it further. There is no reason to start at $\Sigma = 10$.
+
+Then count the physical time scale. Count how many steps fall inside one period of the oscillation mode you
+care about. Stable is not the same as accurate: $\Sigma = 10$ was stable and still missed the energy decay.
+
+Finally, read the nonlinear iteration count per step out of the log. If raising $\Sigma$ raises the iteration
+count proportionally, that point is the right edge of the window. The wall clock has already bottomed out.

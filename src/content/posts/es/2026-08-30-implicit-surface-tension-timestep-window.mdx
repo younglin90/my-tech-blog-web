@@ -1,0 +1,267 @@
+---
+title: "Subir Δt cinco veces dio 1.9x de velocidad; diez veces no dio nada — la ventana que abre la tensión superficial implícita"
+date: 2026-08-30
+description: "Romper la restricción capilar de paso temporal deja otros techos en pie. Janodet et al. (2025) midieron el límite de estabilidad y el óptimo de rendimiento con razón de densidades 1000."
+tags: ["Surface-Tension", "Capillary-Wave", "VOF", "Multiphase", "Paper-Review"]
+locale: es
+slug: 2026-08-30-implicit-surface-tension-timestep-window
+takeaway: "Un paso temporal mayor compra menos pasos y nada más. Las iteraciones de Newton que se suman a cada paso devuelven esa ganancia en un punto que se puede localizar."
+draft: false
+---
+
+import { CapillaryWaveAmplitudeTracer } from '@/components/post-viz/2026-08-30-implicit-surface-tension-timestep-window/CapillaryWaveAmplitudeTracer'
+import { BreachFactorSpeedupWindow } from '@/components/post-viz/2026-08-30-implicit-surface-tension-timestep-window/BreachFactorSpeedupWindow'
+
+## Tres días delante de una gota que oscila
+
+Una gota 2D que oscila lleva tres días de cálculo. Las velocidades son bajas y la malla no es grande. Aun así
+el paso temporal es de $10^{-6}$ s. En cuanto la tensión superficial se trata de forma explícita, el paso
+temporal deja de fijarlo el flujo y pasa a fijarlo una onda capilar.
+
+La propuesta habitual en este punto es tratar la tensión superficial de forma implícita, con la interfaz del
+nuevo instante dentro del sistema lineal. Al romper la restricción, el paso temporal podría subir 5 o 10
+veces. ¿Convierte eso tres días en uno?
+
+La respuesta es "hasta unas 5 veces". El algoritmo totalmente acoplado que Janodet, van Wachem y Denner
+publicaron en 2025 midió ambos extremos de esa ventana con una razón de densidades de 1000. Por arriba la
+cierra un límite de estabilidad; por abajo, el costo por paso. Este artículo recorre dónde está cada una de
+esas dos paredes y por qué refinar la malla deja de comprar precisión antes de lo esperado.
+
+## Lo que ata el paso temporal es una onda capilar, no la velocidad del flujo
+
+Con tensión superficial en la interfaz existe una onda capilar mínima que la malla puede resolver. Su longitud
+de onda es $\lambda_\sigma = 2\Delta x$. Si el paso temporal supera el tiempo que esa onda tarda en cruzar una
+celda, el término explícito de tensión superficial diverge. Denner y van Wachem escriben la restricción así.
+
+$$
+\Delta t_\sigma = \sqrt{\frac{\rho_A + \rho_B}{2\pi\sigma}\,\Delta x^3} \propto \Delta x^{3/2}
+$$
+
+Aquí $\rho_A, \rho_B$ son las densidades de los dos fluidos, $\sigma$ el coeficiente de tensión superficial y
+$\Delta x$ el tamaño de celda. El problema es el exponente $3/2$. Al reducir la malla a la mitad, el paso
+temporal se reduce 2.8 veces. Se cierra más rápido que el $\Delta x^1$ de una condición CFL advectiva. Los
+términos difusivos pueden resolverse implícitamente y salir de la cuenta; la tensión superficial se resistió
+mucho tiempo. Por qué aparece la restricción y cómo se hace implícita está en
+[una entrada anterior sobre la restricción capilar de paso temporal](/es/posts/2026-06-28-implicit-surface-tension-capillary-timestep/).
+
+Conviene manipular la simulación que sigue.
+
+<CapillaryWaveAmplitudeTracer />
+
+Es una onda capilar entre dos fluidos con razón de densidades 1000, amortiguada por la viscosidad. La línea
+gris discontinua es la solución analítica de Prosperetti; la azul, la amplitud que entrega el solver discreto.
+Al subir `lambda/dx` las dos curvas se juntan. Con `curvature dx^0.5` activado, conviene barrer `dt/dt_sigma`
+de 0.5 a 8 y observar lo poco que se mueve el error: ese es el tema de la sección siguiente a la próxima.
+
+## Donde cayó la primera pared queda un segundo techo
+
+Tratar la tensión superficial de forma implícita sí permite pasar $\Delta t_\sigma$, pero no entrega un paso
+temporal arbitrariamente grande. Siguiendo el análisis de Galusinski y Vigneaux, Denner et al. escriben el
+límite restante como una competencia entre dos escalas de tiempo.
+
+$$
+\Delta t^{*} = \frac{a_2 \tau_{vc} + \sqrt{(a_2 \tau_{vc})^2 + 4 a_1 \tau_\sigma^2}}{2}
+$$
+
+Donde $\tau_{vc} = \hat\mu \lambda_\sigma / \sigma$ es la escala visco-capilar y
+$\tau_\sigma = \sqrt{\hat\rho \lambda_\sigma^3 / \sigma}$ la escala capilar, con
+$\hat\rho = \rho_A + \rho_B$ y $\hat\mu = \mu_A + \mu_B$. Las constantes $a_1, a_2$ dependen del caso;
+con $a_1 = 1/(16\pi)$ y $a_2 = 0$ se recupera exactamente $\Delta t_\sigma$.
+
+El cociente de ambas escalas es el número de Ohnesorge de malla.
+
+$$
+\mathrm{Oh}_{\Delta x} = \frac{\tau_{vc}}{\tau_\sigma} = \frac{\hat\mu}{\sqrt{\hat\rho \sigma \lambda_\sigma}}
+$$
+
+Con $\mathrm{Oh}_{\Delta x} \ll 1$ domina la inercia y $\Delta t^{*} \propto \tau_\sigma$; en el caso opuesto
+domina la viscosidad y $\Delta t^{*} \propto \tau_{vc}$. El segundo régimen es el que paga: una viscosidad
+dinámica alta o una onda capilar corta abren bastante el límite.
+
+El número que duele es la razón de densidades. En el caso de la gota estática (equilibrio de Laplace), el
+límite en el régimen $\mathrm{Oh}_{\Delta x} \ll 1$ fue de $1.5\,\Delta t_\sigma$ con razón de densidades 1000.
+La misma familia de algoritmos alcanzaba $15\,\Delta t_\sigma$ con razón unitaria: se perdió un factor diez. En
+el régimen de $\mathrm{Oh}_{\Delta x}$ grande la diferencia también es de un orden de magnitud. Las razones
+gas-líquido realistas estrechan la ventana.
+
+## Refinar la malla ocho veces solo redujo el error a la mitad
+
+El segundo caso de validación es una onda capilar amortiguada. Razones de densidad y viscosidad ambas de 1000,
+número de Laplace $\mathrm{La} = \rho\lambda\sigma/\mu^2 = 300$, mallas
+$\lambda/\Delta x = \{25, 50, 100, 200\}$ y pasos temporales $\Delta t/\Delta t_\sigma = \{0.5, 2, 8\}$. La
+distancia a la solución analítica se mide con una norma $L_2$ de la amplitud.
+
+Lo llamativo de la tabla resultante no es el tamaño del error sino el orden de convergencia. La mayoría de las
+casillas cae entre 0.46 y 0.95. El mismo problema con razón de densidades unitaria converge a segundo orden.
+Refinar la malla ocho veces reduce el error apenas a la mitad.
+
+El artículo no culpa a la discretización temporal, sino al transporte de la interfaz, en dos líneas. El
+esquema de captura de interfaz empleado es, en el mejor caso, de segundo orden. La curvatura es una segunda
+derivada de la función de color, de modo que pierde dos órdenes. La curvatura es, por tanto, **de orden cero
+en el mejor caso**. En una malla suficientemente fina el orden de convergencia del error de amplitud tiende a
+cero: el error se asienta en una constante y deja de bajar.
+
+## El dueño del orden de convergencia, en Python
+
+El argumento se reduce a un solo oscilador amortiguado. En régimen lineal la amplitud de la onda cumple
+$A'' + 2\nu k^2 A' + \omega_0^2 A = 0$. Lo que ve el solver no es $\omega_0$ sino una frecuencia que carga el
+error de curvatura, $\omega_{num} = \omega_0\sqrt{1 + C(\Delta x/\lambda)^q}$. Basta variar $q$, avanzar con
+la regla trapezoidal y leer la norma $L_2$ frente a la solución analítica junto con su orden.
+
+```python
+import math
+
+SIGMA, RHO_HAT, LAMBDA, K, LA = 1.0, 1.0, 2*math.pi, 1.0, 300.0
+MU = math.sqrt(RHO_HAT * LAMBDA * SIGMA / LA)
+NU = MU / RHO_HAT
+A0, T_END = LAMBDA / 100.0, 25.0
+
+
+def capillary_omega(dx, q, c_kappa=0.6):
+    """frecuencia que ve realmente el solver discreto — error de curvatura O(dx^q)"""
+    w0 = math.sqrt(SIGMA * K**3 / RHO_HAT)
+    return w0 * math.sqrt(1.0 + c_kappa * (dx / LAMBDA) ** q)
+
+
+def analytic_amplitude(t):
+    """solución exacta de A'' + 2*nu*k^2*A' + w0^2*A = 0"""
+    w0 = math.sqrt(SIGMA * K**3 / RHO_HAT)
+    g = NU * K**2
+    wd = math.sqrt(w0**2 - g**2)
+    return A0 * math.exp(-g*t) * (math.cos(wd*t) + g/wd * math.sin(wd*t))
+
+
+def march_amplitude(dt, w, n_steps):
+    """avanza [A, A'] con la regla trapezoidal (Crank-Nicolson)"""
+    g = NU * K**2
+    a, v, hist = A0, 0.0, [A0]
+    for _ in range(n_steps):
+        h = 0.5 * dt
+        rhs_a, rhs_v = a + h*v, v + h*(-w**2 * a - 2*g*v)
+        det = (1 + 2*g*h) + h*h*w**2
+        a = ((1 + 2*g*h) * rhs_a + h * rhs_v) / det
+        v = (-h * w**2 * rhs_a + rhs_v) / det
+        hist.append(a)
+    return hist
+
+
+def l2_amplitude(hist, dt):
+    """norma de error L2 de la amplitud (Ec. 61 del artículo)"""
+    acc = 0.0
+    for i, a in enumerate(hist):
+        w = 0.5 if i in (0, len(hist)-1) else 1.0
+        acc += w * (a - analytic_amplitude(i*dt))**2 * dt
+    return math.sqrt(acc / (len(hist)-1) / dt) / A0
+
+
+def order_of(e_coarse, e_fine):
+    return math.log(e_coarse / e_fine) / math.log(2.0)
+
+
+for label, q in [("curvature error ~ dx^2", 2.0), ("curvature error ~ dx^0.5", 0.5)]:
+    print(f"\n{label}")
+    print("lam/dx |  dt/dt_s=0.5        dt/dt_s=2          dt/dt_s=8")
+    prev = {}
+    for n in [25, 50, 100, 200]:
+        dx = LAMBDA / n
+        dt_sigma = math.sqrt(RHO_HAT * dx**3 / (2*math.pi*SIGMA))
+        w = capillary_omega(dx, q)
+        row = []
+        for s in [0.5, 2.0, 8.0]:
+            dt = s * dt_sigma
+            e = l2_amplitude(march_amplitude(dt, w, int(T_END/dt)), dt)
+            tag = "  (-- )" if s not in prev else f" ({order_of(prev[s], e):4.2f})"
+            row.append(f"{e:.3e}{tag}")
+            prev[s] = e
+        print(f"{n:6d} | " + "  ".join(row))
+```
+
+```text
+curvature error ~ dx^2
+lam/dx |  dt/dt_s=0.5        dt/dt_s=2          dt/dt_s=8
+    25 | 5.763e-04  (-- )  5.692e-04  (-- )  1.680e-02  (-- )
+    50 | 1.516e-04 (1.93)  6.731e-05 (3.08)  2.023e-03 (3.05)
+   100 | 3.885e-05 (1.96)  2.548e-05 (1.40)  2.345e-04 (3.11)
+   200 | 9.833e-06 (1.98)  8.085e-06 (1.66)  2.506e-05 (3.23)
+
+curvature error ~ dx^0.5
+lam/dx |  dt/dt_s=0.5        dt/dt_s=2          dt/dt_s=8
+    25 | 7.565e-02  (-- )  7.483e-02  (-- )  6.051e-02  (-- )
+    50 | 5.449e-02 (0.47)  5.439e-02 (0.46)  5.266e-02 (0.20)
+   100 | 3.897e-02 (0.48)  3.896e-02 (0.48)  3.874e-02 (0.44)
+   200 | 2.775e-02 (0.49)  2.775e-02 (0.49)  2.773e-02 (0.48)
+```
+
+La tabla superior muestra segundo orden con pasos temporales pequeños. El tercer orden de la columna
+$\Delta t/\Delta t_\sigma = 8$ no es un regalo: como $\Delta t \propto \Delta x^{3/2}$, un error temporal de
+segundo orden cae como $\Delta x^3$.
+
+La tabla inferior es la situación del artículo. El orden se fija cerca de 0.5. Más revelador aún: las tres
+columnas llevan prácticamente los mismos valores. Dividir el paso temporal por dieciséis deja el error intacto.
+Lo que fija el piso de precisión es la curvatura, no la discretización temporal. Los órdenes medidos de 0.46 a
+0.95 del artículo caen exactamente sobre esta imagen.
+
+Esto hace pareja con
+[la entrada sobre el techo CFL de la advección de interfaz](/es/posts/2026-08-16-vof-interface-advection-cfl-limit/):
+allí un paso temporal mayor chocaba con CFL 0.05; aquí una malla más fina choca con la curvatura.
+
+## Cinco veces dio 1.9x, diez veces no dio nada
+
+El tercer caso es la oscilación amortiguada de una gota elíptica 2D. Arranca con semieje mayor de 0.15 m y
+menor de 0.1 m, oscila en el modo $n=2$ y se frena por esfuerzos viscosos. El paso temporal aplicado es el
+menor de dos restricciones.
+
+$$
+\Delta t = \min\left(\Delta t_{CFL},\ \Sigma\,\Delta t_\sigma\right)
+$$
+
+$\Sigma$ es el factor con el que se rompe la restricción capilar. El artículo corrió
+$\Sigma \in \{2, 5, 10\}$ con el número CFL máximo fijado en 0.05.
+
+Primero la precisión: el error de frecuencia de oscilación fue de alrededor del 3% para $\Sigma = 2$ y
+$\Sigma = 5$, menor que el 4.5% aproximado obtenido con tratamiento explícito de la tensión superficial a la
+misma resolución. En cambio, $\Sigma = 10$ no logró seguir el decaimiento de la energía cinética. Al no quedar
+resuelto en el tiempo el movimiento de interfaz impulsado por la tensión superficial, señala el artículo, no
+cabe esperar la precisión formal de segundo orden del esquema temporal.
+
+Los números de costo son el título de este artículo. Subir $\Sigma$ de 2 a 5 —un factor de 2.5— recortó el
+tiempo total de reloj en un factor de 1.9. Llevarlo hasta 10 no conservó esa ganancia: el tiempo de cálculo
+reducido por paso subió de forma notable. La razón es una sola: cuanto mayor es el paso temporal, más lento
+converge el procedimiento no lineal dentro de cada paso. Menos pasos, más trabajo en cada uno.
+
+<BreachFactorSpeedupWindow />
+
+El deslizador `S` es $\Sigma$. Al llevarlo de 1 a 5, el carril azul termina visiblemente antes; al empujarlo
+hasta 10 apenas se mueve. Al bajar `Oh_dx`, la pared roja ($\Delta t^{*}$) se desplaza a la izquierda hasta que
+el carril rápido muere sin más.
+
+## Las paredes están en sitios distintos
+
+Un solo caso carga cinco límites y óptimos, y no hay dos iguales.
+
+| Techo | Lo fija | Al cruzarlo | Dónde quedó aquí |
+|---|---|---|---|
+| $\Delta t_{CFL}$ | velocidad advectiva y esquema de captura | la interfaz se difumina | fijado en CFL 0.05 |
+| $\Delta t_\sigma$ | ondas capilares, $\Delta x^{3/2}$ | el tratamiento explícito diverge | roto al hacerlo implícito |
+| $\Delta t^{*}$ | $\mathrm{Oh}_{\Delta x}$ y constantes del caso | hasta el solver acoplado diverge | $1.5\,\Delta t_\sigma$ con razón 1000 |
+| límite de precisión | resolución de la escala física | la respuesta es errónea | energía perdida en $\Sigma = 10$ |
+| óptimo de costo | iteraciones de Newton por paso | vuelve a ser más lento | $\Sigma \approx 5$ |
+
+Un algoritmo que rompe $\Delta t_\sigma$ borra exactamente una fila de esa tabla. Las demás siguen ahí. Cómo
+sobrevive el balance de fuerzas en una gota estática está en
+[la entrada sobre corrientes parásitas](/es/posts/2026-07-19-parasitic-currents-surface-tension/).
+
+## Entonces, ¿cómo se elige $\Sigma$?
+
+La conclusión del artículo es que existe un $\Sigma$ óptimo y depende del caso; aquí fue 5. Encontrarlo exige
+tres medidas.
+
+Primero conviene calcular $\mathrm{Oh}_{\Delta x}$. Si queda muy por debajo de 1, la ventana de estabilidad ya
+es estrecha, y una razón de densidades alta la estrecha más. No hay motivo para partir de $\Sigma = 10$.
+
+Después toca contar la escala de tiempo física: cuántos pasos caben en un período del modo de oscilación de
+interés. Estable no es lo mismo que preciso: $\Sigma = 10$ fue estable y aun así perdió el decaimiento de la
+energía.
+
+Por último, se lee del registro el número de iteraciones no lineales por paso. Si al subir $\Sigma$ ese número
+sube en proporción, ese punto es el borde derecho de la ventana. El tiempo de reloj ya tocó fondo.
