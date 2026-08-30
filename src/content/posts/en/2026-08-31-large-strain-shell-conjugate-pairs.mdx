@@ -1,0 +1,415 @@
+---
+title: "A 30° rigid rotation read -13% strain — conjugate stress-strain pairs in large-strain shells"
+date: 2026-08-31
+description: "Rotation alone fabricates strain in the engineering measure, and a wrong stress-strain pairing shifts the internal work rate by 5% or 54%."
+tags: ["Green-Lagrange", "Shell-Element", "FEM", "Structural-Analysis", "FSI"]
+locale: en
+slug: 2026-08-31-large-strain-shell-conjugate-pairs
+takeaway: "In large strain you cannot multiply any stress by any strain. Only $S:\\dot{E}$, $P:\\dot{F}$, and $J\\sigma:d$ return the same number."
+draft: false
+---
+
+import { RotationStrainGaugeDial } from '@/components/post-viz/2026-08-31-large-strain-shell-conjugate-pairs/RotationStrainGaugeDial'
+import { RodriguesOrderDriftTracer } from '@/components/post-viz/2026-08-31-large-strain-shell-conjugate-pairs/RodriguesOrderDriftTracer'
+
+## Nothing but rotation, and the strain gauge read -13%
+
+A single shell element was turned 30° in its own plane. No stretching, no shearing. Rigid rotation only.
+
+Yet the engineering strain $\varepsilon_{xx} = \partial u_x / \partial x$ comes out as $-0.134$.
+That is 13.4% compression. The element deformed nowhere, and the gauge reports compression.
+
+The number is neither a mistake nor a discretization error. $\cos 30° - 1 = -0.134$, exactly that value.
+The definition of small-strain strain misreads rotation as deformation.
+
+This post is about where that misreading gets cut off, and what the stress has to become once it is.
+Three things to take away. A strain measure immune to rotation, measured numbers for how far the
+energy drifts when the stress-strain pair is wrong, and the identity of the equation that closes the
+through-thickness unknown in a shell.
+
+Try it directly in the simulation below.
+
+<RotationStrainGaugeDial />
+
+Press `rigid rotation only` and let the rotation run. The element keeps its shape, yet the red $\varepsilon$ bar
+swings hard left and right. The green $E$ bar stays pinned at zero. Raise `lam` and $E$ finally moves,
+and its value does not change no matter how the rotation angle is varied.
+
+## What filters rotation out is not $F$ but $F^{T}F$
+
+Deformation starts with the deformation gradient (the local map from the reference configuration to the current one).
+
+$$
+F_{iJ} = \frac{\partial x_i}{\partial X_J}
+$$
+
+$x$ is the deformed coordinate, $X$ the undeformed one. Polar decomposition splits it as $F = RU$.
+$R$ is rotation, $U$ is pure stretch. The trouble is that $R$ lives on inside $F$ itself.
+
+$\varepsilon = \tfrac{1}{2}(F + F^{T}) - I$ uses $F$ as is. So $R$ leaks in.
+That is why $\varepsilon_{xx} = \cos\theta - 1$ under pure rotation.
+
+Square $F$, though, and the rotation disappears.
+
+$$
+C = F^{T}F = U^{T}R^{T}RU = U^{T}U
+$$
+
+Since $R^{T}R = I$, only $U$ survives in $C$. This $C$ is the right Cauchy-Green tensor.
+Subtract the identity and halve it, and you have the Green-Lagrange strain.
+
+$$
+E = \tfrac{1}{2}\left(F^{T}F - I\right)
+$$
+
+Under rigid rotation $F^{T}F = I$, so $E$ is exactly zero. Those two lines are why the green bar in the
+simulation above never moves. The demand that physics not change when the coordinate system does was
+answered by a change of basis in
+[constitutive tensor transformation](/en/posts/2026-08-17-curvilinear-constitutive-tensor-transform/);
+here it is answered by the definition of the strain measure itself.
+
+## Which area is the stress tensor divided by
+
+Once the strain has been pulled back to the reference configuration, the stress has to come along.
+Stress is "force over area", and in large strain it splits on whether that area is the deformed one or not.
+One table covers it.
+
+| Tensor | Face the force acts on | Area it is divided by | Symmetry | Conjugate strain rate |
+|---|---|---|---|---|
+| Cauchy $\sigma$ | deformed | deformed | symmetric | $d$ (but as $J\sigma:d$) |
+| 1st PK $P$ | deformed | **undeformed** | unsymmetric | $\dot{F}$ |
+| 2nd PK $S$ | pulled back to reference | undeformed | symmetric | $\dot{E}$ |
+| engineering $\varepsilon$·$\sigma$ | no distinction | no distinction | symmetric | only in the small-strain limit |
+
+They relate to each other like this.
+
+$$
+P = FS, \qquad \sigma = J^{-1} F S F^{T}, \qquad J = \det F
+$$
+
+$J$ is the volume ratio. The 1st PK tensor $P$ is unsymmetric because its two legs stand in different
+configurations. One index points at the deformed state, the other at the undeformed one. So storing $P$
+in a finite element code means carrying all 9 components. $S$ puts both legs in the reference
+configuration and needs only 6.
+
+## Being conjugate means producing the same work rate
+
+A "conjugate pair" is not a matter of taste. It is the identity that the internal work rate per unit
+reference volume must come out the same.
+
+$$
+\dot{W} = S : \dot{E} = P : \dot{F} = J\,\sigma : d
+$$
+
+Here $d = \operatorname{sym}(\dot{F}F^{-1})$ is the rate-of-deformation tensor.
+The three expressions write one physical quantity in three configurations, so their values must agree exactly.
+
+Conversely, $\sigma : \dot{E}$ and $S : d$ are not physical quantities at all. The units work out and the
+arithmetic runs, but the number is not a work rate. Build a finite element residual from such a
+combination and the stiffness matrix stops being the Hessian of an energy functional. Same territory as
+the [Galerkin symmetry](/en/posts/2026-08-28-self-adjointness-galerkin-supg-peclet/) discussion.
+With no energy to minimize, Newton iteration loses quadratic convergence.
+
+## Measuring the three pairings at one instant in Python
+
+One deformation path mixing stretch, shear, and rotation, with all three combinations evaluated at $t=0.7$.
+The material is Saint Venant-Kirchhoff, $S = \lambda\,\mathrm{tr}(E)I + 2\mu E$.
+
+```python
+import math
+
+I3 = [[1.0, 0, 0], [0, 1.0, 0], [0, 0, 1.0]]
+
+def mul(A, B):
+    return [[sum(A[i][k]*B[k][j] for k in range(3)) for j in range(3)] for i in range(3)]
+
+def tr(A):
+    return [[A[j][i] for j in range(3)] for i in range(3)]
+
+def add(A, B, s=1.0):
+    return [[A[i][j] + s*B[i][j] for j in range(3)] for i in range(3)]
+
+def scale(A, s):
+    return [[s*A[i][j] for j in range(3)] for i in range(3)]
+
+def ddot(A, B):
+    return sum(A[i][j]*B[i][j] for i in range(3) for j in range(3))
+
+def trace(A):
+    return A[0][0] + A[1][1] + A[2][2]
+
+def det(A):
+    return (A[0][0]*(A[1][1]*A[2][2] - A[1][2]*A[2][1])
+          - A[0][1]*(A[1][0]*A[2][2] - A[1][2]*A[2][0])
+          + A[0][2]*(A[1][0]*A[2][1] - A[1][1]*A[2][0]))
+
+def inv(A):
+    d = det(A)
+    C = [[0.0]*3 for _ in range(3)]
+    for i in range(3):
+        for j in range(3):
+            m = [[A[r][c] for c in range(3) if c != j] for r in range(3) if r != i]
+            C[j][i] = ((-1)**(i+j))*(m[0][0]*m[1][1] - m[0][1]*m[1][0])/d
+    return C
+
+def sym(A):
+    return scale(add(A, tr(A)), 0.5)
+
+def green_lagrange(F):
+    return scale(add(mul(tr(F), F), I3, -1.0), 0.5)
+
+def linear_strain(F):
+    return sym(add(F, I3, -1.0))
+
+LAM, MU = 100.0, 60.0                      # Saint Venant-Kirchhoff constants
+
+def pk2_stress(E):
+    return add(scale(I3, LAM*trace(E)), E, 2*MU)
+
+def cauchy_stress(F, S):
+    return scale(mul(mul(F, S), tr(F)), 1.0/det(F))
+
+def rot_z(th):
+    c, s = math.cos(th), math.sin(th)
+    return [[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]]
+
+print("--- 1. pure rotation, no stretch ---")
+print(" theta   eps_xx(linear)   E_xx(Green-Lagrange)")
+for deg in (0, 5, 10, 30, 60, 90):
+    F = rot_z(math.radians(deg))
+    print("%5.0f   %14.5f   %20.2e" % (deg, linear_strain(F)[0][0], green_lagrange(F)[0][0]))
+
+def defo_path(t):
+    """Apply stretch and shear, then a rigid rotation of 40 deg * t"""
+    U = [[1 + 0.20*t, 0.15*t,     0.0],
+         [0.15*t,     1 - 0.05*t, 0.0],
+         [0.0,        0.0,        1 - 0.08*t]]
+    return mul(rot_z(math.radians(40.0)*t), U)
+
+def rate(f, t, h=1e-6):
+    A, B = f(t + h), f(t - h)
+    return [[(A[i][j] - B[i][j])/(2*h) for j in range(3)] for i in range(3)]
+
+print()
+print("--- 2. work rate at t=0.7, three pairings ---")
+t = 0.7
+F = defo_path(t)
+Fd = rate(defo_path, t)
+E = green_lagrange(F)
+Ed = rate(lambda s: green_lagrange(defo_path(s)), t)
+S = pk2_stress(E)
+P = mul(F, S)
+J = det(F)
+sig = cauchy_stress(F, S)
+d = sym(mul(Fd, inv(F)))                   # rate-of-deformation tensor
+
+print("  J = det F              = %.6f" % J)
+print("  S : Edot   (2nd PK  x GL rate)   = %12.6f" % ddot(S, Ed))
+print("  P : Fdot   (1st PK  x F rate)    = %12.6f" % ddot(P, Fd))
+print("  J sigma: d (Cauchy  x stretching)= %12.6f" % (J*ddot(sig, d)))
+print("  sigma : Edot   <- wrong pair     = %12.6f" % ddot(sig, Ed))
+print("  S : d          <- wrong pair     = %12.6f" % ddot(S, d))
+```
+
+```text
+--- 1. pure rotation, no stretch ---
+ theta   eps_xx(linear)   E_xx(Green-Lagrange)
+    0          0.00000               0.00e+00
+    5         -0.00381               0.00e+00
+   10         -0.01519              -5.55e-17
+   30         -0.13397               0.00e+00
+   60         -0.50000               0.00e+00
+   90         -1.00000               0.00e+00
+
+--- 2. work rate at t=0.7, three pairings ---
+  J = det F              = 1.028087
+  S : Edot   (2nd PK  x GL rate)   =    10.522306
+  P : Fdot   (1st PK  x F rate)    =    10.522306
+  J sigma: d (Cauchy  x stretching)=    10.522306
+  sigma : Edot   <- wrong pair     =     9.961790
+  S : d          <- wrong pair     =     4.823514
+```
+
+## 5% and 54% — two kinds of error from a wrong pairing
+
+The three legitimate combinations agree to six decimal places. $10.522306$. The numbers confirm that
+splitting the writeup across three configurations changes nothing about the value.
+
+The two wrong combinations go wrong differently. $\sigma : \dot{E}$ gives $9.961790$, 5.3% low.
+$\sigma$ and $S$ differ by the map $J^{-1}F(\cdot)F^{T}$, and here that map is mild.
+$J = 1.028$ and the stretch is only about 20%, so the error stops around there.
+
+$S : d$ gives $4.823514$. That is 54% low. This one is not a scaling problem but a different species of error.
+It ignores the relation $\dot{E} = F^{T} d F$ and feeds $d$ in raw, so rotation components mix in as well.
+The larger the rotation angle, the larger this error grows.
+
+In practice the dangerous one is the 5%. The 54% diverges at the first load step and gets caught immediately.
+The 5% converges — to a slightly wrong answer. Refining the mesh does not make it go away.
+
+## The thickness is closed by volume, not by an equation
+
+Everything so far is general continuum mechanics. Shells add one more item.
+
+A 3D shell element carries the through-thickness stretch as an unknown. In the 3D-shell formulation of
+Sussman and Bathe, the thickness direction needs 3 unknowns, while the plane-stress condition supplies
+only 2 equations. One is missing.
+
+What supplies the missing one is incompressibility.
+
+$$
+J = \lambda_1 \lambda_2 \lambda_3 = 1
+\quad\Longrightarrow\quad
+\lambda_3 = \frac{1}{\lambda_1 \lambda_2}
+$$
+
+$\lambda_i$ are the principal stretch ratios. For materials that nearly preserve volume, such as rubber or
+metal plasticity, the thickness is not an independent unknown but a dependent variable of the in-plane
+stretch. Stretch in-plane by $\lambda_1 = 1.20$ and $\lambda_2 = 1.05$ and the thickness goes to $0.794$
+times its original, 20.6% thinner. This is exactly the relation used to compute thinning in sheet forming.
+
+There is a point where this condition meets
+[MITC tying](/en/posts/2026-08-12-mitc-shell-shear-locking/).
+Interpolating the through-thickness stretch directly inside the element produces volumetric locking in
+thin elements. Just as shear locking was resolved with tying points, the thickness stretch is left
+independent at only a few points per element and the rest is tied by interpolation.
+
+## Truncate rotation at first order and the director grows 16%
+
+The second shell item is rotation. A shell element carries the midsurface normal vector, the director.
+When Newton iteration returns a rotation increment $\Delta\boldsymbol{\theta}$, the director has to be
+turned by that much. The rotation matrix comes from the Rodrigues formula.
+
+$$
+R(\boldsymbol{\theta}) = I + \frac{\sin\theta}{\theta}\,\Theta + \frac{1 - \cos\theta}{\theta^{2}}\,\Theta^{2}
+$$
+
+$\Theta$ is the skew-symmetric matrix of $\boldsymbol{\theta}$, and $\theta = |\boldsymbol{\theta}|$.
+Codes that truncate to $R \approx I + \Theta$ on the grounds that the increment is small are common.
+That matrix is not orthogonal. Since $\det(I + \Theta) = 1 + \theta^{2} \neq 1$, the director gets a
+little longer at every step.
+
+Try it directly in the simulation below.
+
+<RodriguesOrderDriftTracer />
+
+Set `d.theta` to 0.10 and let it run: the red first-order-truncated arrow spirals out past the dashed
+unit circle. The green closed form stays exactly on the circle. Halve `d.theta` and the drift halves too.
+That is, this error is first order in the increment size.
+
+```python
+import math
+
+def matvec(A, v):
+    return [sum(A[i][k]*v[k] for k in range(3)) for i in range(3)]
+
+def matmul(A, B):
+    return [[sum(A[i][k]*B[k][j] for k in range(3)) for j in range(3)] for i in range(3)]
+
+def skew(w):
+    return [[0.0, -w[2], w[1]],
+            [w[2], 0.0, -w[0]],
+            [-w[1], w[0], 0.0]]
+
+def rodrigues(w, order):
+    """order = 1, 2 truncate the series; 0 is the closed form"""
+    th = math.sqrt(sum(c*c for c in w))
+    W = skew(w)
+    W2 = matmul(W, W)
+    if order == 1:
+        a, b = 1.0, 0.0
+    elif order == 2:
+        a, b = 1.0, 0.5
+    else:
+        a = math.sin(th)/th
+        b = (1.0 - math.cos(th))/(th*th)
+    return [[(1.0 if i == j else 0.0) + a*W[i][j] + b*W2[i][j]
+             for j in range(3)] for i in range(3)]
+
+def spin_director(dth, steps, order):
+    """Rotate the midsurface normal about the y axis by dth radians per step"""
+    d = [0.0, 0.0, 1.0]
+    for _ in range(steps):
+        d = matvec(rodrigues([0.0, dth, 0.0], order), d)
+    return d
+
+print("--- 3. director after 30 increments of 0.10 rad (exact total 171.89 deg) ---")
+print(" order        |d|      length err %   angle(deg)   angle err(deg)")
+for order, name in ((1, "1st"), (2, "2nd"), (0, "closed")):
+    d = spin_director(0.10, 30, order)
+    n = math.sqrt(sum(c*c for c in d))
+    ang = math.degrees(math.atan2(d[0], d[2]))
+    if ang < 0:
+        ang += 360.0
+    print(" %-6s  %10.5f   %11.2f   %10.3f   %12.3f"
+          % (name, n, 100*(n - 1.0), ang, ang - math.degrees(3.0)))
+
+print()
+print("--- 4. same total rotation, smaller increments (1st order) ---")
+print(" steps   dtheta      |d|     length err %")
+for steps in (30, 60, 150, 300, 3000):
+    dth = 3.0/steps
+    d = spin_director(dth, steps, 1)
+    n = math.sqrt(sum(c*c for c in d))
+    print(" %5d   %6.4f  %8.5f   %11.3f" % (steps, dth, n, 100*(n - 1.0)))
+
+print()
+print("--- 5. thickness closed by J = 1, not by a 3rd equation ---")
+print(" lam1   lam2    lam3=1/(lam1 lam2)   thickness change %")
+for l1, l2 in ((1.20, 1.05), (1.20, 1.00), (1.10, 1.10), (1.30, 0.95)):
+    l3 = 1.0/(l1*l2)
+    print(" %4.2f   %4.2f   %16.5f   %16.1f" % (l1, l2, l3, 100*(l3 - 1.0)))
+```
+
+```text
+--- 3. director after 30 increments of 0.10 rad (exact total 171.89 deg) ---
+ order        |d|      length err %   angle(deg)   angle err(deg)
+ 1st        1.16097         16.10      171.318         -0.570
+ 2nd        1.00038          0.04      172.173          0.286
+ closed     1.00000          0.00      171.887          0.000
+
+--- 4. same total rotation, smaller increments (1st order) ---
+ steps   dtheta      |d|     length err %
+    30   0.1000   1.16097        16.097
+    60   0.0500   1.07778         7.778
+   150   0.0200   1.03045         3.045
+   300   0.0100   1.01511         1.511
+  3000   0.0010   1.00150         0.150
+
+--- 5. thickness closed by J = 1, not by a 3rd equation ---
+ lam1   lam2    lam3=1/(lam1 lam2)   thickness change %
+ 1.20   1.05            0.79365              -20.6
+ 1.20   1.00            0.83333              -16.7
+ 1.10   1.10            0.82645              -17.4
+ 1.30   0.95            0.80972              -19.0
+```
+
+First-order truncation stretched the director by 16.1% in 30 steps. Adding one more term drops that to
+0.04% at second order. The length got 400 times more accurate, yet the angle error is actually worse at
+second order. The two errors are separate.
+
+Table 4 matters more. Cut the increment to a tenth and the error only falls to a tenth. Chopping the load
+steps finer does not remove this problem. Use the closed form, renormalize the director every step, or
+carry the rotation as a
+[quaternion](/en/posts/2026-04-20-fem-rigid-body-dynamics-quaternion/).
+
+## How to tell $S$ from $\sigma$ by reading the code
+
+Open somebody else's large-strain code and the identity of the stress variable is not readable from its
+name. Three places settle it.
+
+Look at where the stress enters the stiffness matrix. If the $B$ matrix is built as $\partial E / \partial u$,
+the stress multiplying it is $S$. If $B$ is $\partial \varepsilon / \partial u$, it is $\sigma$. As seen in
+[constitutive matrix transformation](/en/posts/2026-08-17-curvilinear-constitutive-tensor-transform/),
+the definition of $B$ decides the identity of the stress.
+
+Look at the Jacobian in the integration. Integrating over the reference volume as $\int_{V_0} \cdots \, dV_0$
+without multiplying by $J$ means $S$. If $J$ is being multiplied in, then $\sigma$ is being pulled back to
+the reference configuration.
+
+Look at the output routine. If the transformation $\sigma = J^{-1}FSF^{T}$ appears in post-processing just
+before von Mises is computed, the internals were running on $S$. There are codes that skip this transform
+and push the components of $S$ straight into von Mises for plotting. Small strain hides it; past 20%
+stretch the two curves separate.
+
+If none of the three can be confirmed, a test remains. Subject a single element to rigid rotation only and
+check whether the stress stays at zero. If 13% shows up at 30°, something somewhere failed to square $F$.

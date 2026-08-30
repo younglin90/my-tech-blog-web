@@ -1,0 +1,401 @@
+---
+title: "回転を30°与えただけでひずみが-13%と出た — 大変形シェルの応力・ひずみ共役対"
+date: 2026-08-31
+description: "剛体回転だけで現れる偽のひずみと、応力・ひずみの共役対を取り違えたときに内部仕事率がどれだけずれるかを、数値で確かめます。"
+tags: ["Green-Lagrange", "Shell-Element", "FEM", "Structural-Analysis", "FSI"]
+locale: ja
+slug: 2026-08-31-large-strain-shell-conjugate-pairs
+takeaway: "大変形では応力とひずみを好き勝手に掛け合わせてはいけません。$S:\\dot{E}$、$P:\\dot{F}$、$J\\sigma:d$ だけが同じ値を返します。"
+draft: false
+---
+
+import { RotationStrainGaugeDial } from '@/components/post-viz/2026-08-31-large-strain-shell-conjugate-pairs/RotationStrainGaugeDial'
+import { RodriguesOrderDriftTracer } from '@/components/post-viz/2026-08-31-large-strain-shell-conjugate-pairs/RodriguesOrderDriftTracer'
+
+## 回転させただけなのにひずみゲージが-13%を指した
+
+シェル要素を1つ、面内で30°回しました。伸ばしてもいませんし、ねじってもいません。剛体回転だけです。
+
+ところが工学ひずみ $\varepsilon_{xx} = \partial u_x / \partial x$ を計算すると $-0.134$ が出ます。
+13.4%の圧縮です。要素はどこも変形していないのに、ゲージは圧縮を読み取ります。
+
+この値はミスでも離散化誤差でもありません。$\cos 30° - 1 = -0.134$、ちょうどその値です。
+微小ひずみの定義そのものが、回転を変形として読み違えています。
+
+この記事では、その読み違いをどこで断ち切るのか、断ち切った後に応力を何に持ち替えるのかを扱います。
+持ち帰れるものは3つです。回転に免疫のあるひずみ尺度、応力・ひずみの対を間違えたときに
+エネルギーがどれだけずれるかの実測値、そしてシェルの厚さ方向の未知数を閉じる方程式の正体です。
+
+下のシミュレーションで直接操作してみてください。
+
+<RotationStrainGaugeDial />
+
+`rigid rotation only` を押して回転を流してみます。要素の形はそのままなのに、赤い $\varepsilon$ のバーだけが
+左右に大きく振れます。緑の $E$ のバーは0に張り付いたままです。`lam` を上げるとそこで初めて $E$ が動き、
+その値は回転角をどう変えても変わりません。
+
+## 回転を濾し取るのは $F$ ではなく $F^{T}F$ です
+
+変形の話は変形勾配(deformation gradient、基準配置から現在配置への局所写像)から始まります。
+
+$$
+F_{iJ} = \frac{\partial x_i}{\partial X_J}
+$$
+
+$x$ は変形後の座標、$X$ は変形前の座標です。極分解(polar decomposition)を使うと $F = RU$ に分かれます。
+$R$ は回転、$U$ は純粋な伸長です。問題は $F$ そのものに $R$ が生き残っている点です。
+
+$\varepsilon = \tfrac{1}{2}(F + F^{T}) - I$ は $F$ をそのまま使います。だから $R$ が漏れ込みます。
+回転だけのときに $\varepsilon_{xx} = \cos\theta - 1$ になる理由がこれです。
+
+ところが $F$ を二乗すると回転が消えます。
+
+$$
+C = F^{T}F = U^{T}R^{T}RU = U^{T}U
+$$
+
+$R^{T}R = I$ なので $C$ には $U$ だけが残ります。この $C$ が右コーシー–グリーンテンソルです。
+ここから単位テンソルを引いて半分にしたものが、グリーン–ラグランジュひずみです。
+
+$$
+E = \tfrac{1}{2}\left(F^{T}F - I\right)
+$$
+
+剛体回転では $F^{T}F = I$ なので $E$ はぴったり0になります。上のシミュレーションで緑のバーが
+動かない理由は、この2行に尽きます。座標系を変えても物理は変わってはならない、という要求を
+[構成テンソルの座標変換](/ja/posts/2026-08-17-curvilinear-constitutive-tensor-transform/)では基底の変換で
+解きましたが、ここではひずみ尺度の定義そのもので解きます。
+
+## 応力テンソルはどの面積で割った値か
+
+ひずみを基準配置へ引き戻したなら、応力も一緒に引き戻す必要があります。応力は「力を面積で割ったもの」ですが、
+大変形ではその面積が変形前なのか変形後なのかで分かれます。表1枚で整理できます。
+
+| テンソル | 力が作用する面 | 割る面積 | 対称性 | 共役なひずみ速度 |
+|---|---|---|---|---|
+| Cauchy $\sigma$ | 変形後 | 変形後 | 対称 | $d$（ただし $J\sigma:d$） |
+| 1st PK $P$ | 変形後 | 変形 **前** | 非対称 | $\dot{F}$ |
+| 2nd PK $S$ | 基準配置へ引き戻し | 変形前 | 対称 | $\dot{E}$ |
+| 工学 $\varepsilon$・$\sigma$ | 区別なし | 区別なし | 対称 | 微小ひずみ極限でのみ |
+
+互いの関係は次のとおりです。
+
+$$
+P = FS, \qquad \sigma = J^{-1} F S F^{T}, \qquad J = \det F
+$$
+
+$J$ は体積比です。第1ピオラ–キルヒホッフテンソル $P$ が非対称なのは、2本の脚がそれぞれ別の配置を
+踏んでいるからです。片方の添字は変形後を、もう片方は変形前を指します。そのため有限要素コードで $P$ を
+保存するには9成分すべてを持つ必要があります。$S$ は両脚を基準配置に置くので6成分で済みます。
+
+## 共役であるとは仕事率が一致するということ
+
+「共役対(conjugate pair)」は好みの問題ではありません。基準体積あたりの内部仕事率が同じ値を返さなければ
+ならない、という等式です。
+
+$$
+\dot{W} = S : \dot{E} = P : \dot{F} = J\,\sigma : d
+$$
+
+ここで $d = \operatorname{sym}(\dot{F}F^{-1})$ は変形速度(rate of deformation)テンソルです。
+3つの表現は同じ物理量を3つの配置で書いたものなので、値は厳密に一致しなければなりません。
+
+逆に $\sigma : \dot{E}$ や $S : d$ は何の物理量でもありません。単位は合いますし計算もできますが、
+その数値は仕事率ではありません。有限要素の残差をこの組み合わせで立てると、剛性行列がエネルギー汎関数の
+ヘッセ行列になりません。[ガラーキン法の対称性](/ja/posts/2026-08-28-self-adjointness-galerkin-supg-peclet/)の話と
+同じ場所です。最小化すべきエネルギーがなければ、ニュートン反復は2次収束を失います。
+
+## Python で3つの共役対の仕事率を同時刻に測ってみた
+
+伸長とせん断と回転を混ぜた変形経路を1つ作り、$t=0.7$ で3通りの組み合わせの値を測りました。
+材料はサンヴナン–キルヒホッフ、$S = \lambda\,\mathrm{tr}(E)I + 2\mu E$ を使いました。
+
+```python
+import math
+
+I3 = [[1.0, 0, 0], [0, 1.0, 0], [0, 0, 1.0]]
+
+def mul(A, B):
+    return [[sum(A[i][k]*B[k][j] for k in range(3)) for j in range(3)] for i in range(3)]
+
+def tr(A):
+    return [[A[j][i] for j in range(3)] for i in range(3)]
+
+def add(A, B, s=1.0):
+    return [[A[i][j] + s*B[i][j] for j in range(3)] for i in range(3)]
+
+def scale(A, s):
+    return [[s*A[i][j] for j in range(3)] for i in range(3)]
+
+def ddot(A, B):
+    return sum(A[i][j]*B[i][j] for i in range(3) for j in range(3))
+
+def trace(A):
+    return A[0][0] + A[1][1] + A[2][2]
+
+def det(A):
+    return (A[0][0]*(A[1][1]*A[2][2] - A[1][2]*A[2][1])
+          - A[0][1]*(A[1][0]*A[2][2] - A[1][2]*A[2][0])
+          + A[0][2]*(A[1][0]*A[2][1] - A[1][1]*A[2][0]))
+
+def inv(A):
+    d = det(A)
+    C = [[0.0]*3 for _ in range(3)]
+    for i in range(3):
+        for j in range(3):
+            m = [[A[r][c] for c in range(3) if c != j] for r in range(3) if r != i]
+            C[j][i] = ((-1)**(i+j))*(m[0][0]*m[1][1] - m[0][1]*m[1][0])/d
+    return C
+
+def sym(A):
+    return scale(add(A, tr(A)), 0.5)
+
+def green_lagrange(F):
+    return scale(add(mul(tr(F), F), I3, -1.0), 0.5)
+
+def linear_strain(F):
+    return sym(add(F, I3, -1.0))
+
+LAM, MU = 100.0, 60.0                      # サンヴナン–キルヒホッフ定数
+
+def pk2_stress(E):
+    return add(scale(I3, LAM*trace(E)), E, 2*MU)
+
+def cauchy_stress(F, S):
+    return scale(mul(mul(F, S), tr(F)), 1.0/det(F))
+
+def rot_z(th):
+    c, s = math.cos(th), math.sin(th)
+    return [[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]]
+
+print("--- 1. pure rotation, no stretch ---")
+print(" theta   eps_xx(linear)   E_xx(Green-Lagrange)")
+for deg in (0, 5, 10, 30, 60, 90):
+    F = rot_z(math.radians(deg))
+    print("%5.0f   %14.5f   %20.2e" % (deg, linear_strain(F)[0][0], green_lagrange(F)[0][0]))
+
+def defo_path(t):
+    """伸長とせん断を与えたあと 40度 * t だけ剛体回転させる"""
+    U = [[1 + 0.20*t, 0.15*t,     0.0],
+         [0.15*t,     1 - 0.05*t, 0.0],
+         [0.0,        0.0,        1 - 0.08*t]]
+    return mul(rot_z(math.radians(40.0)*t), U)
+
+def rate(f, t, h=1e-6):
+    A, B = f(t + h), f(t - h)
+    return [[(A[i][j] - B[i][j])/(2*h) for j in range(3)] for i in range(3)]
+
+print()
+print("--- 2. work rate at t=0.7, three pairings ---")
+t = 0.7
+F = defo_path(t)
+Fd = rate(defo_path, t)
+E = green_lagrange(F)
+Ed = rate(lambda s: green_lagrange(defo_path(s)), t)
+S = pk2_stress(E)
+P = mul(F, S)
+J = det(F)
+sig = cauchy_stress(F, S)
+d = sym(mul(Fd, inv(F)))                   # 変形速度テンソル
+
+print("  J = det F              = %.6f" % J)
+print("  S : Edot   (2nd PK  x GL rate)   = %12.6f" % ddot(S, Ed))
+print("  P : Fdot   (1st PK  x F rate)    = %12.6f" % ddot(P, Fd))
+print("  J sigma: d (Cauchy  x stretching)= %12.6f" % (J*ddot(sig, d)))
+print("  sigma : Edot   <- wrong pair     = %12.6f" % ddot(sig, Ed))
+print("  S : d          <- wrong pair     = %12.6f" % ddot(S, d))
+```
+
+```text
+--- 1. pure rotation, no stretch ---
+ theta   eps_xx(linear)   E_xx(Green-Lagrange)
+    0          0.00000               0.00e+00
+    5         -0.00381               0.00e+00
+   10         -0.01519              -5.55e-17
+   30         -0.13397               0.00e+00
+   60         -0.50000               0.00e+00
+   90         -1.00000               0.00e+00
+
+--- 2. work rate at t=0.7, three pairings ---
+  J = det F              = 1.028087
+  S : Edot   (2nd PK  x GL rate)   =    10.522306
+  P : Fdot   (1st PK  x F rate)    =    10.522306
+  J sigma: d (Cauchy  x stretching)=    10.522306
+  sigma : Edot   <- wrong pair     =     9.961790
+  S : d          <- wrong pair     =     4.823514
+```
+
+## 5%と54% — 対を間違えたときに出る2種類の誤差
+
+正しい3つの組み合わせは小数点以下6桁まで一致します。$10.522306$ です。配置を3つに分けて書いただけで
+同じ値だということが、数値で確認できます。
+
+間違った2つは、それぞれ違う壊れ方をします。$\sigma : \dot{E}$ は $9.961790$ で5.3%低い値です。
+$\sigma$ と $S$ は $J^{-1}F(\cdot)F^{T}$ の分だけ違いますが、この変形が小さいためです。
+$J = 1.028$、伸長も20%程度なので、誤差もその程度で止まります。
+
+$S : d$ は $4.823514$ です。54%低い値です。こちらはスケールの問題ではなく、種類の違う誤りです。
+$\dot{E} = F^{T} d F$ という関係を無視して $d$ をそのまま入れたため、回転成分まで混ざり込みます。
+回転角が大きくなるほど、この誤差は膨らみます。
+
+実務で危ないのは5%のほうです。54%は最初の荷重ステップで発散するのですぐ捕まります。5%は収束するのに、
+答えが少し違ったまま収束します。要素数を増やしても消えません。
+
+## 厚さ方向は方程式ではなく体積が閉じる
+
+ここまでが一般の連続体の話です。シェルには項目がもう1つ付きます。
+
+3Dシェル要素は厚さ方向の伸びを未知数として持っています。SussmanとBatheの3Dシェル定式化では
+厚さ方向に未知数が3つ必要ですが、平面応力条件から出てくる式は2つだけです。1つ足りません。
+
+足りない1つを埋めるのが非圧縮条件です。
+
+$$
+J = \lambda_1 \lambda_2 \lambda_3 = 1
+\quad\Longrightarrow\quad
+\lambda_3 = \frac{1}{\lambda_1 \lambda_2}
+$$
+
+$\lambda_i$ は主伸長比です。ゴムや金属の塑性のように体積がほぼ保存される材料では、厚さは独立な未知数ではなく
+面内伸長の従属変数になります。面内に $\lambda_1 = 1.20$、$\lambda_2 = 1.05$ だけ伸ばすと、
+厚さは $0.794$ 倍、20.6%薄くなります。板材成形で板厚減少を計算するときに使う、まさにその関係です。
+
+この条件が [MITCタイイング](/ja/posts/2026-08-12-mitc-shell-shear-locking/)と交わる場所があります。
+厚さ方向の伸びを要素内部でそのまま補間すると、薄い要素で体積ロッキング(volumetric locking)が起きます。
+せん断ロッキングをタイイング点で解いたのと同じように、厚さ方向の伸びも要素あたり数点だけ独立に置き、
+残りは補間で縛ります。
+
+## 回転を1次で打ち切ると director が16%伸びる
+
+シェルの2つ目の項目は回転です。シェル要素は中立面の法線ベクトル、つまり director を持ち歩きます。
+ニュートン反復が回転増分 $\Delta\boldsymbol{\theta}$ を出したら、director をその分だけ回す必要があります。
+回転行列はロドリゲス(Rodrigues)の公式で作ります。
+
+$$
+R(\boldsymbol{\theta}) = I + \frac{\sin\theta}{\theta}\,\Theta + \frac{1 - \cos\theta}{\theta^{2}}\,\Theta^{2}
+$$
+
+$\Theta$ は $\boldsymbol{\theta}$ の交代行列、$\theta = |\boldsymbol{\theta}|$ です。
+増分が小さいからと $R \approx I + \Theta$ で打ち切るコードはよく見かけます。この行列は直交行列ではありません。
+$\det(I + \Theta) = 1 + \theta^{2} \neq 1$ なので、ステップごとに director が少しずつ伸びていきます。
+
+下のシミュレーションで直接操作してみてください。
+
+<RodriguesOrderDriftTracer />
+
+`d.theta` を0.10にして進めると、赤い1次打ち切りの矢印が破線の単位円の外へ螺旋を描いて抜け出します。
+緑の閉形式は円の上に正確に残ります。`d.theta` を半分にすればドリフトも半分になります。
+つまりこの誤差は増分の大きさに対して1次です。
+
+```python
+import math
+
+def matvec(A, v):
+    return [sum(A[i][k]*v[k] for k in range(3)) for i in range(3)]
+
+def matmul(A, B):
+    return [[sum(A[i][k]*B[k][j] for k in range(3)) for j in range(3)] for i in range(3)]
+
+def skew(w):
+    return [[0.0, -w[2], w[1]],
+            [w[2], 0.0, -w[0]],
+            [-w[1], w[0], 0.0]]
+
+def rodrigues(w, order):
+    """order = 1, 2 は級数の打ち切り、0 は閉形式"""
+    th = math.sqrt(sum(c*c for c in w))
+    W = skew(w)
+    W2 = matmul(W, W)
+    if order == 1:
+        a, b = 1.0, 0.0
+    elif order == 2:
+        a, b = 1.0, 0.5
+    else:
+        a = math.sin(th)/th
+        b = (1.0 - math.cos(th))/(th*th)
+    return [[(1.0 if i == j else 0.0) + a*W[i][j] + b*W2[i][j]
+             for j in range(3)] for i in range(3)]
+
+def spin_director(dth, steps, order):
+    """中立面の法線を y 軸まわりに 1 ステップ dth ラジアンずつ回す"""
+    d = [0.0, 0.0, 1.0]
+    for _ in range(steps):
+        d = matvec(rodrigues([0.0, dth, 0.0], order), d)
+    return d
+
+print("--- 3. director after 30 increments of 0.10 rad (exact total 171.89 deg) ---")
+print(" order        |d|      length err %   angle(deg)   angle err(deg)")
+for order, name in ((1, "1st"), (2, "2nd"), (0, "closed")):
+    d = spin_director(0.10, 30, order)
+    n = math.sqrt(sum(c*c for c in d))
+    ang = math.degrees(math.atan2(d[0], d[2]))
+    if ang < 0:
+        ang += 360.0
+    print(" %-6s  %10.5f   %11.2f   %10.3f   %12.3f"
+          % (name, n, 100*(n - 1.0), ang, ang - math.degrees(3.0)))
+
+print()
+print("--- 4. same total rotation, smaller increments (1st order) ---")
+print(" steps   dtheta      |d|     length err %")
+for steps in (30, 60, 150, 300, 3000):
+    dth = 3.0/steps
+    d = spin_director(dth, steps, 1)
+    n = math.sqrt(sum(c*c for c in d))
+    print(" %5d   %6.4f  %8.5f   %11.3f" % (steps, dth, n, 100*(n - 1.0)))
+
+print()
+print("--- 5. thickness closed by J = 1, not by a 3rd equation ---")
+print(" lam1   lam2    lam3=1/(lam1 lam2)   thickness change %")
+for l1, l2 in ((1.20, 1.05), (1.20, 1.00), (1.10, 1.10), (1.30, 0.95)):
+    l3 = 1.0/(l1*l2)
+    print(" %4.2f   %4.2f   %16.5f   %16.1f" % (l1, l2, l3, 100*(l3 - 1.0)))
+```
+
+```text
+--- 3. director after 30 increments of 0.10 rad (exact total 171.89 deg) ---
+ order        |d|      length err %   angle(deg)   angle err(deg)
+ 1st        1.16097         16.10      171.318         -0.570
+ 2nd        1.00038          0.04      172.173          0.286
+ closed     1.00000          0.00      171.887          0.000
+
+--- 4. same total rotation, smaller increments (1st order) ---
+ steps   dtheta      |d|     length err %
+    30   0.1000   1.16097        16.097
+    60   0.0500   1.07778         7.778
+   150   0.0200   1.03045         3.045
+   300   0.0100   1.01511         1.511
+  3000   0.0010   1.00150         0.150
+
+--- 5. thickness closed by J = 1, not by a 3rd equation ---
+ lam1   lam2    lam3=1/(lam1 lam2)   thickness change %
+ 1.20   1.05            0.79365              -20.6
+ 1.20   1.00            0.83333              -16.7
+ 1.10   1.10            0.82645              -17.4
+ 1.30   0.95            0.80972              -19.0
+```
+
+1次打ち切りは30ステップで director を16.1%伸ばしました。項を1つ足した2次では0.04%まで落ちます。
+長さは400倍正確になったのに、角度誤差はむしろ2次のほうが大きいです。2つの誤差は別物です。
+
+4番目の表のほうが重要です。増分を10分の1にしても、誤差は10分の1にしか減りません。荷重ステップを
+細かく刻むだけでは、この問題は消せません。閉形式を使うか、毎ステップ director を正規化するか、
+回転を[クォータニオン](/ja/posts/2026-04-20-fem-rigid-body-dynamics-quaternion/)で持ち歩く必要があります。
+
+## $S$ なのか $\sigma$ なのかをコードから見分ける
+
+他人の大変形コードを開いたとき、応力変数の正体は名前からは分かりません。3か所を見れば判別できます。
+
+応力が剛性行列に入る場所を見ます。$B$ 行列が $\partial E / \partial u$ で作られていれば、掛かる応力は $S$ です。
+$B$ が $\partial \varepsilon / \partial u$ なら $\sigma$ です。
+[構成行列の変換](/ja/posts/2026-08-17-curvilinear-constitutive-tensor-transform/)で見たとおり、$B$ の定義が
+応力の正体を決めます。
+
+積分時のヤコビアンを見ます。$\int_{V_0} \cdots \, dV_0$ のように基準配置の体積で積分しながら $J$ を
+掛けていなければ $S$ です。$J$ を掛けているなら、$\sigma$ を基準配置へ戻している最中です。
+
+出力ルーチンを見ます。後処理で von Mises を計算する直前に $\sigma = J^{-1}FSF^{T}$ の変換が入っていれば、
+内部では $S$ で回っていたということです。この変換なしに $S$ の成分をそのまま von Mises に入れて
+描いてしまうコードもあります。小さな変形では表に出ませんが、伸びが20%を超えると食い違い始めます。
+
+3つとも確認できなければ、テストが残っています。要素を1つ剛体回転だけさせて、応力が0に保たれるかを見ます。
+30°で13%が出るなら、どこかで $F$ を二乗していないという意味です。
