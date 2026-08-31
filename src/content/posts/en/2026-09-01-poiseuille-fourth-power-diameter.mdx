@@ -1,0 +1,242 @@
+---
+title: "A 1% Error in Diameter Is a 4% Error in Flow Rate — Half a Cell of Wall and Poiseuille's Constant"
+date: 2026-09-01
+description: "Pipe flow rate rides on the fourth power of the diameter. The same exponent explains a mesh with the wall half a cell off and Poiseuille's 1838 glass tubes."
+tags: ["Hagen-Poiseuille", "Viscosity", "Boundary-Conditions", "Historical", "Incompressible"]
+locale: en
+slug: 2026-09-01-poiseuille-fourth-power-diameter
+takeaway: "Your viscous scheme can be perfect and still lose four times as much flow rate as the half cell by which the wall sits in the wrong place."
+draft: false
+---
+
+import { FourthPowerFlowTwinTube } from '@/components/post-viz/2026-09-01-poiseuille-fourth-power-diameter/FourthPowerFlowTwinTube'
+import { ExponentFitNoiseBench } from '@/components/post-viz/2026-09-01-poiseuille-fourth-power-diameter/ExponentFitNoiseBench'
+
+## The verification case was off by 4% and the scheme was fine
+
+Laminar pipe flow is one of the few verification cases with a closed-form answer. I ran a freshly written viscous discretization against it and the flow rate came back 4% low. Suspecting the scheme was the obvious first move. But doubling the mesh resolution did not halve the error — it left the error exactly where it was. An error that refuses to converge is not a discretization error; it is a geometry error.
+
+The culprit was where the wall stood. Put the radius 1% too far in and the flow rate drops by 4%. This post traces where that factor of four comes from, and how Poiseuille ran the same exponent backwards in his glass-tube experiments of 1838.
+
+## Flow rate rides on the fourth power of the diameter
+
+For fully developed pipe flow, all that survives is one axial momentum balance.
+
+$$
+\frac{\mu}{r}\frac{d}{dr}\left(r\,\frac{du}{dr}\right) = \frac{dp}{dx}
+$$
+
+Here $\mu$ is the dynamic viscosity, $r$ the radial coordinate measured from the axis, and $u$ the axial velocity. Impose $du/dr = 0$ on the axis and $u = 0$ at the wall, and a parabola comes out.
+
+$$
+u(r) = \frac{\Delta p}{4\mu L}\left(R^{2} - r^{2}\right)
+$$
+
+$\Delta p$ is the pressure drop over a length $L$, and $R$ is the pipe radius. Integrating this over the cross section gives the flow rate.
+
+$$
+Q = \int_{0}^{R} u(r)\,2\pi r\,dr = \frac{\pi\,\Delta p\,D^{4}}{128\,\mu L}
+$$
+
+$D = 2R$ is the diameter. The integral supplies one extra factor of $r\,dr$, which is what turns $R^{2}$ into $R^{4}$. That is the whole origin of the fourth power.
+
+Let that exponent act on an error and it becomes a multiplier.
+
+$$
+\frac{\delta Q}{Q} = 4\,\frac{\delta D}{D} + \mathcal{O}\!\left(\left(\frac{\delta D}{D}\right)^{2}\right)
+$$
+
+$\delta D$ is the error in diameter and $\delta Q$ the resulting error in flow rate. An error in wall position usually shows up at first order in other verification quantities. Only in the flow rate does it charge you four times over.
+
+Try it yourself in the simulation below.
+
+<FourthPowerFlowTwinTube />
+
+Move the `dD/D` slider, which shifts only the lower pipe's wall, and watch the red bar and the counters on the right. The counters are an independent measurement — they simply tally particles crossing the outlet and know nothing about the formula — and they still converge on $(1+e)^{4}$. Switch to `wall pinned at cell centre` and drag N down to 10: 19% of the flow disappears with a perfectly correct viscous scheme.
+
+## What Navier left open in 1822, what Poiseuille pinned down in 1838
+
+Navier was a bridge engineer. He was preoccupied by the fact that fluid resistance is plain in measurements yet has no place in Euler's equations. In 1822, before the mathematics of elasticity had settled, he derived a viscous term shaped like a Laplacian of velocity and attached it to Euler's equation. That is the point at which fluid mechanics, [stalled for more than half a century after d'Alembert](/en/posts/2026-08-25-dalembert-bernoulli-wave-equation-gibbs/), started moving again.
+
+In the same years Cauchy was a professor at the École Polytechnique and Coriolis lectured there. The [energy equation in a rotating frame](/en/posts/2026-08-27-coriolis-rothalpy-rotating-frame-energy/) came out of waterwheel experiments in the same corridors. When the school was briefly closed in 1816, an entering student named Poiseuille changed course and went to medical school.
+
+He became a physician and measured blood flow. His question was how blood pressure varies with vessel diameter. To imitate the finest vessels he drew his own glass tubes, and the smallest had a bore of 0.015 mm — one fifth the thickness of a human hair. What he published in 1838 had this shape.
+
+$$
+Q = K''\,\frac{\Delta p\,D^{4}}{L}, \qquad K'' = \frac{\pi}{128\,\mu}
+$$
+
+The right-hand expression for $K''$ was filled in later. Poiseuille himself had no concept of viscosity. He simply wrote $K''$ as a constant. What his experiment pinned down was not the constant but the **exponent**.
+
+## What half a cell of wall is worth, measured in Python
+
+I solved the momentum balance above with a radial finite volume scheme. Two runs side by side: no-slip imposed on the wall face, and no-slip simply pinned at the last cell centre.
+
+```python
+import math
+
+MU, GRAD_P, RADIUS = 1.0e-3, 100.0, 1.0e-3   # Pa*s, Pa/m, m
+
+
+def poiseuille_q(radius, mu=MU, grad_p=GRAD_P):
+    """analytic flow rate  Q = pi*G*R^4/(8 mu)"""
+    return math.pi * grad_p * radius ** 4 / (8.0 * mu)
+
+
+def solve_pipe_fv(ncell, wall_at_face=True, radius=RADIUS, mu=MU, grad_p=GRAD_P):
+    """axisymmetric fully developed profile, finite volume on ncell annuli"""
+    dr = radius / ncell
+    rf = [i * dr for i in range(ncell + 1)]          # face radii
+    lo, dg, up, rhs = [0.0] * ncell, [0.0] * ncell, [0.0] * ncell, [0.0] * ncell
+    for i in range(ncell):
+        rhs[i] = -grad_p * (rf[i + 1] ** 2 - rf[i] ** 2) / 2.0
+        if i > 0:
+            w = mu * rf[i] / dr
+            lo[i], dg[i] = w, dg[i] - w
+        if i < ncell - 1:
+            e = mu * rf[i + 1] / dr
+            up[i], dg[i] = e, dg[i] - e
+        else:
+            if wall_at_face:                          # no-slip on the wall face
+                dg[i] -= mu * rf[i + 1] / (dr / 2.0)
+            else:                                     # no-slip pinned at the cell centre
+                lo[i], dg[i], up[i], rhs[i] = 0.0, 1.0, 0.0, 0.0
+    for i in range(1, ncell):                         # Thomas algorithm
+        m = lo[i] / dg[i - 1]
+        dg[i] -= m * up[i - 1]
+        rhs[i] -= m * rhs[i - 1]
+    u = [0.0] * ncell
+    u[-1] = rhs[-1] / dg[-1]
+    for i in range(ncell - 2, -1, -1):
+        u[i] = (rhs[i] - up[i] * u[i + 1]) / dg[i]
+    q = sum(u[i] * math.pi * (rf[i + 1] ** 2 - rf[i] ** 2) for i in range(ncell))
+    return q
+
+
+def fit_slope(xs, ys):
+    """least squares slope of log y against log x"""
+    lx = [math.log(x) for x in xs]
+    ly = [math.log(y) for y in ys]
+    n = len(lx)
+    mx, my = sum(lx) / n, sum(ly) / n
+    num = sum((lx[i] - mx) * (ly[i] - my) for i in range(n))
+    den = sum((lx[i] - mx) ** 2 for i in range(n))
+    return num / den
+
+
+_seed = 20260901
+
+
+def unit_normal():
+    """Box-Muller on a plain LCG, so the numbers reproduce anywhere"""
+    global _seed
+    out = []
+    for _ in range(2):
+        _seed = (1103515245 * _seed + 12345) % (2 ** 31)
+        out.append((_seed + 0.5) / 2 ** 31)
+    return math.sqrt(-2.0 * math.log(out[0])) * math.cos(2 * math.pi * out[1])
+
+
+def measured_exponent(dmin, dmax, ntube, noise, repeat=200):
+    """Poiseuille's experiment: true flow rate, diameter read with a relative error"""
+    slopes = []
+    for _ in range(repeat):
+        ds, qs = [], []
+        for k in range(ntube):
+            f = k / (ntube - 1)
+            d_true = dmin * (dmax / dmin) ** f
+            qs.append(poiseuille_q(d_true / 2.0))
+            ds.append(d_true * (1.0 + noise * unit_normal()))
+        slopes.append(fit_slope(ds, qs))
+    mean = sum(slopes) / len(slopes)
+    sd = math.sqrt(sum((s - mean) ** 2 for s in slopes) / len(slopes))
+    return mean, sd
+
+
+print("[1] wall half a cell off  (R = 1.000 mm)")
+print(" N   Q_face/Q_exact   Q_centre/Q_exact   (1-1/2N)^4")
+qex = poiseuille_q(RADIUS)
+for n in (10, 20, 40, 80):
+    a = solve_pipe_fv(n, True) / qex
+    b = solve_pipe_fv(n, False) / qex
+    print(f"{n:3d}      {a:.4f}            {b:.4f}          {(1-1/(2*n))**4:.4f}")
+
+print()
+print("[2] 1% error on D vs the resulting error on Q")
+for e in (0.005, 0.01, 0.02):
+    print(f"  dD/D = {e*100:4.1f}%  ->  dQ/Q = {((1+e)**4-1)*100:5.2f}%")
+
+print()
+print("[3] exponent fitted from 12 tubes, 200 repeats")
+print(" range of D            noise on D    exponent (mean +- sd)")
+for (lo_d, hi_d, tag) in ((0.10e-3, 0.30e-3, "0.10 - 0.30 mm"),
+                          (0.015e-3, 0.60e-3, "0.015- 0.60 mm")):
+    for nz in (0.0, 0.01, 0.03):
+        m, s = measured_exponent(lo_d, hi_d, 12, nz)
+        print(f" {tag}        {nz*100:4.1f}%       {m:.3f} +- {s:.3f}")
+```
+
+```text
+[1] wall half a cell off  (R = 1.000 mm)
+ N   Q_face/Q_exact   Q_centre/Q_exact   (1-1/2N)^4
+ 10      1.0100            0.8100          0.8145
+ 20      1.0025            0.9025          0.9037
+ 40      1.0006            0.9506          0.9509
+ 80      1.0002            0.9752          0.9752
+
+[2] 1% error on D vs the resulting error on Q
+  dD/D =  0.5%  ->  dQ/Q =  2.02%
+  dD/D =  1.0%  ->  dQ/Q =  4.06%
+  dD/D =  2.0%  ->  dQ/Q =  8.24%
+
+[3] exponent fitted from 12 tubes, 200 repeats
+ range of D            noise on D    exponent (mean +- sd)
+ 0.10 - 0.30 mm         0.0%       4.000 +- 0.000
+ 0.10 - 0.30 mm         1.0%       3.996 +- 0.033
+ 0.10 - 0.30 mm         3.0%       3.993 +- 0.098
+ 0.015- 0.60 mm         0.0%       4.000 +- 0.000
+ 0.015- 0.60 mm         1.0%       4.000 +- 0.009
+ 0.015- 0.60 mm         3.0%       3.995 +- 0.028
+```
+
+In the first table, the second column cuts its error by four every time the mesh doubles. That is second-order convergence. The third column does no such thing. Its error only halves, and it matches the fourth column, $(1-1/2N)^{4}$, to three decimal places.
+
+That match is the diagnosis. The moment no-slip is pinned at the cell centre, the computation is solving a pipe of radius $R - \Delta r/2$. Not a discretization error — a different pipe. And that half cell becomes a factor of four in the flow rate. At N = 20 the radius is 2.5% small and the flow rate is 9.75% small.
+
+Placing the wall halfway between nodes is not a finite volume peculiarity. [Lattice Boltzmann bounce-back also stands the wall midway between two nodes](/en/posts/2026-08-24-lbm-boundary-node-unknown-pdf-framework/). Either way, the first thing to settle is where the code believes the wall to be.
+
+## Does the exponent 4 survive the noise?
+
+Poiseuille's situation was the reverse of ours. He was not given $D$ and asked to predict $Q$; he had to read the exponent out of the $Q$ he measured. And the diameter is the hardest quantity to measure. Consider reading the bore of a 0.015 mm glass tube to 1%.
+
+The third table is that experiment. Relative error goes on the diameter only, and the slope of $\log Q$ against $\log D$ is refitted 200 times. Over a tube range of 0.10–0.30 mm, 1% noise makes the slope wobble by $\pm 0.033$. Widen the range to 0.015–0.60 mm and the same noise with the same number of tubes gives $\pm 0.009$.
+
+One regression estimate explains it.
+
+$$
+\sigma_{n} \approx \frac{n\,\sigma_{\delta D/D}}{\sqrt{N}\;\sigma_{\ln D}}
+$$
+
+Here $n = 4$ is the true exponent, $N$ the number of tubes, and $\sigma_{\ln D}$ the spread of the tubes along the $\log D$ axis. The narrow range gives $4 \times 0.01 / (\sqrt{12} \times 0.331) = 0.035$, the wide one $0.010$. Those are the 0.033 and 0.009 in the table.
+
+Accuracy in the exponent is not bought with a finer ruler. It is bought with a longer lever arm along $\log D$. That is why Poiseuille went all the way down to a fifth of a hair's width.
+
+<ExponentFitNoiseBench />
+
+Leave `Dmax/Dmin` at 3 and watch the histogram spread, then push the range to 40 with the noise untouched. Same ruler, same tube count, and the distribution collapses onto 4.
+
+## After Stokes turned $K''$ into $\pi/128$
+
+Replacing Poiseuille's $K''$ with $\pi/128\mu$ was not a tidying-up of units. It was the moment when the $\mu$ of Navier's equation moved into the empty slot the experiment had left. Stokes derived the law mathematically from Navier's equation, which confirmed that the quantity measured in a tube and the property fed to the equation are the same thing.
+
+After that the formula ran in the other direction. Instead of an experiment that measures an exponent, it became a viscometer that measures $\mu$. The CGS unit of viscosity, the poise, carries his name. The equation itself, reinforced by Poiseuille's experiments and Stokes's analysis, settled into the Navier–Stokes equations — and in 2000 became one of the Clay Institute's seven millennium problems.
+
+The same structure recurs in our own codes. Wall function constants, effective diameters, contact angles: experiment supplies the form, theory fills in the coefficient. And when the form is as steep as $D^{4}$, geometry dominates the error long before any coefficient does.
+
+## What I check first when a pipe case misses
+
+Opening the scheme first, when a flow rate is off, wastes a day. The order goes like this.
+
+Double the mesh resolution and see whether the error falls to a quarter. If it does not, the problem is not discretization. Next, compare the error ratio against a geometric factor such as $(1-1/2N)^{4}$. If it matches, it is the wall position. Finally, divide the flow rate error by the diameter error. A quotient near 4 says that one radius accounts for the whole thing.
+
+Poiseuille could not know his diameters, so he read the exponent. We know the exponent, so we can work back to the diameter. The same $D^{4}$, used from both ends.

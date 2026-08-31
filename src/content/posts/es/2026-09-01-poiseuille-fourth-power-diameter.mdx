@@ -1,0 +1,242 @@
+---
+title: "Un error del 1% en el diámetro es un 4% en el caudal — media celda de pared y la constante de Poiseuille"
+date: 2026-09-01
+description: "El caudal en tubería va con la cuarta potencia del diámetro. El mismo exponente explica una malla con la pared media celda adentro y los tubos de vidrio de Poiseuille en 1838."
+tags: ["Hagen-Poiseuille", "Viscosity", "Boundary-Conditions", "Historical", "Incompressible"]
+locale: es
+slug: 2026-09-01-poiseuille-fourth-power-diameter
+takeaway: "El esquema viscoso puede ser perfecto y aun así perder cuatro veces la media celda que la pared tiene mal colocada."
+draft: false
+---
+
+import { FourthPowerFlowTwinTube } from '@/components/post-viz/2026-09-01-poiseuille-fourth-power-diameter/FourthPowerFlowTwinTube'
+import { ExponentFitNoiseBench } from '@/components/post-viz/2026-09-01-poiseuille-fourth-power-diameter/ExponentFitNoiseBench'
+
+## El caso de verificación fallaba por 4% y el esquema estaba bien
+
+El flujo laminar en tubería es uno de los pocos casos de verificación con solución analítica. Al probar allí una discretización viscosa recién escrita, el caudal salió 4% bajo. Sospechar del esquema era el orden natural. Sin embargo, al duplicar la resolución de malla el error no se redujo a la mitad: quedó exactamente igual. Un error que no converge no es error de discretización, es error de geometría.
+
+El culpable era la posición de la pared. Basta desplazar el radio un 1% hacia adentro para que el caudal caiga un 4%. Este artículo rastrea de dónde sale ese factor cuatro, y cómo Poiseuille usó el mismo exponente en sentido inverso en sus experimentos con tubos de vidrio de 1838.
+
+## El caudal va con la cuarta potencia del diámetro
+
+En flujo de tubería completamente desarrollado solo sobrevive un balance de cantidad de movimiento axial.
+
+$$
+\frac{\mu}{r}\frac{d}{dr}\left(r\,\frac{du}{dr}\right) = \frac{dp}{dx}
+$$
+
+Aquí $\mu$ es la viscosidad dinámica, $r$ la coordenada radial medida desde el eje y $u$ la velocidad axial. Con $du/dr = 0$ en el eje y $u = 0$ en la pared aparece una parábola.
+
+$$
+u(r) = \frac{\Delta p}{4\mu L}\left(R^{2} - r^{2}\right)
+$$
+
+$\Delta p$ es la caída de presión en un tramo de longitud $L$ y $R$ es el radio del tubo. Al integrar sobre la sección se obtiene el caudal.
+
+$$
+Q = \int_{0}^{R} u(r)\,2\pi r\,dr = \frac{\pi\,\Delta p\,D^{4}}{128\,\mu L}
+$$
+
+$D = 2R$ es el diámetro. La integral aporta un factor extra $r\,dr$, y eso es lo que convierte $R^{2}$ en $R^{4}$. Ese es todo el origen de la cuarta potencia.
+
+Cuando ese exponente actúa sobre un error, se vuelve un multiplicador.
+
+$$
+\frac{\delta Q}{Q} = 4\,\frac{\delta D}{D} + \mathcal{O}\!\left(\left(\frac{\delta D}{D}\right)^{2}\right)
+$$
+
+$\delta D$ es el error en el diámetro y $\delta Q$ el error resultante en el caudal. Un error en la posición de la pared suele aparecer a primer orden en otras magnitudes de verificación. Solo el caudal lo cobra cuatro veces.
+
+Conviene manipularlo directamente en la simulación siguiente.
+
+<FourthPowerFlowTwinTube />
+
+Con el deslizador `dD/D` se mueve únicamente la pared del tubo inferior; conviene mirar la barra roja y los contadores de la derecha. Los contadores son una medición independiente: solo cuentan partículas que cruzan la salida y no saben nada de la fórmula, y aun así convergen a $(1+e)^{4}$. Al cambiar a `wall pinned at cell centre` y bajar N hasta 10 desaparece el 19% del caudal con un esquema viscoso perfectamente correcto.
+
+## Lo que Navier dejó abierto en 1822 y el exponente que Poiseuille fijó en 1838
+
+Navier era ingeniero de puentes. Le obsesionaba que la resistencia del fluido fuera evidente en las mediciones y no tuviera expresión en las ecuaciones de Euler. En 1822, antes de que la matemática de la elasticidad estuviera asentada, dedujo un término viscoso con forma de laplaciano de la velocidad y lo añadió a la ecuación de Euler. Ese es el punto en que la mecánica de fluidos, [estancada durante más de medio siglo después de d'Alembert](/es/posts/2026-08-25-dalembert-bernoulli-wave-equation-gibbs/), volvió a moverse.
+
+Por esos mismos años Cauchy era profesor en la École Polytechnique y Coriolis daba clases allí. La [ecuación de energía en marco rotante](/es/posts/2026-08-27-coriolis-rothalpy-rotating-frame-energy/) salió de experimentos con ruedas hidráulicas en los mismos pasillos. Cuando la escuela cerró brevemente en 1816, un estudiante recién ingresado llamado Poiseuille cambió de rumbo y entró a medicina.
+
+Se hizo médico y midió flujo sanguíneo. Su pregunta era cómo varía la presión arterial con el diámetro del vaso. Para imitar los vasos más finos estiró sus propios tubos de vidrio, y el más pequeño tenía 0.015 mm de calibre: la quinta parte del grosor de un cabello. Lo que publicó en 1838 tenía esta forma.
+
+$$
+Q = K''\,\frac{\Delta p\,D^{4}}{L}, \qquad K'' = \frac{\pi}{128\,\mu}
+$$
+
+La expresión de la derecha para $K''$ se completó después. El propio Poiseuille no tenía el concepto de viscosidad; escribió $K''$ como una constante sin más. Lo que su experimento fijó no fue la constante, sino el **exponente**.
+
+## Cuánto vale media celda de pared, medido en Python
+
+El balance anterior se resolvió con un esquema de volúmenes finitos radial. Dos corridas en paralelo: la condición de no deslizamiento impuesta en la cara de la pared, y la misma condición simplemente clavada en el último centro de celda.
+
+```python
+import math
+
+MU, GRAD_P, RADIUS = 1.0e-3, 100.0, 1.0e-3   # Pa*s, Pa/m, m
+
+
+def poiseuille_q(radius, mu=MU, grad_p=GRAD_P):
+    """caudal analitico  Q = pi*G*R^4/(8 mu)"""
+    return math.pi * grad_p * radius ** 4 / (8.0 * mu)
+
+
+def solve_pipe_fv(ncell, wall_at_face=True, radius=RADIUS, mu=MU, grad_p=GRAD_P):
+    """perfil axisimetrico desarrollado, volumenes finitos con ncell anillos"""
+    dr = radius / ncell
+    rf = [i * dr for i in range(ncell + 1)]          # radios de cara
+    lo, dg, up, rhs = [0.0] * ncell, [0.0] * ncell, [0.0] * ncell, [0.0] * ncell
+    for i in range(ncell):
+        rhs[i] = -grad_p * (rf[i + 1] ** 2 - rf[i] ** 2) / 2.0
+        if i > 0:
+            w = mu * rf[i] / dr
+            lo[i], dg[i] = w, dg[i] - w
+        if i < ncell - 1:
+            e = mu * rf[i + 1] / dr
+            up[i], dg[i] = e, dg[i] - e
+        else:
+            if wall_at_face:                          # no deslizamiento en la cara de pared
+                dg[i] -= mu * rf[i + 1] / (dr / 2.0)
+            else:                                     # no deslizamiento clavado en el centro de celda
+                lo[i], dg[i], up[i], rhs[i] = 0.0, 1.0, 0.0, 0.0
+    for i in range(1, ncell):                         # algoritmo de Thomas
+        m = lo[i] / dg[i - 1]
+        dg[i] -= m * up[i - 1]
+        rhs[i] -= m * rhs[i - 1]
+    u = [0.0] * ncell
+    u[-1] = rhs[-1] / dg[-1]
+    for i in range(ncell - 2, -1, -1):
+        u[i] = (rhs[i] - up[i] * u[i + 1]) / dg[i]
+    q = sum(u[i] * math.pi * (rf[i + 1] ** 2 - rf[i] ** 2) for i in range(ncell))
+    return q
+
+
+def fit_slope(xs, ys):
+    """pendiente por minimos cuadrados de log y frente a log x"""
+    lx = [math.log(x) for x in xs]
+    ly = [math.log(y) for y in ys]
+    n = len(lx)
+    mx, my = sum(lx) / n, sum(ly) / n
+    num = sum((lx[i] - mx) * (ly[i] - my) for i in range(n))
+    den = sum((lx[i] - mx) ** 2 for i in range(n))
+    return num / den
+
+
+_seed = 20260901
+
+
+def unit_normal():
+    """Box-Muller sobre un LCG simple, para reproducir los numeros en cualquier maquina"""
+    global _seed
+    out = []
+    for _ in range(2):
+        _seed = (1103515245 * _seed + 12345) % (2 ** 31)
+        out.append((_seed + 0.5) / 2 ** 31)
+    return math.sqrt(-2.0 * math.log(out[0])) * math.cos(2 * math.pi * out[1])
+
+
+def measured_exponent(dmin, dmax, ntube, noise, repeat=200):
+    """experimento de Poiseuille: caudal verdadero, diametro leido con error relativo"""
+    slopes = []
+    for _ in range(repeat):
+        ds, qs = [], []
+        for k in range(ntube):
+            f = k / (ntube - 1)
+            d_true = dmin * (dmax / dmin) ** f
+            qs.append(poiseuille_q(d_true / 2.0))
+            ds.append(d_true * (1.0 + noise * unit_normal()))
+        slopes.append(fit_slope(ds, qs))
+    mean = sum(slopes) / len(slopes)
+    sd = math.sqrt(sum((s - mean) ** 2 for s in slopes) / len(slopes))
+    return mean, sd
+
+
+print("[1] wall half a cell off  (R = 1.000 mm)")
+print(" N   Q_face/Q_exact   Q_centre/Q_exact   (1-1/2N)^4")
+qex = poiseuille_q(RADIUS)
+for n in (10, 20, 40, 80):
+    a = solve_pipe_fv(n, True) / qex
+    b = solve_pipe_fv(n, False) / qex
+    print(f"{n:3d}      {a:.4f}            {b:.4f}          {(1-1/(2*n))**4:.4f}")
+
+print()
+print("[2] 1% error on D vs the resulting error on Q")
+for e in (0.005, 0.01, 0.02):
+    print(f"  dD/D = {e*100:4.1f}%  ->  dQ/Q = {((1+e)**4-1)*100:5.2f}%")
+
+print()
+print("[3] exponent fitted from 12 tubes, 200 repeats")
+print(" range of D            noise on D    exponent (mean +- sd)")
+for (lo_d, hi_d, tag) in ((0.10e-3, 0.30e-3, "0.10 - 0.30 mm"),
+                          (0.015e-3, 0.60e-3, "0.015- 0.60 mm")):
+    for nz in (0.0, 0.01, 0.03):
+        m, s = measured_exponent(lo_d, hi_d, 12, nz)
+        print(f" {tag}        {nz*100:4.1f}%       {m:.3f} +- {s:.3f}")
+```
+
+```text
+[1] wall half a cell off  (R = 1.000 mm)
+ N   Q_face/Q_exact   Q_centre/Q_exact   (1-1/2N)^4
+ 10      1.0100            0.8100          0.8145
+ 20      1.0025            0.9025          0.9037
+ 40      1.0006            0.9506          0.9509
+ 80      1.0002            0.9752          0.9752
+
+[2] 1% error on D vs the resulting error on Q
+  dD/D =  0.5%  ->  dQ/Q =  2.02%
+  dD/D =  1.0%  ->  dQ/Q =  4.06%
+  dD/D =  2.0%  ->  dQ/Q =  8.24%
+
+[3] exponent fitted from 12 tubes, 200 repeats
+ range of D            noise on D    exponent (mean +- sd)
+ 0.10 - 0.30 mm         0.0%       4.000 +- 0.000
+ 0.10 - 0.30 mm         1.0%       3.996 +- 0.033
+ 0.10 - 0.30 mm         3.0%       3.993 +- 0.098
+ 0.015- 0.60 mm         0.0%       4.000 +- 0.000
+ 0.015- 0.60 mm         1.0%       4.000 +- 0.009
+ 0.015- 0.60 mm         3.0%       3.995 +- 0.028
+```
+
+En la primera tabla, la segunda columna divide su error entre cuatro cada vez que la malla se duplica: convergencia de segundo orden. La tercera columna no hace nada de eso. Su error solo se reduce a la mitad y coincide con la cuarta columna, $(1-1/2N)^{4}$, hasta el tercer decimal.
+
+Esa coincidencia es el diagnóstico. En el instante en que la condición de no deslizamiento se clava en el centro de celda, el cálculo resuelve un tubo de radio $R - \Delta r/2$. No es error de discretización: es otro tubo. Y esa media celda se convierte en un factor cuatro sobre el caudal. Con N = 20 el radio es 2.5% menor y el caudal 9.75% menor.
+
+Colocar la pared a mitad de camino entre nodos no es una peculiaridad de volúmenes finitos. [El bounce-back de lattice Boltzmann también levanta la pared en el punto medio entre dos nodos](/es/posts/2026-08-24-lbm-boundary-node-unknown-pdf-framework/). En cualquier caso, lo primero que hay que fijar es dónde cree el código que está la pared.
+
+## ¿Sobrevive el exponente 4 al ruido?
+
+La situación de Poiseuille era la inversa de la nuestra. No partía de $D$ para predecir $Q$: tenía que leer el exponente a partir del $Q$ medido. Y el diámetro es la magnitud más difícil de medir. Basta imaginar la lectura del calibre de un tubo de 0.015 mm con precisión del 1%.
+
+La tercera tabla es ese experimento. El error relativo entra solo en el diámetro y la pendiente de $\log Q$ frente a $\log D$ se reajusta 200 veces. Con tubos en el rango 0.10–0.30 mm, un ruido del 1% hace oscilar la pendiente en $\pm 0.033$. Al ampliar el rango a 0.015–0.60 mm, el mismo ruido y el mismo número de tubos dan $\pm 0.009$.
+
+Una sola estimación de regresión lo explica.
+
+$$
+\sigma_{n} \approx \frac{n\,\sigma_{\delta D/D}}{\sqrt{N}\;\sigma_{\ln D}}
+$$
+
+Aquí $n = 4$ es el exponente verdadero, $N$ el número de tubos y $\sigma_{\ln D}$ la dispersión de los tubos sobre el eje $\log D$. El rango estrecho da $4 \times 0.01 / (\sqrt{12} \times 0.331) = 0.035$ y el ancho $0.010$. Son los 0.033 y 0.009 de la tabla.
+
+La precisión del exponente no se compra con una regla más fina, sino con un brazo de palanca más largo sobre $\log D$. Por eso Poiseuille bajó hasta la quinta parte del grosor de un cabello.
+
+<ExponentFitNoiseBench />
+
+Conviene dejar `Dmax/Dmin` en 3 y observar cómo se ensancha el histograma; después, sin tocar el ruido, empujar el rango hasta 40. Misma regla, mismo número de tubos, y la distribución se cierra sobre 4.
+
+## Después de que Stokes convirtiera $K''$ en $\pi/128$
+
+Sustituir el $K''$ de Poiseuille por $\pi/128\mu$ no fue un arreglo de unidades. Fue el momento en que la $\mu$ de la ecuación de Navier ocupó el hueco que el experimento había dejado. Stokes dedujo la ley matemáticamente a partir de la ecuación de Navier, y con ello quedó confirmado que la magnitud medida en un tubo y la propiedad que se introduce en la ecuación son la misma cosa.
+
+A partir de ahí la fórmula cambió de sentido. Dejó de ser un experimento que mide un exponente para volverse un viscosímetro que mide $\mu$. La unidad CGS de viscosidad, el poise, lleva su nombre. La ecuación, reforzada por los experimentos de Poiseuille y el análisis de Stokes, se consolidó como las ecuaciones de Navier–Stokes y en 2000 pasó a ser uno de los siete problemas del milenio del Instituto Clay.
+
+La misma estructura se repite en nuestros propios códigos. Constantes de funciones de pared, diámetros efectivos, ángulos de contacto: el experimento aporta la forma y la teoría rellena el coeficiente. Y cuando la forma es tan empinada como $D^{4}$, la geometría domina el error mucho antes que cualquier coeficiente.
+
+## Lo primero que se revisa cuando un caso de tubería falla
+
+Abrir el esquema en cuanto el caudal no cuadra cuesta un día de trabajo. El orden es este.
+
+Primero se duplica la resolución de malla y se comprueba si el error cae a la cuarta parte. Si no cae, el problema no es la discretización. Después se compara la razón de errores contra un factor geométrico como $(1-1/2N)^{4}$. Si coincide, es la posición de la pared. Por último se divide el error de caudal entre el error de diámetro. Un cociente cercano a 4 indica que un solo radio explica todo.
+
+Poiseuille no podía conocer sus diámetros y por eso leyó el exponente; nosotros conocemos el exponente y por eso podemos remontarnos al diámetro. El mismo $D^{4}$, usado desde ambos extremos.
