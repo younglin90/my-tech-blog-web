@@ -1,0 +1,254 @@
+---
+title: "ρ and u Agree to the Last Digit While the Strain Rate Swells 45% — Nonequilibrium Rescaling at an LBM Refinement Interface"
+date: 2026-09-02
+description: "Copying distribution functions across an LBM AMR level interface keeps ρ and u exact but inflates the stress by up to 2x. I measured the rescale factor."
+tags: ["AMR", "LBM", "Chapman-Enskog", "Viscosity", "Mesh-Refinement"]
+locale: en
+slug: 2026-09-02-lbm-amr-nonequilibrium-rescale
+takeaway: "Only ρ and u may cross a level interface untouched. The nonequilibrium part has to be rewritten by a factor of τ_f/(m·τ_c)."
+draft: false
+---
+
+import { RefinementGateStrainInflator } from '@/components/post-viz/2026-09-02-lbm-amr-nonequilibrium-rescale/RefinementGateStrainInflator'
+import { ExplosionCoalescenceClock } from '@/components/post-viz/2026-09-02-lbm-amr-nonequilibrium-rescale/ExplosionCoalescenceClock'
+
+## ρ and u Matched to the Last Digit, but the Stress Was Inflated
+
+Bolt adaptive mesh refinement (AMR) onto a lattice Boltzmann (LBM) code and you inherit a new object: the level interface.
+One layer of cells is shared by the coarse grid and the fine grid. Values have to be transcribed across that layer.
+
+The usual way to check that transcription is to look at density and velocity. Look only at those and the bug walks right past you.
+Copy the distribution functions $f_i$ onto the fine level verbatim and $\rho$ and $\mathbf{u}$ still agree to the last decimal.
+What does not agree is the stress. This post pins down exactly how large the discrepancy is, and why it lands on that particular factor.
+
+The answer up front: the factor is the reciprocal of $\tilde\tau_f/(m\tilde\tau_c)$. In a common setup that is 1.45x,
+and in a high-Reynolds setup it approaches 2x.
+
+## What Must Survive a Level Change and What Must Not
+
+The rule for converting between levels is a single line. Conserved quantities have to match.
+$\rho$, $\mathbf{u}$, and $p$ are physical quantities, so changing the grid gives them no reason to change.
+
+Let the refinement ratio be $m = \Delta x_c/\Delta x_f$. Subscript $c$ means coarse grid, $f$ means fine grid.
+Under acoustic scaling, $\Delta t$ shrinks by the same ratio.
+
+$$
+\Delta x_f = \frac{\Delta x_c}{m}, \qquad \Delta t_f = \frac{\Delta t_c}{m}
+$$
+
+That makes the lattice-unit velocity $\hat{u} = u\,\Delta t/\Delta x$ identical on both levels.
+$\rho$ is identical too, so the equilibrium distribution $f_i^{\mathrm{eq}}(\rho, \hat{u})$ is **exactly the same number on both levels**.
+The only thing that has to change is the departure from equilibrium, $f_i^{\mathrm{neq}} = f_i - f_i^{\mathrm{eq}}$.
+
+Try it hands-on in the simulation below.
+
+<RefinementGateStrainInflator />
+
+Two real grids solve the same physical domain over the same physical time, side by side.
+Drag the `tau_c` slider and watch whether `measured q_f/q_c` on the right-hand ladder stays glued to `rescale r`.
+Press `tau copied` and the fine level becomes a fluid of a different viscosity, so the orange curve peels away from the blue one.
+
+## Pin the Viscosity and τ Has to Move
+
+Physical viscosity must not change just because the level changed. Written with the lattice-unit relaxation time $\tilde\tau$, viscosity looks like this.
+
+$$
+\nu = c_s^2\left(\tilde\tau - \tfrac{1}{2}\right)\frac{\Delta x^2}{\Delta t}
+$$
+
+$c_s^2$ is the squared lattice speed of sound, and $\Delta x^2/\Delta t$ carries the units of a diffusivity.
+The $-\tfrac{1}{2}$ is the residue of trapezoidal integration, covered separately in [the Δt/2 left behind by LBM discretization](/en/posts/2026-08-26-lbm-trapezoidal-integration-half-timestep/).
+
+Under acoustic scaling $\Delta x^2/\Delta t$ picks up a factor of $1/m$. Imposing $\nu_f = \nu_c$ drags $\tilde\tau$ out into the open.
+
+$$
+\tilde\tau_f = \frac{1}{2} + m\left(\tilde\tau_c - \frac{1}{2}\right)
+$$
+
+With $m=2$ and $\tilde\tau_c = 0.8$ you get $\tilde\tau_f = 1.1$. The point is that this is not double.
+Simply multiplying $\tilde\tau$ by $m$ throws $\nu$ off, because the $\tfrac{1}{2}$ is not a quantity that scales.
+
+## The Nonequilibrium Part Carries Δt as Well as τ
+
+Write the first-order term of the Chapman–Enskog expansion with a Grad approximation and the nonequilibrium part is proportional to the strain rate.
+
+$$
+f_i^{\mathrm{neq}} = -\frac{w_i \rho \tilde\tau}{c_s^2}\left(\mathbf{c}_i\mathbf{c}_i - c_s^2\mathbf{I}\right) : \hat{\mathbf{S}}
+$$
+
+$w_i$ is the weight, $\mathbf{c}_i$ the lattice velocity, and $\hat{\mathbf{S}}$ the **lattice-unit** strain rate.
+It relates to the physical strain rate $\mathbf{S}$ through $\hat{\mathbf{S}} = \mathbf{S}\,\Delta t$.
+The physical strain rate at a given point is level-independent, so $f^{\mathrm{neq}}$ is proportional to $\tilde\tau\,\Delta t$.
+
+$$
+r \equiv \frac{f_i^{\mathrm{neq},f}}{f_i^{\mathrm{neq},c}} = \frac{\tilde\tau_f\,\Delta t_f}{\tilde\tau_c\,\Delta t_c} = \frac{\tilde\tau_f}{m\,\tilde\tau_c}
+$$
+
+That $r$ is the rescale factor, in the form Dupuis and Chopard laid out.
+With $\tilde\tau_c = 0.8$ and $m=2$, $r = 1.1/1.6 = 0.6875$. The fine level's nonequilibrium is 69% of the coarse level's.
+
+## Three Transfer Schemes on One Table
+
+In practice, passing values across a level interface splits three ways.
+
+| Scheme | What crosses | Information needed | Cost | Failure point |
+|---|---|---|---|---|
+| Full copy | $f_i$ as is | none | lowest | $\rho,\mathbf{u}$ are right, stress inflates by $1/r$ |
+| Macroscopic + Grad reconstruction | interpolate $\rho, \mathbf{u}$, then rebuild $f^{\mathrm{neq}}$ | velocity gradient | medium | the gradient has to be re-differenced |
+| Nonequilibrium interpolation + scaling | recompute $f^{\mathrm{eq}}$, multiply $f^{\mathrm{neq}}$ by $r$ | $\tilde\tau_c, \tilde\tau_f, m$ | near lowest | easy to drop the $m$ in $r$ |
+
+The second and third must produce the same result. The third is the practical standard because no gradient has to be re-differenced.
+Two values of $\tilde\tau$ plus $m$ give you the coefficient.
+
+The spatial interpolation itself is unremarkable. Coarse to fine is trilinear interpolation in 3D; fine to coarse is the average of $2^d$ cells.
+$d$ is the number of dimensions. The hard part is not the interpolation but deciding what gets multiplied by $r$ afterward.
+
+## Measuring the Recovered Strain Rate in Python
+
+On a D2Q9 lattice, fix one physical strain rate and build $f^{\mathrm{neq}}$ for each of the two levels.
+Then recover the strain rate using the fine level's $\tilde\tau_f$. Feed in the rescaled value and the copied value side by side.
+
+```python
+CS2 = 1.0 / 3.0
+EX = [0, 1, 0, -1, 0, 1, -1, -1, 1]
+EY = [0, 0, 1, 0, -1, 1, 1, -1, -1]
+W = [4/9, 1/9, 1/9, 1/9, 1/9, 1/36, 1/36, 1/36, 1/36]
+
+
+def equilibrium(rho, ux, uy):
+    """D2Q9 equilibrium. Different levels give the same value when rho and u match."""
+    out = []
+    u2 = ux*ux + uy*uy
+    for i in range(9):
+        cu = EX[i]*ux + EY[i]*uy
+        out.append(rho*W[i]*(1 + cu/CS2 + cu*cu/(2*CS2*CS2) - u2/(2*CS2)))
+    return out
+
+
+def grad_neq(rho, tau, sxy):
+    """Nonequilibrium part from the Grad approximation. sxy is that level's lattice-unit shear strain rate."""
+    out = []
+    for i in range(9):
+        q_xy = EX[i]*EY[i]            # xy component of Q_i (the diagonal has no partner for sxy)
+        out.append(-(W[i]*rho*tau/CS2) * 2.0 * q_xy * sxy)
+    return out
+
+
+def recover_strain(fneq, rho, tau, dt):
+    """Recover the shear strain rate in physical units from the nonequilibrium moment."""
+    pi_xy = sum(fneq[i]*EX[i]*EY[i] for i in range(9))
+    return -pi_xy / (2.0*rho*CS2*tau*dt)
+
+
+def tau_on_level(tau_c, m):
+    """Relaxation time the fine level must carry when the viscosity is held fixed."""
+    return 0.5 + m*(tau_c - 0.5)
+
+
+def nu_physical(tau, dx, dt):
+    return CS2*(tau - 0.5)*dx*dx/dt
+
+
+rho, ux, uy = 1.0, 0.05, 0.0
+s_phys = 0.004          # physical shear strain rate - independent of level
+m = 2                   # refinement ratio
+dx_c, dt_c = 1.0, 1.0
+dx_f, dt_f = dx_c/m, dt_c/m
+
+feq_c = equilibrium(rho, ux, uy)
+feq_f = equilibrium(rho, ux, uy)
+print("max |feq_c - feq_f| = %.3e" % max(abs(a-b) for a, b in zip(feq_c, feq_f)))
+print()
+print("%5s  %6s  %8s  %8s  %7s  %11s  %14s  %6s" % (
+    "tau_c", "tau_f", "nu_c", "nu_f", "r_meas", "tf/(m*tc)", "copied/true", "err%"))
+for tau_c in [0.51, 0.55, 0.60, 0.80, 1.20, 2.00]:
+    tau_f = tau_on_level(tau_c, m)
+    fneq_c = grad_neq(rho, tau_c, s_phys*dt_c)
+    fneq_f = grad_neq(rho, tau_f, s_phys*dt_f)
+    r = fneq_f[5]/fneq_c[5]
+    s_ok = recover_strain(fneq_f, rho, tau_f, dt_f)
+    s_bad = recover_strain(fneq_c, rho, tau_f, dt_f)
+    print("%5.2f  %6.3f  %8.5f  %8.5f  %7.4f  %11.4f  %14.4f  %6.1f" % (
+        tau_c, tau_f, nu_physical(tau_c, dx_c, dt_c), nu_physical(tau_f, dx_f, dt_f),
+        r, tau_f/(m*tau_c), s_bad/s_ok, (s_bad/s_ok - 1)*100))
+
+print()
+worst = grad_neq(rho, 0.51, s_phys)
+print("mass moment of f^neq     = %.3e" % sum(worst))
+print("momentum moments of f^neq = %.3e, %.3e" % (sum(worst[i]*EX[i] for i in range(9)),
+                                            sum(worst[i]*EY[i] for i in range(9))))
+```
+
+```text
+max |feq_c - feq_f| = 0.000e+00
+
+tau_c   tau_f      nu_c      nu_f   r_meas    tf/(m*tc)     copied/true    err%
+ 0.51   0.520   0.00333   0.00333   0.5098       0.5098          1.9615    96.2
+ 0.55   0.600   0.01667   0.01667   0.5455       0.5455          1.8333    83.3
+ 0.60   0.700   0.03333   0.03333   0.5833       0.5833          1.7143    71.4
+ 0.80   1.100   0.10000   0.10000   0.6875       0.6875          1.4545    45.5
+ 1.20   1.900   0.23333   0.23333   0.7917       0.7917          1.2632    26.3
+ 2.00   3.500   0.50000   0.50000   0.8750       0.8750          1.1429    14.3
+
+mass moment of f^neq     = 0.000e+00
+momentum moments of f^neq = 0.000e+00, 0.000e+00
+```
+
+Three things fall out at once. The equilibrium distribution is exactly the same on both levels.
+The $\nu_c$ and $\nu_f$ columns agree digit for digit. The measured $r$ matches the closed form $\tilde\tau_f/(m\tilde\tau_c)$.
+
+The last two lines are where this post's title came from. The zeroth and first moments of $f^{\mathrm{neq}}$ are exactly zero.
+Copy or rescale, $\rho$ and momentum never budge. Exactly one thing goes wrong: the second moment.
+
+## The Closer τ Sits to 0.5, the More the Copy Costs
+
+Read the error column top to bottom and the trend is plain. At $\tilde\tau_c = 2.0$ it is 14%.
+At $\tilde\tau_c = 0.51$ it is 96%. Written in closed form, $r$ has a bounded range.
+
+$$
+r = \frac{1/2 + m(\tilde\tau_c - 1/2)}{m\,\tilde\tau_c}
+$$
+
+As $\tilde\tau_c \to 1/2$, $r \to 1/2$; as $\tilde\tau_c \to \infty$, $r \to 1$.
+At high viscosity, copying leaves no visible mark. At low viscosity, the stress doubles.
+
+The trouble is that the reason to bolt on AMR is usually high Reynolds number. You push $\tilde\tau$ down toward 0.5 and run it there.
+The regime where the copy bug blows up hardest is precisely the regime where you want AMR.
+The symptoms are confusing too. Mass and momentum are conserved, so nothing diverges; you are left with a thin layer of spurious vorticity tracing the level interface.
+
+Raising $m$ makes it worse. With $m=4$ and $\tilde\tau_c = 0.8$, $\tilde\tau_f = 1.7$.
+So $r = 1.7/3.2 = 0.531$ and the copy error jumps to 88%.
+
+## One Extra Level Is Billed at m^(d+1)
+
+Rescaling happens exactly twice: explosion, going down from the coarse level to the fine level,
+and coalescence, coming back up from fine to coarse. Everything in between is ordinary collide-and-stream.
+
+Walk one cycle a step at a time on the clock below.
+
+<ExplosionCoalescenceClock />
+
+Press `next phase` and follow the order: explosion → $m$ substeps → coalescence.
+The green and purple dashed lines are the only two moments when distribution functions cross a level.
+Raise `m` and `d` and the work factor in the right-hand ledger climbs as $m^{d+1}$.
+
+That exponent is the real constraint on AMR design. In 3D with $m=2$, a single patch costs 16 times as much.
+Which is why where you put the fine levels, and how much of them, moves performance far more than the choice of scheme.
+
+## So Why Does the Overlap Layer Have to Be One Cell Deep?
+
+The overlap layer is the one layer of cells where nodes from both levels exist. Why one layer?
+Because streaming moves exactly one cell per step. When the fine level takes one substep,
+the distribution functions arriving from outside come from exactly one cell away. Filling that single cell is enough.
+
+This is the same viewpoint as [the distribution functions a boundary node loses](/en/posts/2026-08-24-lbm-boundary-node-unknown-pdf-framework/).
+Wall or level interface, the first job is counting which $f_i$ are left empty after streaming.
+At a wall the geometry decides the answer; at a level interface the refinement ratio $m$ decides it.
+
+A cell-centered grid makes the overlap layer easier to handle than a node-centered one.
+No nodes coincide, so ownership is unambiguous, and in a parallel decomposition the communication target reduces to a single list of cells.
+The price is that coarse-to-fine interpolation is offset by half a cell in each direction, so the interpolation stencil has to be laid out accordingly.
+
+Whether you are writing a new AMR interface or reading someone else's code, three lines finish the diagnosis.
+Is $\tilde\tau_f$ equal to $\tfrac{1}{2} + m(\tilde\tau_c - \tfrac{1}{2})$? Is $f^{\mathrm{neq}}$ multiplied by $r$?
+Does the denominator of $r$ contain $m$? The third one goes missing most often.

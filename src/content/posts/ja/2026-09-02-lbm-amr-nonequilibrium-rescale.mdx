@@ -1,0 +1,254 @@
+---
+title: "ρもuも桁まで一致するのにひずみ速度だけ45%膨らむ — LBM格子細分化の非平衡再スケール"
+date: 2026-09-02
+description: "LBMのAMRレベル境界で分布関数をそのまま複製すると、ρとuは合うのに応力だけ最大2倍に膨らみます。再スケール係数をGrad近似で測り直しました。"
+tags: ["AMR", "LBM", "Chapman-Enskog", "Viscosity", "Mesh-Refinement"]
+locale: ja
+slug: 2026-09-02-lbm-amr-nonequilibrium-rescale
+takeaway: "レベル境界をそのまま渡してよいのは ρ と u だけです。非平衡部分は τ_f/(m·τ_c) 倍で書き直す必要があります。"
+draft: false
+---
+
+import { RefinementGateStrainInflator } from '@/components/post-viz/2026-09-02-lbm-amr-nonequilibrium-rescale/RefinementGateStrainInflator'
+import { ExplosionCoalescenceClock } from '@/components/post-viz/2026-09-02-lbm-amr-nonequilibrium-rescale/ExplosionCoalescenceClock'
+
+## ρもuも桁まで一致していたのに応力だけが膨らんだ
+
+格子ボルツマン法(LBM)のコードに適応格子細分化(AMR)を組み込むと、レベル境界という新しい相手が現れます。
+境界の一層で粗い格子と細かい格子が重なります。この層では値を書き移さなければなりません。
+
+書き移しを検証するとき、たいていは密度と速度を見ます。しかしそれだけではバグがすり抜けます。
+分布関数 $f_i$ を細レベルへそのまま複製しても、$\rho$ と $\mathbf{u}$ は小数の末尾まで一致します。
+一致しないのは応力です。本記事では、その差が正確に何倍なのか、なぜその倍数になるのかを扱います。
+
+先に結論を書くと、倍率は $\tilde\tau_f/(m\tilde\tau_c)$ の逆数です。よくある設定で1.45倍、
+高レイノルズ設定では2倍近くになります。
+
+## レベルをまたいでも同じであるべき量と、必ず変わるべき量
+
+レベル間変換の原則は一つだけです。保存量は一致していなければなりません。
+$\rho$、$\mathbf{u}$、$p$ は物理量なので、格子を変えたからといって変わる理由がありません。
+
+細分化比を $m = \Delta x_c/\Delta x_f$ と置きます。添字 $c$ は粗い格子、$f$ は細かい格子です。
+音速スケーリング(acoustic scaling)を使えば $\Delta t$ も同じ比で縮みます。
+
+$$
+\Delta x_f = \frac{\Delta x_c}{m}, \qquad \Delta t_f = \frac{\Delta t_c}{m}
+$$
+
+こうすると格子単位速度 $\hat{u} = u\,\Delta t/\Delta x$ が両レベルで等しくなります。
+$\rho$ も等しいので、平衡分布 $f_i^{\mathrm{eq}}(\rho, \hat{u})$ は**両レベルでまったく同じ値**です。
+変えるべきなのは平衡からのずれ、つまり $f_i^{\mathrm{neq}} = f_i - f_i^{\mathrm{eq}}$ だけです。
+
+下のシミュレーションで直接操作してみましょう。
+
+<RefinementGateStrainInflator />
+
+同じ物理領域・同じ物理時間を、二つの実際の格子が並んで解いています。
+`tau_c` スライダーを動かしながら、右のはしごの `measured q_f/q_c` が `rescale r` に貼り付いたままか見てください。
+`tau copied` ボタンを押すと細レベルが別の粘性の流体になり、橙の曲線が青の曲線から離れていきます。
+
+## 粘性を固定するとτが引きずられて動く
+
+物理粘性はレベルが変わったからといって変わってはいけません。格子単位の緩和時間 $\tilde\tau$ で書いた粘性はこうなります。
+
+$$
+\nu = c_s^2\left(\tilde\tau - \tfrac{1}{2}\right)\frac{\Delta x^2}{\Delta t}
+$$
+
+$c_s^2$ は格子音速の二乗、$\Delta x^2/\Delta t$ は拡散係数の単位です。
+$-\tfrac{1}{2}$ は台形積分が残した項で、[LBMの離散化が残したΔt/2](/ja/posts/2026-08-26-lbm-trapezoidal-integration-half-timestep/)で別途扱いました。
+
+音速スケーリングでは $\Delta x^2/\Delta t$ が $1/m$ 倍になります。$\nu_f = \nu_c$ を課すと $\tilde\tau$ が引き出されます。
+
+$$
+\tilde\tau_f = \frac{1}{2} + m\left(\tilde\tau_c - \frac{1}{2}\right)
+$$
+
+$m=2$、$\tilde\tau_c = 0.8$ なら $\tilde\tau_f = 1.1$ です。二倍ではないという点が重要です。
+$\tilde\tau$ を単純に $m$ 倍すると $\nu$ がずれます。$\tfrac{1}{2}$ がスケーリングの対象ではないからです。
+
+## 非平衡部分にはτだけでなくΔtも付いてくる
+
+Chapman–Enskog展開の一次項をGrad近似で書くと、非平衡部分はひずみ速度に比例します。
+
+$$
+f_i^{\mathrm{neq}} = -\frac{w_i \rho \tilde\tau}{c_s^2}\left(\mathbf{c}_i\mathbf{c}_i - c_s^2\mathbf{I}\right) : \hat{\mathbf{S}}
+$$
+
+$w_i$ は重み、$\mathbf{c}_i$ は格子速度、$\hat{\mathbf{S}}$ は**格子単位**のひずみ速度です。
+物理ひずみ速度 $\mathbf{S}$ との関係は $\hat{\mathbf{S}} = \mathbf{S}\,\Delta t$ です。
+同じ地点の物理ひずみ速度はレベルに依存しないので、$f^{\mathrm{neq}}$ は $\tilde\tau\,\Delta t$ に比例します。
+
+$$
+r \equiv \frac{f_i^{\mathrm{neq},f}}{f_i^{\mathrm{neq},c}} = \frac{\tilde\tau_f\,\Delta t_f}{\tilde\tau_c\,\Delta t_c} = \frac{\tilde\tau_f}{m\,\tilde\tau_c}
+$$
+
+この $r$ が再スケール係数です。DupuisとChopardが整理した形と同じです。
+$\tilde\tau_c = 0.8$、$m=2$ なら $r = 1.1/1.6 = 0.6875$ です。細レベルの非平衡は粗レベルの69%になります。
+
+## 三つの受け渡し方式を同じ表に並べる
+
+レベル境界で値を渡す方法は、実務では三つに分かれます。
+
+| 方式 | 渡すもの | 必要な情報 | コスト | 破綻する箇所 |
+|---|---|---|---|---|
+| 全複製 | $f_i$ をそのまま | なし | 最小 | $\rho,\mathbf{u}$ は合うが応力が $1/r$ 倍に膨らむ |
+| 巨視量 + Grad再構成 | $\rho, \mathbf{u}$ を補間して $f^{\mathrm{neq}}$ を再計算 | 速度勾配 | 中 | 勾配を有限差分で取り直す必要がある |
+| 非平衡補間 + スケール | $f^{\mathrm{eq}}$ は再計算、$f^{\mathrm{neq}}$ は $r$ 倍 | $\tilde\tau_c, \tilde\tau_f, m$ | ほぼ最小 | $r$ の $m$ を落としやすい |
+
+二番目と三番目は結果が一致するはずです。三番目が実務標準なのは、勾配を取り直す必要がないからです。
+$\tilde\tau$ 二つと $m$ さえあれば係数が出ます。
+
+空間補間そのものは平凡です。粗→細は3次元で三線形(trilinear)補間、細→粗は $2^d$ 個のセルの平均です。
+$d$ は次元数です。難しいのは補間ではなく、補間したあと何に $r$ を掛けるかです。
+
+## Pythonで復元したひずみ速度を測り直す
+
+D2Q9格子で物理ひずみ速度を一つ決めておき、両レベルの $f^{\mathrm{neq}}$ をそれぞれ作ります。
+そのうえで細レベルの $\tilde\tau_f$ を使ってひずみ速度を復元します。再スケールした値と複製した値を並べて入れてみます。
+
+```python
+CS2 = 1.0 / 3.0
+EX = [0, 1, 0, -1, 0, 1, -1, -1, 1]
+EY = [0, 0, 1, 0, -1, 1, 1, -1, -1]
+W = [4/9, 1/9, 1/9, 1/9, 1/9, 1/36, 1/36, 1/36, 1/36]
+
+
+def equilibrium(rho, ux, uy):
+    """D2Q9平衡分布。レベルが違っても rho, u が同じなら同じ値になる。"""
+    out = []
+    u2 = ux*ux + uy*uy
+    for i in range(9):
+        cu = EX[i]*ux + EY[i]*uy
+        out.append(rho*W[i]*(1 + cu/CS2 + cu*cu/(2*CS2*CS2) - u2/(2*CS2)))
+    return out
+
+
+def grad_neq(rho, tau, sxy):
+    """Grad近似で作った非平衡部分。sxy はそのレベルの格子単位せん断ひずみ速度。"""
+    out = []
+    for i in range(9):
+        q_xy = EX[i]*EY[i]            # Q_i の xy 成分 (対角は sxy と対にならない)
+        out.append(-(W[i]*rho*tau/CS2) * 2.0 * q_xy * sxy)
+    return out
+
+
+def recover_strain(fneq, rho, tau, dt):
+    """非平衡モーメントから物理単位のせん断ひずみ速度を復元する。"""
+    pi_xy = sum(fneq[i]*EX[i]*EY[i] for i in range(9))
+    return -pi_xy / (2.0*rho*CS2*tau*dt)
+
+
+def tau_on_level(tau_c, m):
+    """粘性を固定したとき細レベルが持つべき緩和時間。"""
+    return 0.5 + m*(tau_c - 0.5)
+
+
+def nu_physical(tau, dx, dt):
+    return CS2*(tau - 0.5)*dx*dx/dt
+
+
+rho, ux, uy = 1.0, 0.05, 0.0
+s_phys = 0.004          # 物理せん断ひずみ速度 — レベルに依存しない値
+m = 2                   # 細分化比
+dx_c, dt_c = 1.0, 1.0
+dx_f, dt_f = dx_c/m, dt_c/m
+
+feq_c = equilibrium(rho, ux, uy)
+feq_f = equilibrium(rho, ux, uy)
+print("max |feq_c - feq_f| = %.3e" % max(abs(a-b) for a, b in zip(feq_c, feq_f)))
+print()
+print("%5s  %6s  %8s  %8s  %7s  %11s  %14s  %6s" % (
+    "tau_c", "tau_f", "nu_c", "nu_f", "r_meas", "tf/(m*tc)", "copied/true", "err%"))
+for tau_c in [0.51, 0.55, 0.60, 0.80, 1.20, 2.00]:
+    tau_f = tau_on_level(tau_c, m)
+    fneq_c = grad_neq(rho, tau_c, s_phys*dt_c)
+    fneq_f = grad_neq(rho, tau_f, s_phys*dt_f)
+    r = fneq_f[5]/fneq_c[5]
+    s_ok = recover_strain(fneq_f, rho, tau_f, dt_f)
+    s_bad = recover_strain(fneq_c, rho, tau_f, dt_f)
+    print("%5.2f  %6.3f  %8.5f  %8.5f  %7.4f  %11.4f  %14.4f  %6.1f" % (
+        tau_c, tau_f, nu_physical(tau_c, dx_c, dt_c), nu_physical(tau_f, dx_f, dt_f),
+        r, tau_f/(m*tau_c), s_bad/s_ok, (s_bad/s_ok - 1)*100))
+
+print()
+worst = grad_neq(rho, 0.51, s_phys)
+print("mass moment of f^neq     = %.3e" % sum(worst))
+print("momentum moments of f^neq = %.3e, %.3e" % (sum(worst[i]*EX[i] for i in range(9)),
+                                            sum(worst[i]*EY[i] for i in range(9))))
+```
+
+```text
+max |feq_c - feq_f| = 0.000e+00
+
+tau_c   tau_f      nu_c      nu_f   r_meas    tf/(m*tc)     copied/true    err%
+ 0.51   0.520   0.00333   0.00333   0.5098       0.5098          1.9615    96.2
+ 0.55   0.600   0.01667   0.01667   0.5455       0.5455          1.8333    83.3
+ 0.60   0.700   0.03333   0.03333   0.5833       0.5833          1.7143    71.4
+ 0.80   1.100   0.10000   0.10000   0.6875       0.6875          1.4545    45.5
+ 1.20   1.900   0.23333   0.23333   0.7917       0.7917          1.2632    26.3
+ 2.00   3.500   0.50000   0.50000   0.8750       0.8750          1.1429    14.3
+
+mass moment of f^neq     = 0.000e+00
+momentum moments of f^neq = 0.000e+00, 0.000e+00
+```
+
+三つのことが一度に出てきます。平衡分布は両レベルでまったく同じです。
+$\nu_c$ と $\nu_f$ の列は桁まで一致します。測定した $r$ は閉じた形 $\tilde\tau_f/(m\tilde\tau_c)$ と同じです。
+
+最後の二行が、この記事のタイトルの出どころです。$f^{\mathrm{neq}}$ の0次・1次モーメントがちょうど0です。
+複製しようが再スケールしようが、$\rho$ と運動量は揺らぎません。狂うのは2次モーメント一つだけです。
+
+## τが0.5に近づくほど複製の代償は二倍へ向かう
+
+誤差の列を上から下へ読むと方向が見えます。$\tilde\tau_c = 2.0$ では14%です。
+$\tilde\tau_c = 0.51$ では96%です。閉じた形で書けば $r$ の範囲が出ます。
+
+$$
+r = \frac{1/2 + m(\tilde\tau_c - 1/2)}{m\,\tilde\tau_c}
+$$
+
+$\tilde\tau_c \to 1/2$ なら $r \to 1/2$、$\tilde\tau_c \to \infty$ なら $r \to 1$ です。
+粘性が大きければ複製しても目立ちません。粘性が小さければ応力が二倍になります。
+
+厄介なのは、AMRを入れる理由がたいてい高レイノルズだという点です。$\tilde\tau$ を0.5近くまで下げて使います。
+複製バグが最も大きく破裂する領域が、そのままAMRを使いたい領域なのです。
+症状も紛らわしいものです。質量と運動量は保存されるので発散せず、レベル境界線に沿って薄い渦の層だけが残ります。
+
+$m$ を大きくすると悪化します。$m=4$、$\tilde\tau_c = 0.8$ なら $\tilde\tau_f = 1.7$ です。
+したがって $r = 1.7/3.2 = 0.531$ となり、複製誤差は88%へ跳ね上がります。
+
+## レベルを一段積む代金は m^(d+1) で請求される
+
+再スケールは二回しか起きません。粗レベルから細レベルへ下りるexplosionと、
+細レベルから粗レベルへ上がるcoalescenceです。その間は平凡なcollide-and-streamです。
+
+下の時計で一周期を一段ずつ歩いてみましょう。
+
+<ExplosionCoalescenceClock />
+
+`next phase` を押して、explosion → $m$ 回のサブステップ → coalescence の順序を確認してください。
+緑と紫の点線が、分布関数がレベルをまたぐ唯一の二つの瞬間です。
+`m` と `d` を上げると、右の帳簿のwork factorが $m^{d+1}$ で上がります。
+
+この指数がAMR設計の実際の制約です。3次元で $m=2$ なら、パッチ一つが16倍高くつきます。
+だからこそ、細レベルをどこにどれだけ置くかが、スキームの選択よりも性能を大きく左右します。
+
+## ではなぜオーバーラップ層は一枚でなければならないのか
+
+オーバーラップ層とは、両レベルのノードがともに存在するセル一層のことです。なぜ一層なのでしょうか。
+ストリーミングが一ステップで一マスしか動かないからです。細レベルが一サブステップ回るとき、
+外から入ってくる分布関数はちょうど一マス外から来ます。その一マスを埋めれば足ります。
+
+この見方は[境界ノードが失う分布関数](/ja/posts/2026-08-24-lbm-boundary-node-unknown-pdf-framework/)と同じです。
+壁であれレベル境界であれ、最初にやるのは「ストリーミング後にどの $f_i$ が空くか」を数えることです。
+壁では形状がその答えを決め、レベル境界では細分化比 $m$ が決めます。
+
+セル中心(cell-centered)格子を使うと、オーバーラップ層はノード中心(node-centered)より扱いやすくなります。
+重なるノードがないので所有権が明確で、並列分割では通信対象がセルのリスト一つに落ちます。
+その代わり粗→細の補間で位置が半マスずつずれるので、補間ステンシルをそれに合わせて取る必要があります。
+
+AMRインターフェースを新しく書くにせよ、他人のコードを読むにせよ、三行で診断は終わります。
+$\tilde\tau_f$ は $\tfrac{1}{2} + m(\tilde\tau_c - \tfrac{1}{2})$ になっているか。$f^{\mathrm{neq}}$ に $r$ を掛けているか。
+$r$ の分母に $m$ があるか。三つ目が最も頻繁に抜け落ちます。
