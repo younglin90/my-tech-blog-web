@@ -1,0 +1,373 @@
+---
+title: "Doubling τ Left Pr at 1.0000 — The Two Constants Locked Inside Thermal LBM"
+date: 2026-09-04
+description: "A single-distribution thermal LBM ties viscosity and thermal diffusivity to one τ, locking Pr at 1. I measured on D2Q9 what a second distribution unlocks."
+tags: ["Double-Distribution-Function", "LBM", "Prandtl-Number", "Heat-Transfer", "Chapman-Enskog"]
+locale: en
+slug: 2026-09-04-lbm-double-distribution-prandtl
+takeaway: "With a single τ, Pr = 1 and γ = 1 + 2/D are not fluid properties — they are numbers the lattice picked. Freeing both requires a separate distribution function for energy."
+draft: false
+---
+
+import { PrandtlLockTwinDecay } from '@/components/post-viz/2026-09-04-lbm-double-distribution-prandtl/PrandtlLockTwinDecay'
+import { SpecificHeatDofGammaTuner } from '@/components/post-viz/2026-09-04-lbm-double-distribution-prandtl/SpecificHeatDofGammaTuner'
+
+## A number I never supplied came out as 1.0000
+
+I put one sinusoidal shear wave and one sinusoidal temperature wave on a D2Q9 lattice and measured
+the kinematic viscosity $\nu$ and the thermal diffusivity $\alpha$ from how fast each amplitude
+decayed. Then I repeated the measurement with the relaxation time $\tau$ doubled step by step:
+0.6, 0.8, 1.2. All three runs returned a Prandtl number (the ratio of momentum diffusion to
+thermal diffusion) of 1.0001, 1.0000, 1.0001.
+
+I never supplied that number as a material property. The lattice picked it.
+
+This post points at the line of code where the lock sits, then re-measures on the same lattice what
+opens up once energy gets its own distribution function. And $\mathrm{Pr}$ is not the only constant
+locked in. The specific heat ratio $\gamma$ is locked too, and on D2Q9 its value is 2 — not the 1.4
+of air. Even after the lock comes off, $\tau_g$ cannot be pushed indefinitely, so I measured where
+it breaks down as well.
+
+Work the lock open and shut yourself below.
+
+<PrandtlLockTwinDecay />
+
+While it stays locked, no amount of moving $\tau_f$ separates the curves: the orange (temperature)
+curve hides completely under the blue (velocity) one. Release the lock, drag $\tau_g$, and the two
+curves split apart. How far they split is exactly $\mathrm{Pr}$.
+
+## One τ gets used in two places
+
+Here is the lattice Boltzmann equation with a BGK collision term.
+
+$$
+f_i(\boldsymbol{x} + \boldsymbol{e}_i \Delta t,\; t + \Delta t) - f_i(\boldsymbol{x}, t)
+= -\frac{\Delta t}{\tau}\left[ f_i - f_i^{\mathrm{eq}} \right]
+$$
+
+$f_i$ is the distribution function along lattice direction $i$, $\boldsymbol{e}_i$ is the discrete
+velocity in that direction, and $\tau$ is the relaxation time. Carry the Chapman–Enskog expansion
+(an expansion that treats the departure from equilibrium as a small parameter and separates the
+result order by order) to first order, and the viscous stress falls out of the first-order
+non-equilibrium part of $f$. That gives the familiar result.
+
+$$
+\nu = c_s^{2}\left(\tau - \frac{\Delta t}{2}\right)
+$$
+
+$c_s$ is the lattice speed of sound and $\Delta t/2$ is the correction left behind by
+discretization. Where that half step comes from is worked out separately in
+[The Δt/2 the LBM Discretization Left Behind](/en/posts/2026-08-26-lbm-trapezoidal-integration-half-timestep/).
+
+The trouble starts right after. Define internal energy as a second moment of that same $f$, and the
+temperature equation drops out of the same expansion through the same first-order non-equilibrium
+term. The thermal diffusivity comes out with an identical shape.
+
+$$
+\alpha = c_s^{2}\left(\tau - \frac{\Delta t}{2}\right)
+$$
+
+The right-hand sides match character for character. Only one conclusion follows.
+
+$$
+\mathrm{Pr} = \frac{\nu}{\alpha} = 1
+$$
+
+The reason fits in one line. Momentum flux and heat flux both come from the same non-equilibrium
+term of the same distribution function, and there is exactly one time constant sitting in front of
+that term. One constant means the ratio is not yours to choose.
+
+That $\mathrm{Pr}$ sits near 1 for gases is an experimental fact, and the
+[Reynolds analogy](/en/posts/2026-06-23-reynolds-analogy-friction-heat/) that links friction to heat
+transfer follows from it. But there it is an approximation and a modeling choice. Here it is
+enforced. Feed the solver water or liquid metal and it still returns 1.
+
+## Give energy its own distribution function
+
+The fix is structurally simple. The problem came from having only one constant, so make a second
+one. Let $f$ carry mass and momentum only, and hand energy to a second distribution function $g_i$.
+That is the double-distribution-function (DDF) method.
+
+The moment conditions $g$ must satisfy take two lines.
+
+$$
+\sum_i g_i = \rho E, \qquad
+\sum_i \boldsymbol{e}_i\, g_i = \rho E \boldsymbol{u} + p\,\boldsymbol{u}
+$$
+
+$E = c_v T + |\boldsymbol{u}|^{2}/2$ is the total energy per unit mass and $p\boldsymbol{u}$ is the
+work done by pressure. The $p\boldsymbol{u}$ in the second line is the crux. The convective flux of
+energy is not $\rho E \boldsymbol{u}$ alone but $\rho H \boldsymbol{u}$, pressure work included, so
+the equilibrium distribution for $g$ cannot simply copy the one for $f$.
+
+Relax $g$ with $\tau_g$, run the same Chapman–Enskog expansion, and the thermal diffusivity now
+looks at $\tau_g$.
+
+$$
+\mathrm{Pr} = \frac{\nu}{\alpha}
+= \frac{\tau_f - \Delta t/2}{\tau_g - \Delta t/2}
+$$
+
+The Reynolds number sets $\tau_f$; the Prandtl number sets $\tau_g$. The two demands finally hold
+separate knobs.
+
+## Measuring the lock and its release on one lattice in Python
+
+Rather than leave it as an argument, I measured it. I set up $f$ on D2Q9 and $g$ on D2Q5 (a
+five-velocity lattice for temperature only), with a sine wave varying along $y$ as the initial
+condition. The shear wave amplitude decays as $\exp(-\nu k^{2} t)$ and the temperature wave as
+$\exp(-\alpha k^{2} t)$. A least-squares fit to the log amplitude returns $\nu$ and $\alpha$.
+
+```python
+import math
+
+NY, CS2 = 64, 1.0 / 3.0
+K = 2.0 * math.pi / NY
+
+EX9 = [0, 1, 0, -1, 0, 1, -1, -1, 1]
+EY9 = [0, 0, 1, 0, -1, 1, 1, -1, -1]
+W9 = [4/9, 1/9, 1/9, 1/9, 1/9, 1/36, 1/36, 1/36, 1/36]
+
+EY5 = [0, 0, 1, 0, -1]
+W5 = [1/3, 1/6, 1/6, 1/6, 1/6]
+
+
+def feq_d2q9(rho, ux, uy):
+    u2 = ux * ux + uy * uy
+    return [w * rho * (1 + 3 * (ex * ux + ey * uy)
+                       + 4.5 * (ex * ux + ey * uy) ** 2 - 1.5 * u2)
+            for w, ex, ey in zip(W9, EX9, EY9)]
+
+
+def geq_d2q5(temp):
+    return [w * temp for w in W5]
+
+
+def fit_decay_rate(samples):
+    """samples = [(step, amplitude)] -> least-squares slope of ln(amplitude)."""
+    n = len(samples)
+    xs = [s for s, _ in samples]
+    ys = [math.log(a) for _, a in samples]
+    mx, my = sum(xs) / n, sum(ys) / n
+    num = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+    den = sum((x - mx) ** 2 for x in xs)
+    return -num / den
+
+
+def run_shear_wave(tau_f, steps=3000, amp=1e-3):
+    f = [[0.0] * NY for _ in range(9)]
+    for y in range(NY):
+        for i, v in enumerate(feq_d2q9(1.0, amp * math.sin(K * y), 0.0)):
+            f[i][y] = v
+    log = []
+    for step in range(steps + 1):
+        rho = [sum(f[i][y] for i in range(9)) for y in range(NY)]
+        ux = [sum(f[i][y] * EX9[i] for i in range(9)) / rho[y] for y in range(NY)]
+        if step % 200 == 0:
+            a = 2.0 / NY * sum(ux[y] * math.sin(K * y) for y in range(NY))
+            log.append((step, a))
+        post = [[0.0] * NY for _ in range(9)]
+        for y in range(NY):
+            eq = feq_d2q9(rho[y], ux[y], 0.0)
+            for i in range(9):
+                post[i][y] = f[i][y] - (f[i][y] - eq[i]) / tau_f
+        for i in range(9):
+            for y in range(NY):
+                f[i][(y + EY9[i]) % NY] = post[i][y]
+    return fit_decay_rate(log) / (K * K)
+
+
+def run_thermal_wave(tau_g, amp=1e-3):
+    """Pick the step count from tau_g so the amplitude always decays by e^-2.5."""
+    alpha_th = CS2 * (tau_g - 0.5)
+    steps = max(240, min(12000, int(2.5 / (alpha_th * K * K))))
+    every = max(1, steps // 12)
+    g = [[0.0] * NY for _ in range(5)]
+    for y in range(NY):
+        for i, v in enumerate(geq_d2q5(amp * math.sin(K * y))):
+            g[i][y] = v
+    log = []
+    for step in range(steps + 1):
+        temp = [sum(g[i][y] for i in range(5)) for y in range(NY)]
+        if step % every == 0:
+            a = 2.0 / NY * sum(temp[y] * math.sin(K * y) for y in range(NY))
+            log.append((step, a))
+        post = [[0.0] * NY for _ in range(5)]
+        for y in range(NY):
+            eq = geq_d2q5(temp[y])
+            for i in range(5):
+                post[i][y] = g[i][y] - (g[i][y] - eq[i]) / tau_g
+        for i in range(5):
+            for y in range(NY):
+                g[i][(y + EY5[i]) % NY] = post[i][y]
+    return fit_decay_rate(log) / (K * K)
+
+
+def tau_for(nu, target_pr):
+    return 0.5 + nu / (target_pr * CS2)
+
+
+TAU_F = 0.8
+nu = run_shear_wave(TAU_F)
+print(f"tau_f = {TAU_F}   nu(theory) = {CS2*(TAU_F-0.5):.6f}   nu(measured) = {nu:.6f}")
+print()
+print("[A] single distribution: one tau relaxes momentum AND energy")
+print(f"{'tau':>6} {'nu':>10} {'alpha':>10} {'Pr':>8}")
+for t in (0.6, 0.8, 1.2):
+    n_, a_ = run_shear_wave(t), run_thermal_wave(t)
+    print(f"{t:6.2f} {n_:10.6f} {a_:10.6f} {n_/a_:8.4f}")
+print()
+print("[B] double distribution: tau_g chosen for a target Pr (tau_f = 0.8)")
+print(f"{'gas':>8} {'Pr(target)':>11} {'tau_g':>8} {'alpha':>10} {'Pr(meas)':>9} {'err%':>7}")
+for name, pr in (("mercury", 0.025), ("air", 0.71), ("Pr=1", 1.0), ("water", 7.0)):
+    tg = tau_for(nu, pr)
+    a_ = run_thermal_wave(tg)
+    prm = nu / a_
+    print(f"{name:>8} {pr:11.3f} {tg:8.4f} {a_:10.6f} {prm:9.4f} {100*(prm-pr)/pr:7.2f}")
+
+print()
+print("[C] how far can tau_g be pushed?  (theory: alpha = cs2*(tau_g-0.5))")
+print(f"{'tau_g':>7} {'alpha(th)':>10} {'alpha(meas)':>12} {'err%':>7}")
+for tg in (0.51, 0.55, 0.7, 1.0, 2.0, 4.0, 8.0, 12.5):
+    th = CS2 * (tg - 0.5)
+    ms = run_thermal_wave(tg)
+    print(f"{tg:7.2f} {th:10.5f} {ms:12.5f} {100*(ms-th)/th:7.2f}")
+```
+
+```text
+tau_f = 0.8   nu(theory) = 0.100000   nu(measured) = 0.100057
+
+[A] single distribution: one tau relaxes momentum AND energy
+   tau         nu      alpha       Pr
+  0.60   0.033368   0.033363   1.0001
+  0.80   0.100057   0.100060   1.0000
+  1.20   0.233144   0.233124   1.0001
+
+[B] double distribution: tau_g chosen for a target Pr (tau_f = 0.8)
+     gas  Pr(target)    tau_g      alpha  Pr(meas)    err%
+ mercury       0.025  12.5069   2.047239    0.0489   95.50
+     air       0.710   0.9228   0.140963    0.7098   -0.03
+    Pr=1       1.000   0.8002   0.100117    0.9994   -0.06
+   water       7.000   0.5429   0.014308    6.9931   -0.10
+
+[C] how far can tau_g be pushed?  (theory: alpha = cs2*(tau_g-0.5))
+  tau_g  alpha(th)  alpha(meas)    err%
+   0.51    0.00333      0.00334    0.16
+   0.55    0.01667      0.01668    0.10
+   0.70    0.06667      0.06672    0.08
+   1.00    0.16667      0.16667   -0.00
+   2.00    0.50000      0.49624   -0.75
+   4.00    1.16667      1.11274   -4.62
+   8.00    2.50000      1.94812  -22.08
+  12.50    4.00000      2.04752  -48.81
+```
+
+Table [A] is the lock. Double $\tau$ from 0.6 to 1.2 and $\nu$ grows sevenfold, yet $\mathrm{Pr}$
+stays 1 out to the fourth decimal. Table [B] is the release. Air lands at 0.7098 and water at
+6.9931, both within 0.1% of target. The top row is the exception: mercury is off by 95%. That row
+gets its own section later.
+
+## There is a second locked constant — the specific heat ratio
+
+Stop at $\mathrm{Pr}$ and you miss the second lock. A particle on the lattice moves along $D$
+translational directions and nothing else. No rotation, no vibration. The heat capacity at constant
+volume then counts translational degrees of freedom only, giving $c_v = DR/2$, and the gas constant
+comes back as $R = c_v / (D/2)$. The specific heat ratio is decided for you.
+
+$$
+c_v = \frac{(D + n_0)\,R}{2}, \qquad
+\gamma = 1 + \frac{2}{D + n_0}
+$$
+
+$n_0$ is the number of internal degrees of freedom carried on top of the translational ones. Do
+nothing and $n_0 = 0$.
+
+| Lattice | $n_0$ | $c_v$ | $\gamma$ | Matching gas |
+|---|---|---|---|---|
+| D2Q9 | 0 | $1.0R$ | 2.000 | none |
+| D3Q19 | 0 | $1.5R$ | 1.667 | monatomic (Ar, He) |
+| D2Q9 | 3 | $2.5R$ | 1.400 | air |
+| D3Q19 | 2 | $2.5R$ | 1.400 | air |
+| D2Q9 | 4 | $3.0R$ | 1.333 | water vapor |
+
+In two dimensions, an untouched lattice has $\gamma = 2$. Since the speed of sound is
+$\sqrt{\gamma R T}$, that is $\sqrt{2/1.4} = 1.195$ times the value for air — 19.5% too fast. Mach
+number, shock angles, and nozzle choking conditions all shift by the same factor. In compressible
+simulations this bites before $\mathrm{Pr}$ does.
+
+<SpecificHeatDofGammaTuner />
+
+Start from D2Q9 with $n_0 = 0$, watch how far the two acoustic pulses separate, then drag $n_0$
+until the blue marker sits on the dashed line. The number where it lands is the count of internal
+degrees of freedom the energy distribution function has to carry. Matching air takes 2 in three
+dimensions and 3 in two.
+
+## How far τ_g can be pushed
+
+Table [C] measures how long $\alpha = c_s^{2}(\tau_g - \Delta t/2)$ stays trustworthy. Out to
+$\tau_g = 2$ the error stays under 0.8%. At 4 it is 4.6%, at 8 it is 22%, and at 12.5 the gap opens
+to 49%. The measurement returns barely half the theoretical value.
+
+The reason lies in where that formula came from. $\alpha = c_s^{2}(\tau_g - \Delta t/2)$ is a
+first-order result of the Chapman–Enskog expansion. For the expansion to hold, the relaxation time
+must be short compared with the time scale of the flow. As $\tau_g$ grows, the discarded
+second-order term — a hyperdiffusive term proportional to the fourth power of the wavenumber —
+grows to the size of the first-order one. The practical ceiling is around $\alpha \approx 0.5$ in
+lattice units.
+
+That is why the mercury row in [B] broke. Getting $\mathrm{Pr} = 0.025$ at $\tau_f = 0.8$ demands
+$\alpha = 4.0$, eight times that ceiling. The prescription is not to raise $\tau_g$ further but to
+lower $\nu$. Holding $\alpha \le 0.5$ while reaching $\mathrm{Pr} = 0.025$ requires
+$\nu \le 0.0125$, that is $\tau_f \le 0.5375$. Now the opposite wall shows up: BGK turns unstable
+as $\tau_f$ approaches 0.5.
+
+So the picture is this. High $\mathrm{Pr}$ runs into a stability wall on the $\tau_g \to 0.5$ side,
+and low $\mathrm{Pr}$ runs into an accuracy wall as $\tau_g$ grows. What DDF hands you is a window,
+not unlimited freedom.
+
+## Which ledger does viscous heating go on
+
+Splitting $f$ and $g$ creates a new problem. The energy equation contains the viscous dissipation
+term $\boldsymbol{u} \cdot (\nabla \cdot \boldsymbol{\Pi})$. But $\boldsymbol{\Pi}$ is a quantity
+that emerges from the first-order non-equilibrium part of $f$, and it relaxes with $\tau_f$.
+
+$$
+\boldsymbol{\Pi}^{(1)} = -2\rho\, c_s^{2}\left(\tau_f - \frac{\Delta t}{2}\right) \boldsymbol{S}
+$$
+
+$\boldsymbol{S}$ is the strain rate tensor. Since $g$ relaxes with $\tau_g$, the dissipation term
+returned by the expansion of $g$ carries $\tau_g$ in front of it. The moment the two relaxation
+times differ, the coefficients disagree. They match on their own only when $\mathrm{Pr} = 1$. That
+is why coupled DDF schemes attach one more correction term to the $g$ equation.
+
+Computing that correction locally at each lattice node requires closing $\boldsymbol{\Pi}^{(1)}$ in
+terms of moments. Grad's 13-moment approximation fills that slot.
+
+$$
+f_i \simeq w_i\left[\rho
++ \frac{\rho\, \boldsymbol{e}_i \cdot \boldsymbol{u}}{c_s^{2}}
++ \frac{(\boldsymbol{e}_i \boldsymbol{e}_i - c_s^{2}\boldsymbol{I}) :
+\left(\rho \boldsymbol{u}\boldsymbol{u} + \boldsymbol{\Pi}^{(1)}\right)}{2 c_s^{4}}\right]
+$$
+
+Set $\boldsymbol{\Pi}^{(1)} = 0$ and the familiar equilibrium distribution comes back untouched.
+Where that polynomial comes from is written up in
+[Maxwell–Boltzmann Inside Nine Arrows](/en/posts/2026-05-25-lbm-equilibrium-hermite-d2q9/). Grad's
+approximation carries the same expansion one order further, feeding the non-equilibrium stress back
+into the distribution function itself. This is also the fork between the coupled DDF papers of 2007
+(the Li et al. model for compressible Navier–Stokes) and the low-Mach decoupled models. The former
+attaches the correction explicitly; the latter throws viscous heating away entirely.
+
+## How much physics one distribution function can carry
+
+A single $f$ can carry $\rho$, $\boldsymbol{u}$, and one relaxation time — that is the budget. Put
+temperature on a second moment of that same $f$ and $\mathrm{Pr}$ and $\gamma$ stop being fluid
+properties and become lattice constants. Low-Mach Boussinesq simulations never expose the problem,
+since temperature there is a passive scalar anyway. Move to compressible thermal flow and both
+constants come due at once.
+
+In a thermal LBM code you inherited, three lines are enough to find first. Does temperature come
+out of a moment of $f$, or out of a separate array? Is $\gamma$ hardcoded as a constant, or computed
+from $D + n_0$? And is there a correction term next to the collision operator of $g$ that uses
+$\boldsymbol{\Pi}^{(1)}$? If the third one is missing while $\tau_f \ne \tau_g$, the viscous heating
+in that code is a quantity nobody ever computed.

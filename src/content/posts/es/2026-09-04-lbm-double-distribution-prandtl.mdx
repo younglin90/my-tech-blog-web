@@ -1,0 +1,378 @@
+---
+title: "Duplicar τ dejó Pr en 1.0000 — las dos constantes encerradas en el LBM térmico"
+date: 2026-09-04
+description: "Un LBM térmico de una sola función de distribución ata la viscosidad y la difusividad térmica al mismo τ, y Pr queda fijado en 1. Un segundo τ lo libera."
+tags: ["Double-Distribution-Function", "LBM", "Prandtl-Number", "Heat-Transfer", "Chapman-Enskog"]
+locale: es
+slug: 2026-09-04-lbm-double-distribution-prandtl
+takeaway: "Con un solo τ, Pr = 1 y γ = 1 + 2/D no son propiedades del fluido sino valores que fijó la retícula. Liberar ambos exige una función de distribución aparte para la energía."
+draft: false
+---
+
+import { PrandtlLockTwinDecay } from '@/components/post-viz/2026-09-04-lbm-double-distribution-prandtl/PrandtlLockTwinDecay'
+import { SpecificHeatDofGammaTuner } from '@/components/post-viz/2026-09-04-lbm-double-distribution-prandtl/SpecificHeatDofGammaTuner'
+
+## Un valor que nunca ingresé salió como 1.0000
+
+Sobre una retícula D2Q9 coloqué una onda de corte sinusoidal y una onda de temperatura sinusoidal, y
+medí la viscosidad cinemática $\nu$ y la difusividad térmica $\alpha$ a partir de la rapidez con que
+decae cada amplitud. Repetí la medición duplicando el tiempo de relajación $\tau$: 0.6, 0.8, 1.2.
+Las tres veces el número de Prandtl (la razón entre difusión de momento y difusión de calor) dio
+1.0001, 1.0000 y 1.0001.
+
+Ese valor nunca entró como propiedad del fluido. Lo fijó la retícula.
+
+Este artículo señala en qué línea de código está ese candado y vuelve a medir, sobre la misma
+retícula, qué se libera al levantar una segunda función de distribución para la energía. La
+constante encerrada no es solo $\mathrm{Pr}$. La razón de calores específicos $\gamma$ también está
+encerrada, y en D2Q9 vale 2, no el 1.4 del aire. Y aun después de liberarla, $\tau_g$ no se puede
+empujar sin límite: dónde se rompe también se mide con números.
+
+Abajo se puede abrir y cerrar el candado a mano.
+
+<PrandtlLockTwinDecay />
+
+Con el candado puesto, mover $\tau_f$ no sirve de nada: la curva naranja (temperatura) queda
+totalmente escondida bajo la azul (velocidad). Al soltar el candado y arrastrar $\tau_g$, las dos
+curvas se separan. Cuánto se separan es justamente $\mathrm{Pr}$.
+
+## Un solo τ se usa en dos lugares
+
+Esta es la ecuación de Boltzmann en retícula con el término de colisión BGK.
+
+$$
+f_i(\boldsymbol{x} + \boldsymbol{e}_i \Delta t,\; t + \Delta t) - f_i(\boldsymbol{x}, t)
+= -\frac{\Delta t}{\tau}\left[ f_i - f_i^{\mathrm{eq}} \right]
+$$
+
+$f_i$ es la función de distribución en la dirección $i$ de la retícula, $\boldsymbol{e}_i$ es la
+velocidad discreta en esa dirección y $\tau$ es el tiempo de relajación. Al llevar el desarrollo de
+Chapman–Enskog (un desarrollo que toma el alejamiento del equilibrio como parámetro pequeño y separa
+el resultado orden por orden) hasta primer orden, el esfuerzo viscoso sale de la parte de no
+equilibrio de primer orden de $f$. El resultado es esta expresión conocida.
+
+$$
+\nu = c_s^{2}\left(\tau - \frac{\Delta t}{2}\right)
+$$
+
+$c_s$ es la velocidad del sonido de la retícula y $\Delta t/2$ es la corrección que dejó la
+discretización. De dónde sale ese medio paso está desarrollado aparte en
+[El Δt/2 que dejó la discretización del LBM](/es/posts/2026-08-26-lbm-trapezoidal-integration-half-timestep/).
+
+El problema viene después. Si la energía interna se define como segundo momento de esa misma $f$, la
+ecuación de temperatura sale del mismo desarrollo a través del mismo término de no equilibrio de
+primer orden. La difusividad térmica queda con la forma idéntica.
+
+$$
+\alpha = c_s^{2}\left(\tau - \frac{\Delta t}{2}\right)
+$$
+
+Los lados derechos coinciden carácter por carácter. De ahí solo se sigue una conclusión.
+
+$$
+\mathrm{Pr} = \frac{\nu}{\alpha} = 1
+$$
+
+La razón cabe en una línea. El flujo de momento y el flujo de calor salen del mismo término de no
+equilibrio de la misma función de distribución, y delante de ese término hay una sola constante de
+tiempo. Con una sola constante, la razón entre ambos no es algo que se pueda elegir.
+
+Que $\mathrm{Pr}$ ronde 1 en los gases es un hecho experimental, y de ahí sale también la
+[analogía de Reynolds](/es/posts/2026-06-23-reynolds-analogy-friction-heat/) que enlaza fricción y
+transferencia de calor. Pero allí es una aproximación y una elección de modelado. Aquí es una
+imposición. Con agua o con metal líquido el resultado sigue siendo 1.
+
+## Levantar una función de distribución aparte para la energía
+
+La solución es estructuralmente simple. El problema nació de tener una sola constante, así que se
+crea una segunda. $f$ se encarga solo de masa y momento, y la energía queda a cargo de una segunda
+función de distribución $g_i$. Es el método de doble función de distribución (DDF).
+
+Las condiciones de momento que $g$ debe cumplir ocupan dos líneas.
+
+$$
+\sum_i g_i = \rho E, \qquad
+\sum_i \boldsymbol{e}_i\, g_i = \rho E \boldsymbol{u} + p\,\boldsymbol{u}
+$$
+
+$E = c_v T + |\boldsymbol{u}|^{2}/2$ es la energía total por unidad de masa y $p\boldsymbol{u}$ es el
+trabajo de la presión. La clave está en ese $p\boldsymbol{u}$ de la segunda línea. El flujo
+convectivo de energía no es solo $\rho E \boldsymbol{u}$, sino $\rho H \boldsymbol{u}$, con el
+trabajo de presión incluido, y por eso la distribución de equilibrio de $g$ no puede copiar tal cual
+la de $f$.
+
+Al relajar $g$ con $\tau_g$ y correr el mismo desarrollo de Chapman–Enskog, la difusividad térmica
+ahora mira a $\tau_g$.
+
+$$
+\mathrm{Pr} = \frac{\nu}{\alpha}
+= \frac{\tau_f - \Delta t/2}{\tau_g - \Delta t/2}
+$$
+
+El número de Reynolds fija $\tau_f$ y el número de Prandtl fija $\tau_g$. Cada exigencia pasó a
+tener su propia perilla.
+
+## Midiendo el candado y su liberación en la misma retícula con Python
+
+En lugar de dejarlo en palabras, lo medí. Armé $f$ en D2Q9 y $g$ en D2Q5 (una retícula de cinco
+velocidades solo para temperatura), con una onda sinusoidal que varía únicamente en $y$ como
+condición inicial. La amplitud de la onda de corte decae como $\exp(-\nu k^{2} t)$ y la de la onda
+térmica como $\exp(-\alpha k^{2} t)$. Un ajuste por mínimos cuadrados del logaritmo de la amplitud
+devuelve $\nu$ y $\alpha$.
+
+```python
+import math
+
+NY, CS2 = 64, 1.0 / 3.0
+K = 2.0 * math.pi / NY
+
+EX9 = [0, 1, 0, -1, 0, 1, -1, -1, 1]
+EY9 = [0, 0, 1, 0, -1, 1, 1, -1, -1]
+W9 = [4/9, 1/9, 1/9, 1/9, 1/9, 1/36, 1/36, 1/36, 1/36]
+
+EY5 = [0, 0, 1, 0, -1]
+W5 = [1/3, 1/6, 1/6, 1/6, 1/6]
+
+
+def feq_d2q9(rho, ux, uy):
+    u2 = ux * ux + uy * uy
+    return [w * rho * (1 + 3 * (ex * ux + ey * uy)
+                       + 4.5 * (ex * ux + ey * uy) ** 2 - 1.5 * u2)
+            for w, ex, ey in zip(W9, EX9, EY9)]
+
+
+def geq_d2q5(temp):
+    return [w * temp for w in W5]
+
+
+def fit_decay_rate(samples):
+    """samples = [(paso, amplitud)] -> pendiente de ln(amplitud) por mínimos cuadrados."""
+    n = len(samples)
+    xs = [s for s, _ in samples]
+    ys = [math.log(a) for _, a in samples]
+    mx, my = sum(xs) / n, sum(ys) / n
+    num = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+    den = sum((x - mx) ** 2 for x in xs)
+    return -num / den
+
+
+def run_shear_wave(tau_f, steps=3000, amp=1e-3):
+    f = [[0.0] * NY for _ in range(9)]
+    for y in range(NY):
+        for i, v in enumerate(feq_d2q9(1.0, amp * math.sin(K * y), 0.0)):
+            f[i][y] = v
+    log = []
+    for step in range(steps + 1):
+        rho = [sum(f[i][y] for i in range(9)) for y in range(NY)]
+        ux = [sum(f[i][y] * EX9[i] for i in range(9)) / rho[y] for y in range(NY)]
+        if step % 200 == 0:
+            a = 2.0 / NY * sum(ux[y] * math.sin(K * y) for y in range(NY))
+            log.append((step, a))
+        post = [[0.0] * NY for _ in range(9)]
+        for y in range(NY):
+            eq = feq_d2q9(rho[y], ux[y], 0.0)
+            for i in range(9):
+                post[i][y] = f[i][y] - (f[i][y] - eq[i]) / tau_f
+        for i in range(9):
+            for y in range(NY):
+                f[i][(y + EY9[i]) % NY] = post[i][y]
+    return fit_decay_rate(log) / (K * K)
+
+
+def run_thermal_wave(tau_g, amp=1e-3):
+    """El número de pasos se ajusta a tau_g para que la amplitud siempre caiga e^-2.5."""
+    alpha_th = CS2 * (tau_g - 0.5)
+    steps = max(240, min(12000, int(2.5 / (alpha_th * K * K))))
+    every = max(1, steps // 12)
+    g = [[0.0] * NY for _ in range(5)]
+    for y in range(NY):
+        for i, v in enumerate(geq_d2q5(amp * math.sin(K * y))):
+            g[i][y] = v
+    log = []
+    for step in range(steps + 1):
+        temp = [sum(g[i][y] for i in range(5)) for y in range(NY)]
+        if step % every == 0:
+            a = 2.0 / NY * sum(temp[y] * math.sin(K * y) for y in range(NY))
+            log.append((step, a))
+        post = [[0.0] * NY for _ in range(5)]
+        for y in range(NY):
+            eq = geq_d2q5(temp[y])
+            for i in range(5):
+                post[i][y] = g[i][y] - (g[i][y] - eq[i]) / tau_g
+        for i in range(5):
+            for y in range(NY):
+                g[i][(y + EY5[i]) % NY] = post[i][y]
+    return fit_decay_rate(log) / (K * K)
+
+
+def tau_for(nu, target_pr):
+    return 0.5 + nu / (target_pr * CS2)
+
+
+TAU_F = 0.8
+nu = run_shear_wave(TAU_F)
+print(f"tau_f = {TAU_F}   nu(theory) = {CS2*(TAU_F-0.5):.6f}   nu(measured) = {nu:.6f}")
+print()
+print("[A] single distribution: one tau relaxes momentum AND energy")
+print(f"{'tau':>6} {'nu':>10} {'alpha':>10} {'Pr':>8}")
+for t in (0.6, 0.8, 1.2):
+    n_, a_ = run_shear_wave(t), run_thermal_wave(t)
+    print(f"{t:6.2f} {n_:10.6f} {a_:10.6f} {n_/a_:8.4f}")
+print()
+print("[B] double distribution: tau_g chosen for a target Pr (tau_f = 0.8)")
+print(f"{'gas':>8} {'Pr(target)':>11} {'tau_g':>8} {'alpha':>10} {'Pr(meas)':>9} {'err%':>7}")
+for name, pr in (("mercury", 0.025), ("air", 0.71), ("Pr=1", 1.0), ("water", 7.0)):
+    tg = tau_for(nu, pr)
+    a_ = run_thermal_wave(tg)
+    prm = nu / a_
+    print(f"{name:>8} {pr:11.3f} {tg:8.4f} {a_:10.6f} {prm:9.4f} {100*(prm-pr)/pr:7.2f}")
+
+print()
+print("[C] how far can tau_g be pushed?  (theory: alpha = cs2*(tau_g-0.5))")
+print(f"{'tau_g':>7} {'alpha(th)':>10} {'alpha(meas)':>12} {'err%':>7}")
+for tg in (0.51, 0.55, 0.7, 1.0, 2.0, 4.0, 8.0, 12.5):
+    th = CS2 * (tg - 0.5)
+    ms = run_thermal_wave(tg)
+    print(f"{tg:7.2f} {th:10.5f} {ms:12.5f} {100*(ms-th)/th:7.2f}")
+```
+
+```text
+tau_f = 0.8   nu(theory) = 0.100000   nu(measured) = 0.100057
+
+[A] single distribution: one tau relaxes momentum AND energy
+   tau         nu      alpha       Pr
+  0.60   0.033368   0.033363   1.0001
+  0.80   0.100057   0.100060   1.0000
+  1.20   0.233144   0.233124   1.0001
+
+[B] double distribution: tau_g chosen for a target Pr (tau_f = 0.8)
+     gas  Pr(target)    tau_g      alpha  Pr(meas)    err%
+ mercury       0.025  12.5069   2.047239    0.0489   95.50
+     air       0.710   0.9228   0.140963    0.7098   -0.03
+    Pr=1       1.000   0.8002   0.100117    0.9994   -0.06
+   water       7.000   0.5429   0.014308    6.9931   -0.10
+
+[C] how far can tau_g be pushed?  (theory: alpha = cs2*(tau_g-0.5))
+  tau_g  alpha(th)  alpha(meas)    err%
+   0.51    0.00333      0.00334    0.16
+   0.55    0.01667      0.01668    0.10
+   0.70    0.06667      0.06672    0.08
+   1.00    0.16667      0.16667   -0.00
+   2.00    0.50000      0.49624   -0.75
+   4.00    1.16667      1.11274   -4.62
+   8.00    2.50000      1.94812  -22.08
+  12.50    4.00000      2.04752  -48.81
+```
+
+La tabla [A] es el candado. Al duplicar $\tau$ de 0.6 a 1.2, $\nu$ crece siete veces y aun así
+$\mathrm{Pr}$ sigue en 1 hasta el cuarto decimal. La tabla [B] es la liberación. El aire queda en
+0.7098 y el agua en 6.9931, ambos a menos de 0.1% del objetivo. La excepción es la primera fila: el
+mercurio falla por 95%. Esa fila tiene su propia sección más adelante.
+
+## Hay una segunda constante encerrada: la razón de calores específicos
+
+Quedarse en $\mathrm{Pr}$ deja pasar el segundo candado. Una partícula sobre la retícula se mueve
+solo en $D$ direcciones traslacionales. Ni rotación ni vibración. Entonces el calor específico a
+volumen constante cuenta únicamente los grados de libertad traslacionales, queda $c_v = DR/2$, y la
+constante del gas se recupera como $R = c_v / (D/2)$. La razón de calores específicos queda decidida
+sola.
+
+$$
+c_v = \frac{(D + n_0)\,R}{2}, \qquad
+\gamma = 1 + \frac{2}{D + n_0}
+$$
+
+$n_0$ es la cantidad de grados de libertad internos que se cargan además de los traslacionales. Sin
+hacer nada, $n_0 = 0$.
+
+| Retícula | $n_0$ | $c_v$ | $\gamma$ | Gas correspondiente |
+|---|---|---|---|---|
+| D2Q9 | 0 | $1.0R$ | 2.000 | ninguno |
+| D3Q19 | 0 | $1.5R$ | 1.667 | monoatómico (Ar, He) |
+| D2Q9 | 3 | $2.5R$ | 1.400 | aire |
+| D3Q19 | 2 | $2.5R$ | 1.400 | aire |
+| D2Q9 | 4 | $3.0R$ | 1.333 | vapor de agua |
+
+En dos dimensiones, una retícula sin retocar tiene $\gamma = 2$. Como la velocidad del sonido es
+$\sqrt{\gamma R T}$, eso da $\sqrt{2/1.4} = 1.195$ veces la del aire, es decir un 19.5% más rápida.
+El número de Mach, los ángulos de choque y la condición de bloqueo de una tobera se desvían todos en
+la misma proporción. En cálculos compresibles esto molesta antes que $\mathrm{Pr}$.
+
+<SpecificHeatDofGammaTuner />
+
+Conviene partir de D2Q9 con $n_0 = 0$, ver cuánto se separan los dos pulsos acústicos y luego
+arrastrar $n_0$ hasta poner la marca azul sobre la línea punteada. El número donde queda es la
+cantidad de grados de libertad internos que hay que cargar en la función de distribución de energía.
+Para igualar el aire hacen falta 2 en tres dimensiones y 3 en dos.
+
+## Hasta dónde se puede empujar τ_g
+
+La tabla [C] mide hasta cuándo es confiable $\alpha = c_s^{2}(\tau_g - \Delta t/2)$. Hasta
+$\tau_g = 2$ el error se mantiene por debajo de 0.8%. En 4 es 4.6%, en 8 llega a 22% y en 12.5 la
+brecha se abre a 49%. Sale apenas la mitad del valor teórico.
+
+La razón está en el origen de esa fórmula. $\alpha = c_s^{2}(\tau_g - \Delta t/2)$ es un resultado de
+primer orden del desarrollo de Chapman–Enskog. Para que el desarrollo valga, el tiempo de relajación
+debe ser corto frente a la escala temporal del flujo. Cuando $\tau_g$ crece, el término de segundo
+orden descartado —un término hiperdifusivo proporcional a la cuarta potencia del número de onda—
+crece hasta el tamaño del de primer orden. El techo práctico ronda $\alpha \approx 0.5$ en unidades
+de retícula.
+
+Por eso se rompió la fila del mercurio en [B]. Obtener $\mathrm{Pr} = 0.025$ con $\tau_f = 0.8$ exige
+$\alpha = 4.0$, ocho veces ese techo. La receta no es subir más $\tau_g$, sino bajar $\nu$. Para
+alcanzar $\mathrm{Pr} = 0.025$ respetando $\alpha \le 0.5$ hace falta $\nu \le 0.0125$, o sea
+$\tau_f \le 0.5375$. Y ahí aparece la pared del otro lado: cuando $\tau_f$ se pega a 0.5, BGK se
+vuelve inestable.
+
+En resumen, un $\mathrm{Pr}$ alto choca contra una pared de estabilidad del lado de
+$\tau_g \to 0.5$, y un $\mathrm{Pr}$ bajo choca contra una pared de precisión cuando $\tau_g$ crece.
+Lo que da el DDF es una ventana, no libertad ilimitada.
+
+## En qué libro contable entra el calentamiento viscoso
+
+Separar $f$ de $g$ genera un problema nuevo. La ecuación de la energía contiene el término de
+disipación viscosa $\boldsymbol{u} \cdot (\nabla \cdot \boldsymbol{\Pi})$. Pero $\boldsymbol{\Pi}$ es
+una cantidad que sale del no equilibrio de primer orden de $f$ y relaja con $\tau_f$.
+
+$$
+\boldsymbol{\Pi}^{(1)} = -2\rho\, c_s^{2}\left(\tau_f - \frac{\Delta t}{2}\right) \boldsymbol{S}
+$$
+
+$\boldsymbol{S}$ es el tensor de velocidad de deformación. Como $g$ relaja con $\tau_g$, el término
+de disipación que devuelve el desarrollo de $g$ lleva $\tau_g$ delante. En cuanto los dos tiempos de
+relajación difieren, los coeficientes dejan de coincidir. Solo cuadran solos cuando
+$\mathrm{Pr} = 1$. Esa es la razón por la que los DDF acoplados agregan un término de corrección más
+a la ecuación de $g$.
+
+Para calcular esa corrección de forma local en cada nodo hay que cerrar $\boldsymbol{\Pi}^{(1)}$ en
+términos de momentos. La aproximación de 13 momentos de Grad llena ese lugar.
+
+$$
+f_i \simeq w_i\left[\rho
++ \frac{\rho\, \boldsymbol{e}_i \cdot \boldsymbol{u}}{c_s^{2}}
++ \frac{(\boldsymbol{e}_i \boldsymbol{e}_i - c_s^{2}\boldsymbol{I}) :
+\left(\rho \boldsymbol{u}\boldsymbol{u} + \boldsymbol{\Pi}^{(1)}\right)}{2 c_s^{4}}\right]
+$$
+
+Con $\boldsymbol{\Pi}^{(1)} = 0$ reaparece intacta la distribución de equilibrio de siempre. De dónde
+viene ese polinomio está escrito en
+[Maxwell–Boltzmann dentro de nueve flechas](/es/posts/2026-05-25-lbm-equilibrium-hermite-d2q9/). La
+aproximación de Grad lleva ese desarrollo un orden más allá y devuelve el esfuerzo de no equilibrio
+al interior de la función de distribución. Ahí también se bifurcan los DDF acoplados de 2007 (el
+modelo de Li y colaboradores para Navier–Stokes compresible) y los modelos desacoplados de bajo
+Mach. Los primeros agregan la corrección de forma explícita; los segundos descartan por completo el
+calentamiento viscoso.
+
+## Cuánta física aguanta una sola función de distribución
+
+Con una sola $f$ caben $\rho$, $\boldsymbol{u}$ y un tiempo de relajación: ahí termina el
+presupuesto. En cuanto la temperatura se monta sobre el segundo momento de esa misma $f$,
+$\mathrm{Pr}$ y $\gamma$ dejan de ser propiedades del fluido y pasan a ser constantes de la retícula.
+En cálculos Boussinesq de bajo Mach el problema no aparece, porque allí la temperatura es de todas
+formas un escalar pasivo. Al pasar a flujo térmico compresible, las dos constantes se cobran juntas.
+
+En un código de LBM térmico heredado basta con buscar primero tres líneas. Si la temperatura sale de
+un momento de $f$ o de un arreglo aparte. Si $\gamma$ está fijado a mano como constante o se calcula
+desde $D + n_0$. Y si junto al término de colisión de $g$ hay una corrección que use
+$\boldsymbol{\Pi}^{(1)}$. Si falta la tercera y además $\tau_f \ne \tau_g$, el calentamiento viscoso
+de ese código es un valor que nunca se calculó.

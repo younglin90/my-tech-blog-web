@@ -1,0 +1,342 @@
+---
+title: "τ 翻倍后 Pr 依然是 1.0000 —— 热 LBM 中被锁死的两个常数"
+date: 2026-09-04
+description: "单分布函数热 LBM 用一个 τ 同时决定粘性与热扩散，Pr 被锁死在 1。第二个分布函数如何解开 Pr 和比热比，本文在 D2Q9 上实测给出答案。"
+tags: ["Double-Distribution-Function", "LBM", "Prandtl-Number", "Heat-Transfer", "Chapman-Enskog"]
+locale: zh
+slug: 2026-09-04-lbm-double-distribution-prandtl
+takeaway: "只有一个 τ 时，Pr = 1 和 γ = 1 + 2/D 不是流体的物性，而是格子定下的值。要同时解开两者，必须为能量单独建立一个分布函数。"
+draft: false
+---
+
+import { PrandtlLockTwinDecay } from '@/components/post-viz/2026-09-04-lbm-double-distribution-prandtl/PrandtlLockTwinDecay'
+import { SpecificHeatDofGammaTuner } from '@/components/post-viz/2026-09-04-lbm-double-distribution-prandtl/SpecificHeatDofGammaTuner'
+
+## 没有作为物性输入的值，算出来是 1.0000
+
+在 D2Q9 格子上分别叠加一列正弦剪切波和一列正弦温度波，通过各自振幅的衰减速率测出运动粘性系数
+$\nu$ 和热扩散系数 $\alpha$。把弛豫时间 $\tau$ 依次取 0.6、0.8、1.2 逐次翻倍，重复同一组测量。
+三次得到的普朗特数(Prandtl number，动量扩散与热扩散之比)分别是 1.0001、1.0000、1.0001。
+
+这个值从来没有作为物性输入过。它是格子定下的。
+
+本文要指出这把锁具体锁在代码的哪一行，并在同一套格子上重新测量：为能量再立一个分布函数之后，
+到底解开了什么。被锁死的常数不止 $\mathrm{Pr}$ 一个。比热比 $\gamma$ 同样被锁着，在 D2Q9 上它
+等于 2，而不是空气的 1.4。而且即使解开之后，$\tau_g$ 也不能无限往上推 —— 它在哪里失效，同样用
+数值测出来。
+
+下面可以亲手把这把锁扣上再打开。
+
+<PrandtlLockTwinDecay />
+
+锁定状态下，无论怎样调 $\tau_f$，右图中橙色(温度)曲线都会完全隐藏在蓝色(速度)曲线之下。解锁后
+拖动 $\tau_g$，两条曲线就分开了。分开的程度就是 $\mathrm{Pr}$。
+
+## 一个 τ 被用在两个地方
+
+采用 BGK 碰撞项的格子玻尔兹曼方程如下。
+
+$$
+f_i(\boldsymbol{x} + \boldsymbol{e}_i \Delta t,\; t + \Delta t) - f_i(\boldsymbol{x}, t)
+= -\frac{\Delta t}{\tau}\left[ f_i - f_i^{\mathrm{eq}} \right]
+$$
+
+$f_i$ 是第 $i$ 个格子方向上的分布函数，$\boldsymbol{e}_i$ 是该方向的离散速度，$\tau$ 是弛豫时间。
+把 Chapman–Enskog 展开(以偏离平衡的程度为小参数、按阶次分解的展开)做到一阶，粘性应力就来自 $f$
+的一阶非平衡项。结果就是这个熟悉的式子。
+
+$$
+\nu = c_s^{2}\left(\tau - \frac{\Delta t}{2}\right)
+$$
+
+$c_s$ 是格子声速，$\Delta t/2$ 是离散化留下的修正。这半格从何而来，在
+[LBM 离散化留下的 Δt/2 藏在三处](/zh/posts/2026-08-26-lbm-trapezoidal-integration-half-timestep/)
+里另有整理。
+
+问题出在下一步。如果把内能定义为同一个 $f$ 的二阶矩，温度方程也会从同一个展开、同一个一阶非平衡项
+中导出。热扩散系数连形式都一模一样。
+
+$$
+\alpha = c_s^{2}\left(\tau - \frac{\Delta t}{2}\right)
+$$
+
+两个式子的右端一个字符都不差。那么结论只有一个。
+
+$$
+\mathrm{Pr} = \frac{\nu}{\alpha} = 1
+$$
+
+原因一句话就能概括。动量通量和热通量都来自同一个分布函数的同一个非平衡项，而该项前面的时间常数
+只有 $\tau$ 一个。常数只有一个，比值就没得选。
+
+气体的 $\mathrm{Pr}$ 接近 1 是实验事实，连接摩擦与传热的
+[雷诺比拟](/zh/posts/2026-06-23-reynolds-analogy-friction-heat/)也由此而来。但那是一种近似，是一种
+选择。这里则是强制。放水进去、放液态金属进去，算出来都是 1。
+
+## 为能量单独建立一个分布函数
+
+解开的办法在结构上很简单。既然问题源于常数只有一个，那就再造一个常数。让 $f$ 只负责质量和动量，
+能量交给第二个分布函数 $g_i$。这就是双分布函数(double-distribution-function, DDF)方法。
+
+$g$ 需要满足的矩条件有两行。
+
+$$
+\sum_i g_i = \rho E, \qquad
+\sum_i \boldsymbol{e}_i\, g_i = \rho E \boldsymbol{u} + p\,\boldsymbol{u}
+$$
+
+$E = c_v T + |\boldsymbol{u}|^{2}/2$ 是单位质量的总能量，$p\boldsymbol{u}$ 是压力所做的功。第二行
+里出现 $p\boldsymbol{u}$ 是关键。能量的对流通量不只是 $\rho E \boldsymbol{u}$，而是把压力功一并计入的
+$\rho H \boldsymbol{u}$，所以 $g$ 的平衡分布不能照抄 $f$ 的平衡分布。
+
+让 $g$ 以 $\tau_g$ 弛豫，再走一遍同样的 Chapman–Enskog 展开，热扩散系数这时看的就是 $\tau_g$。
+
+$$
+\mathrm{Pr} = \frac{\nu}{\alpha}
+= \frac{\tau_f - \Delta t/2}{\tau_g - \Delta t/2}
+$$
+
+$\tau_f$ 由雷诺数决定，$\tau_g$ 由普朗特数决定。两项要求终于各握住了一个旋钮。
+
+## 用 Python 在同一格子上测量锁定与解锁
+
+不停留在口头上，直接测。$f$ 用 D2Q9，$g$ 用 D2Q5(温度专用的五速度格子)，初始条件给一列只沿 $y$
+方向变化的正弦波。剪切波的振幅按 $\exp(-\nu k^{2} t)$ 衰减，温度波的振幅按 $\exp(-\alpha k^{2} t)$
+衰减。对振幅取对数并做最小二乘拟合，就能得到 $\nu$ 和 $\alpha$。
+
+```python
+import math
+
+NY, CS2 = 64, 1.0 / 3.0
+K = 2.0 * math.pi / NY
+
+EX9 = [0, 1, 0, -1, 0, 1, -1, -1, 1]
+EY9 = [0, 0, 1, 0, -1, 1, 1, -1, -1]
+W9 = [4/9, 1/9, 1/9, 1/9, 1/9, 1/36, 1/36, 1/36, 1/36]
+
+EY5 = [0, 0, 1, 0, -1]
+W5 = [1/3, 1/6, 1/6, 1/6, 1/6]
+
+
+def feq_d2q9(rho, ux, uy):
+    u2 = ux * ux + uy * uy
+    return [w * rho * (1 + 3 * (ex * ux + ey * uy)
+                       + 4.5 * (ex * ux + ey * uy) ** 2 - 1.5 * u2)
+            for w, ex, ey in zip(W9, EX9, EY9)]
+
+
+def geq_d2q5(temp):
+    return [w * temp for w in W5]
+
+
+def fit_decay_rate(samples):
+    """samples = [(步数, 振幅)] -> 用最小二乘求 ln(振幅) 的斜率。"""
+    n = len(samples)
+    xs = [s for s, _ in samples]
+    ys = [math.log(a) for _, a in samples]
+    mx, my = sum(xs) / n, sum(ys) / n
+    num = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+    den = sum((x - mx) ** 2 for x in xs)
+    return -num / den
+
+
+def run_shear_wave(tau_f, steps=3000, amp=1e-3):
+    f = [[0.0] * NY for _ in range(9)]
+    for y in range(NY):
+        for i, v in enumerate(feq_d2q9(1.0, amp * math.sin(K * y), 0.0)):
+            f[i][y] = v
+    log = []
+    for step in range(steps + 1):
+        rho = [sum(f[i][y] for i in range(9)) for y in range(NY)]
+        ux = [sum(f[i][y] * EX9[i] for i in range(9)) / rho[y] for y in range(NY)]
+        if step % 200 == 0:
+            a = 2.0 / NY * sum(ux[y] * math.sin(K * y) for y in range(NY))
+            log.append((step, a))
+        post = [[0.0] * NY for _ in range(9)]
+        for y in range(NY):
+            eq = feq_d2q9(rho[y], ux[y], 0.0)
+            for i in range(9):
+                post[i][y] = f[i][y] - (f[i][y] - eq[i]) / tau_f
+        for i in range(9):
+            for y in range(NY):
+                f[i][(y + EY9[i]) % NY] = post[i][y]
+    return fit_decay_rate(log) / (K * K)
+
+
+def run_thermal_wave(tau_g, amp=1e-3):
+    """按 tau_g 调整步数，使振幅始终衰减 e^-2.5 倍。"""
+    alpha_th = CS2 * (tau_g - 0.5)
+    steps = max(240, min(12000, int(2.5 / (alpha_th * K * K))))
+    every = max(1, steps // 12)
+    g = [[0.0] * NY for _ in range(5)]
+    for y in range(NY):
+        for i, v in enumerate(geq_d2q5(amp * math.sin(K * y))):
+            g[i][y] = v
+    log = []
+    for step in range(steps + 1):
+        temp = [sum(g[i][y] for i in range(5)) for y in range(NY)]
+        if step % every == 0:
+            a = 2.0 / NY * sum(temp[y] * math.sin(K * y) for y in range(NY))
+            log.append((step, a))
+        post = [[0.0] * NY for _ in range(5)]
+        for y in range(NY):
+            eq = geq_d2q5(temp[y])
+            for i in range(5):
+                post[i][y] = g[i][y] - (g[i][y] - eq[i]) / tau_g
+        for i in range(5):
+            for y in range(NY):
+                g[i][(y + EY5[i]) % NY] = post[i][y]
+    return fit_decay_rate(log) / (K * K)
+
+
+def tau_for(nu, target_pr):
+    return 0.5 + nu / (target_pr * CS2)
+
+
+TAU_F = 0.8
+nu = run_shear_wave(TAU_F)
+print(f"tau_f = {TAU_F}   nu(theory) = {CS2*(TAU_F-0.5):.6f}   nu(measured) = {nu:.6f}")
+print()
+print("[A] single distribution: one tau relaxes momentum AND energy")
+print(f"{'tau':>6} {'nu':>10} {'alpha':>10} {'Pr':>8}")
+for t in (0.6, 0.8, 1.2):
+    n_, a_ = run_shear_wave(t), run_thermal_wave(t)
+    print(f"{t:6.2f} {n_:10.6f} {a_:10.6f} {n_/a_:8.4f}")
+print()
+print("[B] double distribution: tau_g chosen for a target Pr (tau_f = 0.8)")
+print(f"{'gas':>8} {'Pr(target)':>11} {'tau_g':>8} {'alpha':>10} {'Pr(meas)':>9} {'err%':>7}")
+for name, pr in (("mercury", 0.025), ("air", 0.71), ("Pr=1", 1.0), ("water", 7.0)):
+    tg = tau_for(nu, pr)
+    a_ = run_thermal_wave(tg)
+    prm = nu / a_
+    print(f"{name:>8} {pr:11.3f} {tg:8.4f} {a_:10.6f} {prm:9.4f} {100*(prm-pr)/pr:7.2f}")
+
+print()
+print("[C] how far can tau_g be pushed?  (theory: alpha = cs2*(tau_g-0.5))")
+print(f"{'tau_g':>7} {'alpha(th)':>10} {'alpha(meas)':>12} {'err%':>7}")
+for tg in (0.51, 0.55, 0.7, 1.0, 2.0, 4.0, 8.0, 12.5):
+    th = CS2 * (tg - 0.5)
+    ms = run_thermal_wave(tg)
+    print(f"{tg:7.2f} {th:10.5f} {ms:12.5f} {100*(ms-th)/th:7.2f}")
+```
+
+```text
+tau_f = 0.8   nu(theory) = 0.100000   nu(measured) = 0.100057
+
+[A] single distribution: one tau relaxes momentum AND energy
+   tau         nu      alpha       Pr
+  0.60   0.033368   0.033363   1.0001
+  0.80   0.100057   0.100060   1.0000
+  1.20   0.233144   0.233124   1.0001
+
+[B] double distribution: tau_g chosen for a target Pr (tau_f = 0.8)
+     gas  Pr(target)    tau_g      alpha  Pr(meas)    err%
+ mercury       0.025  12.5069   2.047239    0.0489   95.50
+     air       0.710   0.9228   0.140963    0.7098   -0.03
+    Pr=1       1.000   0.8002   0.100117    0.9994   -0.06
+   water       7.000   0.5429   0.014308    6.9931   -0.10
+
+[C] how far can tau_g be pushed?  (theory: alpha = cs2*(tau_g-0.5))
+  tau_g  alpha(th)  alpha(meas)    err%
+   0.51    0.00333      0.00334    0.16
+   0.55    0.01667      0.01668    0.10
+   0.70    0.06667      0.06672    0.08
+   1.00    0.16667      0.16667   -0.00
+   2.00    0.50000      0.49624   -0.75
+   4.00    1.16667      1.11274   -4.62
+   8.00    2.50000      1.94812  -22.08
+  12.50    4.00000      2.04752  -48.81
+```
+
+[A] 表就是那把锁。把 $\tau$ 从 0.6 增大到 1.2，$\nu$ 变成七倍，而 $\mathrm{Pr}$ 到小数点后第四位
+仍然是 1。[B] 表则是解锁。空气是 0.7098，水是 6.9931，与目标值的偏差都在 0.1% 以内。唯独最上面
+的水银那一行错了 95%。这一行后面单独讨论。
+
+## 被锁死的常数还有一个 —— 比热比
+
+只盯着 $\mathrm{Pr}$ 就会漏掉第二把锁。格子上的粒子只能沿 $D$ 个平动方向运动，既不转动也不振动。
+于是定容比热只数平动自由度，$c_v = DR/2$，气体常数反过来由 $R = c_v / (D/2)$ 给出。比热比就此
+被自动定死。
+
+$$
+c_v = \frac{(D + n_0)\,R}{2}, \qquad
+\gamma = 1 + \frac{2}{D + n_0}
+$$
+
+$n_0$ 是在平动之外额外加载的内部自由度个数。什么都不做时 $n_0 = 0$。
+
+| 格子 | $n_0$ | $c_v$ | $\gamma$ | 对应的气体 |
+|---|---|---|---|---|
+| D2Q9 | 0 | $1.0R$ | 2.000 | 无 |
+| D3Q19 | 0 | $1.5R$ | 1.667 | 单原子(Ar、He) |
+| D2Q9 | 3 | $2.5R$ | 1.400 | 空气 |
+| D3Q19 | 2 | $2.5R$ | 1.400 | 空气 |
+| D2Q9 | 4 | $3.0R$ | 1.333 | 水蒸气 |
+
+二维下未加处理的格子，$\gamma$ 等于 2。声速为 $\sqrt{\gamma R T}$，所以比空气快
+$\sqrt{2/1.4} = 1.195$ 倍，也就是快 19.5%。马赫数、激波角、喷管的壅塞条件都会同比例偏离。在可压缩
+计算里，这一条比 $\mathrm{Pr}$ 更早成为问题。
+
+<SpecificHeatDofGammaTuner />
+
+先从 D2Q9 和 $n_0 = 0$ 出发，看两道声脉冲会拉开多大距离，然后拖动 $n_0$，把蓝色标记抬到虚线上。
+抬上去时对应的数字，就是应该加载到能量分布函数上的内部自由度个数。三维要匹配空气需要 2 个，
+二维需要 3 个。
+
+## τ_g 能推到多远
+
+[C] 表测的是 $\alpha = c_s^{2}(\tau_g - \Delta t/2)$ 能信到什么程度。$\tau_g$ 在 2 以内时误差不到
+0.8%。到 4 是 4.6%，到 8 是 22%，到 12.5 就差了 49%，只有理论值的一半。
+
+原因在于这个式子的出处。$\alpha = c_s^{2}(\tau_g - \Delta t/2)$ 是 Chapman–Enskog 展开的一阶结果。
+展开要成立，弛豫时间必须短于流动的时间尺度。$\tau_g$ 一大，被丢掉的二阶项 —— 正比于波数四次方的
+超扩散项 —— 就会长到与一阶项同量级。以格子单位计，实际上限在 $\alpha \approx 0.5$ 附近。
+
+[B] 表中水银那一行正是因此崩掉的。要在 $\tau_f = 0.8$ 下得到 $\mathrm{Pr} = 0.025$，需要
+$\alpha = 4.0$，是上述上限的八倍。对策不是继续调高 $\tau_g$，而是把 $\nu$ 降下来。在守住
+$\alpha \le 0.5$ 的前提下要得到 $\mathrm{Pr} = 0.025$，就得有 $\nu \le 0.0125$，即
+$\tau_f \le 0.5375$。这回撞的是另一侧的墙：$\tau_f$ 一贴近 0.5，BGK 就会失稳。
+
+归纳起来是这样。高 $\mathrm{Pr}$ 在 $\tau_g \to 0.5$ 一侧撞上稳定性的墙，低 $\mathrm{Pr}$ 在
+$\tau_g$ 增大的一侧撞上精度的墙。DDF 给出的不是无限的自由，而是一扇窗。
+
+## 粘性加热记在哪一本账上
+
+把 $f$ 和 $g$ 拆开之后会冒出一个新问题。能量方程里含有粘性耗散项
+$\boldsymbol{u} \cdot (\nabla \cdot \boldsymbol{\Pi})$。而 $\boldsymbol{\Pi}$ 是从 $f$ 的一阶非平衡
+中来的量，按 $\tau_f$ 弛豫。
+
+$$
+\boldsymbol{\Pi}^{(1)} = -2\rho\, c_s^{2}\left(\tau_f - \frac{\Delta t}{2}\right) \boldsymbol{S}
+$$
+
+$\boldsymbol{S}$ 是应变率张量。$g$ 按 $\tau_g$ 弛豫，所以 $g$ 的展开还回来的耗散项前面带的是
+$\tau_g$。两个弛豫时间一不相等，系数立刻对不上。只有 $\mathrm{Pr} = 1$ 时才会自动吻合。耦合型 DDF
+要在 $g$ 方程上再加一个修正项，原因就在这里。
+
+要在每个格点上局部地算出这个修正项，必须把 $\boldsymbol{\Pi}^{(1)}$ 用矩封闭。Grad 的 13 矩近似
+补上了这个位置。
+
+$$
+f_i \simeq w_i\left[\rho
++ \frac{\rho\, \boldsymbol{e}_i \cdot \boldsymbol{u}}{c_s^{2}}
++ \frac{(\boldsymbol{e}_i \boldsymbol{e}_i - c_s^{2}\boldsymbol{I}) :
+\left(\rho \boldsymbol{u}\boldsymbol{u} + \boldsymbol{\Pi}^{(1)}\right)}{2 c_s^{4}}\right]
+$$
+
+代入 $\boldsymbol{\Pi}^{(1)} = 0$，熟悉的平衡分布就原样出现。这个多项式从何而来，写在
+[九支箭头里的 Maxwell–Boltzmann](/zh/posts/2026-05-25-lbm-equilibrium-hermite-d2q9/) 里。Grad 近似
+把那个展开再往前推一阶，把非平衡应力也塞回分布函数内部。2007 年的耦合型 DDF 论文(Li 等人面向可压缩
+Navier–Stokes 的模型)与低马赫解耦模型的分岔点也在这里。前者显式地加上修正项，后者干脆把粘性加热
+整个丢掉。
+
+## 一个分布函数能承载多少物理
+
+一个 $f$ 能装下的，只有 $\rho$、$\boldsymbol{u}$，外加一个弛豫时间。一旦把温度挂到同一个 $f$ 的
+二阶矩上，$\mathrm{Pr}$ 和 $\gamma$ 就不再是流体的物性，而变成格子常数。在低马赫的 Boussinesq
+计算里，温度本来就是被动标量，这个问题浮不出水面。一转到可压缩热流动，两个常数会同时来要账。
+
+接手一份热 LBM 代码时，先找三行就够了。温度是从 $f$ 的矩里取出来的，还是从单独的数组里取出来的。
+$\gamma$ 是硬编码成常数，还是由 $D + n_0$ 算出来的。以及 $g$ 的碰撞项旁边有没有使用
+$\boldsymbol{\Pi}^{(1)}$ 的修正项。如果第三条没有而 $\tau_f \ne \tau_g$，那份代码里的粘性加热
+从来没有被真正计算过。
