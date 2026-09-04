@@ -1,0 +1,227 @@
+---
+title: "[Paper Review] Two Fragments Flew Together Instead of Pushing Apart — The 144° Equilibrium of a Mach 20 Sphere Pair"
+date: 2026-09-05
+description: "At Mach 20 two touching spheres align at one angle and generate lift together instead of repelling. A Newtonian approximation pins that angle down."
+tags: ["Shock-Surfing", "Hypersonic", "FSI", "Compressible", "Paper-Review"]
+locale: en
+slug: 2026-09-05-hypersonic-sphere-pair-shock-surfing
+takeaway: "What sets the separation velocity of a fragment pair is not the magnitude of the repulsive force, but the sign of the moment that keeps them in contact."
+draft: false
+---
+
+import { AlignmentTorqueContactPair } from '@/components/post-viz/2026-09-05-hypersonic-sphere-pair-shock-surfing/AlignmentTorqueContactPair'
+import { ShockSurfRideTracker } from '@/components/post-viz/2026-09-05-hypersonic-sphere-pair-shock-surfing/ShockSurfRideTracker'
+
+Say a meteoroid breaks into two pieces in the atmosphere. Do the pieces drift apart? If the answer were "always," back-solving a crater field on the ground would be far easier. The Mach 20 computations that Whalen, Deiterding and Laurence published in JFM 2026 (vol. 1029, A35) unsettle that answer. At certain alignment angles the two spheres fly on in contact, and the pair as a whole even produces lift. This post reproduces where that angle comes from with a 30-line Newtonian approximation. The value it returns is 143.6°, inside the paper's stable band of 132°–145.7°.
+
+## Q1. Why is the two-fragment problem still open
+
+Meteoroid fragment calculations split into two old camps. When only a few pieces exist, the discrete-fragment approach tracks each one separately. When the pieces are effectively infinite, the debris-cloud approach smears the mass like a fluid. The two-body model Passey and Melosh proposed in 1980 is the archetype of the former. If the spheres are assumed to be pushed purely sideways, the final transverse velocity reduces to one proportionality.
+
+$$V_T \propto V\sqrt{\rho_a/\rho_m}$$
+
+$V$ is the entry velocity, $\rho_a$ the atmospheric density, $\rho_m$ the meteoroid density. All that is left is a single constant, and values back-solved from crater fields on the ground scatter from 0.03 to 2.28. That is two orders of magnitude.
+
+The trouble lies in between. The intermediate-count regime, neither 2 pieces nor thousands, was almost empty. The paper aims straight at that gap. It arranges equal-sized spheres in regular clusters of 2, 4 and 13, varies only the initial attitude, and runs 83 cases. AMROC solves the Euler equations on an embedded boundary for the flow, while DYNA3D solves the spheres including contact. The gas is a perfect gas with $\gamma=1.4$, the inflow is Mach 20, and the sphere-to-gas density ratio is $10^4$. The mesh refines automatically along density gradients. The cost structure of this approach is the same one covered in [AMR tagging and refluxing](/en/posts/2026-08-10-amr-tagging-and-refluxing/).
+
+Try it hands-on in the simulation below.
+
+<AlignmentTorqueContactPair />
+
+Set the alignment angle $\theta_0$ anywhere and hit release. A green curved arrow means the pair is opening up, a red one means it is closing. Every initial angle gets pulled into the single point where the curve on the right crosses zero.
+
+## Q2. Why does a pair in contact settle at one particular angle
+
+The alignment angle $\theta$ is defined between the freestream direction and the segment running from the secondary sphere to the primary. At $\theta = 180^\circ$ the rear sphere sits exactly inside the wake of the front one. At $\theta = 90^\circ$ they stand side by side.
+
+While the two spheres stay in contact, they can be treated as one rigid body. The contact force is then internal and drops out of the moment on the pair. Only the aerodynamic moment remains.
+
+$$
+\mathbf{M}_{\rm com} = \sum_{i=1}^{2}\oint_{S_i}(\mathbf{x}-\mathbf{x}_{\rm com})\times\bigl(-C_p\,\hat{n}\bigr)\,\mathrm{d}A
+$$
+
+$S_i$ is each sphere's surface, $\hat{n}$ the outward normal, $\mathbf{x}_{\rm com}$ the center of mass of the pair. Equilibrium requires only that this vanish; stability is decided by the sign nearby.
+
+Start at $\theta = 180^\circ$. The upstream sphere takes the freestream head-on, and the downstream one is fully shielded with near-zero drag. The drag difference acts at a station offset from the center of mass, so any small tilt produces a moment that grows the tilt. That is unstable equilibrium. The paper likewise reports no attitude change at 180°, adding that the larger upstream drag should make it unstable.
+
+At the other end, $\theta = 90^\circ$ is symmetric, so the moment is exactly zero. Somewhere in between, then, the sign must flip. That crossing is the stable alignment angle.
+
+## Q3. Does a Newtonian approximation alone recover that angle
+
+At hypersonic speeds the pressure distribution can be approximated by Newtonian impact theory. If a fluid particle striking the surface loses all of its normal momentum, the pressure coefficient becomes
+
+$$C_p = C_{p,\max}\,(\hat{u}\cdot\hat{n})^2, \qquad C_{p,\max} = 1.8394$$
+
+$\hat{u}$ is the freestream unit vector and $\hat{n}$ the outward surface normal; the formula holds only on windward faces where $\hat{u}\cdot\hat{n}<0$. $C_{p,\max}$ is the stagnation value for $\gamma=1.4$ and $M\to\infty$. One more line handles shielding: if a face hides behind the other sphere, its pressure is set to zero.
+
+Each sphere is cut into 24,000 panels on a Fibonacci lattice, and the sweep runs from 90° to 180° in 1° steps.
+
+```python
+import math
+
+CP_MAX = 1.8394          # modified Newtonian theory, gamma=1.4, M -> infinity
+R = 1.0                  # sphere radius
+N_PANEL = 24000
+
+
+def fib_sphere(n):
+    """Nearly uniform points on the unit sphere, plus the area of one panel."""
+    pts, ga = [], math.pi * (3.0 - math.sqrt(5.0))
+    for i in range(n):
+        z = 1.0 - 2.0 * (i + 0.5) / n
+        rho = math.sqrt(max(0.0, 1.0 - z * z))
+        a = ga * i
+        pts.append((rho * math.cos(a), rho * math.sin(a), z))
+    return pts, 4.0 * math.pi / n
+
+
+PANELS, DA = fib_sphere(N_PANEL)
+
+
+def pair_geometry(theta_deg):
+    """Secondary (downstream) sphere at the origin, primary at 2R along n_hat.
+    theta = angle between the freestream x_hat and the 'secondary -> primary' segment."""
+    t = math.radians(theta_deg)
+    n_hat = (math.cos(t), math.sin(t), 0.0)
+    return (0.0, 0.0, 0.0), tuple(2.0 * R * c for c in n_hat), n_hat
+
+
+def shadowed(px, py, pz, cx, cy, cz):
+    """Is this point hidden from the freestream by the sphere at c?
+    The flow runs along +x, so trace back along -x and do a cylinder test."""
+    if cx >= px:
+        return False
+    return (py - cy) ** 2 + (pz - cz) ** 2 < R * R
+
+
+def newtonian_cp(nx):
+    """nx = x component of the outward normal. nx < 0 means a windward face."""
+    return CP_MAX * nx * nx if nx < 0.0 else 0.0
+
+
+def pair_loads(theta_deg):
+    """Force coefficients of each sphere and the moment about the pair's center of mass.
+    References: q_inf * pi * R^2 for force, and that times 2R for moment."""
+    cs, cp, _ = pair_geometry(theta_deg)
+    com = tuple(0.5 * (a + b) for a, b in zip(cs, cp))
+    out = []
+    for me, other in ((cs, cp), (cp, cs)):
+        fx = fy = mz = 0.0
+        for ux, uy, uz in PANELS:
+            cpv = newtonian_cp(ux)
+            if cpv == 0.0:
+                continue
+            x, y, z = me[0] + R * ux, me[1] + R * uy, me[2] + R * uz
+            if shadowed(x, y, z, other[0], other[1], other[2]):
+                continue
+            dfx, dfy = -cpv * ux * DA * R * R, -cpv * uy * DA * R * R
+            fx += dfx
+            fy += dfy
+            mz += (x - com[0]) * dfy - (y - com[1]) * dfx
+        s = math.pi * R * R
+        out.append((fx / s, fy / s, mz / (s * 2.0 * R)))
+    return out
+
+
+def sweep_alignment(lo, hi, step):
+    rows, t = [], lo
+    while t <= hi + 1e-9:
+        (dxs, dys, ms), (dxp, dyp, mp) = pair_loads(t)
+        cd, cl, cm = dxs + dxp, dys + dyp, ms + mp
+        rows.append((t, cd, cl, cm, dxp, dxs))
+        t += step
+    return rows
+
+
+SLOPE_FLOOR = 5.0e-5     # integration noise. real crossings are far steeper
+
+
+def stable_window(rows):
+    """Among the zeros of C_M, keep only those whose slope beats the noise."""
+    hits = []
+    for (t0, _, _, m0, _, _), (t1, _, _, m1, _, _) in zip(rows, rows[1:]):
+        if m0 * m1 >= 0.0 or abs(m1 - m0) < SLOPE_FLOOR * (t1 - t0):
+            continue
+        te = t0 + (t1 - t0) * (-m0) / (m1 - m0)
+        hits.append((te, "stable" if m1 < m0 else "unstable", m1 - m0))
+    return hits
+
+
+rows = sweep_alignment(90.0, 180.0, 1.0)
+
+print("theta   C_D    C_L     C_M      L/D    C_D,up  C_D,down")
+for t, cd, cl, cm, dxp, dxs in rows:
+    if abs(t % 7.5) < 1e-9:
+        print(f"{t:5.1f} {cd:6.3f} {cl:7.3f} {cm:8.4f} {cl / cd:7.3f} "
+              f"{dxp:7.3f} {dxs:8.3f}")
+
+print()
+for te, kind, slope in stable_window(rows):
+    print(f"C_M = 0 at theta = {te:6.2f} deg  slope {slope:+.2e}/deg  -> {kind}")
+
+eq = [h[0] for h in stable_window(rows) if h[1] == "stable"][0]
+near = min(rows, key=lambda r: abs(r[0] - eq))
+print(f"\nat the stable angle: L/D = {near[2] / near[1]:.3f}, C_D = {near[1]:.3f}")
+lo = min(r[0] for r in rows if r[3] > SLOPE_FLOOR)
+print(f"restoring sign holds from theta = {lo:.1f} deg up to the equilibrium")
+print(f"tandem (180 deg): C_D,up = {rows[-1][4]:.3f}, C_D,down = {rows[-1][5]:.3f}")
+```
+
+```text
+theta   C_D    C_L     C_M      L/D    C_D,up  C_D,down
+ 90.0  1.839   0.000   0.0000   0.000   0.920    0.920
+105.0  1.839   0.003   0.0000   0.002   0.920    0.919
+120.0  1.819   0.037   0.0003   0.020   0.920    0.899
+135.0  1.714   0.128   0.0007   0.075   0.920    0.794
+150.0  1.459   0.215  -0.0020   0.147   0.920    0.539
+165.0  1.112   0.170  -0.0122   0.152   0.920    0.193
+180.0  0.920   0.000  -0.0000   0.000   0.920    0.000
+
+C_M = 0 at theta = 143.61 deg  slope -2.09e-04/deg  -> stable
+
+at the stable angle: L/D = 0.119, C_D = 1.580
+restoring sign holds from theta = 111.0 deg up to the equilibrium
+tandem (180 deg): C_D,up = 0.920, C_D,down = 0.000
+```
+
+Out came 143.61°. The stable band the paper extracted by combing through coefficient and moment histories is 132°–145.7°, and the lift-to-drag peak of the contact pair sits at 141.5°. Thirty lines with no mesh and no shock waves landed inside it.
+
+The lift-to-drag ratio comes out at 0.119, below the paper's stable-band average of 0.197 and peak of 0.22. The reason for the gap is clear. The Newtonian approximation knows nothing about shock-shock interaction. In the paper's figures the high-pressure patch on the inner faces between the spheres is made by two bow shocks meeting, and this model has no room for such a spot. As seen in [the oblique shock train](/en/posts/2026-08-06-oblique-shock-train-supersonic-inlet/), pressure where shocks overlap exceeds a simple sum. So what this code gets right is not the magnitude but the sign and the location.
+
+The places where signs flip in the table are worth reading too. $C_L$ peaks at 0.215 near 150°, while $C_M$ passes through zero earlier, at 143.6°. The attitude with the most lift and the attitude that sustains itself are not the same.
+
+## Q4. Where does the sideways push come from once they separate
+
+Once contact breaks, the story changes. If the spheres started side by side (near 90°), a shared bow shock presses on the inner faces and drives them apart. That mutual repulsion fades quickly as the gap widens, and the paper's nondimensional transverse velocity stalls around 0.2.
+
+Something else happens when the rear sphere straddles the shock of the front one. Just behind the shock the pressure is high; outside it is freestream. A sphere riding half in and half out of that boundary feels a sustained outward push. Laurence and Deiterding named this shock surfing in 2011. In the paper this effect raises the final transverse velocity from 0.2 to 0.25 and stretches the time to separation from $1.7\tau_s$ to $4\tau_s$.
+
+The reference scales for time and velocity are as follows.
+
+$$\tau_s = \sqrt{\frac{\rho_{\rm sph}}{\rho_\infty}}\,\frac{r_c}{u_\infty}$$
+
+$r_c$ is the circumscribed radius of the cluster. Since the density ratio is $10^4$, $\tau_s$ is 100 times the transit time. Nondimensionalized this way, the relative equation of motion keeps a single coefficient.
+
+$$\frac{\mathrm{d}V'}{\mathrm{d}t'} = \frac{3}{8}\bigl(C_{F,\rm trail} - C_{F,\rm lead}\bigr)$$
+
+The $3/8$ comes from the ratio of a sphere's volume to its cross-section, and the density ratio has been absorbed entirely into the scales. The animation below integrates this equation directly.
+
+<ShockSurfRideTracker />
+
+Drag the release angle upward from 90°. Near 90° the solid and dashed curves overlap, meaning the shared shock does all the work and surfing adds nothing. Past 135° the two curves split, and a sphere's rim brightens only while it is biting the pink shock line.
+
+The contact phase lives in this model too. Release at 165° and the two spheres roll together for 3–4$\tau_s$, separating only after the alignment angle has dropped toward 120°. That broadly matches the paper's reported contact duration of 4–6$\tau_s$ and release angle near 130°. The way drag collapses in the wake is a different problem from the single-sphere drag curve seen in [the drag crisis](/en/posts/2026-06-09-drag-crisis-boundary-layer-separation/). Here the cause is shielding, not a separation point.
+
+## Q5. So why does nothing happen at 180°
+
+A perfectly aligned tandem is symmetric. The transverse force is zero and so is the moment. The computation ends with the two spheres in contact for 8$\tau_s$ without changing attitude at all. The paper observes the same.
+
+But this is the equilibrium of a pencil balanced on its tip. Because the upstream sphere's drag exceeds the downstream one's (0.920 against 0.000 in the table above), the slightest tilt attracts a moment that amplifies it. In the actual computation, releasing even at 172.5° gives motion that barely moves at first and then accelerates into a "rolling" behavior, until contact finally breaks.
+
+One practically important number falls out here. A pair that generates lift while staying in contact has its center of mass itself pushed sideways. The paper records center-of-mass transverse velocities of 0.42, 0.32 and 0.28 for pairs released at 150°, 157.5° and 172.5°, larger than the relative velocity of the individual fragments. Counting only the repulsion of each fragment drops this component entirely.
+
+## What survives all the way to 13
+
+The paper carries the same survey through 38 tetrahedral arrangements of 4 spheres and 34 face-centered-cubic arrangements of 13. The final transverse velocity of an individual sphere collapses fairly well onto its initial polar angle alone, and this trend appears similarly for 4 and for 13. What fades as the count grows is the influence of the whole cluster's bluntness on bulk behavior. More pieces means more homogeneous separation, which hints at where the debris-cloud approach starts to earn its keep.
+
+To sum up, what governs the separation of a fragment pair is not the magnitude of the repulsive force. It is when contact breaks, and that is decided by the sign of the moment. And that sign can be known without a mesh. Put Newtonian pressure on the surface, count shielding correctly, and the angle the two spheres find on their own comes out at 143.6° in thirty lines.
