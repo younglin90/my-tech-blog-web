@@ -1,0 +1,331 @@
+---
+title: "在本该什么都不发生的算例里，压力跳了 21% — Abgrall 判据与非守恒项"
+date: 2026-09-06
+description: "均匀压力与速度的流动之所以保持不住均匀，根源不在通量而在非守恒项的离散。本文在同一网格上复现了 Re–Abgrall 论文的 H_u 算子。"
+tags: ["Abgrall-Criterion", "Baer-Nunziato", "Diffuse-Interface", "Multiphase", "Paper-Review"]
+locale: zh
+slug: 2026-09-06-abgrall-criterion-nonconservative-term
+takeaway: "非守恒项的离散不是可以随手挑的自由度。守恒通量一旦定下，均匀流条件就把剩余项的系数唯一地钉死了。"
+draft: false
+---
+
+import { PressureNonDisturbanceLab } from '@/components/post-viz/2026-09-06-abgrall-criterion-nonconservative-term/PressureNonDisturbanceLab'
+import { HuStencilWeightDial } from '@/components/post-viz/2026-09-06-abgrall-criterion-nonconservative-term/HuStencilWeightDial'
+
+## 第一个测试，是一道本该什么都不发生的题
+
+给多组分可压缩求解器挑的第一个校验算例很简单。两种气体隔着一个接触面贴在一起。
+压力处处是 100 kPa，速度处处是 100 m/s。两种气体只有密度和比热比不同。
+
+精确解无聊到极点。接触面向右漂走，压力和速度自始至终保持均匀。
+网格再粗、时间步再大也一样。这道题里根本没有需要求解的波。
+
+跑到第 20 步，界面单元的压力掉到了 78.6 kPa。比均匀值低了 21%。
+速度稳稳停在 100 m/s，质量和能量也守恒到机器精度。
+通量没有问题。出错的是站在通量旁边的那一项。
+
+下面的模拟可以亲手把这段振荡造出来。
+
+<PressureNonDisturbanceLab />
+
+两条曲线用同一个迎风算子搬运同一组守恒变量。唯一的区别是热力学变量搭哪班车。
+把 `gamma_2` 往 1.400 拉，红色曲线就贴回绿色曲线上。反向推，或者把密度比调大，
+红色曲线就在两处界面塌下去。压力能不能保持均匀，取决的不是格式的精度阶数，
+而是这一个选择。
+
+## 这次计算里，到底哪一步对不上
+
+压力不是守恒变量，而是靠状态方程反算回来的量。当比热比 $\gamma$ 随空间变化时
+
+$$
+P = \frac{\rho E - \tfrac{1}{2}\rho u^{2}}{\Gamma}, \qquad \Gamma \equiv \frac{1}{\gamma - 1}
+$$
+
+其中 $\rho E$ 是单位体积总能，$\Gamma$ 是装着比热比的热力学变量。
+
+在均匀压力与速度下，总能为 $\rho E = P\Gamma + \tfrac{1}{2}\rho u^{2}$。迎风对流是线性的，
+所以 $\rho E$ 的更新值等于 $P \cdot (\Gamma$ 的迎风对流$)$ 再加上动能项。
+于是新的压力可以整理成下面的形式。
+
+$$
+P^{n+1}_j = P^{n} \, \frac{\mathcal{U}(\Gamma)_j}{\Gamma^{n+1}_j}
+$$
+
+$\mathcal{U}$ 就是实际作用在 $\rho E$ 上的那个迎风算子。
+
+条件最后只剩一个分式。必须让 $\Gamma^{n+1}$ 与 $\mathcal{U}(\Gamma)$ **取到同一个值**，
+压力才会待在原地。也就是说，搬运 $\Gamma$ 的方式必须与搬运能量的方式在代数上严丝合缝。
+
+我最初写的代码把质量分数 $Y$ 按守恒形式搬运，再用混合律反算 $\Gamma$。
+$\Gamma(Y)$ 对 $Y$ 是线性的，但 $Y^{n+1} = \mathcal{U}(\rho Y)/\mathcal{U}(\rho)$
+在密度变化的地方并不等于 $\mathcal{U}(Y)$。两个分式一旦对不上，差额立刻变成压力误差。
+
+## Abgrall 在 1996 年立下的一句要求
+
+Re 与 Abgrall 建立弱可压多组分模型时援引的判据，就是这么一句话。
+"压力和速度均匀的两相流动，随时间推进后必须在同样的变量上保持均匀。"
+论文把它称作压力非扰动条件（pressure non-disturbance condition），或者 Abgrall 判据。
+
+这句话特殊的地方在于，它不是对精度的要求。一阶还是五阶都无所谓。
+它也不是稳定性条件。把 CFL 压低，振荡照样在那儿。它要的是**各个离散之间的代数相容**。
+某个方程里用了什么算子，会直接决定另一个方程里还允许用什么算子。
+
+同样的情形在[两流体模型的双曲性与界面压力](/zh/posts/2026-08-23-two-fluid-model-hyperbolicity-interfacial-pressure/)中
+挑选界面压力项时也出现过。那里挑的是让特征值保持实数的项，这里挑的是让均匀流动维持住的项。
+两种场合都存在多个"物理上说得通的离散"，而最终只有一个能活下来。
+
+## 用 Python 把两种离散摆在同一网格上并排跑
+
+在 100 个单元的周期网格上放一个接触面，两种做法推进相同的步数。
+守恒变量 $\rho$、$\rho u$、$\rho E$ 在两种做法里都用同一个一阶迎风更新。
+差别只在一个热力学变量上。
+
+```python
+G1, G2 = 1.4, 1.667      # 两种气体的比热比
+P0, U0 = 1.0e5, 100.0    # 均匀压力 [Pa], 均匀速度 [m/s]
+R1, R2 = 1.0, 0.125      # 两种气体的密度 [kg/m^3]
+
+
+def gamma_var(y):
+    """质量分数 y -> 1/(gamma-1)。对 y 呈线性的混合律。"""
+    return y / (G1 - 1.0) + (1.0 - y) / (G2 - 1.0)
+
+
+def advect_upwind(q, lam):
+    """u>0 的一阶迎风对流。左侧流入单元保持固定。"""
+    return [q[0]] + [q[j] - lam * (q[j] - q[j - 1]) for j in range(1, len(q))]
+
+
+def initial_state(n):
+    x = [(j + 0.5) / n for j in range(n)]
+    y = [1.0 if xi < 0.3 else 0.0 for xi in x]
+    rho = [R1 if xi < 0.3 else R2 for xi in x]
+    return x, y, rho
+
+
+def step_massfraction_closure(rho, mom, ene, ry, lam):
+    """把 rho*Y 按守恒形式搬运，再用混合律反算 gamma。"""
+    rho_n = advect_upwind(rho, lam)
+    mom_n = advect_upwind(mom, lam)
+    ene_n = advect_upwind(ene, lam)
+    ry_n = advect_upwind(ry, lam)
+    y_n = [ry_n[j] / rho_n[j] for j in range(len(rho_n))]
+    p_n = [(ene_n[j] - 0.5 * mom_n[j] ** 2 / rho_n[j]) / gamma_var(y_n[j])
+           for j in range(len(rho_n))]
+    return rho_n, mom_n, ene_n, ry_n, p_n
+
+
+def step_gammavar_transport(rho, mom, ene, gv, lam):
+    """把 1/(gamma-1) 以非守恒（对流）形式送上同一个迎风算子。"""
+    rho_n = advect_upwind(rho, lam)
+    mom_n = advect_upwind(mom, lam)
+    ene_n = advect_upwind(ene, lam)
+    gv_n = advect_upwind(gv, lam)
+    p_n = [(ene_n[j] - 0.5 * mom_n[j] ** 2 / rho_n[j]) / gv_n[j]
+           for j in range(len(rho_n))]
+    return rho_n, mom_n, ene_n, gv_n, p_n
+
+
+def run_interface_advection(n=100, steps=60, cfl=0.5):
+    x, y0, rho0 = initial_state(n)
+    gv0 = [gamma_var(v) for v in y0]
+
+    rho_a = list(rho0)
+    mom_a = [r * U0 for r in rho0]
+    ene_a = [P0 * gv0[j] + 0.5 * rho0[j] * U0 ** 2 for j in range(n)]
+    ry_a = [rho0[j] * y0[j] for j in range(n)]
+
+    rho_b, mom_b, ene_b = list(rho_a), list(mom_a), list(ene_a)
+    gv_b = list(gv0)
+
+    hist, p_a, p_b = [], None, None
+    for k in range(1, steps + 1):
+        rho_a, mom_a, ene_a, ry_a, p_a = step_massfraction_closure(
+            rho_a, mom_a, ene_a, ry_a, cfl)
+        rho_b, mom_b, ene_b, gv_b, p_b = step_gammavar_transport(
+            rho_b, mom_b, ene_b, gv_b, cfl)
+        if k % 20 == 0:
+            ea = max(abs(v - P0) for v in p_a)
+            eb = max(abs(v - P0) for v in p_b)
+            eu = max(abs(mom_a[j] / rho_a[j] - U0) for j in range(n))
+            hist.append((k, ea, eb, eu))
+    return x, p_a, p_b, hist
+
+
+if __name__ == "__main__":
+    x, p_a, p_b, hist = run_interface_advection()
+    print("step |  max|P-P0| mixrule |  max|P-P0| Gamma-adv |  max|u-U0| mixrule")
+    for k, ea, eb, eu in hist:
+        print("%4d | %16.2f | %19.2e | %16.3e" % (k, ea, eb, eu))
+
+    j = max(range(len(p_a)), key=lambda i: abs(p_a[i] - P0))
+    print("\nworst cell x=%.3f  P=%.1f Pa  (uniform value %.0f Pa)" % (x[j], p_a[j], P0))
+    print("relative error:  mixrule %.2f%%   Gamma-adv %.1e%%"
+          % (max(abs(v - P0) for v in p_a) / P0 * 100,
+             max(abs(v - P0) for v in p_b) / P0 * 100))
+```
+
+```text
+step |  max|P-P0| mixrule |  max|P-P0| Gamma-adv |  max|u-U0| mixrule
+  20 |         21433.25 |            2.91e-11 |        0.000e+00
+  40 |         21587.18 |            4.37e-11 |        0.000e+00
+  60 |         21442.28 |            4.37e-11 |        2.842e-14
+
+worst cell x=0.635  P=78557.7 Pa  (uniform value 100000 Pa)
+relative error:  mixrule 21.44%   Gamma-adv 4.4e-14%
+```
+
+只需要读三行。混合律那一侧从 21.4 kPa 起步，步数再加也不见回落。
+$\Gamma$ 对流那一侧是 $10^{-11}$ Pa，相对误差 $10^{-14}$%。这是双精度的地板。
+
+速度那一列为零同样重要。动量方程从头到尾都解对了。
+把网格加密一倍，21% 依旧是 21%。因为这是不收敛的误差。
+
+## 论文推导 $H_u$ 的路子 —— 先定格式，再让项去凑
+
+Re 与 Abgrall 采用的 Baer–Nunziato 型模型（两相各有自己的速度和压力，属于七方程族）里，
+另有一个体积分数方程。这个方程不是守恒形式。
+
+$$
+\frac{\partial \alpha_i}{\partial t} + u_I \frac{\partial \alpha_i}{\partial x} = 0
+$$
+
+$\alpha_i$ 是第 $i$ 相的体积分数，$u_I$ 是界面速度。论文把这一项记作
+$H_u(\alpha_i, u_I)$ 这样一个离散算子，并且**不预先假定**它的形式，而是从条件里倒推出来。
+
+质量方程 $(\alpha_i\rho_i)$ 已经用 Rusanov 通量定死了。代入密度和速度均匀的状态，
+这个通量可以因式分解成 $\rho_i \times (\alpha_i$ 的 Rusanov 通量$)$。要让更新之后
+$\rho_i = (\alpha_i\rho_i)^{n+1}/\alpha_i^{n+1}$ 原封不动，分母 $\alpha_i^{n+1}$
+就必须用与分子完全相同的通量差分来更新。所以 $H_u$ 不是选择，而是结果。
+
+$$
+H_u(\alpha_i, u_I)_j = \frac{1}{2}\Big[ \big(\alpha_{j+1} - \alpha_{j-1}\big) u_{I,j}
+- \big|u_{I,j}\big| \big(\alpha_{j+1} - 2\alpha_j + \alpha_{j-1}\big) \Big]
+$$
+
+前一项是中心差分，后一项是带 $|u_I|$ 的耗散。两者之和正好是 $\alpha$ 的
+Rusanov 通量差分。当 $u_I > 0$ 时只剩下 $\alpha_j - \alpha_{j-1}$，即纯迎风。
+
+论文在压力方程里也复用同一个 $H_u$。把 $u^{*}\partial P/\partial x$ 拆成
+$\partial(Pu^{*})/\partial x - P\partial u^{*}/\partial x$ 之后，剩下的非守恒项
+仍然交给与质量方程相同的算子。各个方程用不同的离散，刚刚对齐的相容性就会重新破掉。
+
+## 亲手拧一拧三点模板的系数
+
+给 $H_u$ 两项中的耗散项加一个权重 $\theta$，就能用一个旋钮在两个极端之间来回走。
+$\theta = 1$ 是论文的 $H_u$，$\theta = 0$ 则是 $u_I \partial\alpha/\partial x$ 的纯中心差分。
+
+<HuStencilWeightDial />
+
+把 `theta` 从 1 往下调，下游单元的权重就会从 0 复活。就在那一刻，反算出来的密度
+离开 850 kg/m³ 并且再也回不来。翻转 `u_I` 的符号，$\theta = 1$ 依然扛得住。
+因为通量差分会跟着界面速度的符号走，中心模板不会。
+
+数值上也验证过。均匀密度 850 kg/m³、一个界面、同一套网格，只把 $\alpha$ 换成两种算子更新。
+
+```python
+RHO, UI, N, LAM = 850.0, 1.0, 80, 0.4   # 均匀密度 [kg/m^3], 界面速度, 单元数, u*dt/dx
+
+
+def alpha_profile():
+    """跨过界面的体积分数。0.02 <-> 0.98 之间用三个单元衔接。"""
+    a = []
+    for j in range(N):
+        if j < 30:
+            a.append(0.98)
+        elif j < 33:
+            a.append(0.98 - 0.32 * (j - 29))
+        else:
+            a.append(0.02)
+    return a
+
+
+def rusanov_flux(q, j, vel):
+    """单元 j 与 j+1 之间的 Rusanov 数值通量（周期边界）。"""
+    ql, qr = q[j % N], q[(j + 1) % N]
+    return 0.5 * (qr + ql) * vel - 0.5 * abs(vel) * (qr - ql)
+
+
+def hu_upwind(a, j):
+    """论文式 (10) 的非守恒算子：alpha 的 Rusanov 通量差分。"""
+    return rusanov_flux(a, j, UI) - rusanov_flux(a, j - 1, UI)
+
+
+def hu_central(a, j):
+    """把 u_I * d(alpha)/dx 直接用中心差分离散的版本。"""
+    return 0.5 * UI * (a[(j + 1) % N] - a[(j - 1) % N])
+
+
+def march(op, steps):
+    """alpha*rho 用 Rusanov、alpha 用 op 推进，再看反算出的 rho。"""
+    a = alpha_profile()
+    ar = [RHO * v for v in a]
+    for _ in range(steps):
+        ar = [ar[j] - LAM * (rusanov_flux(ar, j, UI) - rusanov_flux(ar, j - 1, UI))
+              for j in range(N)]
+        a = [a[j] - LAM * op(a, j) for j in range(N)]
+    return max(abs(ar[j] / a[j] - RHO) for j in range(N))
+
+
+if __name__ == "__main__":
+    print("steps |  upwind H_u [kg/m^3] |  centred [kg/m^3]")
+    for s in (10, 40, 120):
+        print("%5d | %20.2e | %17.4f" % (s, march(hu_upwind, s), march(hu_central, s)))
+
+    a = alpha_profile()
+    lhs = hu_upwind(a, 31)
+    rhs = 0.5 * ((a[32] - a[30]) * UI - abs(UI) * (a[32] - 2 * a[31] + a[30]))
+    print("\ncell 31:  flux difference %.6f   paper Eq.(10) %.6f   gap %.1e"
+          % (lhs, rhs, abs(lhs - rhs)))
+```
+
+```text
+steps |  upwind H_u [kg/m^3] |  centred [kg/m^3]
+   10 |             2.27e-13 |         2553.2027
+   40 |             4.55e-13 |         6697.6224
+  120 |             5.68e-13 |         1206.6015
+
+cell 31:  flux difference -0.320000   paper Eq.(10) -0.320000   gap 0.0e+00
+```
+
+迎风版 $H_u$ 跑满 120 步也只停在 $10^{-13}$ kg/m³。中心差分只用 10 步就偏离了 2,553 kg/m³。
+120 步时数字回落到 1,207，那不是恢复而是发散。
+意思是 $\alpha$ 已经在 0 附近来回摆动，除法进入了随便吐个数的区间。
+
+最后一行是对推导本身的确认。$\alpha$ 的 Rusanov 通量差分与论文式 (10) 的闭式表达
+在单元 31 上连位数都一致。两个写法在代数上就是同一个东西。
+
+## "这个条件与精度无关"到底是什么意思
+
+有一点要说清楚。用了 $H_u$ 并不会让解变得更准。
+一阶迎风照样把界面抹平。上面的图里，$\alpha$ 的台阶每走一步都在变厚。
+
+Abgrall 判据保证的是另一类东西：**即使错，也要往物理上说得通的方向错。**
+界面变宽是数值耗散，而数值耗散可以靠加密网格削减。
+在均匀压力场上立起一根 21 kPa 的尖峰则不是数值耗散。它不随网格加密而减小，
+状态方程越刚性（stiff）它越大，而且常常以负压力把计算直接掐停。
+
+在讨论[隐式表面张力能把时间步窗口撑多宽](/zh/posts/2026-08-30-implicit-surface-tension-timestep-window/)时
+也出现过同样的区分。有些约束花精度就能买通，有些花了也买不通。
+Abgrall 判据属于后者。升到高阶格式，这个条件仍要单独重新对齐。
+
+## 下次界面上的压力再跳，先看哪里
+
+如果我再撞上这个问题，顺序会是这样。
+
+先跑均匀压力与速度的算例。在一道没有波的题里，只要压力变动不为零，
+就没必要去看通量。答案在非守恒项或者状态方程反算这一侧。
+
+接着把网格加密一倍，测同一个量。振荡减半就是数值耗散问题。
+纹丝不动就是相容性问题。这一次运行就能把两种病因分开。
+
+最后把每个方程的非守恒项各用了什么模板并排写出来。
+如果质量用 Rusanov、体积分数用中心差分、能量又是别的什么，病根就在那里。
+论文把一个 $H_u$ 反复用在三个方程上，不是为了少写几行代码的偏好。
+
+---
+
+**参考文献**
+
+- B. Re, R. Abgrall, *Non-equilibrium Model for Weakly Compressible Multi-component Flows: the Hyperbolic Operator*, arXiv:1911.00270 — §2.2 The discretization
+- R. Abgrall, *How to Prevent Pressure Oscillations in Multicomponent Flow Calculations: A Quasi Conservative Approach*, J. Comput. Phys. 125 (1996)

@@ -1,0 +1,332 @@
+---
+title: "Pressure Jumped 21% in a Problem Where Nothing Should Happen — The Abgrall Criterion and the Nonconservative Term"
+date: 2026-09-06
+description: "Uniform pressure and velocity stop staying uniform because of the nonconservative term, not the flux. I remeasured Re-Abgrall's H_u operator on one grid."
+tags: ["Abgrall-Criterion", "Baer-Nunziato", "Diffuse-Interface", "Multiphase", "Paper-Review"]
+locale: en
+slug: 2026-09-06-abgrall-criterion-nonconservative-term
+takeaway: "A nonconservative term's discretization is not a free choice. Fix the conservative flux first, and the uniform-flow condition nails down the remaining coefficients."
+draft: false
+---
+
+import { PressureNonDisturbanceLab } from '@/components/post-viz/2026-09-06-abgrall-criterion-nonconservative-term/PressureNonDisturbanceLab'
+import { HuStencilWeightDial } from '@/components/post-viz/2026-09-06-abgrall-criterion-nonconservative-term/HuStencilWeightDial'
+
+## The First Test Was a Problem Where Nothing Should Happen
+
+I picked the first verification case for a multicomponent compressible solver. Two gases meet across a single contact surface.
+Pressure is 100 kPa everywhere, velocity is 100 m/s everywhere. Only the density and the specific heat ratio of the two gases differ.
+
+The exact solution is boring. The contact surface drifts to the right, and that is all — pressure and velocity stay uniform to the end.
+A coarse grid does not change that, and neither does a large time step. There is no wave in this problem to resolve.
+
+After 20 steps, the pressure in the interface cell had dropped to 78.6 kPa. That is 21% off the uniform value.
+Velocity held at exactly 100 m/s, and mass and energy were conserved to machine precision.
+The flux was fine. What was wrong was the term standing next to the flux.
+
+Let's produce that oscillation directly in the simulation below.
+
+<PressureNonDisturbanceLab />
+
+Both curves move the same conserved variables with the same upwind operator. The only difference is how the thermodynamic variable rides along.
+Pull `gamma_2` toward 1.400 and the red curve settles onto the green one. Push it the other way, or raise the density ratio,
+and the red curve caves in at the two interface locations. Whether pressure stays uniform is decided not by the accuracy of the scheme
+but by this single choice.
+
+## What Exactly Went Wrong in This Calculation
+
+Pressure is not a conserved variable. It is recovered through the equation of state. When the specific heat ratio $\gamma$ varies in space,
+
+$$
+P = \frac{\rho E - \tfrac{1}{2}\rho u^{2}}{\Gamma}, \qquad \Gamma \equiv \frac{1}{\gamma - 1}
+$$
+
+Here $\rho E$ is total energy per unit volume, and $\Gamma$ is the thermodynamic variable that carries the specific heat ratio.
+
+At uniform pressure and velocity the total energy is $\rho E = P\Gamma + \tfrac{1}{2}\rho u^{2}$. Upwind advection is linear, so
+the updated $\rho E$ equals $P \cdot (\Gamma$'s upwind advection$)$ plus the kinetic energy term.
+The new pressure then reduces to this.
+
+$$
+P^{n+1}_j = P^{n} \, \frac{\mathcal{U}(\Gamma)_j}{\Gamma^{n+1}_j}
+$$
+
+$\mathcal{U}$ is that very upwind operator, the one actually applied to $\rho E$.
+
+The condition boils down to a single fraction. Pressure stays put only if $\Gamma^{n+1}$ comes out **equal** to $\mathcal{U}(\Gamma)$.
+In other words, the way you move $\Gamma$ has to mesh algebraically with the way you move energy.
+
+My first version of the code advected the mass fraction $Y$ in conservative form and recovered $\Gamma$ from a mixture rule.
+$\Gamma(Y)$ is linear in $Y$, but $Y^{n+1} = \mathcal{U}(\rho Y)/\mathcal{U}(\rho)$ is not $\mathcal{U}(Y)$
+wherever the density varies. When the two fractions disagree, that discrepancy is exactly the pressure error.
+
+## The One-Line Requirement Abgrall Wrote Down in 1996
+
+The criterion Re and Abgrall cite while building their weakly compressible multicomponent model is a single sentence.
+"A two-phase flow that is uniform in pressure and velocity must remain uniform in the same variables as time advances."
+The paper calls it the pressure non-disturbance condition, or Abgrall's criterion.
+
+What makes this sentence unusual is that it is not a demand on accuracy. First order or fifth order, it makes no difference.
+It is not a stability condition either. Lower the CFL number and the oscillation survives untouched. This is a demand for
+**algebraic consistency between discretizations**. Which operator you used in one equation determines which operators are
+permitted in the others.
+
+The same situation shows up in [Hyperbolicity of the Two-Fluid Model and Interfacial Pressure](/en/posts/2026-08-23-two-fluid-model-hyperbolicity-interfacial-pressure/)
+when the interfacial pressure term is chosen. There the term was picked so the eigenvalues came out real; here it is picked
+so uniform flow is preserved. In both cases several "physically plausible discretizations" exist and only one survives.
+
+## Two Discretizations Standing Side by Side on One Grid in Python
+
+I placed a single contact surface on a 100-cell periodic grid and ran both approaches for the same number of steps.
+The conserved variables $\rho$, $\rho u$, $\rho E$ are updated with the identical first-order upwind scheme in both.
+The only difference is one thermodynamic variable.
+
+```python
+G1, G2 = 1.4, 1.667      # specific heat ratios of the two gases
+P0, U0 = 1.0e5, 100.0    # uniform pressure [Pa], uniform velocity [m/s]
+R1, R2 = 1.0, 0.125      # densities of the two gases [kg/m^3]
+
+
+def gamma_var(y):
+    """Mass fraction y -> 1/(gamma-1). A mixture rule linear in y."""
+    return y / (G1 - 1.0) + (1.0 - y) / (G2 - 1.0)
+
+
+def advect_upwind(q, lam):
+    """First-order upwind advection for u>0. The left inflow cell is held fixed."""
+    return [q[0]] + [q[j] - lam * (q[j] - q[j - 1]) for j in range(1, len(q))]
+
+
+def initial_state(n):
+    x = [(j + 0.5) / n for j in range(n)]
+    y = [1.0 if xi < 0.3 else 0.0 for xi in x]
+    rho = [R1 if xi < 0.3 else R2 for xi in x]
+    return x, y, rho
+
+
+def step_massfraction_closure(rho, mom, ene, ry, lam):
+    """Advect rho*Y in conservative form and recover gamma from the mixture rule."""
+    rho_n = advect_upwind(rho, lam)
+    mom_n = advect_upwind(mom, lam)
+    ene_n = advect_upwind(ene, lam)
+    ry_n = advect_upwind(ry, lam)
+    y_n = [ry_n[j] / rho_n[j] for j in range(len(rho_n))]
+    p_n = [(ene_n[j] - 0.5 * mom_n[j] ** 2 / rho_n[j]) / gamma_var(y_n[j])
+           for j in range(len(rho_n))]
+    return rho_n, mom_n, ene_n, ry_n, p_n
+
+
+def step_gammavar_transport(rho, mom, ene, gv, lam):
+    """Carry 1/(gamma-1) in nonconservative (advective) form on the same upwind operator."""
+    rho_n = advect_upwind(rho, lam)
+    mom_n = advect_upwind(mom, lam)
+    ene_n = advect_upwind(ene, lam)
+    gv_n = advect_upwind(gv, lam)
+    p_n = [(ene_n[j] - 0.5 * mom_n[j] ** 2 / rho_n[j]) / gv_n[j]
+           for j in range(len(rho_n))]
+    return rho_n, mom_n, ene_n, gv_n, p_n
+
+
+def run_interface_advection(n=100, steps=60, cfl=0.5):
+    x, y0, rho0 = initial_state(n)
+    gv0 = [gamma_var(v) for v in y0]
+
+    rho_a = list(rho0)
+    mom_a = [r * U0 for r in rho0]
+    ene_a = [P0 * gv0[j] + 0.5 * rho0[j] * U0 ** 2 for j in range(n)]
+    ry_a = [rho0[j] * y0[j] for j in range(n)]
+
+    rho_b, mom_b, ene_b = list(rho_a), list(mom_a), list(ene_a)
+    gv_b = list(gv0)
+
+    hist, p_a, p_b = [], None, None
+    for k in range(1, steps + 1):
+        rho_a, mom_a, ene_a, ry_a, p_a = step_massfraction_closure(
+            rho_a, mom_a, ene_a, ry_a, cfl)
+        rho_b, mom_b, ene_b, gv_b, p_b = step_gammavar_transport(
+            rho_b, mom_b, ene_b, gv_b, cfl)
+        if k % 20 == 0:
+            ea = max(abs(v - P0) for v in p_a)
+            eb = max(abs(v - P0) for v in p_b)
+            eu = max(abs(mom_a[j] / rho_a[j] - U0) for j in range(n))
+            hist.append((k, ea, eb, eu))
+    return x, p_a, p_b, hist
+
+
+if __name__ == "__main__":
+    x, p_a, p_b, hist = run_interface_advection()
+    print("step |  max|P-P0| mixrule |  max|P-P0| Gamma-adv |  max|u-U0| mixrule")
+    for k, ea, eb, eu in hist:
+        print("%4d | %16.2f | %19.2e | %16.3e" % (k, ea, eb, eu))
+
+    j = max(range(len(p_a)), key=lambda i: abs(p_a[i] - P0))
+    print("\nworst cell x=%.3f  P=%.1f Pa  (uniform value %.0f Pa)" % (x[j], p_a[j], P0))
+    print("relative error:  mixrule %.2f%%   Gamma-adv %.1e%%"
+          % (max(abs(v - P0) for v in p_a) / P0 * 100,
+             max(abs(v - P0) for v in p_b) / P0 * 100))
+```
+
+```text
+step |  max|P-P0| mixrule |  max|P-P0| Gamma-adv |  max|u-U0| mixrule
+  20 |         21433.25 |            2.91e-11 |        0.000e+00
+  40 |         21587.18 |            4.37e-11 |        0.000e+00
+  60 |         21442.28 |            4.37e-11 |        2.842e-14
+
+worst cell x=0.635  P=78557.7 Pa  (uniform value 100000 Pa)
+relative error:  mixrule 21.44%   Gamma-adv 4.4e-14%
+```
+
+Three lines are all you need to read. The mixture-rule side starts at 21.4 kPa and does not shrink as the steps pile up.
+The $\Gamma$-advection side sits at $10^{-11}$ Pa, a relative error of $10^{-14}$%. That is the floor of double precision.
+
+The zero column for velocity matters too. The momentum equation was solved correctly from beginning to end.
+Double the grid resolution and 21% stays 21%. This is an error that does not converge away.
+
+## How the Paper Derives $H_u$ — Fix the Scheme First, Then Match the Term
+
+The Baer–Nunziato-type model of Re and Abgrall (the seven-equation family, where each phase carries its own velocity and pressure)
+has a separate volume fraction equation. That equation is not in conservative form.
+
+$$
+\frac{\partial \alpha_i}{\partial t} + u_I \frac{\partial \alpha_i}{\partial x} = 0
+$$
+
+$\alpha_i$ is the volume fraction of phase $i$, and $u_I$ is the interface velocity. The paper leaves this term as a discrete operator
+named $H_u(\alpha_i, u_I)$ and **does not assume** its form. It derives it from the condition instead.
+
+The mass equation $(\alpha_i\rho_i)$ is already fixed to the Rusanov flux. Feed it a state with uniform density and velocity
+and that flux factors into $\rho_i \times (\alpha_i$'s Rusanov flux$)$. For $\rho_i = (\alpha_i\rho_i)^{n+1}/\alpha_i^{n+1}$
+to survive the update unchanged, the denominator $\alpha_i^{n+1}$ has to be updated with exactly the same flux difference as the
+numerator. So $H_u$ is not a choice — it is a consequence.
+
+$$
+H_u(\alpha_i, u_I)_j = \frac{1}{2}\Big[ \big(\alpha_{j+1} - \alpha_{j-1}\big) u_{I,j}
+- \big|u_{I,j}\big| \big(\alpha_{j+1} - 2\alpha_j + \alpha_{j-1}\big) \Big]
+$$
+
+The first term is a central difference, the second is diffusion weighted by $|u_I|$. Their sum is exactly the Rusanov flux difference
+for $\alpha$. When $u_I > 0$, only $\alpha_j - \alpha_{j-1}$ remains. Pure upwinding.
+
+The paper reuses the same $H_u$ in the pressure equation. It splits $u^{*}\partial P/\partial x$ into
+$\partial(Pu^{*})/\partial x - P\partial u^{*}/\partial x$, then puts the leftover nonconservative term on the same operator
+as the mass equation. Using a different discretization per equation would break the consistency just established.
+
+## Turning the Three-Point Stencil Coefficients by Hand
+
+Attach a weight $\theta$ to the diffusive one of the two terms in $H_u$ and a single dial sweeps between the two extremes.
+At $\theta = 1$ you get the paper's $H_u$; at $\theta = 0$ you get a pure central difference of $u_I \partial\alpha/\partial x$.
+
+<HuStencilWeightDial />
+
+Turn `theta` down from 1 and the weight on the downstream cell revives from zero. At that moment the recovered density leaves
+850 kg/m³ and never comes back. Flip the sign of `u_I` and $\theta = 1$ still holds. The flux difference follows the sign of the
+interface velocity while the central stencil does not.
+
+I checked it numerically as well. Uniform density of 850 kg/m³, a single interface, the same grid, with only $\alpha$ updated by the two operators.
+
+```python
+RHO, UI, N, LAM = 850.0, 1.0, 80, 0.4   # uniform density [kg/m^3], interface velocity, cell count, u*dt/dx
+
+
+def alpha_profile():
+    """Volume fraction across an interface. Bridges 0.02 <-> 0.98 over three cells."""
+    a = []
+    for j in range(N):
+        if j < 30:
+            a.append(0.98)
+        elif j < 33:
+            a.append(0.98 - 0.32 * (j - 29))
+        else:
+            a.append(0.02)
+    return a
+
+
+def rusanov_flux(q, j, vel):
+    """Rusanov numerical flux between cell j and j+1 (periodic boundary)."""
+    ql, qr = q[j % N], q[(j + 1) % N]
+    return 0.5 * (qr + ql) * vel - 0.5 * abs(vel) * (qr - ql)
+
+
+def hu_upwind(a, j):
+    """Nonconservative operator of Eq. (10) in the paper: Rusanov flux difference for alpha."""
+    return rusanov_flux(a, j, UI) - rusanov_flux(a, j - 1, UI)
+
+
+def hu_central(a, j):
+    """Version that discretizes u_I * d(alpha)/dx directly with a central difference."""
+    return 0.5 * UI * (a[(j + 1) % N] - a[(j - 1) % N])
+
+
+def march(op, steps):
+    """Advance alpha*rho with Rusanov and alpha with op, then inspect the recovered rho."""
+    a = alpha_profile()
+    ar = [RHO * v for v in a]
+    for _ in range(steps):
+        ar = [ar[j] - LAM * (rusanov_flux(ar, j, UI) - rusanov_flux(ar, j - 1, UI))
+              for j in range(N)]
+        a = [a[j] - LAM * op(a, j) for j in range(N)]
+    return max(abs(ar[j] / a[j] - RHO) for j in range(N))
+
+
+if __name__ == "__main__":
+    print("steps |  upwind H_u [kg/m^3] |  centred [kg/m^3]")
+    for s in (10, 40, 120):
+        print("%5d | %20.2e | %17.4f" % (s, march(hu_upwind, s), march(hu_central, s)))
+
+    a = alpha_profile()
+    lhs = hu_upwind(a, 31)
+    rhs = 0.5 * ((a[32] - a[30]) * UI - abs(UI) * (a[32] - 2 * a[31] + a[30]))
+    print("\ncell 31:  flux difference %.6f   paper Eq.(10) %.6f   gap %.1e"
+          % (lhs, rhs, abs(lhs - rhs)))
+```
+
+```text
+steps |  upwind H_u [kg/m^3] |  centred [kg/m^3]
+   10 |             2.27e-13 |         2553.2027
+   40 |             4.55e-13 |         6697.6224
+  120 |             5.68e-13 |         1206.6015
+
+cell 31:  flux difference -0.320000   paper Eq.(10) -0.320000   gap 0.0e+00
+```
+
+The upwind $H_u$ stays at $10^{-13}$ kg/m³ even after 120 steps. The central difference drifts 2,553 kg/m³ away within 10 steps.
+The value coming back down to 1,207 at 120 steps is not recovery but divergence.
+It means $\alpha$ has wandered near zero and entered a regime where the division returns whatever it likes.
+
+The last line confirms the derivation. The Rusanov flux difference for $\alpha$ and the closed form of Eq. (10) in the paper
+agree at cell 31 down to the last digit. The two expressions are algebraically the same thing.
+
+## What It Means to Say This Condition Has Nothing to Do with Accuracy
+
+Let me be clear about one thing. Using $H_u$ does not make the solution accurate.
+First-order upwinding still smears the interface. Even in the figure above, the step in $\alpha$ thickens with every step.
+
+What the Abgrall criterion guarantees is a different kind of thing. **When it is wrong, it is wrong in a physically sensible direction.**
+A smeared interface is numerical diffusion, and that shrinks when you refine the grid.
+A 21 kPa spike standing in a uniform pressure field is not numerical diffusion. It does not shrink under refinement,
+it grows as the equation of state gets stiffer, and it often halts the computation with a negative pressure.
+
+The same distinction came up in [How Wide a Time Step Implicit Surface Tension Opens](/en/posts/2026-08-30-implicit-surface-tension-timestep-window/).
+Some constraints can be bought off with accuracy, and some cannot.
+The Abgrall criterion is the latter. Move up to a high-order scheme and this condition still has to be satisfied separately.
+
+## Where I Look First the Next Time Pressure Spikes at an Interface
+
+If I meet this problem again, my order goes like this.
+
+Run the uniform pressure and velocity problem first. If a problem with no waves shows a nonzero pressure variation,
+there is no need to look at the flux. The answer is in the nonconservative term or in the equation-of-state recovery.
+
+Next, double the grid resolution and measure the same quantity. If the oscillation halves, it is a numerical diffusion problem.
+If it stays put, it is a consistency problem. This single run separates the two causes.
+
+Finally, write out side by side which stencil each equation used for its nonconservative term.
+If mass used Rusanov, volume fraction used a central difference, and energy used something else again, that is the cause.
+The paper reusing a single $H_u$ across three equations was not a preference for shorter code.
+
+---
+
+**References**
+
+- B. Re, R. Abgrall, *Non-equilibrium Model for Weakly Compressible Multi-component Flows: the Hyperbolic Operator*, arXiv:1911.00270 — §2.2 The discretization
+- R. Abgrall, *How to Prevent Pressure Oscillations in Multicomponent Flow Calculations: A Quasi Conservative Approach*, J. Comput. Phys. 125 (1996)

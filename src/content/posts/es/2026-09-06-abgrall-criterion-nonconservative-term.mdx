@@ -1,0 +1,365 @@
+---
+title: "La presión saltó un 21% en un problema donde no debía pasar nada — el criterio de Abgrall y el término no conservativo"
+date: 2026-09-06
+description: "Que un flujo de presión y velocidad uniformes deje de serlo no es culpa del flujo numérico, sino de cómo se discretiza el término no conservativo."
+tags: ["Abgrall-Criterion", "Baer-Nunziato", "Diffuse-Interface", "Multiphase", "Paper-Review"]
+locale: es
+slug: 2026-09-06-abgrall-criterion-nonconservative-term
+takeaway: "La discretización del término no conservativo no es un grado de libertad: fijado el flujo conservativo, la condición de uniformidad clava sus coeficientes."
+draft: false
+---
+
+import { PressureNonDisturbanceLab } from '@/components/post-viz/2026-09-06-abgrall-criterion-nonconservative-term/PressureNonDisturbanceLab'
+import { HuStencilWeightDial } from '@/components/post-viz/2026-09-06-abgrall-criterion-nonconservative-term/HuStencilWeightDial'
+
+## La primera prueba fue un problema donde no debía pasar nada
+
+El primer caso de verificación del solver compresible multicomponente era sencillo.
+Dos gases en contacto a través de una única interfaz. La presión vale 100 kPa en todas partes
+y la velocidad, 100 m/s. Los gases solo se diferencian en densidad y razón de calores específicos.
+
+La solución exacta es aburrida. La interfaz se desplaza hacia la derecha y la presión y la velocidad
+siguen uniformes hasta el final. Da igual que la malla sea gruesa o que el paso de tiempo sea grande.
+En este problema no hay ninguna onda que resolver.
+
+Tras 20 pasos, la presión en la celda de la interfaz había caído a 78,6 kPa: un 21% por debajo
+del valor uniforme. La velocidad se mantuvo exactamente en 100 m/s, y la masa y la energía se
+conservaron hasta la precisión de máquina. El flujo numérico estaba sano.
+Lo que fallaba era el término que estaba a su lado.
+
+La simulación siguiente permite fabricar esa oscilación a mano.
+
+<PressureNonDisturbanceLab />
+
+Las dos curvas transportan las mismas variables conservadas con el mismo operador upwind.
+Lo único distinto es en qué vehículo viaja la variable termodinámica. Al llevar `gamma_2`
+hacia 1.400, la curva roja se recuesta sobre la verde. Al empujarla en sentido contrario,
+o al subir la razón de densidades, la curva roja se hunde en las dos interfaces.
+Que la presión siga uniforme no depende del orden de precisión del esquema, sino de esa única elección.
+
+## Qué fue exactamente lo que no encajó en este cálculo
+
+La presión no es una variable conservada: se recupera con la ecuación de estado.
+Cuando la razón de calores específicos $\gamma$ varía en el espacio,
+
+$$
+P = \frac{\rho E - \tfrac{1}{2}\rho u^{2}}{\Gamma}, \qquad \Gamma \equiv \frac{1}{\gamma - 1}
+$$
+
+donde $\rho E$ es la energía total por unidad de volumen y $\Gamma$ la variable termodinámica
+que encapsula la razón de calores específicos.
+
+Con presión y velocidad uniformes, la energía total es $\rho E = P\Gamma + \tfrac{1}{2}\rho u^{2}$.
+Como la advección upwind es lineal, el valor actualizado de $\rho E$ resulta ser
+$P \cdot ($advección upwind de $\Gamma)$ más el término de energía cinética.
+La nueva presión queda entonces así.
+
+$$
+P^{n+1}_j = P^{n} \, \frac{\mathcal{U}(\Gamma)_j}{\Gamma^{n+1}_j}
+$$
+
+$\mathcal{U}$ es exactamente el operador upwind que se aplicó a $\rho E$.
+
+La condición se reduce a una fracción. Hay que lograr que $\Gamma^{n+1}$ tome **el mismo valor**
+que $\mathcal{U}(\Gamma)$ para que la presión no se mueva. Es decir, la forma de transportar $\Gamma$
+tiene que encajar algebraicamente con la forma de transportar la energía.
+
+El primer código que escribí transportaba la fracción másica $Y$ en forma conservativa y recuperaba
+$\Gamma$ con la regla de mezcla. $\Gamma(Y)$ es lineal en $Y$, pero
+$Y^{n+1} = \mathcal{U}(\rho Y)/\mathcal{U}(\rho)$ no coincide con $\mathcal{U}(Y)$
+allí donde la densidad cambia. Cuando las dos fracciones se desalinean, esa diferencia es el error de presión.
+
+## El requisito de una sola línea que Abgrall formuló en 1996
+
+El criterio que Re y Abgrall citan al construir su modelo multicomponente débilmente compresible
+cabe en una frase: "un flujo bifásico con presión y velocidad uniformes debe permanecer uniforme
+en esas mismas variables a medida que avanza el tiempo". El artículo lo llama condición de no
+perturbación de la presión (pressure non-disturbance condition), o criterio de Abgrall.
+
+Lo peculiar de esa frase es que no exige precisión. Da lo mismo primer orden que quinto.
+Tampoco es una condición de estabilidad: bajar el CFL deja la oscilación intacta.
+Es una exigencia de **consistencia algebraica entre discretizaciones**. El operador elegido
+en una ecuación determina qué operadores quedan permitidos en las demás.
+
+La misma situación aparece al escoger el término de presión interfacial en
+[hiperbolicidad del modelo de dos fluidos y presión interfacial](/es/posts/2026-08-23-two-fluid-model-hyperbolicity-interfacial-pressure/).
+Allí el término se elige para que los autovalores sean reales; aquí, para que el flujo uniforme
+se conserve. En ambos casos existen varias discretizaciones "físicamente razonables"
+y solo una sobrevive.
+
+## Dos discretizaciones sobre la misma malla, lado a lado, en Python
+
+Sobre una malla periódica de 100 celdas se coloca una interfaz y se avanzan ambos enfoques
+el mismo número de pasos. Las variables conservadas $\rho$, $\rho u$ y $\rho E$ se actualizan
+con el mismo upwind de primer orden en los dos casos.
+La única diferencia está en una variable termodinámica.
+
+```python
+G1, G2 = 1.4, 1.667      # razones de calores específicos de los dos gases
+P0, U0 = 1.0e5, 100.0    # presión uniforme [Pa], velocidad uniforme [m/s]
+R1, R2 = 1.0, 0.125      # densidades de los dos gases [kg/m^3]
+
+
+def gamma_var(y):
+    """Fracción másica y -> 1/(gamma-1). Regla de mezcla lineal en y."""
+    return y / (G1 - 1.0) + (1.0 - y) / (G2 - 1.0)
+
+
+def advect_upwind(q, lam):
+    """Advección upwind de primer orden con u>0. La celda de entrada queda fija."""
+    return [q[0]] + [q[j] - lam * (q[j] - q[j - 1]) for j in range(1, len(q))]
+
+
+def initial_state(n):
+    x = [(j + 0.5) / n for j in range(n)]
+    y = [1.0 if xi < 0.3 else 0.0 for xi in x]
+    rho = [R1 if xi < 0.3 else R2 for xi in x]
+    return x, y, rho
+
+
+def step_massfraction_closure(rho, mom, ene, ry, lam):
+    """Transporta rho*Y en forma conservativa y recupera gamma con la regla de mezcla."""
+    rho_n = advect_upwind(rho, lam)
+    mom_n = advect_upwind(mom, lam)
+    ene_n = advect_upwind(ene, lam)
+    ry_n = advect_upwind(ry, lam)
+    y_n = [ry_n[j] / rho_n[j] for j in range(len(rho_n))]
+    p_n = [(ene_n[j] - 0.5 * mom_n[j] ** 2 / rho_n[j]) / gamma_var(y_n[j])
+           for j in range(len(rho_n))]
+    return rho_n, mom_n, ene_n, ry_n, p_n
+
+
+def step_gammavar_transport(rho, mom, ene, gv, lam):
+    """Monta 1/(gamma-1) en forma no conservativa (advectiva) sobre el mismo operador upwind."""
+    rho_n = advect_upwind(rho, lam)
+    mom_n = advect_upwind(mom, lam)
+    ene_n = advect_upwind(ene, lam)
+    gv_n = advect_upwind(gv, lam)
+    p_n = [(ene_n[j] - 0.5 * mom_n[j] ** 2 / rho_n[j]) / gv_n[j]
+           for j in range(len(rho_n))]
+    return rho_n, mom_n, ene_n, gv_n, p_n
+
+
+def run_interface_advection(n=100, steps=60, cfl=0.5):
+    x, y0, rho0 = initial_state(n)
+    gv0 = [gamma_var(v) for v in y0]
+
+    rho_a = list(rho0)
+    mom_a = [r * U0 for r in rho0]
+    ene_a = [P0 * gv0[j] + 0.5 * rho0[j] * U0 ** 2 for j in range(n)]
+    ry_a = [rho0[j] * y0[j] for j in range(n)]
+
+    rho_b, mom_b, ene_b = list(rho_a), list(mom_a), list(ene_a)
+    gv_b = list(gv0)
+
+    hist, p_a, p_b = [], None, None
+    for k in range(1, steps + 1):
+        rho_a, mom_a, ene_a, ry_a, p_a = step_massfraction_closure(
+            rho_a, mom_a, ene_a, ry_a, cfl)
+        rho_b, mom_b, ene_b, gv_b, p_b = step_gammavar_transport(
+            rho_b, mom_b, ene_b, gv_b, cfl)
+        if k % 20 == 0:
+            ea = max(abs(v - P0) for v in p_a)
+            eb = max(abs(v - P0) for v in p_b)
+            eu = max(abs(mom_a[j] / rho_a[j] - U0) for j in range(n))
+            hist.append((k, ea, eb, eu))
+    return x, p_a, p_b, hist
+
+
+if __name__ == "__main__":
+    x, p_a, p_b, hist = run_interface_advection()
+    print("step |  max|P-P0| mixrule |  max|P-P0| Gamma-adv |  max|u-U0| mixrule")
+    for k, ea, eb, eu in hist:
+        print("%4d | %16.2f | %19.2e | %16.3e" % (k, ea, eb, eu))
+
+    j = max(range(len(p_a)), key=lambda i: abs(p_a[i] - P0))
+    print("\nworst cell x=%.3f  P=%.1f Pa  (uniform value %.0f Pa)" % (x[j], p_a[j], P0))
+    print("relative error:  mixrule %.2f%%   Gamma-adv %.1e%%"
+          % (max(abs(v - P0) for v in p_a) / P0 * 100,
+             max(abs(v - P0) for v in p_b) / P0 * 100))
+```
+
+```text
+step |  max|P-P0| mixrule |  max|P-P0| Gamma-adv |  max|u-U0| mixrule
+  20 |         21433.25 |            2.91e-11 |        0.000e+00
+  40 |         21587.18 |            4.37e-11 |        0.000e+00
+  60 |         21442.28 |            4.37e-11 |        2.842e-14
+
+worst cell x=0.635  P=78557.7 Pa  (uniform value 100000 Pa)
+relative error:  mixrule 21.44%   Gamma-adv 4.4e-14%
+```
+
+Bastan tres líneas. El lado de la regla de mezcla arranca en 21,4 kPa y no baja por más pasos que se den.
+El lado de la advección de $\Gamma$ se queda en $10^{-11}$ Pa, un error relativo de $10^{-14}$%:
+el suelo de la doble precisión.
+
+Que la columna de velocidad valga cero también importa. La ecuación de momento se resolvió bien
+de principio a fin. Al duplicar la resolución de la malla, el 21% sigue siendo 21%,
+porque es un error que no converge.
+
+## Cómo deduce el artículo $H_u$: primero el esquema, después el término que encaja
+
+El modelo tipo Baer–Nunziato de Re y Abgrall (familia de siete ecuaciones, con velocidad y presión
+propias para cada fase) incluye una ecuación aparte para la fracción volumétrica.
+Esa ecuación no está en forma conservativa.
+
+$$
+\frac{\partial \alpha_i}{\partial t} + u_I \frac{\partial \alpha_i}{\partial x} = 0
+$$
+
+$\alpha_i$ es la fracción volumétrica de la fase $i$ y $u_I$ la velocidad interfacial.
+El artículo escribe ese término como un operador discreto llamado $H_u(\alpha_i, u_I)$
+y **no supone** su forma: la deduce a partir de la condición.
+
+La ecuación de masa $(\alpha_i\rho_i)$ ya está fijada con flujo de Rusanov. Al introducir un estado
+de densidad y velocidad uniformes, ese flujo se factoriza como
+$\rho_i \times ($flujo de Rusanov de $\alpha_i)$. Para que tras la actualización siga valiendo
+$\rho_i = (\alpha_i\rho_i)^{n+1}/\alpha_i^{n+1}$, el denominador $\alpha_i^{n+1}$ debe actualizarse
+con exactamente la misma diferencia de flujos que el numerador. Por eso $H_u$ no es una elección,
+sino una consecuencia.
+
+$$
+H_u(\alpha_i, u_I)_j = \frac{1}{2}\Big[ \big(\alpha_{j+1} - \alpha_{j-1}\big) u_{I,j}
+- \big|u_{I,j}\big| \big(\alpha_{j+1} - 2\alpha_j + \alpha_{j-1}\big) \Big]
+$$
+
+El primer término es una diferencia centrada; el segundo, una disipación acompañada de $|u_I|$.
+Su suma es exactamente la diferencia de flujos de Rusanov para $\alpha$.
+Si $u_I > 0$ solo queda $\alpha_j - \alpha_{j-1}$: upwind puro.
+
+El artículo reutiliza ese mismo $H_u$ en la ecuación de presión. Tras descomponer
+$u^{*}\partial P/\partial x$ como $\partial(Pu^{*})/\partial x - P\partial u^{*}/\partial x$,
+el término no conservativo restante se monta sobre el mismo operador que la ecuación de masa.
+Usar una discretización distinta en cada ecuación rompería la consistencia recién conseguida.
+
+## Girando a mano los coeficientes del stencil de tres puntos
+
+Si se pondera con $\theta$ el término disipativo de los dos que componen $H_u$, un solo dial
+recorre los dos extremos. Con $\theta = 1$ se obtiene el $H_u$ del artículo; con $\theta = 0$,
+la diferencia centrada pura de $u_I \partial\alpha/\partial x$.
+
+<HuStencilWeightDial />
+
+Al bajar `theta` desde 1, el peso de la celda aguas abajo resucita desde cero. En ese mismo instante
+la densidad recuperada abandona los 850 kg/m³ y ya no vuelve. Invertir el signo de `u_I` no altera
+la resistencia de $\theta = 1$: la diferencia de flujos sigue el signo de la velocidad interfacial,
+pero el stencil centrado no lo hace.
+
+También se comprobó con números. Densidad uniforme de 850 kg/m³, una interfaz y la misma malla,
+actualizando solo $\alpha$ con los dos operadores.
+
+```python
+RHO, UI, N, LAM = 850.0, 1.0, 80, 0.4   # densidad uniforme [kg/m^3], vel. interfacial, núm. de celdas, u*dt/dx
+
+
+def alpha_profile():
+    """Fracción volumétrica a ambos lados de la interfaz. Une 0.02 <-> 0.98 en tres celdas."""
+    a = []
+    for j in range(N):
+        if j < 30:
+            a.append(0.98)
+        elif j < 33:
+            a.append(0.98 - 0.32 * (j - 29))
+        else:
+            a.append(0.02)
+    return a
+
+
+def rusanov_flux(q, j, vel):
+    """Flujo numérico de Rusanov entre las celdas j y j+1 (frontera periódica)."""
+    ql, qr = q[j % N], q[(j + 1) % N]
+    return 0.5 * (qr + ql) * vel - 0.5 * abs(vel) * (qr - ql)
+
+
+def hu_upwind(a, j):
+    """Operador no conservativo de la Ec. (10) del artículo: diferencia de flujos de Rusanov para alpha."""
+    return rusanov_flux(a, j, UI) - rusanov_flux(a, j - 1, UI)
+
+
+def hu_central(a, j):
+    """Versión que discretiza u_I * d(alpha)/dx con diferencias centradas sin más."""
+    return 0.5 * UI * (a[(j + 1) % N] - a[(j - 1) % N])
+
+
+def march(op, steps):
+    """Avanza alpha*rho con Rusanov y alpha con op, y observa la rho recuperada."""
+    a = alpha_profile()
+    ar = [RHO * v for v in a]
+    for _ in range(steps):
+        ar = [ar[j] - LAM * (rusanov_flux(ar, j, UI) - rusanov_flux(ar, j - 1, UI))
+              for j in range(N)]
+        a = [a[j] - LAM * op(a, j) for j in range(N)]
+    return max(abs(ar[j] / a[j] - RHO) for j in range(N))
+
+
+if __name__ == "__main__":
+    print("steps |  upwind H_u [kg/m^3] |  centred [kg/m^3]")
+    for s in (10, 40, 120):
+        print("%5d | %20.2e | %17.4f" % (s, march(hu_upwind, s), march(hu_central, s)))
+
+    a = alpha_profile()
+    lhs = hu_upwind(a, 31)
+    rhs = 0.5 * ((a[32] - a[30]) * UI - abs(UI) * (a[32] - 2 * a[31] + a[30]))
+    print("\ncell 31:  flux difference %.6f   paper Eq.(10) %.6f   gap %.1e"
+          % (lhs, rhs, abs(lhs - rhs)))
+```
+
+```text
+steps |  upwind H_u [kg/m^3] |  centred [kg/m^3]
+   10 |             2.27e-13 |         2553.2027
+   40 |             4.55e-13 |         6697.6224
+  120 |             5.68e-13 |         1206.6015
+
+cell 31:  flux difference -0.320000   paper Eq.(10) -0.320000   gap 0.0e+00
+```
+
+El $H_u$ upwind se queda en $10^{-13}$ kg/m³ incluso tras 120 pasos. La diferencia centrada
+se aleja 2.553 kg/m³ en apenas 10 pasos. Que a los 120 pasos el valor vuelva a 1.207
+no es recuperación, sino divergencia: significa que $\alpha$ oscila cerca de cero
+y la división ha entrado en la zona donde devuelve cualquier cosa.
+
+La última línea confirma la deducción. La diferencia de flujos de Rusanov para $\alpha$
+y la forma cerrada de la Ec. (10) del artículo coinciden dígito a dígito en la celda 31.
+Ambas expresiones son algebraicamente la misma cosa.
+
+## Qué significa decir que esta condición nada tiene que ver con la precisión
+
+Conviene dejar algo claro: usar $H_u$ no vuelve más exacta la solución.
+El upwind de primer orden sigue emborronando la interfaz. En la figura anterior,
+el escalón de $\alpha$ se engrosa en cada paso.
+
+Lo que el criterio de Abgrall garantiza es otra cosa: **si se equivoca, se equivoca en una dirección
+que tiene sentido físico.** Que la interfaz se difumine es difusión numérica, y eso se reduce
+al refinar la malla. Que se levante un pico de 21 kPa sobre un campo de presión uniforme no lo es.
+Eso no disminuye por refinar, crece cuanto más rígida (stiff) sea la ecuación de estado
+y a menudo detiene el cálculo con presiones negativas.
+
+La misma distinción apareció al tratar
+[cuánto abre el paso de tiempo la tensión superficial implícita](/es/posts/2026-08-30-implicit-surface-tension-timestep-window/).
+Algunas restricciones se compran con precisión y otras no se compran con nada.
+El criterio de Abgrall pertenece al segundo grupo: al subir a esquemas de alto orden,
+esta condición hay que volver a ajustarla por separado.
+
+## Por dónde empezar la próxima vez que la presión salte en la interfaz
+
+Si vuelvo a toparme con este problema, el orden sería este.
+
+Primero, correr el caso de presión y velocidad uniformes. En un problema sin ondas,
+si la variación de presión no es cero, no hace falta mirar el flujo numérico.
+La respuesta está en el término no conservativo o en la recuperación vía ecuación de estado.
+
+Después, duplicar la resolución de la malla y medir la misma cantidad. Si la oscilación cae
+a la mitad, es difusión numérica. Si no se mueve, es un problema de consistencia.
+Esa sola ejecución separa las dos causas.
+
+Por último, escribir en paralelo qué stencil usa el término no conservativo en cada ecuación.
+Si la masa va con Rusanov, la fracción volumétrica con diferencias centradas y la energía con
+otra cosa, ahí está el origen. Que el artículo reutilice un único $H_u$ en tres ecuaciones
+no era una manía por escribir menos código.
+
+---
+
+**Referencias**
+
+- B. Re, R. Abgrall, *Non-equilibrium Model for Weakly Compressible Multi-component Flows: the Hyperbolic Operator*, arXiv:1911.00270 — §2.2 The discretization
+- R. Abgrall, *How to Prevent Pressure Oscillations in Multicomponent Flow Calculations: A Quasi Conservative Approach*, J. Comput. Phys. 125 (1996)
