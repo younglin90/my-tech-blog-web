@@ -1,0 +1,211 @@
+---
+title: "27 de 1.681 vóxeles quedaron al revés — paridad de rayos y corte de enlaces al voxelizar un STL"
+date: 2026-09-07
+description: "Convertir un STL en una malla de vóxeles para LBM son cuatro etapas: octree, teorema de ejes separadores, paridad de rayos y la fracción q del corte."
+tags: ["Voxelization", "Mesh-Generation", "Computational-Geometry", "LBM", "Bounce-Back"]
+locale: es
+slug: 2026-09-07-stl-voxelization-lbm-boundary-links
+takeaway: "La paridad de rayos se invierte en un solo vértice. Agregar direcciones apenas disimula el problema; cerrar el intervalo como semiabierto lo elimina."
+draft: false
+---
+
+import { OctreeVoxelSatClassifier } from '@/components/post-viz/2026-09-07-stl-voxelization-lbm-boundary-links/OctreeVoxelSatClassifier'
+import { BoundaryLinkCutDial } from '@/components/post-viz/2026-09-07-stl-voxelization-lbm-boundary-links/BoundaryLinkCutDial'
+
+## La entrada es un archivo STL y un tamaño de vóxel
+
+Cuando una geometría entra a un solver de Boltzmann en malla (LBM), en la mano hay apenas dos cosas. Un archivo STL, que es una lista de triángulos de superficie, y la longitud del lado de un vóxel. Lo que debe salir es mucho más. Para cada vóxel, si es fluido, sólido o frontera. Para un vóxel de frontera, cuál de los enlaces con sus vecinos queda cortado por la pared. Para un enlace cortado, la fracción de distancia hasta la pared.
+
+Este texto parte esa conversión en cuatro etapas. El octree reduce los candidatos, el teorema de ejes separadores decide el solape, la paridad del rayo separa el adentro del afuera, y sobre los enlaces se marcan los puntos de intersección. En cada etapa también se ve dónde se rompe de verdad. El único valor $q$ que sale de la última etapa fija la precisión de la condición de frontera.
+
+## Probar todos los triángulos en cada vóxel multiplica el costo
+
+Lo más simple es probar cada vóxel contra todos los triángulos. Con $N^3$ vóxeles y $M$ triángulos, el número de pruebas es $N^3 M$. Con $N = 256$ y $M = 200{,}000$ eso da $3.4 \times 10^{12}$ pruebas. No termina en un día.
+
+El octree (árbol que divide el espacio recursivamente en ocho partes) rompe ese producto. Se parte de un único nodo raíz y se arma la lista de triángulos que lo tocan. Si la lista no está vacía, se crean ocho nodos hijos, y cada hijo vuelve a probar **solo la lista del padre**. Si la lista queda vacía, ahí se detiene.
+
+Los nodos detenidos son lo importante. Adentro no hay ni un pedazo de superficie, así que el nodo entero es fluido o entero sólido. Basta una sola clasificación. El costo pasa a depender del **área de la superficie** y no del volumen.
+
+Conviene manipularlo directamente en la simulación de abajo.
+
+<OctreeVoxelSatClassifier />
+
+Al subir el deslizador de nivel del octree de 3 a 7, la cáscara naranja de vóxeles de frontera se adelgaza mientras su cantidad crece, pero la barra verde (las pruebas SAT que el árbol ejecutó realmente) casi no sube. La cantidad de celdas se cuadruplica por nivel, mientras que las celdas que forman la cáscara apenas se duplican.
+
+## El teorema de ejes separadores mira solo tres ejes
+
+Decidir si un nodo y un triángulo se solapan se resuelve con el teorema de ejes separadores (SAT). Si dos cuerpos convexos no se intersecan, existe necesariamente un eje que los separa. Dicho al revés: si se prueban todos los ejes candidatos y ninguno los separa, los dos cuerpos se solapan.
+
+En 2D, para un segmento y una caja alineada con los ejes, hay tres candidatos. El eje $x$ de la caja, el eje $y$ de la caja y la normal del segmento. La prueba sobre el eje normal se escribe así.
+
+$$
+\left| \mathbf{n} \cdot (\mathbf{p}_0 - \mathbf{c}) \right| > h_x |n_x| + h_y |n_y|
+$$
+
+$\mathbf{n}$ es la normal del segmento, $\mathbf{p}_0$ es un extremo del segmento, $\mathbf{c}$ es el centro de la caja y $h_x, h_y$ son los semilados. Si la desigualdad se cumple, ese eje ya separó al par y la prueba termina de inmediato.
+
+En 3D, para un triángulo y una caja, hay 13 ejes candidatos. Tres normales de caras de la caja, una normal de la cara del triángulo y nueve ejes obtenidos del producto vectorial entre las direcciones de las aristas de ambos cuerpos. Terminar en 13 comparaciones de productos escalares es la razón para usar SAT en este punto. La salida temprana funciona bien, así que el costo promedio queda muy por debajo de 13.
+
+El nodo que interseca se vuelve vóxel de frontera (B). En ese momento se guardan junto a él las direcciones de los triángulos que lo tocan. Esa lista se reutiliza después, al marcar los puntos de intersección sobre los enlaces.
+
+## Adentro y afuera se deciden por la paridad del número de cruces
+
+Quedan los nodos que ninguna superficie tocó. Cada uno es todo fluido o todo sólido, y de qué lado está solo se sabe mirando la geometría completa.
+
+La respuesta clásica es el teorema de la curva de Jordan. Desde el punto se lanza una semirrecta en cualquier dirección y se cuentan los cruces con la superficie. Impar significa interior, par significa exterior. Mientras la superficie esté cerrada, la dirección da igual. La implementación también es corta. Basta una intersección rayo-triángulo por triángulo.
+
+El problema aparece cuando el rayo pasa exactamente por una arista o un vértice del triángulo. Ese punto lo comparten dos triángulos, así que el cruce puede contarse dos veces. La paridad se invierte. Y la situación no es excepcional. Los centros de vóxel caen de forma regular sobre la malla, y los vértices de un STL exportado desde CAD suelen coincidir exactamente con coordenadas de malla. Cuando se encuentran dos mallas regulares, un rayo alineado con los ejes atraviesa vértices con frecuencia.
+
+Que el documento original diga "interior si el conteo es impar en alguna de las direcciones $x, y, z$" es una precaución frente a este riesgo. La lógica es que, si una dirección falla, las demás rescatan el resultado. Vale la pena contar cuánto rescatan en la práctica.
+
+## Contando en Python los vóxeles invertidos
+
+Reducido a 2D, un rombo se coloca en una malla de 41×41. Sus vértices están en $(\pm 1, 0)$ y $(0, \pm 1)$, de modo que caen exactamente sobre las líneas centrales $y = 0$ y $x = 0$. Sobre la misma malla se compararon la prueba de intervalo cerrado (con ambos extremos incluidos) y la de intervalo semiabierto (con un solo extremo incluido).
+
+```python
+# Rombo (vértices ubicados exactamente sobre las líneas centrales de la malla)
+def diamond_poly(r=1.0):
+    return [(r, 0.0), (0.0, r), (-r, 0.0), (0.0, -r)]
+
+def edges_of(poly):
+    return [(poly[i], poly[(i + 1) % len(poly)]) for i in range(len(poly))]
+
+# Prueba habitual de 'intervalo cerrado' — cuenta el vértice dos veces
+def naive_crossings(px, py, poly, axis):
+    n = 0
+    for (x1, y1), (x2, y2) in edges_of(poly):
+        if axis == 'x':
+            a, b, c1, c2 = y1, y2, x1, x2
+            p, q = py, px
+        else:
+            a, b, c1, c2 = x1, x2, y1, y2
+            p, q = px, py
+        if a == b:
+            continue
+        if min(a, b) <= p <= max(a, b):          # extremos incluidos -> vértice duplicado
+            t = (p - a) / (b - a)
+            if c1 + t * (c2 - c1) > q:
+                n += 1
+    return n
+
+# Prueba de intervalo semiabierto — cuenta el vértice exactamente una vez
+def halfopen_crossings(px, py, poly, axis):
+    n = 0
+    for (x1, y1), (x2, y2) in edges_of(poly):
+        if axis == 'x':
+            a, b, c1, c2 = y1, y2, x1, x2
+            p, q = py, px
+        else:
+            a, b, c1, c2 = x1, x2, y1, y2
+            p, q = px, py
+        if (a > p) != (b > p):                    # intervalo semiabierto [a, b)
+            t = (p - a) / (b - a)
+            if c1 + t * (c2 - c1) > q:
+                n += 1
+    return n
+
+def cell_centers(n, lo=-1.5, hi=1.5):
+    h = (hi - lo) / n
+    return [lo + (i + 0.5) * h for i in range(n)], h
+
+def truth_inside(px, py, r=1.0):
+    return abs(px) + abs(py) < r                  # prueba analítica del rombo
+
+def sweep_axes(n=41):
+    xs, h = cell_centers(n)
+    poly = diamond_poly()
+    bad = {'x-only': 0, 'y-only': 0, 'x-or-y': 0, 'half-open': 0}
+    for py in xs:
+        for px in xs:
+            ref = truth_inside(px, py)
+            ox = naive_crossings(px, py, poly, 'x') % 2 == 1
+            oy = naive_crossings(px, py, poly, 'y') % 2 == 1
+            hx = halfopen_crossings(px, py, poly, 'x') % 2 == 1
+            bad['x-only'] += (ox != ref)
+            bad['y-only'] += (oy != ref)
+            bad['x-or-y'] += ((ox or oy) != ref)
+            bad['half-open'] += (hx != ref)
+    return bad, len(xs) ** 2, h
+
+bad, total, h = sweep_axes(41)
+print(f"grid 41x41, voxel size h = {h:.5f}, cells tested = {total}")
+for k, v in bad.items():
+    print(f"  {k:10s} misclassified {v:4d}  ({100*v/total:.2f}%)")
+
+poly = diamond_poly()
+for (px, py, tag) in [(0.0, 0.0, 'center'), (0.0, 0.9146, 'just above'), (-1.2, 0.0, 'outside left')]:
+    cx = naive_crossings(px, py, poly, 'x')
+    cy = naive_crossings(px, py, poly, 'y')
+    hx = halfopen_crossings(px, py, poly, 'x')
+    print(f"{tag:12s} ({px:+.4f},{py:+.4f})  closed x={cx} y={cy} | half-open x={hx} | truth={'IN' if truth_inside(px,py) else 'OUT'}")
+```
+
+```text
+grid 41x41, voxel size h = 0.07317, cells tested = 1681
+  x-only     misclassified   27  (1.61%)
+  y-only     misclassified   27  (1.61%)
+  x-or-y     misclassified    1  (0.06%)
+  half-open  misclassified    0  (0.00%)
+center       (+0.0000,+0.0000)  closed x=2 y=2 | half-open x=1 | truth=IN
+just above   (+0.0000,+0.9146)  closed x=1 y=2 | half-open x=1 | truth=IN
+outside left (-1.2000,+0.0000)  closed x=4 y=0 | half-open x=2 | truth=OUT
+```
+
+Usando un solo eje, 27 de 1.681 celdas quedan invertidas. Todas son vóxeles interiores de la fila $y = 0$. El rayo pasó por el vértice $(1, 0)$, el cruce se contó como 2 en vez de 1 y la paridad invertida las declaró "exteriores".
+
+Al unir los dos ejes con un OR, la mala clasificación baja de 27 a 1. La regla del documento original sí funciona. El caso que sobrevive es el origen $(0,0)$. Tanto el rayo en $x$ como el rayo en $y$ atraviesan un vértice, así que ambos dan un conteo par. Ahí se ve el límite de agregar direcciones. En 3D el eje $z$ rescataría este punto, pero tampoco cuesta construir una geometría donde los tres ejes fallen a la vez.
+
+La última línea es la solución de verdad. Al cambiar el intervalo de `min <= p <= max` por `(a > p) != (b > p)`, la mala clasificación baja a 0. Es la regla del intervalo semiabierto, que obliga a contar el vértice solo en el extremo inferior. Y con ella desaparece también el costo de lanzar tres rayos.
+
+## Cuatro criterios en la misma tabla
+
+| Método | Costo | Superficie no cerrada | Degeneración con ejes | Efecto secundario |
+|---|---|---|---|---|
+| Paridad de rayo, intervalo cerrado | $O(M)$ / punto | colapsa de inmediato | se invierte (1.61%) | ninguno |
+| Paridad de rayo, semiabierto | $O(M)$ / punto | colapsa de inmediato | ninguna (0.00%) | ninguno |
+| Voto OR multieje | $3 \times O(M)$ | colapsa de inmediato | casi ninguna (0.06%) | ninguno |
+| Distancia con signo / número de vueltas | $O(M)$ / punto, constante alta | resiste | ninguna | da la distancia a la pared |
+
+De la tabla se leen dos cosas. Primero, eliminar la degeneración con los ejes cambiando el criterio resulta más barato y más seguro que lanzar más rayos. Segundo, si el STL no está cerrado, toda la familia de la paridad se derrumba. Un solo agujero convierte el interior entero en fluido. El número de vueltas (winding number) o la distancia con signo siguen dando respuesta en ese caso, pero su costo constante es mucho mayor. En la práctica se opta por la paridad, cerrando antes el STL.
+
+## Donde se corta el enlace aparece $q$
+
+Llegados aquí, cada vóxel lleva su etiqueta F (fluido), B (frontera) o S (sólido). Pero a LBM le falta una etapa más. LBM no usa solo los valores en los centros de vóxel: hace fluir las funciones de distribución hacia los vecinos a lo largo de los **enlaces**. En D2Q9 son 8, en D3Q27 son 26. Lo que la pared corta no es el vóxel sino ese enlace.
+
+En cada enlace de un vóxel de frontera se marca el punto de intersección $I$ con la superficie. Si hay varios, se usa el más cercano al centro del vóxel. La fracción de distancia hasta ese punto es $q$.
+
+$$
+q_i = \frac{\left| \mathbf{x}_I - \mathbf{x}_f \right|}{\left| \mathbf{e}_i \right| \Delta x}, \qquad 0 \le q_i < 1
+$$
+
+$\mathbf{x}_f$ es el centro del vóxel de fluido, $\mathbf{e}_i$ es el vector de dirección de la malla y $\Delta x$ es el tamaño del vóxel. La clave es que $q_i$ cambia según la dirección.
+
+<BoundaryLinkCutDial />
+
+Al girar el ángulo de la pared de 0° hacia 45°, las ocho barras de $q$ empiezan a desalinearse entre sí. Al mover el offset, las barras se deslizan de forma continua mientras las etiquetas de clase del vóxel saltan como escalones. Otro punto de observación es cómo los vóxeles B naranjas pasan a G grises cuando el offset crece.
+
+Ignorar $q$ y dejarlo en $0.5$ para todo es el bounce-back half-way estándar. Es la implementación más corta, pero la pared queda pegada a la malla en lugar de estar sobre la superficie real. En superficies curvas queda un error de escalera y el orden de convergencia cae de segundo a primero. El bounce-back interpolado, que sí usa $q$, construye así el valor que vuelve desde la pared.
+
+$$
+f_{\bar{i}}(\mathbf{x}_f, t + \Delta t) = \frac{1}{1 + q} \left[ 2 q \, f_i^{\star}(\mathbf{x}_f) + (1 - 2q) \, f_i^{\star}(\mathbf{x}_f - \mathbf{e}_i \Delta t) \right]
+$$
+
+$f^\star$ es la función de distribución justo después de la colisión y $\bar{i}$ es la dirección opuesta a $i$. Al sustituir $q = 0.5$, el segundo término desaparece y se recupera la regla half-way. Es decir, $q$ es la generalización que contiene el caso half-way. Para usar esta interpolación, la etapa anterior debe guardar $q$ enlace por enlace. Por eso en la etapa SAT no se descartaron las direcciones de los triángulos.
+
+## Por qué se borran los vóxeles de frontera sin vecino fluido
+
+El procedimiento original tiene otra regla que pasa desapercibida. Si un vóxel B no tiene ni un enlace que lo conecte con un vóxel F, ese B se borra. El lugar vacío queda como vóxel fantasma (G).
+
+La razón no es el costo de cálculo sino la definición. El bounce-back es la operación de devolver una función de distribución que vino del fluido. Si no entra nada, tampoco hay nada que devolver. Imponer una condición de frontera en ese vóxel hace que valores basura sin inicializar salgan en el streaming paso a paso.
+
+El orden del borrado también importa. Una vez borrado el B, el vecino que estaba conectado a él se queda con un enlace cortado. El documento original indica tomar en ese caso el centro del B borrado como punto de intersección $I$. Queda entonces un enlace con $q = 1$. Sin este tratamiento, justo después del borrado quedan enlaces sin definir.
+
+Por último, todo vóxel F que tenga al menos un punto de intersección $I$ asciende a FB. En el cálculo real, el bucle de tratamiento de frontera recorre ese conjunto FB. F hace streaming puro, FB hace streaming más bounce-back interpolado, B provee valores y G queda fuera por completo. Cuatro clases, cuatro kernels distintos. Separar las clases de antemano rinde igual cuando encima se montan extensiones como el [reescalado de la parte de no equilibrio](/es/posts/2026-09-02-lbm-amr-nonequilibrium-rescale/) o el [agregado de una función de distribución de energía](/es/posts/2026-09-04-lbm-double-distribution-prandtl/). Mantener listas en vez de evaluar la bifurcación en cada paso es la estrategia básica de LBM.
+
+## Cómo un vóxel llega a tener nombre propio
+
+Al repasar cómo un STL se convierte en malla, hubo cuatro decisiones. ¿El nodo del octree toca la superficie (SAT, 13 ejes)? ¿El nodo que no la toca está adentro o afuera (paridad del rayo)? ¿El enlace queda cortado (cambio de signo)? ¿El vóxel cortado está conectado con fluido (conteo de enlaces)?
+
+La que falla más en silencio es la segunda. Si la primera o la tercera fallan, la imagen se rompe de forma visible, pero un vóxel con la paridad invertida queda clavado en una sola línea dentro de la geometría y casi no se nota en un contorno. Con el caudal desviado un par de puntos porcentuales, incluso puede pasar la validación.
+
+Por eso, lo primero al meter una geometría nueva es contrastar la cantidad de F y de S contra el volumen analítico. También conviene reducir a la mitad el tamaño de vóxel y verificar que la cantidad de $F$ crezca ocho veces. Si ahí algo no cuadra, no hay motivo para correr el solver. La malla ya está representando otra geometría.

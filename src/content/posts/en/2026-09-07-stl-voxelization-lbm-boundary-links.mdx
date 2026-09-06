@@ -1,0 +1,211 @@
+---
+title: "27 of 1,681 Voxels Flipped Inside Out — Ray Parity and Link Cutting in STL Voxelization"
+date: 2026-09-07
+description: "Turning an STL into an LBM voxel grid takes four stages: octree culling, SAT overlap tests, ray parity, and the per-link cut fraction q, verified in code."
+tags: ["Voxelization", "Mesh-Generation", "Computational-Geometry", "LBM", "Bounce-Back"]
+locale: en
+slug: 2026-09-07-stl-voxelization-lbm-boundary-links
+takeaway: "Ray parity flips at a single vertex. Casting more rays is a patch; closing the interval as half-open is the actual fix."
+draft: false
+---
+
+import { OctreeVoxelSatClassifier } from '@/components/post-viz/2026-09-07-stl-voxelization-lbm-boundary-links/OctreeVoxelSatClassifier'
+import { BoundaryLinkCutDial } from '@/components/post-viz/2026-09-07-stl-voxelization-lbm-boundary-links/BoundaryLinkCutDial'
+
+## The input is one STL file and one voxel size
+
+When a geometry goes into a lattice Boltzmann (LBM) solver, only two things are in hand. An STL file, which is a list of surface triangles, and the edge length of a single voxel. What has to come out is far more. For every voxel, whether it is fluid, solid, or boundary. For a boundary voxel, which of the links to its neighbors the wall cuts. For a cut link, the fractional distance to the wall.
+
+This post splits that conversion into four stages. An octree narrows the candidates, the separating axis theorem decides overlap, ray parity separates inside from outside, and intersection points land on the links. Where each stage actually breaks gets the same attention. The single $q$ value that falls out of the last stage sets the accuracy of the boundary condition.
+
+## Testing every triangle against every voxel multiplies the cost
+
+The simplest approach tests each voxel against every triangle. With $N^3$ voxels and $M$ triangles the test count is $N^3 M$. For $N = 256$ and $M = 200{,}000$ that is $3.4 \times 10^{12}$ tests. It does not finish in a day.
+
+An octree (a tree that recursively splits space into eight children) breaks that product. Start with a single root node and build the list of triangles that touch it. If the list is not empty, create eight child nodes, and each child re-tests **only the parent's list**. If the list is empty, stop there.
+
+The stopped nodes are what matters. No surface passes through them, so such a node is entirely fluid or entirely solid. One classification covers the whole node. The cost now scales with **surface area** instead of volume.
+
+Try it directly in the simulation below.
+
+<OctreeVoxelSatClassifier />
+
+Push the octree level slider from 3 up to 7. The orange shell of boundary voxels gets thinner while its count grows, yet the green bar (the number of SAT tests the tree actually ran) barely moves. Cell count grows fourfold per level, but the cells forming the shell only double.
+
+## The separating axis theorem looks at only three axes
+
+Deciding whether a node and a triangle overlap is done with the separating axis theorem (SAT). If two convex bodies do not intersect, some axis separating them must exist. Turn that around. Test every candidate axis, and if not one of them separates the pair, the two bodies overlap.
+
+For a segment and an axis-aligned box in 2D there are three candidate axes. The box $x$ axis, the box $y$ axis, and the normal of the segment. The test on the normal axis is written like this.
+
+$$
+\left| \mathbf{n} \cdot (\mathbf{p}_0 - \mathbf{c}) \right| > h_x |n_x| + h_y |n_y|
+$$
+
+$\mathbf{n}$ is the segment normal, $\mathbf{p}_0$ is one endpoint of the segment, $\mathbf{c}$ is the box center, and $h_x, h_y$ are the box half-extents. If the inequality holds, that axis has separated the pair, and the test ends immediately.
+
+For a triangle and a box in 3D there are 13 candidate axes. Three box face normals, one triangle face normal, and nine axes from the cross products of the edge directions of the two bodies. Finishing in 13 dot-product comparisons is why SAT belongs in this spot. Early exit hits often, so the average cost sits well below 13.
+
+A node that intersects becomes a boundary (B) voxel. At that moment the addresses of the triangles touching the node are stored alongside it. That list gets reused later, when intersection points are placed on the links.
+
+## Inside and outside come down to the parity of the crossing count
+
+What is left are the nodes no surface touches. Each of them is entirely fluid or entirely solid, and which one it is depends on the geometry as a whole.
+
+The classic answer is the Jordan curve theorem. Shoot a ray from the point in any direction and count how many times it crosses the surface. Odd means inside, even means outside. As long as the surface is closed, the direction does not matter. The implementation is short too. One ray-triangle intersection per triangle is enough.
+
+The trouble comes when the ray passes exactly through an edge or a vertex of a triangle. Two triangles share that spot, so the crossing can be counted twice. The parity flips. And this situation is not exotic. Voxel centers sit on a regular lattice, and vertices of an STL exported from CAD often land exactly on grid coordinates. When two regular lattices meet, an axis-aligned ray hits vertices often.
+
+The source document says "inside if the count is odd along any one of the $x, y, z$ directions", and that is a hedge against this risk. The logic is that the remaining directions rescue the one that fails. How much they actually rescue is worth counting.
+
+## Counting the flipped voxels in Python
+
+Reduced to 2D, a diamond goes into a 41×41 grid. Its vertices sit at $(\pm 1, 0)$ and $(0, \pm 1)$, so they land exactly on the grid center lines $y = 0$ and $x = 0$. A closed-interval test (both endpoints included) and a half-open test (only one endpoint included) were compared on the same grid.
+
+```python
+# Diamond (vertices placed exactly on the grid center lines)
+def diamond_poly(r=1.0):
+    return [(r, 0.0), (0.0, r), (-r, 0.0), (0.0, -r)]
+
+def edges_of(poly):
+    return [(poly[i], poly[(i + 1) % len(poly)]) for i in range(len(poly))]
+
+# The common 'closed interval' test — counts a vertex twice
+def naive_crossings(px, py, poly, axis):
+    n = 0
+    for (x1, y1), (x2, y2) in edges_of(poly):
+        if axis == 'x':
+            a, b, c1, c2 = y1, y2, x1, x2
+            p, q = py, px
+        else:
+            a, b, c1, c2 = x1, x2, y1, y2
+            p, q = px, py
+        if a == b:
+            continue
+        if min(a, b) <= p <= max(a, b):          # both ends included -> duplicate vertex
+            t = (p - a) / (b - a)
+            if c1 + t * (c2 - c1) > q:
+                n += 1
+    return n
+
+# Half-open test — counts a vertex exactly once
+def halfopen_crossings(px, py, poly, axis):
+    n = 0
+    for (x1, y1), (x2, y2) in edges_of(poly):
+        if axis == 'x':
+            a, b, c1, c2 = y1, y2, x1, x2
+            p, q = py, px
+        else:
+            a, b, c1, c2 = x1, x2, y1, y2
+            p, q = px, py
+        if (a > p) != (b > p):                    # [a, b) half-open interval
+            t = (p - a) / (b - a)
+            if c1 + t * (c2 - c1) > q:
+                n += 1
+    return n
+
+def cell_centers(n, lo=-1.5, hi=1.5):
+    h = (hi - lo) / n
+    return [lo + (i + 0.5) * h for i in range(n)], h
+
+def truth_inside(px, py, r=1.0):
+    return abs(px) + abs(py) < r                  # analytic test for the diamond
+
+def sweep_axes(n=41):
+    xs, h = cell_centers(n)
+    poly = diamond_poly()
+    bad = {'x-only': 0, 'y-only': 0, 'x-or-y': 0, 'half-open': 0}
+    for py in xs:
+        for px in xs:
+            ref = truth_inside(px, py)
+            ox = naive_crossings(px, py, poly, 'x') % 2 == 1
+            oy = naive_crossings(px, py, poly, 'y') % 2 == 1
+            hx = halfopen_crossings(px, py, poly, 'x') % 2 == 1
+            bad['x-only'] += (ox != ref)
+            bad['y-only'] += (oy != ref)
+            bad['x-or-y'] += ((ox or oy) != ref)
+            bad['half-open'] += (hx != ref)
+    return bad, len(xs) ** 2, h
+
+bad, total, h = sweep_axes(41)
+print(f"grid 41x41, voxel size h = {h:.5f}, cells tested = {total}")
+for k, v in bad.items():
+    print(f"  {k:10s} misclassified {v:4d}  ({100*v/total:.2f}%)")
+
+poly = diamond_poly()
+for (px, py, tag) in [(0.0, 0.0, 'center'), (0.0, 0.9146, 'just above'), (-1.2, 0.0, 'outside left')]:
+    cx = naive_crossings(px, py, poly, 'x')
+    cy = naive_crossings(px, py, poly, 'y')
+    hx = halfopen_crossings(px, py, poly, 'x')
+    print(f"{tag:12s} ({px:+.4f},{py:+.4f})  closed x={cx} y={cy} | half-open x={hx} | truth={'IN' if truth_inside(px,py) else 'OUT'}")
+```
+
+```text
+grid 41x41, voxel size h = 0.07317, cells tested = 1681
+  x-only     misclassified   27  (1.61%)
+  y-only     misclassified   27  (1.61%)
+  x-or-y     misclassified    1  (0.06%)
+  half-open  misclassified    0  (0.00%)
+center       (+0.0000,+0.0000)  closed x=2 y=2 | half-open x=1 | truth=IN
+just above   (+0.0000,+0.9146)  closed x=1 y=2 | half-open x=1 | truth=IN
+outside left (-1.2000,+0.0000)  closed x=4 y=0 | half-open x=2 | truth=OUT
+```
+
+With a single axis, 27 cells out of 1,681 flip. All of them are interior voxels on the $y = 0$ row. The ray passed through the vertex $(1, 0)$, the crossing was counted as 2 instead of 1, and the flipped parity reported the cell as "outside".
+
+OR-ing the two axes drops the misclassification from 27 to 1. The rule in the source document does work. The one that survives is the origin $(0,0)$. Both the $x$ ray and the $y$ ray run straight through a vertex, so both return an even count. The limit of adding directions shows up right here. In 3D the $z$ axis would rescue this point, but building a geometry where all three axes fail at once is not hard either.
+
+The last line is the real fix. Change the interval from `min <= p <= max` to `(a > p) != (b > p)` and the misclassification goes to 0. It is the half-open rule, which forces a vertex to be counted only at the lower endpoint. The cost of casting three rays disappears along with the error.
+
+## Four classifiers in one table
+
+| Method | Cost | Non-closed surface | Axis-aligned degeneracy | Side effect |
+|---|---|---|---|---|
+| Ray parity, closed interval | $O(M)$ / point | collapses at once | flips (1.61%) | none |
+| Ray parity, half-open | $O(M)$ / point | collapses at once | none (0.00%) | none |
+| Multi-axis OR vote | $3 \times O(M)$ | collapses at once | nearly none (0.06%) | none |
+| Signed distance / winding number | $O(M)$ / point, large constant | survives | none | distance to the wall for free |
+
+Two things come out of the table. First, removing the axis-aligned degeneracy by changing the test itself is cheaper and more certain than casting more rays. Second, if the STL is not closed, every parity-based method collapses. A single hole turns the whole interior into fluid. A winding number or a signed distance still gives an answer in that case, but the constant cost is much higher. In practice the choice is parity, with the STL closed up first.
+
+## $q$ appears where a link is cut
+
+By this point every voxel carries F (fluid), B (boundary), or S (solid). LBM needs one more stage. An LBM solver does not only use values at voxel centers, it streams distribution functions to neighbors along **links**. D2Q9 has 8 of them, D3Q27 has 26. What the wall cuts is not the voxel but the link.
+
+For each link of a boundary voxel, an intersection point $I$ with the surface is placed. If several intersections exist, the one nearest the voxel center is used. The fractional distance to that point is $q$.
+
+$$
+q_i = \frac{\left| \mathbf{x}_I - \mathbf{x}_f \right|}{\left| \mathbf{e}_i \right| \Delta x}, \qquad 0 \le q_i < 1
+$$
+
+$\mathbf{x}_f$ is the fluid voxel center, $\mathbf{e}_i$ is the lattice direction vector, and $\Delta x$ is the voxel size. The key point is that $q_i$ differs from direction to direction.
+
+<BoundaryLinkCutDial />
+
+Turn the wall angle from 0° toward 45° and the eight $q$ bars start sliding out of step with one another. Push the offset and the bars slide continuously while the voxel class labels jump like stairs. Watch the orange B voxels turn into gray G as the offset grows.
+
+Ignoring $q$ and fixing it at $0.5$ everywhere is the standard half-way bounce-back. It is the shortest to implement, but the wall snaps to the lattice instead of sitting on the real surface. On curved surfaces a staircase error remains, and the convergence order drops from second to first. Interpolated bounce-back, which uses $q$, builds the value coming back from the wall like this.
+
+$$
+f_{\bar{i}}(\mathbf{x}_f, t + \Delta t) = \frac{1}{1 + q} \left[ 2 q \, f_i^{\star}(\mathbf{x}_f) + (1 - 2q) \, f_i^{\star}(\mathbf{x}_f - \mathbf{e}_i \Delta t) \right]
+$$
+
+$f^\star$ is the post-collision distribution function and $\bar{i}$ is the direction opposite to $i$. Put $q = 0.5$ in and the second term vanishes, which returns the half-way rule. So $q$ is the generalization that holds half-way as a special case. Using this interpolation requires the earlier stage to store $q$ for every link. That is why the triangle addresses were carried along at the SAT stage instead of being thrown away.
+
+## Why boundary voxels with no fluid neighbor get deleted
+
+The original procedure has one more rule that is easy to miss. If a B voxel has no link at all connecting it to an F voxel, that B is deleted. The vacated spot becomes a ghost (G) voxel.
+
+The reason is definition, not computational cost. Bounce-back is the operation of sending back a distribution function that came from the fluid. With nothing coming in, there is nothing to send back. Imposing a boundary condition on such a voxel puts uninitialized garbage onto the streaming step after step.
+
+The order of deletion matters too. Once a B has been deleted, the neighbor that was connected to it sees a severed link. The source document says to take the center of the deleted B as the intersection point $I$ in that case. It becomes a link with $q = 1$. Without this handling, undefined links are left behind right after the deletion.
+
+Finally, any F voxel holding at least one intersection point $I$ is promoted to FB. The boundary loop in the actual computation runs over that FB set. F does pure streaming, FB does streaming plus interpolated bounce-back, B supplies values, and G drops out entirely. Four classes, four different kernels. Sorting the classes up front pays off the same way when extensions such as [rescaling the non-equilibrium part](/en/posts/2026-09-02-lbm-amr-nonequilibrium-rescale/) or [adding an energy distribution function](/en/posts/2026-09-04-lbm-double-distribution-prandtl/) go on top. Holding lists instead of deciding the branch every step is the basic LBM strategy.
+
+## How a voxel earns its name
+
+Retracing how one STL becomes a grid, there were four decisions. Does the octree node touch the surface (SAT, 13 axes)? Is an untouched node inside or outside (ray parity)? Is the link cut (sign change)? Is the cut voxel connected to fluid (link count)?
+
+The one that fails most quietly is the second. Mistakes in the first and third visibly wreck the picture, but a voxel with flipped parity sits in a single line inside the geometry and hardly shows up in a contour plot. A flow rate that is off by a few percent can pass validation that way.
+
+So the first thing to do with a new geometry is to match the F and S counts against the analytic volume. Halving the voxel size and checking that the $F$ count grows eightfold is the next step. If that disagrees, there is no reason to run the solver. The grid is already holding a different geometry.

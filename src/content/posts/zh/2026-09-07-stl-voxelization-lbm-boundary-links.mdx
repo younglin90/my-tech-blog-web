@@ -1,0 +1,211 @@
+---
+title: "1,681个体素中有27个把内外判反了 —— STL体素化的奇偶判定与链接切断"
+date: 2026-09-07
+description: "把一个STL文件变成LBM体素网格,要经过八叉树剪枝、SAT相交判定、射线奇偶内外判定和链接切断的q这四个步骤,本文用代码逐一验证。"
+tags: ["Voxelization", "Mesh-Generation", "Computational-Geometry", "LBM", "Bounce-Back"]
+locale: zh
+slug: 2026-09-07-stl-voxelization-lbm-boundary-links
+takeaway: "射线奇偶判定会在一个顶点上翻转。增加射线方向只是权宜之计,真正的解法是把区间收成半开区间。"
+draft: false
+---
+
+import { OctreeVoxelSatClassifier } from '@/components/post-viz/2026-09-07-stl-voxelization-lbm-boundary-links/OctreeVoxelSatClassifier'
+import { BoundaryLinkCutDial } from '@/components/post-viz/2026-09-07-stl-voxelization-lbm-boundary-links/BoundaryLinkCutDial'
+
+## 输入只有一个STL文件和一个体素尺寸
+
+把几何形状交给格子玻尔兹曼(LBM)求解器时,手里只有两样东西:一个记录三角形表面的STL文件,以及体素边长这一个数。可是要输出的东西多得多。每个体素是流体、固体还是边界;若是边界,它与邻居之间的连线中哪几条被壁面切断;被切断的话,到壁面的距离比例是多少。
+
+本文把这个转换拆成四个阶段。用八叉树缩小候选,用分离轴定理判定相交,用射线的奇偶区分内外,再在连线上打出交点。每个阶段实际会在哪里出问题,也一并看清楚。最后一个阶段得到的那个 $q$ 值,直接决定边界条件的精度。
+
+## 每个体素都去检查全部三角形,代价会乘起来
+
+最朴素的做法是对每个体素都与全部三角形做一次相交检查。体素有 $N^3$ 个、三角形有 $M$ 个,检查次数就是 $N^3 M$。取 $N = 256$、$M = 200{,}000$,那就是 $3.4 \times 10^{12}$ 次。一天之内跑不完。
+
+八叉树(octree,把空间递归八分的树)能斩断这个乘积。先从一个根节点开始,建立压在该节点上的三角形列表。列表非空就生成8个子节点,每个子节点**只重新检查父节点的那份列表**。列表变空就在那里停下。
+
+停下的节点最要紧。它意味着内部没有任何表面,所以这个节点要么整块是流体,要么整块是固体。判定一次就够。检查成本于是从跟着体积走,变成跟着**表面积**走。
+
+在下面的模拟里亲手操作一下。
+
+<OctreeVoxelSatClassifier />
+
+把八叉树层级滑块从3拉到7,橙色的边界体素壳会变薄、数量变多,而绿色柱子(树实际执行的SAT检查次数)几乎不增长。因为单元总数每升一级变成4倍,构成壳层的单元却只变成2倍。
+
+## 分离轴定理只看三条轴
+
+判定节点与三角形是否重叠,用的是分离轴定理(Separating Axis Theorem, SAT)。若两个凸物体不相交,必定存在一条能把它们分开的轴。反过来说,把候选轴全部检查一遍都分不开,那这两个物体就是重叠的。
+
+在2D里,线段与轴对齐盒子的候选轴有三条:盒子的 $x$ 轴、盒子的 $y$ 轴,以及线段的法线。法线轴上的判定写成这样。
+
+$$
+\left| \mathbf{n} \cdot (\mathbf{p}_0 - \mathbf{c}) \right| > h_x |n_x| + h_y |n_y|
+$$
+
+$\mathbf{n}$ 是线段法线,$\mathbf{p}_0$ 是线段的一个端点,$\mathbf{c}$ 是盒子中心,$h_x, h_y$ 是盒子的半边长。不等式成立就说明这条轴把两者分开了,检查立刻结束。
+
+3D里三角形与盒子的候选轴有13条:盒子的面法线3条,三角形的面法线1条,以及两者棱方向叉乘得到的9条。13次点积比较就能收工,这正是在这个位置选用SAT的理由。提前退出很容易命中,平均成本远低于13。
+
+相交的节点成为边界(B)体素。此时要把压在该节点上的三角形地址一并存下来。之后在连线上打表面交点时,还要再用这份列表。
+
+## 分开内外的是相交次数的奇偶
+
+剩下的是表面没有碰到的那些节点。它们要么全是流体,要么全是固体,而到底是哪一种,得看整个形状才知道。
+
+经典答案是若尔当曲线定理。从点沿任意方向射出一条射线,数它与表面相交的次数。奇数在内部,偶数在外部。只要表面是封闭的,方向随便选都行。实现也很短,每个三角形做一次射线-三角形求交即可。
+
+麻烦在于射线正好穿过三角形的棱或顶点的时候。那个位置由两个三角形共享,相交可能被数成2次,奇偶就翻了过来。而且这种情况一点也不罕见。体素中心规则地排在网格上,从CAD导出的STL,其顶点也常常精确落在网格坐标上。两套规则网格碰在一起,轴对齐的射线就会频繁地穿过顶点。
+
+原始文档写的“$x, y, z$ 三个方向中只要有一个方向是奇数就算内部”,正是针对这个风险的防备。逻辑是一个方向失手,还有其余方向兜住。到底能兜住多少,我数了一遍。
+
+## 用Python数了数被判反的体素
+
+降到2D,把一个菱形放进41×41的网格。它的顶点在 $(\pm 1, 0)$ 和 $(0, \pm 1)$,正好落在网格中心线 $y = 0$ 与 $x = 0$ 上。在同一套网格上比较闭区间判定(含两端点)和半开区间判定(只含一端)。
+
+```python
+# 菱形(让顶点正好落在网格中心线上)
+def diamond_poly(r=1.0):
+    return [(r, 0.0), (0.0, r), (-r, 0.0), (0.0, -r)]
+
+def edges_of(poly):
+    return [(poly[i], poly[(i + 1) % len(poly)]) for i in range(len(poly))]
+
+# 常用的“闭区间”判定 —— 顶点会被数两次
+def naive_crossings(px, py, poly, axis):
+    n = 0
+    for (x1, y1), (x2, y2) in edges_of(poly):
+        if axis == 'x':
+            a, b, c1, c2 = y1, y2, x1, x2
+            p, q = py, px
+        else:
+            a, b, c1, c2 = x1, x2, y1, y2
+            p, q = px, py
+        if a == b:
+            continue
+        if min(a, b) <= p <= max(a, b):          # 两端都含 -> 顶点重复
+            t = (p - a) / (b - a)
+            if c1 + t * (c2 - c1) > q:
+                n += 1
+    return n
+
+# 半开区间判定 —— 顶点恰好只数一次
+def halfopen_crossings(px, py, poly, axis):
+    n = 0
+    for (x1, y1), (x2, y2) in edges_of(poly):
+        if axis == 'x':
+            a, b, c1, c2 = y1, y2, x1, x2
+            p, q = py, px
+        else:
+            a, b, c1, c2 = x1, x2, y1, y2
+            p, q = px, py
+        if (a > p) != (b > p):                    # [a, b) 半开区间
+            t = (p - a) / (b - a)
+            if c1 + t * (c2 - c1) > q:
+                n += 1
+    return n
+
+def cell_centers(n, lo=-1.5, hi=1.5):
+    h = (hi - lo) / n
+    return [lo + (i + 0.5) * h for i in range(n)], h
+
+def truth_inside(px, py, r=1.0):
+    return abs(px) + abs(py) < r                  # 菱形的解析判定
+
+def sweep_axes(n=41):
+    xs, h = cell_centers(n)
+    poly = diamond_poly()
+    bad = {'x-only': 0, 'y-only': 0, 'x-or-y': 0, 'half-open': 0}
+    for py in xs:
+        for px in xs:
+            ref = truth_inside(px, py)
+            ox = naive_crossings(px, py, poly, 'x') % 2 == 1
+            oy = naive_crossings(px, py, poly, 'y') % 2 == 1
+            hx = halfopen_crossings(px, py, poly, 'x') % 2 == 1
+            bad['x-only'] += (ox != ref)
+            bad['y-only'] += (oy != ref)
+            bad['x-or-y'] += ((ox or oy) != ref)
+            bad['half-open'] += (hx != ref)
+    return bad, len(xs) ** 2, h
+
+bad, total, h = sweep_axes(41)
+print(f"grid 41x41, voxel size h = {h:.5f}, cells tested = {total}")
+for k, v in bad.items():
+    print(f"  {k:10s} misclassified {v:4d}  ({100*v/total:.2f}%)")
+
+poly = diamond_poly()
+for (px, py, tag) in [(0.0, 0.0, 'center'), (0.0, 0.9146, 'just above'), (-1.2, 0.0, 'outside left')]:
+    cx = naive_crossings(px, py, poly, 'x')
+    cy = naive_crossings(px, py, poly, 'y')
+    hx = halfopen_crossings(px, py, poly, 'x')
+    print(f"{tag:12s} ({px:+.4f},{py:+.4f})  closed x={cx} y={cy} | half-open x={hx} | truth={'IN' if truth_inside(px,py) else 'OUT'}")
+```
+
+```text
+grid 41x41, voxel size h = 0.07317, cells tested = 1681
+  x-only     misclassified   27  (1.61%)
+  y-only     misclassified   27  (1.61%)
+  x-or-y     misclassified    1  (0.06%)
+  half-open  misclassified    0  (0.00%)
+center       (+0.0000,+0.0000)  closed x=2 y=2 | half-open x=1 | truth=IN
+just above   (+0.0000,+0.9146)  closed x=1 y=2 | half-open x=1 | truth=IN
+outside left (-1.2000,+0.0000)  closed x=4 y=0 | half-open x=2 | truth=OUT
+```
+
+只用一条轴时,1,681个体素里有27个被判反。它们全部落在 $y = 0$ 这一行,而且本来都在内部。射线穿过顶点 $(1, 0)$,相交被数成2而不是1,奇偶翻转,于是变成了“外部”。
+
+把两条轴用OR并起来,误判从27个降到1个。原始文档的规则确实起作用。剩下的那1个是原点 $(0,0)$。$x$ 方向的射线和 $y$ 方向的射线各自都穿过了顶点,两边都给出偶数。靠增加方向来兜底的做法,局限在这里露了出来。到3D里 $z$ 轴能救下这个点,但要构造出三条轴同时失手的形状也并不难。
+
+最后一行才是真正的解法。把区间从 `min <= p <= max` 换成 `(a > p) != (b > p)`,误判就归零了。这是强制只在下端点处计入顶点的半开区间规则。射出三个方向的开销也一并省掉。
+
+## 把四种判定放进同一张表
+
+| 方法 | 代价 | 非封闭表面 | 轴对齐退化 | 附带收益 |
+|---|---|---|---|---|
+| 射线奇偶,闭区间 | $O(M)$ / 点 | 立即崩溃 | 翻转 (1.61%) | 无 |
+| 射线奇偶,半开区间 | $O(M)$ / 点 | 立即崩溃 | 无 (0.00%) | 无 |
+| 多轴OR投票 | $3 \times O(M)$ | 立即崩溃 | 几乎没有 (0.06%) | 无 |
+| 符号距离 / 缠绕数 | $O(M)$ / 点,常数很大 | 扛得住 | 无 | 顺带给出到壁面的距离 |
+
+从表里要读出两件事。第一,消除轴对齐退化,改判定方式比多射几条射线更便宜也更可靠。第二,STL只要不封闭,奇偶这一系全线垮掉。一个孔洞就能把整个内部变成流体。缠绕数(winding number)和符号距离在这种情况下仍能给出答案,但常数开销大得多。工程上的选择是继续用奇偶,先把STL补封闭。
+
+## 链接被切断的地方长出 $q$
+
+走到这里,每个体素都有了F(流体)、B(边界)、S(固体)的标签。但LBM还需要多一个阶段。因为LBM用的不只是体素中心的值,它要沿着**连线**把分布函数推送到邻居。D2Q9有8条,D3Q27有26条。壁面切断的不是体素,而是这些连线。
+
+对边界体素的每条连线,打出它与表面的交点 $I$。交点有多个时,取离体素中心最近的那个。到该点的距离比例就是 $q$。
+
+$$
+q_i = \frac{\left| \mathbf{x}_I - \mathbf{x}_f \right|}{\left| \mathbf{e}_i \right| \Delta x}, \qquad 0 \le q_i < 1
+$$
+
+$\mathbf{x}_f$ 是流体体素中心,$\mathbf{e}_i$ 是格子方向向量,$\Delta x$ 是体素尺寸。关键在于 $q_i$ 会随方向而变。
+
+<BoundaryLinkCutDial />
+
+把壁面角度从0°转到45°附近,八个方向的 $q$ 柱状条会开始彼此错开。推动offset时柱条连续滑动,可是体素的等级标签像台阶一样跳变。偏移量继续加大时,橙色的B体素会变成灰色的G,这也是一个观察点。
+
+无视 $q$、把它一律取作 $0.5$,就是标准的half-way bounce-back。实现最短,但壁面位置被吸附到网格上,而不是落在真实表面上。曲面上会残留阶梯误差,收敛阶从二阶掉到一阶。用上 $q$ 的插值bounce-back,把从壁面返回的值这样构造。
+
+$$
+f_{\bar{i}}(\mathbf{x}_f, t + \Delta t) = \frac{1}{1 + q} \left[ 2 q \, f_i^{\star}(\mathbf{x}_f) + (1 - 2q) \, f_i^{\star}(\mathbf{x}_f - \mathbf{e}_i \Delta t) \right]
+$$
+
+$f^\star$ 是碰撞刚结束时的分布函数,$\bar{i}$ 是 $i$ 的反方向。代入 $q = 0.5$,第二项消失,退回half-way规则。也就是说 $q$ 是把half-way包含为特例的推广。要用这个插值,前一阶段就必须为每条链接存下 $q$。这正是在SAT阶段没有扔掉三角形地址、而是一路带过来的原因。
+
+## 没有流体邻居的边界体素为什么要删掉
+
+原始流程里还有一条不太显眼的规则。B体素当中,如果一条通向F体素的连线都没有,就把这个B删掉。删掉的位置变成幽灵(G)体素。
+
+理由不是计算量,而是定义。bounce-back是把来自流体的分布函数送回去的操作。没有进来的分布函数,也就没有什么可送回。给这样的体素施加边界条件,只会让初始化后的垃圾值在每一步流动中被带出去。
+
+删除的顺序同样重要。先把B删掉之后,原本与它相连的邻居就等于断了一条链接。原始文档规定,这种情况下把被删除的B的中心点直接当作交点 $I$。相当于得到一条 $q = 1$ 的链接。没有这道处理,删除之后会留下未定义的链接。
+
+最后,F体素中只要拥有一个交点 $I$ 的就升格为FB。实际计算里,边界处理循环遍历的正是这个FB集合。F只做流动,FB做流动 + 插值bounce-back,B充当值的提供者,G则完全退出。四个等级各走各的核函数。事先把等级分好,理由在叠加[非平衡部分的重标度](/zh/posts/2026-09-02-lbm-amr-nonequilibrium-rescale/)或[增加能量分布函数](/zh/posts/2026-09-04-lbm-double-distribution-prandtl/)这类扩展时也是一样的。不在每一步现场判断分支,而是把它们攥成列表,这是LBM的基本策略。
+
+## 一个体素怎样得到自己的名字
+
+回头梳理一个STL变成网格的过程,判定一共有四次:八叉树节点是否碰到表面(SAT的13条轴),没碰到的节点在内还是在外(射线奇偶),连线是否被切断(符号变化),被切的体素是否与流体相连(链接条数)。
+
+错得最安静的是第二次。第一次和第三次一旦出错,图像会明显崩坏;而奇偶翻转的体素排成一列嵌在形状内部,看云图很难发现。流量偏了百分之几,却照样通过了验证,这种事是有的。
+
+所以放进新形状后第一件要做的事,是把F和S的数量与解析体积对上。再把体素尺寸减半,确认 $F$ 的数量是否变成8倍。这里对不上就没有理由启动求解器。因为网格里装着的已经是另一个形状了。
