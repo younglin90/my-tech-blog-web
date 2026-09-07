@@ -1,0 +1,214 @@
+---
+title: "A 9% Smaller Drag Coefficient Left the Droplet 35% Slower — Where the Distortion and Vaporization Corrections Attach"
+date: 2026-09-08
+description: "Three drag-coefficient models — rigid sphere, TAB distortion, and Renksizbulut-Yuen vaporization — run on the same droplet and compared by penetration."
+tags: ["Droplet-Drag", "Atomization", "TAB-Model", "Evaporation", "Multiphase"]
+locale: en
+slug: 2026-09-08-droplet-drag-deformation-vaporization
+takeaway: "Vaporization trims $C_D$, but the deceleration rides on $C_D/d$. The moment the diameter starts shrinking, the coefficient you saved comes right back."
+draft: false
+---
+
+import { DistortionDragOscillator } from '@/components/post-viz/2026-09-08-droplet-drag-deformation-vaporization/DistortionDragOscillator'
+import { VaporBlowingDragRace } from '@/components/post-viz/2026-09-08-droplet-drag-deformation-vaporization/VaporBlowingDragRace'
+
+## In 1983, the drag coefficient refused to match a burning droplet
+
+Renksizbulut and Yuen measured the drag on droplets vaporizing inside a hot gas stream. The measured drag came out consistently lower than the sphere correlation predicted. It stayed lower even while the droplets held a spherical shape. The vapor leaving the surface was pushing the boundary layer outward.
+
+The opposite mismatch was being reported around the same time. A droplet in a fast stream flattens, and a flattened droplet drags harder than a sphere. That is the branch O'Rourke and Amsden packaged as the TAB model in 1987.
+
+So the droplet drag coefficient in a spray code is usually three layers deep. One sphere correlation gets multiplied by one distortion correction and one vaporization correction. This post peels the three layers apart and measures how far each one moves the trajectory under identical conditions. The punchline first: the model that trims the coefficient the most is the one that stops first.
+
+## Three correlations patch the same spot in different ways
+
+The starting point is the drag coefficient of a spherical droplet. A Schiller–Naumann style correlation does the job.
+
+$$C_{D,\mathrm{sph}} = \frac{24}{Re}\left(1 + \tfrac{1}{6} Re^{2/3}\right), \qquad Re < 1000$$
+
+$Re = \rho_g u_{\mathrm{rel}} d / \mu_g$ is the Reynolds number built from droplet diameter and relative velocity. The leading $24/Re$ is Stokes drag, and the bracket is the inertial correction.
+
+The two corrections bolted onto it have opposite characters.
+
+| Correction | Multiplying factor | Direction | Basis |
+|---|---|---|---|
+| None (sphere) | $1$ | — | Rigid sphere, no surface mass transfer |
+| TAB distortion | $1 + 2.632\,y$ | drag **up** | Frontal area grows |
+| Vaporization (R–Y) | $(1+B_M)^{-0.2}$ | drag **down** | Vapor pushes the boundary layer out |
+
+$y$ is the dimensionless distortion of the TAB model. $y = 0$ is a sphere, $y = 1$ is the breakup criterion. $B_M$ is the Spalding mass transfer number (the vapor mass fraction difference between surface and far field, non-dimensionalized), the same number covered in [the evaporation source term and the $d^2$ law](/en/posts/2026-07-30-evaporation-source-term-d2-law-lee-model/).
+
+Try growing the distortion by hand below.
+
+<DistortionDragOscillator />
+
+Raise the relative velocity and the diameter, and the droplet flattens into a disc while the coefficient bar climbs past the gray sphere value. Watch how far the actual $y$ overshoots the dashed steady-state $y_{ss}$.
+
+## Distortion rides on the coefficient, not on the frontal area
+
+TAB treats the droplet as a damped harmonic oscillator. Gas dynamic pressure pushes, surface tension pulls back, liquid viscosity damps.
+
+$$
+\frac{d^2 y}{dt^2} = \frac{C_F}{C_b}\frac{\rho_g u_{\mathrm{rel}}^2}{\rho_l r^2}
+- \frac{C_k \sigma}{\rho_l r^3} y
+- \frac{C_d \mu_l}{\rho_l r^2}\frac{dy}{dt}
+$$
+
+$r$ is droplet radius, $\sigma$ is surface tension, $\mu_l$ is liquid viscosity. The constants used are $C_F = 1/3$, $C_k = 8$, $C_d = 5$, $C_b = 1/2$. How this equation is pushed all the way to breakup is covered in [the Weber number and TAB breakup](/en/posts/2026-07-07-tab-droplet-breakup-weber/).
+
+Setting every derivative to zero gives the steady distortion.
+
+$$y_{ss} = \frac{C_F}{C_b C_k}We_r = \frac{We_r}{12}, \qquad We_r = \frac{\rho_g u_{\mathrm{rel}}^2 r}{\sigma}$$
+
+Here is one spot practitioners get wrong all the time. Plenty of codes feed $y_{ss}$ straight into the drag correction. But this oscillator is barely damped. The damping ratio of a 40 μm n-heptane droplet is on the order of $10^{-2}$. Starting from rest, $y$ sails past $y_{ss}$ and climbs to nearly twice that value.
+
+In other words, drag computed from the steady-state value is only half of what the first oscillation actually delivers. The problem is not the coefficient but the moment at which the coefficient is read.
+
+## Vaporization pushes the boundary layer out and trims the coefficient
+
+The Renksizbulut–Yuen correlation handles vaporization as a multiplicative correction.
+
+$$C_D = \frac{24}{Re}\left(1 + 0.2\,Re^{0.63}\right)(1+B_M)^{-0.2}$$
+
+The exponent $-0.2$ is small. At $B_M = 0.6$ the factor is $0.91$; at $B_M = 2$ it is $0.80$. Even a fiercely burning droplet only sheds about 20% of its coefficient.
+
+The mechanism is the same as film theory. The vapor flux leaving the surface thickens the boundary layer. The velocity gradient flattens, wall shear drops, and drag falls. The Nusselt number for heat transfer picks up a correction of the same form.
+
+## Firing four droplets from the same nozzle in Python
+
+One droplet is fired into quiescent gas and tracked for 1 ms. The governing equation is one-dimensional.
+
+$$\frac{du_d}{dt} = -\frac{3}{4}\frac{\rho_g}{\rho_l}\frac{C_D}{d}\,u_d|u_d|$$
+
+The four cases differ only in the drag coefficient. A is the sphere, B is the sphere times TAB distortion, C is the vaporization correction alone, and D adds $d^2$ law shrinkage on top of the vaporization correction.
+
+```python
+import math
+
+RHO_G, MU_G = 4.98, 3.3e-5      # air at 700 K, 10 bar
+RHO_L, SIG, MU_L = 620.0, 0.0145, 3.0e-4   # n-heptane
+D0, U0 = 40e-6, 25.0            # post-breakup droplet, injection velocity
+K_EVAP = 1.0e-6                 # d^2 law constant [m^2/s]
+CF, CK, CD_T, CB = 1.0 / 3.0, 8.0, 5.0, 0.5   # TAB constants
+
+def cd_sphere(re):
+    if re < 1e-8:
+        return 0.0
+    return 24.0 / re * (1.0 + re ** (2.0 / 3.0) / 6.0) if re < 1000.0 else 0.424
+
+def cd_distorted(re, y):
+    return cd_sphere(re) * (1.0 + 2.632 * max(0.0, min(1.0, y)))
+
+def cd_blowing(re, bm):
+    if re < 1e-8:
+        return 0.0
+    return 24.0 / re * (1.0 + 0.2 * re ** 0.63) * (1.0 + bm) ** -0.2
+
+def tab_oscillate(y, ydot, u, d, dt):
+    r = 0.5 * d
+    acc = (CF / CB) * RHO_G * u * u / (RHO_L * r * r) \
+        - (CK * SIG / (RHO_L * r ** 3)) * y \
+        - (CD_T * MU_L / (RHO_L * r * r)) * ydot
+    ydot += acc * dt
+    y += ydot * dt
+    return y, ydot
+
+def run_droplet(law, evaporating, bm=0.6, t_end=1.0e-3, dt=5e-8):
+    u, x, d, t = U0, 0.0, D0, 0.0
+    y, ydot, ymax = 0.0, 0.0, 0.0
+    cd_sum, cd0, n = 0.0, None, 0
+    while t < t_end and u > 1e-6:
+        re = RHO_G * u * d / MU_G
+        if law == 'sphere':
+            cd = cd_sphere(re)
+        elif law == 'tab':
+            y, ydot = tab_oscillate(y, ydot, u, d, dt)
+            ymax = max(ymax, y)
+            cd = cd_distorted(re, y)
+        else:
+            cd = cd_blowing(re, bm)
+        if cd0 is None:
+            cd0 = cd
+        cd_sum += cd
+        n += 1
+        u += -0.75 * RHO_G * cd * u * u / (RHO_L * d) * dt
+        x += u * dt
+        if evaporating:
+            d = math.sqrt(max(1e-18, d * d - K_EVAP * dt))
+        t += dt
+    return dict(x_mm=x * 1e3, u=u, d_um=d * 1e6, cd0=cd0,
+                cd_mean=cd_sum / n, ymax=ymax)
+
+CASES = [
+    ('A sphere            ', 'sphere', False),
+    ('B sphere x TAB      ', 'tab', False),
+    ('C blowing (B_M=0.6) ', 'blow', False),
+    ('D blowing + d2-law  ', 'blow', True),
+]
+
+print('Re0 = %.0f   We_r = %.2f   t = 1.0 ms' %
+      (RHO_G * U0 * D0 / MU_G, RHO_G * U0 * U0 * 0.5 * D0 / SIG))
+print('case                  Cd(t=0)  <Cd>    u(1ms)   x(1ms)   d(1ms)')
+base = None
+for name, law, ev in CASES:
+    r = run_droplet(law, ev)
+    if base is None:
+        base = r
+    print('%s  %6.3f  %6.3f  %6.2f   %6.3f   %5.1f  (%+.1f%% x)' %
+          (name, r['cd0'], r['cd_mean'], r['u'], r['x_mm'], r['d_um'],
+           100.0 * (r['x_mm'] / base['x_mm'] - 1.0)))
+
+tab = run_droplet('tab', False)
+print('TAB peak distortion y_max = %.3f  ->  Cd multiplier %.2fx' %
+      (tab['ymax'], 1.0 + 2.632 * tab['ymax']))
+```
+
+```text
+Re0 = 151   We_r = 4.29   t = 1.0 ms
+case                  Cd(t=0)  <Cd>    u(1ms)   x(1ms)   d(1ms)
+A sphere               0.910   1.708    3.36    9.261    40.0  (+0.0% x)
+B sphere x TAB         0.910   2.233    2.66    7.490    40.0  (-19.1% x)
+C blowing (B_M=0.6)    0.828   1.537    3.68    9.732    40.0  (+5.1% x)
+D blowing + d2-law     0.828   2.096    2.18    8.868    24.5  (-4.3% x)
+TAB peak distortion y_max = 0.632  ->  Cd multiplier 2.66x
+```
+
+The distortion correction cuts penetration by 19.1%, because the coefficient climbs to 2.66 times its base value during the first oscillation. The vaporization correction alone does the reverse and adds 5.1%. So far everything follows the sign of each correlation.
+
+## Why the lowest coefficient stopped first
+
+Case D is the problem. It uses the **same** drag coefficient expression as C. Its initial coefficient is also 0.828. Yet after 1 ms its velocity is 2.18 m/s, the lowest of the four. That is 35% slower than the 3.36 m/s of case A.
+
+Reading the deceleration equation again gives the answer. The right-hand side carries $C_D/d$. While the drag coefficient was trimmed by 9%, the diameter fell from 40 μm to 24.5 μm, a 39% drop. The divisor moved far more than the numerator.
+
+Physically it works out like this. Drag scales with area ($d^2$) and inertia scales with mass ($d^3$). The ratio goes as $1/d$. The drier the droplet gets, the more deceleration the same drag produces. It is the same statement as the response time $\tau_d \simeq \rho_l d^2 / 18\mu_g$ shrinking with $d^2$.
+
+$$\frac{a}{m} \propto \frac{d^2}{d^3} = \frac{1}{d}$$
+
+Vaporization therefore lowers the drag coefficient and amplifies the deceleration at the same time. The first effect is chained to a $-0.2$ exponent; the second acts directly on the diameter. Integrate for even a short while and the second one wins.
+
+Fire all four droplets from the same nozzle below.
+
+<VaporBlowingDragRace />
+
+Raise $B_M$ and lane C pulls ahead of the gray sphere. From that state, raise $K$ and only lane D — which uses the identical coefficient — falls behind. Set $K = 0$ and D lands exactly on top of C, so the two effects separate in a single move.
+
+## Which correlation to switch on, and when
+
+| Situation | Distortion correction | Vaporization correction | Reason |
+|---|---|---|---|
+| $We_r < 0.5$, cold | off | off | $y_{ss} < 0.04$, correction under 4% |
+| Diesel spray near field | **on** | on | Relative velocity peaks, distortion dominates |
+| Spray far field | off | **on** | $We$ falls after deceleration, only vaporization remains |
+| Solid particles | off | off | Neither distortion nor mass transfer |
+| Near the critical point | off | caution | $\sigma \to 0$, TAB meaningless · $B_M$ diverges |
+
+The last row causes real trouble often enough. As surface tension goes to zero the restoring term of TAB disappears and $y$ diverges. In that regime the distortion correction has to be switched off in favor of a diffuse-interface model.
+
+If the drag still refuses to match while $We$ is comfortably low, the place to look is not the corrections. Near a wall it can be a case like [the drag crisis and boundary layer separation](/en/posts/2026-06-09-drag-crisis-boundary-layer-separation/), where $Re$ itself has left the valid range of the correlation.
+
+## Change one correlation and the whole validation case moves
+
+Penetration in this calculation swung between -19.1% and +5.1%. The mesh, the time step, and the turbulence model were never touched. Switching two dimensionless factors on a single droplet on and off was the whole experiment.
+
+That is why tightening the mesh first, when a spray validation disagrees with experiment, is out of order. Check what the drag coefficient expression is, what values of $y$ and $B_M$ go into it, and whether $y$ came from the steady state or from an integrated oscillation. If the diameter is shrinking in time, print $C_D/d$ rather than $C_D$. Looking at the coefficient alone will never reveal why the droplet stopped first.
