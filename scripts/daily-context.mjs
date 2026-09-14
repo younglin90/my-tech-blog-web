@@ -61,9 +61,12 @@ if (all.length === 0) {
 
 const yaml = readFileSync('source-docs/index.yaml', 'utf-8')
 const lastUsed = new Map()
+const usedSections = new Map()
 let key = null
 for (const line of yaml.split('\n')) {
-  const k = line.match(/^ {2}"(.+?)":\s*(?:"(\d{4}-\d{2}-\d{2})")?\s*$/) // 신·구 스키마 모두
+  // 키는 따옴표가 있을 수도("a/b.md":) 없을 수도(a/b.md:) 있다. 둘 다 받는다.
+  // 따옴표를 강제하면 구 스키마 60여 항목이 통째로 '미사용'으로 잘못 뜬다.
+  const k = line.match(/^ {2}"?(.+?\.md)"?:\s*(?:"(\d{4}-\d{2}-\d{2})")?\s*$/)
   if (k) {
     key = k[1]
     if (k[2]) lastUsed.set(key, Date.parse(k[2]))
@@ -71,6 +74,8 @@ for (const line of yaml.split('\n')) {
   }
   const d = line.match(/date:\s*"(\d{4}-\d{2}-\d{2})"/)
   if (key && d) lastUsed.set(key, Math.max(lastUsed.get(key) ?? 0, Date.parse(d[1])))
+  const s = line.match(/^\s*sections:\s*\[(.+)\]\s*$/)
+  if (key && s) usedSections.set(key, (usedSections.get(key) ?? []).concat(s[1]))
 }
 const today = Date.parse(DATE)
 const scored = all
@@ -82,9 +87,11 @@ const pick = cand[Math.floor(Math.random() * cand.length)]
 const age = (u) => (u ? `${Math.round((today - u) / 864e5)}일 전` : '미사용')
 console.log(`\nPICK  ${pick.p}  (${age(pick.used)}, ${statSync(pick.p).size}B)`)
 console.log('ALT   ' + cand.filter((c) => c !== pick).slice(0, 4).map((c) => `${c.p.split('/').pop()} [${age(c.used)}]`).join(' | '))
+const pickedSecs = usedSections.get(pick.p.replace('source-docs/', ''))
+if (pickedSecs) console.log(`      이미 읽은 섹션(제외할 것): ${pickedSecs.join(' ')}`)
 
-// ── 3. 최근 10개 포스트 (중복 방지용 압축 컨텍스트) ───────────────────────────
-const recent = koFiles
+// ── 3. 전체 포스트 메타 (주제 중복 판정용) ────────────────────────────────────
+const allPosts = koFiles
   .map((n) => {
     const t = readFileSync(join(POSTS, 'ko', n), 'utf-8')
     const f = (re) => (t.match(re) ?? [])[1] ?? ''
@@ -92,6 +99,7 @@ const recent = koFiles
       date: f(/^date:\s*(\S+)/m),
       title: f(/^title:\s*"(.+)"/m),
       tags: f(/^tags:\s*(.+)$/m),
+      slug: f(/^slug:\s*(.+)$/m),
       secs: [...t.matchAll(/^## (.+)$/gm)].map((m) => m[1]),
       viz: [...new Set([...t.matchAll(/<([A-Z][A-Za-z0-9]+)\s*\/?>/g)].map((m) => m[1]))],
       sigs: [...new Set([...t.matchAll(/^(?:class|def) ([A-Za-z_][A-Za-z_0-9]*)/gm)].map((m) => m[1]))],
@@ -100,7 +108,41 @@ const recent = koFiles
   })
   .filter((r) => r.date)
   .sort((a, b) => (a.date < b.date ? 1 : -1))
-  .slice(0, 10)
+
+// 소스 파일명·폴더에서 뽑은 토큰이 과거 포스트 제목/태그/slug에 몇 개나 박혀 있는지 센다.
+// 목적은 정확도가 아니라 "이 소재 이미 썼을지도" 신호 하나를 공짜로 주는 것.
+const STOP = new Set(['정리', '만들기', '방법', '문서', '노트', '자료', '내용', '대한', '위한', '기본', 'the', 'and', 'for', 'with'])
+const tokensOf = (p) =>
+  [...new Set(
+    // 그룹 폴더명(fluid-mechanics 등)은 그날 후보 전부가 공유하므로 토큰에서 뺀다.
+    p.replace(`source-docs/${FOLDER}/`, '').replace(/\.md$/, '').split(/[^0-9A-Za-z가-힣]+/)
+      .map((w) => w.trim()).filter((w) => w.length >= 2 && !/^\d+$/.test(w) && !STOP.has(w.toLowerCase())),
+  )]
+const overlap = (p, limit) => {
+  const toks = tokensOf(p)
+  return allPosts
+    .map((r) => {
+      const hay = `${r.title} ${r.tags} ${r.slug}`.toLowerCase()
+      const hit = toks.filter((t) => hay.includes(t.toLowerCase()))
+      return { ...r, score: hit.length, hit }
+    })
+    .filter((r) => r.score > 0)
+    .sort((a, b) => b.score - a.score || (a.date < b.date ? 1 : -1))
+    .slice(0, limit)
+}
+
+console.log('\nPICK_OVERLAP (이 소재로 이미 쓴 글 — 2점 이상이면 제목·섹션을 의심하고 ALT로 옮길 것)')
+const po = overlap(pick.p, 3)
+if (po.length === 0) console.log('  없음')
+for (const r of po) console.log(`  ${r.score}점 ${r.date} ${r.title.slice(0, 60)}  [${r.hit.join(',')}]`)
+
+console.log('\nALT_OVERLAP')
+for (const c of cand.filter((c) => c !== pick).slice(0, 4)) {
+  const top = overlap(c.p, 1)[0]
+  console.log(`  ${c.p.split('/').pop()} → ${top ? `${top.score}점 ${top.date} ${top.title.slice(0, 50)}` : '겹치는 글 없음'}`)
+}
+
+const recent = allPosts.slice(0, 10)
 
 console.log('\nRECENT_POSTS (중복 금지 대상)')
 for (const r of recent) {
@@ -111,3 +153,15 @@ for (const r of recent) {
 }
 console.log(`\nUSED_VIZ  ${[...new Set(recent.flatMap((r) => r.viz))].join(', ')}`)
 console.log(`USED_SIGS ${[...new Set(recent.flatMap((r) => r.sigs))].join(', ')}`)
+
+// ── 4. 기존 태그 (새 태그는 포스트당 최대 2개 — 나머지는 여기서 고른다) ───────
+const tagCount = new Map()
+for (const r of allPosts)
+  for (const t of (r.tags.match(/"([^"]+)"/g) ?? []).map((s) => s.slice(1, -1)))
+    tagCount.set(t, (tagCount.get(t) ?? 0) + 1)
+const tagList = [...tagCount.entries()].sort((a, b) => b[1] - a[1])
+console.log(`\nEXISTING_TAGS (${tagList.length}개, 2회 이상만 표시 — 철자·대소문자 그대로 재사용)`)
+console.log('  ' + tagList.filter(([, c]) => c >= 2).map(([t, c]) => `${t}:${c}`).join(' '))
+
+// ── 5. 빌드 전제조건 (여기서 안 보면 npm run build에서 한 사이클 날린다) ──────
+console.log(`\nDEPS  node_modules ${existsSync('node_modules/katex') ? 'OK' : '없음 → npm ci 먼저 실행할 것'}`)
