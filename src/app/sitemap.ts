@@ -49,18 +49,29 @@ export default async function sitemap({ id }: SitemapProps): Promise<MetadataRou
     'x-default': `${SITE_URL}/en${path}/`,
   })
 
+  // lastmod는 "정확할 때만" 가치가 있다. 전부 오늘 날짜로 찍으면 Google은 그 사이트의
+  // lastmod를 통째로 무시한다. 그래서 콘텐츠에서 실제로 유도되는 날짜만 쓰고,
+  // 유도할 수 없는 URL(계산기 도구)은 lastmod를 아예 비운다.
+  const dateOf = (p: (typeof posts)[number]) =>
+    new Date((p as unknown as { updated?: string }).updated ?? p.date)
+  const newest = (list: typeof posts) =>
+    list.length ? new Date(Math.max(...list.map((p) => dateOf(p).getTime()))) : undefined
+  const siteUpdated = newest(posts)
+
   const entries: MetadataRoute.Sitemap = []
 
   entries.push({
     url: u(''),
-    lastModified: new Date(),
+    lastModified: siteUpdated,
     changeFrequency: 'daily',
     priority: 1.0,
     alternates: { languages: alternateLanguages('') },
   })
 
+  // about은 포스트 수·단어 수·활동 그래프를 렌더하므로 새 글이 올라오면 같이 바뀐다.
   entries.push({
     url: u('/about'),
+    lastModified: siteUpdated,
     changeFrequency: 'monthly',
     priority: 0.5,
     alternates: { languages: alternateLanguages('/about') },
@@ -68,20 +79,31 @@ export default async function sitemap({ id }: SitemapProps): Promise<MetadataRou
 
   entries.push({
     url: u('/tags'),
+    lastModified: siteUpdated,
     changeFrequency: 'weekly',
     priority: 0.6,
     alternates: { languages: alternateLanguages('/tags') },
   })
 
-  // 정적 허브 페이지 — 검색엔진이 발견하도록 명시
-  for (const path of ['/posts', '/tools', '/viz', '/glossary', '/series'] as const) {
+  // 정적 허브 페이지 — 검색엔진이 발견하도록 명시.
+  // 전부 포스트 목록을 렌더하므로 최신 글 날짜가 곧 이 페이지들의 lastmod다.
+  for (const path of ['/posts', '/viz', '/glossary', '/series'] as const) {
     entries.push({
       url: u(path),
+      lastModified: siteUpdated,
       changeFrequency: 'weekly',
       priority: 0.6,
       alternates: { languages: alternateLanguages(path) },
     })
   }
+
+  // /tools 허브와 개별 계산기는 포스트와 무관하게 코드로만 바뀐다 → lastmod 생략.
+  entries.push({
+    url: u('/tools'),
+    changeFrequency: 'monthly',
+    priority: 0.6,
+    alternates: { languages: alternateLanguages('/tools') },
+  })
 
   // 각 계산기 도구 (9개) — 빌드 시 정적 생성됨
   for (const tool of CALCULATORS) {
@@ -95,10 +117,13 @@ export default async function sitemap({ id }: SitemapProps): Promise<MetadataRou
   }
 
   // 시리즈 인덱스 페이지 (locale별 계산)
+  // lastmod는 그 시리즈에 속한 가장 최근 글의 날짜 — 시리즈에 편이 추가되면 같이 움직인다.
   for (const series of listAllSeries(locale as Locale)) {
     const seriesPath = `/series/${series.slug}`
+    const seriesSlugs = new Set((series.posts ?? []).map((p) => p.slug))
     entries.push({
       url: u(seriesPath),
+      lastModified: newest(posts.filter((p) => seriesSlugs.has(p.slug))),
       changeFrequency: 'monthly',
       priority: 0.5,
       alternates: { languages: alternateLanguages(seriesPath) },
@@ -121,10 +146,13 @@ export default async function sitemap({ id }: SitemapProps): Promise<MetadataRou
     })
   }
 
+  // 태그 페이지의 lastmod = 그 태그가 붙은 가장 최근 글의 날짜.
+  // 오늘 글에 붙은 태그만 날짜가 올라가므로 Google이 다시 볼 페이지를 정확히 좁혀준다.
   for (const tag of tags) {
     const tagPath = `/tags/${encodeURIComponent(tag)}`
     entries.push({
       url: u(tagPath),
+      lastModified: newest(posts.filter((p) => (p.tags ?? []).includes(tag))),
       changeFrequency: 'weekly',
       priority: 0.5,
       alternates: { languages: alternateLanguages(tagPath) },
