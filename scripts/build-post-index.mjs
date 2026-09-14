@@ -107,9 +107,15 @@ items.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0))
   }
 }
 
+// generatedAt은 벽시계 시각이 아니라 "가장 최근 글의 날짜"다.
+// 빌드할 때마다 now()를 찍으면 내용이 하나도 안 바뀌어도 post-index.json /
+// rag-index.json 4개 파일이 매번 더티해져서, 커밋할 게 없는데 작업 트리가 더러워진다.
+// 콘텐츠에서 유도하면 같은 입력 → 같은 출력(재현 가능한 빌드)이 되고,
+// 푸터가 보여주려던 freshness 신호도 그대로 유지된다.
+const newestDate = items.reduce((acc, it) => (it.date > acc ? it.date : acc), '')
 const out = {
   meta: {
-    generatedAt: new Date().toISOString(),
+    generatedAt: newestDate ? new Date(`${newestDate}T00:00:00Z`).toISOString() : '',
     count: items.length,
   },
   items,

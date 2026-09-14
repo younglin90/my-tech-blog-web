@@ -67,7 +67,8 @@ for (const [t, df] of docFreq) {
 
 // 인덱스 슬림화: tokens는 원본 유지하되 idf 별도 저장
 const payload = JSON.stringify({
-  meta: { count: chunks.length, generated_at: new Date().toISOString() },
+  // generated_at은 아무도 읽지 않으면서 빌드마다 값이 바뀌어 파일을 더티하게 만들기만 했다.
+  meta: { count: chunks.length },
   idf,
   chunks: chunks.map((c) => ({
     slug: c.slug,

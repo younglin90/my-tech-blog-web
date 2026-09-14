@@ -10,6 +10,8 @@ interface Props {
 
 // post-index.json의 meta.generatedAt을 표시 — 사이트가 활발히 업데이트되고
 // 있다는 freshness 시그널. Footer 우측에 작은 mono 텍스트.
+// generatedAt은 빌드 시각이 아니라 '가장 최근 글의 날짜'(UTC 자정)다.
+// 그래서 시:분은 의미가 없고 툴팁에도 날짜만 보여준다.
 export function LastBuildIndicator({ label }: Props) {
   const [date, setDate] = useState<Date | null>(null)
 
@@ -35,7 +37,7 @@ export function LastBuildIndicator({ label }: Props) {
   return (
     <span
       className="hidden sm:inline"
-      title={`${label}: ${format(date, "yyyy.MM.dd HH:mm 'UTC'")}`}
+      title={`${label}: ${format(date, 'yyyy.MM.dd')}`}
       style={{ color: 'var(--text-faint)' }}
     >
       {label} <span style={{ color: 'var(--text-muted)' }}>{relative}</span>
