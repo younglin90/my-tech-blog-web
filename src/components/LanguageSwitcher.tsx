@@ -56,7 +56,11 @@ export function LanguageSwitcher({ current }: { current?: string }) {
   // 크롤 가능한 링크가 하나도 없었다 — 검색엔진이 보는 연결고리가 hreflang 주석뿐이었다.
   // 클릭은 그대로 가로채 쿠키를 심고 SPA 전환을 하되, href는 항상 유효하게 둔다.
   const hrefFor = (next: Locale) => {
-    const target = withLocale(next, pathname)
+    // locale 세그먼트가 없는 라우트(/admin, /read, /preview/*, 404)에는 /{locale}{path}
+    // 짝이 존재하지 않는다. 그대로 prefix를 붙이면 locale마다 죽은 URL이 하나씩 생기고,
+    // 404 페이지가 그 링크를 그대로 내보내 크롤러에 5개씩 물린다. 이 경우 홈으로 보낸다.
+    const hasLocale = /^\/(ko|en|ja|zh|es)(\/|$)/.test(pathname)
+    const target = hasLocale ? withLocale(next, pathname) : `/${next}`
     return target.endsWith('/') ? target : `${target}/`
   }
 
