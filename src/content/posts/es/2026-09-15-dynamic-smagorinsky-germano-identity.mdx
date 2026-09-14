@@ -1,0 +1,358 @@
+---
+title: "El 49,9 % de los coeficientes dinámicos salió negativo — la identidad de Germano y el lugar del promedio"
+date: 2026-09-15
+description: "Medir el coeficiente de Smagorinsky con la identidad de Germano devuelve un valor negativo en la mitad de los puntos de malla. Dónde se promedia decide la estabilidad."
+tags: ["Dynamic-Smagorinsky", "Germano-Identity", "Turbulence", "Fluid-Dynamics", "Numerical-Analysis"]
+locale: es
+slug: 2026-09-15-dynamic-smagorinsky-germano-identity
+takeaway: "La operación de promedio en un modelo dinámico no es una opción de posprocesado: es lo que hace funcionar al modelo."
+draft: false
+---
+
+import { GermanoTwoFilterLeonardTrace } from '@/components/post-viz/2026-09-15-dynamic-smagorinsky-germano-identity/GermanoTwoFilterLeonardTrace'
+import { DynamicCoefficientAveragingMap } from '@/components/post-viz/2026-09-15-dynamic-smagorinsky-germano-identity/DynamicCoefficientAveragingMap'
+
+## Reventó en la región de transición y el registro mostraba un número negativo
+
+La primera vez que se activó el modelo dinámico de Smagorinsky, el cálculo divergió en el paso 200. El registro decía que el coeficiente del modelo era negativo. Se sospechó del código, pero el código estaba bien. Ese número negativo no era un error: era el valor que el modelo había leído de los datos. Este artículo rastrea de dónde viene y por qué un modelo dinámico no se sostiene sin una operación de promedio. Todo se mide directamente sobre un campo turbulento de 24³.
+
+En corto: el 49,9 % de los coeficientes locales resultó negativo y en el 27,1 % de los puntos de malla la viscosidad total se volvió negativa. Un solo promedio por planos sobre los mismos datos llevó esa cifra a 0,0 %.
+
+## Lo que cuesta fijar una constante a mano
+
+El modelo clásico de Smagorinsky cierra el esfuerzo de submalla (SGS, subgrid-scale) con una viscosidad de remolino.
+
+$$
+\nu_T = (C_s \Delta)^2 |\bar{S}|, \qquad |\bar{S}| = \sqrt{2 \bar{S}_{ij} \bar{S}_{ij}}
+$$
+
+Aquí $\Delta$ es el ancho del filtro de malla, $\bar{S}_{ij}$ el tensor de velocidad de deformación filtrado y $C_s$ la constante.
+
+El problema es que $C_s$ no es constante. El decaimiento de turbulencia isótropa pide alrededor de 0,17; el flujo en canal pide alrededor de 0,1. En una zona laminar la viscosidad de remolino nunca llega a cero mientras $|\bar{S}| \neq 0$. Al acercarse a una pared, $\nu_T$ debería decaer como $y^3$, y el modelo desconoce ese límite. El manual de PMBFS2 parcha el mismo punto con una función de amortiguamiento de Van Driest. Esa función necesita la distancia a la pared, y en geometrías complejas esa distancia queda mal definida.
+
+## Al medir el mismo esfuerzo en dos niveles queda una diferencia
+
+La salida que propuso Germano en 1991 consiste en dejar de suministrar la constante desde fuera y leerla de las escalas resueltas. Sobre el filtro de malla se apila un filtro de prueba más ancho, $\widehat{(\cdot)}$. Escribiendo el esfuerzo en cada nivel,
+
+$$
+\tau_{ij} = \overline{u_i u_j} - \bar{u}_i \bar{u}_j, \qquad T_{ij} = \widehat{\overline{u_i u_j}} - \hat{\bar{u}}_i \hat{\bar{u}}_j
+$$
+
+su diferencia cancela todos los términos desconocidos y deja solo una cantidad calculable.
+
+$$
+L_{ij} = T_{ij} - \widehat{\tau_{ij}} = \widehat{\bar{u}_i \bar{u}_j} - \hat{\bar{u}}_i \hat{\bar{u}}_j
+$$
+
+En el lado derecho solo aparece $\bar{u}$. Es decir, $L_{ij}$ se mide sin ningún modelo. Esa es la identidad de Germano y es el único apoyo sobre el que se sostiene el modelo dinámico.
+
+En la simulación de abajo conviene separar los dos anchos de filtro.
+
+<GermanoTwoFilterLeonardTrace />
+
+La curva azul es el filtro de malla, la naranja el filtro de prueba y la banda verde inferior es $L(x)$. Al empujar la razón de filtros $\alpha$ de 1,2 a 4, la separación entre curvas se abre y la amplitud de $L$ crece con ella. Lo clave es ver cómo $L$ colapsa hacia cero cuando $\alpha \to 1$. Si desaparece la señal que se quiere medir, el coeficiente tampoco queda determinado.
+
+## Reducir cinco ecuaciones a un solo escalar
+
+Aun contando solo las componentes desviadoras, $L_{ij}$ da cinco ecuaciones para una única incógnita, $C = C_s^2$. Suponiendo que el mismo $C$ vale en ambos niveles (invariancia de escala) y reordenando,
+
+$$
+L_{ij}^{d} = C M_{ij}, \qquad M_{ij} = 2\left[\Delta^2 \widehat{|\bar{S}| \bar{S}_{ij}} - \hat{\Delta}^2 |\hat{\bar{S}}| \hat{\bar{S}}_{ij}\right]
+$$
+
+donde el superíndice $d$ marca la parte desviadora. Lilly cerró este sistema sobredeterminado por mínimos cuadrados en 1992. Derivando el residuo $\|L^d_{ij} - C M_{ij}\|^2$ respecto de $C$ e igualando a cero resulta
+
+$$
+C = \frac{\langle L_{ij}^{d} M_{ij} \rangle}{\langle M_{kl} M_{kl} \rangle}
+$$
+
+Los corchetes $\langle \cdot \rangle$ son el tema de hoy. Dónde se aplican cambia el carácter del modelo. Si se quitan y se divide punto por punto, aparecen lugares donde el denominador se acerca a cero.
+
+## Construir turbulencia de 24³ en Python y medir el coeficiente
+
+Un campo con fases aleatorias no tiene cascada. Por eso primero se integran las ecuaciones de Navier–Stokes durante 40 pasos para generar las correlaciones y luego se hace la prueba a priori sobre ese resultado. Sin bibliotecas externas: solo listas.
+
+```python
+import math, random
+
+N, NU = 24, 0.02
+NP, H = N * N * N, 2.0 * math.pi / N
+GRID_W, TEST_W = 3, 5                       # anchos del filtro de caja, en celdas
+DELTA = GRID_W * H                          # ancho del filtro de malla
+DELTA_T = math.sqrt((GRID_W * H) ** 2 + (TEST_W * H) ** 2)   # nivel de prueba compuesto
+
+_perm = {}
+def shift_perm(axis, off):
+    """mapa de indices periodico: desplaza off celdas a lo largo de axis"""
+    if (axis, off) not in _perm:
+        p = [0] * NP
+        for i in range(N):
+            for j in range(N):
+                for k in range(N):
+                    a, b, c = i, j, k
+                    if axis == 0: a = (i + off) % N
+                    elif axis == 1: b = (j + off) % N
+                    else: c = (k + off) % N
+                    p[(i * N + j) * N + k] = (a * N + b) * N + c
+        _perm[(axis, off)] = p
+    return _perm[(axis, off)]
+
+def box_filter(f, w):
+    r, out = w // 2, f
+    for axis in (0, 1, 2):
+        acc = [0.0] * NP
+        for off in range(-r, r + 1):
+            acc = [a + out[q] for a, q in zip(acc, shift_perm(axis, off))]
+        out = [v / w for v in acc]
+    return out
+
+def ddx(f, axis):
+    inv = 1.0 / (2.0 * H)
+    return [(f[a] - f[b]) * inv for a, b in zip(shift_perm(axis, 1), shift_perm(axis, -1))]
+
+def lap(f):
+    out = [-6.0 * v for v in f]
+    for axis in (0, 1, 2):
+        for off in (1, -1):
+            out = [o + f[q] for o, q in zip(out, shift_perm(axis, off))]
+    return [v / (H * H) for v in out]
+
+def divergence(u):
+    d = ddx(u[0], 0)
+    d = [a + b for a, b in zip(d, ddx(u[1], 1))]
+    return [a + b for a, b in zip(d, ddx(u[2], 2))]
+
+def synth_field(nmodes, kmax, seed):
+    """campo de Fourier aleatorio sin divergencia, E(k) ~ k^(-5/3)"""
+    random.seed(seed)
+    u, xs = [[0.0] * NP for _ in range(3)], [i * H for i in range(N)]
+    for _ in range(nmodes):
+        while True:
+            kv = [random.randint(-kmax, kmax) for _ in range(3)]
+            km = math.sqrt(kv[0]**2 + kv[1]**2 + kv[2]**2)
+            if 1.0 <= km <= kmax: break
+        amp = km ** (-5.0 / 6.0)
+        while True:
+            r = [random.gauss(0, 1) for _ in range(3)]
+            e = [r[1]*kv[2]-r[2]*kv[1], r[2]*kv[0]-r[0]*kv[2], r[0]*kv[1]-r[1]*kv[0]]
+            en = math.sqrt(e[0]**2 + e[1]**2 + e[2]**2)
+            if en > 1e-9: break
+        e, ph = [c / en for c in e], random.uniform(0, 2 * math.pi)
+        ax = [kv[0]*x for x in xs]; by = [kv[1]*x for x in xs]; cz = [kv[2]*x for x in xs]
+        for i in range(N):
+            for j in range(N):
+                base, o = ax[i] + by[j] + ph, (i*N+j)*N
+                for k in range(N):
+                    c = math.cos(base + cz[k])
+                    u[0][o+k] += amp*e[0]*c; u[1][o+k] += amp*e[1]*c; u[2][o+k] += amp*e[2]*c
+    rms = math.sqrt(sum(v*v for comp in u for v in comp) / NP)
+    return [[v / rms for v in comp] for comp in u]
+
+def project(u, phi, sweeps):
+    """elimina la divergencia; el laplaciano coincide con div(grad) de los esquemas 2h"""
+    rhs, hh = divergence(u), (2.0 * H) ** 2
+    for _ in range(sweeps):
+        acc = [0.0] * NP
+        for axis in (0, 1, 2):
+            for off in (2, -2):
+                acc = [a + phi[q] for a, q in zip(acc, shift_perm(axis, off))]
+        phi = [(a - hh * r) / 6.0 for a, r in zip(acc, rhs)]
+    for d in range(3):
+        u[d] = [v - s for v, s in zip(u[d], ddx(phi, d))]
+    return u, phi
+
+def rhs_ns(u):
+    out = []
+    for d in range(3):
+        adv = [0.0] * NP
+        for ax in range(3):
+            g = ddx(u[d], ax)
+            adv = [a + v * gg for a, v, gg in zip(adv, u[ax], g)]
+        out.append([-a + NU * l for a, l in zip(adv, lap(u[d]))])
+    return out
+
+def advance(u, dt, nsteps, sweeps):
+    """RK2 + proyeccion de presion: las fases aleatorias se vuelven una cascada real"""
+    phi = [0.0] * NP
+    for _ in range(nsteps):
+        k1 = rhs_ns(u)
+        mid = [[v + 0.5*dt*r for v, r in zip(u[d], k1[d])] for d in range(3)]
+        k2 = rhs_ns(mid)
+        u, phi = project([[v + dt*r for v, r in zip(u[d], k2[d])] for d in range(3)], phi, sweeps)
+    return u
+
+def strain_tensor(u):
+    g = [[ddx(u[d], ax) for ax in range(3)] for d in range(3)]
+    S = [[None]*3 for _ in range(3)]
+    for a in range(3):
+        for b in range(a, 3):
+            S[a][b] = [0.5*(x+y) for x, y in zip(g[a][b], g[b][a])]
+            S[b][a] = S[a][b]
+    mag = [0.0]*NP
+    for a in range(3):
+        for b in range(3):
+            mag = [m + 2.0*s*s for m, s in zip(mag, S[a][b])]
+    return S, [math.sqrt(m) for m in mag]
+
+def leonard_stress(ub, w):
+    """L_ij = test(u_i u_j) - test(u_i) test(u_j), solo la parte desviadora"""
+    ut = [box_filter(c, w) for c in ub]
+    L = [[None]*3 for _ in range(3)]
+    for a in range(3):
+        for b in range(a, 3):
+            prod = box_filter([x*y for x, y in zip(ub[a], ub[b])], w)
+            L[a][b] = [p - x*y for p, x, y in zip(prod, ut[a], ut[b])]
+            L[b][a] = L[a][b]
+    tr = [0.0]*NP
+    for a in range(3):
+        tr = [t + v for t, v in zip(tr, L[a][a])]
+    for a in range(3):
+        L[a][a] = [v - t/3.0 for v, t in zip(L[a][a], tr)]
+    return L, ut
+
+def m_tensor(S, mag, ut, w, dg, dt_):
+    """M_ij = 2[ D^2 test(|S|S_ij) - Dhat^2 |S_test| S_test_ij ]"""
+    St, magt = strain_tensor(ut)
+    M = [[None]*3 for _ in range(3)]
+    for a in range(3):
+        for b in range(a, 3):
+            t1 = box_filter([m*s for m, s in zip(mag, S[a][b])], w)
+            M[a][b] = [2.0*(dg*dg*x - dt_*dt_*mt*st) for x, mt, st in zip(t1, magt, St[a][b])]
+            M[b][a] = M[a][b]
+    return M
+
+def contract(A, B):
+    out = [0.0]*NP
+    for a in range(3):
+        for b in range(3):
+            out = [o + x*y for o, x, y in zip(out, A[a][b], B[a][b])]
+    return out
+
+def plane_average(v):
+    acc = [0.0]*N
+    for i in range(N):
+        for j in range(N):
+            o = (i*N+j)*N
+            for k in range(N):
+                acc[k] += v[o+k]
+    return [a/(N*N) for a in acc]
+
+def pct(v, q):
+    s = sorted(v)
+    return s[min(len(s)-1, int(q*len(s)))]
+
+u = advance(synth_field(40, 8, 20260915), 0.05, 40, 40)
+urms = math.sqrt(sum(v*v for c in u for v in c) / NP)
+dv = divergence(u)
+sg = [0.0]*NP
+for d in range(3):
+    for a in range(3):
+        sg = [x + y*y for x, y in zip(sg, ddx(u[d], a))]
+print("grid %d^3  nu %.3f  t_end %.2f  u_rms %.4f" % (N, NU, 0.05*40, urms))
+print("rms|div u| / rms|grad u|      : %.3f"
+      % (math.sqrt(sum(v*v for v in dv)/NP) / math.sqrt(sum(sg)/NP)))
+
+ub = [box_filter(c, GRID_W) for c in u]
+S, mag = strain_tensor(ub)
+L, ut = leonard_stress(ub, TEST_W)
+
+print("--- Germano-Lilly coefficient  C = Cs^2 ---")
+ref = None
+for tag, dt_ in (("composed  a=%.3f" % (DELTA_T/DELTA), DELTA_T),
+                 ("textbook  a=2.000", 2.0*DELTA),
+                 ("test only a=%.3f" % (TEST_W/GRID_W), TEST_W*H)):
+    M = m_tensor(S, mag, ut, TEST_W, DELTA, dt_)
+    c = sum(contract(L, M)) / sum(contract(M, M))
+    if ref is None:
+        ref, Mref = c, M
+        print("  %s : C = %.6f   Cs = %.4f" % (tag, c, math.sqrt(c)))
+    else:
+        print("  %s : C = %.6f   Cs = %.4f   (%+.1f%%)" % (tag, c, math.sqrt(c), 100*(c/ref-1)))
+
+LM, MM = contract(L, Mref), contract(Mref, Mref)
+Cloc = [a/b for a, b in zip(LM, MM)]
+nuT = [c*DELTA*DELTA*m for c, m in zip(Cloc, mag)]
+mm_mean = sum(MM) / NP
+print("--- pointwise C (no averaging) ---")
+print("  C < 0 fraction              : %.1f %%" % (100.0*sum(1 for c in Cloc if c < 0)/NP))
+print("  C  p01 / p50 / p99          : %+.4f / %+.4f / %+.4f" % (pct(Cloc,0.01), pct(Cloc,0.5), pct(Cloc,0.99)))
+print("  M:M < 1e-3 * <M:M>          : %.2f %%" % (100.0*sum(1 for m in MM if m < 1e-3*mm_mean)/NP))
+print("  nu_T(global C) / nu         : %.2f" % (ref*DELTA*DELTA*(sum(mag)/NP)/NU))
+print("  nu + nu_T < 0               : %.1f %%" % (100.0*sum(1 for v in nuT if NU+v < 0)/NP))
+print("  worst nu_T / nu             : %.1f" % (min(nuT)/NU))
+
+Cpl = [a/b for a, b in zip(plane_average(LM), plane_average(MM))]
+nuTp = [Cpl[n % N]*DELTA*DELTA*mag[n] for n in range(NP)]
+print("--- C averaged over i-j planes ---")
+print("  C range over %d planes       : %+.5f .. %+.5f" % (N, min(Cpl), max(Cpl)))
+print("  negative planes             : %d / %d" % (sum(1 for c in Cpl if c < 0), N))
+print("  nu + nu_T < 0               : %.1f %%" % (100.0*sum(1 for v in nuTp if NU+v < 0)/NP))
+```
+
+출력은 이렇게 나온다.
+
+```text
+grid 24^3  nu 0.020  t_end 2.00  u_rms 0.5140
+rms|div u| / rms|grad u|      : 0.008
+--- Germano-Lilly coefficient  C = Cs^2 ---
+  composed  a=1.944 : C = 0.008296   Cs = 0.0911
+  textbook  a=2.000 : C = 0.008035   Cs = 0.0896   (-3.1%)
+  test only a=1.667 : C = 0.001029   Cs = 0.0321   (-87.6%)
+--- pointwise C (no averaging) ---
+  C < 0 fraction              : 49.9 %
+  C  p01 / p50 / p99          : -0.5499 / +0.0001 / +0.3246
+  M:M < 1e-3 * <M:M>          : 0.07 %
+  nu_T(global C) / nu         : 0.25
+  nu + nu_T < 0               : 27.1 %
+  worst nu_T / nu             : -78.6
+--- C averaged over i-j planes ---
+  C range over 24 planes       : -0.00021 .. +0.01692
+  negative planes             : 1 / 24
+  nu + nu_T < 0               : 0.0 %
+```
+
+El valor global por mínimos cuadrados es $C_s = 0{,}0911$, dentro del rango de 0,09 a 0,12 que suele reportarse en pruebas a priori con filtro de caja.
+
+## Que la mitad salga negativa no es un error
+
+El 49,9 % de los coeficientes locales es negativo. La mediana vale $+0{,}0001$, prácticamente cero, mientras que el percentil 1 está en $-0{,}55$ y el 99 en $+0{,}32$. La dispersión alcanza entre 40 y 66 veces el valor medio de 0,0083 hacia ambos lados.
+
+Esos valores negativos tienen sentido físico. La energía no viaja solo de las escalas grandes a las pequeñas. Localmente corre en sentido inverso, un proceso llamado retrodispersión (backscatter), observado en el 30 a 50 % de los puntos de malla en turbulencia real. El modelo dinámico es honesto al leer también esa dirección.
+
+El precio de esa honestidad es el problema. Si $C < 0$ entonces $\nu_T < 0$ y el signo del término difusivo se invierte. En el cálculo anterior, el 27,1 % de los puntos quedó con $\nu + \nu_T < 0$. El peor punto llega a $\nu_T / \nu = -78{,}6$, es decir, empuja hacia atrás con 78 veces la viscosidad molecular. La divergencia es el resultado garantizado.
+
+En el mapa de abajo conviene arrastrar la ventana de promedio.
+
+<DynamicCoefficientAveragingMap />
+
+El azul marca coeficientes negativos y el rojo positivos. Al agrandar la ventana desde 1×1, los puntos azules desaparecen primero y la cifra `ν + νT < 0` baja a cero. El botón `clipping` es la alternativa: recortar el coeficiente por abajo en lugar de promediarlo. El punto de observación es qué huella distinta deja cada estrategia en el mapa.
+
+## Dónde van los corchetes
+
+El $\langle \cdot \rangle$ que dejaron Germano y Lilly no está para adornar la fórmula. El último bloque de salida es la prueba. Si se promedian numerador y denominador por separado sobre planos $i$–$j$ y luego se dividen, solo 1 de 24 planos queda negativo, y con valor $-0{,}0002$. Ningún punto de malla cumple $\nu + \nu_T < 0$. Mismos datos, misma fórmula, y la fracción inestable cae del 27,1 % a cero.
+
+El orden importa. No conviene calcular $C$ primero y promediar después, porque $C$ diverge donde el denominador se acerca a cero. En esta corrida, el 0,07 % de los puntos tenía $M_{ij}M_{ij}$ por debajo de la milésima parte de su media. Hay que promediar $\langle L{:}M \rangle$ y $\langle M{:}M \rangle$ por separado y luego dividir.
+
+El flujo decide la dirección del promedio: planos paralelos a la pared en un canal, direcciones circunferencial y axial en una tubería. Si no hay ninguna dirección homogénea, se usa el modelo dinámico lagrangiano, que promedia a lo largo de las trayectorias. Cómo se enreda una constante con el ancho de malla ya apareció en [el reescalado de no equilibrio del refinamiento de malla en LBM](/es/posts/2026-09-02-lbm-amr-nonequilibrium-rescale/).
+
+## Equivocarse con $\alpha$ borra el 88 % del coeficiente
+
+$M_{ij}$ contiene $\hat{\Delta}^2$, y el número que se le asigne mueve $C$ por completo. El código anterior apila un filtro de caja de 5 celdas sobre otro de 3 celdas. El ancho efectivo del nivel de prueba no es de 5 celdas. Al aplicar dos filtros de caja se suman sus segundos momentos, de modo que
+
+$$
+\hat{\Delta} = \sqrt{\Delta^2 + \Delta_{\text{test}}^2} = \sqrt{(3h)^2 + (5h)^2} = 5.83h
+$$
+
+y $\alpha = \hat{\Delta}/\Delta = 1{,}944$. Seguir la costumbre de los libros de texto y usar $\alpha = 2$ mueve $C$ apenas un 3,1 %. Pero meter el ancho del filtro de prueba, $5h$, directamente en $\hat{\Delta}$ da $\alpha = 1{,}667$ y reduce $C$ en un 87,6 %. En términos de $C_s$, 0,0911 cae a 0,0321.
+
+La razón está en la estructura de $M_{ij}$. Se construye como diferencia de dos términos, así que crece en proporción a $\alpha^2 - 1$. Cuando $\alpha$ se acerca a 1, numerador y denominador tienden a cero juntos y su cociente se distorsiona con rapidez. Es el mismo efecto que el colapso de $L$ al empujar $\alpha$ hacia 1,2 en la primera simulación.
+
+## Por qué PMBFS2 dejó apagado el modelo dinámico
+
+El manual que originó este artículo implementa el modelo dinámico y luego aclara que los cálculos reales usaron el modelo algebraico de Smagorinsky. Da dos razones: aún se desconoce cuál es el mejor modelo SGS para fluidos reales, y el modelo dinámico impone un requisito de malla más estricto por sus filtros dobles.
+
+La segunda razón es la práctica. El procedimiento dinámico se sostiene solo si $\Delta$ y $\hat{\Delta}$ caen **ambos** dentro del subrango inercial, y $\hat{\Delta}$ es el doble de $\Delta$. Eso exige una malla dos veces más fina para mantener viva la misma hipótesis, lo que en tres dimensiones son ocho veces más celdas. La constante del modelo sale gratis y la malla la paga.
+
+Así se reparte el criterio práctico. Con al menos una dirección homogénea, y cuando la transición o la relajación importan, el modelo dinámico vale su costo. Con geometría compleja y presupuesto de malla ajustado, un modelo algebraico con función de amortiguamiento es la opción realista. Una constante que se fija sola dentro del cálculo, sin haber sido dada como propiedad, ya apareció en [las dos constantes escondidas en el LBM térmico](/es/posts/2026-09-04-lbm-double-distribution-prandtl/).
+
+Cuando ahora aparece un número negativo en el registro, el código ya no es el primer sospechoso. Lo son los corchetes.

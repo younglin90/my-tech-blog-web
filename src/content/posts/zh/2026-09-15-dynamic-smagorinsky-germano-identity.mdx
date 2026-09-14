@@ -1,0 +1,358 @@
+---
+title: "动态系数的 49.9% 为负 — Germano 恒等式与平均操作的位置"
+date: 2026-09-15
+description: "用 Germano 恒等式测量 Smagorinsky 系数，一半的网格点为负。平均取在哪里决定了稳定性。"
+tags: ["Dynamic-Smagorinsky", "Germano-Identity", "Turbulence", "Fluid-Dynamics", "Numerical-Analysis"]
+locale: zh
+slug: 2026-09-15-dynamic-smagorinsky-germano-identity
+takeaway: "动态模型中的平均操作不是后处理选项，而是让模型得以成立的构成要素。"
+draft: false
+---
+
+import { GermanoTwoFilterLeonardTrace } from '@/components/post-viz/2026-09-15-dynamic-smagorinsky-germano-identity/GermanoTwoFilterLeonardTrace'
+import { DynamicCoefficientAveragingMap } from '@/components/post-viz/2026-09-15-dynamic-smagorinsky-germano-identity/DynamicCoefficientAveragingMap'
+
+## 在转捩区炸掉，日志里留着一个负数
+
+第一次打开动态 Smagorinsky 模型那天，计算在第 200 步发散。翻开日志，模型系数是负的。我怀疑代码，可代码没错。那个负数不是 bug，而是模型从数据里读出来的值。这篇文章追踪它从哪里来，以及为什么没有平均操作，动态模型就无法成立。所有结论都在一个 24³ 的湍流场上直接测出来。
+
+先说结果：局部系数有 49.9% 为负，其中 27.1% 的网格点总粘性变成负值。对同样的数据做一次平面平均，这个比例降到 0.0%。
+
+## 用手指定一个常数的代价
+
+经典 Smagorinsky 模型用涡粘性来封闭亚格子（SGS，subgrid-scale）应力。
+
+$$
+\nu_T = (C_s \Delta)^2 |\bar{S}|, \qquad |\bar{S}| = \sqrt{2 \bar{S}_{ij} \bar{S}_{ij}}
+$$
+
+其中 $\Delta$ 是网格滤波宽度，$\bar{S}_{ij}$ 是滤波后的应变率张量，$C_s$ 是那个常数。
+
+麻烦在于 $C_s$ 并不是常数。各向同性湍流衰减需要 0.17 左右，槽道流需要 0.1 左右。在层流区只要 $|\bar{S}| \neq 0$，涡粘性就不会归零。贴近壁面时 $\nu_T$ 应当按 $y^3$ 衰减，而模型不知道这个极限。PMBFS2 手册也在同一处用 Van Driest 衰减函数打补丁。衰减函数需要壁面距离，而在复杂几何中这个距离很难良好定义。
+
+## 在两个层级上量同一个应力，差值留了下来
+
+Germano 在 1991 年给出的出路，是不再从外部给定常数，而是从可解尺度里读出来。在网格滤波之上再叠一层更宽的测试滤波 $\widehat{(\cdot)}$。写出两个层级的应力，
+
+$$
+\tau_{ij} = \overline{u_i u_j} - \bar{u}_i \bar{u}_j, \qquad T_{ij} = \widehat{\overline{u_i u_j}} - \hat{\bar{u}}_i \hat{\bar{u}}_j
+$$
+
+两者之差把所有未知项抵消掉，只剩下可以直接算出的量。
+
+$$
+L_{ij} = T_{ij} - \widehat{\tau_{ij}} = \widehat{\bar{u}_i \bar{u}_j} - \hat{\bar{u}}_i \hat{\bar{u}}_j
+$$
+
+右端只含 $\bar{u}$。也就是说 $L_{ij}$ 不需要任何模型就能测量。这就是 Germano 恒等式，也是动态模型唯一的立足点。
+
+在下面的模拟里，把两个滤波宽度拉开试试。
+
+<GermanoTwoFilterLeonardTrace />
+
+蓝线是网格滤波，橙线是测试滤波，下方绿色带是 $L(x)$。把滤波比 $\alpha$ 从 1.2 推到 4，两条曲线的间距张开，$L$ 的幅值随之增大。关键要看的是 $\alpha \to 1$ 时 $L$ 塌向零。要测的信号消失了，系数也就定不下来。
+
+## 把 5 个方程压成 1 个标量
+
+$L_{ij}$ 即使只数偏量分量也有 5 个方程，未知数却只有 $C = C_s^2$ 一个。假设两个层级用同一个 $C$（尺度不变性），整理后得到
+
+$$
+L_{ij}^{d} = C M_{ij}, \qquad M_{ij} = 2\left[\Delta^2 \widehat{|\bar{S}| \bar{S}_{ij}} - \hat{\Delta}^2 |\hat{\bar{S}}| \hat{\bar{S}}_{ij}\right]
+$$
+
+上标 $d$ 表示偏量部分。Lilly 在 1992 年用最小二乘封闭了这个超定系统。把残差 $\|L^d_{ij} - C M_{ij}\|^2$ 对 $C$ 求导并令其为零，得到
+
+$$
+C = \frac{\langle L_{ij}^{d} M_{ij} \rangle}{\langle M_{kl} M_{kl} \rangle}
+$$
+
+这个 $\langle \cdot \rangle$ 才是今天的主角。括号加在哪里，会改变模型的性格。去掉括号逐点相除，就会出现分母趋近于零的位置。
+
+## 用 Python 造一个 24³ 湍流场，直接测系数
+
+只有随机相位的场没有级串。所以先积分 Navier–Stokes 方程 40 步建立相关性，再在结果上做 a priori 检验。不使用外部库，只用列表。
+
+```python
+import math, random
+
+N, NU = 24, 0.02
+NP, H = N * N * N, 2.0 * math.pi / N
+GRID_W, TEST_W = 3, 5                       # 盒式滤波器宽度，以网格单元计
+DELTA = GRID_W * H                          # 网格滤波器宽度
+DELTA_T = math.sqrt((GRID_W * H) ** 2 + (TEST_W * H) ** 2)   # 复合后的测试层级
+
+_perm = {}
+def shift_perm(axis, off):
+    """沿 axis 方向平移 off 个单元的周期索引映射"""
+    if (axis, off) not in _perm:
+        p = [0] * NP
+        for i in range(N):
+            for j in range(N):
+                for k in range(N):
+                    a, b, c = i, j, k
+                    if axis == 0: a = (i + off) % N
+                    elif axis == 1: b = (j + off) % N
+                    else: c = (k + off) % N
+                    p[(i * N + j) * N + k] = (a * N + b) * N + c
+        _perm[(axis, off)] = p
+    return _perm[(axis, off)]
+
+def box_filter(f, w):
+    r, out = w // 2, f
+    for axis in (0, 1, 2):
+        acc = [0.0] * NP
+        for off in range(-r, r + 1):
+            acc = [a + out[q] for a, q in zip(acc, shift_perm(axis, off))]
+        out = [v / w for v in acc]
+    return out
+
+def ddx(f, axis):
+    inv = 1.0 / (2.0 * H)
+    return [(f[a] - f[b]) * inv for a, b in zip(shift_perm(axis, 1), shift_perm(axis, -1))]
+
+def lap(f):
+    out = [-6.0 * v for v in f]
+    for axis in (0, 1, 2):
+        for off in (1, -1):
+            out = [o + f[q] for o, q in zip(out, shift_perm(axis, off))]
+    return [v / (H * H) for v in out]
+
+def divergence(u):
+    d = ddx(u[0], 0)
+    d = [a + b for a, b in zip(d, ddx(u[1], 1))]
+    return [a + b for a, b in zip(d, ddx(u[2], 2))]
+
+def synth_field(nmodes, kmax, seed):
+    """无散度的随机 Fourier 场，E(k) ~ k^(-5/3)"""
+    random.seed(seed)
+    u, xs = [[0.0] * NP for _ in range(3)], [i * H for i in range(N)]
+    for _ in range(nmodes):
+        while True:
+            kv = [random.randint(-kmax, kmax) for _ in range(3)]
+            km = math.sqrt(kv[0]**2 + kv[1]**2 + kv[2]**2)
+            if 1.0 <= km <= kmax: break
+        amp = km ** (-5.0 / 6.0)
+        while True:
+            r = [random.gauss(0, 1) for _ in range(3)]
+            e = [r[1]*kv[2]-r[2]*kv[1], r[2]*kv[0]-r[0]*kv[2], r[0]*kv[1]-r[1]*kv[0]]
+            en = math.sqrt(e[0]**2 + e[1]**2 + e[2]**2)
+            if en > 1e-9: break
+        e, ph = [c / en for c in e], random.uniform(0, 2 * math.pi)
+        ax = [kv[0]*x for x in xs]; by = [kv[1]*x for x in xs]; cz = [kv[2]*x for x in xs]
+        for i in range(N):
+            for j in range(N):
+                base, o = ax[i] + by[j] + ph, (i*N+j)*N
+                for k in range(N):
+                    c = math.cos(base + cz[k])
+                    u[0][o+k] += amp*e[0]*c; u[1][o+k] += amp*e[1]*c; u[2][o+k] += amp*e[2]*c
+    rms = math.sqrt(sum(v*v for comp in u for v in comp) / NP)
+    return [[v / rms for v in comp] for comp in u]
+
+def project(u, phi, sweeps):
+    """去除散度；拉普拉斯算子与 2h 模板的 div(grad) 保持一致"""
+    rhs, hh = divergence(u), (2.0 * H) ** 2
+    for _ in range(sweeps):
+        acc = [0.0] * NP
+        for axis in (0, 1, 2):
+            for off in (2, -2):
+                acc = [a + phi[q] for a, q in zip(acc, shift_perm(axis, off))]
+        phi = [(a - hh * r) / 6.0 for a, r in zip(acc, rhs)]
+    for d in range(3):
+        u[d] = [v - s for v, s in zip(u[d], ddx(phi, d))]
+    return u, phi
+
+def rhs_ns(u):
+    out = []
+    for d in range(3):
+        adv = [0.0] * NP
+        for ax in range(3):
+            g = ddx(u[d], ax)
+            adv = [a + v * gg for a, v, gg in zip(adv, u[ax], g)]
+        out.append([-a + NU * l for a, l in zip(adv, lap(u[d]))])
+    return out
+
+def advance(u, dt, nsteps, sweeps):
+    """RK2 + 压力投影：随机相位转变为真实的级串"""
+    phi = [0.0] * NP
+    for _ in range(nsteps):
+        k1 = rhs_ns(u)
+        mid = [[v + 0.5*dt*r for v, r in zip(u[d], k1[d])] for d in range(3)]
+        k2 = rhs_ns(mid)
+        u, phi = project([[v + dt*r for v, r in zip(u[d], k2[d])] for d in range(3)], phi, sweeps)
+    return u
+
+def strain_tensor(u):
+    g = [[ddx(u[d], ax) for ax in range(3)] for d in range(3)]
+    S = [[None]*3 for _ in range(3)]
+    for a in range(3):
+        for b in range(a, 3):
+            S[a][b] = [0.5*(x+y) for x, y in zip(g[a][b], g[b][a])]
+            S[b][a] = S[a][b]
+    mag = [0.0]*NP
+    for a in range(3):
+        for b in range(3):
+            mag = [m + 2.0*s*s for m, s in zip(mag, S[a][b])]
+    return S, [math.sqrt(m) for m in mag]
+
+def leonard_stress(ub, w):
+    """L_ij = test(u_i u_j) - test(u_i) test(u_j)，只保留偏量部分"""
+    ut = [box_filter(c, w) for c in ub]
+    L = [[None]*3 for _ in range(3)]
+    for a in range(3):
+        for b in range(a, 3):
+            prod = box_filter([x*y for x, y in zip(ub[a], ub[b])], w)
+            L[a][b] = [p - x*y for p, x, y in zip(prod, ut[a], ut[b])]
+            L[b][a] = L[a][b]
+    tr = [0.0]*NP
+    for a in range(3):
+        tr = [t + v for t, v in zip(tr, L[a][a])]
+    for a in range(3):
+        L[a][a] = [v - t/3.0 for v, t in zip(L[a][a], tr)]
+    return L, ut
+
+def m_tensor(S, mag, ut, w, dg, dt_):
+    """M_ij = 2[ D^2 test(|S|S_ij) - Dhat^2 |S_test| S_test_ij ]"""
+    St, magt = strain_tensor(ut)
+    M = [[None]*3 for _ in range(3)]
+    for a in range(3):
+        for b in range(a, 3):
+            t1 = box_filter([m*s for m, s in zip(mag, S[a][b])], w)
+            M[a][b] = [2.0*(dg*dg*x - dt_*dt_*mt*st) for x, mt, st in zip(t1, magt, St[a][b])]
+            M[b][a] = M[a][b]
+    return M
+
+def contract(A, B):
+    out = [0.0]*NP
+    for a in range(3):
+        for b in range(3):
+            out = [o + x*y for o, x, y in zip(out, A[a][b], B[a][b])]
+    return out
+
+def plane_average(v):
+    acc = [0.0]*N
+    for i in range(N):
+        for j in range(N):
+            o = (i*N+j)*N
+            for k in range(N):
+                acc[k] += v[o+k]
+    return [a/(N*N) for a in acc]
+
+def pct(v, q):
+    s = sorted(v)
+    return s[min(len(s)-1, int(q*len(s)))]
+
+u = advance(synth_field(40, 8, 20260915), 0.05, 40, 40)
+urms = math.sqrt(sum(v*v for c in u for v in c) / NP)
+dv = divergence(u)
+sg = [0.0]*NP
+for d in range(3):
+    for a in range(3):
+        sg = [x + y*y for x, y in zip(sg, ddx(u[d], a))]
+print("grid %d^3  nu %.3f  t_end %.2f  u_rms %.4f" % (N, NU, 0.05*40, urms))
+print("rms|div u| / rms|grad u|      : %.3f"
+      % (math.sqrt(sum(v*v for v in dv)/NP) / math.sqrt(sum(sg)/NP)))
+
+ub = [box_filter(c, GRID_W) for c in u]
+S, mag = strain_tensor(ub)
+L, ut = leonard_stress(ub, TEST_W)
+
+print("--- Germano-Lilly coefficient  C = Cs^2 ---")
+ref = None
+for tag, dt_ in (("composed  a=%.3f" % (DELTA_T/DELTA), DELTA_T),
+                 ("textbook  a=2.000", 2.0*DELTA),
+                 ("test only a=%.3f" % (TEST_W/GRID_W), TEST_W*H)):
+    M = m_tensor(S, mag, ut, TEST_W, DELTA, dt_)
+    c = sum(contract(L, M)) / sum(contract(M, M))
+    if ref is None:
+        ref, Mref = c, M
+        print("  %s : C = %.6f   Cs = %.4f" % (tag, c, math.sqrt(c)))
+    else:
+        print("  %s : C = %.6f   Cs = %.4f   (%+.1f%%)" % (tag, c, math.sqrt(c), 100*(c/ref-1)))
+
+LM, MM = contract(L, Mref), contract(Mref, Mref)
+Cloc = [a/b for a, b in zip(LM, MM)]
+nuT = [c*DELTA*DELTA*m for c, m in zip(Cloc, mag)]
+mm_mean = sum(MM) / NP
+print("--- pointwise C (no averaging) ---")
+print("  C < 0 fraction              : %.1f %%" % (100.0*sum(1 for c in Cloc if c < 0)/NP))
+print("  C  p01 / p50 / p99          : %+.4f / %+.4f / %+.4f" % (pct(Cloc,0.01), pct(Cloc,0.5), pct(Cloc,0.99)))
+print("  M:M < 1e-3 * <M:M>          : %.2f %%" % (100.0*sum(1 for m in MM if m < 1e-3*mm_mean)/NP))
+print("  nu_T(global C) / nu         : %.2f" % (ref*DELTA*DELTA*(sum(mag)/NP)/NU))
+print("  nu + nu_T < 0               : %.1f %%" % (100.0*sum(1 for v in nuT if NU+v < 0)/NP))
+print("  worst nu_T / nu             : %.1f" % (min(nuT)/NU))
+
+Cpl = [a/b for a, b in zip(plane_average(LM), plane_average(MM))]
+nuTp = [Cpl[n % N]*DELTA*DELTA*mag[n] for n in range(NP)]
+print("--- C averaged over i-j planes ---")
+print("  C range over %d planes       : %+.5f .. %+.5f" % (N, min(Cpl), max(Cpl)))
+print("  negative planes             : %d / %d" % (sum(1 for c in Cpl if c < 0), N))
+print("  nu + nu_T < 0               : %.1f %%" % (100.0*sum(1 for v in nuTp if NU+v < 0)/NP))
+```
+
+출력은 이렇게 나온다.
+
+```text
+grid 24^3  nu 0.020  t_end 2.00  u_rms 0.5140
+rms|div u| / rms|grad u|      : 0.008
+--- Germano-Lilly coefficient  C = Cs^2 ---
+  composed  a=1.944 : C = 0.008296   Cs = 0.0911
+  textbook  a=2.000 : C = 0.008035   Cs = 0.0896   (-3.1%)
+  test only a=1.667 : C = 0.001029   Cs = 0.0321   (-87.6%)
+--- pointwise C (no averaging) ---
+  C < 0 fraction              : 49.9 %
+  C  p01 / p50 / p99          : -0.5499 / +0.0001 / +0.3246
+  M:M < 1e-3 * <M:M>          : 0.07 %
+  nu_T(global C) / nu         : 0.25
+  nu + nu_T < 0               : 27.1 %
+  worst nu_T / nu             : -78.6
+--- C averaged over i-j planes ---
+  C range over 24 planes       : -0.00021 .. +0.01692
+  negative planes             : 1 / 24
+  nu + nu_T < 0               : 0.0 %
+```
+
+全局最小二乘给出的 $C_s$ 是 0.0911，落在盒式滤波 a priori 检验常见的 0.09～0.12 区间内。
+
+## 一半为负并不是错误
+
+局部系数有 49.9% 为负。中位数是 $+0.0001$，实际上就是零，而 1 分位是 $-0.55$，99 分位是 $+0.32$。两侧的展布达到均值 0.0083 的 40～66 倍。
+
+这些负值有物理含义。能量并非只从大尺度流向小尺度。局部上它会反向流动，这称为逆散射（backscatter），在真实湍流中出现在 30～50% 的网格点上。动态模型连这个方向也照实读出来。
+
+代价正是这份诚实。$C < 0$ 意味着 $\nu_T < 0$，扩散项的符号被翻转。上面的计算中，27.1% 的网格点处于 $\nu + \nu_T < 0$。最糟的点达到 $\nu_T / \nu = -78.6$，相当于用 78 倍的分子粘性反向推。发散是注定的结果。
+
+在下面的图上拖动平均窗口试试。
+
+<DynamicCoefficientAveragingMap />
+
+蓝色是负系数，红色是正系数。把窗口从 1×1 放大，蓝点先消失，`ν + νT < 0` 的比例降到零。`clipping` 按钮是另一条路：不做平均，而是从下方截断。两种做法在图上留下的痕迹有何不同，是这里的观察点。
+
+## 括号加在哪里
+
+Germano 和 Lilly 留下的 $\langle \cdot \rangle$ 不是为了让公式好看。输出的最后一段就是证据。把分子和分母分别在 $i$–$j$ 平面上平均再相除，24 个平面里只有 1 个为负，其值也只有 $-0.0002$。$\nu + \nu_T < 0$ 的网格点是 0.0%。同样的数据、同样的公式，不稳定网格点却从 27.1% 降到零。
+
+顺序很关键。不要先求 $C$ 再平均，因为分母接近零的点上 $C$ 会发散。上面的计算中，$M_{ij}M_{ij}$ 小于均值千分之一的点占 0.07%。必须把 $\langle L{:}M \rangle$ 和 $\langle M{:}M \rangle$ 分别平均后再相除。
+
+平均方向由流动决定。槽道取平行于壁面的平面，圆管取周向和轴向。若完全没有均匀方向，就改用沿迹线平均的 Lagrangian 动态模型。常数如何与网格宽度纠缠在一起，[LBM 网格加密中的非平衡重标度](/zh/posts/2026-09-02-lbm-amr-nonequilibrium-rescale/)里谈过。
+
+## $\alpha$ 取错，系数会消失 88%
+
+$M_{ij}$ 里含有 $\hat{\Delta}^2$。这个值取多少，会把 $C$ 整体挪动。上面的代码在 3 格宽的盒式滤波之上叠了 5 格宽的滤波。测试层级的有效宽度并不是 5 格。盒式滤波作用两次，二阶矩相加，因此
+
+$$
+\hat{\Delta} = \sqrt{\Delta^2 + \Delta_{\text{test}}^2} = \sqrt{(3h)^2 + (5h)^2} = 5.83h
+$$
+
+即 $\alpha = \hat{\Delta}/\Delta = 1.944$。按教科书习惯取 $\alpha = 2$，$C$ 只变动 3.1%。但若把测试滤波的宽度 $5h$ 直接当作 $\hat{\Delta}$，就得到 $\alpha = 1.667$，$C$ 减少 87.6%。换成 $C_s$ 看，0.0911 掉到 0.0321。
+
+原因在 $M_{ij}$ 的结构。它是两项之差，因而正比于 $\alpha^2 - 1$ 增长。当 $\alpha$ 趋近 1，分子和分母一起趋零，比值急剧畸变。这与第一个模拟中把 $\alpha$ 推向 1.2 时 $L$ 塌陷是同一个现象。
+
+## PMBFS2 为什么没有启用动态模型
+
+这篇文章取材的手册实现了动态模型，却写明实际计算使用的是代数 Smagorinsky 模型。理由给了两条：真实流体最合适的 SGS 模型尚无定论；以及使用双重滤波的动态模型对网格的要求更严。
+
+第二条更具实务意义。动态过程要成立，$\Delta$ 和 $\hat{\Delta}$ **两者**都必须落在惯性子区内，而 $\hat{\Delta}$ 是 $\Delta$ 的 2 倍。也就是说要把网格再加密一倍才能维持同一假设，在三维里就是 8 倍的单元数。自动得到模型常数的代价，用网格来付。
+
+于是实务判断这样分。只要有一个均匀方向，且转捩或弛豫过程重要，动态模型值这个价。若几何复杂、网格预算紧张，给代数模型配一个衰减函数更现实。没有作为物性输入的常数在计算内部悄悄定下来，这种情形在[热 LBM 中潜藏的两个常数](/zh/posts/2026-09-04-lbm-double-distribution-prandtl/)里也见过。
+
+现在日志里再出现负数，第一个怀疑对象不再是代码，而是括号加在了哪里。
