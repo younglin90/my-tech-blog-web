@@ -15,6 +15,7 @@ import { ReadingPosition } from '@/components/ReadingPosition'
 import { QuoteShare } from '@/components/QuoteShare'
 import { LinkPreview } from '@/components/LinkPreview'
 import { PostFeedback } from '@/components/PostFeedback'
+import { AdSlot } from '@/components/AdSlot'
 import { PostSourceLinks } from '@/components/PostSourceLinks'
 import { ReadingFontSize } from '@/components/ReadingFontSize'
 import { ReadingFocusMode } from '@/components/ReadingFocusMode'
@@ -489,6 +490,8 @@ export default async function PostPage({ params }: PostProps) {
       <PostSourceLinks locale={loc} slug={post.slug} />
 
       <PostFeedback postId={post.slug} />
+
+      <AdSlot />
 
       <AuthorBio />
 

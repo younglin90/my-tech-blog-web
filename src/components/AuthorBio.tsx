@@ -4,6 +4,7 @@ import { usePathname } from 'next/navigation'
 import { Github } from 'lucide-react'
 import { localePathPrefix, t } from '@/lib/i18n'
 import { Subscribe } from '@/components/Subscribe'
+import { SupportLinks } from '@/components/SupportLinks'
 
 export function AuthorBio() {
   const pathname = usePathname() ?? '/'
@@ -43,6 +44,7 @@ export function AuthorBio() {
         </div>
       </div>
       <Subscribe />
+      <SupportLinks />
     </aside>
   )
 }

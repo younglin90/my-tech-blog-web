@@ -9,6 +9,7 @@ import { TerminalFooter } from '@/components/TerminalFooter'
 import { ServiceWorkerRegister } from '@/components/ServiceWorkerRegister'
 import type { Metadata, Viewport } from 'next'
 import { SITE_URL } from '@/lib/site'
+import { ADSENSE } from '@/lib/monetization'
 
 // Umami 트래킹 정보는 공개 값(브라우저에 그대로 노출되는 script 태그)이라 코드에 고정해도 안전.
 // 필요 시 환경변수로 오버라이드 가능.
@@ -115,6 +116,15 @@ export default function RootLayout({
         <link rel="alternate" type="application/rss+xml" hrefLang="ja" title="Younglin's CFD Blog RSS (JA)" href="/feed-ja.xml" />
         <link rel="alternate" type="application/rss+xml" hrefLang="zh" title="Younglin's CFD Blog RSS (ZH)" href="/feed-zh.xml" />
         <link rel="alternate" type="application/rss+xml" hrefLang="es" title="Younglin's CFD Blog RSS (ES)" href="/feed-es.xml" />
+        {ADSENSE.client && (
+          // biome-ignore lint/style/useNativeScript: Umami와 같은 이유로 raw <script> — 로더가 SSR HTML의 <head>에 들어가야
+          // 정적 export된 페이지에서도 adsbygoogle 큐가 하이드레이션 전에 준비된다.
+          <script
+            async
+            src={`https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=${ADSENSE.client}`}
+            crossOrigin="anonymous"
+          />
+        )}
         {UMAMI_SCRIPT_URL && UMAMI_WEBSITE_ID && (
           // biome-ignore lint/style/useNativeScript: raw <script> ensures the tag lands in the SSR HTML <head>
           // so the tracker loads before hydration (next/script with afterInteractive defers insertion to client-side only).
