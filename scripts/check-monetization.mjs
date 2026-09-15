@@ -3,7 +3,8 @@
 const env = process.env
 const strict = process.argv.includes('--strict')
 
-const client = env.NEXT_PUBLIC_ADSENSE_CLIENT ?? ''
+const client =
+  env.NEXT_PUBLIC_ADSENSE_CLIENT ?? 'ca-pub-8224726790382223'
 const articleSlot =
   env.NEXT_PUBLIC_ADSENSE_SLOT_ARTICLE ?? env.NEXT_PUBLIC_ADSENSE_SLOT ?? ''
 const reviewUrl = env.NEXT_PUBLIC_CFD_REVIEW_URL ?? ''

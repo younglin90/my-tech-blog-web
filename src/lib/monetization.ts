@@ -16,6 +16,10 @@
 //
 // NEXT_PUBLIC_* 는 빌드 시점에 번들에 박히는 공개 값이다. 비밀 값을 넣지 말 것.
 
+// AdSense 게시자 ID는 광고 코드와 ads.txt에 공개되는 값이다. 환경변수가 없더라도
+// 현재 소유자의 계정을 사용해 사이트 소유권 확인과 Auto ads가 동작하게 한다.
+const DEFAULT_ADSENSE_CLIENT = 'ca-pub-8224726790382223'
+
 export const SUPPORT = {
   githubSponsors: process.env.NEXT_PUBLIC_SUPPORT_GITHUB_SPONSORS ?? '',
   buyMeACoffee: process.env.NEXT_PUBLIC_SUPPORT_BMC ?? '',
@@ -26,7 +30,7 @@ export const hasSupport =
   Boolean(SUPPORT.githubSponsors) || Boolean(SUPPORT.buyMeACoffee) || Boolean(SUPPORT.toss)
 
 export const ADSENSE = {
-  client: process.env.NEXT_PUBLIC_ADSENSE_CLIENT ?? '',
+  client: process.env.NEXT_PUBLIC_ADSENSE_CLIENT ?? DEFAULT_ADSENSE_CLIENT,
   articleSlot:
     process.env.NEXT_PUBLIC_ADSENSE_SLOT_ARTICLE ??
     process.env.NEXT_PUBLIC_ADSENSE_SLOT ??
