@@ -90,5 +90,29 @@ if (existsSync(robots)) {
   }
 }
 
+// Cloudflare Pages는 public/_headers를 out/_headers로 복사한다. 전역 nosniff가 켜진
+// 상태에서 sitemap의 MIME 타입이 빠지면 브라우저에서는 XML이 보여도 Google의
+// sitemap 파서가 "가져올 수 없음"으로 거부할 수 있다. 실제 배포 설정을 함께 고정한다.
+const headersPath = join(ROOT, '_headers')
+if (!existsSync(headersPath)) {
+  fail('out/_headers 없음 — Cloudflare sitemap Content-Type 설정을 확인할 수 없다')
+} else {
+  const headersText = readFileSync(headersPath, 'utf-8').replace(/\r\n/g, '\n')
+  const escapeRe = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  for (const route of ['/sitemap.xml', '/sitemap/*']) {
+    const block = headersText.match(
+      new RegExp(`^${escapeRe(route)}\\n((?:[ \\t]+[^\\n]*(?:\\n|$))*)`, 'm'),
+    )?.[1]
+    if (!block) {
+      fail(`out/_headers에 ${route} 규칙이 없다`)
+    } else if (!/^\s*Content-Type:\s*(?:application|text)\/xml\b/im.test(block)) {
+      fail(`out/_headers의 ${route}에 XML Content-Type이 없다`)
+    }
+  }
+}
+
 if (process.exitCode === 1) process.exit(1)
-console.log(`✅ sitemap: 인덱스 + 자식 ${children.length}개, URL ${totalUrls}개, BOM/호스트/한도 정상`)
+console.log(
+  `✅ sitemap: 인덱스 + 자식 ${children.length}개, URL ${totalUrls}개, ` +
+  'BOM/호스트/한도/Cloudflare Content-Type 정상',
+)

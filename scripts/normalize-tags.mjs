@@ -3,7 +3,7 @@
  * scripts/normalize-tags.mjs — 태그 표기 정규화 (1회성 코드모드 + 재실행 안전)
  *
  * 두 가지를 고친다.
- *   1. 대소문자 충돌 17쌍 (Advection/advection …) → 빈도가 높은 표기로 통일.
+ *   1. 대소문자 충돌 (Advection/advection …) → 빈도가 높은 표기로 통일.
  *      URL이 대소문자를 구분하므로 지금은 같은 주제가 두 개의 태그 페이지로 쪼개져 있다.
  *   2. 비ASCII 태그 34개 → .claude/rules/daily-post.md가 이미 규정한 영문 하이픈 표기.
  *      %EB%85%BC%EB%AC%B8… 형태의 퍼센트 인코딩 URL은 SERP에서 깨져 보이고, locale마다
@@ -36,12 +36,14 @@ const CASE_CANON = {
   'flux-limiter': 'Flux-Limiter',
   'fractional-step': 'Fractional-Step',
   godunov: 'Godunov',
+  'high-order': 'High-Order',
   implicit: 'Implicit',
   'interface-capturing': 'Interface-Capturing',
   'iterative-solver': 'Iterative-Solver',
   'kapila-model': 'Kapila-Model',
   'low-mach': 'Low-Mach',
   'natural-convection': 'Natural-Convection',
+  'numerical-analysis': 'Numerical-Analysis',
   'riemann-solver': 'Riemann-Solver',
   'shock-capturing': 'Shock-Capturing',
   'unstructured-grid': 'Unstructured-Grid',
