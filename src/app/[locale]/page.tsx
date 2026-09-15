@@ -3,6 +3,7 @@ import { PostList } from '@/components/PostList'
 import { QuoteHero } from '@/components/QuoteHero'
 import { ContinueReading } from '@/components/ContinueReading'
 import { TopPosts } from '@/components/TopPosts'
+import { StartHere } from '@/components/StartHere'
 import { DAY_META, getDayLabel } from '@/lib/day-meta'
 import { LOCALES, isLocale, t, hreflangAlternates, type Locale } from '@/lib/i18n'
 import postIndex from '@/lib/post-index.json'
@@ -89,8 +90,12 @@ export default async function Home({ params }: HomeProps) {
 
       <QuoteHero />
 
+      <div className="reveal reveal-1">
+        <StartHere locale={loc} />
+      </div>
+
       <div
-        className="reveal reveal-1 mb-5 flex flex-wrap items-center gap-x-5 gap-y-2 px-4 py-3 rounded-lg"
+        className="reveal reveal-2 mb-5 flex flex-wrap items-center gap-x-5 gap-y-2 px-4 py-3 rounded-lg"
         style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
       >
         <span
@@ -116,7 +121,7 @@ export default async function Home({ params }: HomeProps) {
         })}
       </div>
 
-      <div className="reveal reveal-2">
+      <div className="reveal reveal-3">
         <ContinueReading
           posts={posts.map((p) => ({
             slug: p.id, title: p.title, url: p.url,
@@ -125,7 +130,7 @@ export default async function Home({ params }: HomeProps) {
         />
       </div>
 
-      <div className="reveal reveal-3">
+      <div>
         <TopPosts locale={loc} heading={t(loc, 'about.topPosts')} limit={5} days={7} />
       </div>
 

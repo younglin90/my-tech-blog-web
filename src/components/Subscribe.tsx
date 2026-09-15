@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import { usePathname } from 'next/navigation'
+import Link from 'next/link'
 import { Mail, Check, AlertCircle, Loader2 } from 'lucide-react'
 import { localePathPrefix, t } from '@/lib/i18n'
 import { trackEvent } from '@/lib/analytics'
@@ -136,6 +137,10 @@ export function Subscribe() {
       )}
       <p className="mt-2 text-[10px]" style={{ color: 'var(--text-faint)' }}>
         {t(locale, 'subscribe.note')}
+        {' · '}
+        <Link href={`/${locale}/privacy`} className="underline underline-offset-2 link-hover-text-accent">
+          {t(locale, 'subscribe.privacy')}
+        </Link>
       </p>
     </form>
   )

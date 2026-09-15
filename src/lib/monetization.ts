@@ -5,9 +5,12 @@
 //
 // Cloudflare Pages → Settings → Environment variables 에 넣을 값:
 //
+//   NEXT_PUBLIC_SUPPORT_URL               공통 후원 페이지 전체 URL
+//   NEXT_PUBLIC_SUPPORT_COFFEE_URL        커피 선택용 결제/후원 URL (선택)
+//   NEXT_PUBLIC_SUPPORT_BEER_URL          맥주 선택용 결제/후원 URL (선택)
 //   NEXT_PUBLIC_SUPPORT_GITHUB_SPONSORS   github 계정명 (GitHub Sponsors 가입 후)
-//   NEXT_PUBLIC_SUPPORT_BMC               buymeacoffee.com 핸들
-//   NEXT_PUBLIC_SUPPORT_TOSS              토스 송금 링크 전체 URL
+//   NEXT_PUBLIC_SUPPORT_BMC               buymeacoffee.com 핸들 (레거시 폴백)
+//   NEXT_PUBLIC_SUPPORT_TOSS              토스 송금 링크 전체 URL (레거시 폴백)
 //   NEXT_PUBLIC_ADSENSE_CLIENT            ca-pub-XXXXXXXXXXXXXXXX
 //   NEXT_PUBLIC_ADSENSE_SLOT_ARTICLE      글 본문 직후 광고 단위 ID (숫자)
 //   NEXT_PUBLIC_ADSENSE_SLOT              위 값의 레거시 폴백
@@ -20,14 +23,32 @@
 // 현재 소유자의 계정을 사용해 사이트 소유권 확인과 Auto ads가 동작하게 한다.
 const DEFAULT_ADSENSE_CLIENT = 'ca-pub-8224726790382223'
 
+function httpsUrl(value: string | undefined): string {
+  if (!value) return ''
+  try {
+    const parsed = new URL(value)
+    return parsed.protocol === 'https:' ? parsed.toString() : ''
+  } catch {
+    return ''
+  }
+}
+
+const githubSponsors = (process.env.NEXT_PUBLIC_SUPPORT_GITHUB_SPONSORS ?? '').trim()
+const buyMeACoffee = (process.env.NEXT_PUBLIC_SUPPORT_BMC ?? '').trim()
+const legacyUrl = httpsUrl(
+  process.env.NEXT_PUBLIC_SUPPORT_TOSS ||
+    (buyMeACoffee ? `https://buymeacoffee.com/${buyMeACoffee}` : '') ||
+    (githubSponsors ? `https://github.com/sponsors/${githubSponsors}` : ''),
+)
+const commonUrl = httpsUrl(process.env.NEXT_PUBLIC_SUPPORT_URL) || legacyUrl
+
 export const SUPPORT = {
-  githubSponsors: process.env.NEXT_PUBLIC_SUPPORT_GITHUB_SPONSORS ?? '',
-  buyMeACoffee: process.env.NEXT_PUBLIC_SUPPORT_BMC ?? '',
-  toss: process.env.NEXT_PUBLIC_SUPPORT_TOSS ?? '',
+  coffeeUrl: httpsUrl(process.env.NEXT_PUBLIC_SUPPORT_COFFEE_URL) || commonUrl,
+  beerUrl: httpsUrl(process.env.NEXT_PUBLIC_SUPPORT_BEER_URL) || commonUrl,
+  sponsorUrl: githubSponsors ? `https://github.com/sponsors/${githubSponsors}` : '',
 } as const
 
-export const hasSupport =
-  Boolean(SUPPORT.githubSponsors) || Boolean(SUPPORT.buyMeACoffee) || Boolean(SUPPORT.toss)
+export const hasSupport = Boolean(SUPPORT.coffeeUrl || SUPPORT.beerUrl || SUPPORT.sponsorUrl)
 
 export const ADSENSE = {
   client: process.env.NEXT_PUBLIC_ADSENSE_CLIENT ?? DEFAULT_ADSENSE_CLIENT,

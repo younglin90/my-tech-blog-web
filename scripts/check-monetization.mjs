@@ -9,16 +9,30 @@ const articleSlot =
   env.NEXT_PUBLIC_ADSENSE_SLOT_ARTICLE ?? env.NEXT_PUBLIC_ADSENSE_SLOT ?? ''
 const reviewUrl = env.NEXT_PUBLIC_CFD_REVIEW_URL ?? ''
 const reviewPrice = env.NEXT_PUBLIC_CFD_REVIEW_PRICE_KRW ?? ''
+const supportValues = [
+  env.NEXT_PUBLIC_SUPPORT_URL,
+  env.NEXT_PUBLIC_SUPPORT_COFFEE_URL,
+  env.NEXT_PUBLIC_SUPPORT_BEER_URL,
+  env.NEXT_PUBLIC_SUPPORT_TOSS,
+]
 const supportEnabled = [
+  ...supportValues,
   env.NEXT_PUBLIC_SUPPORT_GITHUB_SPONSORS,
   env.NEXT_PUBLIC_SUPPORT_BMC,
-  env.NEXT_PUBLIC_SUPPORT_TOSS,
 ].some(Boolean)
 const newsletterEnabled = Boolean(env.NEXT_PUBLIC_BUTTONDOWN_USERNAME)
 
 const errors = []
 const warnings = []
 const channels = []
+
+for (const value of supportValues.filter(Boolean)) {
+  try {
+    if (new URL(value).protocol !== 'https:') errors.push('후원 URL은 https 주소여야 합니다.')
+  } catch {
+    errors.push('후원 URL 중 올바르지 않은 주소가 있습니다.')
+  }
+}
 
 if (client) {
   if (!/^ca-pub-\d{16}$/.test(client)) {

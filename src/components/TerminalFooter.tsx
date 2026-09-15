@@ -39,6 +39,7 @@ export function TerminalFooter() {
         <Link href={`/${locale}/glossary`} className="link-hover-text inline-flex min-h-11 items-center">{t(locale, 'nav.glossary').toLowerCase()}</Link>
         <Link href={`/${locale}/bookmarks`} className="link-hover-text inline-flex min-h-11 items-center">{t(locale, 'nav.bookmarks').toLowerCase()}</Link>
         <Link href={`/${locale}/about`} className="link-hover-text inline-flex min-h-11 items-center">{t(locale, 'nav.about').toLowerCase()}</Link>
+        <Link href={`/${locale}/privacy`} className="link-hover-text inline-flex min-h-11 items-center">{t(locale, 'footer.privacy').toLowerCase()}</Link>
         <RandomPostLink locale={locale} label={t(locale, 'footer.random')} />
         <a
           href={locale === 'ko' ? '/feed.xml' : `/feed-${locale}.xml`}

@@ -105,9 +105,9 @@ export function TableOfContents() {
 
   const tocList = (
     <ul className="space-y-1.5 text-xs">
-      {headings.map((h) => (
+      {headings.map((h, index) => (
         <li
-          key={h.id}
+          key={`${h.id}-${index}`}
           ref={(el) => { itemRefs.current[h.id] = el }}
           style={{
             paddingLeft: h.level === 3 ? '0.75rem' : '0',

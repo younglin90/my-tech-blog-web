@@ -1,5 +1,6 @@
 import '@/styles/globals.css'
 import { Fraunces, Geist, JetBrains_Mono } from 'next/font/google'
+import Script from 'next/script'
 import { ThemeProvider } from '@/components/ThemeProvider'
 import { BackToTop } from '@/components/BackToTop'
 import { MobileNav } from '@/components/MobileNav'
@@ -100,6 +101,7 @@ export const metadata: Metadata = {
     ],
     apple: '/apple-touch-icon.png',
   },
+  ...(ADSENSE.client ? { other: { 'google-adsense-account': ADSENSE.client } } : {}),
 }
 
 export default function RootLayout({
@@ -116,15 +118,6 @@ export default function RootLayout({
         <link rel="alternate" type="application/rss+xml" hrefLang="ja" title="Younglin's CFD Blog RSS (JA)" href="/feed-ja.xml" />
         <link rel="alternate" type="application/rss+xml" hrefLang="zh" title="Younglin's CFD Blog RSS (ZH)" href="/feed-zh.xml" />
         <link rel="alternate" type="application/rss+xml" hrefLang="es" title="Younglin's CFD Blog RSS (ES)" href="/feed-es.xml" />
-        {ADSENSE.client && (
-          // biome-ignore lint/style/useNativeScript: Umami와 같은 이유로 raw <script> — 로더가 SSR HTML의 <head>에 들어가야
-          // 정적 export된 페이지에서도 adsbygoogle 큐가 하이드레이션 전에 준비된다.
-          <script
-            async
-            src={`https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=${ADSENSE.client}`}
-            crossOrigin="anonymous"
-          />
-        )}
         {UMAMI_SCRIPT_URL && UMAMI_WEBSITE_ID && (
           // biome-ignore lint/style/useNativeScript: raw <script> ensures the tag lands in the SSR HTML <head>
           // so the tracker loads before hydration (next/script with afterInteractive defers insertion to client-side only).
@@ -140,6 +133,16 @@ export default function RootLayout({
         className={`${fraunces.variable} ${geist.variable} ${jetbrainsMono.variable} min-h-screen antialiased`}
         style={{ fontFamily: 'var(--font-body, system-ui, sans-serif)' }}
       >
+        {ADSENSE.client && (
+          // 광고는 hydration 뒤에 로드한다. AdSense가 실행 직후 <head>에 관리 script를
+          // 삽입해 React와 충돌하는 것을 막고, publisher 확인은 위 meta가 담당한다.
+          <Script
+            id="adsense-loader"
+            strategy="afterInteractive"
+            src={`https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=${ADSENSE.client}`}
+            crossOrigin="anonymous"
+          />
+        )}
         {/* 글자 크기 선호를 첫 페인트 전에 적용한다. hydration 후에 적용하면
             'large'를 고른 재방문자는 본문 전체가 1.0 → 1.2로 리플로우되는 걸 보게 된다. */}
         <script

@@ -44,7 +44,7 @@ export function AuthorBio() {
         </div>
       </div>
       <Subscribe />
-      <SupportLinks />
+      <SupportLinks source="author" />
     </aside>
   )
 }

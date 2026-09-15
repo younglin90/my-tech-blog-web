@@ -78,6 +78,13 @@ export default async function sitemap({ id }: SitemapProps): Promise<MetadataRou
   })
 
   entries.push({
+    url: u('/privacy'),
+    changeFrequency: 'yearly',
+    priority: 0.3,
+    alternates: { languages: alternateLanguages('/privacy') },
+  })
+
+  entries.push({
     url: u('/tags'),
     lastModified: siteUpdated,
     changeFrequency: 'weekly',
