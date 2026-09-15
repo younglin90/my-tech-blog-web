@@ -2,6 +2,7 @@
 
 const env = process.env
 const strict = process.argv.includes('--strict')
+const defaultSupportUrl = 'https://buymeacoffee.com/younglin90j'
 
 const client =
   env.NEXT_PUBLIC_ADSENSE_CLIENT ?? 'ca-pub-8224726790382223'
@@ -10,7 +11,7 @@ const articleSlot =
 const reviewUrl = env.NEXT_PUBLIC_CFD_REVIEW_URL ?? ''
 const reviewPrice = env.NEXT_PUBLIC_CFD_REVIEW_PRICE_KRW ?? ''
 const supportValues = [
-  env.NEXT_PUBLIC_SUPPORT_URL,
+  env.NEXT_PUBLIC_SUPPORT_URL ?? defaultSupportUrl,
   env.NEXT_PUBLIC_SUPPORT_COFFEE_URL,
   env.NEXT_PUBLIC_SUPPORT_BEER_URL,
   env.NEXT_PUBLIC_SUPPORT_TOSS,

@@ -5,7 +5,8 @@
 2026-09-15 production 통계는 전날 127 pageviews, 누적 9,045 pageviews였다. 전날 수준이
 한 달 유지되면 약 3,800 pageviews다. Search Console 자연 검색 클릭은 최근 집계에서 11회였다.
 AdSense 게시자 코드와 `ads.txt`는 production에 연결됐고 사이트 리뷰는 `준비 중`이다. Google CMP의
-동의/거부/옵션 관리 메시지도 게시했다. 후원과 Buttondown 뉴스레터는 실제 수신 링크가 없어 아직
+동의/거부/옵션 관리 메시지도 게시했다. Buy Me a Coffee 후원은
+`https://buymeacoffee.com/younglin90j`에 연결했고, Buttondown 뉴스레터는 실제 수신 링크가 없어 아직
 비활성이다.
 
 광고 수익은 실제 AdSense Page RPM으로 계산한다.
@@ -34,7 +35,7 @@ Cloudflare Pages의 production 환경변수에 다음을 등록하고 재배포�
 3. `NEXT_PUBLIC_CFD_REVIEW_URL`: 실제 문의를 받을 폼·예약 페이지·메일 주소
 4. `NEXT_PUBLIC_CFD_REVIEW_PRICE_KRW=100000`: CTA에 표시할 시작 가격
 5. `NEXT_PUBLIC_BUTTONDOWN_USERNAME`: 재방문 독자를 쌓을 뉴스레터 계정
-6. `NEXT_PUBLIC_SUPPORT_URL`: Toss 송금/Buy Me a Coffee 등 공개 후원 페이지
+6. `NEXT_PUBLIC_SUPPORT_URL`: 기본 Buy Me a Coffee 주소를 다른 공개 후원 페이지로 덮어쓸 때 사용
 7. `NEXT_PUBLIC_SUPPORT_COFFEE_URL`, `NEXT_PUBLIC_SUPPORT_BEER_URL`: 금액별 링크가 있을 때만 선택적으로 설정
 
 설정 검사는 다음 명령으로 한다.

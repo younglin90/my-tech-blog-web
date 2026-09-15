@@ -1,7 +1,6 @@
-// 수익화 설정 — 전부 환경변수로 켜고 끈다.
+// 수익화 설정 — 공개 기본값은 코드에 두고, 배포 환경변수로 덮어쓸 수 있다.
 //
-// 값이 비어 있으면 해당 UI는 아예 렌더되지 않는다(빈 박스도 안 남는다).
-// 그래서 이 파일을 머지해도 환경변수를 넣기 전까지 사이트 화면은 그대로다.
+// 유효한 후원 URL이 없으면 해당 UI는 아예 렌더되지 않는다(빈 박스도 안 남는다).
 //
 // Cloudflare Pages → Settings → Environment variables 에 넣을 값:
 //
@@ -22,6 +21,7 @@
 // AdSense 게시자 ID는 광고 코드와 ads.txt에 공개되는 값이다. 환경변수가 없더라도
 // 현재 소유자의 계정을 사용해 사이트 소유권 확인과 Auto ads가 동작하게 한다.
 const DEFAULT_ADSENSE_CLIENT = 'ca-pub-8224726790382223'
+const DEFAULT_SUPPORT_URL = 'https://buymeacoffee.com/younglin90j'
 
 function httpsUrl(value: string | undefined): string {
   if (!value) return ''
@@ -40,7 +40,8 @@ const legacyUrl = httpsUrl(
     (buyMeACoffee ? `https://buymeacoffee.com/${buyMeACoffee}` : '') ||
     (githubSponsors ? `https://github.com/sponsors/${githubSponsors}` : ''),
 )
-const commonUrl = httpsUrl(process.env.NEXT_PUBLIC_SUPPORT_URL) || legacyUrl
+const commonUrl =
+  httpsUrl(process.env.NEXT_PUBLIC_SUPPORT_URL) || legacyUrl || DEFAULT_SUPPORT_URL
 
 export const SUPPORT = {
   coffeeUrl: httpsUrl(process.env.NEXT_PUBLIC_SUPPORT_COFFEE_URL) || commonUrl,
