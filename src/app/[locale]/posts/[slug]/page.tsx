@@ -25,6 +25,7 @@ import { SeriesNav } from '@/components/SeriesNav'
 import { getSeriesContext } from '@/lib/series'
 import { PrintButton } from '@/components/PrintButton'
 import { BookmarkButton } from '@/components/BookmarkButton'
+import { CfdReviewCallout } from '@/components/CfdReviewCallout'
 import { dayMeta } from '@/lib/day-meta'
 import { LOCALES, isLocale, t, SITE_NAMES, OG_LOCALE, HREFLANG, hreflangAlternates, type Locale } from '@/lib/i18n'
 import type { Metadata } from 'next'
@@ -392,6 +393,7 @@ export default async function PostPage({ params }: PostProps) {
       <TableOfContents />
 
       <Mdx code={post.body.code} />
+      <AdSlot />
       <MathCopyLatex />
       <ReadingPosition postId={post.slug} />
       <QuoteShare />
@@ -491,7 +493,7 @@ export default async function PostPage({ params }: PostProps) {
 
       <PostFeedback postId={post.slug} />
 
-      <AdSlot />
+      <CfdReviewCallout source="post" />
 
       <AuthorBio />
 

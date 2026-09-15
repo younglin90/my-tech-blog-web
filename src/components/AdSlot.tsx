@@ -3,7 +3,7 @@
 import { useEffect, useRef } from 'react'
 import { usePathname } from 'next/navigation'
 import { localePathPrefix, t } from '@/lib/i18n'
-import { ADSENSE, hasAds } from '@/lib/monetization'
+import { ADSENSE } from '@/lib/monetization'
 
 declare global {
   interface Window {
@@ -21,23 +21,28 @@ declare global {
 export function AdSlot({ slot }: { slot?: string }) {
   const pathname = usePathname() ?? '/'
   const { locale } = localePathPrefix(pathname)
-  const unit = slot ?? ADSENSE.slot
+  const unit = slot ?? ADSENSE.articleSlot
+  const enabled = Boolean(ADSENSE.client) && Boolean(unit)
   const pushed = useRef(false)
 
   useEffect(() => {
-    if (!hasAds || pushed.current) return
+    if (!enabled || pushed.current) return
     pushed.current = true
     try {
       ;(window.adsbygoogle = window.adsbygoogle ?? []).push({})
     } catch {
       // 광고 차단기나 로더 실패는 조용히 넘긴다.
     }
-  }, [])
+  }, [enabled, unit])
 
-  if (!hasAds) return null
+  if (!enabled) return null
 
   return (
-    <aside className="mt-12" aria-label={t(locale, 'ad.label')}>
+    <aside
+      className="my-12 border-y py-6"
+      style={{ borderColor: 'var(--border)' }}
+      aria-label={t(locale, 'ad.label')}
+    >
       <p
         className="mb-1.5 text-[10px] uppercase tracking-wider"
         style={{ color: 'var(--text-muted)' }}

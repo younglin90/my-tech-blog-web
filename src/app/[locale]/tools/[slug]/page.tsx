@@ -7,6 +7,7 @@ import { CALCULATOR_COMPONENTS } from '@/components/calculators'
 import { ToolFormula } from '@/components/ToolFormula'
 import { ToolInsightPanel } from '@/components/ToolInsightPanel'
 import { ToolViewTracker } from '@/components/ToolViewTracker'
+import { CfdReviewCallout } from '@/components/CfdReviewCallout'
 import { SITE_URL } from '@/lib/site'
 import { jsonLdHtml, PERSON_ID, ORG_ID, WEBSITE_ID } from '@/lib/jsonld'
 
@@ -257,6 +258,7 @@ export default async function CalculatorPage({ params }: Props) {
           )}
         </aside>
       </div>
+      <CfdReviewCallout source="tool" />
     </div>
   )
 }

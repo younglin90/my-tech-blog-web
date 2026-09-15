@@ -9,7 +9,10 @@
 //   NEXT_PUBLIC_SUPPORT_BMC               buymeacoffee.com 핸들
 //   NEXT_PUBLIC_SUPPORT_TOSS              토스 송금 링크 전체 URL
 //   NEXT_PUBLIC_ADSENSE_CLIENT            ca-pub-XXXXXXXXXXXXXXXX
-//   NEXT_PUBLIC_ADSENSE_SLOT              본문 하단 광고 단위 ID (숫자)
+//   NEXT_PUBLIC_ADSENSE_SLOT_ARTICLE      글 본문 직후 광고 단위 ID (숫자)
+//   NEXT_PUBLIC_ADSENSE_SLOT              위 값의 레거시 폴백
+//   NEXT_PUBLIC_CFD_REVIEW_URL             유료 CFD 검토 문의/예약 URL
+//   NEXT_PUBLIC_CFD_REVIEW_PRICE_KRW       시작 가격(원, 선택)
 //
 // NEXT_PUBLIC_* 는 빌드 시점에 번들에 박히는 공개 값이다. 비밀 값을 넣지 말 것.
 
@@ -24,7 +27,28 @@ export const hasSupport =
 
 export const ADSENSE = {
   client: process.env.NEXT_PUBLIC_ADSENSE_CLIENT ?? '',
-  slot: process.env.NEXT_PUBLIC_ADSENSE_SLOT ?? '',
+  articleSlot:
+    process.env.NEXT_PUBLIC_ADSENSE_SLOT_ARTICLE ??
+    process.env.NEXT_PUBLIC_ADSENSE_SLOT ??
+    '',
 } as const
 
-export const hasAds = Boolean(ADSENSE.client) && Boolean(ADSENSE.slot)
+// Auto ads는 client만 있으면 동작한다. 수동 광고 단위는 client + slot이 모두 필요하다.
+export const hasAutoAds = Boolean(ADSENSE.client)
+export const hasArticleAd = hasAutoAds && Boolean(ADSENSE.articleSlot)
+
+export const CFD_REVIEW = {
+  url: process.env.NEXT_PUBLIC_CFD_REVIEW_URL ?? '',
+  priceKrw: process.env.NEXT_PUBLIC_CFD_REVIEW_PRICE_KRW ?? '',
+} as const
+
+function isAllowedPublicUrl(value: string): boolean {
+  if (!value) return false
+  try {
+    return ['https:', 'mailto:'].includes(new URL(value).protocol)
+  } catch {
+    return false
+  }
+}
+
+export const hasCfdReview = isAllowedPublicUrl(CFD_REVIEW.url)
