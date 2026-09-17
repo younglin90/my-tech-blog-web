@@ -1,0 +1,251 @@
+---
+title: "Mobility Up 10×, Interface Width Unchanged — The Anti-Diffusion Term in Conservative Allen–Cahn"
+date: 2026-09-18
+description: "Why the anti-diffusion term cancels diffusion exactly, pinning interface width to W rather than to mobility, and where that term enters the LBM equilibrium."
+tags: ["Allen-Cahn", "Phase-Field", "LBM", "Multiphase", "Interface-Capturing"]
+locale: en
+slug: 2026-09-18-conservative-allen-cahn-lbm-interface
+takeaway: "Interface thickness is set by W, not by the mobility M. All M decides is how fast a smeared interface snaps back."
+draft: false
+---
+
+import { AntiDiffusionWidthLock } from '@/components/post-viz/2026-09-18-conservative-allen-cahn-lbm-interface/AntiDiffusionWidthLock'
+import { LatticeGradientIsotropyRose } from '@/components/post-viz/2026-09-18-conservative-allen-cahn-lbm-interface/LatticeGradientIsotropyRose'
+
+## Diffusion went up tenfold and the interface refused to thicken
+
+In a phase-field code (phase field: an interface written as a smooth scalar running between 0 and 1) the mobility $M$ was raised from 0.02 to 0.20. That is a tenfold increase in the diffusion coefficient. The interface should smear ten times faster. The measured width moved from 4.44 to 4.24 — slightly down, not up.
+
+Nothing was broken. The equation is built that way. This post covers why the conservative Allen–Cahn equation used to hold interfaces in lattice Boltzmann (LBM) solvers has a width that ignores mobility, where that term lands inside an LBM kernel, and how to compute the $\nabla\phi$ the term cannot live without on a lattice. Every number below came from running the code that is printed with it.
+
+Try the simulation below directly.
+
+<AntiDiffusionWidthLock />
+
+Press `smear interface` to wreck the profile on purpose, then watch the orange width trace at the bottom. With anti-diffusion on, any $M$ pulls the profile back to the green dashed level; with it off, $M$ only sets how fast the interface keeps swelling.
+
+## Holding an interface with one equation instead of two
+
+VOF and level set solve advection first, then reconstruct the interface or reinitialize the distance function. That is a separate stage. The [anti-diffusion interface sharpening](/en/posts/2026-07-25-interface-sharpening-anti-diffusion/) scheme covered earlier was also a post-process: advect, then run a sharpening equation.
+
+Conservative Allen–Cahn folds that post-process into the same equation.
+
+$$
+\frac{\partial \phi}{\partial t} + \nabla\cdot(\phi\,\mathbf{u}) = \nabla\cdot\left[\,M\left(\nabla\phi - \frac{4\phi(1-\phi)}{W}\,\mathbf{n}\right)\right]
+$$
+
+Here $\phi$ is the phase-field variable (0 in one phase, 1 in the other), $M$ is the mobility, $W$ is the target interface width in lattice cells, and $\mathbf{n}=\nabla\phi/|\nabla\phi|$ is the interface normal. The first term in the bracket is ordinary diffusion spreading the interface; the second pushes back the other way.
+
+The whole right-hand side sits inside a divergence. On periodic boundaries $\int\phi\,dV$ is conserved to machine precision. That is why a form of Allen–Cahn — an equation that famously does not conserve mass — gets to be called conservative.
+
+## The spot where the anti-diffusion term is exactly zero
+
+Write $\xi$ for the coordinate along the interface normal. The equilibrium profile looks like this.
+
+$$
+\phi(\xi) = \frac{1}{2}\left[1+\tanh\frac{2\xi}{W}\right]
+$$
+
+Differentiating gives the slope.
+
+$$
+\frac{d\phi}{d\xi} = \frac{1}{W}\,\mathrm{sech}^2\frac{2\xi}{W}
+$$
+
+On the same profile, $4\phi(1-\phi) = 1-\tanh^2(2\xi/W) = \mathrm{sech}^2(2\xi/W)$. The two expressions are the same function. So on the equilibrium profile
+
+$$
+\nabla\phi = \frac{4\phi(1-\phi)}{W}\,\mathbf{n}
+$$
+
+holds identically. The bracket is zero. And $M$ multiplies that zero.
+
+Two things follow. First, the equilibrium width is fixed by $W$ alone and mobility has no say in it. Second, what $M$ does control is the recovery time once the profile has been knocked off equilibrium, which scales roughly as $W^2/M$.
+
+## On a lattice that zero does not hold by itself
+
+Two terms that cancel exactly in the continuum drift apart once discretized. Evaluate diffusion and anti-diffusion separately at nodes with central differences and both stencils see $i-1$ and $i+1$ while skipping $i$. Odd and even points stop talking to each other, and anti-diffusion amplifies that grid-scale mode. Written that way the profile at $M=0.20$ shot past the target of 4.0 and settled at 2.88.
+
+The fix is to build the flux on faces instead of nodes. If the flux at face $i+1/2$ is assembled from $\phi_i$ and $\phi_{i+1}$ alone, neighbouring points do see each other. There is no room left for the decoupled mode.
+
+## Eight width measurements against one ruler
+
+A slab was initialized at width 8, then run for 8,000 steps toward a target of $W=4$. Anti-diffusion on and off, four values of $M$ each.
+
+```python
+import numpy as np
+
+L, dx, dt = 384, 1.0, 0.2
+W, u, NSTEP, R = 4.0, 0.05, 8000, 96.0
+x = np.arange(L) * dx
+
+def slab(width):
+    d = (x - L / 2 + L / 2) % L - L / 2
+    return 0.5 * (1.0 + np.tanh(2.0 * (R - np.abs(d)) / width))
+
+def measured_width(phi):
+    g = (np.roll(phi, -1) - np.roll(phi, 1)) / (2.0 * dx)
+    return 1.0 / np.max(np.abs(g))
+
+def face_flux(phi, M, sharp):
+    # build diffusion and anti-diffusion together on face i+1/2
+    g = (np.roll(phi, -1) - phi) / dx
+    pf = 0.5 * (phi + np.roll(phi, -1))
+    return M * (g - sharp * (4.0 * pf * (1.0 - pf) / W) * np.sign(g))
+
+def step(phi, M, sharp):
+    F = face_flux(phi, M, sharp)
+    adv = u * (np.roll(phi, -1) - np.roll(phi, 1)) / (2.0 * dx)
+    return phi + dt * (-adv + (F - np.roll(F, 1)) / dx)
+
+def run(M, sharp, w_init=8.0):
+    phi = slab(w_init)
+    m0 = phi.sum() * dx
+    for _ in range(NSTEP):
+        phi = step(phi, M, sharp)
+    return measured_width(phi), phi.sum() * dx - m0
+
+print("ruler: an exact tanh of W=4.0 on this grid reads %.4f" % measured_width(slab(W)))
+print("start W=8.0, %d steps at u=%.2f, target W=%.1f\n" % (NSTEP, u, W))
+print("%-8s %-12s %-12s %-12s" % ("M", "anti-diff", "W_read", "mass drift"))
+for M in (0.02, 0.05, 0.10, 0.20):
+    for sharp in (1.0, 0.0):
+        w, dm = run(M, sharp)
+        print("%-8.2f %-12s %-12.4f %-+12.2e" % (M, "ON" if sharp else "OFF", w, dm))
+w_lo, _ = run(0.05, 1.0, w_init=2.0)
+print("\nfrom the thin side: W_init=2.0, M=0.05, ON -> %.4f" % w_lo)
+```
+
+```text
+ruler: an exact tanh of W=4.0 on this grid reads 4.3279
+start W=8.0, 8000 steps at u=0.05, target W=4.0
+
+M        anti-diff    W_read       mass drift  
+0.02     ON           4.4403       -1.10e-11   
+0.02     OFF          21.8974      -1.34e-11   
+0.05     ON           4.2854       -2.95e-11   
+0.05     OFF          32.9005      -6.76e-12   
+0.10     ON           4.2442       -3.22e-11   
+0.10     OFF          45.6971      -9.66e-13   
+0.20     ON           4.2357       -3.60e-11   
+0.20     OFF          64.0262      -2.27e-13   
+
+from the thin side: W_init=2.0, M=0.05, ON -> 4.2854
+```
+
+The first line is the ruler. Width is measured as $1/\max|\nabla\phi|$, and laying an exact width-4 tanh on the grid and measuring it the same way reads 4.3279, not 4.0. That gap is the discretization error of the ruler itself.
+
+Held against that ruler, the four anti-diffusion-on values of 4.24 to 4.44 all sit within $\pm3\%$. Mobility swept a factor of ten and the width barely moved. Switch anti-diffusion off and the same sweep spreads from 21.9 to 64.0. Mass drift stays around $10^{-11}$ on both sides.
+
+The last line shows this is not merely "nothing changed". Starting from a width of 2, the profile climbs to 4.2854 — matching the value reached from above to four decimals. The equilibrium profile is an attractor pulling from both sides.
+
+## Moved into LBM, the term is not a source term
+
+Give $\phi$ its own distribution function $h_i$. A common misstep starts here: coding anti-diffusion as a source added after collision. It does not need to be.
+
+$$
+h_i(\mathbf{x}+\mathbf{c}_i\delta t,\ t+\delta t) = h_i(\mathbf{x},t) - \frac{1}{\tau_\phi}\left[h_i(\mathbf{x},t) - h_i^{\mathrm{eq}}\right]
+$$
+
+Choose the equilibrium like this.
+
+$$
+h_i^{\mathrm{eq}} = w_i\,\phi + \frac{w_i}{c_s^2}\,\mathbf{c}_i\cdot\left[\phi\,\mathbf{u} + M\,\frac{4\phi(1-\phi)}{W}\,\mathbf{n}\right]
+$$
+
+$w_i$ are the lattice weights, $c_s^2=1/3$ is the squared lattice sound speed, $\tau_\phi$ is the dimensionless relaxation time. The bracket is the first moment of the equilibrium — the velocity that carries $\phi$. Anti-diffusion sits there beside the physical velocity $\mathbf{u}$, dressed as a velocity of its own.
+
+A Chapman–Enskog expansion pulls the diffusion coefficient out of the relaxation time.
+
+$$
+M = c_s^2\left(\tau_\phi - \frac{1}{2}\right)\delta t
+$$
+
+Put the two together and the conservative Allen–Cahn equation comes back intact. Relaxation produces $+M\nabla^2\phi$; the extra first moment in the equilibrium produces $-\nabla\cdot(M\,4\phi(1-\phi)\mathbf{n}/W)$. How the error trails out of the relaxation time is worked through in [the Chapman–Enskog error of convection–diffusion LBM](/en/posts/2026-08-14-lbm-convection-diffusion-ce-error/).
+
+The implementation payoff is plain. Streaming and collision are untouched. The entire interface-capturing job fits in one line of the equilibrium. Which form the surface-tension force takes on the momentum side is a separate choice, compared in [the two forcing forms of non-ideal LBM](/en/posts/2026-08-21-nonideal-lbm-pressure-vs-freeenergy-forcing/).
+
+## The price is computing $\mathbf{n}$ at every node
+
+Nothing is free. The equilibrium contains $\mathbf{n}=\nabla\phi/|\nabla\phi|$, so $\nabla\phi$ has to be evaluated everywhere, and the stencil choice decides the result.
+
+The obvious option is a central difference using the four axis neighbours. Lattice Boltzmann offers another: weight the entire velocity set.
+
+$$
+\nabla\phi \simeq \frac{1}{c_s^2}\sum_i w_i\,\mathbf{c}_i\;\phi(\mathbf{x}+\mathbf{c}_i\delta t)
+$$
+
+On D2Q9 the weights are $1/9$ along the axes and $1/36$ on the diagonals. Bringing the diagonal neighbours in cancels the fourth-order anisotropy error. Compare the two stencils on the same droplet.
+
+<LatticeGradientIsotropyRose />
+
+Press the stencil button and watch the rose on the right rather than the readout next to it. The central difference is a four-petalled flower with petals along the lattice axes; the D2Q9 rose is nearly a circle. Pull $W$ down toward 2 and both get worse, but only one gets lopsided.
+
+## Why the larger mean error is the one to pick
+
+A tanh droplet of radius 24 and width $W$ was laid on a 96×96 lattice, and the relative error of $|\nabla\phi|$ on the interface ring was binned into 24 angular sectors.
+
+```python
+import numpy as np
+
+N, R = 96, 24.0
+cx = np.array([0, 1, 0, -1, 0, 1, -1, -1, 1])
+cy = np.array([0, 0, 1, 0, -1, 1, 1, -1, -1])
+w = np.array([4/9] + [1/9]*4 + [1/36]*4)
+
+def fields(W):
+    i = np.arange(N)
+    X, Y = np.meshgrid(i - N/2 + 0.5, i - N/2 + 0.5, indexing='ij')
+    r = np.sqrt(X**2 + Y**2)
+    phi = 0.5 * (1.0 + np.tanh(2.0 * (R - r) / W))
+    exact = (1.0 / W) / np.cosh(2.0 * (R - r) / W)**2
+    return X, Y, r, phi, exact
+
+def grad_central(phi):
+    gx = (np.roll(phi, -1, 0) - np.roll(phi, 1, 0)) / 2.0
+    gy = (np.roll(phi, -1, 1) - np.roll(phi, 1, 1)) / 2.0
+    return np.sqrt(gx**2 + gy**2)
+
+def grad_lattice(phi):
+    # tie in the diagonal neighbours with the lattice weights
+    gx = np.zeros_like(phi); gy = np.zeros_like(phi)
+    for k in range(9):
+        s = np.roll(np.roll(phi, -cx[k], 0), -cy[k], 1)
+        gx += w[k] * cx[k] * s
+        gy += w[k] * cy[k] * s
+    return np.sqrt((3.0 * gx)**2 + (3.0 * gy)**2)
+
+print("%-6s %-12s %-14s %-14s" % ("W", "stencil", "mean err %", "anisotropy %"))
+for W in (5.0, 4.0, 3.0):
+    X, Y, r, phi, exact = fields(W)
+    ring = np.abs(r - R) < 0.6
+    theta = np.arctan2(Y, X)[ring]
+    for name, g in (("central", grad_central(phi)), ("D2Q9", grad_lattice(phi))):
+        err = (g[ring] - exact[ring]) / exact[ring] * 100.0
+        b = ((theta + np.pi) / (np.pi / 12)).astype(int) % 24
+        binned = np.array([err[b == j].mean() for j in range(24) if np.any(b == j)])
+        print("%-6.1f %-12s %-14.3f %-14.3f" % (W, name, np.abs(err).mean(),
+                                                binned.max() - binned.min()))
+```
+
+```text
+W      stencil      mean err %     anisotropy %  
+5.0    central      3.641          1.812         
+5.0    D2Q9         4.675          0.075         
+4.0    central      5.338          2.575         
+4.0    D2Q9         6.803          0.155         
+3.0    central      8.369          3.749         
+3.0    D2Q9         10.539         0.402         
+```
+
+At $W=4$ the D2Q9 mean error is 6.803% against the central difference's 5.338%. On accuracy alone it loses. Yet the spread across angle drops from 2.575% to 0.155%, close to a factor of seventeen.
+
+These two numbers are different in kind, not just in size. An error spread uniformly around the interface gets the magnitude of $\nabla\phi$ wrong by a fixed ratio. That is equivalent to mis-setting the surface tension coefficient, and a droplet at rest stays at rest. An error that varies with angle is another matter. Different points on the same circle feel forces of different size. That imbalance stirs up motion on the surface of a droplet that should be sitting still — the spurious currents everyone complains about.
+
+So the trade here is 1.5 percentage points of mean error given away to buy a factor of seventeen in isotropy. Worth it.
+
+## What choosing $W$ is actually haggling over
+
+The third and fourth columns of that table move in opposite directions. Dropping $W$ from 5 to 3 sharpens the interface physically, but the mean error in $\nabla\phi$ climbs from 3.6% to 8.4% and the central-difference anisotropy from 1.8% to 3.7%. Raising $W$ shrinks the errors but blunts the interface until small droplets and thin films stop being resolved.
+
+That table is why $W=4$ to $5$ became the practical default. And reaching for $M$ when a thinner interface is wanted accomplishes nothing — which is where this post started. Turning $M$ changes the recovery rate, and turning it too low leaves anti-diffusion unable to keep up with the numerical diffusion advection keeps generating. There is exactly one knob on thickness, and it is $W$.

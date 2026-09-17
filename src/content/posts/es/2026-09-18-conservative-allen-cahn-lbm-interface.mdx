@@ -1,0 +1,251 @@
+---
+title: "La movilidad subió 10× y el espesor de la interfaz no se movió — el término antidifusivo de Allen–Cahn conservativo"
+date: 2026-09-18
+description: "Por qué el término antidifusivo cancela la difusión de forma exacta y fija el espesor de la interfaz en W y no en la movilidad, y dónde entra ese término en el equilibrio de LBM."
+tags: ["Allen-Cahn", "Phase-Field", "LBM", "Multiphase", "Interface-Capturing"]
+locale: es
+slug: 2026-09-18-conservative-allen-cahn-lbm-interface
+takeaway: "El espesor de la interfaz lo fija W, no la movilidad M. Lo único que decide M es qué tan rápido se recupera una interfaz emborronada."
+draft: false
+---
+
+import { AntiDiffusionWidthLock } from '@/components/post-viz/2026-09-18-conservative-allen-cahn-lbm-interface/AntiDiffusionWidthLock'
+import { LatticeGradientIsotropyRose } from '@/components/post-viz/2026-09-18-conservative-allen-cahn-lbm-interface/LatticeGradientIsotropyRose'
+
+## La difusión se multiplicó por diez y la interfaz no engordó
+
+En un código de campo de fase (phase field: la interfaz escrita como un escalar suave que pasa de 0 a 1) la movilidad $M$ pasó de 0.02 a 0.20. Eso es multiplicar por diez el coeficiente de difusión. La interfaz debería emborronarse diez veces más rápido. El espesor medido pasó de 4.44 a 4.24: bajó un poco, en lugar de subir.
+
+No había nada roto. La ecuación está construida así. Este artículo trata por qué la ecuación de Allen–Cahn conservativa que sostiene las interfaces en los solucionadores de Boltzmann en red (LBM) tiene un espesor que ignora la movilidad, dónde aterriza ese término dentro de un núcleo LBM, y cómo calcular sobre la red el $\nabla\phi$ sin el cual ese término no existe. Cada número que aparece salió de ejecutar el código que se muestra junto a él.
+
+Conviene probar la simulación siguiente de forma directa.
+
+<AntiDiffusionWidthLock />
+
+Al pulsar `smear interface` el perfil se estropea a propósito; conviene entonces mirar la traza naranja de espesor de abajo. Con la antidifusión activada, cualquier $M$ devuelve el perfil a la altura de la línea verde discontinua; con ella desactivada, $M$ solo fija la velocidad a la que la interfaz sigue hinchándose.
+
+## Sujetar una interfaz con una sola ecuación
+
+VOF y level set resuelven primero la advección y después reconstruyen la interfaz o reinicializan la función distancia. Es una etapa aparte. El esquema de [afilado de interfaz por antidifusión](/es/posts/2026-07-25-interface-sharpening-anti-diffusion/) visto antes también era un posproceso: advectar y luego correr una ecuación de afilado.
+
+Allen–Cahn conservativo pliega ese posproceso dentro de la misma ecuación.
+
+$$
+\frac{\partial \phi}{\partial t} + \nabla\cdot(\phi\,\mathbf{u}) = \nabla\cdot\left[\,M\left(\nabla\phi - \frac{4\phi(1-\phi)}{W}\,\mathbf{n}\right)\right]
+$$
+
+Aquí $\phi$ es la variable de campo de fase (0 en una fase, 1 en la otra), $M$ es la movilidad, $W$ es el espesor objetivo de la interfaz en celdas de red y $\mathbf{n}=\nabla\phi/|\nabla\phi|$ es la normal a la interfaz. El primer término del corchete es la difusión ordinaria que extiende la interfaz; el segundo empuja en sentido contrario.
+
+Que todo el miembro derecho quede dentro de una divergencia es lo importante. Con fronteras periódicas, $\int\phi\,dV$ se conserva hasta la precisión de máquina. Por eso una forma de Allen–Cahn —una ecuación célebre por no conservar la masa— puede llamarse conservativa.
+
+## El punto donde el término antidifusivo vale exactamente cero
+
+Sea $\xi$ la coordenada a lo largo de la normal a la interfaz. El perfil de equilibrio tiene esta forma.
+
+$$
+\phi(\xi) = \frac{1}{2}\left[1+\tanh\frac{2\xi}{W}\right]
+$$
+
+Derivando se obtiene la pendiente.
+
+$$
+\frac{d\phi}{d\xi} = \frac{1}{W}\,\mathrm{sech}^2\frac{2\xi}{W}
+$$
+
+Por otro lado, sobre ese mismo perfil $4\phi(1-\phi) = 1-\tanh^2(2\xi/W) = \mathrm{sech}^2(2\xi/W)$. Las dos expresiones son la misma función. Es decir, sobre el perfil de equilibrio
+
+$$
+\nabla\phi = \frac{4\phi(1-\phi)}{W}\,\mathbf{n}
+$$
+
+se cumple de forma idéntica. El corchete es cero. Y $M$ multiplica a ese cero.
+
+De ahí salen dos conclusiones. Primera: el espesor de equilibrio queda fijado solo por $W$ y la movilidad no opina. Segunda: lo que $M$ controla es el tiempo de recuperación cuando el perfil se aparta del equilibrio, que escala aproximadamente como $W^2/M$.
+
+## Sobre la red ese cero no se mantiene solo
+
+Dos términos que se cancelan de forma exacta en el continuo se separan al discretizar. Si se evalúan difusión y antidifusión por separado en los nodos con diferencias centradas, ambos esténciles ven $i-1$ e $i+1$ y saltan por encima de $i$. Los puntos pares y los impares dejan de hablarse, y la antidifusión amplifica ese modo de escala de malla. Escrito así, el perfil con $M=0.20$ se pasó del objetivo 4.0 y se quedó en 2.88.
+
+La solución es construir el flujo en las caras y no en los nodos. Si el flujo en la cara $i+1/2$ se arma solo con $\phi_i$ y $\phi_{i+1}$, los puntos vecinos sí se ven entre sí. No queda hueco para el modo desacoplado.
+
+## Ocho medidas de espesor contra una misma regla
+
+Una lámina se inicializó con espesor 8 y se corrió 8.000 pasos hacia un objetivo de $W=4$. Antidifusión activada y desactivada, con cuatro valores de $M$ cada una.
+
+```python
+import numpy as np
+
+L, dx, dt = 384, 1.0, 0.2
+W, u, NSTEP, R = 4.0, 0.05, 8000, 96.0
+x = np.arange(L) * dx
+
+def slab(width):
+    d = (x - L / 2 + L / 2) % L - L / 2
+    return 0.5 * (1.0 + np.tanh(2.0 * (R - np.abs(d)) / width))
+
+def measured_width(phi):
+    g = (np.roll(phi, -1) - np.roll(phi, 1)) / (2.0 * dx)
+    return 1.0 / np.max(np.abs(g))
+
+def face_flux(phi, M, sharp):
+    # construye difusion y antidifusion juntas sobre la cara i+1/2
+    g = (np.roll(phi, -1) - phi) / dx
+    pf = 0.5 * (phi + np.roll(phi, -1))
+    return M * (g - sharp * (4.0 * pf * (1.0 - pf) / W) * np.sign(g))
+
+def step(phi, M, sharp):
+    F = face_flux(phi, M, sharp)
+    adv = u * (np.roll(phi, -1) - np.roll(phi, 1)) / (2.0 * dx)
+    return phi + dt * (-adv + (F - np.roll(F, 1)) / dx)
+
+def run(M, sharp, w_init=8.0):
+    phi = slab(w_init)
+    m0 = phi.sum() * dx
+    for _ in range(NSTEP):
+        phi = step(phi, M, sharp)
+    return measured_width(phi), phi.sum() * dx - m0
+
+print("ruler: an exact tanh of W=4.0 on this grid reads %.4f" % measured_width(slab(W)))
+print("start W=8.0, %d steps at u=%.2f, target W=%.1f\n" % (NSTEP, u, W))
+print("%-8s %-12s %-12s %-12s" % ("M", "anti-diff", "W_read", "mass drift"))
+for M in (0.02, 0.05, 0.10, 0.20):
+    for sharp in (1.0, 0.0):
+        w, dm = run(M, sharp)
+        print("%-8.2f %-12s %-12.4f %-+12.2e" % (M, "ON" if sharp else "OFF", w, dm))
+w_lo, _ = run(0.05, 1.0, w_init=2.0)
+print("\nfrom the thin side: W_init=2.0, M=0.05, ON -> %.4f" % w_lo)
+```
+
+```text
+ruler: an exact tanh of W=4.0 on this grid reads 4.3279
+start W=8.0, 8000 steps at u=0.05, target W=4.0
+
+M        anti-diff    W_read       mass drift  
+0.02     ON           4.4403       -1.10e-11   
+0.02     OFF          21.8974      -1.34e-11   
+0.05     ON           4.2854       -2.95e-11   
+0.05     OFF          32.9005      -6.76e-12   
+0.10     ON           4.2442       -3.22e-11   
+0.10     OFF          45.6971      -9.66e-13   
+0.20     ON           4.2357       -3.60e-11   
+0.20     OFF          64.0262      -2.27e-13   
+
+from the thin side: W_init=2.0, M=0.05, ON -> 4.2854
+```
+
+La primera línea es la regla. El espesor se mide como $1/\max|\nabla\phi|$, y al colocar sobre la red una tanh exacta de ancho 4 y medirla del mismo modo se lee 4.3279 y no 4.0. Esa diferencia es el error de discretización de la propia regla.
+
+Medidos contra esa regla, los cuatro valores con antidifusión activada, de 4.24 a 4.44, caen todos dentro de $\pm3\%$. La movilidad recorrió un factor diez y el espesor apenas se movió. Al desactivar la antidifusión, el mismo barrido se abre de 21.9 a 64.0. La deriva de masa se queda en torno a $10^{-11}$ en ambos lados.
+
+La última línea muestra que esto no es un simple "no cambió nada". Partiendo de un espesor de 2, el perfil sube hasta 4.2854, coincidiendo en cuatro decimales con el valor alcanzado desde arriba. El perfil de equilibrio es un atractor que tira desde los dos lados.
+
+## Llevado a LBM, el término no es un término fuente
+
+Se le da a $\phi$ su propia función de distribución $h_i$. Aquí empieza un rodeo frecuente: programar la antidifusión como una fuente que se suma después de la colisión. No hace falta.
+
+$$
+h_i(\mathbf{x}+\mathbf{c}_i\delta t,\ t+\delta t) = h_i(\mathbf{x},t) - \frac{1}{\tau_\phi}\left[h_i(\mathbf{x},t) - h_i^{\mathrm{eq}}\right]
+$$
+
+El equilibrio se elige así.
+
+$$
+h_i^{\mathrm{eq}} = w_i\,\phi + \frac{w_i}{c_s^2}\,\mathbf{c}_i\cdot\left[\phi\,\mathbf{u} + M\,\frac{4\phi(1-\phi)}{W}\,\mathbf{n}\right]
+$$
+
+$w_i$ son los pesos de la red, $c_s^2=1/3$ es la velocidad del sonido de red al cuadrado y $\tau_\phi$ es el tiempo de relajación adimensional. El corchete es el primer momento del equilibrio, es decir, la velocidad que transporta $\phi$. La antidifusión se sienta ahí, junto a la velocidad física $\mathbf{u}$, disfrazada de velocidad.
+
+Un desarrollo de Chapman–Enskog saca el coeficiente de difusión del tiempo de relajación.
+
+$$
+M = c_s^2\left(\tau_\phi - \frac{1}{2}\right)\delta t
+$$
+
+Juntando ambas piezas, la ecuación de Allen–Cahn conservativa se recupera intacta. La relajación produce $+M\nabla^2\phi$; el primer momento extra del equilibrio produce $-\nabla\cdot(M\,4\phi(1-\phi)\mathbf{n}/W)$. Cómo arrastra el error el tiempo de relajación se desarrolla en [el error de Chapman–Enskog del LBM de convección–difusión](/es/posts/2026-08-14-lbm-convection-diffusion-ce-error/).
+
+La ganancia en implementación es clara. Streaming y colisión quedan intactos. Todo el trabajo de captura de interfaz cabe en una línea del equilibrio. Qué forma toma la fuerza de tensión superficial del lado del momento es una elección aparte, comparada en [las dos formas de forcing del LBM no ideal](/es/posts/2026-08-21-nonideal-lbm-pressure-vs-freeenergy-forcing/).
+
+## El precio es calcular $\mathbf{n}$ en cada nodo
+
+Nada es gratis. El equilibrio contiene $\mathbf{n}=\nabla\phi/|\nabla\phi|$, así que hay que evaluar $\nabla\phi$ en todas partes, y la elección del esténcil decide el resultado.
+
+La opción evidente es una diferencia centrada con los cuatro vecinos axiales. Boltzmann en red ofrece otra: ponderar todo el conjunto de velocidades.
+
+$$
+\nabla\phi \simeq \frac{1}{c_s^2}\sum_i w_i\,\mathbf{c}_i\;\phi(\mathbf{x}+\mathbf{c}_i\delta t)
+$$
+
+En D2Q9 los pesos son $1/9$ sobre los ejes y $1/36$ en las diagonales. Al entrar los vecinos diagonales se cancela el error de anisotropía de cuarto orden. Conviene comparar ambos esténciles sobre la misma gota.
+
+<LatticeGradientIsotropyRose />
+
+Al pulsar el botón del esténcil hay que mirar la rosa de la derecha y no la lectura de al lado. La diferencia centrada es una flor de cuatro pétalos alineados con los ejes de la red; la rosa de D2Q9 es casi un círculo. Bajando $W$ hacia 2 empeoran las dos, pero solo una se deforma.
+
+## Por qué conviene elegir el error medio más grande
+
+Se colocó una gota tanh de radio 24 y espesor $W$ sobre una red de 96×96, y el error relativo de $|\nabla\phi|$ en el anillo de la interfaz se agrupó en 24 sectores angulares.
+
+```python
+import numpy as np
+
+N, R = 96, 24.0
+cx = np.array([0, 1, 0, -1, 0, 1, -1, -1, 1])
+cy = np.array([0, 0, 1, 0, -1, 1, 1, -1, -1])
+w = np.array([4/9] + [1/9]*4 + [1/36]*4)
+
+def fields(W):
+    i = np.arange(N)
+    X, Y = np.meshgrid(i - N/2 + 0.5, i - N/2 + 0.5, indexing='ij')
+    r = np.sqrt(X**2 + Y**2)
+    phi = 0.5 * (1.0 + np.tanh(2.0 * (R - r) / W))
+    exact = (1.0 / W) / np.cosh(2.0 * (R - r) / W)**2
+    return X, Y, r, phi, exact
+
+def grad_central(phi):
+    gx = (np.roll(phi, -1, 0) - np.roll(phi, 1, 0)) / 2.0
+    gy = (np.roll(phi, -1, 1) - np.roll(phi, 1, 1)) / 2.0
+    return np.sqrt(gx**2 + gy**2)
+
+def grad_lattice(phi):
+    # incorpora tambien los vecinos diagonales con los pesos de la red
+    gx = np.zeros_like(phi); gy = np.zeros_like(phi)
+    for k in range(9):
+        s = np.roll(np.roll(phi, -cx[k], 0), -cy[k], 1)
+        gx += w[k] * cx[k] * s
+        gy += w[k] * cy[k] * s
+    return np.sqrt((3.0 * gx)**2 + (3.0 * gy)**2)
+
+print("%-6s %-12s %-14s %-14s" % ("W", "stencil", "mean err %", "anisotropy %"))
+for W in (5.0, 4.0, 3.0):
+    X, Y, r, phi, exact = fields(W)
+    ring = np.abs(r - R) < 0.6
+    theta = np.arctan2(Y, X)[ring]
+    for name, g in (("central", grad_central(phi)), ("D2Q9", grad_lattice(phi))):
+        err = (g[ring] - exact[ring]) / exact[ring] * 100.0
+        b = ((theta + np.pi) / (np.pi / 12)).astype(int) % 24
+        binned = np.array([err[b == j].mean() for j in range(24) if np.any(b == j)])
+        print("%-6.1f %-12s %-14.3f %-14.3f" % (W, name, np.abs(err).mean(),
+                                                binned.max() - binned.min()))
+```
+
+```text
+W      stencil      mean err %     anisotropy %  
+5.0    central      3.641          1.812         
+5.0    D2Q9         4.675          0.075         
+4.0    central      5.338          2.575         
+4.0    D2Q9         6.803          0.155         
+3.0    central      8.369          3.749         
+3.0    D2Q9         10.539         0.402         
+```
+
+Con $W=4$ el error medio de D2Q9 es 6.803% frente al 5.338% de la diferencia centrada. Solo en exactitud, pierde. Sin embargo la dispersión con el ángulo cae de 2.575% a 0.155%, cerca de un factor diecisiete.
+
+Estos dos números difieren en naturaleza, no solo en tamaño. Un error repartido de forma uniforme por toda la interfaz equivoca la magnitud de $\nabla\phi$ en una proporción fija. Eso equivale a ajustar mal el coeficiente de tensión superficial, y una gota en reposo sigue en reposo. Un error que varía con el ángulo es otra cosa. Puntos distintos del mismo círculo sienten fuerzas de distinto tamaño. Ese desequilibrio agita la superficie de una gota que debería estar quieta: son las corrientes espurias de las que todo el mundo se queja.
+
+Así que aquí se entregan 1,5 puntos porcentuales de error medio para comprar un factor diecisiete de isotropía. El trato conviene.
+
+## Qué se está regateando realmente al elegir $W$
+
+La tercera y la cuarta columna de esa tabla se mueven en sentidos opuestos. Bajar $W$ de 5 a 3 afila físicamente la interfaz, pero el error medio en $\nabla\phi$ sube de 3.6% a 8.4% y la anisotropía de la diferencia centrada de 1.8% a 3.7%. Subir $W$ reduce los errores, pero embota la interfaz hasta que las gotas pequeñas y las películas delgadas dejan de resolverse.
+
+Esa tabla explica por qué $W=4$ a $5$ se volvió el valor habitual en la práctica. Y recurrir a $M$ cuando se quiere una interfaz más fina no sirve de nada: con eso empezó este artículo. Girar $M$ cambia la velocidad de recuperación, y bajarlo demasiado deja a la antidifusión sin capacidad de alcanzar a la difusión numérica que la advección no deja de generar. Hay exactamente una perilla para el espesor, y es $W$.

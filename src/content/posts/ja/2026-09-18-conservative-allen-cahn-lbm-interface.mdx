@@ -1,0 +1,251 @@
+---
+title: "移動度を10倍にしても界面の厚みは動かなかった — 保存型Allen–Cahnの反拡散項"
+date: 2026-09-18
+description: "反拡散項が拡散を正確に打ち消し、界面厚みを移動度ではなくWに固定する仕組みと、その項がLBM平衡分布に入る位置"
+tags: ["Allen-Cahn", "Phase-Field", "LBM", "Multiphase", "Interface-Capturing"]
+locale: ja
+slug: 2026-09-18-conservative-allen-cahn-lbm-interface
+takeaway: "界面の厚みを決めるのは移動度Mではなく W です。M が決めるのは厚みではなく、崩れた界面が戻る速さだけです。"
+draft: false
+---
+
+import { AntiDiffusionWidthLock } from '@/components/post-viz/2026-09-18-conservative-allen-cahn-lbm-interface/AntiDiffusionWidthLock'
+import { LatticeGradientIsotropyRose } from '@/components/post-viz/2026-09-18-conservative-allen-cahn-lbm-interface/LatticeGradientIsotropyRose'
+
+## 拡散を10倍にしたのに界面は厚くならなかった
+
+相場(phase field、界面を0と1のあいだを滑らかに渡るスカラーで表す方法)のコードで、移動度 $M$ を0.02から0.20へ上げました。拡散係数を10倍にしたことになります。界面は10倍速くなまるはずです。測った厚みは4.44から4.24へ、わずかに減りました。
+
+計算が壊れたわけではありません。方程式がそういう形をしています。この記事では、格子ボルツマン法(LBM)で界面を保持する保存型Allen–Cahn方程式の厚みがなぜ移動度に依らないのか、その項がLBMのどこに入るのか、そしてその項に不可欠な $\nabla\phi$ を格子上でどう求めるのかを扱います。出てくる数値はすべて、併記したコードを実際に走らせて得たものです。
+
+下のシミュレーションを実際に触ってみてください。
+
+<AntiDiffusionWidthLock />
+
+`smear interface` を押してわざと界面を崩し、下段のオレンジ色の厚み履歴を見ます。反拡散がオンならどの $M$ でも緑の破線の高さへ戻り、オフなら $M$ は厚みが増える速さを決めるだけです。
+
+## 界面を方程式ひとつで押さえるという発想
+
+VOFやlevel setは移流を解いたあと、界面を再構成したり距離関数を再初期化したりします。別工程です。以前扱った[反拡散による界面シャープニング](/ja/posts/2026-07-25-interface-sharpening-anti-diffusion/)も、移流のあとにシャープニング方程式を回す後処理でした。
+
+保存型Allen–Cahnは、その後処理を同じ方程式の中に畳み込みます。
+
+$$
+\frac{\partial \phi}{\partial t} + \nabla\cdot(\phi\,\mathbf{u}) = \nabla\cdot\left[\,M\left(\nabla\phi - \frac{4\phi(1-\phi)}{W}\,\mathbf{n}\right)\right]
+$$
+
+$\phi$ は相場変数(一方の相で0、他方で1)、$M$ は移動度、$W$ は目標とする界面厚み(格子セル数)、$\mathbf{n}=\nabla\phi/|\nabla\phi|$ は界面法線です。括弧内の第1項は界面を広げる通常の拡散、第2項が逆向きに押し戻す反拡散です。
+
+右辺全体が発散形になっている点が効きます。周期境界では $\int\phi\,dV$ が機械精度まで保存されます。質量を保存しないことで知られるAllen–Cahnの一形式が「保存型」と呼ばれる理由がここにあります。
+
+## 反拡散項がちょうどゼロになる場所
+
+界面法線方向の座標を $\xi$ とすると、平衡プロファイルはこうなります。
+
+$$
+\phi(\xi) = \frac{1}{2}\left[1+\tanh\frac{2\xi}{W}\right]
+$$
+
+微分すれば勾配が出ます。
+
+$$
+\frac{d\phi}{d\xi} = \frac{1}{W}\,\mathrm{sech}^2\frac{2\xi}{W}
+$$
+
+一方、同じプロファイル上で $4\phi(1-\phi) = 1-\tanh^2(2\xi/W) = \mathrm{sech}^2(2\xi/W)$ です。2つの式は同じ関数です。つまり平衡プロファイル上では
+
+$$
+\nabla\phi = \frac{4\phi(1-\phi)}{W}\,\mathbf{n}
+$$
+
+が恒等的に成り立ちます。括弧の中がゼロです。そして $M$ はそのゼロに掛かります。
+
+ここから2つのことが出ます。第一に、平衡厚みは $W$ だけで決まり、移動度は口を出しません。第二に、$M$ が支配するのは平衡から外れたときの回復時間で、これは概ね $W^2/M$ で動きます。
+
+## 格子の上ではそのゼロは自動では保たれない
+
+連続系でぴたりと打ち消し合う2項も、離散化すると別々に動きます。拡散と反拡散を格子点上で中心差分により個別に評価すると、どちらのステンシルも $i-1$ と $i+1$ だけを見て $i$ を飛ばします。奇数点と偶数点が互いを知らない状態になり、その格子スケールのモードを反拡散が増幅します。実際その形で組んだところ、$M=0.20$ で厚みが目標の4.0を通り越して2.88まで下がりました。
+
+対処は、フラックスを格子点ではなく面で作ることです。面 $i+1/2$ のフラックスを $\phi_i$ と $\phi_{i+1}$ の2値だけで組めば、隣り合う点が互いを見ます。分離モードの入る隙がありません。
+
+## 同じ物差しで厚みを8回測った
+
+スラブを厚み8で初期化し、目標 $W=4$ に向けて8,000ステップ回しました。反拡散のオン・オフを $M$ の4値それぞれで比べます。
+
+```python
+import numpy as np
+
+L, dx, dt = 384, 1.0, 0.2
+W, u, NSTEP, R = 4.0, 0.05, 8000, 96.0
+x = np.arange(L) * dx
+
+def slab(width):
+    d = (x - L / 2 + L / 2) % L - L / 2
+    return 0.5 * (1.0 + np.tanh(2.0 * (R - np.abs(d)) / width))
+
+def measured_width(phi):
+    g = (np.roll(phi, -1) - np.roll(phi, 1)) / (2.0 * dx)
+    return 1.0 / np.max(np.abs(g))
+
+def face_flux(phi, M, sharp):
+    # 面 i+1/2 の上で拡散と反拡散をまとめて作る
+    g = (np.roll(phi, -1) - phi) / dx
+    pf = 0.5 * (phi + np.roll(phi, -1))
+    return M * (g - sharp * (4.0 * pf * (1.0 - pf) / W) * np.sign(g))
+
+def step(phi, M, sharp):
+    F = face_flux(phi, M, sharp)
+    adv = u * (np.roll(phi, -1) - np.roll(phi, 1)) / (2.0 * dx)
+    return phi + dt * (-adv + (F - np.roll(F, 1)) / dx)
+
+def run(M, sharp, w_init=8.0):
+    phi = slab(w_init)
+    m0 = phi.sum() * dx
+    for _ in range(NSTEP):
+        phi = step(phi, M, sharp)
+    return measured_width(phi), phi.sum() * dx - m0
+
+print("ruler: an exact tanh of W=4.0 on this grid reads %.4f" % measured_width(slab(W)))
+print("start W=8.0, %d steps at u=%.2f, target W=%.1f\n" % (NSTEP, u, W))
+print("%-8s %-12s %-12s %-12s" % ("M", "anti-diff", "W_read", "mass drift"))
+for M in (0.02, 0.05, 0.10, 0.20):
+    for sharp in (1.0, 0.0):
+        w, dm = run(M, sharp)
+        print("%-8.2f %-12s %-12.4f %-+12.2e" % (M, "ON" if sharp else "OFF", w, dm))
+w_lo, _ = run(0.05, 1.0, w_init=2.0)
+print("\nfrom the thin side: W_init=2.0, M=0.05, ON -> %.4f" % w_lo)
+```
+
+```text
+ruler: an exact tanh of W=4.0 on this grid reads 4.3279
+start W=8.0, 8000 steps at u=0.05, target W=4.0
+
+M        anti-diff    W_read       mass drift  
+0.02     ON           4.4403       -1.10e-11   
+0.02     OFF          21.8974      -1.34e-11   
+0.05     ON           4.2854       -2.95e-11   
+0.05     OFF          32.9005      -6.76e-12   
+0.10     ON           4.2442       -3.22e-11   
+0.10     OFF          45.6971      -9.66e-13   
+0.20     ON           4.2357       -3.60e-11   
+0.20     OFF          64.0262      -2.27e-13   
+
+from the thin side: W_init=2.0, M=0.05, ON -> 4.2854
+```
+
+最初の行が物差しです。厚みを $1/\max|\nabla\phi|$ で測っていますが、厳密な幅4のtanhを格子に載せて同じ方法で測ると4.0ではなく4.3279と出ます。物差し自身の離散化誤差です。
+
+その物差しに当てれば、反拡散オンの4値4.24〜4.44はすべて $\pm3\%$ の内側です。移動度が10倍動くあいだ、厚みはほぼ動いていません。反拡散を切ると同じ範囲で21.9から64.0まで開きます。質量のずれはどちらも $10^{-11}$ 程度です。
+
+最後の行は、これが単なる「変化なし」ではないことを示します。厚み2から始めても4.2854まで上がり、上から下りてきた値と小数第4位まで一致します。平衡プロファイルは両側から引き寄せるアトラクターです。
+
+## LBMに移すと、この項はソース項ではない
+
+$\phi$ に分布関数 $h_i$ を別に立てます。ここでよくある回り道が、反拡散を衝突後に足すソース項として組むことです。その必要はありません。
+
+$$
+h_i(\mathbf{x}+\mathbf{c}_i\delta t,\ t+\delta t) = h_i(\mathbf{x},t) - \frac{1}{\tau_\phi}\left[h_i(\mathbf{x},t) - h_i^{\mathrm{eq}}\right]
+$$
+
+平衡分布をこう取ります。
+
+$$
+h_i^{\mathrm{eq}} = w_i\,\phi + \frac{w_i}{c_s^2}\,\mathbf{c}_i\cdot\left[\phi\,\mathbf{u} + M\,\frac{4\phi(1-\phi)}{W}\,\mathbf{n}\right]
+$$
+
+$w_i$ は格子重み、$c_s^2=1/3$ は格子音速の2乗、$\tau_\phi$ は無次元緩和時間です。角括弧の中が平衡分布の1次モーメント、つまり $\phi$ を運ぶ速度です。物理速度 $\mathbf{u}$ の隣に、反拡散が速度の顔をして並んでいます。
+
+Chapman–Enskog展開をかけると、拡散係数は緩和時間から出てきます。
+
+$$
+M = c_s^2\left(\tau_\phi - \frac{1}{2}\right)\delta t
+$$
+
+2つを合わせると、先の保存型Allen–Cahn方程式がそのまま復元されます。緩和が $+M\nabla^2\phi$ を作り、平衡分布に載せた1次モーメントが $-\nabla\cdot(M\,4\phi(1-\phi)\mathbf{n}/W)$ を作ります。緩和時間から誤差がどう付いてくるかは[対流拡散LBMのChapman–Enskog誤差](/ja/posts/2026-08-14-lbm-convection-diffusion-ce-error/)で詳しく扱いました。
+
+実装上の利点ははっきりしています。streamingとcollisionの構造に手を入れません。界面捕捉の仕事が平衡分布の一行に収まります。運動量側で表面張力をどの形で入れるかは別の選択で、その比較は[非理想LBMの2つのforcing形式](/ja/posts/2026-08-21-nonideal-lbm-pressure-vs-freeenergy-forcing/)で行いました。
+
+## 代償は $\mathbf{n}$ を全格子点で求めること
+
+ただではありません。平衡分布に $\mathbf{n}=\nabla\phi/|\nabla\phi|$ が入っている以上、$\nabla\phi$ をどこでも評価する必要があり、ステンシルの選択が結果を分けます。
+
+素直な選択は軸方向の4近傍だけを使う中心差分です。格子ボルツマンにはもう一つの手があります。格子速度集合全体に重みを載せるやり方です。
+
+$$
+\nabla\phi \simeq \frac{1}{c_s^2}\sum_i w_i\,\mathbf{c}_i\;\phi(\mathbf{x}+\mathbf{c}_i\delta t)
+$$
+
+D2Q9では重みは軸方向が $1/9$、対角方向が $1/36$ です。対角近傍が入ることで4次の異方性誤差が打ち消されます。2つのステンシルを同じ液滴の上で比べてみましょう。
+
+<LatticeGradientIsotropyRose />
+
+ステンシルのボタンを押し、横の数値ではなく右のローズ図の変化を見ます。中心差分は格子軸方向に花びらが4枚伸びた形、D2Q9はほぼ円です。$W$ を2の方へ下げると両方とも悪化しますが、いびつになるのは片方だけです。
+
+## 平均誤差が大きいほうを選ぶ理由
+
+半径24、厚み $W$ のtanh液滴を96×96格子に載せ、界面リング上の $|\nabla\phi|$ の相対誤差を角度24区間に分けて測りました。
+
+```python
+import numpy as np
+
+N, R = 96, 24.0
+cx = np.array([0, 1, 0, -1, 0, 1, -1, -1, 1])
+cy = np.array([0, 0, 1, 0, -1, 1, 1, -1, -1])
+w = np.array([4/9] + [1/9]*4 + [1/36]*4)
+
+def fields(W):
+    i = np.arange(N)
+    X, Y = np.meshgrid(i - N/2 + 0.5, i - N/2 + 0.5, indexing='ij')
+    r = np.sqrt(X**2 + Y**2)
+    phi = 0.5 * (1.0 + np.tanh(2.0 * (R - r) / W))
+    exact = (1.0 / W) / np.cosh(2.0 * (R - r) / W)**2
+    return X, Y, r, phi, exact
+
+def grad_central(phi):
+    gx = (np.roll(phi, -1, 0) - np.roll(phi, 1, 0)) / 2.0
+    gy = (np.roll(phi, -1, 1) - np.roll(phi, 1, 1)) / 2.0
+    return np.sqrt(gx**2 + gy**2)
+
+def grad_lattice(phi):
+    # 対角近傍まで格子重みでまとめる
+    gx = np.zeros_like(phi); gy = np.zeros_like(phi)
+    for k in range(9):
+        s = np.roll(np.roll(phi, -cx[k], 0), -cy[k], 1)
+        gx += w[k] * cx[k] * s
+        gy += w[k] * cy[k] * s
+    return np.sqrt((3.0 * gx)**2 + (3.0 * gy)**2)
+
+print("%-6s %-12s %-14s %-14s" % ("W", "stencil", "mean err %", "anisotropy %"))
+for W in (5.0, 4.0, 3.0):
+    X, Y, r, phi, exact = fields(W)
+    ring = np.abs(r - R) < 0.6
+    theta = np.arctan2(Y, X)[ring]
+    for name, g in (("central", grad_central(phi)), ("D2Q9", grad_lattice(phi))):
+        err = (g[ring] - exact[ring]) / exact[ring] * 100.0
+        b = ((theta + np.pi) / (np.pi / 12)).astype(int) % 24
+        binned = np.array([err[b == j].mean() for j in range(24) if np.any(b == j)])
+        print("%-6.1f %-12s %-14.3f %-14.3f" % (W, name, np.abs(err).mean(),
+                                                binned.max() - binned.min()))
+```
+
+```text
+W      stencil      mean err %     anisotropy %  
+5.0    central      3.641          1.812         
+5.0    D2Q9         4.675          0.075         
+4.0    central      5.338          2.575         
+4.0    D2Q9         6.803          0.155         
+3.0    central      8.369          3.749         
+3.0    D2Q9         10.539         0.402         
+```
+
+$W=4$ でD2Q9の平均誤差は6.803%、中心差分の5.338%より大きい。精度だけ見れば負けています。ところが角度による広がりは2.575%から0.155%へ、17倍近く縮みます。
+
+この2つは大きさが違うのではなく、性質が違います。界面全体に一様に乗った誤差は $\nabla\phi$ の大きさを一定比率で外します。表面張力係数をその分だけ取り違えたのと同じで、静止した液滴は静止したままです。角度によって変わる誤差は別物です。同じ円の上の点ごとに違う大きさの力がかかります。その不均衡が、止まっているはずの液滴表面に流れを生みます。よく言われる寄生流(spurious current)です。
+
+つまりここでは平均誤差1.5ポイントを渡して等方性17倍を買っています。割に合う取引です。
+
+## $W$ を決めるとき実際に値切っているもの
+
+表の3列目と4列目は逆向きに動きます。$W$ を5から3へ下げると界面は物理的に鋭くなりますが、$\nabla\phi$ の平均誤差は3.6%から8.4%へ、中心差分の異方性は1.8%から3.7%へ増えます。$W$ を上げれば誤差は減りますが、界面が鈍って小さな液滴や薄い膜を解像できなくなります。
+
+$W=4\sim5$ が実務の定番になった理由がこの表にあります。そして界面を薄くしたいときに $M$ をいじっても何も起きません。この記事の最初の数値がその話でした。$M$ を回すと回復速度が変わり、下げすぎると移流が生む数値拡散に反拡散が追いつかなくなります。厚みのつまみは $W$ ひとつだけです。

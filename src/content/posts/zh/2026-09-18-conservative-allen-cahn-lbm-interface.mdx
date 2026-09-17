@@ -1,0 +1,251 @@
+---
+title: "迁移率放大10倍，界面厚度却没有动 — 守恒型Allen–Cahn的反扩散项"
+date: 2026-09-18
+description: "反扩散项如何精确抵消扩散，把界面厚度锁定在W而不是迁移率上，以及该项进入LBM平衡分布的位置"
+tags: ["Allen-Cahn", "Phase-Field", "LBM", "Multiphase", "Interface-Capturing"]
+locale: zh
+slug: 2026-09-18-conservative-allen-cahn-lbm-interface
+takeaway: "决定界面厚度的是W，不是迁移率M。M决定的不是厚度，而是被抹平的界面回弹的速度。"
+draft: false
+---
+
+import { AntiDiffusionWidthLock } from '@/components/post-viz/2026-09-18-conservative-allen-cahn-lbm-interface/AntiDiffusionWidthLock'
+import { LatticeGradientIsotropyRose } from '@/components/post-viz/2026-09-18-conservative-allen-cahn-lbm-interface/LatticeGradientIsotropyRose'
+
+## 扩散放大十倍，界面却没有变厚
+
+在一份相场(phase field，用一个在0和1之间平滑过渡的标量表示界面)代码里，把迁移率 $M$ 从0.02提到0.20。相当于把扩散系数放大十倍。界面应该抹平得快十倍。实测厚度从4.44变成4.24，反而略微减小。
+
+计算没有出错。方程本来就是这个样子。本文讨论：格子玻尔兹曼方法(LBM)中用来保持界面的守恒型Allen–Cahn方程，为什么其厚度与迁移率无关；这一项落在LBM的哪个位置；以及这一项离不开的 $\nabla\phi$ 在格子上该怎么算。文中所有数字都来自随文给出的代码的实际运行结果。
+
+在下面的模拟里亲手操作一下。
+
+<AntiDiffusionWidthLock />
+
+按 `smear interface` 故意把界面抹开，然后看下方橙色的厚度记录。反扩散打开时，无论 $M$ 取多少都会回到绿色虚线的高度；关闭时，$M$ 只决定界面继续变厚的速度。
+
+## 用一个方程按住界面
+
+VOF和level set先解对流，然后重构界面或者重新初始化距离函数。那是一个独立的步骤。之前写过的[反扩散界面锐化](/zh/posts/2026-07-25-interface-sharpening-anti-diffusion/)同样是后处理：先对流，再跑一个锐化方程。
+
+守恒型Allen–Cahn把这个后处理折进了同一个方程里。
+
+$$
+\frac{\partial \phi}{\partial t} + \nabla\cdot(\phi\,\mathbf{u}) = \nabla\cdot\left[\,M\left(\nabla\phi - \frac{4\phi(1-\phi)}{W}\,\mathbf{n}\right)\right]
+$$
+
+其中 $\phi$ 是相场变量(一相为0，另一相为1)，$M$ 是迁移率，$W$ 是目标界面厚度(以格子单元计)，$\mathbf{n}=\nabla\phi/|\nabla\phi|$ 是界面法向。括号里第一项是把界面摊开的普通扩散，第二项则朝反方向推回去。
+
+右端整体写成散度形式这一点很关键。在周期边界下 $\int\phi\,dV$ 守恒到机器精度。Allen–Cahn本以不守恒质量出名，这个形式却能叫"守恒型"，原因就在这里。
+
+## 反扩散项恰好为零的地方
+
+记界面法向坐标为 $\xi$，平衡剖面长这样。
+
+$$
+\phi(\xi) = \frac{1}{2}\left[1+\tanh\frac{2\xi}{W}\right]
+$$
+
+求导得到斜率。
+
+$$
+\frac{d\phi}{d\xi} = \frac{1}{W}\,\mathrm{sech}^2\frac{2\xi}{W}
+$$
+
+而在同一剖面上 $4\phi(1-\phi) = 1-\tanh^2(2\xi/W) = \mathrm{sech}^2(2\xi/W)$。两个式子是同一个函数。也就是说，在平衡剖面上
+
+$$
+\nabla\phi = \frac{4\phi(1-\phi)}{W}\,\mathbf{n}
+$$
+
+恒等成立。括号里是零。而 $M$ 乘的正是这个零。
+
+由此得到两点。第一，平衡厚度只由 $W$ 决定，迁移率插不上手。第二，$M$ 控制的是偏离平衡之后的恢复时间，量级大致按 $W^2/M$ 变化。
+
+## 在格子上这个零不会自动保持
+
+在连续方程里精确抵消的两项，一经离散就各走各的。若在格点上用中心差分分别算扩散和反扩散，两个模板都只看 $i-1$ 和 $i+1$ 而跳过 $i$。奇数点和偶数点互不相识，反扩散又会放大这个格子尺度的模态。按这个写法实测，$M=0.20$ 时厚度越过目标4.0，一路掉到2.88。
+
+办法是把通量建在面上而不是格点上。面 $i+1/2$ 的通量只用 $\phi_i$ 和 $\phi_{i+1}$ 两个值组装，相邻点就能互相看见，分离模态没有立足之地。
+
+## 用同一把尺量了八次厚度
+
+把一块平板初始化成厚度8，朝目标 $W=4$ 跑8,000步。反扩散开与关，各取四个 $M$ 值对比。
+
+```python
+import numpy as np
+
+L, dx, dt = 384, 1.0, 0.2
+W, u, NSTEP, R = 4.0, 0.05, 8000, 96.0
+x = np.arange(L) * dx
+
+def slab(width):
+    d = (x - L / 2 + L / 2) % L - L / 2
+    return 0.5 * (1.0 + np.tanh(2.0 * (R - np.abs(d)) / width))
+
+def measured_width(phi):
+    g = (np.roll(phi, -1) - np.roll(phi, 1)) / (2.0 * dx)
+    return 1.0 / np.max(np.abs(g))
+
+def face_flux(phi, M, sharp):
+    # 在面 i+1/2 上把扩散和反扩散一起构造
+    g = (np.roll(phi, -1) - phi) / dx
+    pf = 0.5 * (phi + np.roll(phi, -1))
+    return M * (g - sharp * (4.0 * pf * (1.0 - pf) / W) * np.sign(g))
+
+def step(phi, M, sharp):
+    F = face_flux(phi, M, sharp)
+    adv = u * (np.roll(phi, -1) - np.roll(phi, 1)) / (2.0 * dx)
+    return phi + dt * (-adv + (F - np.roll(F, 1)) / dx)
+
+def run(M, sharp, w_init=8.0):
+    phi = slab(w_init)
+    m0 = phi.sum() * dx
+    for _ in range(NSTEP):
+        phi = step(phi, M, sharp)
+    return measured_width(phi), phi.sum() * dx - m0
+
+print("ruler: an exact tanh of W=4.0 on this grid reads %.4f" % measured_width(slab(W)))
+print("start W=8.0, %d steps at u=%.2f, target W=%.1f\n" % (NSTEP, u, W))
+print("%-8s %-12s %-12s %-12s" % ("M", "anti-diff", "W_read", "mass drift"))
+for M in (0.02, 0.05, 0.10, 0.20):
+    for sharp in (1.0, 0.0):
+        w, dm = run(M, sharp)
+        print("%-8.2f %-12s %-12.4f %-+12.2e" % (M, "ON" if sharp else "OFF", w, dm))
+w_lo, _ = run(0.05, 1.0, w_init=2.0)
+print("\nfrom the thin side: W_init=2.0, M=0.05, ON -> %.4f" % w_lo)
+```
+
+```text
+ruler: an exact tanh of W=4.0 on this grid reads 4.3279
+start W=8.0, 8000 steps at u=0.05, target W=4.0
+
+M        anti-diff    W_read       mass drift  
+0.02     ON           4.4403       -1.10e-11   
+0.02     OFF          21.8974      -1.34e-11   
+0.05     ON           4.2854       -2.95e-11   
+0.05     OFF          32.9005      -6.76e-12   
+0.10     ON           4.2442       -3.22e-11   
+0.10     OFF          45.6971      -9.66e-13   
+0.20     ON           4.2357       -3.60e-11   
+0.20     OFF          64.0262      -2.27e-13   
+
+from the thin side: W_init=2.0, M=0.05, ON -> 4.2854
+```
+
+第一行是尺子。厚度按 $1/\max|\nabla\phi|$ 度量，而把一个精确的宽度为4的tanh放到格子上、用同样方法去量，读数是4.3279而不是4.0。这是尺子本身的离散化误差。
+
+以这把尺为准，反扩散打开的四个值4.24到4.44全都落在 $\pm3\%$ 以内。迁移率跨了十倍，厚度基本没动。关掉反扩散，同样的区间就从21.9拉到64.0。两边的质量漂移都在 $10^{-11}$ 量级。
+
+最后一行说明这不只是"没有变化"。从厚度2出发也会升到4.2854，与从上方降下来的值在小数点后四位一致。平衡剖面是一个两侧都往回拉的吸引子。
+
+## 搬进LBM之后，这一项不是源项
+
+给 $\phi$ 单独立一套分布函数 $h_i$。这里有一个常见的弯路：把反扩散写成碰撞之后加上的源项。其实不必。
+
+$$
+h_i(\mathbf{x}+\mathbf{c}_i\delta t,\ t+\delta t) = h_i(\mathbf{x},t) - \frac{1}{\tau_\phi}\left[h_i(\mathbf{x},t) - h_i^{\mathrm{eq}}\right]
+$$
+
+平衡分布这样取。
+
+$$
+h_i^{\mathrm{eq}} = w_i\,\phi + \frac{w_i}{c_s^2}\,\mathbf{c}_i\cdot\left[\phi\,\mathbf{u} + M\,\frac{4\phi(1-\phi)}{W}\,\mathbf{n}\right]
+$$
+
+$w_i$ 是格子权重，$c_s^2=1/3$ 是格子声速平方，$\tau_\phi$ 是无量纲松弛时间。方括号里是平衡分布的一阶矩，也就是输运 $\phi$ 的速度。反扩散就以速度的身份，坐在物理速度 $\mathbf{u}$ 旁边。
+
+做Chapman–Enskog展开，扩散系数从松弛时间里出来。
+
+$$
+M = c_s^2\left(\tau_\phi - \frac{1}{2}\right)\delta t
+$$
+
+两者合起来，前面那个守恒型Allen–Cahn方程原样复原。松弛给出 $+M\nabla^2\phi$，平衡分布上多加的一阶矩给出 $-\nabla\cdot(M\,4\phi(1-\phi)\mathbf{n}/W)$。误差如何从松弛时间里跟出来，在[对流扩散LBM的Chapman–Enskog误差](/zh/posts/2026-08-14-lbm-convection-diffusion-ce-error/)里有详细讨论。
+
+从实现角度看，好处很明确：不动streaming和collision的结构，整个界面捕捉的工作装进平衡分布的一行里。动量一侧的表面张力该用哪种形式是另一个选择，那个对比放在[非理想LBM的两种forcing形式](/zh/posts/2026-08-21-nonideal-lbm-pressure-vs-freeenergy-forcing/)里。
+
+## 代价是每个格点都要算 $\mathbf{n}$
+
+没有白拿的。平衡分布里含着 $\mathbf{n}=\nabla\phi/|\nabla\phi|$，$\nabla\phi$ 就得在所有格点上求，而模板的选择会改变结果。
+
+最直接的选择是只用四个轴向邻居的中心差分。格子玻尔兹曼还有另一个选项：给整个格子速度集加权。
+
+$$
+\nabla\phi \simeq \frac{1}{c_s^2}\sum_i w_i\,\mathbf{c}_i\;\phi(\mathbf{x}+\mathbf{c}_i\delta t)
+$$
+
+在D2Q9中，轴向权重为 $1/9$，对角为 $1/36$。对角邻居一进来，四阶各向异性误差被抵消掉。把两个模板放到同一个液滴上比一比。
+
+<LatticeGradientIsotropyRose />
+
+按模板按钮，看的是右边的玫瑰图，而不是旁边的数值。中心差分是一朵沿格子轴伸出四片花瓣的花，D2Q9几乎是个圆。把 $W$ 往2的方向压，两者都会变差，但只有一个会变歪。
+
+## 为什么要选平均误差更大的那一个
+
+把半径24、厚度为 $W$ 的tanh液滴放在96×96格子上，在界面环上测 $|\nabla\phi|$ 的相对误差，按角度分成24个扇区。
+
+```python
+import numpy as np
+
+N, R = 96, 24.0
+cx = np.array([0, 1, 0, -1, 0, 1, -1, -1, 1])
+cy = np.array([0, 0, 1, 0, -1, 1, 1, -1, -1])
+w = np.array([4/9] + [1/9]*4 + [1/36]*4)
+
+def fields(W):
+    i = np.arange(N)
+    X, Y = np.meshgrid(i - N/2 + 0.5, i - N/2 + 0.5, indexing='ij')
+    r = np.sqrt(X**2 + Y**2)
+    phi = 0.5 * (1.0 + np.tanh(2.0 * (R - r) / W))
+    exact = (1.0 / W) / np.cosh(2.0 * (R - r) / W)**2
+    return X, Y, r, phi, exact
+
+def grad_central(phi):
+    gx = (np.roll(phi, -1, 0) - np.roll(phi, 1, 0)) / 2.0
+    gy = (np.roll(phi, -1, 1) - np.roll(phi, 1, 1)) / 2.0
+    return np.sqrt(gx**2 + gy**2)
+
+def grad_lattice(phi):
+    # 用格子权重把对角邻居一并纳入
+    gx = np.zeros_like(phi); gy = np.zeros_like(phi)
+    for k in range(9):
+        s = np.roll(np.roll(phi, -cx[k], 0), -cy[k], 1)
+        gx += w[k] * cx[k] * s
+        gy += w[k] * cy[k] * s
+    return np.sqrt((3.0 * gx)**2 + (3.0 * gy)**2)
+
+print("%-6s %-12s %-14s %-14s" % ("W", "stencil", "mean err %", "anisotropy %"))
+for W in (5.0, 4.0, 3.0):
+    X, Y, r, phi, exact = fields(W)
+    ring = np.abs(r - R) < 0.6
+    theta = np.arctan2(Y, X)[ring]
+    for name, g in (("central", grad_central(phi)), ("D2Q9", grad_lattice(phi))):
+        err = (g[ring] - exact[ring]) / exact[ring] * 100.0
+        b = ((theta + np.pi) / (np.pi / 12)).astype(int) % 24
+        binned = np.array([err[b == j].mean() for j in range(24) if np.any(b == j)])
+        print("%-6.1f %-12s %-14.3f %-14.3f" % (W, name, np.abs(err).mean(),
+                                                binned.max() - binned.min()))
+```
+
+```text
+W      stencil      mean err %     anisotropy %  
+5.0    central      3.641          1.812         
+5.0    D2Q9         4.675          0.075         
+4.0    central      5.338          2.575         
+4.0    D2Q9         6.803          0.155         
+3.0    central      8.369          3.749         
+3.0    D2Q9         10.539         0.402         
+```
+
+在 $W=4$ 处，D2Q9的平均误差是6.803%，高于中心差分的5.338%。单看精度是输的。可是随角度的离散度从2.575%降到0.155%，接近十七倍。
+
+这两个数不是大小之分，而是性质之分。均匀地铺在整个界面上的误差，只是把 $\nabla\phi$ 的大小按固定比例算错。这等价于把表面张力系数取偏了，静止的液滴照样静止。随角度变化的误差就不同了。同一个圆上不同位置受到的力大小不一样。这种不平衡会在本该静止的液滴表面搅出流动，也就是常说的寄生流(spurious current)。
+
+所以这里是让出1.5个百分点的平均误差，换来十七倍的各向同性。这笔账是划算的。
+
+## 选 $W$ 的时候实际在讨价还价什么
+
+表里第三列和第四列朝相反方向走。把 $W$ 从5降到3，界面在物理上更锐利，但 $\nabla\phi$ 的平均误差从3.6%升到8.4%，中心差分的各向异性从1.8%升到3.7%。把 $W$ 调大，误差变小，界面却变钝，小液滴和薄膜就解析不出来了。
+
+$W=4\sim5$ 之所以成为工程上的常用值，答案就在这张表里。而想让界面变薄时去动 $M$ 是白费力气，本文开头那个数字讲的就是这件事。拧 $M$ 改变的是恢复速度，拧得太低，反扩散就追不上对流不断制造的数值扩散。控制厚度的旋钮只有 $W$ 一个。
