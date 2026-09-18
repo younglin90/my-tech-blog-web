@@ -1,0 +1,347 @@
+---
+title: "The bill for a 1001x larger time step — why a semi-implicit pressure scheme is not L∞ stable"
+date: 2026-09-19
+description: "A semi-implicit all-Mach pressure solver buys a 1001x time step by dropping the sound speed from its CFL condition. Here is what discontinuities charge in return."
+tags: ["Semi-Implicit", "Low-Mach", "IMEX", "Paper-Review", "Numerical-Analysis"]
+locale: en
+slug: semi-implicit-pressure-linf-flattener
+takeaway: "Erase the sound speed from the CFL condition and the time step comes free, but the oscillation at a discontinuity stays put instead of decaying."
+draft: false
+---
+
+import { AcousticCflBudgetDial } from '@/components/post-viz/2026-09-19-semi-implicit-pressure-linf-flattener/AcousticCflBudgetDial'
+import { ThetaOvershootPersistence } from '@/components/post-viz/2026-09-19-semi-implicit-pressure-linf-flattener/ThetaOvershootPersistence'
+
+## 1971, the year pressure was pried loose from the sound speed
+
+That is when Francis Harlow and Anthony Amsden published the ICE method at Los Alamos. The title
+carried the phrase "all flow speeds". It announced that the crawl of a compressible code at low Mach
+number would be attacked through the time step rather than the mesh. The newest entry in that line is
+the 2021 semi-implicit pressure-based scheme of Boscheri and Pareschi, which solves the three
+dimensional Navier–Stokes equations to third order across every Mach regime. This article checks, in
+numbers, exactly what that scheme buys and what it gives up. The short version: the time step grew by
+up to a factor of 1001, and the oscillation at a discontinuity was still there after four laps.
+
+Start with what it buys. Pull the Mach slider down in the figure below.
+
+<AcousticCflBudgetDial />
+
+Both panels cover the same physical time and the same forty cells. As the Mach number drops, the red
+acoustic characteristics tilt toward horizontal, and the upper panel starts slicing the window into
+ever thinner time levels to keep them inside a single cell. The step count in the lower panel never
+moves.
+
+## Where the time step gets tied to the Mach number
+
+In the rescaled Navier–Stokes equations the stiffness is carried by $\varepsilon$, the square of the
+Mach number, and the sound speed appears as $c/\sqrt{\varepsilon}$. A fully explicit CFL condition
+holds on to it.
+
+$$
+\Delta t \le \mathrm{CFL}\,\frac{\Delta x}{\max\left(|u| + c/\sqrt{\varepsilon}\right)}
+$$
+
+$\Delta x$ is the mesh spacing, $u$ the fluid velocity, $c$ the reference sound speed. As
+$\varepsilon \to 0$ the denominator blows up and $\Delta t$ collapses like $\sqrt{\varepsilon}$.
+A flow in which nothing interesting happens acoustically is held hostage by acoustics.
+
+The semi-implicit scheme moves only the pressure terms to the implicit side. The sound speed then
+drops out of the stability condition.
+
+$$
+\Delta t \le \mathrm{CFL}\,\frac{\Delta x}{\max |u|}
+$$
+
+The ratio of the two is $1 + 1/M$, which is 1001 at $M = 0.001$. The same idea taken from the time
+integration side appears in
+[IMEX TVD schemes and asymptotic preservation](/en/posts/2026-07-26-imex-tvd-ap-low-mach/).
+
+## How pressure turns into an elliptic equation
+
+The first order semi-implicit semi-discretisation is three lines. Continuity stays fully explicit,
+the momentum equation treats only the pressure gradient implicitly, and the energy equation takes the
+momentum inside the enthalpy flux implicitly.
+
+$$
+\frac{\rho^{n+1} - \rho^{n}}{\Delta t} + \nabla\cdot(\rho\mathbf{u})^{n} = 0
+$$
+
+$$
+\frac{(\rho\mathbf{u})^{n+1} - (\rho\mathbf{u})^{n}}{\Delta t}
++ \nabla\cdot\left((\rho\mathbf{u})^{n}\otimes\mathbf{u}^{n}\right)
++ \frac{1}{\varepsilon}\nabla p^{n+1} = 0
+$$
+
+$n$ is the current time level and $n+1$ the next. Substituting the momentum equation into the energy
+equation leaves a single equation whose only unknown is $p^{n+1}$.
+
+$$
+\varepsilon(\rho e)^{n+1}
++ \varepsilon\frac{\Delta t}{2}\frac{(\rho\mathbf{u})^{n}}{\rho^{n}}\nabla p^{n+1}
+- \Delta t^{2}\,\nabla\cdot\left(h^{n}\nabla p^{n+1}\right) = b^{n}
+$$
+
+$h = (\rho e + p)/\rho$ is the specific enthalpy and $b^n$ is a right hand side built from explicit
+quantities alone. The $\Delta t^2 \nabla\cdot(h\nabla p)$ term is what makes this elliptic. For an
+ideal gas $(\rho e)^{n+1} = p^{n+1}/(\gamma-1)$, so the system is linear; for a nonlinear equation
+of state such as Redlich–Kwong a Newton iteration is wrapped around it, converging in at most four
+passes at a tolerance of $10^{-10}$ in the paper.
+
+Once pressure is known the momentum is recovered, and the total energy closes with the implicit part
+of the kinetic energy. In short: **mass → pressure (elliptic) → momentum → energy**. The structure
+matches an incompressible projection method, except that the equation of state is still alive here,
+so compressibility survives.
+
+## Does the divergence really go to zero in the low Mach limit
+
+Asymptotic preservation means the discrete scheme reproduces the incompressible limit on its own as
+$\varepsilon \to 0$. Expanding every variable in powers of $\varepsilon$ and keeping the leading
+terms makes the leading pressure spatially constant.
+
+$$
+\nabla p_{(0)}^{n+1} = 0
+$$
+
+Feeding that into the limit of the energy equation gives, for an ideal gas,
+
+$$
+h^{n}\,\nabla\cdot\mathbf{u}^{n+1} = O(\Delta t)
+$$
+
+and the constant hidden in $O(\Delta t)$ does not depend on $\varepsilon$. However far the Mach
+number is pushed down, the divergence of the velocity field stays at the level of $\Delta t$. That is
+why the pressure does not split into a checkerboard when the same mesh is taken into the low Mach
+regime.
+
+## Four laps of the same pulse in Python
+
+Section 3.6 of the paper records an uncomfortable sentence. High order implicit time discretisations
+cannot remove overshoot in front of a strong discontinuity, and those oscillations **neither grow nor
+disappear**. Calling an implicit scheme stable means $L_2$ stable, not $L_\infty$ stable.
+
+Checking that claim alone does not need the full nonlinear solver. The same splitting applied to the
+linearised one dimensional Euler equations is enough: material transport explicit, acoustic coupling
+implicit, with an implicitness weight $\theta$ swept from 0.5 (second order, no damping) to 1.0
+(first order, damped). Placing pressure at cell centres and velocity on faces makes the pressure
+equation exactly a three-point Helmholtz system. The boundaries are periodic, so a cyclic tridiagonal
+solver does the work.
+
+The initial state is a square acoustic pulse travelling right. The exact solution is that pulse
+translated by $u_0 + c$, so the error is analytic. A material CFL of 0.5 puts the acoustic CFL at 5.
+
+```python
+import numpy as np
+
+GAMMA, RHO0, C0 = 1.4, 1.0, 1.0
+P0 = C0 ** 2 * RHO0 / GAMMA          # so that c = sqrt(gamma p0 / rho0) = 1
+N, CFL, U0 = 400, 0.5, 0.1
+DX = 1.0 / N
+
+
+def cyclic_thomas(a, b, c, d):
+    """periodic tridiagonal solve: Thomas + Sherman-Morrison correction."""
+    n = len(b)
+    al, be, g = a[0], c[-1], -b[0]
+    bb = b.copy()
+    bb[0] -= g
+    bb[-1] -= al * be / g
+
+    def tri(rhs):
+        cp, dp = np.zeros(n), np.zeros(n)
+        cp[0], dp[0] = c[0] / bb[0], rhs[0] / bb[0]
+        for i in range(1, n):
+            m = bb[i] - a[i] * cp[i - 1]
+            cp[i], dp[i] = c[i] / m, (rhs[i] - a[i] * dp[i - 1]) / m
+        x = np.zeros(n)
+        x[-1] = dp[-1]
+        for i in range(n - 2, -1, -1):
+            x[i] = dp[i] - cp[i] * x[i + 1]
+        return x
+
+    v = np.zeros(n)
+    v[0], v[-1] = g, be
+    y, z = tri(d), tri(v)
+    fac = (y[0] + al * y[-1] / g) / (1.0 + z[0] + al * z[-1] / g)
+    return y - fac * z
+
+
+def grad_face(p):
+    return (np.roll(p, -1) - p) / DX
+
+
+def div_cell(u):
+    """div_cell(grad_face(.)) is exactly the three-point Laplacian."""
+    return (u - np.roll(u, 1)) / DX
+
+
+def upwind(f):
+    return (f - np.roll(f, 1)) / DX
+
+
+def si_update(u, p, dt, theta):
+    """material transport explicit, acoustic coupling with implicitness theta."""
+    ps = p - dt * U0 * upwind(p)
+    ue = u - dt * U0 * upwind(u) - dt * (1 - theta) / RHO0 * grad_face(p)
+    k = C0 ** 2 * (theta * dt) ** 2 / DX ** 2
+    rhs = ps - dt * GAMMA * P0 * (theta * div_cell(ue) + (1 - theta) * div_cell(u))
+    p_n = cyclic_thomas(np.full(N, -k), np.full(N, 1 + 2 * k), np.full(N, -k), rhs)
+    return ue - dt * theta / RHO0 * grad_face(p_n), p_n
+
+
+def chi_flattener(u, k1):
+    """Eq. (104): flag the cells compressing faster than k1 * c_min."""
+    divu = div_cell(u)
+    return np.minimum(1.0, np.maximum(0.0, -(divu + k1 * C0) / (k1 * C0)))
+
+
+def exact_wave(x, t):
+    s = np.mod(x - (U0 + C0) * t, 1.0)
+    return np.where((s >= 0.3) & (s < 0.6), 1.0, 0.0)
+
+
+def solve_case(n_transit, theta, k1=None):
+    xc, xf = (np.arange(N) + 0.5) * DX, (np.arange(N) + 1.0) * DX
+    p, u = exact_wave(xc, 0.0), exact_wave(xf, 0.0) / (RHO0 * C0)
+    t_end, dt = n_transit / (U0 + C0), CFL * DX / abs(U0)
+    t, nstep, nflag = 0.0, 0, 0
+    while t < t_end - 1e-14:
+        h = min(dt, t_end - t)
+        u2, p2 = si_update(u, p, h, theta)
+        if k1 is not None:
+            chi = chi_flattener(u, k1)
+            nflag += int(np.sum(chi > 0))
+            u1, p1 = si_update(u, p, h, 1.0)
+            cf = np.maximum(chi, np.roll(chi, -1))
+            u2, p2 = cf * u1 + (1 - cf) * u2, chi * p1 + (1 - chi) * p2
+        u, p, t, nstep = u2, p2, t + h, nstep + 1
+    ex = exact_wave(xc, t_end)
+    return dict(l1=float(np.mean(np.abs(p - ex))), over=float(np.max(p) - 1.0),
+                under=float(-np.min(p)), l2=float(np.sqrt(np.mean(p ** 2))),
+                steps=nstep, flagged=nflag, acfl=CFL * C0 / abs(U0))
+
+
+print("=== (1) time step from Eq.(20) vs Eq.(106), CFL=0.5, 400 cells ===")
+print(f"{'Mach':>8}{'dt explicit':>14}{'dt semi-impl':>15}{'gain':>8}")
+for M in [0.5, 0.2, 0.1, 0.02, 0.005, 0.001]:
+    de, di = CFL * DX / (M * C0 + C0), CFL * DX / (M * C0)
+    print(f"{M:8.3f}{de:14.3e}{di:15.3e}{di / de:8.1f}")
+
+b = solve_case(1, 1.0)
+print(f"\n=== (2) square acoustic pulse, M={U0}, material CFL={CFL}")
+print(f"    -> acoustic CFL {b['acfl']:.1f}, {b['steps']} steps per transit ===")
+print(f"{'theta':>7}{'over@1':>10}{'over@2':>10}{'over@4':>10}{'L1@4':>9}{'|p|2@4':>9}")
+for th in (0.50, 0.52, 0.55, 0.60, 0.70, 1.00):
+    r = [solve_case(n, th) for n in (1, 2, 4)]
+    ov = [f"{x['over']:10.4f}" if abs(x['over']) < 1e3 else f"{'blow-up':>10}" for x in r]
+    l1 = f"{r[2]['l1']:9.4f}" if r[2]['l1'] < 1e3 else f"{'-':>9}"
+    l2 = f"{r[2]['l2']:9.4f}" if r[2]['l2'] < 1e3 else f"{'-':>9}"
+    print(f"{th:7.2f}{ov[0]}{ov[1]}{ov[2]}{l1}{l2}")
+
+print("\n=== (3) flattener blend, theta=0.55 against theta=1, 4 transits ===")
+print(f"{'k1':>9}{'flagged/step':>14}{'over':>9}{'under':>9}{'L1':>9}")
+base = solve_case(4, 0.55)
+print(f"{'off':>9}{0:14.1f}{base['over']:9.4f}{base['under']:9.4f}{base['l1']:9.4f}")
+for k1 in [1e-3, 1e-1, 1e0, 1e1, 1e2]:
+    r = solve_case(4, 0.55, k1)
+    print(f"{k1:9.0e}{r['flagged'] / r['steps']:14.1f}{r['over']:9.4f}"
+          f"{r['under']:9.4f}{r['l1']:9.4f}")
+mono = solve_case(4, 1.0)
+print(f"{'theta=1':>9}{'(all cells)':>14}{mono['over']:9.4f}"
+      f"{mono['under']:9.4f}{mono['l1']:9.4f}")
+```
+
+```text
+=== (1) time step from Eq.(20) vs Eq.(106), CFL=0.5, 400 cells ===
+    Mach   dt explicit   dt semi-impl    gain
+   0.500     8.333e-04      2.500e-03     3.0
+   0.200     1.042e-03      6.250e-03     6.0
+   0.100     1.136e-03      1.250e-02    11.0
+   0.020     1.225e-03      6.250e-02    51.0
+   0.005     1.244e-03      2.500e-01   201.0
+   0.001     1.249e-03      1.250e+00  1001.0
+
+=== (2) square acoustic pulse, M=0.1, material CFL=0.5
+    -> acoustic CFL 5.0, 73 steps per transit ===
+  theta    over@1    over@2    over@4     L1@4   |p|2@4
+   0.50  488.1288   blow-up   blow-up        -        -
+   0.52    4.5456  212.3962   blow-up        -        -
+   0.55    0.2285    0.2023    0.1825   0.1348   0.5169
+   0.60    0.0538    0.0286   -0.0346   0.1270   0.4630
+   0.70   -0.0163   -0.0900   -0.2320   0.1992   0.4064
+   1.00   -0.1610   -0.3210   -0.4823   0.3098   0.3347
+
+=== (3) flattener blend, theta=0.55 against theta=1, 4 transits ===
+       k1  flagged/step     over    under       L1
+      off           0.0   0.1825   0.1663   0.1348
+    1e-03         302.9  -0.3611   0.4734   0.2870
+    1e-01         280.0  -0.3544   0.4998   0.2888
+    1e+00         196.0  -0.1857   0.5381   0.2448
+    1e+01           8.2   0.1275   0.3135   0.1469
+    1e+02           0.0   0.1801   0.1726   0.1355
+  theta=1   (all cells)  -0.4823  -0.0985   0.3098
+```
+
+## What separates 0.55 from 0.50
+
+The second table is the heart of this article. $\theta = 0.5$ is Crank–Nicolson, formally second
+order, and on the acoustic part alone it conserves energy exactly. Combined with explicit transport,
+the overshoot reaches 488 within one lap and the run dies on the second. When the implicit half
+supplies no damping at all, the upwind damping of the explicit half cannot cover the splitting error.
+This is why schemes in the Casulli line recommend taking $\theta$ slightly above 0.5.
+
+At $\theta = 0.55$ the picture changes. The overshoot runs 0.2285 → 0.2023 → 0.1825. Eighteen
+percent is still there after four laps. It does not grow, so the scheme is $L_2$ stable; it does not
+shrink either, so it is not $L_\infty$ stable. The sentence in the paper reproduces exactly. At the
+other end $\theta = 1.0$ has a negative overshoot, meaning the pulse never even reaches its own
+height, and pays with an $L_1$ error of 0.3098, which is 2.3 times that of 0.55.
+
+Move $\theta$ yourself with the slider.
+
+<ThetaOvershootPersistence />
+
+Leave $\theta$ at 0.55 and watch only the overshoot readout. However many laps the pulse makes, it
+parks near 0.18. Push to 1.00 and the wiggles go away while the pulse melts. Neither side is free.
+
+## The flattener's $k_1$ was never a threshold
+
+The paper's remedy is detect-then-blend. Shock cells are found by comparing the divergence of the
+velocity field against the smallest sound speed among the neighbours.
+
+$$
+\chi^{n} = \min\left[1,\ \max\left(0,\ -\frac{\nabla\cdot\mathbf{u}^{n} + k_1 c^{n}_{\min}}{k_1 c^{n}_{\min}}\right)\right]
+$$
+
+Where $\chi$ is zero the high order candidate stands, where it is one the first order solution
+replaces it, and in between the two are combined convexly. The paper used $k_1 = 10^{-3}$ for every
+computation and reported that very few cells are ever flagged.
+
+The third table shows what happens when that constant is carried across. At $k_1 = 10^{-3}$, 302.9 of
+400 cells are flagged per step. The overshoot does vanish, from 0.1825 to $-0.3611$, but the $L_1$
+error goes from 0.1348 to 0.2870, a factor of 2.1. That is not detection; it is the whole scheme
+quietly dropping to first order, landing almost exactly where $\theta = 1$ lands (0.3098).
+
+The reason sits in the formula. $\chi$ climbs from 0 to 1 while $\nabla\cdot\mathbf{u}$ moves from
+$-k_1 c$ to $-2k_1 c$. With $k_1 c = 10^{-3}$ that ramp is 0.002 wide. In this problem the divergence
+fluctuates at $O(1)$, so any cell compressing at all lands at $\chi = 1$. It behaves as a sign test,
+not a threshold.
+
+Selecting actual cells took four orders of magnitude more. At $k_1 = 10$ only 8.2 cells per step are
+flagged, the overshoot drops 30 percent from 0.1825 to 0.1275, and $L_1$ worsens by only 9 percent,
+from 0.1348 to 0.1469. At $k_1 = 10^2$ nothing is flagged at all. None of this makes the published
+value wrong. It is tuned for nonlinear shock tubes where the divergence is effectively zero in smooth
+regions; move it to a problem that already carries oscillations and the reference loses its meaning.
+The same species of constant-transplant problem, at an interface with non-conservative terms, appears
+in [the Abgrall criterion and non-conservative terms](/en/posts/2026-09-06-abgrall-criterion-nonconservative-term/).
+
+## What is left where the sound speed used to be
+
+Turning on a semi-implicit pressure scheme really decides three things. First, whatever sound speed
+was erased from the CFL condition is sound the time integration can no longer follow. At low Mach
+that is the right answer, but as the Mach number rises those waves become shocks. Second, $\theta$ is
+a dial trading accuracy against monotonicity, not a safety device — 0.5 was not even stable under this
+splitting. Third, the detector constant is attached to the divergence scale of the problem; copy the
+published value and the detector becomes a switch.
+
+For the opposite approach, recovering the exact solution from cell averages, the contrast with
+[the exact Riemann solution and the shock tube](/en/posts/2026-05-18-godunov-exact-riemann-shock-tube/)
+is sharp.

@@ -24,6 +24,7 @@ function lazyViz(load: () => Promise<{ default: ComponentType }>): ComponentType
 export const VIZ_COMPONENTS: Record<string, ComponentType> = {
   "AbsoluteStabilityRegion": lazyViz(() => import("@/components/post-viz/2026-06-22-lu-sgs-implicit-time-integration/AbsoluteStabilityRegion").then((m) => ({ default: m.AbsoluteStabilityRegion }))),
   "AcousticCFLBudget": lazyViz(() => import("@/components/post-viz/2026-07-26-imex-tvd-ap-low-mach/AcousticCFLBudget").then((m) => ({ default: m.AcousticCFLBudget }))),
+  "AcousticCflBudgetDial": lazyViz(() => import("@/components/post-viz/2026-09-19-semi-implicit-pressure-linf-flattener/AcousticCflBudgetDial").then((m) => ({ default: m.AcousticCflBudgetDial }))),
   "AcousticConvectiveScales": lazyViz(() => import("@/components/post-viz/2026-06-06-weston-block-preconditioner-jfnk/AcousticConvectiveScales").then((m) => ({ default: m.AcousticConvectiveScales }))),
   "AcousticConvectiveSplitDemo": lazyViz(() => import("@/components/post-viz/2026-07-11-acoustic-convective-splitting-lagrange-projection/AcousticConvectiveSplitDemo").then((m) => ({ default: m.AcousticConvectiveSplitDemo }))),
   "AcousticImpedanceMirror": lazyViz(() => import("@/components/post-viz/2026-08-01-acoustic-impedance-interface-two-phase/AcousticImpedanceMirror").then((m) => ({ default: m.AcousticImpedanceMirror }))),
@@ -273,6 +274,7 @@ export const VIZ_COMPONENTS: Record<string, ComponentType> = {
   "TabDropletOscillator": lazyViz(() => import("@/components/post-viz/2026-07-07-tab-droplet-breakup-weber/TabDropletOscillator").then((m) => ({ default: m.TabDropletOscillator }))),
   "TENOvsWENOAdvection1D": lazyViz(() => import("@/components/post-viz/2026-04-25-teno-low-dissipation-shock-capturing/TENOvsWENOAdvection1D").then((m) => ({ default: m.TENOvsWENOAdvection1D }))),
   "ThetaBudgetSplitDial": lazyViz(() => import("@/components/post-viz/2026-08-05-positivity-preserving-flux-limiter/ThetaBudgetSplitDial").then((m) => ({ default: m.ThetaBudgetSplitDial }))),
+  "ThetaOvershootPersistence": lazyViz(() => import("@/components/post-viz/2026-09-19-semi-implicit-pressure-linf-flattener/ThetaOvershootPersistence").then((m) => ({ default: m.ThetaOvershootPersistence }))),
   "ThetaPerFaceSelector": lazyViz(() => import("@/components/post-viz/2026-05-20-positivity-preserving-flux-limiter/ThetaPerFaceSelector").then((m) => ({ default: m.ThetaPerFaceSelector }))),
   "ThincReconstructionLab": lazyViz(() => import("@/components/post-viz/2026-06-13-teno-thinc-shock-resolving-reconstruction/ThincReconstructionLab").then((m) => ({ default: m.ThincReconstructionLab }))),
   "ThincSharpInterface1D": lazyViz(() => import("@/components/post-viz/2026-05-23-chamarthi-2025-wave-appropriate-thinc-mp5/ThincSharpInterface1D").then((m) => ({ default: m.ThincSharpInterface1D }))),

@@ -1,0 +1,313 @@
+---
+title: "时间步长放大1001倍的账单 — 半隐式压力格式为何不是L∞稳定"
+date: 2026-09-19
+description: "复现低马赫半隐式压力格式所换来的时间步长，以及作为代价残留在间断面上的非衰减振荡。"
+tags: ["Semi-Implicit", "Low-Mach", "IMEX", "Paper-Review", "Numerical-Analysis"]
+locale: zh
+slug: semi-implicit-pressure-linf-flattener
+takeaway: "把声速从CFL条件里抹去，时间步长就自由了，但间断面上的振荡不会衰减，会一直留在那里。"
+draft: false
+---
+
+import { AcousticCflBudgetDial } from '@/components/post-viz/2026-09-19-semi-implicit-pressure-linf-flattener/AcousticCflBudgetDial'
+import { ThetaOvershootPersistence } from '@/components/post-viz/2026-09-19-semi-implicit-pressure-linf-flattener/ThetaOvershootPersistence'
+
+## 1971 年，把压力从声速上撬开的算法
+
+那一年 Francis Harlow 与 Anthony Amsden 在 Los Alamos 发表了 ICE 方法，论文标题里写着 "all flow
+speeds"。这是一个宣告：压缩性程序在低马赫区域慢如爬行的问题，要从时间步长而不是网格这一侧解决。这一脉络的
+最新一版，是 Boscheri 与 Pareschi 在 2021 年提出的半隐式压力格式，它在全马赫区间以三阶精度求解三维
+Navier–Stokes 方程。本文用数字核对这套格式究竟赚到了什么、又付出了什么。先把结论写在前面：时间步长最多放大
+到 1001 倍，而间断面上的振荡在跑完四圈之后依然原样留着。
+
+先看它赚到的部分。在下面的图里把马赫数滑块往下拉。
+
+<AcousticCflBudgetDial />
+
+上下两个面板覆盖同样的物理时间、同样的 40 个网格。马赫数越低，红色的声学特征线越平，上面板就越要把这段窗口
+切成更薄的时间层，好把特征线关在一个网格里。下面板的步数始终不变。
+
+## 时间步长被马赫数捆住的地方
+
+在无量纲化的 Navier–Stokes 方程中，承担刚性的是 $\varepsilon$，也就是马赫数的平方，声速以
+$c/\sqrt{\varepsilon}$ 的形式出现。完全显式的 CFL 条件把它原封不动地抱着。
+
+$$
+\Delta t \le \mathrm{CFL}\,\frac{\Delta x}{\max\left(|u| + c/\sqrt{\varepsilon}\right)}
+$$
+
+$\Delta x$ 是网格间距，$u$ 是流体速度，$c$ 是参考声速。当 $\varepsilon \to 0$，分母发散，
+$\Delta t$ 像 $\sqrt{\varepsilon}$ 一样趋于零。声学上什么都没发生的流动，被没人关心的声波扣作人质。
+
+半隐式格式只把压力项挪到隐式一侧，声速随即从稳定性条件中消失。
+
+$$
+\Delta t \le \mathrm{CFL}\,\frac{\Delta x}{\max |u|}
+$$
+
+两式之比是 $1 + 1/M$，在 $M = 0.001$ 时为 1001 倍。从时间积分一侧处理同一思路的文章，见
+[IMEX TVD 格式与渐近保持性](/zh/posts/2026-07-26-imex-tvd-ap-low-mach/)。
+
+## 压力如何变成一个椭圆型方程
+
+一阶半隐式半离散只有三行。连续方程完全显式，动量方程只把压力梯度隐式处理，能量方程把焓通量里的动量取为隐式。
+
+$$
+\frac{\rho^{n+1} - \rho^{n}}{\Delta t} + \nabla\cdot(\rho\mathbf{u})^{n} = 0
+$$
+
+$$
+\frac{(\rho\mathbf{u})^{n+1} - (\rho\mathbf{u})^{n}}{\Delta t}
++ \nabla\cdot\left((\rho\mathbf{u})^{n}\otimes\mathbf{u}^{n}\right)
++ \frac{1}{\varepsilon}\nabla p^{n+1} = 0
+$$
+
+$n$ 是当前时间层，$n+1$ 是下一层。把动量方程代入能量方程，剩下的方程里未知数只有 $p^{n+1}$。
+
+$$
+\varepsilon(\rho e)^{n+1}
++ \varepsilon\frac{\Delta t}{2}\frac{(\rho\mathbf{u})^{n}}{\rho^{n}}\nabla p^{n+1}
+- \Delta t^{2}\,\nabla\cdot\left(h^{n}\nabla p^{n+1}\right) = b^{n}
+$$
+
+$h = (\rho e + p)/\rho$ 是比焓，$b^n$ 是只由显式量构成的右端项。使这个方程成为椭圆型的，是
+$\Delta t^2 \nabla\cdot(h\nabla p)$ 这一项。理想气体下 $(\rho e)^{n+1} = p^{n+1}/(\gamma-1)$，
+因此是线性系统；遇到 Redlich–Kwong 这类非线性状态方程，则要套一层 Newton 迭代，论文报告在
+$10^{-10}$ 的容差下最多四次收敛。
+
+压力解出后回算动量，总能量再补上动能的隐式部分收尾。概括起来是**质量 → 压力（椭圆型）→ 动量 → 能量**。
+结构与不可压投影法相同，但这里状态方程仍然在场，压缩性因此保留了下来。
+
+## 低马赫极限下散度真的趋于零吗
+
+渐近保持指的是，当 $\varepsilon \to 0$ 时离散格式自行复现不可压极限。把所有变量按 $\varepsilon$ 的幂
+展开并只留首项，压力的首项在空间上成为常数。
+
+$$
+\nabla p_{(0)}^{n+1} = 0
+$$
+
+将其代入能量方程的极限并整理，对理想气体可得
+
+$$
+h^{n}\,\nabla\cdot\mathbf{u}^{n+1} = O(\Delta t)
+$$
+
+而 $O(\Delta t)$ 中隐含的常数不依赖于 $\varepsilon$。这意味着无论把马赫数压到多低，速度场的散度都保持在
+$\Delta t$ 的量级。不改网格直接降到低马赫、压力却不会裂成棋盘格，原因正在于此。
+
+## 用 Python 把同一个脉冲跑了四圈
+
+论文 3.6 节写下了一句令人不安的话：高阶隐式时间离散在强间断面前无法消除过冲，而那些振荡**既不增长也不消失**。
+说隐式格式稳定，指的是 $L_2$ 稳定，而不是 $L_\infty$ 稳定。
+
+单独核对这一条并不需要整套非线性求解器。对线性化的一维 Euler 方程施加同样的分裂就够了：物质输运显式，声学
+耦合隐式，隐式权重 $\theta$ 从 0.5（二阶、无阻尼）扫到 1.0（一阶、有阻尼）。在交错网格上把压力放在网格
+中心、速度放在面上，压力方程恰好成为三点 Helmholtz 系统。边界取周期，因此用循环三对角求解器。
+
+初始条件是一个向右行进的方形声学脉冲。精确解就是该脉冲平移 $u_0 + c$，误差可以解析地量出。物质 CFL 取
+0.5，声学 CFL 便是 5。
+
+```python
+import numpy as np
+
+GAMMA, RHO0, C0 = 1.4, 1.0, 1.0
+P0 = C0 ** 2 * RHO0 / GAMMA          # so that c = sqrt(gamma p0 / rho0) = 1
+N, CFL, U0 = 400, 0.5, 0.1
+DX = 1.0 / N
+
+
+def cyclic_thomas(a, b, c, d):
+    """周期三对角求解：Thomas + Sherman-Morrison 修正。"""
+    n = len(b)
+    al, be, g = a[0], c[-1], -b[0]
+    bb = b.copy()
+    bb[0] -= g
+    bb[-1] -= al * be / g
+
+    def tri(rhs):
+        cp, dp = np.zeros(n), np.zeros(n)
+        cp[0], dp[0] = c[0] / bb[0], rhs[0] / bb[0]
+        for i in range(1, n):
+            m = bb[i] - a[i] * cp[i - 1]
+            cp[i], dp[i] = c[i] / m, (rhs[i] - a[i] * dp[i - 1]) / m
+        x = np.zeros(n)
+        x[-1] = dp[-1]
+        for i in range(n - 2, -1, -1):
+            x[i] = dp[i] - cp[i] * x[i + 1]
+        return x
+
+    v = np.zeros(n)
+    v[0], v[-1] = g, be
+    y, z = tri(d), tri(v)
+    fac = (y[0] + al * y[-1] / g) / (1.0 + z[0] + al * z[-1] / g)
+    return y - fac * z
+
+
+def grad_face(p):
+    return (np.roll(p, -1) - p) / DX
+
+
+def div_cell(u):
+    """div_cell(grad_face(.)) 恰好是三点拉普拉斯算子。"""
+    return (u - np.roll(u, 1)) / DX
+
+
+def upwind(f):
+    return (f - np.roll(f, 1)) / DX
+
+
+def si_update(u, p, dt, theta):
+    """物质输运显式，声学耦合按隐式权重 theta 处理。"""
+    ps = p - dt * U0 * upwind(p)
+    ue = u - dt * U0 * upwind(u) - dt * (1 - theta) / RHO0 * grad_face(p)
+    k = C0 ** 2 * (theta * dt) ** 2 / DX ** 2
+    rhs = ps - dt * GAMMA * P0 * (theta * div_cell(ue) + (1 - theta) * div_cell(u))
+    p_n = cyclic_thomas(np.full(N, -k), np.full(N, 1 + 2 * k), np.full(N, -k), rhs)
+    return ue - dt * theta / RHO0 * grad_face(p_n), p_n
+
+
+def chi_flattener(u, k1):
+    """式 (104)：标记压缩速率超过 k1 * c_min 的网格。"""
+    divu = div_cell(u)
+    return np.minimum(1.0, np.maximum(0.0, -(divu + k1 * C0) / (k1 * C0)))
+
+
+def exact_wave(x, t):
+    s = np.mod(x - (U0 + C0) * t, 1.0)
+    return np.where((s >= 0.3) & (s < 0.6), 1.0, 0.0)
+
+
+def solve_case(n_transit, theta, k1=None):
+    xc, xf = (np.arange(N) + 0.5) * DX, (np.arange(N) + 1.0) * DX
+    p, u = exact_wave(xc, 0.0), exact_wave(xf, 0.0) / (RHO0 * C0)
+    t_end, dt = n_transit / (U0 + C0), CFL * DX / abs(U0)
+    t, nstep, nflag = 0.0, 0, 0
+    while t < t_end - 1e-14:
+        h = min(dt, t_end - t)
+        u2, p2 = si_update(u, p, h, theta)
+        if k1 is not None:
+            chi = chi_flattener(u, k1)
+            nflag += int(np.sum(chi > 0))
+            u1, p1 = si_update(u, p, h, 1.0)
+            cf = np.maximum(chi, np.roll(chi, -1))
+            u2, p2 = cf * u1 + (1 - cf) * u2, chi * p1 + (1 - chi) * p2
+        u, p, t, nstep = u2, p2, t + h, nstep + 1
+    ex = exact_wave(xc, t_end)
+    return dict(l1=float(np.mean(np.abs(p - ex))), over=float(np.max(p) - 1.0),
+                under=float(-np.min(p)), l2=float(np.sqrt(np.mean(p ** 2))),
+                steps=nstep, flagged=nflag, acfl=CFL * C0 / abs(U0))
+
+
+print("=== (1) time step from Eq.(20) vs Eq.(106), CFL=0.5, 400 cells ===")
+print(f"{'Mach':>8}{'dt explicit':>14}{'dt semi-impl':>15}{'gain':>8}")
+for M in [0.5, 0.2, 0.1, 0.02, 0.005, 0.001]:
+    de, di = CFL * DX / (M * C0 + C0), CFL * DX / (M * C0)
+    print(f"{M:8.3f}{de:14.3e}{di:15.3e}{di / de:8.1f}")
+
+b = solve_case(1, 1.0)
+print(f"\n=== (2) square acoustic pulse, M={U0}, material CFL={CFL}")
+print(f"    -> acoustic CFL {b['acfl']:.1f}, {b['steps']} steps per transit ===")
+print(f"{'theta':>7}{'over@1':>10}{'over@2':>10}{'over@4':>10}{'L1@4':>9}{'|p|2@4':>9}")
+for th in (0.50, 0.52, 0.55, 0.60, 0.70, 1.00):
+    r = [solve_case(n, th) for n in (1, 2, 4)]
+    ov = [f"{x['over']:10.4f}" if abs(x['over']) < 1e3 else f"{'blow-up':>10}" for x in r]
+    l1 = f"{r[2]['l1']:9.4f}" if r[2]['l1'] < 1e3 else f"{'-':>9}"
+    l2 = f"{r[2]['l2']:9.4f}" if r[2]['l2'] < 1e3 else f"{'-':>9}"
+    print(f"{th:7.2f}{ov[0]}{ov[1]}{ov[2]}{l1}{l2}")
+
+print("\n=== (3) flattener blend, theta=0.55 against theta=1, 4 transits ===")
+print(f"{'k1':>9}{'flagged/step':>14}{'over':>9}{'under':>9}{'L1':>9}")
+base = solve_case(4, 0.55)
+print(f"{'off':>9}{0:14.1f}{base['over']:9.4f}{base['under']:9.4f}{base['l1']:9.4f}")
+for k1 in [1e-3, 1e-1, 1e0, 1e1, 1e2]:
+    r = solve_case(4, 0.55, k1)
+    print(f"{k1:9.0e}{r['flagged'] / r['steps']:14.1f}{r['over']:9.4f}"
+          f"{r['under']:9.4f}{r['l1']:9.4f}")
+mono = solve_case(4, 1.0)
+print(f"{'theta=1':>9}{'(all cells)':>14}{mono['over']:9.4f}"
+      f"{mono['under']:9.4f}{mono['l1']:9.4f}")
+```
+
+```text
+=== (1) time step from Eq.(20) vs Eq.(106), CFL=0.5, 400 cells ===
+    Mach   dt explicit   dt semi-impl    gain
+   0.500     8.333e-04      2.500e-03     3.0
+   0.200     1.042e-03      6.250e-03     6.0
+   0.100     1.136e-03      1.250e-02    11.0
+   0.020     1.225e-03      6.250e-02    51.0
+   0.005     1.244e-03      2.500e-01   201.0
+   0.001     1.249e-03      1.250e+00  1001.0
+
+=== (2) square acoustic pulse, M=0.1, material CFL=0.5
+    -> acoustic CFL 5.0, 73 steps per transit ===
+  theta    over@1    over@2    over@4     L1@4   |p|2@4
+   0.50  488.1288   blow-up   blow-up        -        -
+   0.52    4.5456  212.3962   blow-up        -        -
+   0.55    0.2285    0.2023    0.1825   0.1348   0.5169
+   0.60    0.0538    0.0286   -0.0346   0.1270   0.4630
+   0.70   -0.0163   -0.0900   -0.2320   0.1992   0.4064
+   1.00   -0.1610   -0.3210   -0.4823   0.3098   0.3347
+
+=== (3) flattener blend, theta=0.55 against theta=1, 4 transits ===
+       k1  flagged/step     over    under       L1
+      off           0.0   0.1825   0.1663   0.1348
+    1e-03         302.9  -0.3611   0.4734   0.2870
+    1e-01         280.0  -0.3544   0.4998   0.2888
+    1e+00         196.0  -0.1857   0.5381   0.2448
+    1e+01           8.2   0.1275   0.3135   0.1469
+    1e+02           0.0   0.1801   0.1726   0.1355
+  theta=1   (all cells)  -0.4823  -0.0985   0.3098
+```
+
+## 0.55 与 0.50 之间分开的东西
+
+第二张表是本文的核心。$\theta = 0.5$ 是 Crank–Nicolson，形式上二阶，单看声学部分能精确守恒能量。可是一旦
+与显式输运合在一起，一圈之内过冲就升到 488，第二圈直接崩掉。隐式那一半完全不提供阻尼时，显式那一半的迎风
+耗散盖不住分裂误差。Casulli 一系的格式建议把 $\theta$ 取得略大于 0.5，原因就在这里。
+
+到了 $\theta = 0.55$，局面改变。过冲依次为 0.2285 → 0.2023 → 0.1825，跑完四圈仍留着 18%。它不增长，所以
+按 $L_2$ 是稳定的；它也不缩小，所以按 $L_\infty$ 并不稳定。论文那句话原样复现。另一端的
+$\theta = 1.0$ 过冲为负，意味着脉冲连自己的高度都没够到，代价是 $L_1$ 误差 0.3098，是 0.55 的 2.3 倍。
+
+用滑块自己动一动 $\theta$。
+
+<ThetaOvershootPersistence />
+
+把 $\theta$ 停在 0.55，只看过冲那个数字。脉冲转多少圈，它都停在 0.18 附近。推到 1.00，振荡消失，脉冲却在
+融化。两边都不是免费的。
+
+## flattener 的 $k_1$ 并不是一个阈值
+
+论文的对策是先检测再混合：把速度场的散度与邻居中最小的声速比较，找出激波网格。
+
+$$
+\chi^{n} = \min\left[1,\ \max\left(0,\ -\frac{\nabla\cdot\mathbf{u}^{n} + k_1 c^{n}_{\min}}{k_1 c^{n}_{\min}}\right)\right]
+$$
+
+$\chi$ 为 0 就保留高阶解，为 1 就换成一阶解，中间按凸组合。论文在所有算例中都用 $k_1 = 10^{-3}$，并报告被
+标记的网格非常少。
+
+第三张表显示了把这个常数照搬过来会发生什么。$k_1 = 10^{-3}$ 时，每步 400 个网格里有 302.9 个被标记。过冲
+确实从 0.1825 消到 $-0.3611$，但 $L_1$ 误差从 0.1348 升到 0.2870，是 2.1 倍。这不是检测，而是把整套格式悄悄
+降到了一阶，落点几乎与 $\theta=1$ 的结果（0.3098）重合。
+
+原因就在式子本身。$\chi$ 在 $\nabla\cdot\mathbf{u}$ 从 $-k_1 c$ 走到 $-2k_1 c$ 的过程中由 0 升到 1。
+若 $k_1 c = 10^{-3}$，这段区间只有 0.002 宽。而本问题中散度以 $O(1)$ 的幅度起伏，于是只要稍有压缩的网格
+全都落到 $\chi = 1$。它起的是符号判别器的作用，而不是阈值。
+
+要真正挑出网格，$k_1$ 得抬高四个数量级。$k_1 = 10$ 时每步只标记 8.2 个，过冲从 0.1825 降到 0.1275，减少
+30%，而 $L_1$ 只从 0.1348 变到 0.1469，恶化 9%。$k_1 = 10^2$ 时则一个都标不出来。这并不说明论文的取值有误。
+那个值是为光滑区散度实质为零的非线性激波管算例调的；换到一个本就带着振荡的问题上，参照标准就失去了意义。
+同一类常数移植问题在带非保守项的界面上的表现，见
+[Abgrall 判据与非保守项](/zh/posts/2026-09-06-abgrall-criterion-nonconservative-term/)。
+
+## 抹掉声速的地方留下了什么
+
+启用半隐式压力格式，实际决定的是三件事。其一，从 CFL 里抹掉多少声速，时间积分就有多少声波追不上。低马赫下
+这是正确答案，但马赫数一升高，那些声波就是激波。其二，$\theta$ 是在精度与单调性之间取舍的旋钮，不是安全
+装置——在这套分裂下，0.5 连稳定都算不上。其三，检测器的常数绑在问题的散度尺度上；把论文的取值原样抄过来，
+检测器就变成了开关。
+
+若对从网格平均值反推精确解的相反路线感兴趣，把
+[精确 Riemann 解与激波管](/zh/posts/2026-05-18-godunov-exact-riemann-shock-tube/)放在一起看，对比会很清楚。

@@ -1,0 +1,327 @@
+---
+title: "時間刻みを1001倍にした請求書 — 半陰的圧力スキームがL∞安定でない理由"
+date: 2026-09-19
+description: "低マッハ半陰的圧力スキームが稼ぐ時間刻みと、その代償として不連続面に残る非減衰振動を再現します。"
+tags: ["Semi-Implicit", "Low-Mach", "IMEX", "Paper-Review", "Numerical-Analysis"]
+locale: ja
+slug: semi-implicit-pressure-linf-flattener
+takeaway: "音速をCFL条件から消せば時間刻みは自由になりますが、不連続面の振動は減衰せずそのまま残ります。"
+draft: false
+---
+
+import { AcousticCflBudgetDial } from '@/components/post-viz/2026-09-19-semi-implicit-pressure-linf-flattener/AcousticCflBudgetDial'
+import { ThetaOvershootPersistence } from '@/components/post-viz/2026-09-19-semi-implicit-pressure-linf-flattener/ThetaOvershootPersistence'
+
+## 1971年、圧力を音速から引き剥がした計算法
+
+Francis Harlow と Anthony Amsden が Los Alamos で ICE 法を発表した年です。論文の題に "all flow
+speeds" という語が入りました。圧縮性コードが低マッハ域で這うように遅くなる問題を、格子ではなく時間刻みの
+側から解くという宣言でした。その系譜の最新版が Boscheri と Pareschi による 2021 年の半陰的圧力ベース
+スキームで、三次元 Navier–Stokes を全マッハ域で 3 次精度で解きます。この記事では、そのスキームが何を稼ぎ
+何を失うのかを数字で確かめます。先に書いておくと、時間刻みは最大 1001 倍まで稼ぎ、不連続面の振動は 4 周
+回しても残ったままでした。
+
+まず稼ぐ側から見てみます。下の図でマッハ数のスライダーを下げてみてください。
+
+<AcousticCflBudgetDial />
+
+上下のパネルは同じ物理時間、同じ 40 セルを覆っています。マッハ数を下げるほど赤い音響特性線が寝ていき、上の
+パネルはその線をセル 1 個の中に収めようとして時間層を細かく刻み始めます。下のパネルのステップ数は動きません。
+
+## 時間刻みがマッハ数に縛られる場所
+
+無次元化された Navier–Stokes で剛性を担うのは $\varepsilon$、つまりマッハ数の二乗で、音速は
+$c/\sqrt{\varepsilon}$ として現れます。完全陽的な CFL 条件はこれを抱え込んだままです。
+
+$$
+\Delta t \le \mathrm{CFL}\,\frac{\Delta x}{\max\left(|u| + c/\sqrt{\varepsilon}\right)}
+$$
+
+$\Delta x$ は格子間隔、$u$ は流体速度、$c$ は基準音速です。$\varepsilon \to 0$ では分母が発散し、
+$\Delta t$ は $\sqrt{\varepsilon}$ のように 0 へ落ちます。音響的には何も起きていない流れが、誰も
+見ていない音波に人質に取られるわけです。
+
+半陰的スキームは圧力項だけを陰的側へ移します。すると安定条件から音速が消えます。
+
+$$
+\Delta t \le \mathrm{CFL}\,\frac{\Delta x}{\max |u|}
+$$
+
+両者の比は $1 + 1/M$ で、$M = 0.001$ なら 1001 倍です。同じ発想を時間積分の側から扱った記事が
+[IMEX TVD スキームと漸近保存性](/ja/posts/2026-07-26-imex-tvd-ap-low-mach/)にあります。
+
+## 圧力が楕円型方程式に変わる過程
+
+1 次の半陰的半離散化は 3 行です。連続の式は完全に陽的、運動量方程式は圧力勾配だけを陰的に、エネルギー
+方程式はエンタルピー流束の中の運動量を陰的に扱います。
+
+$$
+\frac{\rho^{n+1} - \rho^{n}}{\Delta t} + \nabla\cdot(\rho\mathbf{u})^{n} = 0
+$$
+
+$$
+\frac{(\rho\mathbf{u})^{n+1} - (\rho\mathbf{u})^{n}}{\Delta t}
++ \nabla\cdot\left((\rho\mathbf{u})^{n}\otimes\mathbf{u}^{n}\right)
++ \frac{1}{\varepsilon}\nabla p^{n+1} = 0
+$$
+
+$n$ が現在の時間層、$n+1$ が次の時間層です。運動量の式をエネルギーの式へ代入すると、未知数が $p^{n+1}$
+だけの方程式が残ります。
+
+$$
+\varepsilon(\rho e)^{n+1}
++ \varepsilon\frac{\Delta t}{2}\frac{(\rho\mathbf{u})^{n}}{\rho^{n}}\nabla p^{n+1}
+- \Delta t^{2}\,\nabla\cdot\left(h^{n}\nabla p^{n+1}\right) = b^{n}
+$$
+
+$h = (\rho e + p)/\rho$ は比エンタルピー、$b^n$ は陽的な量だけで作られた右辺です。この式を楕円型に
+するのが $\Delta t^2 \nabla\cdot(h\nabla p)$ の項です。理想気体なら $(\rho e)^{n+1} =
+p^{n+1}/(\gamma-1)$ なので線形系になり、Redlich–Kwong のような非線形状態方程式では Newton 反復が
+付きます。論文では許容誤差 $10^{-10}$ で最大 4 回で収束したと報告されています。
+
+圧力が解ければ運動量を戻して計算し、全エネルギーは運動エネルギーの陰的部分を付けて締めます。まとめると
+**質量 → 圧力（楕円型）→ 運動量 → エネルギー**の順です。非圧縮の射影法と構造は同じですが、ここでは状態
+方程式が生きているので圧縮性がそのまま残ります。
+
+## 低マッハ極限で発散は本当に 0 へ行くのか
+
+漸近保存性とは、$\varepsilon \to 0$ で離散スキームがひとりでに非圧縮極限を再現する性質です。すべての
+変数を $\varepsilon$ の冪で展開して先頭項だけを残すと、圧力の先頭項が空間的に一定になります。
+
+$$
+\nabla p_{(0)}^{n+1} = 0
+$$
+
+これをエネルギー方程式の極限に入れて整理すると、理想気体では次が出ます。
+
+$$
+h^{n}\,\nabla\cdot\mathbf{u}^{n+1} = O(\Delta t)
+$$
+
+$O(\Delta t)$ に隠れた定数は $\varepsilon$ に依存しません。マッハ数をいくら下げても速度場の発散が
+$\Delta t$ の水準に留まるということです。格子を変えずに低マッハへ降りても圧力がチェッカーボードに
+割れない理由がここにあります。
+
+## Python で同じパルスを 4 周させた
+
+論文の 3.6 節には居心地の悪い一文があります。高次の陰的時間離散化は強い不連続の前でオーバーシュートを
+取り除けず、その振動は**大きくもならず消えもしない**、というものです。陰的だから安定という言い方は
+$L_2$ 安定という意味であって、$L_\infty$ 安定という意味ではありません。
+
+この主張だけを確かめるのに非線形ソルバ一式は要りません。線形化した 1 次元 Euler 方程式に同じ分解をかければ
+十分です。物質輸送は陽的、音響結合は陰的にし、陰的重み $\theta$ を 0.5（2 次、無減衰）から 1.0（1 次、
+減衰あり）まで動かします。食い違い格子で圧力をセル中心、速度を面に置くと、圧力方程式がちょうど 3 点
+Helmholtz 系になります。境界は周期的なので巡回三重対角ソルバを使います。
+
+初期条件は右へ走る矩形の音響パルスです。厳密解はそのパルスを $u_0 + c$ だけ平行移動したものなので、誤差を
+解析的に測れます。物質 CFL を 0.5 に取ると音響 CFL は 5 になります。
+
+```python
+import numpy as np
+
+GAMMA, RHO0, C0 = 1.4, 1.0, 1.0
+P0 = C0 ** 2 * RHO0 / GAMMA          # so that c = sqrt(gamma p0 / rho0) = 1
+N, CFL, U0 = 400, 0.5, 0.1
+DX = 1.0 / N
+
+
+def cyclic_thomas(a, b, c, d):
+    """周期的三重対角の解法: Thomas + Sherman-Morrison 補正。"""
+    n = len(b)
+    al, be, g = a[0], c[-1], -b[0]
+    bb = b.copy()
+    bb[0] -= g
+    bb[-1] -= al * be / g
+
+    def tri(rhs):
+        cp, dp = np.zeros(n), np.zeros(n)
+        cp[0], dp[0] = c[0] / bb[0], rhs[0] / bb[0]
+        for i in range(1, n):
+            m = bb[i] - a[i] * cp[i - 1]
+            cp[i], dp[i] = c[i] / m, (rhs[i] - a[i] * dp[i - 1]) / m
+        x = np.zeros(n)
+        x[-1] = dp[-1]
+        for i in range(n - 2, -1, -1):
+            x[i] = dp[i] - cp[i] * x[i + 1]
+        return x
+
+    v = np.zeros(n)
+    v[0], v[-1] = g, be
+    y, z = tri(d), tri(v)
+    fac = (y[0] + al * y[-1] / g) / (1.0 + z[0] + al * z[-1] / g)
+    return y - fac * z
+
+
+def grad_face(p):
+    return (np.roll(p, -1) - p) / DX
+
+
+def div_cell(u):
+    """div_cell(grad_face(.)) がちょうど 3 点ラプラシアンになります。"""
+    return (u - np.roll(u, 1)) / DX
+
+
+def upwind(f):
+    return (f - np.roll(f, 1)) / DX
+
+
+def si_update(u, p, dt, theta):
+    """物質輸送は陽的に、音響結合は陰的重み theta で。"""
+    ps = p - dt * U0 * upwind(p)
+    ue = u - dt * U0 * upwind(u) - dt * (1 - theta) / RHO0 * grad_face(p)
+    k = C0 ** 2 * (theta * dt) ** 2 / DX ** 2
+    rhs = ps - dt * GAMMA * P0 * (theta * div_cell(ue) + (1 - theta) * div_cell(u))
+    p_n = cyclic_thomas(np.full(N, -k), np.full(N, 1 + 2 * k), np.full(N, -k), rhs)
+    return ue - dt * theta / RHO0 * grad_face(p_n), p_n
+
+
+def chi_flattener(u, k1):
+    """式 (104): 圧縮率が k1 * c_min を超えるセルに印を付けます。"""
+    divu = div_cell(u)
+    return np.minimum(1.0, np.maximum(0.0, -(divu + k1 * C0) / (k1 * C0)))
+
+
+def exact_wave(x, t):
+    s = np.mod(x - (U0 + C0) * t, 1.0)
+    return np.where((s >= 0.3) & (s < 0.6), 1.0, 0.0)
+
+
+def solve_case(n_transit, theta, k1=None):
+    xc, xf = (np.arange(N) + 0.5) * DX, (np.arange(N) + 1.0) * DX
+    p, u = exact_wave(xc, 0.0), exact_wave(xf, 0.0) / (RHO0 * C0)
+    t_end, dt = n_transit / (U0 + C0), CFL * DX / abs(U0)
+    t, nstep, nflag = 0.0, 0, 0
+    while t < t_end - 1e-14:
+        h = min(dt, t_end - t)
+        u2, p2 = si_update(u, p, h, theta)
+        if k1 is not None:
+            chi = chi_flattener(u, k1)
+            nflag += int(np.sum(chi > 0))
+            u1, p1 = si_update(u, p, h, 1.0)
+            cf = np.maximum(chi, np.roll(chi, -1))
+            u2, p2 = cf * u1 + (1 - cf) * u2, chi * p1 + (1 - chi) * p2
+        u, p, t, nstep = u2, p2, t + h, nstep + 1
+    ex = exact_wave(xc, t_end)
+    return dict(l1=float(np.mean(np.abs(p - ex))), over=float(np.max(p) - 1.0),
+                under=float(-np.min(p)), l2=float(np.sqrt(np.mean(p ** 2))),
+                steps=nstep, flagged=nflag, acfl=CFL * C0 / abs(U0))
+
+
+print("=== (1) time step from Eq.(20) vs Eq.(106), CFL=0.5, 400 cells ===")
+print(f"{'Mach':>8}{'dt explicit':>14}{'dt semi-impl':>15}{'gain':>8}")
+for M in [0.5, 0.2, 0.1, 0.02, 0.005, 0.001]:
+    de, di = CFL * DX / (M * C0 + C0), CFL * DX / (M * C0)
+    print(f"{M:8.3f}{de:14.3e}{di:15.3e}{di / de:8.1f}")
+
+b = solve_case(1, 1.0)
+print(f"\n=== (2) square acoustic pulse, M={U0}, material CFL={CFL}")
+print(f"    -> acoustic CFL {b['acfl']:.1f}, {b['steps']} steps per transit ===")
+print(f"{'theta':>7}{'over@1':>10}{'over@2':>10}{'over@4':>10}{'L1@4':>9}{'|p|2@4':>9}")
+for th in (0.50, 0.52, 0.55, 0.60, 0.70, 1.00):
+    r = [solve_case(n, th) for n in (1, 2, 4)]
+    ov = [f"{x['over']:10.4f}" if abs(x['over']) < 1e3 else f"{'blow-up':>10}" for x in r]
+    l1 = f"{r[2]['l1']:9.4f}" if r[2]['l1'] < 1e3 else f"{'-':>9}"
+    l2 = f"{r[2]['l2']:9.4f}" if r[2]['l2'] < 1e3 else f"{'-':>9}"
+    print(f"{th:7.2f}{ov[0]}{ov[1]}{ov[2]}{l1}{l2}")
+
+print("\n=== (3) flattener blend, theta=0.55 against theta=1, 4 transits ===")
+print(f"{'k1':>9}{'flagged/step':>14}{'over':>9}{'under':>9}{'L1':>9}")
+base = solve_case(4, 0.55)
+print(f"{'off':>9}{0:14.1f}{base['over']:9.4f}{base['under']:9.4f}{base['l1']:9.4f}")
+for k1 in [1e-3, 1e-1, 1e0, 1e1, 1e2]:
+    r = solve_case(4, 0.55, k1)
+    print(f"{k1:9.0e}{r['flagged'] / r['steps']:14.1f}{r['over']:9.4f}"
+          f"{r['under']:9.4f}{r['l1']:9.4f}")
+mono = solve_case(4, 1.0)
+print(f"{'theta=1':>9}{'(all cells)':>14}{mono['over']:9.4f}"
+      f"{mono['under']:9.4f}{mono['l1']:9.4f}")
+```
+
+```text
+=== (1) time step from Eq.(20) vs Eq.(106), CFL=0.5, 400 cells ===
+    Mach   dt explicit   dt semi-impl    gain
+   0.500     8.333e-04      2.500e-03     3.0
+   0.200     1.042e-03      6.250e-03     6.0
+   0.100     1.136e-03      1.250e-02    11.0
+   0.020     1.225e-03      6.250e-02    51.0
+   0.005     1.244e-03      2.500e-01   201.0
+   0.001     1.249e-03      1.250e+00  1001.0
+
+=== (2) square acoustic pulse, M=0.1, material CFL=0.5
+    -> acoustic CFL 5.0, 73 steps per transit ===
+  theta    over@1    over@2    over@4     L1@4   |p|2@4
+   0.50  488.1288   blow-up   blow-up        -        -
+   0.52    4.5456  212.3962   blow-up        -        -
+   0.55    0.2285    0.2023    0.1825   0.1348   0.5169
+   0.60    0.0538    0.0286   -0.0346   0.1270   0.4630
+   0.70   -0.0163   -0.0900   -0.2320   0.1992   0.4064
+   1.00   -0.1610   -0.3210   -0.4823   0.3098   0.3347
+
+=== (3) flattener blend, theta=0.55 against theta=1, 4 transits ===
+       k1  flagged/step     over    under       L1
+      off           0.0   0.1825   0.1663   0.1348
+    1e-03         302.9  -0.3611   0.4734   0.2870
+    1e-01         280.0  -0.3544   0.4998   0.2888
+    1e+00         196.0  -0.1857   0.5381   0.2448
+    1e+01           8.2   0.1275   0.3135   0.1469
+    1e+02           0.0   0.1801   0.1726   0.1355
+  theta=1   (all cells)  -0.4823  -0.0985   0.3098
+```
+
+## 0.55 と 0.50 の間で分かれるもの
+
+2 番目の表がこの記事の核心です。$\theta = 0.5$ は Crank–Nicolson、形式上は 2 次で、音響部分だけを見れば
+エネルギーを正確に保存します。ところが陽的な輸送と合わせた途端、1 周でオーバーシュートが 488 まで上がり、
+2 周目で破綻します。陰的な半分が減衰をまったく供給しないと、陽的な半分の風上差分の減衰だけでは分解誤差を
+覆えません。Casulli 系のスキームが $\theta$ を 0.5 より少し大きく取るよう勧めるのはこのためです。
+
+$\theta = 0.55$ で様子が変わります。オーバーシュートは 0.2285 → 0.2023 → 0.1825 と進みます。4 周回っても
+18 パーセントが残っています。大きくならないので $L_2$ では安定、小さくもならないので $L_\infty$ では
+安定ではありません。論文の一文がそのまま再現されます。反対側の $\theta = 1.0$ はオーバーシュートが負、
+つまりパルスが自分の高さにすら届いておらず、代わりに $L_1$ 誤差が 0.3098 と 0.55 の 2.3 倍になります。
+
+スライダーで $\theta$ を動かしてみてください。
+
+<ThetaOvershootPersistence />
+
+$\theta$ を 0.55 に置いて、オーバーシュートの数字だけを見てください。パルスが何周しても 0.18 付近で
+止まっています。1.00 まで押すと振動は消えますが、パルスが溶けていきます。どちらも無料ではありません。
+
+## flattener の $k_1$ は閾値ではなかった
+
+論文の対処は、検出してから混合する方式です。速度場の発散を隣接セルの最小音速と比べて衝撃波セルを探します。
+
+$$
+\chi^{n} = \min\left[1,\ \max\left(0,\ -\frac{\nabla\cdot\mathbf{u}^{n} + k_1 c^{n}_{\min}}{k_1 c^{n}_{\min}}\right)\right]
+$$
+
+$\chi$ が 0 なら高次解をそのまま使い、1 なら 1 次解に差し替え、その間は凸結合です。論文はすべての計算で
+$k_1 = 10^{-3}$ を使い、印が付くセルは非常に少ないと報告しています。
+
+3 番目の表が、その定数を移して使ったときに起きることです。$k_1 = 10^{-3}$ では 400 個中 302.9 個が毎ステップ
+引っかかります。オーバーシュートは 0.1825 から $-0.3611$ へ消えますが、$L_1$ 誤差が 0.1348 から 0.2870 へ、
+2.1 倍になります。これは検出ではなく、スキーム全体を静かに 1 次へ落としたということで、実際 $\theta=1$ の
+結果（0.3098）とほぼ同じ場所に着きます。
+
+理由は式そのものにあります。$\chi$ は $\nabla\cdot\mathbf{u}$ が $-k_1 c$ から $-2k_1 c$ へ動く間に
+0 から 1 へ上がります。$k_1 c = 10^{-3}$ ならその区間の幅は 0.002 です。この問題では発散が $O(1)$ の大きさで
+揺れるので、少しでも圧縮しているセルはすべて $\chi = 1$ になります。閾値ではなく符号判定器として働くわけです。
+
+実際にセルを選り分けるには $k_1$ を 4 桁上げる必要がありました。$k_1 = 10$ ではステップあたり 8.2 個だけが
+引っかかり、オーバーシュートは 0.1825 から 0.1275 へ 30 パーセント下がり、$L_1$ は 0.1348 から 0.1469 へ
+9 パーセントしか悪化しません。$k_1 = 10^2$ では何も引っかかりません。論文の値が誤りという意味ではありません。
+その値は滑らかな領域で発散が事実上 0 になる非線形衝撃波管の計算に合わせてあり、すでに振動が敷かれた問題へ
+移すと基準が意味を失います。同じ種類の定数移植の問題を、非保存項が絡む界面で扱った記事が
+[Abgrall 基準と非保存項](/ja/posts/2026-09-06-abgrall-criterion-nonconservative-term/)にあります。
+
+## 音速を消した場所に何が残るのか
+
+半陰的圧力スキームを入れるとき実際に決めているのは 3 つです。第一に、CFL から消した音速の分だけ、音波は
+時間積分では追えなくなります。低マッハではそれが正解ですが、マッハ数が上がるとその音波が衝撃波です。第二に、
+$\theta$ は精度と単調性を交換するつまみであって安全装置ではありません。0.5 はこの分解では安定ですらあり
+ませんでした。第三に、検出器の定数は問題の発散スケールに紐づいています。論文の値をそのまま写すと、検出器では
+なくスイッチになります。
+
+セル平均から厳密解を復元する反対側の手法が気になる方は、
+[厳密 Riemann 解と衝撃波管](/ja/posts/2026-05-18-godunov-exact-riemann-shock-tube/)と並べると対比が
+はっきりします。
