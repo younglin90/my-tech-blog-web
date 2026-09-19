@@ -1,0 +1,215 @@
+---
+title: "[Reseña de artículo] La función de color del mismo punto difirió en 0.544 según el camino — restricciones de rotacional y malla escalonada"
+date: 2026-09-20
+description: "Una discretización escalonada que mantiene el rotacional del campo de interfaz al nivel del redondeo se ejecuta 400 pasos junto a un esquema colocado con flujo de Rusanov."
+tags: ["Involution-Constraints", "Staggered-Grid", "Diffuse-Interface", "Paper-Review", "Numerical-Analysis"]
+locale: es
+slug: 2026-09-20-curl-involution-staggered-twophase
+takeaway: "La restricción de rotacional no es una condición inicial sino una identidad que hay que honrar en cada paso, y se cumple al nivel del redondeo en cuanto el gradiente y el rotacional discretos comparten los mismos cuatro puntos."
+draft: false
+---
+
+import { InvolutionDriftTwinGrid } from '@/components/post-viz/2026-09-20-curl-involution-staggered-twophase/InvolutionDriftTwinGrid'
+import { PathGapLoopIntegrator } from '@/components/post-viz/2026-09-20-curl-involution-staggered-twophase/PathGapLoopIntegrator'
+
+## El mismo punto se leyó como dos números distintos
+
+Tras empujar un campo de interfaz $\mathbf{b}$ durante 400 pasos, reconstruí la función de color en la celda central de la malla. Integrar $\mathbf{b}$ desde el origen debería devolver la función de color: eso significa $\mathbf{b} = \nabla c$. Avanzar primero en $x$ y girar en $y$ dio un número. Avanzar primero en $y$ y girar en $x$ dio otro. La diferencia fue 0.544. La función de color es una cantidad que vive entre 0 y 1.
+
+Este artículo revisa a Chiocchetti y Dumbser (2023), un esquema semi-implícito sobre malla escalonada para un modelo hiperbólico de primer orden de flujo bifásico viscoso con tensión superficial, y reproduce solo una pieza: la restricción de rotacional (curl involution). Por qué ese número debe ser cero, por qué no lo es con una disposición de variables corriente, y qué hay que cambiar para bajarlo hasta el redondeo.
+
+## Por qué el campo de interfaz asciende a variable independiente
+
+Un modelo de interfaz difusa (diffuse interface) representa la frontera entre dos fases como una transición suave de la función de color $c$. La tensión superficial requiere $\nabla c$ y su divergencia. El problema es el número de derivadas. La curvatura es una segunda derivada de $c$, así que con una interfaz de apenas unas pocas celdas de ancho el ruido se amplifica directamente.
+
+La reformulación hiperbólica de primer orden (first order hyperbolic) baja eso un escalón. Asciende $\mathbf{b} = \nabla c$ a variable independiente y resuelve una ecuación de transporte para el propio $\mathbf{b}$. Aplicando $\nabla$ a ambos lados de $\partial_t c + \mathbf{v}\cdot\nabla c = 0$ resulta lo siguiente.
+
+$$
+\partial_t b_k + \partial_k (v_j b_j) = 0
+$$
+
+Aquí $b_k$ es la componente $k$ del campo de interfaz, $v_j$ es la velocidad y $v_j b_j = \mathbf{v}\cdot\mathbf{b}$ es un único escalar. Ahora todo el sistema contiene solo primeras derivadas. Los autovalores quedan definidos y cualquier solver hiperbólico sirve. La misma motivación aparece en [por qué la normal $\mathbf{n}$ debe evaluarse en cada nodo en un modelo Allen–Cahn conservativo](/es/posts/2026-09-18-conservative-allen-cahn-lbm-interface/).
+
+Hay un precio. Ahora $\mathbf{b}$ se almacena de forma independiente de $c$, y ambos pueden separarse.
+
+En la simulación de abajo conviene empujar la misma interfaz inicial con dos discretizaciones a la vez.
+
+<InvolutionDriftTwinGrid />
+
+A la izquierda está la disposición escalonada; a la derecha, la colocada. Al subir el cizallamiento y la disipación de Rusanov, conviene observar si el panel izquierdo sigue negro y cuándo empieza a encenderse el derecho.
+
+## La restricción forma parte de la ecuación, no de los datos iniciales
+
+Si $\mathbf{b}$ es el gradiente de algún escalar, su rotacional se anula de forma idéntica.
+
+$$
+\nabla \times \mathbf{b} = \nabla \times \nabla c = \mathbf{0}
+$$
+
+Esa relación se llama restricción involutiva (involution). La propia ecuación de transporte la preserva, porque $\partial_t (\nabla \times \mathbf{b}) = -\nabla \times \nabla(v_j b_j) = \mathbf{0}$. En el nivel continuo, cero en $t=0$ significa cero para siempre.
+
+Por eso se trata como un asunto de condición inicial. Ahí está exactamente la trampa. Nada garantiza que $\nabla_h \times \nabla_h$ se anule para los operadores discretizados. Sin esa garantía la restricción gotea un poco en cada paso, y tras 400 pasos la fuga es el 0.544 del inicio.
+
+¿Qué se rompe cuando el rotacional no es cero? El teorema de Stokes responde: la integral a lo largo de un lazo cerrado es igual a la integral de superficie del rotacional que ese lazo encierra. Un rotacional no nulo significa que $\mathbf{b}$ no es el gradiente de ninguna función de color. Es decir, la interfaz correspondiente al $\mathbf{b}$ almacenado no existe.
+
+<PathGapLoopIntegrator />
+
+El deslizador $\kappa$ fija cuánta componente rotacional se mezcla en el campo. Bajándolo a cero, las dos barras se detienen exactamente en el mismo número. Al subirlo mínimamente los dos caminos se separan, y la brecha coincide con la integral del rotacional sobre la región sombreada.
+
+## Dónde comparten los operadores discretos la identidad de Schwarz
+
+La receta del artículo es simple: disponer el gradiente discreto y el rotacional discreto de modo que usen los mismos cuatro puntos.
+
+La función de color va en los centros de celda, $b_x$ en las caras $x$ $(i+\frac12, j)$ y $b_y$ en las caras $y$ $(i, j+\frac12)$. El rotacional se calcula en el nodo $(i+\frac12, j+\frac12)$. Para cualquier escalar $\psi$ se desarrolla así.
+
+$$
+(\nabla_h \times \nabla_h \psi)_{i+\frac12,\, j+\frac12}
+= \frac{\psi_{i+1,j+1} - \psi_{i,j+1} - \psi_{i+1,j} + \psi_{i,j}}{h^2}
+- \frac{\psi_{i+1,j+1} - \psi_{i+1,j} - \psi_{i,j+1} + \psi_{i,j}}{h^2}
+$$
+
+Los dos numeradores son los mismos cuatro términos escritos en otro orden. La diferencia es idénticamente cero. Esto traslada intacta al nivel discreto la identidad de Schwarz para derivadas cruzadas (las parciales mixtas conmutan). No es una aproximación: en punto flotante se suman y restan los mismos cuatro números, de modo que solo sobrevive el redondeo.
+
+Llevar esa propiedad a la integración temporal ocupa una línea. Si cada actualización tiene la forma $-\Delta t\, \nabla_h \psi$, desaparece en cuanto se le aplica un rotacional. Así $\nabla_h \times \mathbf{b}$ conserva su valor inicial sin importar cuántos pasos se den. Si ese valor es cero, sigue siendo cero.
+
+## Dos discretizaciones bajo la misma capa de cizalla en Python
+
+Una interfaz redonda sobre una malla periódica de $64^2$, empujada por una capa de cizalla tanh. Una corrida usa el par de operadores escalonados de arriba; la otra guarda todo $\mathbf{b}$ en los centros de celda y usa un flujo de Rusanov componente a componente. Mismo $\Delta t$, mismo campo de velocidad.
+
+```python
+import numpy as np
+
+N, L = 64, 1.0
+h = L / N
+xc = (np.arange(N) + 0.5) * h
+Xc, Yc = np.meshgrid(xc, xc, indexing="ij")
+
+def shear_velocity(amp=1.0, delta=0.12):
+    """Estilo Kelvin-Helmholtz: capa de cizalla tanh + perturbacion sinusoidal"""
+    return amp * np.tanh((Yc - 0.5) / delta), 0.35 * amp * np.sin(2 * np.pi * Xc)
+
+def interface_potential(r0=0.22, w=0.05):
+    r = np.sqrt((Xc - 0.5) ** 2 + (Yc - 0.5) ** 2)
+    return 0.5 * (1.0 + np.tanh((r0 - r) / w))
+
+def grad_stagger(phi):
+    """b_x en las caras x (i+1/2, j), b_y en las caras y (i, j+1/2)"""
+    return (np.roll(phi, -1, 0) - phi) / h, (np.roll(phi, -1, 1) - phi) / h
+
+def curl_node(bx, by):
+    """rotacional en los nodos (i+1/2, j+1/2): el operador compatible con grad_stagger"""
+    return (np.roll(by, -1, 0) - by) / h - (np.roll(bx, -1, 1) - bx) / h
+
+def curl_centered(bx, by):
+    """rotacional colocado: diferencias centradas de las componentes en el centro"""
+    return ((np.roll(by, -1, 0) - np.roll(by, 1, 0))
+            - (np.roll(bx, -1, 1) - np.roll(bx, 1, 1))) / (2 * h)
+
+def psi_cell(bx, by, vx, vy, upwind):
+    """el unico escalar psi = v . b, reunido en los centros de celda"""
+    if upwind:
+        bxc = np.where(vx > 0, np.roll(bx, 1, 0), bx)
+        byc = np.where(vy > 0, np.roll(by, 1, 1), by)
+    else:
+        bxc = 0.5 * (bx + np.roll(bx, 1, 0))
+        byc = 0.5 * (by + np.roll(by, 1, 1))
+    return vx * bxc + vy * byc
+
+def update_compatible(bx, by, vx, vy, dt, upwind=True):
+    """b <- b - dt * grad_h(psi): todo termino anadido es un gradiente discreto"""
+    psi = psi_cell(bx, by, vx, vy, upwind)
+    return (bx - dt * (np.roll(psi, -1, 0) - psi) / h,
+            by - dt * (np.roll(psi, -1, 1) - psi) / h)
+
+def update_collocated(bx, by, vx, vy, dt, lam):
+    """Rusanov por componentes: la disipacion no es el gradiente de nada"""
+    psi = vx * bx + vy * by
+    fx = 0.5 * (psi + np.roll(psi, -1, 0)) - 0.5 * lam * (np.roll(bx, -1, 0) - bx)
+    fy = 0.5 * (psi + np.roll(psi, -1, 1)) - 0.5 * lam * (np.roll(by, -1, 1) - by)
+    return (bx - dt * (fx - np.roll(fx, 1, 0)) / h,
+            by - dt * (fy - np.roll(fy, 1, 1)) / h)
+
+def path_gap(bx, by):
+    """integra b por dos caminos hasta la misma celda; la brecha es el rotacional encerrado"""
+    i1 = j1 = N // 2
+    pa = bx[:i1, 0].sum() * h + by[i1, :j1].sum() * h   # primero x, luego y
+    pb = by[0, :j1].sum() * h + bx[:i1, j1].sum() * h   # primero y, luego x
+    return pa - pb
+
+vx, vy = shear_velocity()
+phi0 = interface_potential()
+lam = float(np.max(np.abs(vx) + np.abs(vy)))
+dt = 0.4 * h / lam
+bs = list(grad_stagger(phi0))
+bc = [np.gradient(phi0, h, axis=0, edge_order=2),
+      np.gradient(phi0, h, axis=1, edge_order=2)]
+
+print(f"N={N}  h={h:.4e}  dt={dt:.4e}  lambda={lam:.3f}")
+print(f"{'t':>6}{'|b|max stag':>13}{'|curl|max stag':>16}"
+      f"{'|b|max coll':>13}{'|curl|max coll':>16}")
+for k in range(5):
+    if k:
+        for _ in range(100):
+            bs = update_compatible(*bs, vx, vy, dt)
+            bc = update_collocated(*bc, vx, vy, dt, lam)
+    print(f"{k*100*dt:>6.3f}{np.max(np.hypot(*bs)):>13.3f}"
+          f"{np.max(np.abs(curl_node(*bs))):>16.3e}"
+          f"{np.max(np.hypot(*bc)):>13.3f}"
+          f"{np.max(np.abs(curl_centered(*bc))):>16.3e}")
+
+print(f"\npath-integral gap of phi at (0.5, 0.5):"
+      f"  staggered {path_gap(*bs):+.3e}   collocated {path_gap(*bc):+.3e}")
+
+bn = list(grad_stagger(phi0))
+for _ in range(400):
+    bn = update_compatible(*bn, vx, vy, dt, upwind=False)
+print(f"staggered with NO upwinding: |b|max={np.max(np.hypot(*bn)):.3e} (unstable)"
+      f"  |curl|max={np.max(np.abs(curl_node(*bn))):.3e}")
+```
+
+```text
+N=64  h=1.5625e-02  dt=4.6330e-03  lambda=1.349
+     t  |b|max stag  |curl|max stag  |b|max coll  |curl|max coll
+ 0.000       10.167       0.000e+00        9.818       3.286e-04
+ 0.463       12.318       1.421e-12        6.538       5.545e+01
+ 0.927       18.063       1.748e-12        4.703       1.687e+02
+ 1.390        9.854       1.705e-12        4.124       2.269e+02
+ 1.853        5.746       2.132e-12        3.342       1.998e+02
+
+path-integral gap of phi at (0.5, 0.5):  staggered -3.331e-16   collocated -5.442e-01
+staggered with NO upwinding: |b|max=3.622e+03 (unstable)  |curl|max=1.091e-10
+```
+
+El rotacional escalonado se queda en $10^{-12}$. Eso es el redondeo de doble precisión multiplicado por $1/h^2 \approx 4096$. El colocado alcanza 55 en $t = 0.46$ y 227 en $t = 1.39$. Como el máximo de $|\mathbf{b}|$ ronda 4, el rotacional es más de cincuenta veces mayor que el campo que lo transporta. Lo que queda no es una interfaz, sino ruido rotacional.
+
+## Por qué más disipación no añade rotacional
+
+La segunda corrida de `update_compatible` usa esquema contra corriente (upwind), es decir, incorpora disipación. Y el rotacional sigue en $10^{-12}$. Esa es la ventaja práctica del esquema.
+
+La razón está en dónde se aplica el upwind. La decisión contra corriente solo interviene cuando el escalar $\psi = \mathbf{v}\cdot\mathbf{b}$ se reúne en los centros de celda. La actualización posterior sigue siendo el único bloque $-\Delta t\, \nabla_h \psi$. Sea como sea que se construya $\psi$, el rotacional de un gradiente es cero.
+
+La disposición colocada es lo contrario. El término disipativo de Rusanov $-\frac{\lambda}{2}(b_{x,i+1} - b_{x,i})$ se adhiere a $b_x$ solo en $x$ y a $b_y$ solo en $y$. Las dos componentes reciben operadores distintos. Ese par no es el gradiente de ningún escalar, de modo que aplicar un rotacional deja atrás $\frac{\lambda h}{2}(\partial_x \partial_y^2 b_y - \partial_y \partial_x^2 b_x)$.
+
+Resumiendo, la restricción recae sobre la forma y no sobre la precisión. Mientras la actualización completa sea el gradiente discreto de un solo escalar, se pueden apilar limitadores o reconstrucciones de alto orden a voluntad. Contar primero qué puede y qué no puede representar la malla es el mismo orden de trabajo que en [el defecto del momento cúbico del equilibrio LBM](/es/posts/2026-09-16-lbm-cubic-defect-galilean-invariance/). Primero se elige el esquema, después se ajustan los términos.
+
+## Rotacional cero no evita que el cálculo explote
+
+La última línea de salida cuenta eso. Al apagar el upwind y dejar solo el promedio centrado, $|\mathbf{b}|$ trepa hasta $3.6\times 10^3$. Empezó en 10, o sea un factor de 360: la corrida divergió. El rotacional, en cambio, es $1.09\times 10^{-10}$, todavía al nivel del redondeo.
+
+Preservar la restricción y ser estable son propiedades separadas. La disposición escalonada solo garantiza que el campo sigue siendo el gradiente de alguna interfaz; no promete que esa interfaz se mantenga acotada. La disipación es un ingrediente aparte. Confundir ambas cosas lleva a un mal diagnóstico: ver una explosión y sospechar de la disposición de variables.
+
+## Dónde cambia esto los números en la tensión superficial
+
+El sistema del artículo construye el esfuerzo de tensión superficial directamente a partir de $\mathbf{b}$. El tensor de esfuerzos tiene aproximadamente la forma $\sigma(|\mathbf{b}|\,\mathbf{I} - \mathbf{b}\otimes\mathbf{b}/|\mathbf{b}|)$. Si se mezcla contenido rotacional en $\mathbf{b}$, ese esfuerzo genera tensión para una interfaz que no existe.
+
+El síntoma aparece primero en una burbuja estática. Crecen corrientes espurias (spurious currents) en un problema cuya velocidad debería ser exactamente cero. La componente rotacional entra en el esfuerzo a través de la curvatura, el esfuerzo produce velocidad y la velocidad rota aún más a $\mathbf{b}$. Una vez cerrado el lazo de realimentación, la amplitud crece de forma exponencial.
+
+El artículo resuelve la presión de manera semi-implícita sobre la misma malla. Pertenece a la misma familia que [la separación acústica semi-implícita](/es/posts/2026-09-19-semi-implicit-pressure-linf-flattener/), donde solo las ondas acústicas pasan a implícito y el resto queda explícito. La disposición escalonada hace aquí dos trabajos: entrega la identidad del rotacional y vuelve simétrico definido positivo el sistema de presión, de modo que sirve un solver de gradiente conjugado (CG). Una sola disposición compra ambas propiedades.
+
+## Lo que cobra la malla escalonada
+
+No sale gratis. Como $b_x$ y $b_y$ viven en lugares distintos, formar $\mathbf{v}\cdot\mathbf{b}$ exige un promedio cada vez. Ese promedio es `psi_cell` en el código de arriba, y promediar recorta las altas frecuencias. Con una interfaz de tres o cuatro celdas de ancho, ese amortiguamiento no es despreciable.
+
+El tratamiento de contornos también se alarga. Las variables que viven en caras y en nodos exigen cada una su propio esténcil de frontera. Al pasar a mallas no estructuradas, la correspondencia entre "cara" y "nodo" deja de ser obvia, así que el par de operadores compatibles debe diseñarse aparte. Esa es, en mi lectura, la razón por la que el artículo se queda en mallas cartesianas.
+
+La regla de decisión queda así. Si un modelo lleva un campo de interfaz o un campo de distorsión (distortion field) como variable independiente, la identidad del rotacional no es opcional: gotea en cada paso, y la tasa de fuga escala con $\lambda h$. Si el modelo recalcula $\mathbf{b}$ a partir de $c$ cada vez, el problema no llega a surgir. En cualquier caso, vale la pena contar una vez si existe un escalar que corresponda al campo vectorial almacenado. Las diez líneas de `path_gap` bastan para eso.

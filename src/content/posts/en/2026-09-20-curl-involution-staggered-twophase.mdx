@@ -1,0 +1,215 @@
+---
+title: "[Paper Review] The Same Point Read 0.544 Apart Along Two Paths — Curl Involutions on a Staggered Grid"
+date: 2026-09-20
+description: "A staggered discretization that holds the curl of an interface field at round-off is run beside a collocated Rusanov scheme for 400 steps, and the color function is reconstructed along two paths."
+tags: ["Involution-Constraints", "Staggered-Grid", "Diffuse-Interface", "Paper-Review", "Numerical-Analysis"]
+locale: en
+slug: 2026-09-20-curl-involution-staggered-twophase
+takeaway: "A curl involution is not an initial condition but an identity every step has to honor, and it holds to round-off for free once the discrete gradient and curl share the same four points."
+draft: false
+---
+
+import { InvolutionDriftTwinGrid } from '@/components/post-viz/2026-09-20-curl-involution-staggered-twophase/InvolutionDriftTwinGrid'
+import { PathGapLoopIntegrator } from '@/components/post-viz/2026-09-20-curl-involution-staggered-twophase/PathGapLoopIntegrator'
+
+## The same point read as two different numbers
+
+After 400 steps of pushing an interface field $\mathbf{b}$ around, I reconstructed the color function at the middle cell of the grid. Integrating $\mathbf{b}$ from the origin should give the color function back. That is what $\mathbf{b} = \nabla c$ means. Going in $x$ first and turning in $y$ gave one number. Going in $y$ first and turning in $x$ gave another. They differed by 0.544. The color function is a quantity that lives between 0 and 1.
+
+This post reads Chiocchetti and Dumbser (2023), a staggered semi-implicit scheme for a first order hyperbolic model of viscous two-phase flow with surface tension, and reproduces one piece of it: the curl involution. Why that number has to be zero, why it is not zero under an ordinary variable layout, and what has to change to drive it down to round-off.
+
+## Promoting the interface field to an independent variable
+
+A diffuse interface model represents the boundary between two phases as a smooth transition in a color function $c$. Surface tension needs $\nabla c$ and its divergence. The trouble is the number of derivatives. Curvature is a second derivative of $c$, so when the interface is only a few cells wide, noise gets amplified straight through.
+
+A first order hyperbolic reformulation lowers that by one. It promotes $\mathbf{b} = \nabla c$ to an independent variable and solves a transport equation for $\mathbf{b}$ itself. Apply $\nabla$ to both sides of $\partial_t c + \mathbf{v}\cdot\nabla c = 0$ and you get this.
+
+$$
+\partial_t b_k + \partial_k (v_j b_j) = 0
+$$
+
+Here $b_k$ is the $k$ component of the interface field, $v_j$ is the velocity, and $v_j b_j = \mathbf{v}\cdot\mathbf{b}$ is a single scalar. The whole system now contains first derivatives only. Eigenvalues are defined, and any hyperbolic solver applies. The same motivation shows up in [why the normal $\mathbf{n}$ has to be evaluated at every node in a conservative Allen-Cahn model](/en/posts/2026-09-18-conservative-allen-cahn-lbm-interface/).
+
+There is a price. $\mathbf{b}$ is now stored independently of $c$. The two can drift apart.
+
+Push the same initial interface through two discretizations at once in the simulation below.
+
+<InvolutionDriftTwinGrid />
+
+Left is the staggered layout, right is the collocated one. Raise the shear and the Rusanov dissipation, then watch whether the left panel stays black and when the right one starts to light up.
+
+## The constraint is part of the equation, not part of the initial data
+
+If $\mathbf{b}$ is the gradient of any scalar, its curl vanishes identically.
+
+$$
+\nabla \times \mathbf{b} = \nabla \times \nabla c = \mathbf{0}
+$$
+
+That relation is called an involution. The transport equation preserves it on its own, because $\partial_t (\nabla \times \mathbf{b}) = -\nabla \times \nabla(v_j b_j) = \mathbf{0}$. At the continuous level, zero at $t=0$ means zero forever.
+
+So it gets treated as an initial-condition matter. That is exactly the trap. Nothing guarantees that $\nabla_h \times \nabla_h$ vanishes for the discretized operators. Without that guarantee the constraint leaks a little every step, and after 400 steps the leak is the 0.544 from the opening.
+
+What breaks when the curl is nonzero? Stokes answers that. The integral along a closed loop equals the area integral of the curl the loop encloses. A nonzero curl means $\mathbf{b}$ is not the gradient of any color function. The interface that corresponds to the stored $\mathbf{b}$ does not exist.
+
+<PathGapLoopIntegrator />
+
+The $\kappa$ slider sets how much rotational content is mixed into the field. Drive it to zero and the two bars stop on the identical number. Raise it at all and the two paths split, and the gap matches the curl integral over the shaded region.
+
+## Where the discrete operators share the Schwarz identity
+
+The paper's prescription is simple: lay the discrete gradient and the discrete curl out so they use the same four points.
+
+Put the color function at cell centers, $b_x$ on the $x$ faces $(i+\frac12, j)$, and $b_y$ on the $y$ faces $(i, j+\frac12)$. Compute the curl at the node $(i+\frac12, j+\frac12)$. For any scalar $\psi$ it then expands like this.
+
+$$
+(\nabla_h \times \nabla_h \psi)_{i+\frac12,\, j+\frac12}
+= \frac{\psi_{i+1,j+1} - \psi_{i,j+1} - \psi_{i+1,j} + \psi_{i,j}}{h^2}
+- \frac{\psi_{i+1,j+1} - \psi_{i+1,j} - \psi_{i,j+1} + \psi_{i,j}}{h^2}
+$$
+
+The two numerators are the same four terms written in a different order. The difference is identically zero. This is the Schwarz identity for mixed partials (mixed partials commute) carried intact to the discrete level. It is not an approximation. In floating point the same four numbers are added and subtracted, so only round-off survives.
+
+Carrying that into the time integration takes one line. If every update has the form $-\Delta t\, \nabla_h \psi$, it disappears the moment a curl is applied. So $\nabla_h \times \mathbf{b}$ keeps its initial value regardless of how many steps are taken. If that value is zero, it stays zero.
+
+## Two discretizations under the same shear layer in Python
+
+One round interface on a $64^2$ periodic grid, pushed by a tanh shear layer. One run uses the staggered operator pair above; the other stores all of $\mathbf{b}$ at cell centers and uses a component-wise Rusanov flux. Same $\Delta t$, same velocity field.
+
+```python
+import numpy as np
+
+N, L = 64, 1.0
+h = L / N
+xc = (np.arange(N) + 0.5) * h
+Xc, Yc = np.meshgrid(xc, xc, indexing="ij")
+
+def shear_velocity(amp=1.0, delta=0.12):
+    """Kelvin-Helmholtz style: tanh shear layer + sinusoidal perturbation."""
+    return amp * np.tanh((Yc - 0.5) / delta), 0.35 * amp * np.sin(2 * np.pi * Xc)
+
+def interface_potential(r0=0.22, w=0.05):
+    r = np.sqrt((Xc - 0.5) ** 2 + (Yc - 0.5) ** 2)
+    return 0.5 * (1.0 + np.tanh((r0 - r) / w))
+
+def grad_stagger(phi):
+    """b_x at x-faces (i+1/2, j), b_y at y-faces (i, j+1/2)."""
+    return (np.roll(phi, -1, 0) - phi) / h, (np.roll(phi, -1, 1) - phi) / h
+
+def curl_node(bx, by):
+    """curl at nodes (i+1/2, j+1/2) -- the operator compatible with grad_stagger."""
+    return (np.roll(by, -1, 0) - by) / h - (np.roll(bx, -1, 1) - bx) / h
+
+def curl_centered(bx, by):
+    """collocated curl: central differences of cell-centred components."""
+    return ((np.roll(by, -1, 0) - np.roll(by, 1, 0))
+            - (np.roll(bx, -1, 1) - np.roll(bx, 1, 1))) / (2 * h)
+
+def psi_cell(bx, by, vx, vy, upwind):
+    """the single scalar psi = v . b, collocated at cell centres."""
+    if upwind:
+        bxc = np.where(vx > 0, np.roll(bx, 1, 0), bx)
+        byc = np.where(vy > 0, np.roll(by, 1, 1), by)
+    else:
+        bxc = 0.5 * (bx + np.roll(bx, 1, 0))
+        byc = 0.5 * (by + np.roll(by, 1, 1))
+    return vx * bxc + vy * byc
+
+def update_compatible(bx, by, vx, vy, dt, upwind=True):
+    """b <- b - dt * grad_h(psi): every added term is a discrete gradient."""
+    psi = psi_cell(bx, by, vx, vy, upwind)
+    return (bx - dt * (np.roll(psi, -1, 0) - psi) / h,
+            by - dt * (np.roll(psi, -1, 1) - psi) / h)
+
+def update_collocated(bx, by, vx, vy, dt, lam):
+    """component-wise Rusanov: the dissipation is not the gradient of anything."""
+    psi = vx * bx + vy * by
+    fx = 0.5 * (psi + np.roll(psi, -1, 0)) - 0.5 * lam * (np.roll(bx, -1, 0) - bx)
+    fy = 0.5 * (psi + np.roll(psi, -1, 1)) - 0.5 * lam * (np.roll(by, -1, 1) - by)
+    return (bx - dt * (fx - np.roll(fx, 1, 0)) / h,
+            by - dt * (fy - np.roll(fy, 1, 1)) / h)
+
+def path_gap(bx, by):
+    """integrate b along two paths to the same cell; the gap is the enclosed curl."""
+    i1 = j1 = N // 2
+    pa = bx[:i1, 0].sum() * h + by[i1, :j1].sum() * h   # x first, then y
+    pb = by[0, :j1].sum() * h + bx[:i1, j1].sum() * h   # y first, then x
+    return pa - pb
+
+vx, vy = shear_velocity()
+phi0 = interface_potential()
+lam = float(np.max(np.abs(vx) + np.abs(vy)))
+dt = 0.4 * h / lam
+bs = list(grad_stagger(phi0))
+bc = [np.gradient(phi0, h, axis=0, edge_order=2),
+      np.gradient(phi0, h, axis=1, edge_order=2)]
+
+print(f"N={N}  h={h:.4e}  dt={dt:.4e}  lambda={lam:.3f}")
+print(f"{'t':>6}{'|b|max stag':>13}{'|curl|max stag':>16}"
+      f"{'|b|max coll':>13}{'|curl|max coll':>16}")
+for k in range(5):
+    if k:
+        for _ in range(100):
+            bs = update_compatible(*bs, vx, vy, dt)
+            bc = update_collocated(*bc, vx, vy, dt, lam)
+    print(f"{k*100*dt:>6.3f}{np.max(np.hypot(*bs)):>13.3f}"
+          f"{np.max(np.abs(curl_node(*bs))):>16.3e}"
+          f"{np.max(np.hypot(*bc)):>13.3f}"
+          f"{np.max(np.abs(curl_centered(*bc))):>16.3e}")
+
+print(f"\npath-integral gap of phi at (0.5, 0.5):"
+      f"  staggered {path_gap(*bs):+.3e}   collocated {path_gap(*bc):+.3e}")
+
+bn = list(grad_stagger(phi0))
+for _ in range(400):
+    bn = update_compatible(*bn, vx, vy, dt, upwind=False)
+print(f"staggered with NO upwinding: |b|max={np.max(np.hypot(*bn)):.3e} (unstable)"
+      f"  |curl|max={np.max(np.abs(curl_node(*bn))):.3e}")
+```
+
+```text
+N=64  h=1.5625e-02  dt=4.6330e-03  lambda=1.349
+     t  |b|max stag  |curl|max stag  |b|max coll  |curl|max coll
+ 0.000       10.167       0.000e+00        9.818       3.286e-04
+ 0.463       12.318       1.421e-12        6.538       5.545e+01
+ 0.927       18.063       1.748e-12        4.703       1.687e+02
+ 1.390        9.854       1.705e-12        4.124       2.269e+02
+ 1.853        5.746       2.132e-12        3.342       1.998e+02
+
+path-integral gap of phi at (0.5, 0.5):  staggered -3.331e-16   collocated -5.442e-01
+staggered with NO upwinding: |b|max=3.622e+03 (unstable)  |curl|max=1.091e-10
+```
+
+The staggered curl sits at $10^{-12}$. That is double precision round-off multiplied by $1/h^2 \approx 4096$. The collocated one reaches 55 by $t = 0.46$ and 227 by $t = 1.39$. Since the largest $|\mathbf{b}|$ is about 4, the curl is more than fifty times bigger than the field carrying it. What is left is rotational noise, not an interface.
+
+## Why more dissipation does not add curl
+
+The second run of `update_compatible` uses upwinding, which means dissipation is in there. The curl is still $10^{-12}$. This is the practical advantage of the scheme.
+
+The reason is where the upwinding sits. The upwind decision is used only when the scalar $\psi = \mathbf{v}\cdot\mathbf{b}$ is gathered at cell centers. The update after that is still the single object $-\Delta t\, \nabla_h \psi$. However $\psi$ gets built, the curl of a gradient is zero.
+
+The collocated layout is the opposite. The Rusanov dissipation $-\frac{\lambda}{2}(b_{x,i+1} - b_{x,i})$ attaches to $b_x$ in $x$ only and to $b_y$ in $y$ only. The two components receive different operators. That pair is not the gradient of any scalar, so applying a curl leaves $\frac{\lambda h}{2}(\partial_x \partial_y^2 b_y - \partial_y \partial_x^2 b_x)$ behind.
+
+So the restriction is on form, not on accuracy. As long as the entire update is the discrete gradient of one scalar, pile on limiters or high order reconstruction freely. Counting what the grid can and cannot represent before choosing terms is the same order of business as in [the cubic moment defect of the LBM equilibrium](/en/posts/2026-09-16-lbm-cubic-defect-galilean-invariance/). Pick the scheme first, fit the terms afterward.
+
+## Zero curl does not stop a blow-up
+
+The last line of output makes that point. Turn upwinding off and keep only the central average, and $|\mathbf{b}|$ climbs to $3.6\times 10^3$. It started at 10, so that is a factor of 360. The run diverged. The curl, meanwhile, is $1.09\times 10^{-10}$, still at round-off.
+
+Involution preservation and stability are separate properties. The staggered layout guarantees only that the field is still the gradient of some interface. It promises nothing about that interface staying finite. Dissipation is a separate ingredient. Conflating the two leads to a bad diagnosis: seeing a blow-up and suspecting the variable layout.
+
+## Where this changes numbers in surface tension
+
+The system in the paper builds the surface tension stress directly from $\mathbf{b}$. The stress tensor looks roughly like $\sigma(|\mathbf{b}|\,\mathbf{I} - \mathbf{b}\otimes\mathbf{b}/|\mathbf{b}|)$. Mix rotational content into $\mathbf{b}$ and that stress produces tension for an interface that does not exist.
+
+The symptom shows up first in a static bubble. Spurious currents grow in a problem whose velocity should be exactly zero. The curl component enters the stress through the curvature, the stress makes velocity, and the velocity rotates $\mathbf{b}$ further. Once the feedback loop closes, the amplitude grows exponentially.
+
+The paper solves pressure semi-implicitly on the same grid. It belongs to the same family as [the semi-implicit acoustic split](/en/posts/2026-09-19-semi-implicit-pressure-linf-flattener/), where only the acoustic waves go implicit and the rest stays explicit. The staggered layout does two jobs here. It hands over the curl identity, and it makes the pressure system symmetric positive definite so a conjugate gradient solver applies. One layout buys both properties.
+
+## What the staggered grid charges for it
+
+It is not free. Because $b_x$ and $b_y$ live at different places, forming $\mathbf{v}\cdot\mathbf{b}$ requires an average every time. That average is `psi_cell` in the code above, and averaging shaves high frequencies. With an interface three or four cells wide, that damping is not negligible.
+
+Boundary treatment gets longer too. Variables living on faces and on nodes each demand their own boundary stencil. Move to unstructured grids and the correspondence between "face" and "node" stops being obvious, so the compatible operator pair has to be designed separately. I read that as the reason the paper stays on Cartesian grids.
+
+The decision rule comes out like this. If a model carries an interface field or a distortion field as an independent variable, the curl identity is not optional. It leaks every step, and the leak rate scales with $\lambda h$. If the model recomputes $\mathbf{b}$ from $c$ each time, the problem never arises at all. Either way, it is worth counting once whether a scalar exists that matches the vector field being stored. The ten lines of `path_gap` above will do it.

@@ -1,0 +1,269 @@
+---
+title: "[论文评述] 同一点的色函数沿两条路径相差0.544 — 旋度约束与交错网格"
+date: 2026-09-20
+description: "把界面场旋度在离散层面严格保持为零的交错网格离散，与同位布置并排跑400步做对比。"
+tags: ["Involution-Constraints", "Staggered-Grid", "Diffuse-Interface", "Paper-Review", "Numerical-Analysis"]
+locale: zh
+slug: 2026-09-20-curl-involution-staggered-twophase
+takeaway: "旋度约束不是初始条件，而是每一步都要兑现的恒等式；只要离散梯度与旋度共用同样的四个点，它就在舍入误差水平上自动成立。"
+draft: false
+---
+
+import { InvolutionDriftTwinGrid } from '@/components/post-viz/2026-09-20-curl-involution-staggered-twophase/InvolutionDriftTwinGrid'
+import { PathGapLoopIntegrator } from '@/components/post-viz/2026-09-20-curl-involution-staggered-twophase/PathGapLoopIntegrator'
+
+## 同一个点的色函数读出了两个值
+
+把界面场 $\mathbf{b}$ 推了400步之后，我在网格正中的单元重建了色函数。
+从原点积分 $\mathbf{b}$ 本应还原出色函数，因为定义就是 $\mathbf{b} = \nabla c$。
+先沿 $x$ 走再拐向 $y$ 得到一个数，先沿 $y$ 走再拐向 $x$ 得到另一个数。
+两者相差0.544。而色函数是取值在0到1之间的量。
+
+本文阅读 Chiocchetti 与 Dumbser (2023) 针对含黏性与表面张力的一阶双曲两相流模型提出的
+交错网格半隐式格式，并只抽出其中的旋度约束(curl involution)部分加以复现。
+为什么这个值必须为零，为什么在常见布置下它不为零，以及改动什么才能把它压到舍入误差。
+
+## 把界面场提升为独立变量的理由
+
+扩散界面(diffuse interface)模型用色函数 $c$ 的平缓过渡来表示两相边界。
+计算表面张力需要 $\nabla c$ 及其散度。麻烦在于求导的次数。
+曲率是 $c$ 的二阶导数，界面只有几个网格宽时，噪声会被直接放大。
+
+改写成一阶双曲(first order hyperbolic)形式把求导降了一级。
+它把 $\mathbf{b} = \nabla c$ 提升为独立变量，转而求解 $\mathbf{b}$ 自身的输运方程。
+对 $c$ 的输运方程 $\partial_t c + \mathbf{v}\cdot\nabla c = 0$ 两边取 $\nabla$，就得到下式。
+
+$$
+\partial_t b_k + \partial_k (v_j b_j) = 0
+$$
+
+其中 $b_k$ 是界面场的第 $k$ 个分量，$v_j$ 是速度，$v_j b_j = \mathbf{v}\cdot\mathbf{b}$ 是一个标量。
+这样整个系统只含一阶导数，特征值有定义，双曲型求解器可以直接套用。
+同样的动机也出现在[保守型Allen–Cahn中为何要在每个节点求法向 $\mathbf{n}$](/zh/posts/2026-09-18-conservative-allen-cahn-lbm-interface/) 一文里。
+
+代价有一个。$\mathbf{b}$ 现在独立于 $c$ 存储，二者可能彼此偏离。
+
+在下面的模拟里，把同一个初始界面用两种离散同时推一遍。
+
+<InvolutionDriftTwinGrid />
+
+左边是交错布置，右边是同位布置。调大剪切强度和 Rusanov 耗散，
+看左边面板是否一直保持黑色，以及右边从什么时候开始亮起来。
+
+## 约束不是初始条件，而是方程的一部分
+
+如果 $\mathbf{b}$ 是某个标量的梯度，那么它的旋度恒为零。
+
+$$
+\nabla \times \mathbf{b} = \nabla \times \nabla c = \mathbf{0}
+$$
+
+这个关系称为约束(involution)。输运方程自身就保持这一性质，
+因为 $\partial_t (\nabla \times \mathbf{b}) = -\nabla \times \nabla(v_j b_j) = \mathbf{0}$。
+在连续方程层面，$t=0$ 时为零就永远为零。
+
+于是它常被当成初始条件的问题来对待。这恰恰是陷阱。
+离散化之后，没有任何东西保证 $\nabla_h \times \nabla_h$ 等于零。
+没有这个保证，约束每步都会漏一点，400步之后就成了开头那个0.544。
+
+旋度不为零会破坏什么？Stokes 定理给出答案。沿闭合回路的积分等于回路所围旋度的面积分。
+存在旋度就意味着 $\mathbf{b}$ 不是任何色函数的梯度。
+也就是说，与所存 $\mathbf{b}$ 对应的界面根本不存在。
+
+<PathGapLoopIntegrator />
+
+$\kappa$ 滑块控制混入场中的旋转分量。把它降到零，两根柱子会精确停在同一个数上。
+只要抬起一点，两条路径就分开，而这个差值始终等于阴影区域内的旋度积分。
+
+## 离散算子共享 Schwarz 恒等式的位置
+
+论文的处方很简单：把离散梯度与离散旋度布置成使用同样的四个点。
+
+色函数放在单元中心，$b_x$ 放在 $x$ 面 $(i+\frac12, j)$，$b_y$ 放在 $y$ 面 $(i, j+\frac12)$。
+旋度在节点 $(i+\frac12, j+\frac12)$ 上计算。于是对任意标量 $\psi$ 展开如下。
+
+$$
+(\nabla_h \times \nabla_h \psi)_{i+\frac12,\, j+\frac12}
+= \frac{\psi_{i+1,j+1} - \psi_{i,j+1} - \psi_{i+1,j} + \psi_{i,j}}{h^2}
+- \frac{\psi_{i+1,j+1} - \psi_{i+1,j} - \psi_{i,j+1} + \psi_{i,j}}{h^2}
+$$
+
+两个分子是同样四项换了顺序写出来的，差值恒等于零。
+这就是把交叉导数的 Schwarz 恒等式(混合偏导可交换)原样搬到了离散层面。
+它不是近似。在浮点运算中加减的也是同样四个数，所以只剩下舍入误差。
+
+把这个性质带进时间积分只需一行推理。若每步的增量都是 $-\Delta t\, \nabla_h \psi$ 的形式，
+一取旋度就消失。于是 $\nabla_h \times \mathbf{b}$ 与步数无关地保持初值。初值为零就一直为零。
+
+## 用 Python 把两种离散放进同一个剪切层
+
+在 $64^2$ 的周期网格上放一个圆形界面，用 tanh 剪切层去推。
+一路用上面的交错算子对，另一路把 $\mathbf{b}$ 全部放在单元中心并采用分量式 Rusanov 通量。
+两者的 $\Delta t$ 与速度场完全相同。
+
+```python
+import numpy as np
+
+N, L = 64, 1.0
+h = L / N
+xc = (np.arange(N) + 0.5) * h
+Xc, Yc = np.meshgrid(xc, xc, indexing="ij")
+
+def shear_velocity(amp=1.0, delta=0.12):
+    """Kelvin-Helmholtz 型：tanh 剪切层 + 正弦扰动"""
+    return amp * np.tanh((Yc - 0.5) / delta), 0.35 * amp * np.sin(2 * np.pi * Xc)
+
+def interface_potential(r0=0.22, w=0.05):
+    r = np.sqrt((Xc - 0.5) ** 2 + (Yc - 0.5) ** 2)
+    return 0.5 * (1.0 + np.tanh((r0 - r) / w))
+
+def grad_stagger(phi):
+    """b_x 位于 x 面 (i+1/2, j)，b_y 位于 y 面 (i, j+1/2)"""
+    return (np.roll(phi, -1, 0) - phi) / h, (np.roll(phi, -1, 1) - phi) / h
+
+def curl_node(bx, by):
+    """节点 (i+1/2, j+1/2) 上的旋度 —— 与 grad_stagger 配对的算子"""
+    return (np.roll(by, -1, 0) - by) / h - (np.roll(bx, -1, 1) - bx) / h
+
+def curl_centered(bx, by):
+    """同位布置的旋度：单元中心分量的中心差分"""
+    return ((np.roll(by, -1, 0) - np.roll(by, 1, 0))
+            - (np.roll(bx, -1, 1) - np.roll(bx, 1, 1))) / (2 * h)
+
+def psi_cell(bx, by, vx, vy, upwind):
+    """把单个标量 psi = v . b 汇集到单元中心"""
+    if upwind:
+        bxc = np.where(vx > 0, np.roll(bx, 1, 0), bx)
+        byc = np.where(vy > 0, np.roll(by, 1, 1), by)
+    else:
+        bxc = 0.5 * (bx + np.roll(bx, 1, 0))
+        byc = 0.5 * (by + np.roll(by, 1, 1))
+    return vx * bxc + vy * byc
+
+def update_compatible(bx, by, vx, vy, dt, upwind=True):
+    """b <- b - dt * grad_h(psi)：所加的项全部是离散梯度"""
+    psi = psi_cell(bx, by, vx, vy, upwind)
+    return (bx - dt * (np.roll(psi, -1, 0) - psi) / h,
+            by - dt * (np.roll(psi, -1, 1) - psi) / h)
+
+def update_collocated(bx, by, vx, vy, dt, lam):
+    """分量式 Rusanov：耗散项不是任何标量的梯度"""
+    psi = vx * bx + vy * by
+    fx = 0.5 * (psi + np.roll(psi, -1, 0)) - 0.5 * lam * (np.roll(bx, -1, 0) - bx)
+    fy = 0.5 * (psi + np.roll(psi, -1, 1)) - 0.5 * lam * (np.roll(by, -1, 1) - by)
+    return (bx - dt * (fx - np.roll(fx, 1, 0)) / h,
+            by - dt * (fy - np.roll(fy, 1, 1)) / h)
+
+def path_gap(bx, by):
+    """沿两条路径积分 b 到同一单元，差值就是所围的旋度"""
+    i1 = j1 = N // 2
+    pa = bx[:i1, 0].sum() * h + by[i1, :j1].sum() * h   # 先 x 后 y
+    pb = by[0, :j1].sum() * h + bx[:i1, j1].sum() * h   # 先 y 后 x
+    return pa - pb
+
+vx, vy = shear_velocity()
+phi0 = interface_potential()
+lam = float(np.max(np.abs(vx) + np.abs(vy)))
+dt = 0.4 * h / lam
+bs = list(grad_stagger(phi0))
+bc = [np.gradient(phi0, h, axis=0, edge_order=2),
+      np.gradient(phi0, h, axis=1, edge_order=2)]
+
+print(f"N={N}  h={h:.4e}  dt={dt:.4e}  lambda={lam:.3f}")
+print(f"{'t':>6}{'|b|max stag':>13}{'|curl|max stag':>16}"
+      f"{'|b|max coll':>13}{'|curl|max coll':>16}")
+for k in range(5):
+    if k:
+        for _ in range(100):
+            bs = update_compatible(*bs, vx, vy, dt)
+            bc = update_collocated(*bc, vx, vy, dt, lam)
+    print(f"{k*100*dt:>6.3f}{np.max(np.hypot(*bs)):>13.3f}"
+          f"{np.max(np.abs(curl_node(*bs))):>16.3e}"
+          f"{np.max(np.hypot(*bc)):>13.3f}"
+          f"{np.max(np.abs(curl_centered(*bc))):>16.3e}")
+
+print(f"\npath-integral gap of phi at (0.5, 0.5):"
+      f"  staggered {path_gap(*bs):+.3e}   collocated {path_gap(*bc):+.3e}")
+
+bn = list(grad_stagger(phi0))
+for _ in range(400):
+    bn = update_compatible(*bn, vx, vy, dt, upwind=False)
+print(f"staggered with NO upwinding: |b|max={np.max(np.hypot(*bn)):.3e} (unstable)"
+      f"  |curl|max={np.max(np.abs(curl_node(*bn))):.3e}")
+```
+
+```text
+N=64  h=1.5625e-02  dt=4.6330e-03  lambda=1.349
+     t  |b|max stag  |curl|max stag  |b|max coll  |curl|max coll
+ 0.000       10.167       0.000e+00        9.818       3.286e-04
+ 0.463       12.318       1.421e-12        6.538       5.545e+01
+ 0.927       18.063       1.748e-12        4.703       1.687e+02
+ 1.390        9.854       1.705e-12        4.124       2.269e+02
+ 1.853        5.746       2.132e-12        3.342       1.998e+02
+
+path-integral gap of phi at (0.5, 0.5):  staggered -3.331e-16   collocated -5.442e-01
+staggered with NO upwinding: |b|max=3.622e+03 (unstable)  |curl|max=1.091e-10
+```
+
+交错一侧的旋度停在 $10^{-12}$。那正是双精度舍入误差乘上 $1/h^2 \approx 4096$ 的量级。
+同位一侧在 $t=0.46$ 时升到55，在1.39时升到227。而 $|\mathbf{b}|$ 的最大值不过4左右，
+旋度比承载它的场还要大50倍以上。剩下的不是界面，而是旋转噪声。
+
+## 加大耗散却不增加旋度的条件
+
+第二条路径里的 `update_compatible` 用了迎风差分(upwind)，也就是引入了耗散。
+可旋度依然是 $10^{-12}$。这正是该格式在实践中的好处。
+
+原因在于迎风差分所处的位置。迎风判别只用在把标量 $\psi = \mathbf{v}\cdot\mathbf{b}$
+汇集到单元中心的那一步。之后的更新仍然是 $-\Delta t\, \nabla_h \psi$ 这一整块。
+无论 $\psi$ 怎么构造，梯度的旋度都是零。
+
+同位布置正相反。Rusanov 耗散项 $-\frac{\lambda}{2}(b_{x,i+1} - b_{x,i})$
+只在 $x$ 方向作用于 $b_x$，只在 $y$ 方向作用于 $b_y$。两个分量接受了不同的算子。
+这一对不是任何标量的梯度，所以取旋度后会留下
+$\frac{\lambda h}{2}(\partial_x \partial_y^2 b_y - \partial_y \partial_x^2 b_x)$。
+
+归结起来，限制落在形式上而不在精度上。只要整个增量是某一个标量的离散梯度，
+限制器也好、高阶重构也好，都可以随意叠加。先数清网格能表示什么、不能表示什么，
+这个顺序与[LBM平衡分布的三阶矩缺失](/zh/posts/2026-09-16-lbm-cubic-defect-galilean-invariance/)里用的是同一套。
+先定格式，再配项。
+
+## 旋度为零，计算照样会发散
+
+最后一行输出讲的就是这件事。关掉迎风只留中心平均，$|\mathbf{b}|$ 会长到 $3.6\times 10^3$。
+初值是10，也就是360倍，计算发散了。可旋度是 $1.09\times 10^{-10}$，仍在舍入误差水平。
+
+约束保持与稳定性是两种不同的性质。交错布置只保证"这个场仍然是某个界面的梯度"，
+并不承诺那个界面保持有限大小。耗散要另外加进来。
+把两者混为一谈，就会看到发散的计算却去怀疑网格布置，得出错误的诊断。
+
+## 这个性质在表面张力里改变数值的地方
+
+论文处理的系统直接由 $\mathbf{b}$ 构造表面张力应力。
+应力张量大致是 $\sigma(|\mathbf{b}|\,\mathbf{I} - \mathbf{b}\otimes\mathbf{b}/|\mathbf{b}|)$ 的形式。
+一旦 $\mathbf{b}$ 混入旋转分量，这个应力就会为一个并不存在的界面制造张力。
+
+症状最先出现在静止气泡上。在速度理应严格为零的问题里，寄生流(spurious current)开始生长。
+旋度分量通过曲率进入应力，应力产生速度，速度又进一步旋转 $\mathbf{b}$。
+反馈回路一旦闭合，振幅就指数增长。
+
+论文在同一套网格上半隐式地求解压力。它与[半隐式压力分裂](/zh/posts/2026-09-19-semi-implicit-pressure-linf-flattener/)
+属于同一脉络，只把声波交给隐式，其余保持显式。
+交错布置在这里干了两份活：交出旋度恒等式，又让压力方程对称正定，从而可用共轭梯度法(CG)求解。
+一个布置同时买下两个性质。
+
+## 交错网格开出的账单
+
+它不是免费的。由于 $b_x$ 与 $b_y$ 住在不同位置，每次构造 $\mathbf{v}\cdot\mathbf{b}$ 都要做平均。
+上面代码里的 `psi_cell` 就是这个平均。平均会削掉高频。
+界面只有3到4个网格宽时，这种衰减不可忽略。
+
+边界处理也变长。住在面上和节点上的变量各自要求不同的边界条件模板。
+一旦转到非结构网格，"面"与"节点"的对应不再显然，兼容算子对必须另行设计。
+我读下来认为，这就是论文停留在正交网格上的原因。
+
+判断准则可以这样归纳。如果模型把界面场或变形场(distortion field)当作独立变量携带，
+旋度恒等式就不是可选项。它每步都在漏，漏的速率正比于 $\lambda h$。
+如果模型每次都从 $c$ 重算 $\mathbf{b}$，这个问题根本不会出现。
+无论哪一种，都值得数一次：所存的向量场是否真有一个标量与之对应。
+上面 `path_gap` 那十行就够了。
