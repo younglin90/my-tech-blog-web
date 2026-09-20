@@ -1,0 +1,226 @@
+---
+title: "Un solo nodo llevó el error de 0.21% a 76% — tiempo de relajación local en LBM de ley de potencia"
+date: 2026-09-21
+description: "Lattice Boltzmann entrega el tensor de velocidad de deformación gratis, desde el momento de no equilibrio. Para un fluido pseudoplástico ese regalo trae un infinito sentado en la línea central."
+tags: ["Power-Law-Fluid", "Non-Newtonian", "LBM", "Viscosity", "Poiseuille"]
+locale: es
+slug: 2026-09-21-power-law-lbm-local-relaxation-time
+takeaway: "En LBM de ley de potencia el tope de tau no es una perilla de estabilidad: es lo que permite alcanzar el estado estacionario."
+draft: false
+---
+
+import { PowerLawTauLadder } from '@/components/post-viz/2026-09-21-power-law-lbm-local-relaxation-time/PowerLawTauLadder'
+import { NeqShearCobwebDial } from '@/components/post-viz/2026-09-21-power-law-lbm-local-relaxation-time/NeqShearCobwebDial'
+
+## Una línea con inf en un log que no convergía
+
+Un flujo en canal resuelto con lattice Boltzmann (LBM), modelando la sangre como fluido de ley de potencia (power-law). El campo de velocidad se veía razonable. El residual no bajaba. Tras veinte mil pasos seguía estacionado cerca de $10^{-3}$.
+
+Al imprimir el tiempo de relajación $\tau$ nodo por nodo apareció un único `inf` en la línea central del canal. Ni un error de tipeo ni una división por cero. Ese nodo pedía, literalmente, viscosidad infinita.
+
+Este artículo sigue esa línea hasta el fondo: cómo LBM recupera el tensor de velocidad de deformación sin tocar un vecino, qué cuesta ese regalo gratuito y dónde un solo tope devuelve el error de 76% a 0.21%. La conclusión adelantada: la divergencia no es un bug, es una propiedad de la propia ley de potencia.
+
+<PowerLawTauLadder />
+
+Conviene bajar el índice $n$ de 1.0 a 0.4. Mientras el perfil de velocidad de la izquierda se aplana en el centro, en la escalera de la derecha el $\tau$ del nodo central se desplaza hacia la banda roja. Al desactivar `cap tau`, ese nodo abandona el eje por completo.
+
+## Dónde LBM regala la velocidad de deformación
+
+Añadir viscosidad no newtoniana a un código de volúmenes finitos empieza por el gradiente de velocidad. Hay que leer celdas vecinas, correr una reconstrucción — mínimos cuadrados, Green–Gauss, la que sea — y recién ahí aparece $\dot\gamma$. En paralelo eso agrega otro intercambio de halos.
+
+LBM se salta el paso. Siguiendo el desarrollo de Chapman–Enskog (una separación multiescala de la función de distribución en potencias del número de Knudsen) un orden, el segundo momento de la parte de no equilibrio queda ligado directamente al tensor de velocidad de deformación.
+
+$$
+S_{\alpha\beta} = -\frac{1}{2\rho c_s^2 \tau \Delta t} \sum_i c_{i\alpha} c_{i\beta}\, f_i^{neq}
+$$
+
+Aquí $f_i^{neq} = f_i - f_i^{eq}$ es la desviación del equilibrio en ese nodo, $c_s^2 = 1/3$ es la velocidad del sonido reticular al cuadrado y $\tau$ el tiempo de relajación. Todo el lado derecho vive dentro de un solo nodo. No se lee ningún vecino.
+
+Ese mismo segundo momento apareció como *déficit* al rastrear [la invariancia galileana rota de D2Q9](/es/posts/2026-09-16-lbm-cubic-defect-galilean-invariance/). Aquí ocurre lo contrario: el esfuerzo viscoso ya está dentro de las distribuciones, esperando a que lo lean.
+
+La ley de potencia cierra con ese único $\dot\gamma$.
+
+$$
+\dot\gamma = \sqrt{2 S_{\alpha\beta} S_{\alpha\beta}}, \qquad \nu = K \dot\gamma^{\,n-1}
+$$
+
+$K$ es el índice de consistencia y $n$ el índice de la ley de potencia. Con $n<1$ el fluido es pseudoplástico (shear-thinning): cuanto más rápido se agita, más fluye. La sangre ronda $n \approx 0.6$. Con $n=1$ se vuelve al caso newtoniano.
+
+## La viscosidad está dentro de tau y tau dentro de la viscosidad
+
+Poniendo dos ecuaciones lado a lado el problema salta a la vista. En la colisión BGK, la viscosidad la fija el tiempo de relajación.
+
+$$
+\nu = c_s^2 \left( \tau - \frac{1}{2} \right) \Delta t
+$$
+
+Pero $\tau$ también está en el denominador de la fórmula de $S_{\alpha\beta}$. Hace falta $\tau$ para medir $\dot\gamma$, hace falta $\dot\gamma$ para obtener $\nu$, y hace falta $\nu$ para fijar $\tau$. Cada nodo carga su propia ecuación no lineal pequeña.
+
+Muchas implementaciones la retrasan: reutilizan el $\tau$ del paso anterior y siguen. Eso funciona en estado estacionario. Donde el corte cambia rápido — a través de una interfase, en un ciclo pulsátil — la colisión usa una viscosidad atrasada un paso.
+
+También se puede resolver de frente. La clave está en aislar la cantidad que no depende de $\tau$. Llamando $\Pi'_{\alpha\beta}$ a la parte desviadora del segundo momento de no equilibrio y definiendo
+
+$$
+Q \equiv \sqrt{2\, \Pi'_{\alpha\beta} \Pi'_{\alpha\beta}}
+$$
+
+resulta que $Q$ se calcula solo con los $f_i$ actuales; $\tau$ no tiene por dónde entrar. Y $\dot\gamma = Q / (2\rho c_s^2 \tau)$.
+
+## Una ecuación local que cierra en un punto fijo
+
+Con el cambio de variable $m \equiv c_s^2 \tau$, las tres ecuaciones colapsan en una línea.
+
+$$
+m = \frac{c_s^2}{2} + B\, m^{1-n}, \qquad B \equiv K \left( \frac{Q}{2\rho} \right)^{n-1}
+$$
+
+Una incógnita, $m$; un coeficiente constante, $B$. La forma paga por una segunda razón. Llamando $g(m)$ al lado derecho,
+
+$$
+g'(m) = B(1-n)\, m^{-n}
+$$
+
+y en la raíz $m = c_s^2/2 + B m^{1-n} > B m^{1-n}$, de modo que $B m^{-n} < 1$. Por lo tanto $|g'| < 1-n < 1$ siempre que $n<1$. Para cualquier fluido pseudoplástico, la sustitución simple es una contracción incondicional. Sin Newton, sin salvaguardas, sin estimación inicial que ajustar.
+
+Vale la pena recorrer esa iteración paso a paso.
+
+<NeqShearCobwebDial />
+
+Al subir el control `Pi_xy` la curva verde baja y la escalera se pega a la diagonal en pocos escalones. Llevando $n$ por encima de 1 — dilatante — la pendiente cambia de signo y la escalera pasa a girar en espiral. Aun así contrae mientras $n<2$.
+
+En D2Q9 solo los cuatro enlaces diagonales alimentan $\Pi_{xy}$, y por eso los enlaces axiales quedan grises en la roseta de la izquierda: su $c_{ix}c_{iy}$ es cero.
+
+## Cinco topes distintos sobre el mismo canal
+
+Canal completamente desarrollado impulsado por una fuerza volumétrica, paredes con bounce-back a media malla, 31 nodos de ancho. El flujo en canal de ley de potencia tiene solución analítica, así que el error se mide en vez de estimarse a ojo.
+
+$$
+u(y) = \frac{n}{n+1} \left( \frac{g}{K} \right)^{1/n} \left( h^{\frac{n+1}{n}} - |y|^{\frac{n+1}{n}} \right)
+$$
+
+$g$ es la fuerza volumétrica por unidad de masa y $h$ la semialtura. Con $n=1$ reaparece la parábola de siempre. La misma familia de perfiles vista desde la altura de velocidad aparece en [2.0000 en laminar, 1.0322 en turbulento](/es/posts/2026-09-17-kinetic-energy-coefficient-pipe-profile/).
+
+```python
+import numpy as np
+
+CX = np.array([0, 1, 0, -1, 0, 1, -1, -1, 1])
+CY = np.array([0, 0, 1, 0, -1, 1, 1, -1, -1])
+W  = np.array([4/9, 1/9, 1/9, 1/9, 1/9, 1/36, 1/36, 1/36, 1/36])
+OPP = np.array([0, 3, 4, 1, 2, 7, 8, 5, 6])
+CS2, G, NY = 1/3, 2e-6, 31
+
+def eq(rho, ux):
+    cu = CX[:, None] * ux
+    return W[:, None] * rho * (1 + cu/CS2 + cu*cu/(2*CS2**2) - ux*ux/(2*CS2))
+
+def relax_time(Q, rho, n, K, sweeps=40):
+    """m = cs2*tau. Iteracion de punto fijo que nunca lee un nodo vecino."""
+    with np.errstate(divide='ignore', over='ignore', invalid='ignore'):
+        B = K * (Q / (2*rho))**(n - 1)
+        m = np.ones_like(Q)
+        for _ in range(sweeps):
+            m = CS2/2 + B * m**(1 - n)
+    return m / CS2
+
+def exact(n, K):
+    h = NY/2.0
+    y = np.arange(NY) - (NY - 1)/2.0
+    return n/(n+1) * (G/K)**(1/n) * (h**((n+1)/n) - np.abs(y)**((n+1)/n))
+
+def consistency_K(n, umax=8e-3):
+    h = NY/2.0
+    return G / (umax*(n+1)/(n*h**((n+1)/n)))**n
+
+def channel(n, K, cap, steps=20000, tol=1e-12):
+    ue = exact(n, K)
+    f = eq(np.ones(NY), ue)          # parte del perfil analitico y relaja solo la correccion
+    prev, tau = ue.copy(), np.full(NY, 0.8)
+    for it in range(steps):
+        rho = f.sum(0)
+        ux = (CX[:, None]*f).sum(0)/rho + 0.5*G
+        fe = eq(rho, ux)
+        Pxy = (CX[:, None]*CY[:, None]*(f - fe)).sum(0)
+        raw = relax_time(2*np.abs(Pxy), rho, n, K)
+        tau = np.clip(np.nan_to_num(raw, nan=cap, posinf=cap), 0.5005, cap)
+        cu = CX[:, None]*ux
+        src = W[:, None]*(1 - 1/(2*tau))*rho*G*((CX[:, None]-ux)/CS2 + cu*CX[:, None]/CS2**2)
+        post = f - (f - fe)/tau + src
+        for i in range(9):
+            f[i] = np.roll(post[i], CY[i])
+        for i in range(9):                                  # bounce-back a media malla
+            if CY[i] == 1:  f[i, 0]  = post[OPP[i], 0]
+            if CY[i] == -1: f[i, -1] = post[OPP[i], -1]
+        if it % 200 == 199:
+            res = np.abs(ux - prev).max()/ux.max()
+            if res < tol: break
+            prev = ux.copy()
+    rho = f.sum(0)
+    ux = (CX[:, None]*f).sum(0)/rho + 0.5*G
+    err = np.linalg.norm(ux - ue)/np.linalg.norm(ue)
+    return err, res, it + 1, tau, raw
+
+K1 = consistency_K(1.0)
+e, r, it, tau, _ = channel(1.0, K1, 1e6)
+print(f"Newtonian n=1.0  L2={e:.4%}  tau={tau.min():.4f}..{tau.max():.4f}  steps={it}")
+
+n, K = 0.6, consistency_K(0.6)
+_, _, _, _, raw = channel(n, K, 4.0, steps=200)
+print(f"n=0.6  tau at wall {raw[0]:.4f}   tau at centre {raw[NY//2]:.4e}")
+print(f"{'cap':>9} {'L2 err':>9} {'residual':>10} {'steps':>7} {'capped':>8}")
+for cap in [0.8, 1.5, 4.0, 40.0, 1e6]:
+    e, r, it, tau, _ = channel(n, K, cap)
+    print(f"{cap:9.1f} {e:9.4%} {r:10.2e} {it:7d} {int((tau >= cap - 1e-9).sum()):5d}/{NY}")
+```
+
+```text
+Newtonian n=1.0  L2=0.1362%  tau=0.5901..0.5901  steps=20000
+n=0.6  tau at wall 0.5690   tau at centre inf
+      cap    L2 err   residual   steps   capped
+      0.8   0.2112%   1.08e-06   20000     3/31
+      1.5   0.2121%   1.14e-06   20000     1/31
+      4.0   0.2134%   1.07e-06   20000     1/31
+     40.0   0.4850%   1.02e-08   20000     1/31
+1000000.0  75.9752%   7.69e-03   20000     1/31
+```
+
+## Lo que separó 0.21% de 76% fue un solo nodo
+
+La referencia newtoniana da 0.1362%, así que el solver en sí está sano. Cambiando a $n=0.6$ en la misma malla, sin tocar nada salvo el tope, el error oscila entre 0.2112% y 75.9752%.
+
+Conviene leer la columna `capped`. Para cualquier tope de 1.5 o más, se recorta exactamente un nodo de 31: el de la línea central. Mantener ese único nodo en $\tau = 10^6$ en lugar de 4.0 vale 75.76 puntos porcentuales de error.
+
+La razón está en la colisión. En $f_i \leftarrow f_i - (f_i - f_i^{eq})/\tau$, hacer $\tau \to \infty$ manda el prefactor a cero. Ese nodo nunca vuelve al equilibrio. El error que traía la distribución inicial se queda ahí y el streaming lo reparte a los vecinos. El residual clavado en $7.69 \times 10^{-3}$ es exactamente eso.
+
+¿Por qué $\dot\gamma$ vale cero exacto en la línea central? Por simetría. Ahí $\partial u / \partial y$ cambia de signo, de modo que pasa por cero, y en el nivel discreto $\Pi_{xy}$ también se cancela de forma exacta. Entonces $\nu = K \dot\gamma^{\,n-1}$ con $n-1 = -0.4$ da $\nu \to \infty$. El continuo dice lo mismo: la ley de potencia no está definida a velocidad de corte nula.
+
+## Por qué el valor del tope casi no cambia la respuesta
+
+Aquí está lo que importa en la práctica. Los topes 0.8, 1.5 y 4.0 dan 0.2112%, 0.2121% y 0.2134%. Coinciden en tres dígitos.
+
+Ese nodo casi no transporta esfuerzo de corte. El balance de cantidad de movimiento en un canal desarrollado fija el esfuerzo como $\sigma(y) = \rho g y$, y en el centro $y=0$, así que $\sigma=0$. La viscosidad puede estar tan mal como se quiera: la velocidad de corte que la multiplica es cero, así que nada llega al esfuerzo.
+
+Lo que diverge es $\nu$, no $\nu\dot\gamma$, y el flujo solo siente lo segundo. Por eso el tope no cuesta precisión. Subirlo a 40 duplica el error a 0.4850%, pero eso es un $\tau$ grande relajando ese nodo con lentitud: es un efecto de velocidad de convergencia, no de precisión.
+
+Un tope demasiado bajo se paga del otro lado. Con 0.8 quedan recortados tres nodos. Los dos vecinos del centro resultan más fluidos de lo que corresponde, y ese error sí viaja en el esfuerzo. La tabla todavía marca 0.2112%, pero el conteo de recortados sube rápido a medida que $n$ baja. En la primera simulación, poniendo `nodes` en 81 y bajando $n$ a 0.4 se ve llenarse la banda roja.
+
+## Dónde cambia la historia para la sangre
+
+Que la ley de potencia explote a corte nulo es un defecto conocido en reología, no solo en la discretización. La sangre real tiende a una viscosidad finita a corte cero. Carreau–Yasuda corrige justamente ese extremo.
+
+$$
+\nu = \nu_\infty + (\nu_0 - \nu_\infty)\left[ 1 + (\lambda \dot\gamma)^a \right]^{\frac{n-1}{a}}
+$$
+
+$\nu_0$ y $\nu_\infty$ cierran ambos extremos y $\lambda$ es el inverso de la velocidad de corte donde empieza el adelgazamiento. Con este modelo $\nu \to \nu_0$ cuando $\dot\gamma \to 0$, finito. No hace falta un tope puesto a mano: $\nu_0$ es el tope.
+
+¿Entonces para qué usar la ley de potencia? Fuera del centro del conducto los dos modelos difieren poco, y la ley de potencia trae una solución analítica contra la cual verificar. Además, el punto fijo de más arriba cierra en una línea solo para la ley de potencia. Carreau–Yasuda itera igual, pero la prueba de contracción no queda ni de cerca tan limpia.
+
+Del lado de LBM hay algo más que vigilar cuando $\tau$ crece: la posición efectiva de la pared bounce-back se desplaza con $\tau$. Un fluido pseudoplástico tiene $\tau$ pequeño cerca de la pared, así que ese error incluso se reduce. El precio es el margen de estabilidad cuando $\tau$ se acerca a $0.5$. El nodo de pared de arriba quedó en 0.5690: hay margen, pero no sobra. La misma tensión de $\tau$ local aparece del lado de la movilidad en [la interfase Allen–Cahn conservativa](/es/posts/2026-09-18-conservative-allen-cahn-lbm-interface/).
+
+## Divergir y ser inservible no son lo mismo
+
+Al ver `inf`, la primera sospecha fue una división por cero en alguna parte. Era el modelo respondiendo con honestidad. Donde la velocidad de corte es cero, la viscosidad de un fluido pseudoplástico es realmente infinita.
+
+El cálculo se rompió no porque ese infinito sea físicamente falso, sino porque la colisión BGK usa $\tau^{-1}$ como coeficiente. "La viscosidad es infinita" y "no relajes nunca más este nodo" terminan escritos de la misma manera. El tope bloquea la segunda lectura.
+
+Así que, al correr LBM de ley de potencia, conviene tratar el tope de $\tau$ como parte de la discretización y no como una opción de estabilidad. Un valor cercano a $2$ alcanza. Y conviene registrar siempre cuántos nodos quedaron recortados. Cuando esa cuenta supere claramente uno, lo que hay que arreglar es $K$ o la malla, no el tope.

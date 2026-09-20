@@ -1,0 +1,226 @@
+---
+title: "一个节点把误差从0.21%推到76% — 幂律流体LBM的局部松弛时间"
+date: 2026-09-21
+description: "LBM从非平衡二阶矩里免费拿到应变率张量。可在剪切率为零的中心线上，剪切变稀流体的黏度会发散。"
+tags: ["Power-Law-Fluid", "Non-Newtonian", "LBM", "Viscosity", "Poiseuille"]
+locale: zh
+slug: 2026-09-21-power-law-lbm-local-relaxation-time
+takeaway: "幂律LBM里给τ设上限不是稳定性开关，而是算例能否到达定常状态的前提。"
+draft: false
+---
+
+import { PowerLawTauLadder } from '@/components/post-viz/2026-09-21-power-law-lbm-local-relaxation-time/PowerLawTauLadder'
+import { NeqShearCobwebDial } from '@/components/post-viz/2026-09-21-power-law-lbm-local-relaxation-time/NeqShearCobwebDial'
+
+## 不收敛的日志里那一行 inf
+
+把血液当作幂律(power-law)流体，用格子玻尔兹曼方法(LBM)跑了一个槽道流。速度场看着像回事。只有残差降不下去。跑了两万步还停在 $10^{-3}$ 附近。
+
+逐节点打印松弛时间 $\tau$，发现槽道中心线上有一个节点是 `inf`。既不是笔误，也不是除以零。那个节点确实在要求无穷大的黏度。
+
+本文把这一行追到底：LBM如何不读邻居节点就拿到应变率张量，这份免费礼物附带什么代价，以及一个上限如何把误差从76%拉回0.21%。先说结论——这个发散不是bug，而是幂律本身的性质。
+
+<PowerLawTauLadder />
+
+把幂律指数 $n$ 从1.0拖到0.4。左边的速度分布在中心变平的同时，右边梯子上中心节点的 $\tau$ 被推进右侧红带。关掉 `cap tau`，那个节点就直接跑出坐标轴。
+
+## LBM免费给出应变率的地方
+
+在有限体积法里加非牛顿黏度，第一步是速度梯度。读邻居单元，做最小二乘或Green–Gauss重构，然后才有 $\dot\gamma$。并行时这里还要多一次通信。
+
+LBM跳过这一步。沿Chapman–Enskog展开(按克努森数幂级数分解分布函数的多尺度方法)走一阶，非平衡分布的二阶矩就和应变率张量直接挂钩。
+
+$$
+S_{\alpha\beta} = -\frac{1}{2\rho c_s^2 \tau \Delta t} \sum_i c_{i\alpha} c_{i\beta}\, f_i^{neq}
+$$
+
+其中 $f_i^{neq} = f_i - f_i^{eq}$ 是该节点偏离平衡的部分，$c_s^2 = 1/3$ 是格子声速的平方，$\tau$ 是松弛时间。右边全部是单个节点内的量，不读邻居。
+
+同一个二阶矩在[伽利略不变性被破坏的地方](/zh/posts/2026-09-16-lbm-cubic-defect-galilean-invariance/)是以三阶矩亏损的面目出现的。在这里它反过来成了礼物：黏性应力本来就装在分布函数里，取出来即可。
+
+幂律只需要这一个 $\dot\gamma$ 就能闭合。
+
+$$
+\dot\gamma = \sqrt{2 S_{\alpha\beta} S_{\alpha\beta}}, \qquad \nu = K \dot\gamma^{\,n-1}
+$$
+
+$K$ 是稠度系数，$n$ 是幂律指数。$n<1$ 即剪切变稀(shear-thinning)——搅得越快越稀。血液大约在 $n \approx 0.6$。$n=1$ 就回到牛顿流体。
+
+## 黏度在 τ 里面，τ 又在黏度里面
+
+把两个式子并排放就能看出问题。BGK碰撞中，黏度由松弛时间决定。
+
+$$
+\nu = c_s^2 \left( \tau - \frac{1}{2} \right) \Delta t
+$$
+
+可是上面 $S_{\alpha\beta}$ 的分母里也有 $\tau$。要知道 $\tau$ 才能量 $\dot\gamma$，要有 $\dot\gamma$ 才能得 $\nu$，要有 $\nu$ 才能定 $\tau$。等于每个节点都摆着一个小的非线性方程。
+
+很多实现在这里直接沿用上一步的 $\tau$。这种滞后(lagging)在定常状态下没问题。但在界面或脉动这类剪切快速变化的地方，碰撞用的是差一步的黏度。
+
+也可以不滞后地解。关键是先分离出不依赖 $\tau$ 的量。记非平衡二阶矩的偏斜(deviatoric)部分为 $\Pi'_{\alpha\beta}$，令
+
+$$
+Q \equiv \sqrt{2\, \Pi'_{\alpha\beta} \Pi'_{\alpha\beta}}
+$$
+
+则 $Q$ 只由当下的 $f_i$ 算出，$\tau$ 没有进入的余地。而 $\dot\gamma = Q / (2\rho c_s^2 \tau)$。
+
+## 用一个不动点闭合的局部方程
+
+换元 $m \equiv c_s^2 \tau$，三个式子并成一行。
+
+$$
+m = \frac{c_s^2}{2} + B\, m^{1-n}, \qquad B \equiv K \left( \frac{Q}{2\rho} \right)^{n-1}
+$$
+
+未知数只有 $m$，系数 $B$ 是常数。这个形式还有另一个好处。把右端记作 $g(m)$，则
+
+$$
+g'(m) = B(1-n)\, m^{-n}
+$$
+
+在根处 $m = c_s^2/2 + B m^{1-n} > B m^{1-n}$，故 $B m^{-n} < 1$。于是当 $n<1$ 时恒有 $|g'| < 1-n < 1$。对剪切变稀流体，简单代入迭代无条件收缩。不需要Newton法，不需要保护措施，也不需要调初值。
+
+下面一格一格地走这个迭代。
+
+<NeqShearCobwebDial />
+
+拖动 `Pi_xy` 加大剪切，绿色曲线下沉，阶梯几步就贴上对角线。把 $n$ 提到1以上(剪切增稠)，斜率变负，阶梯开始画螺旋。只要 $n<2$ 仍然收缩。
+
+在D2Q9上只有四条对角链接对 $\Pi_{xy}$ 有贡献。左边花环里轴向链接保持灰色就是这个原因，它们的 $c_{ix}c_{iy}$ 为零。
+
+## 给同一个槽道设了五个上限
+
+体积力驱动的充分发展槽道，壁面用halfway bounce-back，宽31个节点。幂律槽道流有解析解，因此误差可以直接量。
+
+$$
+u(y) = \frac{n}{n+1} \left( \frac{g}{K} \right)^{1/n} \left( h^{\frac{n+1}{n}} - |y|^{\frac{n+1}{n}} \right)
+$$
+
+$g$ 是单位质量体积力，$h$ 是半宽。代入 $n=1$ 就回到熟悉的抛物线。同一族分布从速度水头角度看的讨论在[层流2.0000、湍流1.0322](/zh/posts/2026-09-17-kinetic-energy-coefficient-pipe-profile/)。
+
+```python
+import numpy as np
+
+CX = np.array([0, 1, 0, -1, 0, 1, -1, -1, 1])
+CY = np.array([0, 0, 1, 0, -1, 1, 1, -1, -1])
+W  = np.array([4/9, 1/9, 1/9, 1/9, 1/9, 1/36, 1/36, 1/36, 1/36])
+OPP = np.array([0, 3, 4, 1, 2, 7, 8, 5, 6])
+CS2, G, NY = 1/3, 2e-6, 31
+
+def eq(rho, ux):
+    cu = CX[:, None] * ux
+    return W[:, None] * rho * (1 + cu/CS2 + cu*cu/(2*CS2**2) - ux*ux/(2*CS2))
+
+def relax_time(Q, rho, n, K, sweeps=40):
+    """m = cs2*tau。完全不读取邻居节点的不动点迭代。"""
+    with np.errstate(divide='ignore', over='ignore', invalid='ignore'):
+        B = K * (Q / (2*rho))**(n - 1)
+        m = np.ones_like(Q)
+        for _ in range(sweeps):
+            m = CS2/2 + B * m**(1 - n)
+    return m / CS2
+
+def exact(n, K):
+    h = NY/2.0
+    y = np.arange(NY) - (NY - 1)/2.0
+    return n/(n+1) * (G/K)**(1/n) * (h**((n+1)/n) - np.abs(y)**((n+1)/n))
+
+def consistency_K(n, umax=8e-3):
+    h = NY/2.0
+    return G / (umax*(n+1)/(n*h**((n+1)/n)))**n
+
+def channel(n, K, cap, steps=20000, tol=1e-12):
+    ue = exact(n, K)
+    f = eq(np.ones(NY), ue)          # 从解析解出发，只让稳态修正项松弛
+    prev, tau = ue.copy(), np.full(NY, 0.8)
+    for it in range(steps):
+        rho = f.sum(0)
+        ux = (CX[:, None]*f).sum(0)/rho + 0.5*G
+        fe = eq(rho, ux)
+        Pxy = (CX[:, None]*CY[:, None]*(f - fe)).sum(0)
+        raw = relax_time(2*np.abs(Pxy), rho, n, K)
+        tau = np.clip(np.nan_to_num(raw, nan=cap, posinf=cap), 0.5005, cap)
+        cu = CX[:, None]*ux
+        src = W[:, None]*(1 - 1/(2*tau))*rho*G*((CX[:, None]-ux)/CS2 + cu*CX[:, None]/CS2**2)
+        post = f - (f - fe)/tau + src
+        for i in range(9):
+            f[i] = np.roll(post[i], CY[i])
+        for i in range(9):                                  # halfway bounce-back
+            if CY[i] == 1:  f[i, 0]  = post[OPP[i], 0]
+            if CY[i] == -1: f[i, -1] = post[OPP[i], -1]
+        if it % 200 == 199:
+            res = np.abs(ux - prev).max()/ux.max()
+            if res < tol: break
+            prev = ux.copy()
+    rho = f.sum(0)
+    ux = (CX[:, None]*f).sum(0)/rho + 0.5*G
+    err = np.linalg.norm(ux - ue)/np.linalg.norm(ue)
+    return err, res, it + 1, tau, raw
+
+K1 = consistency_K(1.0)
+e, r, it, tau, _ = channel(1.0, K1, 1e6)
+print(f"Newtonian n=1.0  L2={e:.4%}  tau={tau.min():.4f}..{tau.max():.4f}  steps={it}")
+
+n, K = 0.6, consistency_K(0.6)
+_, _, _, _, raw = channel(n, K, 4.0, steps=200)
+print(f"n=0.6  tau at wall {raw[0]:.4f}   tau at centre {raw[NY//2]:.4e}")
+print(f"{'cap':>9} {'L2 err':>9} {'residual':>10} {'steps':>7} {'capped':>8}")
+for cap in [0.8, 1.5, 4.0, 40.0, 1e6]:
+    e, r, it, tau, _ = channel(n, K, cap)
+    print(f"{cap:9.1f} {e:9.4%} {r:10.2e} {it:7d} {int((tau >= cap - 1e-9).sum()):5d}/{NY}")
+```
+
+```text
+Newtonian n=1.0  L2=0.1362%  tau=0.5901..0.5901  steps=20000
+n=0.6  tau at wall 0.5690   tau at centre inf
+      cap    L2 err   residual   steps   capped
+      0.8   0.2112%   1.08e-06   20000     3/31
+      1.5   0.2121%   1.14e-06   20000     1/31
+      4.0   0.2134%   1.07e-06   20000     1/31
+     40.0   0.4850%   1.02e-08   20000     1/31
+1000000.0  75.9752%   7.69e-03   20000     1/31
+```
+
+## 把0.21%和76%分开的是一个节点
+
+牛顿流体基准线是0.1362%，说明求解器本身没问题。同一网格换成 $n=0.6$，只改上限，误差就从0.2112%走到75.9752%。
+
+看 `capped` 这一列。上限在1.5以上时，被截断的节点在31个里恰好是1个，就是槽道中心线那个节点。把这一个节点的 $\tau$ 设成 $10^6$ 还是4.0，中间隔着75.76个百分点的误差。
+
+原因在碰撞式里。$f_i \leftarrow f_i - (f_i - f_i^{eq})/\tau$ 中令 $\tau \to \infty$，括号前的系数就变成0。那个节点不再回到平衡。初始分布带的误差原样留在那里，邻居再通过迁移把它带走。残差卡在 $7.69 \times 10^{-3}$ 就是这个结果。
+
+为什么中心线上 $\dot\gamma$ 恰好为零？因为对称。槽道中心处 $\partial u / \partial y$ 变号，所以在该位置过零；离散上 $\Pi_{xy}$ 也恰好相消为零。于是 $\nu = K \dot\gamma^{\,n-1}$ 中 $n-1 = -0.4$，得到 $\nu \to \infty$。连续介质层面也一样：幂律在剪切率为零处没有定义。
+
+## 上限取在哪里几乎都给出同一个答案的原因
+
+这里有一个工程上重要的事实。0.8、1.5、4.0对应的误差是0.2112%、0.2121%、0.2134%，前三位数字相同。
+
+因为那个节点几乎不承担剪切应力。充分发展槽道里动量平衡定下的应力是 $\sigma(y) = \rho g y$，中心处 $y=0$，所以 $\sigma=0$。黏度错得再离谱，与之相乘的剪切率是零，对应力毫无贡献。
+
+也就是说，发散的是 $\nu$，不是 $\nu\dot\gamma$，而流动真正感受到的是后者。所以设上限不损失精度。上限抬到40时误差翻倍到0.4850%，那是因为 $\tau$ 大导致该节点松弛变慢，属于收敛速度问题，不是精度问题。
+
+反过来上限压得太低也有代价。取0.8时有3个节点被截断，中心两侧两个节点比实际更稀，这个误差是会上到应力里的。表中还只是0.2112%，但 $n$ 再小一些，被截断的节点数会迅速增加。把第一个模拟的 `nodes` 调到81、$n$ 压到0.4，进入红带的节点明显变多。
+
+## 算血液时故事发生变化的地方
+
+幂律在零剪切率发散，这在流变学里也是公认的缺陷。真实血液在剪切率趋零时黏度会停在一个有限值(零剪切黏度)。Carreau–Yasuda模型补的正是这一端。
+
+$$
+\nu = \nu_\infty + (\nu_0 - \nu_\infty)\left[ 1 + (\lambda \dot\gamma)^a \right]^{\frac{n-1}{a}}
+$$
+
+$\nu_0$ 和 $\nu_\infty$ 堵住两端，$\lambda$ 是开始剪切变稀那个剪切率的倒数。用这个模型时 $\dot\gamma \to 0$ 给出有限的 $\nu \to \nu_0$，不必手工设上限，$\nu_0$ 本身就是上限。
+
+那为什么还用幂律？因为除管中心外的大部分区域两个模型差别很小，而且幂律有解析解可供验证。另外上面那个不动点只在幂律下才能一行闭合。Carreau–Yasuda也能同样迭代，但收缩性的证明远没有这么干净。
+
+LBM这边 $\tau$ 变大时还有一点要留意：bounce-back壁面的有效位置随 $\tau$ 移动。剪切变稀流体在壁面附近 $\tau$ 小，所以这项误差反而更小。代价是 $\tau$ 靠近 $0.5$ 时稳定裕度变窄。上面算例的壁面节点是0.5690，有裕度，但不算宽裕。类似的局部 $\tau$ 张力在[守恒型Allen–Cahn界面](/zh/posts/2026-09-18-conservative-allen-cahn-lbm-interface/)里出现在迁移率一侧。
+
+## 发散和不能用是两回事
+
+看到 `inf` 时第一反应是哪里除了零。实际上那是模型诚实作答的结果。在剪切率为零的位置，剪切变稀流体的黏度确实是无穷大。
+
+算例崩掉不是因为这个无穷大在物理上错了，而是因为BGK碰撞把 $\tau^{-1}$ 当系数用。"黏度无穷大"和"这个节点永远不再松弛"被写成了同一个式子。上限挡的是后一种解读。
+
+所以跑幂律LBM时，把 $\tau$ 的上限当作离散化的一部分，而不是稳定性选项。取 $2$ 附近就够。并且每次都把被截断的节点数打到日志里。一旦这个数明显超过1，该改的是 $K$ 或网格，不是上限。

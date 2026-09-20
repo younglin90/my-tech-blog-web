@@ -1,0 +1,226 @@
+---
+title: "One node pushed the error from 0.21% to 76% — local relaxation time in power-law LBM"
+date: 2026-09-21
+description: "Lattice Boltzmann hands you the strain-rate tensor for free, straight out of the non-equilibrium moment. For a shear-thinning fluid that gift comes with an infinity sitting on the centreline."
+tags: ["Power-Law-Fluid", "Non-Newtonian", "LBM", "Viscosity", "Poiseuille"]
+locale: en
+slug: 2026-09-21-power-law-lbm-local-relaxation-time
+takeaway: "In power-law LBM a cap on tau is not a stability knob; it is what lets the run reach steady state at all."
+draft: false
+---
+
+import { PowerLawTauLadder } from '@/components/post-viz/2026-09-21-power-law-lbm-local-relaxation-time/PowerLawTauLadder'
+import { NeqShearCobwebDial } from '@/components/post-viz/2026-09-21-power-law-lbm-local-relaxation-time/NeqShearCobwebDial'
+
+## One line of inf in a log that would not converge
+
+I ran a lattice Boltzmann (LBM) channel flow with blood modelled as a power-law fluid. The velocity field looked plausible. The residual refused to drop. After twenty thousand steps it was still parked near $10^{-3}$.
+
+Printing the relaxation time $\tau$ node by node turned up a single `inf` on the channel centreline. Not a typo, not a division by zero. That node was genuinely asking for infinite viscosity.
+
+This post follows that one line all the way down: how LBM recovers the strain-rate tensor without touching a neighbour, what the free gift costs, and where a single cap pulls the error back from 76% to 0.21%. The short version is that the divergence is not a bug. It is a property of the power law itself.
+
+<PowerLawTauLadder />
+
+Drag the power-law index $n$ from 1.0 down to 0.4. As the velocity profile on the left flattens near the centre, watch the centre node on the right-hand ladder slide into the red band. Switch `cap tau` off and that node leaves the axis entirely.
+
+## Where LBM hands you the strain rate for free
+
+Adding a non-Newtonian viscosity to a finite volume code starts with the velocity gradient. You read neighbouring cells, run a reconstruction — least squares, Green–Gauss, whichever — and only then do you have $\dot\gamma$. In parallel that buys you another halo exchange.
+
+LBM skips the step. Follow the Chapman–Enskog expansion (a multiscale split of the distribution function in powers of the Knudsen number) one order and the second moment of the non-equilibrium part ties directly to the strain-rate tensor.
+
+$$
+S_{\alpha\beta} = -\frac{1}{2\rho c_s^2 \tau \Delta t} \sum_i c_{i\alpha} c_{i\beta}\, f_i^{neq}
+$$
+
+Here $f_i^{neq} = f_i - f_i^{eq}$ is that node's departure from equilibrium, $c_s^2 = 1/3$ is the squared lattice sound speed, and $\tau$ is the relaxation time. Everything on the right lives inside one node. No neighbour is read.
+
+The same second moment showed up as a *deficit* when we chased [the broken Galilean invariance of D2Q9](/en/posts/2026-09-16-lbm-cubic-defect-galilean-invariance/). Here it is the opposite: the viscous stress is already sitting inside the distributions, waiting to be read out.
+
+The power law closes on that single $\dot\gamma$.
+
+$$
+\dot\gamma = \sqrt{2 S_{\alpha\beta} S_{\alpha\beta}}, \qquad \nu = K \dot\gamma^{\,n-1}
+$$
+
+$K$ is the consistency index and $n$ the power-law index. With $n<1$ the fluid is shear-thinning — stir it harder and it runs thinner. Blood sits around $n \approx 0.6$. Set $n=1$ and you are back to a Newtonian fluid.
+
+## The viscosity is inside tau and tau is inside the viscosity
+
+Put two equations side by side and the problem shows. In BGK collision, viscosity is set by the relaxation time.
+
+$$
+\nu = c_s^2 \left( \tau - \frac{1}{2} \right) \Delta t
+$$
+
+But $\tau$ also sits in the denominator of the $S_{\alpha\beta}$ formula above. You need $\tau$ to measure $\dot\gamma$, you need $\dot\gamma$ to get $\nu$, and you need $\nu$ to fix $\tau$. Every node carries its own small nonlinear equation.
+
+Plenty of implementations lag it: reuse last step's $\tau$ and move on. That is fine at steady state. Where shear changes fast — across an interface, through a pulsatile cycle — it collides with a viscosity that is one step stale.
+
+You can also solve it outright. The trick is to isolate the quantity that does not depend on $\tau$. Write $\Pi'_{\alpha\beta}$ for the deviatoric part of the non-equilibrium second moment and set
+
+$$
+Q \equiv \sqrt{2\, \Pi'_{\alpha\beta} \Pi'_{\alpha\beta}}
+$$
+
+$Q$ is computed from the current $f_i$ alone; $\tau$ has nowhere to enter. And $\dot\gamma = Q / (2\rho c_s^2 \tau)$.
+
+## A local equation that closes on one fixed point
+
+Change variables to $m \equiv c_s^2 \tau$ and the three equations collapse into one line.
+
+$$
+m = \frac{c_s^2}{2} + B\, m^{1-n}, \qquad B \equiv K \left( \frac{Q}{2\rho} \right)^{n-1}
+$$
+
+One unknown, $m$; one constant coefficient, $B$. The form pays off for a second reason. Call the right-hand side $g(m)$, then
+
+$$
+g'(m) = B(1-n)\, m^{-n}
+$$
+
+and at the root $m = c_s^2/2 + B m^{1-n} > B m^{1-n}$, so $B m^{-n} < 1$. Therefore $|g'| < 1-n < 1$ whenever $n<1$. For any shear-thinning fluid, plain substitution is an unconditional contraction. No Newton, no safeguards, no initial guess to tune.
+
+Step through that iteration below.
+
+<NeqShearCobwebDial />
+
+Raise the `Pi_xy` slider and the green curve drops while the staircase snaps onto the diagonal in a handful of steps. Push $n$ above 1 — shear-thickening — and the slope flips sign, so the staircase starts spiralling instead. It still contracts as long as $n<2$.
+
+On D2Q9 only the four diagonal links feed $\Pi_{xy}$, which is why the axis links stay grey in the rosette on the left. Their $c_{ix}c_{iy}$ is zero.
+
+## Five different caps on the same channel
+
+A fully developed channel driven by a body force, halfway bounce-back walls, 31 nodes across. Power-law channel flow has an analytic solution, so the error can be measured rather than eyeballed.
+
+$$
+u(y) = \frac{n}{n+1} \left( \frac{g}{K} \right)^{1/n} \left( h^{\frac{n+1}{n}} - |y|^{\frac{n+1}{n}} \right)
+$$
+
+$g$ is the body force per unit mass and $h$ the half-width. Put $n=1$ in and the familiar parabola comes back. The same profile family seen from the velocity-head side appears in [2.0000 in laminar flow, 1.0322 in turbulent](/en/posts/2026-09-17-kinetic-energy-coefficient-pipe-profile/).
+
+```python
+import numpy as np
+
+CX = np.array([0, 1, 0, -1, 0, 1, -1, -1, 1])
+CY = np.array([0, 0, 1, 0, -1, 1, 1, -1, -1])
+W  = np.array([4/9, 1/9, 1/9, 1/9, 1/9, 1/36, 1/36, 1/36, 1/36])
+OPP = np.array([0, 3, 4, 1, 2, 7, 8, 5, 6])
+CS2, G, NY = 1/3, 2e-6, 31
+
+def eq(rho, ux):
+    cu = CX[:, None] * ux
+    return W[:, None] * rho * (1 + cu/CS2 + cu*cu/(2*CS2**2) - ux*ux/(2*CS2))
+
+def relax_time(Q, rho, n, K, sweeps=40):
+    """m = cs2*tau. A fixed-point sweep that never reads a neighbour node."""
+    with np.errstate(divide='ignore', over='ignore', invalid='ignore'):
+        B = K * (Q / (2*rho))**(n - 1)
+        m = np.ones_like(Q)
+        for _ in range(sweeps):
+            m = CS2/2 + B * m**(1 - n)
+    return m / CS2
+
+def exact(n, K):
+    h = NY/2.0
+    y = np.arange(NY) - (NY - 1)/2.0
+    return n/(n+1) * (G/K)**(1/n) * (h**((n+1)/n) - np.abs(y)**((n+1)/n))
+
+def consistency_K(n, umax=8e-3):
+    h = NY/2.0
+    return G / (umax*(n+1)/(n*h**((n+1)/n)))**n
+
+def channel(n, K, cap, steps=20000, tol=1e-12):
+    ue = exact(n, K)
+    f = eq(np.ones(NY), ue)          # start from the analytic profile, relax only the correction
+    prev, tau = ue.copy(), np.full(NY, 0.8)
+    for it in range(steps):
+        rho = f.sum(0)
+        ux = (CX[:, None]*f).sum(0)/rho + 0.5*G
+        fe = eq(rho, ux)
+        Pxy = (CX[:, None]*CY[:, None]*(f - fe)).sum(0)
+        raw = relax_time(2*np.abs(Pxy), rho, n, K)
+        tau = np.clip(np.nan_to_num(raw, nan=cap, posinf=cap), 0.5005, cap)
+        cu = CX[:, None]*ux
+        src = W[:, None]*(1 - 1/(2*tau))*rho*G*((CX[:, None]-ux)/CS2 + cu*CX[:, None]/CS2**2)
+        post = f - (f - fe)/tau + src
+        for i in range(9):
+            f[i] = np.roll(post[i], CY[i])
+        for i in range(9):                                  # halfway bounce-back
+            if CY[i] == 1:  f[i, 0]  = post[OPP[i], 0]
+            if CY[i] == -1: f[i, -1] = post[OPP[i], -1]
+        if it % 200 == 199:
+            res = np.abs(ux - prev).max()/ux.max()
+            if res < tol: break
+            prev = ux.copy()
+    rho = f.sum(0)
+    ux = (CX[:, None]*f).sum(0)/rho + 0.5*G
+    err = np.linalg.norm(ux - ue)/np.linalg.norm(ue)
+    return err, res, it + 1, tau, raw
+
+K1 = consistency_K(1.0)
+e, r, it, tau, _ = channel(1.0, K1, 1e6)
+print(f"Newtonian n=1.0  L2={e:.4%}  tau={tau.min():.4f}..{tau.max():.4f}  steps={it}")
+
+n, K = 0.6, consistency_K(0.6)
+_, _, _, _, raw = channel(n, K, 4.0, steps=200)
+print(f"n=0.6  tau at wall {raw[0]:.4f}   tau at centre {raw[NY//2]:.4e}")
+print(f"{'cap':>9} {'L2 err':>9} {'residual':>10} {'steps':>7} {'capped':>8}")
+for cap in [0.8, 1.5, 4.0, 40.0, 1e6]:
+    e, r, it, tau, _ = channel(n, K, cap)
+    print(f"{cap:9.1f} {e:9.4%} {r:10.2e} {it:7d} {int((tau >= cap - 1e-9).sum()):5d}/{NY}")
+```
+
+```text
+Newtonian n=1.0  L2=0.1362%  tau=0.5901..0.5901  steps=20000
+n=0.6  tau at wall 0.5690   tau at centre inf
+      cap    L2 err   residual   steps   capped
+      0.8   0.2112%   1.08e-06   20000     3/31
+      1.5   0.2121%   1.14e-06   20000     1/31
+      4.0   0.2134%   1.07e-06   20000     1/31
+     40.0   0.4850%   1.02e-08   20000     1/31
+1000000.0  75.9752%   7.69e-03   20000     1/31
+```
+
+## What separated 0.21% from 76% was a single node
+
+The Newtonian baseline is 0.1362%, so the solver itself is sound. Switch to $n=0.6$ on the same grid, change nothing but the cap, and the error swings from 0.2112% to 75.9752%.
+
+Read the `capped` column. For any cap of 1.5 or above, exactly one node out of 31 is clipped — the centreline node. Holding that one node at $\tau = 10^6$ instead of 4.0 is worth 75.76 percentage points of error.
+
+The reason is in the collision. In $f_i \leftarrow f_i - (f_i - f_i^{eq})/\tau$, letting $\tau \to \infty$ drives the prefactor to zero. That node never returns to equilibrium. Whatever error the initial distribution carried stays there, and streaming hands it to the neighbours. The residual stalling at $7.69 \times 10^{-3}$ is what that looks like.
+
+Why is $\dot\gamma$ exactly zero on the centreline? Symmetry. $\partial u / \partial y$ changes sign there, so it passes through zero, and discretely $\Pi_{xy}$ cancels to exactly zero as well. Then $\nu = K \dot\gamma^{\,n-1}$ with $n-1 = -0.4$ gives $\nu \to \infty$. The continuum says the same thing: the power law is undefined at zero shear rate.
+
+## Why the cap value barely changes the answer
+
+Here is the part that matters in practice. Caps of 0.8, 1.5 and 4.0 give 0.2112%, 0.2121% and 0.2134%. Three digits agree.
+
+That node carries almost no shear stress. Momentum balance in a fully developed channel fixes the stress as $\sigma(y) = \rho g y$, and $y=0$ at the centre, so $\sigma=0$. Get the viscosity as wrong as you like; the shear rate it multiplies is zero, so nothing reaches the stress.
+
+What diverges is $\nu$, not $\nu\dot\gamma$ — and the flow only ever feels the latter. That is why the cap costs no accuracy. Push it to 40 and the error doubles to 0.4850%, but that is a large $\tau$ relaxing that node slowly. It is a convergence-rate effect, not an accuracy one.
+
+Cap too low and you pay on the other side. At 0.8, three nodes are clipped. Two nodes either side of the centre become thinner than they should be, and that error does ride on the stress. The table still reads 0.2112%, but the clipped count climbs fast as $n$ drops. In the first simulation, set `nodes` to 81 and pull $n$ down to 0.4 to watch the red band fill up.
+
+## Where the story changes for blood
+
+That the power law blows up at zero shear is a known defect in rheology, not just in the discretisation. Real blood approaches a finite zero-shear viscosity instead. Carreau–Yasuda patches exactly that end.
+
+$$
+\nu = \nu_\infty + (\nu_0 - \nu_\infty)\left[ 1 + (\lambda \dot\gamma)^a \right]^{\frac{n-1}{a}}
+$$
+
+$\nu_0$ and $\nu_\infty$ close off both ends and $\lambda$ is the inverse of the shear rate where thinning begins. With this model $\nu \to \nu_0$ as $\dot\gamma \to 0$, finite. No hand-placed cap needed: $\nu_0$ is the cap.
+
+So why use the power law at all? Outside the pipe centre the two models differ little, and the power law has an analytic solution to verify against. On top of that, the fixed point above closes in one line only for the power law. Carreau–Yasuda iterates the same way, but the contraction proof is nowhere near as clean.
+
+One more thing to watch on the LBM side as $\tau$ grows: the effective wall position of bounce-back shifts with $\tau$. A shear-thinning fluid has small $\tau$ near the wall, so that error actually shrinks. The price is stability margin as $\tau$ approaches $0.5$. The wall node above sat at 0.5690 — there is room, but not much of it. The same local-$\tau$ tension turns up on the mobility side in [the conservative Allen–Cahn interface](/en/posts/2026-09-18-conservative-allen-cahn-lbm-interface/).
+
+## Diverging and unusable are not the same thing
+
+Seeing `inf`, the first assumption was a division by zero somewhere. It was the model answering honestly. Where the shear rate is zero, the viscosity of a shear-thinning fluid really is infinite.
+
+The calculation broke not because that infinity is physically wrong, but because BGK collision uses $\tau^{-1}$ as a coefficient. "The viscosity is infinite" and "never relax this node again" come out written the same way. The cap blocks the second reading.
+
+So if you run power-law LBM, treat the $\tau$ cap as part of the discretisation rather than a stability option. A value near $2$ is plenty. And log the number of clipped nodes every time. Once that count climbs well past one, the thing to fix is $K$ or the grid, not the cap.
