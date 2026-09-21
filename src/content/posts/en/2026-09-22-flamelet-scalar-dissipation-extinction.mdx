@@ -1,0 +1,259 @@
+---
+title: "202x More Scalar Dissipation, 13% Less Temperature — Where a Laminar Flamelet Quenches"
+date: 2026-09-22
+description: "Scalar dissipation rose 202-fold while the peak temperature fell only 13%, then the burning solution vanished. A Python continuation locates the quench limit."
+tags: ["Flamelet", "Scalar-Dissipation", "Combustion", "Diffusion", "Numerical-Analysis"]
+locale: en
+slug: 2026-09-22-flamelet-scalar-dissipation-extinction
+takeaway: "Extinction is not a slow cooling. The burning branch disappears at the one point where diffusive loss outruns heat release."
+draft: false
+---
+
+import { StrainSqueezedMixtureLayer } from '@/components/post-viz/2026-09-22-flamelet-scalar-dissipation-extinction/StrainSqueezedMixtureLayer'
+import { FlameletQuenchScurveDial } from '@/components/post-viz/2026-09-22-flamelet-scalar-dissipation-extinction/FlameletQuenchScurveDial'
+
+## Diffusion went up, so why did the flame go out
+
+Building a flamelet library forces one arbitrary choice: how far to stretch the scalar dissipation grid $\chi_{st}$ before cutting the table off. Cut too early and the turbulent solver queries outside the table. Cut too late and Newton spins looking for solutions that do not exist. To see that boundary I solved the one-dimensional flamelet equations directly.
+
+The result first. Pushing $\chi_{st}$ from 0.05 to 10.12 1/s — a factor of 202 — dropped the peak temperature from 2258.8 K to 1960.9 K, just 13.2%. One more step and the solution was gone. The temperature does not drift toward zero; the branch that was holding disappears whole.
+
+That sounds backwards. Diffusion is the only thing carrying reactants to the flame surface. In a non-premixed flame the fuel and the oxidizer arrive from opposite sides and have no other way to meet. Raise that diffusion and the fire dies.
+
+Try it in the simulation below.
+
+<StrainSqueezedMixtureLayer />
+
+Raise the `strain rate a` slider and the mixing layer thins, $\chi$ at the same location grows, and the flame band dims. Slide `Z_st` and the reaction sheet slips sideways off the $\chi$ peak — the same strain now delivers far less dissipation to the reaction zone.
+
+## What does it take to write a flame with a single scalar
+
+Assume every species diffuses at the same rate. Under that assumption the mixing state of a fluid particle is fixed by one conserved scalar: the mixture fraction $Z$. Here $Z=0$ is pure oxidizer and $Z=1$ is pure fuel.
+
+Peters proposed in 1984 a coordinate transform that makes $Z$ the independent variable. Written on $Z$ instead of three spatial coordinates, only the direction normal to the flame survives.
+
+$$
+\rho \frac{\partial Y_k}{\partial t} = \rho \frac{\chi}{2} \frac{\partial^2 Y_k}{\partial Z^2} + \dot{\omega}_k
+$$
+
+$Y_k$ is the mass fraction of species $k$, $\dot{\omega}_k$ its production rate, and $\chi$ the scalar dissipation rate. The energy equation takes the same shape.
+
+$$
+\rho \frac{\partial T}{\partial t} = \rho \frac{\chi}{2} \frac{\partial^2 T}{\partial Z^2} - \frac{1}{c_p}\sum_k h_k \dot{\omega}_k
+$$
+
+$T$ is temperature, $c_p$ the heat capacity at constant pressure, $h_k$ the species enthalpies. Ferreira later relaxed the constant-$c_p$ assumption and proposed a more general form, which collapses back to this one when $c_p$ is constant.
+
+Notice what left: the flow. No velocity field, no pressure, no three-dimensional grid. Everything turbulence does to the flame has been compressed into $\chi$ alone. The other reduction of turbulent combustion — the wrinkling hypothesis on the premixed side — is covered in [where turbulence stops making flames faster](/en/posts/2026-07-28-turbulent-flame-speed-damkohler-bending/).
+
+## The inverse of what, exactly, is the scalar dissipation rate
+
+The definition is plain.
+
+$$
+\chi = 2D\,\left|\nabla Z\right|^2
+$$
+
+$D$ is the diffusivity. The dimension is 1/s: read it as the inverse of the characteristic diffusion time.
+
+When turbulence stretches a flamelet, the gradient of $Z$ steepens. Since $\chi$ rides on the square of that gradient, it grows faster still. More molecular diffusion reaches the reaction surface — and **the heat leaving that surface grows in exactly the same proportion**. Meanwhile the residence time available for reaction shrinks.
+
+That is the answer to the paradox. Diffusion brings the reactants, but it also carries the heat away. Chemistry depends exponentially on temperature, so the side that loses heat always wins first.
+
+For a laminar counterflow flame the $Z$-dependence of $\chi$ has a closed form, the one Pitsch verified against DNS.
+
+$$
+\chi(Z) = \chi_{st}\,\frac{\exp\!\left(-2\left[\mathrm{erfc}^{-1}(2Z)\right]^2\right)}{\exp\!\left(-2\left[\mathrm{erfc}^{-1}(2Z_{st})\right]^2\right)}
+$$
+
+$\chi_{st}$ is the value at the stoichiometric mixture fraction $Z_{st}$ — the single number that indexes the library. And $Z_{st}$ follows from the feed compositions alone.
+
+$$Z_{st} = \frac{1}{1 + s\,Y_{F,1}/Y_{O,0}}$$
+
+$s$ is the mass of oxygen needed to burn 1 kg of fuel, $Y_{F,1}$ the fuel mass fraction in the fuel stream, $Y_{O,0}$ the oxygen mass fraction in the oxidizer stream.
+
+## How do you pin the quench limit in code
+
+With a one-step irreversible reaction $F + s\,O \to (1+s)P$ the unknown collapses to a single function. Because the diffusivities are equal, $Y_F + T/q$ is linear in $Z$.
+
+$$
+Y_F(Z) + \frac{T(Z)}{q} = \frac{T_0}{q} + Z\left(Y_{F,1} + \frac{T_1 - T_0}{q}\right)
+$$
+
+$q$ is the heat release per unit mass of fuel written in temperature units. $Y_O$ ties to $T$ the same way. So there is one field to solve for, $T(Z)$, and one tridiagonal matrix.
+
+The strategy is continuation. Start at a very small $\chi_{st}$ from the Burke–Schumann solution. Raise $\chi_{st}$ by a factor of 1.35 each step, run Newton, and hand the previous solution forward as the initial guess. The moment the burning solution ceases to exist, Newton either fails to converge or falls to room temperature. Forty geometric bisections between the last two values pin the limit.
+
+```python
+import math
+
+N = 201
+H = 1.0 / (N - 1)
+ZG = [i * H for i in range(N)]
+T_OX, T_FU = 300.0, 300.0      # inlet temperature on both sides [K]
+S_RATIO = 4.0                  # kg of oxygen per kg of fuel
+Y_OX = 0.232                   # oxygen mass fraction in air
+Q_HEAT = 36000.0               # heat release written as a temperature [K]
+T_ACT = 24000.0                # activation temperature [K]
+A_PRE = 2.0e10                 # pre-exponential factor [1/s]
+
+def inv_erfc(y):
+    lo, hi = -6.0, 6.0
+    for _ in range(80):
+        mid = 0.5 * (lo + hi)
+        if math.erfc(mid) > y: lo = mid
+        else: hi = mid
+    return 0.5 * (lo + hi)
+
+def chi_profile(chi_st, z_st):
+    # Pitsch's counterflow shape. It vanishes at both ends, so put a floor under it
+    f = lambda z: math.exp(-2.0 * inv_erfc(2.0 * z) ** 2)
+    fst = f(z_st)
+    out = []
+    for z in ZG:
+        v = f(min(max(z, 1e-9), 1 - 1e-9)) / fst
+        out.append(chi_st * max(v, 1e-4))
+    return out
+
+def couple_species(z, temp, y_fu):
+    # coupling functions: recover Y_F and Y_O from T and Z alone
+    yf = (T_OX / Q_HEAT + z * (y_fu + T_FU / Q_HEAT - T_OX / Q_HEAT)) - temp / Q_HEAT
+    yo = (Y_OX + S_RATIO * T_OX / Q_HEAT
+          + z * (S_RATIO * T_FU / Q_HEAT - Y_OX - S_RATIO * T_OX / Q_HEAT)) - S_RATIO * temp / Q_HEAT
+    return max(yf, 0.0), max(yo, 0.0)
+
+def tridiag_sweep(a, b, c, d):
+    n = len(b)
+    cp = [0.0] * n; dp = [0.0] * n
+    cp[0] = c[0] / b[0]; dp[0] = d[0] / b[0]
+    for i in range(1, n):
+        m = b[i] - a[i] * cp[i - 1]
+        cp[i] = c[i] / m
+        dp[i] = (d[i] - a[i] * dp[i - 1]) / m
+    x = [0.0] * n
+    x[-1] = dp[-1]
+    for i in range(n - 2, -1, -1):
+        x[i] = dp[i] - cp[i] * x[i + 1]
+    return x
+
+def newton_flamelet(chi, guess, y_fu, itmax=60):
+    T = list(guess)
+    n = N - 2
+    for _ in range(itmax):
+        a = [0.0] * n; b = [0.0] * n; c = [0.0] * n; r = [0.0] * n
+        for k in range(n):
+            i = k + 1
+            yf, yo = couple_species(ZG[i], T[i], y_fu)
+            ex = math.exp(-T_ACT / T[i])
+            w = A_PRE * yf * yo * ex
+            dw = A_PRE * ex * (-yo / Q_HEAT - yf * S_RATIO / Q_HEAT + yf * yo * T_ACT / T[i] ** 2)
+            if yf <= 0.0 or yo <= 0.0: w = 0.0; dw = 0.0
+            cf = chi[i] / (2.0 * H * H)
+            r[k] = -(cf * (T[i + 1] - 2 * T[i] + T[i - 1]) + Q_HEAT * w)
+            a[k] = cf if k > 0 else 0.0
+            b[k] = -2.0 * cf + Q_HEAT * dw
+            c[k] = cf if k < n - 1 else 0.0
+        d = tridiag_sweep(a, b, c, r)
+        lim = max(abs(v) for v in d)
+        scale = min(1.0, 200.0 / lim) if lim > 200.0 else 1.0   # limit the temperature update
+        for k in range(n):
+            T[k + 1] = max(T[k + 1] + scale * d[k], 280.0)
+        if lim < 1e-6:
+            return T, True
+    return T, False
+
+def burke_schumann(y_fu):
+    # infinite-rate limit - the starting point of the continuation
+    z_st = 1.0 / (1.0 + S_RATIO * y_fu / Y_OX)
+    T = []
+    for z in ZG:
+        if z <= z_st: T.append(T_OX + (T_FU - T_OX) * z + Q_HEAT * y_fu * z)
+        else: T.append(T_OX + (T_FU - T_OX) * z + Q_HEAT * y_fu * z_st * (1 - z) / (1 - z_st))
+    return z_st, T
+
+def extinction_scan(y_fu, chi0=0.05, growth=1.35, steps=60):
+    z_st, T = burke_schumann(y_fu)
+    chi_st = chi0
+    hist = []
+    last_ok = None
+    while steps > 0:
+        chi = chi_profile(chi_st, z_st)
+        Tn, ok = newton_flamelet(chi, T, y_fu)
+        tmax = max(Tn)
+        if not ok or tmax < 1000.0:
+            break
+        T = Tn; last_ok = (chi_st, tmax, list(Tn))
+        hist.append((chi_st, tmax))
+        chi_st *= growth; steps -= 1
+    lo, hi = last_ok[0], chi_st
+    base = last_ok[2]
+    for _ in range(40):                      # squeeze the last burning solution with a geometric bisection
+        mid = math.sqrt(lo * hi)
+        Tn, ok = newton_flamelet(chi_profile(mid, z_st), base, y_fu)
+        if ok and max(Tn) > 1000.0: lo, base = mid, Tn
+        else: hi = mid
+    return z_st, hist, lo, base
+
+if __name__ == "__main__":
+    z_st, hist, chi_q, Tq = extinction_scan(1.0)
+    print("Z_st = %.4f   T_ad(Burke-Schumann) = %.1f K" % (z_st, max(burke_schumann(1.0)[1])))
+    print("  chi_st [1/s]    T_max [K]   drop [K]")
+    tad = hist[0][1]
+    for c, t in hist[::3]:
+        print("    %9.4f    %8.1f    %7.1f" % (c, t, tad - t))
+    print("    %9.4f    %8.1f    %7.1f   <- quench" % (chi_q, max(Tq), tad - max(Tq)))
+    print("chi range %.4f -> %.4f = x%.1f,  T_max drop = %.1f %%"
+          % (hist[0][0], chi_q, chi_q / hist[0][0], 100.0 * (tad - max(Tq)) / tad))
+    print()
+    print("  Y_F1     Z_st    T_ad [K]   chi_q [1/s]")
+    for yf in (1.0, 0.5, 0.25, 0.125):
+        zs, h, cq, _ = extinction_scan(yf)
+        print("   %5.3f   %6.4f    %7.1f    %9.3f" % (yf, zs, max(burke_schumann(yf)[1]), cq))
+```
+
+```text
+Z_st = 0.0548   T_ad(Burke-Schumann) = 2273.2 K
+  chi_st [1/s]    T_max [K]   drop [K]
+       0.0500      2258.8        0.0
+       0.1230      2251.1        7.7
+       0.3027      2245.4       13.4
+       0.7447      2233.0       25.8
+       1.8322      2210.9       47.9
+       4.5079      2164.0       94.8
+      10.1232      1960.9      297.9   <- quench
+chi range 0.0500 -> 10.1232 = x202.5,  T_max drop = 13.2 %
+
+  Y_F1     Z_st    T_ad [K]   chi_q [1/s]
+   1.000   0.0548     2273.2       10.123
+   0.500   0.1039     2168.8        8.662
+   0.250   0.1883     1991.3        3.942
+   0.125   0.3169     1719.8        0.561
+```
+
+Look at how flat the first six rows are. Over a 90-fold rise in $\chi_{st}$ the temperature gave up 94.8 K. The last single step takes the remaining 203 K at once. That is the knee of the S-curve.
+
+Push $\chi_{st}$ yourself below.
+
+<FlameletQuenchScurveDial />
+
+Drive the dot right along the orange branch, cross the red line, and it drops to the floor. Pull $\chi_{st}$ back to the left and it does not come back up. The frozen solution is a steady solution too — hysteresis is the essence of this curve.
+
+## Why does diluting the fuel break the limit so much harder
+
+The second table in the output shows it. Diluting the fuel mass fraction from 1.0 to 0.125, a factor of 8, pulled the adiabatic flame temperature from 2273.2 K to 1719.8 K, down 24%. The quench limit $\chi_q$ went from 10.123 to 0.561, down by a factor of 18.
+
+A 24% drop in temperature bought an 1800% drop in the limit. The Arrhenius term explains it. The reaction rate hangs on $\exp(-T_a/T)$ with $T_a = 24000$ K here. Moving $T$ from 2273 to 1720 moves the exponent from $-10.6$ to $-14.0$. A gap of 3.4 in the exponent is a factor of 30 in the product.
+
+The shift of $Z_{st}$ from 0.055 to 0.317 pushes the same way. Slide `Z_st` to the right in the first simulation and you can see it. The peak of $\chi(Z)$ sits near $Z=0.5$, so a larger $Z_{st}$ puts the reaction zone closer to that peak. The same strain rate now hits it with more dissipation.
+
+Exhaust gas recirculation is where this combination shows up in practice. Dilute the fuel or the oxidizer with an inert and $T_{ad}$ eases down while the quench limit collapses. Local extinction appears first, then flame lift-off, and blow-off last.
+
+## What you are actually trading when you build the library
+
+Fill the $\chi_{st}$ grid all the way to $\chi_q$ and the coverage is dense, but the table bends sharply near the knee and interpolation error grows there. Stop short and the turbulent solver queries past the end. The real trade is not "how far do I compute" but **"how many table points do I spend on the knee"**.
+
+A steady flamelet library structurally cannot hold states past the knee. What to return in a cell with $\chi_{st} > \chi_q$ is a modeling decision, not a table lookup. Send it to the frozen branch, weight it with a separate extinction probability, or move to unsteady flamelets.
+
+And it is easy to forget that $\chi_{st}$ is itself an output of the turbulence model. In LES the subgrid scalar dissipation is modeled, and its coefficient wanders locally much like the [dynamic Smagorinsky coefficient](/en/posts/2026-09-15-dynamic-smagorinsky-germano-identity/). However accurate the library, an index off by a factor of two flips which side of the knee you are on.
+
+Next time a flamelet calculation drops to room temperature for no visible reason, check the $\chi_{st}$ input before the reaction mechanism. It is usually querying the right-hand side of the knee.
