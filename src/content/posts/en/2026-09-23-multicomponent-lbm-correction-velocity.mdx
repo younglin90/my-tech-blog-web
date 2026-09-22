@@ -1,0 +1,217 @@
+---
+title: "Giving every species its own tau threw the total mass off by 16.8% — correction velocity in multicomponent LBM"
+date: 2026-09-23
+description: "When each species relaxes with its own tau, the Fickian fluxes no longer sum to zero. A three-species LBM run measures the mass defect and a one-line correction velocity puts it back."
+tags: ["Species-Transport", "LBM", "Chapman-Enskog", "Diffusion", "Combustion"]
+locale: en
+slug: 2026-09-23-multicomponent-lbm-correction-velocity
+takeaway: "The moment two species get different diffusivities, continuity breaks. One correction-velocity line turns 0.168 into 0.0005."
+draft: false
+---
+
+import { SpeciesTauMassLeakLab } from '@/components/post-viz/2026-09-23-multicomponent-lbm-correction-velocity/SpeciesTauMassLeakLab'
+import { CorrectionFluxArrowBalance } from '@/components/post-viz/2026-09-23-multicomponent-lbm-correction-velocity/CorrectionFluxArrowBalance'
+
+## The day I added a third species and the density ledger stopped balancing
+
+Every species you bolt onto a combustion solver brings another set of distribution functions with it. Each one diffuses at its own rate, so each gets its own relaxation time $\tau_k$. So far, textbook. Run a few hundred steps and $\sum_k Y_k$ walks away from 1. The mass fractions (the share of the total mass carried by each species) have to add up to 1 by definition.
+
+This post traces that drift back to its source with a Chapman–Enskog expansion, then undoes it with a single line. A three-species mixture runs for 2000 steps and the worst defect drops from 0.168 to 0.0005. The conclusion up front: this is not a bug, it is the model. The instant you hand the species different $\tau_k$, continuity is built to break.
+
+## Three sets of distribution functions, split by job
+
+A compressible multiphase multicomponent LBM splits its distributions by purpose. $f_i$ carries the flow field, $g_i$ the energy, $h_{k,i}$ the $k$-th species. All three live on the same lattice velocities $\mathbf{c}_i$ and solve the same discrete Boltzmann equation.
+
+$$
+h_{k,i}(\mathbf{x}+\mathbf{c}_i\delta t,\;t+\delta t)-h_{k,i}(\mathbf{x},t)
+=-\frac{1}{\tau_k}\Big[h_{k,i}(\mathbf{x},t)-h_{k,i}^{\mathrm{eq}}(\mathbf{x},t)\Big]
+$$
+
+$h_{k,i}$ is the distribution of species $k$ along direction $i$, $\tau_k$ is that species' relaxation time, $\delta t$ the time step.
+
+The equilibrium needs only the species density $\rho_k$ and the flow velocity $\mathbf{u}$. Unlike $f_i$, it carries no second-order term, because the species equation only has to recover advection and diffusion.
+
+$$
+h_{k,i}^{\mathrm{eq}}=\rho_k w_i\left(1+\frac{\mathbf{c}_i\cdot\mathbf{u}}{c_s^2}\right)
+$$
+
+$w_i$ are the lattice weights and $c_s$ the lattice sound speed. The species density reads $\rho_k=\sum_i h_{k,i}$ and the mass fraction $Y_k=\rho_k/\rho$.
+
+Try it directly in the simulation below. The three sliders are $D_A,D_B,D_C$.
+
+<SpeciesTauMassLeakLab />
+
+Line all three sliders up on the same value and the lower panel flattens to round-off. Pull them apart and the error grows every single step. The checkbox is the correction-velocity switch, explained in a moment.
+
+## What Chapman–Enskog pulls out of $h_k$
+
+Taylor-expand the discrete equation in $\delta t$ and split the distribution as $h_{k,i}=h_{k,i}^{\mathrm{eq}}+\epsilon h_{k,i}^{(1)}+\cdots$. Collecting the zeroth moment order by order gives a single-species advection–diffusion equation.
+
+$$
+\partial_t \rho_k+\nabla\cdot(\rho_k\mathbf{u})=\nabla\cdot\big(D_k\nabla\rho_k\big),
+\qquad D_k=c_s^2\Big(\tau_k-\tfrac{1}{2}\Big)\delta t
+$$
+
+$D_k$ is that species' diffusivity. The $-1/2$ comes from the discretization, not from physics. The same $-1/2$ shows up as viscosity in the flow field and as thermal diffusivity in the energy field. Tie those two ledgers together and the Prandtl number locks to a constant — that story is in [the two constants buried in thermal LBM](/en/posts/2026-09-04-lbm-double-distribution-prandtl/).
+
+Up to here it looks clean. Turn one $\tau_k$ and the diffusivity lands wherever you want it. Whether it really does is measured below.
+
+## What is left over when the $\tau_k$ differ
+
+The trouble appears not in one species equation but in their sum. Add the equation over $k$ and use $\sum_k\rho_k=\rho$.
+
+$$
+\partial_t \rho+\nabla\cdot(\rho\mathbf{u})=\nabla\cdot\left(\sum_k D_k\nabla\rho_k\right)
+$$
+
+The left side is continuity. The right side has to vanish. In general it does not.
+
+$$
+\sum_k D_k\nabla\rho_k=\rho\sum_k D_k\nabla Y_k \neq 0
+$$
+
+Only when every $D_k$ is the same does $\sum_k D_k\nabla Y_k=D\nabla\sum_k Y_k=D\nabla(1)=0$. Giving each species its own $\tau_k$ is exactly the act of breaking that cancellation. Written as fluxes it is even plainer: the Fickian fluxes $\mathbf{J}_k=-\rho D_k\nabla Y_k$ do not sum to zero.
+
+Physically this is well known. Fick's law is a binary-mixture approximation, and with three or more species the Stefan–Maxwell relations are the correct closure. LBM inherits the defect wholesale when it transcribes that approximation into one independent $\tau_k$ per species.
+
+## Two thousand steps of a ternary mixture, and the ledger
+
+I put three sets of species populations on a D1Q3 lattice. The mixture sits still: $\rho=1$, $\mathbf{u}=0$. Nothing happens except diffusion, so $\sum_k\rho_k$ must stay at 1 forever. First a decaying sine mode checks whether $D_k$ really equals $c_s^2(\tau_k-1/2)$, then the defect is measured across several $D_k$ combinations.
+
+```python
+import numpy as np
+
+N, CS2 = 256, 1.0/3.0
+W = np.array([2.0/3.0, 1.0/6.0, 1.0/6.0])   # D1Q3 weights: c = 0, +1, -1
+C = np.array([0, 1, -1])
+
+def feq_species(rho_k, u):
+    return rho_k[None, :] * W[:, None] * (1.0 + C[:, None] * u[None, :] / CS2)
+
+def correction_velocity(rho_k, D):
+    dY = np.array([(np.roll(r, -1) - np.roll(r, 1)) * 0.5 for r in rho_k])
+    return np.sum(D[:, None] * dY, axis=0)           # V_c = sum_k D_k grad Y_k
+
+def lbm_species_step(h, D, use_correction):
+    rho_k = h.sum(axis=1)                            # (K, N)
+    u = correction_velocity(rho_k, D) if use_correction else np.zeros(N)
+    tau = D / CS2 + 0.5
+    for k in range(len(D)):
+        h[k] += (feq_species(rho_k[k], u) - h[k]) / tau[k]
+        for i in range(3):
+            h[k, i] = np.roll(h[k, i], C[i])
+    return h
+
+def diffusion_leak_run(D, steps, use_correction):
+    x = np.arange(N)
+    r1 = 0.30 + 0.20 * np.sin(2 * np.pi * x / N)
+    r2 = 0.45 + 0.15 * np.cos(4 * np.pi * x / N)
+    r3 = 1.0 - r1 - r2                               # the sum is exactly 1 at t = 0
+    h = np.array([feq_species(r, np.zeros(N)) for r in [r1, r2, r3]])
+    worst = 0.0
+    for _ in range(steps):
+        h = lbm_species_step(h, D, use_correction)
+        worst = max(worst, np.abs(h.sum(axis=(0, 1)) - 1.0).max())
+    return worst
+
+def measure_D_eff(tau, steps=400):
+    x = np.arange(N)
+    amp0 = 0.01
+    rho = 0.5 + amp0 * np.sin(2 * np.pi * x / N)     # inject one sine mode, measure its decay
+    h = feq_species(rho, np.zeros(N))
+    for _ in range(steps):
+        r = h.sum(axis=0)
+        h += (feq_species(r, np.zeros(N)) - h) / tau
+        for i in range(3):
+            h[i] = np.roll(h[i], C[i])
+    amp = np.abs(np.fft.rfft(h.sum(axis=0))[1]) * 2.0 / N
+    k2 = (2 * np.pi / N) ** 2
+    return -np.log(amp / amp0) / (k2 * steps)
+
+print("tau    D_theory=cs^2(tau-1/2)   D_measured   error[%]")
+for tau in (0.55, 0.80, 1.20, 2.00):
+    dth, dm = CS2 * (tau - 0.5), measure_D_eff(tau)
+    print(f"{tau:.2f}   {dth:.6f}                {dm:.6f}     {100*(dm-dth)/dth:+.3f}")
+
+print()
+print("D1,D2,D3            correction   max|sum(rho_k)-1|")
+for D in (np.array([0.05, 0.05, 0.05]),
+          np.array([0.05, 0.10, 0.02]),
+          np.array([0.01, 0.10, 0.30]),
+          np.array([0.005, 0.10, 0.50])):
+    for corr in (False, True):
+        print(f"{D[0]:.3f},{D[1]:.3f},{D[2]:.3f}     {str(corr):5s}        "
+              f"{diffusion_leak_run(D, 2000, corr):.3e}")
+```
+
+```text
+tau    D_theory=cs^2(tau-1/2)   D_measured   error[%]
+0.55   0.016667                0.016874     +1.243
+0.80   0.100000                0.100137     +0.137
+1.20   0.233333                0.233122     -0.091
+2.00   0.500000                0.498135     -0.373
+
+D1,D2,D3            correction   max|sum(rho_k)-1|
+0.050,0.050,0.050     False        1.865e-13
+0.050,0.050,0.050     True         2.091e-13
+0.050,0.100,0.020     False        5.050e-02
+0.050,0.100,0.020     True         5.201e-05
+0.010,0.100,0.300     False        1.155e-01
+0.010,0.100,0.300     True         1.354e-04
+0.005,0.100,0.500     False        1.683e-01
+0.005,0.100,0.500     True         5.215e-04
+```
+
+Read the top table first. $D_k=c_s^2(\tau_k-1/2)$ holds to about 0.1%. The 1.24% outlier at $\tau=0.55$ is the lattice error that grows as $\tau$ approaches $1/2$. The relation itself can be trusted.
+
+The bottom table is the point. Set all three diffusivities to 0.05 and the defect is $1.9\times10^{-13}$, double-precision round-off. Spread them by a factor of 2.5 and it is $5\times10^{-2}$. Spread them by 100 and it reaches 0.168. With $\rho=1$ that is 16.8% of the total mass.
+
+## The one line that turned 0.168 into 0.0005
+
+The fix has been known for a long time. Add the same correction velocity $\mathbf{V}_c$ to every species so that the fluxes are forced to sum to zero.
+
+$$
+\mathbf{J}_k=-\rho D_k\nabla Y_k+\rho Y_k\mathbf{V}_c,
+\qquad
+\mathbf{V}_c=\sum_k D_k\nabla Y_k
+$$
+
+With that $\mathbf{V}_c$, $\sum_k\mathbf{J}_k=-\rho\sum_k D_k\nabla Y_k+\rho\mathbf{V}_c\sum_k Y_k=0$. It uses the constraint $\sum_k Y_k=1$ directly.
+
+In LBM this never becomes a source term. Swap the velocity inside the equilibrium from $\mathbf{u}$ to $\mathbf{u}+\mathbf{V}_c$ and you are done — the `correction_velocity` line and the `use_correction` branch above are the entire change. The same trick of moving a term into the equilibrium instead of a source shows up in [the anti-diffusion term of the conservative Allen–Cahn equation](/en/posts/2026-09-18-conservative-allen-cahn-lbm-interface/).
+
+Below, drag the sliders and watch where the sum of the three fluxes ends up.
+
+<CorrectionFluxArrowBalance />
+
+Whatever you do to the $D_k$ and the gradients, the red resultant arrow almost never lands on zero. Tick the checkbox and green segments appear, folding the resultant down to exactly zero.
+
+The table agrees. A defect of $5.05\times10^{-2}$ becomes $5.20\times10^{-5}$, and $1.68\times10^{-1}$ becomes $5.22\times10^{-4}$: factors of 971 and 323.
+
+## Why the correction still does not reach zero
+
+One thing catches the eye. With equal diffusivities the defect is $1.9\times10^{-13}$, but with the correction on it stalls at around $5\times10^{-4}$. That is not machine precision.
+
+The reason is that two different discrete operators are in play. `correction_velocity` builds $\nabla Y_k$ from a central difference. The diffusive flux LBM actually produces is the first moment of the non-equilibrium part $h_{k,i}^{(1)}$ — a different discrete gradient, defined by streaming. The two disagree at $O(\delta x^2)$, and that disagreement survives instead of cancelling.
+
+To kill it, take the correction velocity from the same non-equilibrium moment, something like $\mathbf{V}_c=\frac{1}{\rho}\sum_k\big(1-\frac{1}{2\tau_k}\big)\sum_i\mathbf{c}_i h_{k,i}^{(1)}$. The central difference also lags by one step, which leaves a residue for the same reason. The broader point — that a discrete constraint transcribed straight from the continuum is not satisfied exactly — is worked out in [curl involutions on a staggered grid](/en/posts/2026-09-20-curl-involution-staggered-twophase/).
+
+In practice, though, $5\times10^{-4}$ and $1.7\times10^{-1}$ are very different animals. The first does not accumulate and shrinks under grid refinement. The second grows with time.
+
+## Where this term surfaces in a combustion code
+
+Lewis numbers in methane–air combustion scatter from 0.3 to 1.8. H and H$_2$ are extremely fast, large hydrocarbons are slow. In diffusivity that is a spread of more than twenty. The third row of the table above sits right in that range.
+
+The defect does not stop at a density error. Reaction rates depend on $Y_k$ exponentially. If the sum exceeds 1 the rate is overestimated, that heat pushes the density back, and the run diverges. Many codes renormalize by dividing $Y_k$ by the sum every step, but that does not remove the defect — it redistributes it arbitrarily among species. Which species eats the loss depends on the node index.
+
+The most common production remedy is to nominate the heaviest species as a bath species and compute $Y_{N_2}=1-\sum_{k\neq N_2}Y_k$ directly. The sum is then exactly 1, but the whole defect piles onto N$_2$. The correction velocity splits that burden in proportion to $Y_k$.
+
+## What choosing $\tau_k$ actually commits you to
+
+The moment you give each species its own $\tau_k$, you are choosing one of three things: leave the defect alone, renormalize and dump it on one species, or use a correction velocity and split it in proportion to $Y_k$.
+
+The first is not an option. The second is only defensible when the bath species dominates — dilute combustion with $Y_{N_2}\approx0.7$. The third should be the default. It costs one set of gradients per step and one swapped velocity in the equilibrium.
+
+Choosing $\tau_k$ also fixes its allowed range. The table shows a 1.24% diffusivity error at $\tau=0.55$. How that lower bound splits a calculation when $\tau$ varies node by node is covered in [local relaxation time for power-law fluids in LBM](/en/posts/2026-09-21-power-law-lbm-local-relaxation-time/). Here the same ceiling and floor apply once more, along the species axis.
+
+Next time a multicomponent LBM log prints $\sum_k Y_k=1.0003$, line up the $D_k$ first. If they differ, the cause is already on the table.

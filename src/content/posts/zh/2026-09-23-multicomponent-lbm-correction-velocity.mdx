@@ -1,0 +1,217 @@
+---
+title: "给每个组分单独设 τ，总质量偏差达到 16.8% — 多组分 LBM 的修正速度"
+date: 2026-09-23
+description: "各组分松弛时间不同时，Fick 通量之和不为零。用三组分 LBM 测量质量亏损，再用一行修正速度把它拉回来。"
+tags: ["Species-Transport", "LBM", "Chapman-Enskog", "Diffusion", "Combustion"]
+locale: zh
+slug: 2026-09-23-multicomponent-lbm-correction-velocity
+takeaway: "扩散系数一旦彼此不同，连续方程就被破坏。一行修正速度把 0.168 变成 0.0005。"
+draft: false
+---
+
+import { SpeciesTauMassLeakLab } from '@/components/post-viz/2026-09-23-multicomponent-lbm-correction-velocity/SpeciesTauMassLeakLab'
+import { CorrectionFluxArrowBalance } from '@/components/post-viz/2026-09-23-multicomponent-lbm-correction-velocity/CorrectionFluxArrowBalance'
+
+## 把组分加到三个的那天，密度账对不上了
+
+燃烧计算里每加一个组分，分布函数就多一套。各组分扩散系数不同，所以松弛时间 $\tau_k$ 也分别给。到这里都还是教科书写法。可是跑上几百步之后，$\sum_k Y_k$ 就偏离 1 了。质量分数(mass fraction，该组分在总质量中所占的份额)之和按定义必须等于 1。
+
+这篇文章用 Chapman–Enskog 展开追出这个偏差的来源，再用一行修正把它拉回来。三组分混合物跑 2000 步，最大亏损从 0.168 降到 0.0005，过程用数字给出。先把结论写在前面：这不是 bug，而是模型本身。给各组分不同 $\tau_k$ 的那一刻，连续方程就注定被破坏。
+
+## 把分布函数分成三套来用的结构
+
+可压缩多相多组分 LBM 按用途拆分分布函数。$f_i$ 负责流场，$g_i$ 负责能量，$h_{k,i}$ 负责第 $k$ 个组分。三者都在同样的格子速度 $\mathbf{c}_i$ 上，求解同样形式的离散 Boltzmann 方程。
+
+$$
+h_{k,i}(\mathbf{x}+\mathbf{c}_i\delta t,\;t+\delta t)-h_{k,i}(\mathbf{x},t)
+=-\frac{1}{\tau_k}\Big[h_{k,i}(\mathbf{x},t)-h_{k,i}^{\mathrm{eq}}(\mathbf{x},t)\Big]
+$$
+
+$h_{k,i}$ 是方向 $i$ 上组分 $k$ 的分布函数，$\tau_k$ 是该组分的松弛时间，$\delta t$ 是时间步长。
+
+平衡分布只用到组分密度 $\rho_k$ 和流动速度 $\mathbf{u}$。与流场的 $f_i$ 不同，它不需要二阶项，因为组分方程只需恢复到对流扩散为止。
+
+$$
+h_{k,i}^{\mathrm{eq}}=\rho_k w_i\left(1+\frac{\mathbf{c}_i\cdot\mathbf{u}}{c_s^2}\right)
+$$
+
+$w_i$ 是格子权重，$c_s$ 是格子声速。组分密度读作 $\rho_k=\sum_i h_{k,i}$，质量分数为 $Y_k=\rho_k/\rho$。
+
+在下面的模拟中亲手操作一下。三个滑块分别是 $D_A,D_B,D_C$。
+
+<SpeciesTauMassLeakLab />
+
+把三个滑块调到同一个值，下面那块面板就平到舍入误差的水平。拉开之后，误差每一步都在长大。复选框是稍后要讲的修正速度开关。
+
+## Chapman–Enskog 从 $h_k$ 里取出来的式子
+
+把上面的离散式按 $\delta t$ 做 Taylor 展开，再把分布函数写成 $h_{k,i}=h_{k,i}^{\mathrm{eq}}+\epsilon h_{k,i}^{(1)}+\cdots$。按阶次收集零阶矩，就得到单个组分的对流扩散方程。
+
+$$
+\partial_t \rho_k+\nabla\cdot(\rho_k\mathbf{u})=\nabla\cdot\big(D_k\nabla\rho_k\big),
+\qquad D_k=c_s^2\Big(\tau_k-\tfrac{1}{2}\Big)\delta t
+$$
+
+$D_k$ 就是该组分的扩散系数。$-1/2$ 是离散化造出来的项，不是物理。同样结构的 $-1/2$ 在流场里表现为粘性，在能量场里表现为热扩散。把这两本账绑在一起，Prandtl 数就被锁成常数，这件事写在[热 LBM 中隐藏的两个常数](/zh/posts/2026-09-04-lbm-double-distribution-prandtl/)里。
+
+看到这里还很漂亮。转动一个 $\tau_k$，扩散系数就能落到想要的值上。是否真的如此，后面会测。
+
+## 当各个 $\tau_k$ 不同，剩下的是什么
+
+问题不出在单个组分方程上，而出在把它们全部相加时。对 $k$ 求和并利用 $\sum_k\rho_k=\rho$，得到：
+
+$$
+\partial_t \rho+\nabla\cdot(\rho\mathbf{u})=\nabla\cdot\left(\sum_k D_k\nabla\rho_k\right)
+$$
+
+左边是连续方程。右边必须为零。可是右边一般并不为零。
+
+$$
+\sum_k D_k\nabla\rho_k=\rho\sum_k D_k\nabla Y_k \neq 0
+$$
+
+只有当所有 $D_k$ 相同时，$\sum_k D_k\nabla Y_k=D\nabla\sum_k Y_k=D\nabla(1)=0$ 才成立。给各组分不同的 $\tau_k$，就是亲手破坏这个抵消。用通量写出来更清楚：Fick 通量 $\mathbf{J}_k=-\rho D_k\nabla Y_k$ 之和不为零。
+
+从物理上讲这是已知事实。Fick 定律是二元混合物的近似，三组分以上时 Stefan–Maxwell 关系才是正确的封闭。LBM 把这个近似搬成每个组分独立的 $\tau_k$ 时，也把亏损原样继承了下来。
+
+## 让三组分混合物跑 2000 步，对一次账
+
+我在 D1Q3 格子上放了三套组分分布。$\rho=1$、$\mathbf{u}=0$，是静止混合物。除了扩散什么都不发生，所以 $\sum_k\rho_k$ 应当永远是 1。先用一个衰减的正弦模式检验 $D_k$ 是否真等于 $c_s^2(\tau_k-1/2)$，再换不同的 $D_k$ 组合测量亏损。
+
+```python
+import numpy as np
+
+N, CS2 = 256, 1.0/3.0
+W = np.array([2.0/3.0, 1.0/6.0, 1.0/6.0])   # D1Q3 权重: c = 0, +1, -1
+C = np.array([0, 1, -1])
+
+def feq_species(rho_k, u):
+    return rho_k[None, :] * W[:, None] * (1.0 + C[:, None] * u[None, :] / CS2)
+
+def correction_velocity(rho_k, D):
+    dY = np.array([(np.roll(r, -1) - np.roll(r, 1)) * 0.5 for r in rho_k])
+    return np.sum(D[:, None] * dY, axis=0)           # V_c = sum_k D_k grad Y_k
+
+def lbm_species_step(h, D, use_correction):
+    rho_k = h.sum(axis=1)                            # (K, N)
+    u = correction_velocity(rho_k, D) if use_correction else np.zeros(N)
+    tau = D / CS2 + 0.5
+    for k in range(len(D)):
+        h[k] += (feq_species(rho_k[k], u) - h[k]) / tau[k]
+        for i in range(3):
+            h[k, i] = np.roll(h[k, i], C[i])
+    return h
+
+def diffusion_leak_run(D, steps, use_correction):
+    x = np.arange(N)
+    r1 = 0.30 + 0.20 * np.sin(2 * np.pi * x / N)
+    r2 = 0.45 + 0.15 * np.cos(4 * np.pi * x / N)
+    r3 = 1.0 - r1 - r2                               # 初始时刻总和恰好为 1
+    h = np.array([feq_species(r, np.zeros(N)) for r in [r1, r2, r3]])
+    worst = 0.0
+    for _ in range(steps):
+        h = lbm_species_step(h, D, use_correction)
+        worst = max(worst, np.abs(h.sum(axis=(0, 1)) - 1.0).max())
+    return worst
+
+def measure_D_eff(tau, steps=400):
+    x = np.arange(N)
+    amp0 = 0.01
+    rho = 0.5 + amp0 * np.sin(2 * np.pi * x / N)     # 注入一个正弦模式并测量衰减率
+    h = feq_species(rho, np.zeros(N))
+    for _ in range(steps):
+        r = h.sum(axis=0)
+        h += (feq_species(r, np.zeros(N)) - h) / tau
+        for i in range(3):
+            h[i] = np.roll(h[i], C[i])
+    amp = np.abs(np.fft.rfft(h.sum(axis=0))[1]) * 2.0 / N
+    k2 = (2 * np.pi / N) ** 2
+    return -np.log(amp / amp0) / (k2 * steps)
+
+print("tau    D_theory=cs^2(tau-1/2)   D_measured   error[%]")
+for tau in (0.55, 0.80, 1.20, 2.00):
+    dth, dm = CS2 * (tau - 0.5), measure_D_eff(tau)
+    print(f"{tau:.2f}   {dth:.6f}                {dm:.6f}     {100*(dm-dth)/dth:+.3f}")
+
+print()
+print("D1,D2,D3            correction   max|sum(rho_k)-1|")
+for D in (np.array([0.05, 0.05, 0.05]),
+          np.array([0.05, 0.10, 0.02]),
+          np.array([0.01, 0.10, 0.30]),
+          np.array([0.005, 0.10, 0.50])):
+    for corr in (False, True):
+        print(f"{D[0]:.3f},{D[1]:.3f},{D[2]:.3f}     {str(corr):5s}        "
+              f"{diffusion_leak_run(D, 2000, corr):.3e}")
+```
+
+```text
+tau    D_theory=cs^2(tau-1/2)   D_measured   error[%]
+0.55   0.016667                0.016874     +1.243
+0.80   0.100000                0.100137     +0.137
+1.20   0.233333                0.233122     -0.091
+2.00   0.500000                0.498135     -0.373
+
+D1,D2,D3            correction   max|sum(rho_k)-1|
+0.050,0.050,0.050     False        1.865e-13
+0.050,0.050,0.050     True         2.091e-13
+0.050,0.100,0.020     False        5.050e-02
+0.050,0.100,0.020     True         5.201e-05
+0.010,0.100,0.300     False        1.155e-01
+0.010,0.100,0.300     True         1.354e-04
+0.005,0.100,0.500     False        1.683e-01
+0.005,0.100,0.500     True         5.215e-04
+```
+
+先读上面那张表。$D_k=c_s^2(\tau_k-1/2)$ 在 0.1% 的水平上成立。$\tau=0.55$ 处跳到 1.24%，是 $\tau$ 越靠近 $1/2$ 越大的格子误差。也就是说，这个关系本身可以信任。
+
+下面那张表才是正题。三个扩散系数都设为 0.05 时，亏损是 $1.9\times10^{-13}$，属于双精度舍入。只拉开 2.5 倍就变成 $5\times10^{-2}$。拉开 100 倍则达到 0.168。因为 $\rho=1$，这就是总质量的 16.8%。
+
+## 把 0.168 变成 0.0005 的那一行
+
+修法早就为人所知。给所有组分叠加同一个修正速度 $\mathbf{V}_c$，强制让通量之和为零。
+
+$$
+\mathbf{J}_k=-\rho D_k\nabla Y_k+\rho Y_k\mathbf{V}_c,
+\qquad
+\mathbf{V}_c=\sum_k D_k\nabla Y_k
+$$
+
+加入这个 $\mathbf{V}_c$ 后，$\sum_k\mathbf{J}_k=-\rho\sum_k D_k\nabla Y_k+\rho\mathbf{V}_c\sum_k Y_k=0$。这里直接用了 $\sum_k Y_k=1$ 这个约束。
+
+在 LBM 里不把它做成源项。只要把平衡分布中的速度从 $\mathbf{u}$ 换成 $\mathbf{u}+\mathbf{V}_c$ 就够了。上面代码里的 `correction_velocity` 一行和 `use_correction` 分支就是全部改动。把界面项放进平衡分布而不是源项，同样的手法在[守恒型 Allen–Cahn 的反扩散项](/zh/posts/2026-09-18-conservative-allen-cahn-lbm-interface/)里也用过。
+
+在下面拖动滑块，看三个通量之和落到哪里。
+
+<CorrectionFluxArrowBalance />
+
+无论把 $D_k$ 和梯度怎么摆，红色的合矢量几乎都停不到零上。勾上复选框，绿色段就接上来，把合矢量折回到精确的零。
+
+表里的数字也一样。亏损从 $5.05\times10^{-2}$ 降到 $5.20\times10^{-5}$，从 $1.68\times10^{-1}$ 降到 $5.22\times10^{-4}$，分别是 971 倍和 323 倍。
+
+## 为什么加了修正也到不了零
+
+有一处很扎眼。扩散系数全相同时是 $1.9\times10^{-13}$，而开了修正的情形停在 $5\times10^{-4}$。这不是机器精度。
+
+原因是这里有两个离散算子。`correction_velocity` 用中心差分算 $\nabla Y_k$。而 LBM 实际产生的扩散通量，是非平衡部分 $h_{k,i}^{(1)}$ 的一阶矩，即迁移所定义的另一种离散梯度。两种梯度相差 $O(\delta x^2)$，这个差没有被抵消而留了下来。
+
+想消掉它，就把修正速度也从同一个非平衡矩里取出来，写成 $\mathbf{V}_c=\frac{1}{\rho}\sum_k\big(1-\frac{1}{2\tau_k}\big)\sum_i\mathbf{c}_i h_{k,i}^{(1)}$ 这样的形式。中心差分用的是滞后一步的值，出于同样的理由也会留下残差。把离散约束照连续式原样搬过来就无法精确满足，这件事在[旋度约束与交错网格](/zh/posts/2026-09-20-curl-involution-staggered-twophase/)里写得更细。
+
+不过在工程上，$5\times10^{-4}$ 和 $1.7\times10^{-1}$ 差别很大。前者不累积，加密网格就会减小。后者随时间增长。
+
+## 这一项在燃烧代码里露面的地方
+
+甲烷空气燃烧的 Lewis 数按组分散布在 0.3 到 1.8 之间。H 和 H$_2$ 极快，大分子碳氢化合物很慢。换成扩散系数看，差距超过 20 倍。上表的第三行正落在这个范围里。
+
+亏损不会只停在密度误差上。化学反应速率以指数形式依赖 $Y_k$。和超过 1 时反应速率被高估，放出的热又推动密度，最后走向发散。很多代码每步把 $Y_k$ 除以总和做归一化，但那不是消除亏损，而是在组分之间任意重新分配。哪个组分吃亏取决于网格编号。
+
+工程上最常见的处方，是指定最重的组分作为余量组分(bath species)，直接算 $Y_{N_2}=1-\sum_{k\neq N_2}Y_k$。这样总和精确为 1，但亏损全堆在 N$_2$ 上。修正速度则按 $Y_k$ 的比例分摊这份负担。
+
+## 选 $\tau_k$ 时其实在决定什么
+
+给各组分不同 $\tau_k$ 的那一刻，你就在三条路里选一条：放着亏损不管，用归一化把它压到某个组分身上，或者用修正速度按 $Y_k$ 比例分摊。
+
+第一条不是选项。第二条只有在余量组分占压倒多数时才勉强可用(稀释燃烧，$Y_{N_2}\approx0.7$)。第三条应当是默认值。代价只是每步一套梯度，加上平衡分布里换一行速度。
+
+同时 $\tau_k$ 自身的范围也一并定下。上表中 $\tau=0.55$ 的扩散系数误差是 1.24%。逐节点改变 $\tau$ 时这个下限如何把计算劈开，写在[幂律流体 LBM 的局部松弛时间](/zh/posts/2026-09-21-power-law-lbm-local-relaxation-time/)里。在这里，同样的上下限沿组分这根轴又要再加一次。
+
+下次多组分 LBM 的日志里打出 $\sum_k Y_k=1.0003$，先把 $D_k$ 排成一列看看。只要它们彼此不同，原因就已经摆在那里了。

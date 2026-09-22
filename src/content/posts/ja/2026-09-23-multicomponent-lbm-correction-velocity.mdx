@@ -1,0 +1,217 @@
+---
+title: "化学種ごとに τ を変えたら全質量が 16.8% ずれた — 多成分 LBM の補正速度"
+date: 2026-09-23
+description: "化学種ごとに緩和時間が違うと Fick 流束の和がゼロにならない。3成分 LBM で質量欠損を測り、補正速度の一行で戻した記録。"
+tags: ["Species-Transport", "LBM", "Chapman-Enskog", "Diffusion", "Combustion"]
+locale: ja
+slug: 2026-09-23-multicomponent-lbm-correction-velocity
+takeaway: "拡散係数が互いに違った瞬間に連続の式は壊れます。補正速度の一行が 0.168 を 0.0005 に変えます。"
+draft: false
+---
+
+import { SpeciesTauMassLeakLab } from '@/components/post-viz/2026-09-23-multicomponent-lbm-correction-velocity/SpeciesTauMassLeakLab'
+import { CorrectionFluxArrowBalance } from '@/components/post-viz/2026-09-23-multicomponent-lbm-correction-velocity/CorrectionFluxArrowBalance'
+
+## 化学種を三つに増やした日、密度の帳尻が合わなくなった
+
+燃焼計算に化学種を一つ足すたびに、分布関数も一組ずつ増えます。化学種ごとに拡散係数が違うので、緩和時間 $\tau_k$ も別々に与えます。ここまでは教科書どおりです。ところが数百ステップ回すと $\sum_k Y_k$ が 1 から外れます。質量分率(mass fraction、全質量のうちその化学種が占める割合)の和は定義上 1 でなければなりません。
+
+この記事では、そのずれがどこから来るのかを Chapman–Enskog 展開で突き止め、一行の補正で戻します。3成分混合を 2000 ステップ回し、最大欠損が 0.168 から 0.0005 へ下がる過程を数字で示します。先に結論を書くと、これはバグではなくモデルです。$\tau_k$ を互いに違う値にした瞬間、連続の式が壊れるようにできています。
+
+## 分布関数を三組に分けて使う構造
+
+圧縮性多相多成分 LBM は、分布関数を用途別に分けます。$f_i$ が流れ場、$g_i$ がエネルギー、$h_{k,i}$ が $k$ 番目の化学種を担当します。三つとも同じ格子速度 $\mathbf{c}_i$ の上で、同じ形の離散 Boltzmann 方程式を解きます。
+
+$$
+h_{k,i}(\mathbf{x}+\mathbf{c}_i\delta t,\;t+\delta t)-h_{k,i}(\mathbf{x},t)
+=-\frac{1}{\tau_k}\Big[h_{k,i}(\mathbf{x},t)-h_{k,i}^{\mathrm{eq}}(\mathbf{x},t)\Big]
+$$
+
+$h_{k,i}$ は方向 $i$ に載った化学種 $k$ の分布関数、$\tau_k$ はその化学種の緩和時間、$\delta t$ は時間ステップです。
+
+平衡分布は化学種密度 $\rho_k$ と流れ速度 $\mathbf{u}$ だけを使います。流れ場の $f_i$ と違って 2 次項は要りません。化学種の式は移流と拡散まで復元すれば足りるからです。
+
+$$
+h_{k,i}^{\mathrm{eq}}=\rho_k w_i\left(1+\frac{\mathbf{c}_i\cdot\mathbf{u}}{c_s^2}\right)
+$$
+
+$w_i$ は格子重み、$c_s$ は格子音速です。化学種密度は $\rho_k=\sum_i h_{k,i}$、質量分率は $Y_k=\rho_k/\rho$ で読み取ります。
+
+下のシミュレーションで実際に触ってみてください。三つのスライダーが $D_A,D_B,D_C$ です。
+
+<SpeciesTauMassLeakLab />
+
+スライダー三つを同じ値に揃えると、下のパネルが丸め誤差の水準まで平らになります。離すと毎ステップ誤差が育ちます。チェックボックスは後で説明する補正速度のスイッチです。
+
+## Chapman–Enskog が $h_k$ から取り出す式
+
+上の離散式を $\delta t$ で Taylor 展開し、分布関数を $h_{k,i}=h_{k,i}^{\mathrm{eq}}+\epsilon h_{k,i}^{(1)}+\cdots$ と並べます。0 次モーメントを次数ごとに集めると、化学種一つ分の移流拡散方程式が出ます。
+
+$$
+\partial_t \rho_k+\nabla\cdot(\rho_k\mathbf{u})=\nabla\cdot\big(D_k\nabla\rho_k\big),
+\qquad D_k=c_s^2\Big(\tau_k-\tfrac{1}{2}\Big)\delta t
+$$
+
+$D_k$ がその化学種の拡散係数です。$-1/2$ は離散化が生む項であって物理ではありません。同じ構造の $-1/2$ が、流れ場では粘性、エネルギー場では熱拡散として現れます。その二つの帳簿を束ねると Prandtl 数が定数に固定される話は[熱 LBM に隠れている二つの定数](/ja/posts/2026-09-04-lbm-double-distribution-prandtl/)に書きました。
+
+ここまでは美しく見えます。$\tau_k$ を一つ回せば拡散係数を好きな値に合わせられます。本当にそうなるかは後で測ります。
+
+## $\tau_k$ が互いに違うと何が残るか
+
+問題は化学種の式一つではなく、全部を足すときに生じます。$k$ について上の式を足し、$\sum_k\rho_k=\rho$ を使うとこうなります。
+
+$$
+\partial_t \rho+\nabla\cdot(\rho\mathbf{u})=\nabla\cdot\left(\sum_k D_k\nabla\rho_k\right)
+$$
+
+左辺は連続の式です。右辺はゼロでなければなりません。ところが右辺は一般にゼロになりません。
+
+$$
+\sum_k D_k\nabla\rho_k=\rho\sum_k D_k\nabla Y_k \neq 0
+$$
+
+すべての $D_k$ が同じときだけ $\sum_k D_k\nabla Y_k=D\nabla\sum_k Y_k=D\nabla(1)=0$ になります。化学種ごとに $\tau_k$ を変えるとは、この相殺を自分で壊すことです。流束で書くともっとはっきりします。Fick 流束 $\mathbf{J}_k=-\rho D_k\nabla Y_k$ の和がゼロになりません。
+
+物理としては知られた事実です。Fick 則は 2 成分混合の近似で、3 成分以上では Stefan–Maxwell 関係が正しい閉包です。LBM はこの近似を化学種ごとの独立な $\tau_k$ へ書き写す際に、欠損もそのまま引き継ぎます。
+
+## 3成分混合を 2000 ステップ回して帳尻を合わせてみた
+
+D1Q3 格子に化学種を三組載せました。$\rho=1$、$\mathbf{u}=0$ の静止混合です。拡散以外は何も起きないので、$\sum_k\rho_k$ は永遠に 1 のはずです。まず減衰する正弦モードで $D_k$ が本当に $c_s^2(\tau_k-1/2)$ かを測り、次に $D_k$ の組み合わせを変えながら欠損を測りました。
+
+```python
+import numpy as np
+
+N, CS2 = 256, 1.0/3.0
+W = np.array([2.0/3.0, 1.0/6.0, 1.0/6.0])   # D1Q3 の重み: c = 0, +1, -1
+C = np.array([0, 1, -1])
+
+def feq_species(rho_k, u):
+    return rho_k[None, :] * W[:, None] * (1.0 + C[:, None] * u[None, :] / CS2)
+
+def correction_velocity(rho_k, D):
+    dY = np.array([(np.roll(r, -1) - np.roll(r, 1)) * 0.5 for r in rho_k])
+    return np.sum(D[:, None] * dY, axis=0)           # V_c = sum_k D_k grad Y_k
+
+def lbm_species_step(h, D, use_correction):
+    rho_k = h.sum(axis=1)                            # (K, N)
+    u = correction_velocity(rho_k, D) if use_correction else np.zeros(N)
+    tau = D / CS2 + 0.5
+    for k in range(len(D)):
+        h[k] += (feq_species(rho_k[k], u) - h[k]) / tau[k]
+        for i in range(3):
+            h[k, i] = np.roll(h[k, i], C[i])
+    return h
+
+def diffusion_leak_run(D, steps, use_correction):
+    x = np.arange(N)
+    r1 = 0.30 + 0.20 * np.sin(2 * np.pi * x / N)
+    r2 = 0.45 + 0.15 * np.cos(4 * np.pi * x / N)
+    r3 = 1.0 - r1 - r2                               # 開始時の総和はちょうど 1
+    h = np.array([feq_species(r, np.zeros(N)) for r in [r1, r2, r3]])
+    worst = 0.0
+    for _ in range(steps):
+        h = lbm_species_step(h, D, use_correction)
+        worst = max(worst, np.abs(h.sum(axis=(0, 1)) - 1.0).max())
+    return worst
+
+def measure_D_eff(tau, steps=400):
+    x = np.arange(N)
+    amp0 = 0.01
+    rho = 0.5 + amp0 * np.sin(2 * np.pi * x / N)     # 正弦モードを一つ入れて減衰率を測る
+    h = feq_species(rho, np.zeros(N))
+    for _ in range(steps):
+        r = h.sum(axis=0)
+        h += (feq_species(r, np.zeros(N)) - h) / tau
+        for i in range(3):
+            h[i] = np.roll(h[i], C[i])
+    amp = np.abs(np.fft.rfft(h.sum(axis=0))[1]) * 2.0 / N
+    k2 = (2 * np.pi / N) ** 2
+    return -np.log(amp / amp0) / (k2 * steps)
+
+print("tau    D_theory=cs^2(tau-1/2)   D_measured   error[%]")
+for tau in (0.55, 0.80, 1.20, 2.00):
+    dth, dm = CS2 * (tau - 0.5), measure_D_eff(tau)
+    print(f"{tau:.2f}   {dth:.6f}                {dm:.6f}     {100*(dm-dth)/dth:+.3f}")
+
+print()
+print("D1,D2,D3            correction   max|sum(rho_k)-1|")
+for D in (np.array([0.05, 0.05, 0.05]),
+          np.array([0.05, 0.10, 0.02]),
+          np.array([0.01, 0.10, 0.30]),
+          np.array([0.005, 0.10, 0.50])):
+    for corr in (False, True):
+        print(f"{D[0]:.3f},{D[1]:.3f},{D[2]:.3f}     {str(corr):5s}        "
+              f"{diffusion_leak_run(D, 2000, corr):.3e}")
+```
+
+```text
+tau    D_theory=cs^2(tau-1/2)   D_measured   error[%]
+0.55   0.016667                0.016874     +1.243
+0.80   0.100000                0.100137     +0.137
+1.20   0.233333                0.233122     -0.091
+2.00   0.500000                0.498135     -0.373
+
+D1,D2,D3            correction   max|sum(rho_k)-1|
+0.050,0.050,0.050     False        1.865e-13
+0.050,0.050,0.050     True         2.091e-13
+0.050,0.100,0.020     False        5.050e-02
+0.050,0.100,0.020     True         5.201e-05
+0.010,0.100,0.300     False        1.155e-01
+0.010,0.100,0.300     True         1.354e-04
+0.005,0.100,0.500     False        1.683e-01
+0.005,0.100,0.500     True         5.215e-04
+```
+
+上の表から読みます。$D_k=c_s^2(\tau_k-1/2)$ は 0.1% の水準で合います。$\tau=0.55$ で 1.24% に跳ねるのは、$\tau$ が $1/2$ に近づくほど大きくなる格子誤差です。関係式そのものは信頼してよいということです。
+
+下の表が本題です。三つの拡散係数をすべて 0.05 に揃えると欠損は $1.9\times10^{-13}$、倍精度の丸め誤差です。2.5 倍離すだけで $5\times10^{-2}$ になります。100 倍まで離すと 0.168 に達します。$\rho=1$ ですから、これは全質量の 16.8% です。
+
+## 0.168 を 0.0005 に変えた一行
+
+直し方は古くから知られています。すべての化学種に同じ補正速度 $\mathbf{V}_c$ を載せ、流束の和を強制的にゼロにします。
+
+$$
+\mathbf{J}_k=-\rho D_k\nabla Y_k+\rho Y_k\mathbf{V}_c,
+\qquad
+\mathbf{V}_c=\sum_k D_k\nabla Y_k
+$$
+
+この $\mathbf{V}_c$ を入れると $\sum_k\mathbf{J}_k=-\rho\sum_k D_k\nabla Y_k+\rho\mathbf{V}_c\sum_k Y_k=0$ になります。$\sum_k Y_k=1$ という拘束をそのまま使ったものです。
+
+LBM ではこれをソース項として付けません。平衡分布の速度を $\mathbf{u}$ から $\mathbf{u}+\mathbf{V}_c$ に変えるだけです。上のコードの `correction_velocity` 一行と `use_correction` の分岐がすべてです。界面の項をソース項ではなく平衡分布へ移す同じ手口は、[保存形 Allen–Cahn の反拡散項](/ja/posts/2026-09-18-conservative-allen-cahn-lbm-interface/)でも使われます。
+
+下でスライダーを動かして、三つの流束の和がどこへ行くか見てください。
+
+<CorrectionFluxArrowBalance />
+
+$D_k$ と勾配をどう置いても、赤い合計の矢印はほとんどゼロに立ちません。チェックボックスを入れると緑の区間が付き、合計がきっちりゼロへ畳まれます。
+
+表の数字でも同じです。欠損 $5.05\times10^{-2}$ が $5.20\times10^{-5}$ へ、$1.68\times10^{-1}$ が $5.22\times10^{-4}$ へ下がります。それぞれ 971 倍と 323 倍です。
+
+## 補正を入れてもゼロにならない残差
+
+一つ目に留まるものがあります。拡散係数がすべて同じときは $1.9\times10^{-13}$ なのに、補正を入れた場合は $5\times10^{-4}$ で止まります。機械精度ではありません。
+
+理由は離散演算子が二つあるからです。`correction_velocity` は中心差分で $\nabla Y_k$ を計算します。一方で LBM が実際に作る拡散流束は、非平衡部分 $h_{k,i}^{(1)}$ の 1 次モーメント、つまりストリーミングが定める別の離散勾配です。二つの勾配が $O(\delta x^2)$ だけずれます。その差が相殺されずに残ります。
+
+消すには補正速度も同じ非平衡モーメントから取ればよいわけです。$\mathbf{V}_c=\frac{1}{\rho}\sum_k\big(1-\frac{1}{2\tau_k}\big)\sum_i\mathbf{c}_i h_{k,i}^{(1)}$ のように書く方式です。中心差分が一ステップ遅れた値を使うことも、同じ理由で残差を作ります。離散の拘束条件を連続式のまま書き写しても厳密には満たされない、という話は[カール拘束条件とスタガード格子](/ja/posts/2026-09-20-curl-involution-staggered-twophase/)に詳しく書いてあります。
+
+ただし実務では $5\times10^{-4}$ と $1.7\times10^{-1}$ の差は大きいです。前者は蓄積せず、格子を細かくすれば減ります。後者は時間とともに育ちます。
+
+## 燃焼コードでこの項が顔を出す場所
+
+メタン空気燃焼の Lewis 数は化学種ごとに 0.3 から 1.8 まで散らばります。H と H$_2$ は極端に速く、大きな炭化水素は遅いです。拡散係数で見ると 20 倍以上開きます。上の表の三行目がちょうどその範囲です。
+
+欠損は密度誤差だけでは終わりません。化学反応率は $Y_k$ の指数に入ります。和が 1 を超えると反応率が過大評価され、その熱が再び密度を押して発散へ向かいます。多くのコードは毎ステップ $Y_k$ を和で割って正規化しますが、それは欠損を消すのではなく化学種の間に恣意的に配り直すだけです。どの化学種が損をするかは格子番号に依存します。
+
+最もよくある実務の処方は、最も重い化学種を余剰種(bath species)に指定し、$Y_{N_2}=1-\sum_{k\neq N_2}Y_k$ と直接計算することです。こうすると和はきっちり 1 になりますが、欠損は全部 N$_2$ に積もります。補正速度はその負担を $Y_k$ の比で分けます。
+
+## $\tau_k$ を選ぶとき実際に決めていること
+
+$\tau_k$ を化学種ごとに変える瞬間、三つのうち一つを選ぶことになります。欠損をそのまま放置するか、正規化で特定の化学種に寄せるか、補正速度で $Y_k$ に比例して分けるか。
+
+一つ目は選択肢ではありません。二つ目は余剰種が圧倒的に多いとき(希釈燃焼、$Y_{N_2}\approx0.7$)だけ使えます。三つ目が既定値であるべきです。費用はステップごとの勾配一組と、平衡分布の速度差し替え一行だけです。
+
+そして $\tau_k$ 自体の範囲も同時に決まります。上の表では $\tau=0.55$ の拡散係数誤差が 1.24% でした。ノードごとに $\tau$ を変えるとき、その下限が計算をどう分けるかは[べき乗則流体 LBM の局所緩和時間](/ja/posts/2026-09-21-power-law-lbm-local-relaxation-time/)で扱いました。ここでは化学種の軸で同じ上限と下限がもう一度かかります。
+
+次に多成分 LBM のログで $\sum_k Y_k$ が 1.0003 と出たら、まず $D_k$ を並べてみてください。値が互いに違えば、原因はすでに出ています。
