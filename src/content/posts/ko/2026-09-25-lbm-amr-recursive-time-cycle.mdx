@@ -1,0 +1,290 @@
+---
+title: "refine을 stream 뒤로 한 줄 옮겼더니 오차가 7.2배였다 — LBM AMR의 재귀 시간전진 순서"
+date: 2026-09-25
+description: "LBM 격자 세밀화에서 collision·refine·stream·unrefine 순서를 바꿔 같은 문제를 세 번 풀었다. 오차는 7.2배 차이났고 전부 레벨 경계에 앉았다."
+tags: ["AMR", "LBM", "Mesh-Refinement", "Time-Stepping", "Algorithms"]
+locale: ko
+slug: 2026-09-25-lbm-amr-recursive-time-cycle
+takeaway: "레벨 경계에서 건네는 것은 값이 아니라 '언제의 값'이다. collision 뒤의 분포가 아니면 ghost의 비평형 부분은 부호가 뒤집힌 채 들어간다."
+draft: false
+---
+
+import { RefineCycleLadder } from '@/components/post-viz/2026-09-25-lbm-amr-recursive-time-cycle/RefineCycleLadder'
+import { GhostScheduleErrorTrack } from '@/components/post-viz/2026-09-25-lbm-amr-recursive-time-cycle/GhostScheduleErrorTrack'
+
+## 레벨 4까지 켜면 루트 스텝 하나가 무엇을 하는가
+
+AMR을 붙인 LBM 코드에서 먼저 어긋나는 것은 물리가 아니라 순서다. 레벨을 네 개 쌓으면 루트 스텝
+한 번 동안 최하위 레벨은 여덟 번 돈다. 그 사이에 refine과 unrefine이 번갈아 끼어든다. 이 글은 그
+연산들을 어떤 순서로 적어야 하는지, 한 칸 어긋나면 얼마를 물어내는지를 다룬다. 같은 1차원 문제를
+순서만 바꿔 세 번 풀었고, 오차는 0.657%와 4.704% 사이에서 갈렸다.
+
+순서는 재귀 함수 하나로 전부 적힌다. 손으로 루프를 펼쳐 쓰는 순간 레벨을 하나 더 얹을 때마다
+코드가 두 배로 늘어난다.
+
+```python
+def walk_level(lev, maxlev, trace):
+    trace.append((lev, "collision"))                      # ghost 셀은 제외
+    if lev < maxlev:
+        trace.append((lev, "refine   -> L%d ghost @ t" % (lev + 1)))
+    trace.append((lev, "stream"))                         # none + interface + ghost
+    if lev < maxlev:
+        walk_level(lev + 1, maxlev, trace)
+        trace.append((lev, "refine   -> L%d ghost @ t+dt/2" % (lev + 1)))
+        walk_level(lev + 1, maxlev, trace)
+        trace.append((lev + 1, "unrefine -> L%d interface" % lev))
+
+trace = []
+walk_level(1, 3, trace)
+for lev, op in trace:
+    print("  " * (lev - 1) + "L%d  %s" % (lev, op))
+
+print()
+print("level   collisions   streams   share of one root step")
+for maxlev in (4,):
+    t = []
+    walk_level(1, maxlev, t)
+    for lev in range(1, maxlev + 1):
+        nc = sum(1 for l, o in t if l == lev and o == "collision")
+        ns = sum(1 for l, o in t if l == lev and o == "stream")
+        print("  %d     %8d   %7d   dt/%d" % (lev, nc, ns, 2 ** (lev - 1)))
+```
+
+```text
+L1  collision
+L1  refine   -> L2 ghost @ t
+L1  stream
+  L2  collision
+  L2  refine   -> L3 ghost @ t
+  L2  stream
+    L3  collision
+    L3  stream
+  L2  refine   -> L3 ghost @ t+dt/2
+    L3  collision
+    L3  stream
+    L3  unrefine -> L2 interface
+L1  refine   -> L2 ghost @ t+dt/2
+  L2  collision
+  L2  refine   -> L3 ghost @ t
+  L2  stream
+    L3  collision
+    L3  stream
+  L2  refine   -> L3 ghost @ t+dt/2
+    L3  collision
+    L3  stream
+    L3  unrefine -> L2 interface
+  L2  unrefine -> L1 interface
+
+level   collisions   streams   share of one root step
+  1            1         1   dt/1
+  2            2         2   dt/2
+  3            4         4   dt/4
+  4            8         8   dt/8
+```
+
+레벨 셋이면 연산이 23개다. 레벨 $\ell$은 루트 스텝 하나당 $2^{\ell-1}$번 돈다.
+
+## 재귀가 만드는 사다리를 눈으로 따라가기
+
+아래 시뮬레이션에서 직접 조작해보자.
+
+<RefineCycleLadder />
+
+deepest level을 2에서 4로 올리면 아래 레인이 두 배씩 촘촘해진다. 한 레인 안에서 주황 점(collision)이
+초록 화살표(refine)보다 항상 먼저 찍히는지 확인해보자. sub-cycling을 끄면 사다리가 납작해지는데,
+이것이 레벨마다 $\Delta t$를 다르게 주는 일을 빠뜨린 코드의 모습이다.
+
+## 격자를 반으로 줄이면 $\tau$도 따라 바뀐다
+
+격자 간격과 시간 간격을 함께 반으로 줄이는 것을 음향 스케일링(acoustic scaling)이라 부른다.
+격자속도 $\Delta x/\Delta t$가 레벨마다 같으므로 격자 단위 속도 $u$는 그대로 쓴다. 대신 점성이
+움직인다. 물리 점성은 레벨에 무관해야 하므로
+
+$$
+\nu = c_s^2\left(\tau - \tfrac{1}{2}\right)\frac{\Delta x^2}{\Delta t}
+$$
+
+가 두 레벨에서 같아야 한다. $\Delta x$가 절반, $\Delta t$가 절반이면 $\Delta x^2/\Delta t$가 절반이므로
+
+$$
+\tau_f = 2\tau_c - \tfrac{1}{2}
+$$
+
+가 된다. $\tau_c$는 성긴 레벨, $\tau_f$는 고운 레벨의 완화시간(relaxation time)이다. 이 글의 실험은
+$\tau_c = 0.65$, 따라서 $\tau_f = 0.8$을 쓴다. 비평형 부분 $f^{neq}$를 레벨 사이에서 다시 쓰는
+계수는 [비평형 재스케일을 다룬 글](/ko/posts/2026-09-02-lbm-amr-nonequilibrium-rescale/)에서 따로
+정리했다. 여기서는 결과만 쓴다.
+
+$$
+R = \frac{\tau_f}{\tau_c}\cdot\frac{\Delta x_f}{\Delta x_c} = 0.6154
+$$
+
+## refine은 왜 collision과 stream 사이에 있는가
+
+ghost 셀의 일은 하나다. 패치 안쪽 이웃이 스트리밍으로 끌어갈 분포를 대신 들고 있는 것.
+실제 셀이 그 순간 내보내는 것은 충돌을 마친 분포다. 그러니 ghost도 충돌을 마친 분포를 들고 있어야
+한다. 재귀 함수에서 refine이 collision 다음, stream 앞에 앉는 이유가 이것이다.
+
+refine을 stream 뒤로 한 줄 내리면 ghost는 충돌 전 분포를 받는다. 두 상태의 관계는 한 줄이다.
+
+$$
+f^{post} = f^{eq} + \left(1 - \frac{1}{\tau}\right) f^{neq}
+$$
+
+$\tau_f = 0.8$이면 $1 - 1/\tau_f = -0.25$다. 즉 올바른 ghost가 들고 있어야 할 비평형 부분 대비
+충돌 전 분포는 $1/(-0.25) = -4$배다. **부호가 뒤집힌 채 크기가 네 배**로 들어간다. $\tau < 1$의
+과완화(over-relaxation)에서는 충돌이 비평형 부분의 부호를 바꾼다. 이 사실을 모르고 순서를 옮기면
+값은 그럴듯한데 응력만 반대로 실린다.
+
+정리하면 충돌 후 상태를 넘길 때 쓸 계수는 $R$이 아니다.
+
+$$
+S = R\,\frac{1 - 1/\tau_f}{1 - 1/\tau_c} = 0.2857
+$$
+
+## ghost는 두 번 완화되지 않는다
+
+원본 스케줄에는 조건이 두 줄 붙어 있다. collision은 ghost를 제외하고, stream은 ghost와 그 부모까지
+포함한다. 앞 절의 이유가 그대로 답이다. ghost는 이미 충돌을 마친 상태로 부모에게서 받은 값이다.
+고운 레벨에서 한 번 더 충돌시키면 같은 분포가 두 번 완화된다. 레벨마다 $\tau$가 다른 계산에서 이런
+중복이 어디로 새는지는 [화학종마다 $\tau$를 다르게 준 글](/ko/posts/2026-09-23-multicomponent-lbm-correction-velocity/)과
+같은 종류의 문제다.
+
+unrefine은 반대 방향이고, 대상이 더 좁다. 경계에 걸친 부모 셀만 자식 평균으로 덮어쓴다. 시점도
+정해져 있다. 자식이 두 번을 다 돌아 부모와 시간이 맞은 뒤다. 한 번만 돌고 덮어쓰면 부모는 반 스텝
+과거의 값을 받는다.
+
+## 같은 격자에 순서만 세 가지로 걸었다
+
+1차원 이류-확산을 D1Q3로 풀었다. 성긴 격자 128칸이 전체를 덮고, 40~88칸 구간에만 두 배 고운
+패치를 얹었다. 가우시안 펄스가 왼쪽 이음매를 지나 패치 안으로 들어간다. 기준해는 전 영역을 고운
+격자로 덮어 같은 물리 시각까지 돌린 것이다.
+
+```python
+import numpy as np
+
+W, C = np.array([2/3, 1/6, 1/6]), np.array([0.0, 1.0, -1.0])
+NC, A, B, NSTEP = 128, 40, 88, 350      # 성긴 셀 수 / 패치 = 성긴 셀 [A,B)
+NF = 2 * (B - A)
+U, SG = 0.2, 0.018                      # 이류 속도, 초기 펄스 폭
+TAU_C = 0.65
+TAU_F = 2 * TAU_C - 0.5                 # 음향 스케일링: dx/2, dt/2
+R = (TAU_F / TAU_C) * 0.5               # f_neq 계수, 성긴 -> 고운 (충돌 전)
+S = R * (1 - 1 / TAU_F) / (1 - 1 / TAU_C)   # 충돌 후 데이터에 쓰는 같은 계수
+
+def feq_ade(rho):
+    return np.asarray(rho)[..., None] * W * (1.0 + 3.0 * C * U)
+
+def bgk(f, tau):
+    return f - (f - feq_ade(f.sum(-1))) / tau
+
+def stream_all(f):                      # 주기 경계, 레벨 전체
+    g = f.copy()
+    g[:, 1], g[:, 2] = np.roll(f[:, 1], 1), np.roll(f[:, 2], -1)
+    return g
+
+def rescale_neq(src, fac):              # rho는 그대로, 비평형 부분만 재스케일
+    e = feq_ade(src.sum())
+    return e + fac * (src - e)
+
+def pulse(x):
+    return 1.0 + 0.3 * np.exp(-((x - 0.20) ** 2) / (2 * SG ** 2))
+
+def two_level(schedule):
+    fc = feq_ade(pulse((np.arange(NC) + 0.5) / NC))
+    ff = np.zeros((NF + 2, 3))          # 인덱스 0과 -1이 ghost 셀
+    ff[1:-1] = feq_ade(pulse((A + (np.arange(NF) + 0.5) * 0.5) / NC))
+    for _ in range(NSTEP):
+        pre_t = fc                                  # t 시점 성긴 레벨 상태 (충돌 전)
+        post_t = bgk(fc, TAU_C)                     # L1에서 충돌
+        pre_t1 = stream_all(post_t)                 # t + dt 시점 성긴 레벨 상태
+        post_t1 = bgk(pre_t1, TAU_C)                # ghost를 먹이기 위한 국소 연산
+        for k in (0, 1):                            # L1 한 스텝당 L2 서브스텝 두 번
+            th = 0.5 * k
+            if schedule == "ordered":               # refine이 collision 뒤에 있음
+                src, fac = (1 - th) * post_t + th * post_t1, S
+            elif schedule == "frozen-ghost":        # 시간 보간 없음
+                src, fac = post_t, S
+            else:                                   # refine을 stream 뒤로 옮김
+                src, fac = (1 - th) * pre_t + th * pre_t1, R
+            ff[0] = rescale_neq(0.75 * src[A - 1] + 0.25 * src[A], fac)
+            ff[-1] = rescale_neq(0.25 * src[B - 1] + 0.75 * src[B], fac)
+            ff[1:-1] = bgk(ff[1:-1], TAU_F)         # ghost는 L2에서 충돌시키지 않음
+            g = ff.copy()
+            g[1:-1, 1], g[1:-1, 2] = ff[0:-2, 1], ff[2:, 2]
+            ff = g
+        fc = pre_t1.copy()                          # unrefine: L2 -> L1 경계
+        for i in range(B - A):
+            fc[A + i] = rescale_neq(0.5 * (ff[1 + 2 * i] + ff[2 + 2 * i]), 1 / R)
+    return fc.sum(-1)
+
+def single_grid(n, tau, nstep):
+    f = feq_ade(pulse((np.arange(n) + 0.5) / n))
+    for _ in range(nstep):
+        f = stream_all(bgk(f, tau))
+    return f.sum(-1)
+
+ref = single_grid(2 * NC, TAU_F, 2 * NSTEP)         # 전 영역을 고운 격자로
+ref_c = 0.5 * (ref[0::2] + ref[1::2])               # 성긴 셀 위로 평균
+seam = np.zeros(NC, bool)
+seam[A - 2:A + 4] = seam[B - 4:B + 2] = True        # 이음매마다 6칸
+
+print("tau_c=%.2f  tau_f=%.2f   R=%.4f  S=%.4f" % (TAU_C, TAU_F, R, S))
+print("%-20s %9s %11s %11s" % ("schedule", "L2 [%]", "max|drho|", "at seam"))
+for s in ("ordered", "frozen-ghost", "refine-after-stream"):
+    d = np.abs(two_level(s) - ref_c)
+    print("%-20s %9.3f %11.2e %11.2e"
+          % (s, 100 * np.linalg.norm(d) / np.linalg.norm(ref_c - 1), d.max(), d[seam].max()))
+```
+
+```text
+tau_c=0.65  tau_f=0.80   R=0.6154  S=0.2857
+schedule                L2 [%]   max|drho|     at seam
+ordered                  0.657    8.84e-04    3.49e-04
+frozen-ghost             1.159    1.25e-03    1.13e-03
+refine-after-stream      4.704    4.40e-03    4.36e-03
+```
+
+## 오차가 어디에 앉는지가 순서를 고발한다
+
+세 줄에서 읽을 것은 L2 값만이 아니다. 마지막 두 열을 비교해보자. 올바른 순서에서는 전체 최대
+오차가 $8.84\times10^{-4}$인데 이음매 부근 최대는 $3.49\times10^{-4}$다. 오차의 대부분이 이음매가
+아니라 펄스 자체에 앉아 있다는 뜻이고, 이는 보간 차수에서 오는 정상적인 오차다.
+
+refine을 옮긴 쪽은 두 값이 $4.40\times10^{-3}$과 $4.36\times10^{-3}$로 거의 같다. 전체 최대 오차가
+이음매에 그대로 앉아 있다. 해가 나쁜 것이 아니라 **이음매가 오염원**이라는 서명이다. 이 구분이
+실무에서 쓸모 있다. 오차가 균일하게 퍼져 있으면 해상도 문제, 이음매에 몰려 있으면 스케줄 문제다.
+
+아래 시뮬레이션에서 직접 조작해보자.
+
+<GhostScheduleErrorTrack />
+
+세 스케줄이 같은 격자에서 동시에 돈다. 펄스가 왼쪽 점선(이음매)에 닿는 순간 아래 패널을 보자.
+초록 곡선은 이음매에서 평평하고 빨간 곡선만 그 자리에서 솟는다. tau_c를 올리면 간격이 벌어지는데,
+$\tau$가 클수록 분포에서 비평형 부분이 차지하는 몫이 커지기 때문이다.
+
+## 시간 보간을 빼면 레벨마다 반 스텝씩 밀린다
+
+세 번째 줄, frozen-ghost는 순서는 맞지만 시점이 틀린 경우다. 자식이 두 번 도는 동안 ghost를 한
+번만 채우고 그대로 둔다. 두 번째 서브스텝은 반 스텝 과거의 부모 값을 받는다. 오차는 0.657%에서
+1.159%로, 1.8배 늘었다.
+
+레벨이 둘뿐일 때 1.8배다. 레벨이 넷이면 최하위 서브스텝은 최대 $7/8$ 루트 스텝만큼 밀린다.
+재귀 함수에서 refine이 자식 호출 사이에 한 번 더 등장하는 것이 이 보간을 강제하는 장치다.
+`@ t`와 `@ t+dt/2`가 그것이다.
+
+부모의 $t+\Delta t$ 시점 충돌 후 상태가 필요하다는 점이 걸린다. 위 코드에서는 부모 셀 몇 개에만
+국소 충돌을 한 번 더 적용해 얻었다. 레벨 전체를 두 번 전진시키는 것이 아니라 ghost를 먹이기 위한
+국소 연산이다. 원본 스케줄에서 stream 대상에 "ghost의 부모"가 들어 있는 것과 같은 이야기다.
+
+## 이 순서를 코드 어디에 적어둘 것인가
+
+레벨 순회를 손으로 펼친 루프로 적으면 레벨을 하나 더 얹을 때 순서가 조용히 어긋난다. 위
+`walk_level` 같은 함수 하나를 유일한 출처로 두고, 실행기는 그것이 뱉은 목록을 그대로 소비하는
+편이 낫다. 그러면 순서 검증이 단위 테스트가 된다. 레벨 $\ell$의 collision 횟수가 $2^{\ell-1}$인지,
+모든 refine 앞에 같은 레벨의 collision이 있는지, unrefine이 자식의 마지막 stream 뒤에만 오는지.
+세 줄이면 적을 수 있다.
+
+숫자로 남길 것은 4.704와 0.657의 비, 7.2배다. 그리고 그 오차가 전부 이음매에 앉아 있었다는 것.
+다음에 AMR 해가 경계에서만 이상하게 나오면, 격자나 보간 차수를 의심하기 전에 재귀 함수의
+네 줄을 먼저 읽는 편이 빠르다.

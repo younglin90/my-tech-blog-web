@@ -1,0 +1,304 @@
+---
+title: "Moving refine one line below stream cost a 7.2x error — the recursive time cycle of LBM AMR"
+date: 2026-09-25
+description: "Three orderings of collision, refine, stream and unrefine on the same refined LBM grid. The error spread over a factor of 7.2, and all of it sat on the level seam."
+tags: ["AMR", "LBM", "Mesh-Refinement", "Time-Stepping", "Algorithms"]
+locale: en
+slug: 2026-09-25-lbm-amr-recursive-time-cycle
+takeaway: "What crosses a refinement seam is not a value but a value at an instant. Hand over anything other than the post-collision distribution and the ghost carries a non-equilibrium part with the sign flipped."
+draft: false
+---
+
+import { RefineCycleLadder } from '@/components/post-viz/2026-09-25-lbm-amr-recursive-time-cycle/RefineCycleLadder'
+import { GhostScheduleErrorTrack } from '@/components/post-viz/2026-09-25-lbm-amr-recursive-time-cycle/GhostScheduleErrorTrack'
+
+## What one root step actually does when four levels are live
+
+In an LBM code with AMR bolted on, the first thing to go wrong is not the physics but the order.
+Stack four levels and the deepest one runs eight times per root step. Refine and unrefine slot in
+between those runs. This post is about how that sequence has to be written down, and what one
+misplaced line costs. The same 1D problem was solved three times, changing nothing but the order,
+and the error landed anywhere between 0.657% and 4.704%.
+
+The whole order fits in one recursive function. Unroll it by hand and the code doubles every time
+another level is added.
+
+```python
+def walk_level(lev, maxlev, trace):
+    trace.append((lev, "collision"))                      # ghost cells excluded
+    if lev < maxlev:
+        trace.append((lev, "refine   -> L%d ghost @ t" % (lev + 1)))
+    trace.append((lev, "stream"))                         # none + interface + ghost
+    if lev < maxlev:
+        walk_level(lev + 1, maxlev, trace)
+        trace.append((lev, "refine   -> L%d ghost @ t+dt/2" % (lev + 1)))
+        walk_level(lev + 1, maxlev, trace)
+        trace.append((lev + 1, "unrefine -> L%d interface" % lev))
+
+trace = []
+walk_level(1, 3, trace)
+for lev, op in trace:
+    print("  " * (lev - 1) + "L%d  %s" % (lev, op))
+
+print()
+print("level   collisions   streams   share of one root step")
+for maxlev in (4,):
+    t = []
+    walk_level(1, maxlev, t)
+    for lev in range(1, maxlev + 1):
+        nc = sum(1 for l, o in t if l == lev and o == "collision")
+        ns = sum(1 for l, o in t if l == lev and o == "stream")
+        print("  %d     %8d   %7d   dt/%d" % (lev, nc, ns, 2 ** (lev - 1)))
+```
+
+```text
+L1  collision
+L1  refine   -> L2 ghost @ t
+L1  stream
+  L2  collision
+  L2  refine   -> L3 ghost @ t
+  L2  stream
+    L3  collision
+    L3  stream
+  L2  refine   -> L3 ghost @ t+dt/2
+    L3  collision
+    L3  stream
+    L3  unrefine -> L2 interface
+L1  refine   -> L2 ghost @ t+dt/2
+  L2  collision
+  L2  refine   -> L3 ghost @ t
+  L2  stream
+    L3  collision
+    L3  stream
+  L2  refine   -> L3 ghost @ t+dt/2
+    L3  collision
+    L3  stream
+    L3  unrefine -> L2 interface
+  L2  unrefine -> L1 interface
+
+level   collisions   streams   share of one root step
+  1            1         1   dt/1
+  2            2         2   dt/2
+  3            4         4   dt/4
+  4            8         8   dt/8
+```
+
+Three levels give 23 operations. Level $\ell$ runs $2^{\ell-1}$ times per root step.
+
+## Following the ladder the recursion builds
+
+Try the simulation below.
+
+<RefineCycleLadder />
+
+Raise deepest level from 2 to 4 and each lower lane doubles in density. Check that within any lane
+the orange dot (collision) always lands before the green arrow (refine). Untick sub-cycling and the
+ladder flattens out — that is what a code looks like when it forgot to give each level its own
+$\Delta t$.
+
+## Halve the cell size and $\tau$ has to move too
+
+Halving the cell spacing and the time step together is called acoustic scaling. The lattice speed
+$\Delta x/\Delta t$ is the same on every level, so the lattice velocity $u$ carries over unchanged.
+Viscosity does not. The physical viscosity has to be level-independent, so
+
+$$
+\nu = c_s^2\left(\tau - \tfrac{1}{2}\right)\frac{\Delta x^2}{\Delta t}
+$$
+
+must agree across levels. With $\Delta x$ and $\Delta t$ both halved, $\Delta x^2/\Delta t$ is
+halved, which gives
+
+$$
+\tau_f = 2\tau_c - \tfrac{1}{2}
+$$
+
+where $\tau_c$ is the relaxation time on the coarse level and $\tau_f$ on the fine one. The
+experiment here uses $\tau_c = 0.65$, hence $\tau_f = 0.8$. The factor that rewrites the
+non-equilibrium part $f^{neq}$ across levels was worked out separately in
+[the post on non-equilibrium rescaling](/en/posts/2026-09-02-lbm-amr-nonequilibrium-rescale/); only
+the result is needed here.
+
+$$
+R = \frac{\tau_f}{\tau_c}\cdot\frac{\Delta x_f}{\Delta x_c} = 0.6154
+$$
+
+## Why refine sits between collision and stream
+
+A ghost cell has exactly one job: to hold the populations its neighbour inside the patch is about to
+pull in by streaming. What a real cell emits at that instant is a post-collision distribution. So the
+ghost has to hold a post-collision distribution too. That is why refine sits after collision and
+before stream in the recursion.
+
+Drop refine one line below stream and the ghost receives the pre-collision state instead. One line
+relates the two:
+
+$$
+f^{post} = f^{eq} + \left(1 - \frac{1}{\tau}\right) f^{neq}
+$$
+
+With $\tau_f = 0.8$, $1 - 1/\tau_f = -0.25$. Relative to the non-equilibrium part the ghost should
+be holding, the pre-collision state is $1/(-0.25) = -4$ times as large. **The sign flips and the
+magnitude quadruples.** For $\tau < 1$ — over-relaxation — collision reverses the sign of the
+non-equilibrium part. Move the line without knowing that and the values still look plausible while
+the stress rides in backwards.
+
+So the factor for handing over a post-collision state is not $R$:
+
+$$
+S = R\,\frac{1 - 1/\tau_f}{1 - 1/\tau_c} = 0.2857
+$$
+
+## A ghost is never relaxed twice
+
+The original schedule carries two side conditions. Collision skips ghost cells; streaming covers
+ghosts and their parents as well. The previous section is the reason for both. A ghost already holds
+a post-collision state handed down by its parent. Collide it again on the fine level and the same
+distribution relaxes twice. Where that kind of double count leaks when each field has its own $\tau$
+is the same class of problem as in
+[the post on per-species relaxation times](/en/posts/2026-09-23-multicomponent-lbm-correction-velocity/).
+
+Unrefine runs the other way and hits a narrower target: only the parent cells along the seam get
+overwritten by the child average. Its timing is fixed too — after the child has completed both of
+its runs and the two levels agree on the clock. Overwrite after one run and the parent inherits a
+value half a step in the past.
+
+## Three orderings on one grid
+
+A 1D advection-diffusion problem solved with D1Q3. A coarse grid of 128 cells spans the domain, and
+a twice-refined patch covers cells 40 to 88. A Gaussian pulse crosses the left seam and moves into
+the patch. The reference is the same problem on a uniformly fine grid carried to the same physical
+time.
+
+```python
+import numpy as np
+
+W, C = np.array([2/3, 1/6, 1/6]), np.array([0.0, 1.0, -1.0])
+NC, A, B, NSTEP = 128, 40, 88, 350      # coarse cells / patch = coarse cells [A,B)
+NF = 2 * (B - A)
+U, SG = 0.2, 0.018                      # advection speed, initial pulse width
+TAU_C = 0.65
+TAU_F = 2 * TAU_C - 0.5                 # acoustic scaling: dx/2, dt/2
+R = (TAU_F / TAU_C) * 0.5               # f_neq scale, coarse -> fine (pre-collision)
+S = R * (1 - 1 / TAU_F) / (1 - 1 / TAU_C)   # same, for post-collision data
+
+def feq_ade(rho):
+    return np.asarray(rho)[..., None] * W * (1.0 + 3.0 * C * U)
+
+def bgk(f, tau):
+    return f - (f - feq_ade(f.sum(-1))) / tau
+
+def stream_all(f):                      # periodic, whole level
+    g = f.copy()
+    g[:, 1], g[:, 2] = np.roll(f[:, 1], 1), np.roll(f[:, 2], -1)
+    return g
+
+def rescale_neq(src, fac):              # keep rho, rescale the non-equilibrium part
+    e = feq_ade(src.sum())
+    return e + fac * (src - e)
+
+def pulse(x):
+    return 1.0 + 0.3 * np.exp(-((x - 0.20) ** 2) / (2 * SG ** 2))
+
+def two_level(schedule):
+    fc = feq_ade(pulse((np.arange(NC) + 0.5) / NC))
+    ff = np.zeros((NF + 2, 3))          # index 0 and -1 are ghost cells
+    ff[1:-1] = feq_ade(pulse((A + (np.arange(NF) + 0.5) * 0.5) / NC))
+    for _ in range(NSTEP):
+        pre_t = fc                                  # coarse state at t  (pre-collision)
+        post_t = bgk(fc, TAU_C)                     # collision on L1
+        pre_t1 = stream_all(post_t)                 # coarse state at t + dt
+        post_t1 = bgk(pre_t1, TAU_C)                # local only, to feed the ghosts
+        for k in (0, 1):                            # two L2 sub-steps per L1 step
+            th = 0.5 * k
+            if schedule == "ordered":               # refine sits after collision
+                src, fac = (1 - th) * post_t + th * post_t1, S
+            elif schedule == "frozen-ghost":        # no interpolation in time
+                src, fac = post_t, S
+            else:                                   # refine moved after stream
+                src, fac = (1 - th) * pre_t + th * pre_t1, R
+            ff[0] = rescale_neq(0.75 * src[A - 1] + 0.25 * src[A], fac)
+            ff[-1] = rescale_neq(0.25 * src[B - 1] + 0.75 * src[B], fac)
+            ff[1:-1] = bgk(ff[1:-1], TAU_F)         # ghosts are never collided on L2
+            g = ff.copy()
+            g[1:-1, 1], g[1:-1, 2] = ff[0:-2, 1], ff[2:, 2]
+            ff = g
+        fc = pre_t1.copy()                          # unrefine: L2 -> L1 interface
+        for i in range(B - A):
+            fc[A + i] = rescale_neq(0.5 * (ff[1 + 2 * i] + ff[2 + 2 * i]), 1 / R)
+    return fc.sum(-1)
+
+def single_grid(n, tau, nstep):
+    f = feq_ade(pulse((np.arange(n) + 0.5) / n))
+    for _ in range(nstep):
+        f = stream_all(bgk(f, tau))
+    return f.sum(-1)
+
+ref = single_grid(2 * NC, TAU_F, 2 * NSTEP)         # uniform fine grid everywhere
+ref_c = 0.5 * (ref[0::2] + ref[1::2])               # averaged onto coarse cells
+seam = np.zeros(NC, bool)
+seam[A - 2:A + 4] = seam[B - 4:B + 2] = True        # 6 cells around each seam
+
+print("tau_c=%.2f  tau_f=%.2f   R=%.4f  S=%.4f" % (TAU_C, TAU_F, R, S))
+print("%-20s %9s %11s %11s" % ("schedule", "L2 [%]", "max|drho|", "at seam"))
+for s in ("ordered", "frozen-ghost", "refine-after-stream"):
+    d = np.abs(two_level(s) - ref_c)
+    print("%-20s %9.3f %11.2e %11.2e"
+          % (s, 100 * np.linalg.norm(d) / np.linalg.norm(ref_c - 1), d.max(), d[seam].max()))
+```
+
+```text
+tau_c=0.65  tau_f=0.80   R=0.6154  S=0.2857
+schedule                L2 [%]   max|drho|     at seam
+ordered                  0.657    8.84e-04    3.49e-04
+frozen-ghost             1.159    1.25e-03    1.13e-03
+refine-after-stream      4.704    4.40e-03    4.36e-03
+```
+
+## Where the error sits is what gives the ordering away
+
+The L2 column is not the only thing to read. Compare the last two columns. With the correct order the
+global maximum error is $8.84\times10^{-4}$ while the maximum near the seam is $3.49\times10^{-4}$.
+Most of the error lives in the pulse itself rather than at the seam, which is ordinary interpolation
+error.
+
+For the moved refine the two numbers are $4.40\times10^{-3}$ and $4.36\times10^{-3}$ — essentially
+equal. The global worst point sits exactly on the seam. That is not a bad solution; it is a signature
+that **the seam is the source**. The distinction is useful in practice: error spread evenly means a
+resolution problem, error piled on the seam means a schedule problem.
+
+Try the simulation below.
+
+<GhostScheduleErrorTrack />
+
+All three schedules run simultaneously on the same grid. Watch the lower panel as the pulse reaches
+the left dotted seam: the green curve stays flat there while only the red one spikes. Raise tau_c and
+the gap widens, because a larger $\tau$ leaves a larger share of the distribution in the
+non-equilibrium part.
+
+## Drop the time interpolation and every level slips half a step
+
+The middle row, frozen-ghost, has the order right and the instant wrong. The ghost is filled once and
+left alone while the child runs twice, so the second sub-step reads a parent value half a step old.
+The error goes from 0.657% to 1.159% — a factor of 1.8.
+
+That is 1.8 with only two levels. With four, the deepest sub-step can lag by up to $7/8$ of a root
+step. The reason refine appears a second time between the two child calls in the recursion is exactly
+to force that interpolation: `@ t` and `@ t+dt/2`.
+
+The awkward part is that the parent's post-collision state at $t+\Delta t$ is needed. The code above
+gets it by applying one extra local collision to a handful of parent cells. That is not advancing the
+level twice; it is a local operation to feed the ghosts. It is the same story as "ghost's parent"
+appearing in the streaming target of the original schedule.
+
+## Where this order belongs in the code
+
+Write the level traversal as a hand-unrolled loop and the order drifts quietly the moment another
+level is added. Better to keep one function like `walk_level` as the single source of truth and let
+the executor consume the list it emits. Order checking then becomes a unit test: is the collision
+count on level $\ell$ equal to $2^{\ell-1}$, does every refine have a same-level collision in front of
+it, does unrefine only ever follow the child's last stream. Three lines each.
+
+The number worth keeping is the ratio of 4.704 to 0.657, a factor of 7.2 — and the fact that all of
+it sat on the seam. Next time an AMR solution looks wrong only near a refinement boundary, reading
+four lines of the recursion beats suspecting the grid or the interpolation order.

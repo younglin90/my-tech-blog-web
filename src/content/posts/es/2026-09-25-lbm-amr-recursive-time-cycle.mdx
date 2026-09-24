@@ -1,0 +1,308 @@
+---
+title: "Mover refine una línea debajo de stream costó un error 7.2 veces mayor — el ciclo temporal recursivo de LBM AMR"
+date: 2026-09-25
+description: "Tres ordenamientos de collision, refine, stream y unrefine sobre la misma malla refinada de LBM. El error se abrió por un factor de 7.2 y todo quedó sobre la costura entre niveles."
+tags: ["AMR", "LBM", "Mesh-Refinement", "Time-Stepping", "Algorithms"]
+locale: es
+slug: 2026-09-25-lbm-amr-recursive-time-cycle
+takeaway: "Lo que cruza una costura de refinamiento no es un valor sino un valor en un instante. Si lo entregado no es la distribución posterior a la colisión, la parte de no equilibrio del ghost entra con el signo invertido."
+draft: false
+---
+
+import { RefineCycleLadder } from '@/components/post-viz/2026-09-25-lbm-amr-recursive-time-cycle/RefineCycleLadder'
+import { GhostScheduleErrorTrack } from '@/components/post-viz/2026-09-25-lbm-amr-recursive-time-cycle/GhostScheduleErrorTrack'
+
+## Qué hace realmente un paso raíz con cuatro niveles activos
+
+En un código LBM con AMR encima, lo primero que se rompe no es la física sino el orden. Con cuatro
+niveles apilados, el más profundo gira ocho veces por paso raíz. Entre esos giros se intercalan
+refine y unrefine. Este texto trata de cómo debe escribirse esa secuencia y cuánto cuesta una línea
+fuera de lugar. El mismo problema unidimensional se resolvió tres veces cambiando solo el orden, y
+el error quedó entre 0.657% y 4.704%.
+
+Todo el orden cabe en una función recursiva. Al desplegar el bucle a mano, el código se duplica cada
+vez que se añade un nivel.
+
+```python
+def walk_level(lev, maxlev, trace):
+    trace.append((lev, "collision"))                      # se excluyen las celdas ghost
+    if lev < maxlev:
+        trace.append((lev, "refine   -> L%d ghost @ t" % (lev + 1)))
+    trace.append((lev, "stream"))                         # none + interface + ghost
+    if lev < maxlev:
+        walk_level(lev + 1, maxlev, trace)
+        trace.append((lev, "refine   -> L%d ghost @ t+dt/2" % (lev + 1)))
+        walk_level(lev + 1, maxlev, trace)
+        trace.append((lev + 1, "unrefine -> L%d interface" % lev))
+
+trace = []
+walk_level(1, 3, trace)
+for lev, op in trace:
+    print("  " * (lev - 1) + "L%d  %s" % (lev, op))
+
+print()
+print("level   collisions   streams   share of one root step")
+for maxlev in (4,):
+    t = []
+    walk_level(1, maxlev, t)
+    for lev in range(1, maxlev + 1):
+        nc = sum(1 for l, o in t if l == lev and o == "collision")
+        ns = sum(1 for l, o in t if l == lev and o == "stream")
+        print("  %d     %8d   %7d   dt/%d" % (lev, nc, ns, 2 ** (lev - 1)))
+```
+
+```text
+L1  collision
+L1  refine   -> L2 ghost @ t
+L1  stream
+  L2  collision
+  L2  refine   -> L3 ghost @ t
+  L2  stream
+    L3  collision
+    L3  stream
+  L2  refine   -> L3 ghost @ t+dt/2
+    L3  collision
+    L3  stream
+    L3  unrefine -> L2 interface
+L1  refine   -> L2 ghost @ t+dt/2
+  L2  collision
+  L2  refine   -> L3 ghost @ t
+  L2  stream
+    L3  collision
+    L3  stream
+  L2  refine   -> L3 ghost @ t+dt/2
+    L3  collision
+    L3  stream
+    L3  unrefine -> L2 interface
+  L2  unrefine -> L1 interface
+
+level   collisions   streams   share of one root step
+  1            1         1   dt/1
+  2            2         2   dt/2
+  3            4         4   dt/4
+  4            8         8   dt/8
+```
+
+Con tres niveles son 23 operaciones. El nivel $\ell$ gira $2^{\ell-1}$ veces por paso raíz.
+
+## Seguir con la vista la escalera que arma la recursión
+
+Conviene manipular la simulación siguiente.
+
+<RefineCycleLadder />
+
+Al subir deepest level de 2 a 4, cada carril inferior se densifica al doble. Dentro de un mismo
+carril, vale comprobar que el punto naranja (collision) siempre cae antes que la flecha verde
+(refine). Al desactivar sub-cycling la escalera se aplana: así se ve un código que olvidó darle a
+cada nivel su propio $\Delta t$.
+
+## Si la celda se parte a la mitad, $\tau$ también se mueve
+
+Reducir a la mitad el espaciado y el paso temporal a la vez se llama escalamiento acústico (acoustic
+scaling). La velocidad de malla $\Delta x/\Delta t$ es la misma en todos los niveles, así que la
+velocidad en unidades de malla $u$ se conserva. La viscosidad no. La viscosidad física debe ser
+independiente del nivel, de modo que
+
+$$
+\nu = c_s^2\left(\tau - \tfrac{1}{2}\right)\frac{\Delta x^2}{\Delta t}
+$$
+
+tiene que coincidir en ambos niveles. Con $\Delta x$ y $\Delta t$ a la mitad, $\Delta x^2/\Delta t$
+queda a la mitad, lo que da
+
+$$
+\tau_f = 2\tau_c - \tfrac{1}{2}
+$$
+
+donde $\tau_c$ es el tiempo de relajación del nivel grueso y $\tau_f$ el del fino. El experimento de
+aquí usa $\tau_c = 0.65$ y por lo tanto $\tau_f = 0.8$. El factor que reescribe la parte de no
+equilibrio $f^{neq}$ entre niveles quedó ordenado aparte en
+[la entrada sobre el reescalado del no equilibrio](/es/posts/2026-09-02-lbm-amr-nonequilibrium-rescale/);
+aquí solo hace falta el resultado.
+
+$$
+R = \frac{\tau_f}{\tau_c}\cdot\frac{\Delta x_f}{\Delta x_c} = 0.6154
+$$
+
+## Por qué refine va entre collision y stream
+
+Una celda ghost tiene una sola tarea: sostener las poblaciones que su vecina dentro del parche está
+por arrastrar mediante el streaming. Lo que una celda real emite en ese instante es una distribución
+posterior a la colisión. Entonces el ghost también debe sostener una distribución posterior a la
+colisión. Por eso refine se sienta después de collision y antes de stream en la recursión.
+
+Al bajar refine una línea, debajo de stream, el ghost recibe el estado previo a la colisión. La
+relación entre ambos es de una línea:
+
+$$
+f^{post} = f^{eq} + \left(1 - \frac{1}{\tau}\right) f^{neq}
+$$
+
+Con $\tau_f = 0.8$ resulta $1 - 1/\tau_f = -0.25$. Es decir, frente a la parte de no equilibrio que
+el ghost correcto debería sostener, el estado previo a la colisión es $1/(-0.25) = -4$ veces mayor.
+**El signo se invierte y la magnitud se cuadruplica.** Con $\tau < 1$ — sobrerrelajación
+(over-relaxation) — la colisión cambia el signo de la parte de no equilibrio. Quien mueve esa línea
+sin saberlo obtiene valores plausibles mientras el esfuerzo viaja al revés.
+
+En resumen, el factor para entregar un estado posterior a la colisión no es $R$:
+
+$$
+S = R\,\frac{1 - 1/\tau_f}{1 - 1/\tau_c} = 0.2857
+$$
+
+## Un ghost nunca se relaja dos veces
+
+El itinerario original trae dos condiciones adjuntas: collision excluye los ghost, y stream abarca
+los ghost y también a sus padres. La razón de ambas es la de la sección anterior. El ghost ya es un
+estado posterior a la colisión recibido del padre. Colisionarlo otra vez en el nivel fino relaja la
+misma distribución dos veces. Adónde se fuga ese doble conteo cuando cada campo tiene su propio
+$\tau$ es el mismo tipo de problema que en
+[la entrada sobre tiempos de relajación por especie](/es/posts/2026-09-23-multicomponent-lbm-correction-velocity/).
+
+Unrefine va en sentido contrario y apunta más angosto: solo las celdas padre que caen sobre la
+costura se sobrescriben con el promedio de los hijos. El instante también está fijado: después de que
+el hijo completó sus dos giros y ambos relojes coinciden. Si se sobrescribe tras un solo giro, el
+padre hereda un valor medio paso en el pasado.
+
+## Tres ordenamientos sobre una misma malla
+
+Advección-difusión unidimensional resuelta con D1Q3. Una malla gruesa de 128 celdas cubre todo el
+dominio y un parche con el doble de resolución cubre las celdas 40 a 88. Un pulso gaussiano cruza la
+costura izquierda y entra al parche. La referencia es el mismo problema sobre una malla fina uniforme
+llevada al mismo tiempo físico.
+
+```python
+import numpy as np
+
+W, C = np.array([2/3, 1/6, 1/6]), np.array([0.0, 1.0, -1.0])
+NC, A, B, NSTEP = 128, 40, 88, 350      # celdas gruesas / parche = celdas gruesas [A,B)
+NF = 2 * (B - A)
+U, SG = 0.2, 0.018                      # velocidad de adveccion, ancho inicial del pulso
+TAU_C = 0.65
+TAU_F = 2 * TAU_C - 0.5                 # escalamiento acustico: dx/2, dt/2
+R = (TAU_F / TAU_C) * 0.5               # factor f_neq, gruesa -> fina (antes de la colision)
+S = R * (1 - 1 / TAU_F) / (1 - 1 / TAU_C)   # el mismo, para datos posteriores a la colision
+
+def feq_ade(rho):
+    return np.asarray(rho)[..., None] * W * (1.0 + 3.0 * C * U)
+
+def bgk(f, tau):
+    return f - (f - feq_ade(f.sum(-1))) / tau
+
+def stream_all(f):                      # periodico, nivel completo
+    g = f.copy()
+    g[:, 1], g[:, 2] = np.roll(f[:, 1], 1), np.roll(f[:, 2], -1)
+    return g
+
+def rescale_neq(src, fac):              # conserva rho y reescala la parte de no equilibrio
+    e = feq_ade(src.sum())
+    return e + fac * (src - e)
+
+def pulse(x):
+    return 1.0 + 0.3 * np.exp(-((x - 0.20) ** 2) / (2 * SG ** 2))
+
+def two_level(schedule):
+    fc = feq_ade(pulse((np.arange(NC) + 0.5) / NC))
+    ff = np.zeros((NF + 2, 3))          # los indices 0 y -1 son celdas ghost
+    ff[1:-1] = feq_ade(pulse((A + (np.arange(NF) + 0.5) * 0.5) / NC))
+    for _ in range(NSTEP):
+        pre_t = fc                                  # estado grueso en t  (antes de la colision)
+        post_t = bgk(fc, TAU_C)                     # colision en L1
+        pre_t1 = stream_all(post_t)                 # estado grueso en t + dt
+        post_t1 = bgk(pre_t1, TAU_C)                # solo local, para alimentar los ghost
+        for k in (0, 1):                            # dos subpasos L2 por cada paso L1
+            th = 0.5 * k
+            if schedule == "ordered":               # refine va despues de collision
+                src, fac = (1 - th) * post_t + th * post_t1, S
+            elif schedule == "frozen-ghost":        # sin interpolacion en el tiempo
+                src, fac = post_t, S
+            else:                                   # refine movido despues de stream
+                src, fac = (1 - th) * pre_t + th * pre_t1, R
+            ff[0] = rescale_neq(0.75 * src[A - 1] + 0.25 * src[A], fac)
+            ff[-1] = rescale_neq(0.25 * src[B - 1] + 0.75 * src[B], fac)
+            ff[1:-1] = bgk(ff[1:-1], TAU_F)         # los ghost nunca colisionan en L2
+            g = ff.copy()
+            g[1:-1, 1], g[1:-1, 2] = ff[0:-2, 1], ff[2:, 2]
+            ff = g
+        fc = pre_t1.copy()                          # unrefine: interfaz L2 -> L1
+        for i in range(B - A):
+            fc[A + i] = rescale_neq(0.5 * (ff[1 + 2 * i] + ff[2 + 2 * i]), 1 / R)
+    return fc.sum(-1)
+
+def single_grid(n, tau, nstep):
+    f = feq_ade(pulse((np.arange(n) + 0.5) / n))
+    for _ in range(nstep):
+        f = stream_all(bgk(f, tau))
+    return f.sum(-1)
+
+ref = single_grid(2 * NC, TAU_F, 2 * NSTEP)         # malla fina uniforme en todo el dominio
+ref_c = 0.5 * (ref[0::2] + ref[1::2])               # promediado sobre las celdas gruesas
+seam = np.zeros(NC, bool)
+seam[A - 2:A + 4] = seam[B - 4:B + 2] = True        # 6 celdas alrededor de cada costura
+
+print("tau_c=%.2f  tau_f=%.2f   R=%.4f  S=%.4f" % (TAU_C, TAU_F, R, S))
+print("%-20s %9s %11s %11s" % ("schedule", "L2 [%]", "max|drho|", "at seam"))
+for s in ("ordered", "frozen-ghost", "refine-after-stream"):
+    d = np.abs(two_level(s) - ref_c)
+    print("%-20s %9.3f %11.2e %11.2e"
+          % (s, 100 * np.linalg.norm(d) / np.linalg.norm(ref_c - 1), d.max(), d[seam].max()))
+```
+
+```text
+tau_c=0.65  tau_f=0.80   R=0.6154  S=0.2857
+schedule                L2 [%]   max|drho|     at seam
+ordered                  0.657    8.84e-04    3.49e-04
+frozen-ghost             1.159    1.25e-03    1.13e-03
+refine-after-stream      4.704    4.40e-03    4.36e-03
+```
+
+## Dónde se sienta el error delata el orden
+
+De esas tres filas no solo se lee la columna L2. Conviene comparar las dos últimas. Con el orden
+correcto el error máximo global es $8.84\times10^{-4}$ mientras que el máximo cerca de la costura es
+$3.49\times10^{-4}$. La mayor parte del error vive en el pulso mismo y no en la costura: es el error
+normal que proviene del orden de interpolación.
+
+En la fila con refine desplazado, los dos números son $4.40\times10^{-3}$ y $4.36\times10^{-3}$,
+casi iguales. El peor punto global se sienta exactamente sobre la costura. No es que la solución sea
+mala: es la firma de que **la costura es la fuente**. La distinción sirve en la práctica: error
+repartido de forma pareja indica un problema de resolución, error amontonado en la costura indica un
+problema de itinerario.
+
+Conviene manipular la simulación siguiente.
+
+<GhostScheduleErrorTrack />
+
+Los tres itinerarios avanzan a la vez sobre la misma malla. Al llegar el pulso a la línea punteada
+izquierda (la costura), vale mirar el panel inferior: la curva verde se mantiene plana allí y solo la
+roja se dispara en ese punto. Al subir tau_c la brecha se ensancha, porque cuanto mayor es $\tau$,
+mayor es la porción de la distribución que queda en la parte de no equilibrio.
+
+## Sin interpolación temporal, cada nivel se atrasa medio paso
+
+La fila del medio, frozen-ghost, tiene el orden bien y el instante mal. El ghost se llena una sola
+vez y se deja quieto mientras el hijo gira dos veces, así que el segundo subpaso lee un valor del
+padre con medio paso de atraso. El error pasa de 0.657% a 1.159%: un factor de 1.8.
+
+Eso con apenas dos niveles. Con cuatro, el subpaso más profundo puede atrasarse hasta $7/8$ de un
+paso raíz. Que refine aparezca una segunda vez entre las dos llamadas al hijo dentro de la recursión
+es justamente el mecanismo que fuerza esa interpolación: `@ t` y `@ t+dt/2`.
+
+Lo incómodo es que hace falta el estado posterior a la colisión del padre en $t+\Delta t$. El código
+de arriba lo obtiene aplicando una colisión local extra a unas pocas celdas padre. No es avanzar el
+nivel completo dos veces, sino una operación local para alimentar los ghost. Es la misma historia que
+aparece cuando el itinerario original incluye al "padre del ghost" entre los destinos de stream.
+
+## Dónde conviene dejar escrito este orden
+
+Si el recorrido de niveles se escribe como un bucle desplegado a mano, el orden se desalinea en
+silencio apenas se agrega otro nivel. Es preferible dejar una única fuente, una función como
+`walk_level`, y que el ejecutor consuma la lista que ella emite. Así la verificación del orden se
+vuelve una prueba unitaria: si el número de collision del nivel $\ell$ es $2^{\ell-1}$, si cada
+refine tiene delante una collision del mismo nivel, si unrefine solo aparece tras el último stream
+del hijo. Tres líneas cada una.
+
+El número que conviene retener es la razón entre 4.704 y 0.657, un factor de 7.2, junto con el hecho
+de que todo ese error quedó sobre la costura. La próxima vez que una solución con AMR salga rara solo
+cerca de un límite de refinamiento, leer cuatro líneas de la recursión es más rápido que sospechar de
+la malla o del orden de interpolación.

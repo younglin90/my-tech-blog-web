@@ -1,0 +1,293 @@
+---
+title: "refine を stream の一行下へ動かしたら誤差が7.2倍になった — LBM AMR の再帰的時間進行順序"
+date: 2026-09-25
+description: "同じ細分化格子で collision・refine・stream・unrefine の順序を三通りに変えて解いた。誤差は7.2倍開き、その全部がレベル境界に乗っていた。"
+tags: ["AMR", "LBM", "Mesh-Refinement", "Time-Stepping", "Algorithms"]
+locale: ja
+slug: 2026-09-25-lbm-amr-recursive-time-cycle
+takeaway: "レベル境界で渡すのは値ではなく「いつの値」です。衝突後の分布でなければ、ghost の非平衡部分は符号が反転したまま入ります。"
+draft: false
+---
+
+import { RefineCycleLadder } from '@/components/post-viz/2026-09-25-lbm-amr-recursive-time-cycle/RefineCycleLadder'
+import { GhostScheduleErrorTrack } from '@/components/post-viz/2026-09-25-lbm-amr-recursive-time-cycle/GhostScheduleErrorTrack'
+
+## レベルを4つ立てたとき、ルートステップ1回は何をしているのか
+
+AMR を載せた LBM コードで最初に崩れるのは物理ではなく順序です。レベルを4つ積むと、最下層は
+ルートステップ1回のあいだに8回まわります。その合間に refine と unrefine が交互に差し込まれます。
+この記事では、その演算列をどの順序で書くべきか、一行ずれたときに何を支払うのかを扱います。同じ
+1次元問題を順序だけ変えて三回解いたところ、誤差は0.657%と4.704%のあいだで分かれました。
+
+順序は再帰関数ひとつで全部書けます。ループを手で展開した瞬間、レベルを1つ足すたびにコードが
+倍に膨らみます。
+
+```python
+def walk_level(lev, maxlev, trace):
+    trace.append((lev, "collision"))                      # ghost セルは除外
+    if lev < maxlev:
+        trace.append((lev, "refine   -> L%d ghost @ t" % (lev + 1)))
+    trace.append((lev, "stream"))                         # none + interface + ghost
+    if lev < maxlev:
+        walk_level(lev + 1, maxlev, trace)
+        trace.append((lev, "refine   -> L%d ghost @ t+dt/2" % (lev + 1)))
+        walk_level(lev + 1, maxlev, trace)
+        trace.append((lev + 1, "unrefine -> L%d interface" % lev))
+
+trace = []
+walk_level(1, 3, trace)
+for lev, op in trace:
+    print("  " * (lev - 1) + "L%d  %s" % (lev, op))
+
+print()
+print("level   collisions   streams   share of one root step")
+for maxlev in (4,):
+    t = []
+    walk_level(1, maxlev, t)
+    for lev in range(1, maxlev + 1):
+        nc = sum(1 for l, o in t if l == lev and o == "collision")
+        ns = sum(1 for l, o in t if l == lev and o == "stream")
+        print("  %d     %8d   %7d   dt/%d" % (lev, nc, ns, 2 ** (lev - 1)))
+```
+
+```text
+L1  collision
+L1  refine   -> L2 ghost @ t
+L1  stream
+  L2  collision
+  L2  refine   -> L3 ghost @ t
+  L2  stream
+    L3  collision
+    L3  stream
+  L2  refine   -> L3 ghost @ t+dt/2
+    L3  collision
+    L3  stream
+    L3  unrefine -> L2 interface
+L1  refine   -> L2 ghost @ t+dt/2
+  L2  collision
+  L2  refine   -> L3 ghost @ t
+  L2  stream
+    L3  collision
+    L3  stream
+  L2  refine   -> L3 ghost @ t+dt/2
+    L3  collision
+    L3  stream
+    L3  unrefine -> L2 interface
+  L2  unrefine -> L1 interface
+
+level   collisions   streams   share of one root step
+  1            1         1   dt/1
+  2            2         2   dt/2
+  3            4         4   dt/4
+  4            8         8   dt/8
+```
+
+レベルが3つなら演算は23個です。レベル $\ell$ はルートステップ1回あたり $2^{\ell-1}$ 回まわります。
+
+## 再帰が作る梯子を目で追う
+
+下のシミュレーションを実際に操作してみてください。
+
+<RefineCycleLadder />
+
+deepest level を2から4へ上げると、下のレーンが倍ずつ密になります。1つのレーンの中で、橙の点
+(collision) が緑の矢印 (refine) より必ず先に打たれるか確かめてください。sub-cycling を外すと梯子が
+平らになりますが、これがレベルごとに $\Delta t$ を変える処理を落としたコードの姿です。
+
+## 格子を半分にすると $\tau$ も動く
+
+格子間隔と時間刻みを同時に半分にすることを音響スケーリング (acoustic scaling) と呼びます。格子速度
+$\Delta x/\Delta t$ はどのレベルでも同じなので、格子単位の速度 $u$ はそのまま使えます。動くのは
+粘性です。物理粘性はレベルに依らないはずなので
+
+$$
+\nu = c_s^2\left(\tau - \tfrac{1}{2}\right)\frac{\Delta x^2}{\Delta t}
+$$
+
+が両レベルで一致しなければなりません。$\Delta x$ が半分、$\Delta t$ が半分なら
+$\Delta x^2/\Delta t$ は半分になるので
+
+$$
+\tau_f = 2\tau_c - \tfrac{1}{2}
+$$
+
+となります。$\tau_c$ は粗いレベル、$\tau_f$ は細かいレベルの緩和時間です。この記事の実験では
+$\tau_c = 0.65$、したがって $\tau_f = 0.8$ を使います。非平衡部分 $f^{neq}$ をレベル間で書き直す
+係数は[非平衡の再スケールを扱った記事](/ja/posts/2026-09-02-lbm-amr-nonequilibrium-rescale/)で
+別に整理しました。ここでは結果だけ使います。
+
+$$
+R = \frac{\tau_f}{\tau_c}\cdot\frac{\Delta x_f}{\Delta x_c} = 0.6154
+$$
+
+## なぜ refine は collision と stream のあいだにあるのか
+
+ghost セルの仕事はひとつです。パッチ内側の隣接セルがストリーミングで引き取る分布を、代わりに
+持っておくこと。実セルがその瞬間に送り出すのは衝突を終えた分布です。ですから ghost も衝突後の
+分布を持っていなければなりません。再帰関数で refine が collision の次、stream の前に座る理由が
+これです。
+
+refine を stream の一行下へ落とすと、ghost は衝突前の分布を受け取ります。両者の関係は一行です。
+
+$$
+f^{post} = f^{eq} + \left(1 - \frac{1}{\tau}\right) f^{neq}
+$$
+
+$\tau_f = 0.8$ なら $1 - 1/\tau_f = -0.25$ です。つまり正しい ghost が持つべき非平衡部分に対して、
+衝突前の分布は $1/(-0.25) = -4$ 倍です。**符号が反転したまま大きさが4倍**で入ります。$\tau < 1$ の
+過緩和 (over-relaxation) では、衝突が非平衡部分の符号を変えます。これを知らずに行を動かすと、値は
+もっともらしいのに応力だけが逆向きに乗ります。
+
+まとめると、衝突後の状態を渡すときの係数は $R$ ではありません。
+
+$$
+S = R\,\frac{1 - 1/\tau_f}{1 - 1/\tau_c} = 0.2857
+$$
+
+## ghost は二度緩和されない
+
+元のスケジュールには条件が二行ついています。collision は ghost を除く、stream は ghost とその親
+まで含む。前節の理由がそのまま答えです。ghost はすでに衝突を終えた状態として親から受け取った値
+です。細かいレベルでもう一度衝突させれば、同じ分布が二度緩和されます。場ごとに $\tau$ が異なる
+計算でこの二重計上がどこへ漏れるかは、[化学種ごとに $\tau$ を変えた記事](/ja/posts/2026-09-23-multicomponent-lbm-correction-velocity/)と
+同じ種類の問題です。
+
+unrefine は逆向きで、対象はもっと狭いです。境界にかかる親セルだけを子の平均で上書きします。時点も
+決まっています。子が二回まわり終えて親と時計が合ったあとです。一回だけまわして上書きすれば、親は
+半ステップ過去の値を受け取ります。
+
+## 同じ格子に順序だけ三通りかけた
+
+1次元の移流拡散を D1Q3 で解きました。粗い格子128セルが全体を覆い、40〜88セルの区間だけに倍の
+細かさのパッチを載せます。ガウシアンパルスが左の継ぎ目を越えてパッチへ入っていきます。参照解は
+全領域を細かい格子で覆い、同じ物理時刻まで進めたものです。
+
+```python
+import numpy as np
+
+W, C = np.array([2/3, 1/6, 1/6]), np.array([0.0, 1.0, -1.0])
+NC, A, B, NSTEP = 128, 40, 88, 350      # 粗いセル数 / パッチ = 粗いセル [A,B)
+NF = 2 * (B - A)
+U, SG = 0.2, 0.018                      # 移流速度、初期パルス幅
+TAU_C = 0.65
+TAU_F = 2 * TAU_C - 0.5                 # 音響スケーリング: dx/2, dt/2
+R = (TAU_F / TAU_C) * 0.5               # f_neq 係数、粗い -> 細かい (衝突前)
+S = R * (1 - 1 / TAU_F) / (1 - 1 / TAU_C)   # 衝突後データに使う同じ係数
+
+def feq_ade(rho):
+    return np.asarray(rho)[..., None] * W * (1.0 + 3.0 * C * U)
+
+def bgk(f, tau):
+    return f - (f - feq_ade(f.sum(-1))) / tau
+
+def stream_all(f):                      # 周期境界、レベル全体
+    g = f.copy()
+    g[:, 1], g[:, 2] = np.roll(f[:, 1], 1), np.roll(f[:, 2], -1)
+    return g
+
+def rescale_neq(src, fac):              # rho はそのまま、非平衡部分のみ再スケール
+    e = feq_ade(src.sum())
+    return e + fac * (src - e)
+
+def pulse(x):
+    return 1.0 + 0.3 * np.exp(-((x - 0.20) ** 2) / (2 * SG ** 2))
+
+def two_level(schedule):
+    fc = feq_ade(pulse((np.arange(NC) + 0.5) / NC))
+    ff = np.zeros((NF + 2, 3))          # インデックス 0 と -1 が ghost セル
+    ff[1:-1] = feq_ade(pulse((A + (np.arange(NF) + 0.5) * 0.5) / NC))
+    for _ in range(NSTEP):
+        pre_t = fc                                  # t 時点の粗いレベルの状態 (衝突前)
+        post_t = bgk(fc, TAU_C)                     # L1 で衝突
+        pre_t1 = stream_all(post_t)                 # t + dt 時点の粗いレベルの状態
+        post_t1 = bgk(pre_t1, TAU_C)                # ghost を養うための局所演算
+        for k in (0, 1):                            # L1 1 ステップあたり L2 サブステップ 2 回
+            th = 0.5 * k
+            if schedule == "ordered":               # refine が collision の後にある
+                src, fac = (1 - th) * post_t + th * post_t1, S
+            elif schedule == "frozen-ghost":        # 時間補間なし
+                src, fac = post_t, S
+            else:                                   # refine を stream の後ろへ移動
+                src, fac = (1 - th) * pre_t + th * pre_t1, R
+            ff[0] = rescale_neq(0.75 * src[A - 1] + 0.25 * src[A], fac)
+            ff[-1] = rescale_neq(0.25 * src[B - 1] + 0.75 * src[B], fac)
+            ff[1:-1] = bgk(ff[1:-1], TAU_F)         # ghost は L2 で衝突させない
+            g = ff.copy()
+            g[1:-1, 1], g[1:-1, 2] = ff[0:-2, 1], ff[2:, 2]
+            ff = g
+        fc = pre_t1.copy()                          # unrefine: L2 -> L1 境界
+        for i in range(B - A):
+            fc[A + i] = rescale_neq(0.5 * (ff[1 + 2 * i] + ff[2 + 2 * i]), 1 / R)
+    return fc.sum(-1)
+
+def single_grid(n, tau, nstep):
+    f = feq_ade(pulse((np.arange(n) + 0.5) / n))
+    for _ in range(nstep):
+        f = stream_all(bgk(f, tau))
+    return f.sum(-1)
+
+ref = single_grid(2 * NC, TAU_F, 2 * NSTEP)         # 全領域を細かい格子で
+ref_c = 0.5 * (ref[0::2] + ref[1::2])               # 粗いセル上へ平均
+seam = np.zeros(NC, bool)
+seam[A - 2:A + 4] = seam[B - 4:B + 2] = True        # 継ぎ目ごとに 6 セル
+
+print("tau_c=%.2f  tau_f=%.2f   R=%.4f  S=%.4f" % (TAU_C, TAU_F, R, S))
+print("%-20s %9s %11s %11s" % ("schedule", "L2 [%]", "max|drho|", "at seam"))
+for s in ("ordered", "frozen-ghost", "refine-after-stream"):
+    d = np.abs(two_level(s) - ref_c)
+    print("%-20s %9.3f %11.2e %11.2e"
+          % (s, 100 * np.linalg.norm(d) / np.linalg.norm(ref_c - 1), d.max(), d[seam].max()))
+```
+
+```text
+tau_c=0.65  tau_f=0.80   R=0.6154  S=0.2857
+schedule                L2 [%]   max|drho|     at seam
+ordered                  0.657    8.84e-04    3.49e-04
+frozen-ghost             1.159    1.25e-03    1.13e-03
+refine-after-stream      4.704    4.40e-03    4.36e-03
+```
+
+## 誤差がどこに座るかが順序を告発する
+
+三行から読み取るのは L2 値だけではありません。最後の二列を比べてください。正しい順序では全体の
+最大誤差が $8.84\times10^{-4}$ なのに対し、継ぎ目付近の最大は $3.49\times10^{-4}$ です。誤差の
+大半が継ぎ目ではなくパルス本体に乗っているという意味で、これは補間次数から来る通常の誤差です。
+
+refine を動かした側は、二つの値が $4.40\times10^{-3}$ と $4.36\times10^{-3}$ でほぼ同じです。全体の
+最大誤差がそのまま継ぎ目に座っています。解が悪いのではなく、**継ぎ目が汚染源だ**という署名です。
+この区別は実務で使えます。誤差が一様に広がっていれば解像度の問題、継ぎ目に集まっていれば
+スケジュールの問題です。
+
+下のシミュレーションを実際に操作してみてください。
+
+<GhostScheduleErrorTrack />
+
+三つのスケジュールが同じ格子で同時にまわります。パルスが左の点線(継ぎ目)に届く瞬間、下のパネルを
+見てください。緑の曲線は継ぎ目で平らなままで、赤い曲線だけがその場所で立ち上がります。tau_c を
+上げると差が開きますが、$\tau$ が大きいほど分布に占める非平衡部分の取り分が増えるからです。
+
+## 時間補間を外すとレベルごとに半ステップずつ遅れる
+
+真ん中の行、frozen-ghost は順序は正しく時点が誤っている場合です。子が二回まわるあいだ ghost を
+一度だけ埋めて放置します。二回目のサブステップは半ステップ過去の親の値を読みます。誤差は0.657%
+から1.159%へ、1.8倍に増えました。
+
+レベルが二つだけで1.8倍です。四つなら最下層のサブステップは最大 $7/8$ ルートステップ分遅れます。
+再帰関数で refine が子の呼び出しのあいだにもう一度現れるのは、この補間を強制する仕掛けです。
+`@ t` と `@ t+dt/2` がそれです。
+
+厄介なのは、親の $t+\Delta t$ 時点の衝突後状態が必要になることです。上のコードでは親セル数個にだけ
+局所的な衝突をもう一度かけて得ています。レベル全体を二度進めるのではなく、ghost を養うための局所
+演算です。元のスケジュールで stream の対象に「ghost の親」が入っているのと同じ話です。
+
+## この順序をコードのどこに置くか
+
+レベル巡回を手で展開したループで書くと、レベルを1つ足したときに順序が静かにずれます。上の
+`walk_level` のような関数ひとつを唯一の出典として置き、実行器はそれが吐いた列をそのまま消費する
+ほうが良いです。そうすると順序検証が単体テストになります。レベル $\ell$ の collision 回数が
+$2^{\ell-1}$ か、すべての refine の前に同レベルの collision があるか、unrefine が子の最後の stream
+の後にだけ来るか。それぞれ三行で書けます。
+
+数字として残すのは 4.704 と 0.657 の比、7.2倍です。そしてその誤差が全部継ぎ目に座っていたこと。
+次に AMR の解が境界でだけおかしく出たら、格子や補間次数を疑う前に再帰関数の四行を先に読むほうが
+速いです。

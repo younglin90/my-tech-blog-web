@@ -1,0 +1,278 @@
+---
+title: "把 refine 挪到 stream 下面一行，误差变成了 7.2 倍 — LBM AMR 的递归时间推进顺序"
+date: 2026-09-25
+description: "在同一套加密网格上，用三种 collision·refine·stream·unrefine 顺序各解一遍。误差相差 7.2 倍，而且全都落在层级接缝上。"
+tags: ["AMR", "LBM", "Mesh-Refinement", "Time-Stepping", "Algorithms"]
+locale: zh
+slug: 2026-09-25-lbm-amr-recursive-time-cycle
+takeaway: "跨越加密接缝传递的不是一个值，而是某个时刻的值。只要交出的不是碰撞后的分布，ghost 拿到的非平衡部分就会连符号一起翻转。"
+draft: false
+---
+
+import { RefineCycleLadder } from '@/components/post-viz/2026-09-25-lbm-amr-recursive-time-cycle/RefineCycleLadder'
+import { GhostScheduleErrorTrack } from '@/components/post-viz/2026-09-25-lbm-amr-recursive-time-cycle/GhostScheduleErrorTrack'
+
+## 开到第四层时，一个根时间步到底做了什么
+
+在挂上 AMR 的 LBM 代码里，先出问题的往往不是物理而是顺序。叠到四层，最底层在一个根时间步里要转
+八次。refine 和 unrefine 交替插在这些转动之间。本文讨论这串运算该按什么顺序写下来，以及错一行要
+付多少代价。同一个一维问题只改顺序解了三遍，误差落在 0.657% 到 4.704% 之间。
+
+整个顺序用一个递归函数就写完了。一旦把循环手工展开，每加一层代码就翻一倍。
+
+```python
+def walk_level(lev, maxlev, trace):
+    trace.append((lev, "collision"))                      # 排除 ghost 单元
+    if lev < maxlev:
+        trace.append((lev, "refine   -> L%d ghost @ t" % (lev + 1)))
+    trace.append((lev, "stream"))                         # none + interface + ghost
+    if lev < maxlev:
+        walk_level(lev + 1, maxlev, trace)
+        trace.append((lev, "refine   -> L%d ghost @ t+dt/2" % (lev + 1)))
+        walk_level(lev + 1, maxlev, trace)
+        trace.append((lev + 1, "unrefine -> L%d interface" % lev))
+
+trace = []
+walk_level(1, 3, trace)
+for lev, op in trace:
+    print("  " * (lev - 1) + "L%d  %s" % (lev, op))
+
+print()
+print("level   collisions   streams   share of one root step")
+for maxlev in (4,):
+    t = []
+    walk_level(1, maxlev, t)
+    for lev in range(1, maxlev + 1):
+        nc = sum(1 for l, o in t if l == lev and o == "collision")
+        ns = sum(1 for l, o in t if l == lev and o == "stream")
+        print("  %d     %8d   %7d   dt/%d" % (lev, nc, ns, 2 ** (lev - 1)))
+```
+
+```text
+L1  collision
+L1  refine   -> L2 ghost @ t
+L1  stream
+  L2  collision
+  L2  refine   -> L3 ghost @ t
+  L2  stream
+    L3  collision
+    L3  stream
+  L2  refine   -> L3 ghost @ t+dt/2
+    L3  collision
+    L3  stream
+    L3  unrefine -> L2 interface
+L1  refine   -> L2 ghost @ t+dt/2
+  L2  collision
+  L2  refine   -> L3 ghost @ t
+  L2  stream
+    L3  collision
+    L3  stream
+  L2  refine   -> L3 ghost @ t+dt/2
+    L3  collision
+    L3  stream
+    L3  unrefine -> L2 interface
+  L2  unrefine -> L1 interface
+
+level   collisions   streams   share of one root step
+  1            1         1   dt/1
+  2            2         2   dt/2
+  3            4         4   dt/4
+  4            8         8   dt/8
+```
+
+三层就是 23 个运算。第 $\ell$ 层在一个根时间步里转 $2^{\ell-1}$ 次。
+
+## 用眼睛跟一遍递归搭出的梯子
+
+在下面的模拟里亲手操作一下。
+
+<RefineCycleLadder />
+
+把 deepest level 从 2 调到 4，下面每条泳道就密一倍。盯住同一条泳道：橙色圆点(collision)是不是总在
+绿色箭头(refine)之前落下。取消 sub-cycling，梯子就压平了——这正是一份忘了给每层各自 $\Delta t$ 的
+代码的样子。
+
+## 网格减半，$\tau$ 也要跟着动
+
+把网格间距和时间步长一起减半，叫做声学标度 (acoustic scaling)。格子速度 $\Delta x/\Delta t$ 在各层
+相同，所以格子单位下的速度 $u$ 可以照搬。变的是黏性。物理黏性必须与层级无关，于是
+
+$$
+\nu = c_s^2\left(\tau - \tfrac{1}{2}\right)\frac{\Delta x^2}{\Delta t}
+$$
+
+在两层上必须一致。$\Delta x$ 减半、$\Delta t$ 减半，$\Delta x^2/\Delta t$ 就减半，于是
+
+$$
+\tau_f = 2\tau_c - \tfrac{1}{2}
+$$
+
+其中 $\tau_c$ 是粗层、$\tau_f$ 是细层的松弛时间。本文实验取 $\tau_c = 0.65$，因此 $\tau_f = 0.8$。
+把非平衡部分 $f^{neq}$ 在层间改写所用的系数，已经在[讲非平衡重标度的那篇](/zh/posts/2026-09-02-lbm-amr-nonequilibrium-rescale/)里
+单独整理过，这里只用结论。
+
+$$
+R = \frac{\tau_f}{\tau_c}\cdot\frac{\Delta x_f}{\Delta x_c} = 0.6154
+$$
+
+## refine 为什么夹在 collision 和 stream 之间
+
+ghost 单元只有一件事要做：替补丁内侧的邻居拿着它即将通过迁移取走的分布。真实单元在那一刻送出的
+是碰撞之后的分布。所以 ghost 手里也必须是碰撞后的分布。这就是递归函数中 refine 坐在 collision
+之后、stream 之前的理由。
+
+把 refine 往下挪一行放到 stream 后面，ghost 收到的就是碰撞前的分布。两者的关系只有一行：
+
+$$
+f^{post} = f^{eq} + \left(1 - \frac{1}{\tau}\right) f^{neq}
+$$
+
+$\tau_f = 0.8$ 时 $1 - 1/\tau_f = -0.25$。也就是说，相对于正确 ghost 该持有的非平衡部分，碰撞前的
+分布是 $1/(-0.25) = -4$ 倍。**符号翻转，量级放大四倍**。在 $\tau < 1$ 的过松弛 (over-relaxation)
+下，碰撞会改变非平衡部分的符号。不知道这一点就搬动那一行，数值看着还算合理，应力却是反着加上去的。
+
+所以，交出碰撞后状态时该用的系数不是 $R$：
+
+$$
+S = R\,\frac{1 - 1/\tau_f}{1 - 1/\tau_c} = 0.2857
+$$
+
+## ghost 不会被松弛两次
+
+原始调度里附了两行条件：collision 排除 ghost，stream 则连 ghost 及其父单元一起覆盖。上一节的理由
+就是答案。ghost 本来就是父层交下来的碰撞后状态。在细层再碰撞一次，同一个分布就被松弛了两遍。当
+每个场各有各的 $\tau$ 时，这种重复计数会漏到哪里去，与[按组分给不同 $\tau$ 的那篇](/zh/posts/2026-09-23-multicomponent-lbm-correction-velocity/)属于
+同一类问题。
+
+unrefine 方向相反，作用面更窄：只有压在接缝上的父单元被子层平均值覆盖。时刻也是定死的——要等子层
+转满两次、两层的时钟对齐之后。只转一次就覆盖，父层拿到的是半步之前的值。
+
+## 在同一套网格上挂三种顺序
+
+用 D1Q3 解一维对流扩散。128 个粗单元铺满全域，只在第 40 到 88 个单元区间叠一块加密一倍的补丁。
+一个高斯脉冲越过左侧接缝进入补丁。参考解是把全域都用细网格铺满、推进到同一物理时刻的结果。
+
+```python
+import numpy as np
+
+W, C = np.array([2/3, 1/6, 1/6]), np.array([0.0, 1.0, -1.0])
+NC, A, B, NSTEP = 128, 40, 88, 350      # 粗单元数 / 补丁 = 粗单元 [A,B)
+NF = 2 * (B - A)
+U, SG = 0.2, 0.018                      # 对流速度、初始脉冲宽度
+TAU_C = 0.65
+TAU_F = 2 * TAU_C - 0.5                 # 声学标度: dx/2, dt/2
+R = (TAU_F / TAU_C) * 0.5               # f_neq 系数, 粗 -> 细 (碰撞前)
+S = R * (1 - 1 / TAU_F) / (1 - 1 / TAU_C)   # 用于碰撞后数据的同一系数
+
+def feq_ade(rho):
+    return np.asarray(rho)[..., None] * W * (1.0 + 3.0 * C * U)
+
+def bgk(f, tau):
+    return f - (f - feq_ade(f.sum(-1))) / tau
+
+def stream_all(f):                      # 周期边界, 整层
+    g = f.copy()
+    g[:, 1], g[:, 2] = np.roll(f[:, 1], 1), np.roll(f[:, 2], -1)
+    return g
+
+def rescale_neq(src, fac):              # 保持 rho, 只重标度非平衡部分
+    e = feq_ade(src.sum())
+    return e + fac * (src - e)
+
+def pulse(x):
+    return 1.0 + 0.3 * np.exp(-((x - 0.20) ** 2) / (2 * SG ** 2))
+
+def two_level(schedule):
+    fc = feq_ade(pulse((np.arange(NC) + 0.5) / NC))
+    ff = np.zeros((NF + 2, 3))          # 索引 0 和 -1 是 ghost 单元
+    ff[1:-1] = feq_ade(pulse((A + (np.arange(NF) + 0.5) * 0.5) / NC))
+    for _ in range(NSTEP):
+        pre_t = fc                                  # t 时刻的粗层状态 (碰撞前)
+        post_t = bgk(fc, TAU_C)                     # 在 L1 上碰撞
+        pre_t1 = stream_all(post_t)                 # t + dt 时刻的粗层状态
+        post_t1 = bgk(pre_t1, TAU_C)                # 仅局部运算, 用于喂 ghost
+        for k in (0, 1):                            # 每个 L1 步对应两个 L2 子步
+            th = 0.5 * k
+            if schedule == "ordered":               # refine 位于 collision 之后
+                src, fac = (1 - th) * post_t + th * post_t1, S
+            elif schedule == "frozen-ghost":        # 没有时间插值
+                src, fac = post_t, S
+            else:                                   # 把 refine 挪到 stream 之后
+                src, fac = (1 - th) * pre_t + th * pre_t1, R
+            ff[0] = rescale_neq(0.75 * src[A - 1] + 0.25 * src[A], fac)
+            ff[-1] = rescale_neq(0.25 * src[B - 1] + 0.75 * src[B], fac)
+            ff[1:-1] = bgk(ff[1:-1], TAU_F)         # ghost 在 L2 上从不碰撞
+            g = ff.copy()
+            g[1:-1, 1], g[1:-1, 2] = ff[0:-2, 1], ff[2:, 2]
+            ff = g
+        fc = pre_t1.copy()                          # unrefine: L2 -> L1 接缝
+        for i in range(B - A):
+            fc[A + i] = rescale_neq(0.5 * (ff[1 + 2 * i] + ff[2 + 2 * i]), 1 / R)
+    return fc.sum(-1)
+
+def single_grid(n, tau, nstep):
+    f = feq_ade(pulse((np.arange(n) + 0.5) / n))
+    for _ in range(nstep):
+        f = stream_all(bgk(f, tau))
+    return f.sum(-1)
+
+ref = single_grid(2 * NC, TAU_F, 2 * NSTEP)         # 全域都用细网格
+ref_c = 0.5 * (ref[0::2] + ref[1::2])               # 平均到粗单元上
+seam = np.zeros(NC, bool)
+seam[A - 2:A + 4] = seam[B - 4:B + 2] = True        # 每条接缝附近 6 个单元
+
+print("tau_c=%.2f  tau_f=%.2f   R=%.4f  S=%.4f" % (TAU_C, TAU_F, R, S))
+print("%-20s %9s %11s %11s" % ("schedule", "L2 [%]", "max|drho|", "at seam"))
+for s in ("ordered", "frozen-ghost", "refine-after-stream"):
+    d = np.abs(two_level(s) - ref_c)
+    print("%-20s %9.3f %11.2e %11.2e"
+          % (s, 100 * np.linalg.norm(d) / np.linalg.norm(ref_c - 1), d.max(), d[seam].max()))
+```
+
+```text
+tau_c=0.65  tau_f=0.80   R=0.6154  S=0.2857
+schedule                L2 [%]   max|drho|     at seam
+ordered                  0.657    8.84e-04    3.49e-04
+frozen-ghost             1.159    1.25e-03    1.13e-03
+refine-after-stream      4.704    4.40e-03    4.36e-03
+```
+
+## 误差坐在哪里，就是顺序的指认
+
+这三行里要读的不只是 L2 值。比较最后两列：顺序正确时全域最大误差是 $8.84\times10^{-4}$，而接缝
+附近的最大值是 $3.49\times10^{-4}$。这说明误差大半落在脉冲本身而不是接缝上，属于插值阶数带来的
+正常误差。
+
+挪动了 refine 的那一行，两个数是 $4.40\times10^{-3}$ 和 $4.36\times10^{-3}$，几乎相等。全域最大
+误差原封不动地坐在接缝上。这不是解不好，而是**接缝就是污染源**的签名。这个区分在工程上很有用：
+误差均匀铺开是分辨率问题，误差堆在接缝上是调度问题。
+
+在下面的模拟里亲手操作一下。
+
+<GhostScheduleErrorTrack />
+
+三种调度在同一套网格上同时推进。脉冲触到左侧虚线(接缝)的那一刻，请看下面那块面板：绿色曲线在
+接缝处保持平坦，只有红色曲线在那个位置窜起来。把 tau_c 调大，差距会拉开，因为 $\tau$ 越大，分布里
+归属非平衡部分的份额就越大。
+
+## 去掉时间插值，每一层都会落后半步
+
+中间那行 frozen-ghost 属于顺序对、时刻错。子层转两次期间，ghost 只填一次就不管了，于是第二个子步
+读到的是半步之前的父层值。误差从 0.657% 升到 1.159%，涨了 1.8 倍。
+
+只有两层就是 1.8 倍。四层时，最底层的子步最多会落后 $7/8$ 个根时间步。递归函数里 refine 在两次
+子调用之间又出现一次，正是为了强制这个插值：`@ t` 与 `@ t+dt/2`。
+
+麻烦之处在于需要父层在 $t+\Delta t$ 时刻的碰撞后状态。上面的代码只对少数几个父单元再做一次局部
+碰撞来拿到它。这不是把整层推进两次，而是为喂 ghost 而做的局部运算。这与原始调度中 stream 的作用
+对象里写着"ghost 的父单元"是同一回事。
+
+## 这个顺序该放在代码的哪里
+
+把层级遍历写成手工展开的循环，加一层时顺序就会悄悄错位。更好的做法是把上面 `walk_level` 那样的
+一个函数当作唯一出处，执行器只消费它吐出的序列。这样顺序校验就变成了单元测试：第 $\ell$ 层的
+collision 次数是不是 $2^{\ell-1}$，每个 refine 前面是不是都有同层的 collision，unrefine 是不是只
+出现在子层最后一次 stream 之后。每条三行就能写完。
+
+值得留下的数字是 4.704 与 0.657 之比，7.2 倍；以及这些误差全都坐在接缝上这件事。下次 AMR 的解只在
+加密边界附近不对劲时，先读递归函数那四行，比怀疑网格或插值阶数要快。
