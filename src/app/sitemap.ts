@@ -139,6 +139,8 @@ export default async function sitemap({ id }: SitemapProps): Promise<MetadataRou
 
   for (const slug of slugs) {
     const post = posts.find((p) => p.slug === slug)
+    // 페이지가 스스로 noindex인 글은 sitemap에 넣지 않는다 (crawl invariants와 일치).
+    if (post?.noindex) continue
     // updated 필드가 있으면 그것을 우선 사용 (검색엔진에 글 수정을 알림)
     const updatedRaw = (post as unknown as { updated?: string })?.updated
     const lastMod = updatedRaw ? new Date(updatedRaw) : post ? new Date(post.date) : new Date()

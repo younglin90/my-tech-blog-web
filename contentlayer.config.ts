@@ -54,6 +54,8 @@ export const Post = defineDocumentType(() => ({
     date: { type: 'date', required: true },
     description: { type: 'string', required: true },
     draft: { type: 'boolean', default: false },
+    // 본문이 빈약해 검색 색인에서 뺄 글. 목록·링크에는 그대로 남는다.
+    noindex: { type: 'boolean', default: false },
     tags: { type: 'list', of: { type: 'string' } },
     series: { type: 'string' },             // 시리즈 slug (예: "riemann", "compressible-multiphase")
     seriesOrder: { type: 'number' },        // 시리즈 내 순번 (1부터)

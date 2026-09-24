@@ -137,6 +137,8 @@ export async function generateMetadata({ params }: PostProps): Promise<Metadata>
     // ko 제목 중앙값이 42자라 접미사까지 붙으면 100%가 SERP에서 잘린다.
     title: { absolute: post.title },
     description: seo,
+    // 본문이 빈약한 글과 ko 원문을 그대로 내보내는 fallback 페이지는 색인에서 뺀다.
+    ...(post.noindex || found.isFallback ? { robots: { index: false, follow: true } } : {}),
     keywords: post.tags ?? [],
     alternates: {
       canonical: `${SITE_URL}/${locale}/posts/${slug}/`,
@@ -213,6 +215,10 @@ export default async function PostPage({ params }: PostProps) {
     datePublished: post.date,
     dateModified: updatedRaw ?? post.date,
     inLanguage: HREFLANG[loc],
+    // 번역본은 ko 원문의 번역임을 명시한다 — 같은 글의 5개 사본이 아니라 한 저작물의 번역본들.
+    ...(loc !== 'ko' && !isFallback
+      ? { translationOfWork: { '@id': `${SITE_URL}/ko/posts/${slug}/#article` } }
+      : {}),
     keywords: (post.tags ?? []).join(', '),
     about: post.tags ?? [],
     articleSection: dayMeta(post.date).label,
@@ -285,6 +291,15 @@ export default async function PostPage({ params }: PostProps) {
         >
           {t(loc, 'post.translationFallback', { locale: localeLabel })}
         </div>
+      )}
+
+      {loc !== 'ko' && !isFallback && (
+        <p className="mb-6 text-xs" style={{ color: 'var(--text-muted)' }}>
+          {t(loc, 'post.translatedFrom')}{' '}
+          <Link href={`/ko/posts/${slug}/`} hrefLang="ko" lang="ko" style={{ color: 'var(--accent)' }}>
+            {t(loc, 'post.translatedFromLink')}
+          </Link>
+        </p>
       )}
 
       {(() => {
