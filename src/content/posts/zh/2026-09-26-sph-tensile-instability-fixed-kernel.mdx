@@ -1,0 +1,264 @@
+---
+title: "[论文评述] 拉伸下0.333，压缩下0 — SPH粒子成对抱团的位置"
+date: 2026-09-26
+description: "用特征值量出同一套SPH代码只在拉伸下崩溃的原因，并验证把核函数冻结在初始构型上的解法。"
+tags: ["Tensile-Instability", "SPH", "Meshfree", "Paper-Review", "Numerical-Analysis"]
+locale: zh
+slug: 2026-09-26-sph-tensile-instability-fixed-kernel
+takeaway: "决定SPH拉伸不稳定的不是应力大小，而是应力符号与核函数二阶导数的乘积。把核函数冻结在初始构型上，增长率就变成0。"
+draft: false
+---
+
+import { ParticlePairingTensionLab } from '@/components/post-viz/2026-09-26-sph-tensile-instability-fixed-kernel/ParticlePairingTensionLab'
+import { SwegleSignBandKernel } from '@/components/post-viz/2026-09-26-sph-tensile-instability-fixed-kernel/SwegleSignBandKernel'
+
+## 只有拉伸的那次，粒子抱成了团
+
+同一种材料，同一套代码，我算了两次。一次压，一次拉。压的那次跑到了最后。拉的那次粒子两两粘在
+一起，中间裂开空洞，然后崩了。本文用一个特征值量出这种不对称从何而来，再把已发表的几种药方各自
+要付的代价梳理清楚。读完之后，SPH的拉伸计算崩掉时，你会知道该先看什么，而不是先看应力大小。
+
+素材是Xu等人2023年发表在*Acta Mechanica Sinica*上的SPH综述。文章横跨流体、固体与生物力学，
+固体部分把拉伸不稳定单独列为挑战，并把应力点法、保守平滑、人工应力和Total Lagrangian SPH
+并排摆在一起。一个问题为什么需要四种药方，值得亲手量一量。
+
+## 核函数重新数邻居的那一刻产生的反馈
+
+SPH的运动方程长这样，应力$\sigma$以拉伸为正。
+
+$$
+\frac{dv_i}{dt}=\sum_j m_j\left(\frac{\sigma_i}{\rho_i^{2}}+\frac{\sigma_j}{\rho_j^{2}}\right)
+\frac{\partial W_{ij}}{\partial x_i}
+$$
+
+$m_j$是粒子质量，$\rho_i$是密度，$W_{ij}=W(|x_i-x_j|/h)$是用光滑长度$h$构造的核函数。密度不来自
+网格，而是数邻居数出来的。
+
+$$
+\rho_i=\sum_j m_j\,W(|x_i-x_j|/h)
+$$
+
+这里藏着一个陷阱。粒子一动，$W_{ij}$和$\partial W_{ij}/\partial x_i$都跟着变。也就是说变形产生
+力，而这个力又改写了计算力所用的工具本身。有限元没有这个回路，因为形函数固定在节点布置上。
+SPH有，因为它每一步都从当前位置重新构造核函数。
+
+在下面的模拟里亲手调一调。
+
+<ParticlePairingTensionLab />
+
+把`sigma0 / E`推到正值，波长$2\Delta x$的锯齿种子会指数增长，直到粒子明显成对。把同一个种子
+放在负应力下，对数轴上的曲线就平躺着不动。勾选复选框把核函数冻结在初始构型上，可以确认无论
+应力取多少，曲线都躺平。
+
+## 一个符号决定的条件
+
+Swegle在1995年给出的结论，是关于符号组合而不是关于大小的。在均匀受力的粒子布置上叠加波数$k$的
+微小位移并线性化，频率会以两项之差的形式出现。
+
+$$
+\rho_0\,\omega^{2}(k)=E\,A(k)-\sigma_0\,B(k)
+$$
+
+$A(k)$来自弹性刚度，恒不小于0。$B(k)$来自重构核函数，是把各个邻居的$W''(r_{ij})$汇总起来的和。
+一旦$\omega^2$变负，$\omega$就成了纯虚数，位移按指数增长。把条件缩到单个邻居，就得到那个著名的
+形式。
+
+$$
+\sigma\,W''(r_{ij})\gt 0 \;\Longrightarrow\; \text{unstable}
+$$
+
+不对称就在这里得到解释。三次B样条核函数的$W''$在$r/h$越过大约$2/3$时改变符号。拉伸
+($\sigma\gt 0$)时远邻居危险，压缩($\sigma\lt 0$)时近邻居危险。在真实布置里大多数邻居都坐在
+$r/h\gt 2/3$那一侧，所以危险都堆到了拉伸一边。
+
+<SwegleSignBandKernel />
+
+竖线是一个粒子的格点邻居，圆点落在该间距处的$W''$上。拖动`h / dx`，看邻居越过$r/h=2/3$的符号
+翻转线，以及新邻居在$r=2h$处进来。曲线一动不动，只把`sigma0 / E`翻成负值，所有红点都会变成
+蓝点。变的只有乘积的符号。
+
+## 直接用特征值量出增长率
+
+符号条件是以单个邻居为准的。实际代码里需要知道的，是整个布置上增长最快的那个模态的增长率。用
+时间积分去量会混进格点噪声和时间误差，所以更干净的做法是用数值微分取出加速度算子的刚度矩阵，
+再看它的特征值。在周期边界的一维粒子列上取$E=\rho_0=1$、$\Delta x=1$，增长率就直接是
+$c/\Delta x$的单位。
+
+```python
+import numpy as np
+
+def spline_w(q):
+    w = np.zeros_like(q)
+    a, b = q < 1.0, (q >= 1.0) & (q < 2.0)
+    w[a] = 1.0 - 1.5 * q[a] ** 2 + 0.75 * q[a] ** 3
+    w[b] = 0.25 * (2.0 - q[b]) ** 3
+    return (2.0 / 3.0) * w
+
+def spline_dw(q):
+    d = np.zeros_like(q)
+    a, b = q < 1.0, (q >= 1.0) & (q < 2.0)
+    d[a] = -3.0 * q[a] + 2.25 * q[a] ** 2
+    d[b] = -0.75 * (2.0 - q[b]) ** 2
+    return (2.0 / 3.0) * d
+
+def pair_tables(x, h, L):
+    d = x[:, None] - x[None, :]
+    d -= L * np.round(d / L)                 # 周期边界下的最短间距
+    q = np.abs(d) / h
+    dW = spline_dw(q) / h ** 2 * np.sign(d)  # dW/dx_i
+    np.fill_diagonal(dW, 0.0)
+    return spline_w(q) / h, dW
+
+def eulerian_accel(u, x0, h, L, m, rho0, E, sig0):
+    """经典SPH：核函数从变形后的当前位置重新构造。"""
+    W, dW = pair_tables(x0 + u, h, L)
+    rho = m * W.sum(axis=1)
+    sig = sig0 + E * (rho0 / rho - 1.0)
+    return (m * ((sig / rho ** 2)[:, None] + (sig / rho ** 2)[None, :]) * dW).sum(axis=1)
+
+def lagrangian_accel(u, x0, h, L, m, rho0, E, sig0):
+    """Total Lagrangian SPH：核函数冻结在初始构型上。"""
+    _, dW0 = pair_tables(x0, h, L)
+    F = 1.0 + ((m / rho0) * (u[None, :] - u[:, None]) * dW0).sum(axis=1)
+    P = sig0 + E * (F - 1.0)
+    return (m / rho0 ** 2 * (P[:, None] + P[None, :]) * dW0).sum(axis=1)
+
+def worst_mode(accel, x0, h, L, m, rho0, E, sig0, eps=1e-7):
+    """用数值微分取出刚度矩阵，找出增长最快的位移模态。"""
+    n = len(x0)
+    K = np.zeros((n, n))
+    for j in range(n):
+        p = np.zeros(n)
+        p[j] = eps
+        K[:, j] = (accel(p, x0, h, L, m, rho0, E, sig0)
+                   - accel(-p, x0, h, L, m, rho0, E, sig0)) / (2.0 * eps)
+    lam, V = np.linalg.eig(K)                # u'' = K u，所以 omega^2 = -lam
+    i = int(np.argmax(lam.real))
+    rate = np.sqrt(max(lam[i].real, 0.0))    # 以 c/dx 为单位的增长率
+    spec = np.abs(np.fft.rfft(V[:, i].real))
+    kmode = int(np.argmax(spec[1:])) + 1
+    return rate, L / kmode
+
+n, dx, rho0, E = 64, 1.0, 1.0, 1.0
+x0 = np.arange(n) * dx
+L, m = n * dx, rho0 * dx
+
+print("sigma0/E   h/dx   Eulerian rate   worst lambda/dx   frozen-kernel rate")
+for sig in (+0.05, 0.0, -0.05):
+    for hf in (1.0, 1.2, 1.5):
+        ge, lam = worst_mode(eulerian_accel, x0, hf * dx, L, m, rho0, E, sig * E)
+        gl, _ = worst_mode(lagrangian_accel, x0, hf * dx, L, m, rho0, E, sig * E)
+        tag = f"{lam:.2f}" if ge > 1e-4 else "none"       # 没有增长的模态就没有波长
+        print(f"{sig:+8.2f}   {hf:4.2f}   {ge:13.6f}   {tag:>15}   {gl:18.6f}")
+
+print("\nwidening the kernel at sigma0/E = +0.05")
+print(" h/dx   rate   worst lambda/dx")
+for hf in (1.0, 1.2, 1.4, 1.5, 1.7, 2.0):
+    ge, lam = worst_mode(eulerian_accel, x0, hf * dx, L, m, rho0, E, +0.05 * E)
+    print(f"{hf:5.2f}   {ge:6.4f}   {lam:13.2f}")
+
+print("\nrate scaling with the pre-stress at h/dx = 1.2")
+for sig in (0.01, 0.02, 0.05, 0.10, 0.20):
+    ge, _ = worst_mode(eulerian_accel, x0, 1.2 * dx, L, m, rho0, E, sig * E)
+    print(f"sigma0/E = {sig:+5.2f}   rate = {ge:6.4f}   rate/sqrt(sigma0/E) = {ge / np.sqrt(sig):6.4f}")
+```
+
+```text
+sigma0/E   h/dx   Eulerian rate   worst lambda/dx   frozen-kernel rate
+   +0.05   1.00        0.632456              2.00             0.000000
+   +0.05   1.20        0.333437              2.00             0.000012
+   +0.05   1.50        0.048837              2.29             0.000007
+   +0.00   1.00        0.000000              none             0.000000
+   +0.00   1.20        0.000000              none             0.000000
+   +0.00   1.50        0.000000              none             0.000000
+   -0.05   1.00        0.000000              none             0.000000
+   -0.05   1.20        0.000004              none             0.000012
+   -0.05   1.50        0.000000              none             0.000000
+
+widening the kernel at sigma0/E = +0.05
+ h/dx   rate   worst lambda/dx
+ 1.00   0.6325            2.00
+ 1.20   0.3334            2.00
+ 1.40   0.1372            2.00
+ 1.50   0.0488            2.29
+ 1.70   0.0920            2.56
+ 2.00   0.1335            3.20
+
+rate scaling with the pre-stress at h/dx = 1.2
+sigma0/E = +0.01   rate = 0.1375   rate/sqrt(sigma0/E) = 1.3755
+sigma0/E = +0.02   rate = 0.2049   rate/sqrt(sigma0/E) = 1.4489
+sigma0/E = +0.05   rate = 0.3334   rate/sqrt(sigma0/E) = 1.4912
+sigma0/E = +0.10   rate = 0.4759   rate/sqrt(sigma0/E) = 1.5050
+sigma0/E = +0.20   rate = 0.6761   rate/sqrt(sigma0/E) = 1.5119
+```
+
+## 增长最快的是波长$2\Delta x$
+
+第一张表里只有拉伸的三行增长率不为0。$h/\Delta x=1.2$时是0.3334，压缩时为0。$10^{-5}$量级的数值
+是刚体平移模态的舍入误差，读作0即可。
+
+要紧的是旁边那一列。增长最快的模态波长是$2.00\,\Delta x$，也就是这个布置能表达的最短波长：每个
+粒子交替向左右挪。所以屏幕上看到的症状就是「粒子对」。两个粒子互相靠近，旁边留下一个没人的空洞。
+密度求和在空洞处把$\rho$读低，于是那里的应力变成更强的拉伸，回路就闭合了。一个节点改变整场计算
+的结构，和[幂律流体的局部松弛时间](/zh/posts/2026-09-21-power-law-lbm-local-relaxation-time/)里
+看到的是同一种性质。
+
+第三张表说增长率挂在$\sqrt{\sigma_0}$上。最后一列的比值停在1.38到1.51之间。拉伸增到4倍，增长率
+就翻一倍。这也意味着只加1%的应力，增长率仍有0.1375。步数一多，终究还是会崩。
+
+## 把$h$放宽就没事了吗
+
+第二张表是本文最反直觉的地方。把$h/\Delta x$从1.0提到1.5，增长率从0.6325降到0.0488，小了13倍。
+到这里都在预料之中。可是过了1.5又重新往上走：1.7时0.0920，2.0时0.1335。
+
+波长那一列给出了原因。在$h/\Delta x$到1.4之前一直是$2.00\,\Delta x$的最坏模态，在1.5变成
+$2.29\,\Delta x$，在2.0变成$3.20\,\Delta x$。把$h$放宽，$r=2h$之内就会进来更多邻居。如果新进来的
+邻居的$W''$符号又落在不稳定那一侧，不稳定并不会消失，而是搬到更长的波长上坐下。
+
+这在实务中麻烦的原因很清楚。波长更长的不稳定更难被发现。粒子两两粘住，看日志就知道。三格宽的
+抱团看起来像是「物理上的局部化」。把$h$调大，与其说是治症状，不如说更接近让症状变得难以辨认。
+
+## 把核函数绑在初始构型上
+
+表的最后一列就是解法。Total Lagrangian SPH在初始构型$X$上只算一次核函数及其导数，然后一直固定
+到底。变形通过变形梯度进来。
+
+$$
+F_i=1+\sum_j \frac{m_j}{\rho_0}\,(u_j-u_i)\,\frac{\partial W^{0}_{ij}}{\partial X_i},
+\qquad P_i=\sigma_0+E\,(F_i-1)
+$$
+
+$u$是位移，$W^0$是在初始构型上构造的核函数，$P$是第一Piola–Kirchhoff应力。位置不再出现在$W^0$
+里面，所以变形改写核函数的那条通路被切断了。增长率在任何应力下都为0，就是这个结果。稳定性取决于
+离散算子原封不动继承了哪些恒等式，从这个意义上说，这和
+[旋度约束与交错网格](/zh/posts/2026-09-20-curl-involution-staggered-twophase/)属于同一类教训。
+
+代价同样清楚。因为要把初始邻居表用到最后，裂纹、破碎、大变形这类邻接关系本身会变的问题就解不了。
+新的接触也没法生成。所以固体冲击分析里一般是用TL格式，另外挂一个失效模型，再手动决定什么时候
+刷新邻居。
+
+## 应力点、人工应力和$\delta$-SPH各自的位置
+
+综述一起列出的其余药方，各自碰的是不同的通路。
+
+应力点法把位移和应力放在不同的点上。波长$2\Delta x$的模态在应力点上会产生非零应变，于是刚才那个
+最坏模态获得了刚度。这和交错布置压住棋盘格模态是同一个原理。
+
+人工应力在拉伸区加一个只在短距离起作用的排斥项。它不直接修$\sigma W''\gt 0$，而是用反方向的力
+盖住它。系数的取法会改变结果，验证负担因此变重。
+
+保守平滑每一步都对应变场做平滑。短波长被削掉，最坏模态先死；但物理上本该存在的应力局部化也一起
+被削掉了。
+
+$\delta$-SPH其实根本不是治拉伸不稳定的药方。它在密度场里加一个扩散项，用来降低弱可压缩流体计算
+里的压力噪声。综述把两者摆在同一页，是因为症状看起来像，但成因不同。流体一侧的噪声源于状态方程
+放大了密度误差。固体一侧的成对源于应力符号与$W''$的乘积。互相借用药方，只会把症状盖住。
+
+## 选粒子法时真正签下的东西
+
+SPH抹掉网格所付的代价，可以归结成一句话：核函数依赖于解。在以压缩为主的问题里，这种依赖看起来
+是免费的。拉伸一进来，账单就到了。
+
+所以选代码时该问的不是它带了几个稳定化选项。只有两件事：这个计算里拉伸会维持多久，以及邻接关系
+是否必须改变。拉伸时间长而邻居不变，那TL格式是对的。邻居必须不断改变，那就用更新型核函数，并把
+稳定化系数提升为需要验证的对象。增长率0.3334不会问你打开了几个选项。

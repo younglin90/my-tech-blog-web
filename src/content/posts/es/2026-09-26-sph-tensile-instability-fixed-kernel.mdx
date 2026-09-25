@@ -1,0 +1,300 @@
+---
+title: "[Reseña de artículo] 0.333 en tracción, 0 en compresión — dónde las partículas SPH se emparejan"
+date: 2026-09-26
+description: "El mismo código SPH sobrevive a la compresión y muere en tracción. Una medición por autovalores atribuye la tasa de crecimiento al signo de la tensión por la segunda derivada del núcleo."
+tags: ["Tensile-Instability", "SPH", "Meshfree", "Paper-Review", "Numerical-Analysis"]
+locale: es
+slug: 2026-09-26-sph-tensile-instability-fixed-kernel
+takeaway: "La inestabilidad en tracción de SPH la fija el signo de la tensión por la segunda derivada del núcleo, no la magnitud de la tensión. Al congelar el núcleo sobre la configuración inicial, la tasa de crecimiento cae a cero."
+draft: false
+---
+
+import { ParticlePairingTensionLab } from '@/components/post-viz/2026-09-26-sph-tensile-instability-fixed-kernel/ParticlePairingTensionLab'
+import { SwegleSignBandKernel } from '@/components/post-viz/2026-09-26-sph-tensile-instability-fixed-kernel/SwegleSignBandKernel'
+
+## Las partículas se apelotonaron solo al estirar
+
+El mismo material pasó dos veces por el mismo código. Una vez comprimido, otra estirado. La corrida
+comprimida llegó al final. En la estirada las partículas se pegaron de dos en dos, se abrieron huecos
+entre ellas y todo murió. Este artículo mide de dónde sale esa asimetría con un solo autovalor y
+después ordena qué cobra cada una de las curas publicadas. Al terminar quedará claro qué mirar
+primero —en lugar de la magnitud de la tensión— cuando una corrida SPH en tracción se cae.
+
+La fuente es la reseña de SPH que Xu y sus coautores publicaron en *Acta Mechanica Sinica* (2023).
+Recorre fluidos, sólidos y biomecánica, y la parte de sólidos aparta la inestabilidad en tracción
+como un desafío abierto, poniendo lado a lado los puntos de tensión, el suavizado conservativo, la
+tensión artificial y el SPH Total Lagrangiano. Cuatro curas para un problema merecían una medición
+directa.
+
+## La realimentación que se abre cuando el núcleo recuenta sus vecinos
+
+La ecuación de movimiento de SPH tiene esta forma, con la tensión $\sigma$ positiva en tracción.
+
+$$
+\frac{dv_i}{dt}=\sum_j m_j\left(\frac{\sigma_i}{\rho_i^{2}}+\frac{\sigma_j}{\rho_j^{2}}\right)
+\frac{\partial W_{ij}}{\partial x_i}
+$$
+
+Aquí $m_j$ es la masa de la partícula, $\rho_i$ la densidad y $W_{ij}=W(|x_i-x_j|/h)$ el núcleo
+construido con la longitud de suavizado $h$. La densidad no viene de una malla: sale de contar
+vecinos.
+
+$$
+\rho_i=\sum_j m_j\,W(|x_i-x_j|/h)
+$$
+
+Ahí se esconde una trampa. Cuando las partículas se mueven, tanto $W_{ij}$ como
+$\partial W_{ij}/\partial x_i$ se mueven con ellas. La deformación genera fuerza, y esa fuerza
+reescribe la herramienta misma con la que se calcula la fuerza. El método de elementos finitos no
+tiene ese lazo, porque las funciones de forma están ancladas a la disposición de los nodos. SPH sí lo
+tiene, porque reconstruye el núcleo desde las posiciones actuales en cada paso.
+
+Conviene manipular la simulación de abajo.
+
+<ParticlePairingTensionLab />
+
+Al empujar `sigma0 / E` hacia valores positivos, la semilla en zigzag de longitud de onda
+$2\Delta x$ crece exponencialmente hasta que las partículas se emparejan de forma visible. Con la
+misma semilla bajo tensión negativa, la línea del eje logarítmico queda plana. Al marcar la casilla
+que congela el núcleo sobre la configuración inicial, la línea se mantiene plana con cualquier valor
+de la tensión.
+
+## Un solo signo lo decide
+
+Lo que Swegle estableció en 1995 es un enunciado sobre una combinación de signos, no sobre una
+magnitud. Al superponer un desplazamiento pequeño de número de onda $k$ sobre una disposición de
+partículas uniformemente tensionada y linealizar, la frecuencia sale como diferencia de dos términos.
+
+$$
+\rho_0\,\omega^{2}(k)=E\,A(k)-\sigma_0\,B(k)
+$$
+
+$A(k)$ viene de la rigidez elástica y nunca es negativo. $B(k)$ viene de reconstruir el núcleo y es
+una suma que recoge $W''(r_{ij})$ sobre los vecinos. Cuando $\omega^2$ se vuelve negativo, $\omega$
+pasa a ser puramente imaginario y el desplazamiento crece de forma exponencial. Reducida la condición
+a un único vecino, aparece la forma célebre.
+
+$$
+\sigma\,W''(r_{ij})\gt 0 \;\Longrightarrow\; \text{unstable}
+$$
+
+Eso explica la asimetría. La segunda derivada del núcleo B-spline cúbico cambia de signo en cuanto
+$r/h$ pasa de aproximadamente $2/3$. En tracción ($\sigma\gt 0$) los vecinos peligrosos son los
+lejanos; en compresión ($\sigma\lt 0$), los cercanos. En una disposición real la mayoría de los
+vecinos se sitúa del lado $r/h\gt 2/3$, así que el peligro se acumula del lado de la tracción.
+
+<SwegleSignBandKernel />
+
+Las líneas verticales son los vecinos de red de una partícula y cada punto se apoya sobre $W''$ a esa
+separación. Al arrastrar `h / dx` se ve cómo los vecinos cruzan el cambio de signo en $r/h=2/3$
+mientras otros nuevos entran en $r=2h$. Al invertir `sigma0 / E` a negativo sin tocar la curva, todos
+los puntos rojos se vuelven azules. Solo cambió el signo del producto.
+
+## Medir la tasa de crecimiento directamente como autovalor
+
+La condición de signo es por vecino. Lo que hace falta del código real es la tasa de crecimiento del
+modo más rápido sobre toda la disposición. La integración temporal mezcla ruido de red y error
+temporal, así que resulta más limpio extraer la matriz de rigidez del operador de aceleración por
+diferenciación numérica y mirar sus autovalores. Sobre una fila unidimensional periódica de partículas
+con $E=\rho_0=1$ y $\Delta x=1$, la tasa queda directamente en unidades de $c/\Delta x$.
+
+```python
+import numpy as np
+
+def spline_w(q):
+    w = np.zeros_like(q)
+    a, b = q < 1.0, (q >= 1.0) & (q < 2.0)
+    w[a] = 1.0 - 1.5 * q[a] ** 2 + 0.75 * q[a] ** 3
+    w[b] = 0.25 * (2.0 - q[b]) ** 3
+    return (2.0 / 3.0) * w
+
+def spline_dw(q):
+    d = np.zeros_like(q)
+    a, b = q < 1.0, (q >= 1.0) & (q < 2.0)
+    d[a] = -3.0 * q[a] + 2.25 * q[a] ** 2
+    d[b] = -0.75 * (2.0 - q[b]) ** 2
+    return (2.0 / 3.0) * d
+
+def pair_tables(x, h, L):
+    d = x[:, None] - x[None, :]
+    d -= L * np.round(d / L)                 # separacion mas corta con condiciones periodicas
+    q = np.abs(d) / h
+    dW = spline_dw(q) / h ** 2 * np.sign(d)  # dW/dx_i
+    np.fill_diagonal(dW, 0.0)
+    return spline_w(q) / h, dW
+
+def eulerian_accel(u, x0, h, L, m, rho0, E, sig0):
+    """SPH clasico: el nucleo se reconstruye desde las posiciones deformadas actuales."""
+    W, dW = pair_tables(x0 + u, h, L)
+    rho = m * W.sum(axis=1)
+    sig = sig0 + E * (rho0 / rho - 1.0)
+    return (m * ((sig / rho ** 2)[:, None] + (sig / rho ** 2)[None, :]) * dW).sum(axis=1)
+
+def lagrangian_accel(u, x0, h, L, m, rho0, E, sig0):
+    """SPH total-Lagrangiano: el nucleo queda congelado sobre la red inicial."""
+    _, dW0 = pair_tables(x0, h, L)
+    F = 1.0 + ((m / rho0) * (u[None, :] - u[:, None]) * dW0).sum(axis=1)
+    P = sig0 + E * (F - 1.0)
+    return (m / rho0 ** 2 * (P[:, None] + P[None, :]) * dW0).sum(axis=1)
+
+def worst_mode(accel, x0, h, L, m, rho0, E, sig0, eps=1e-7):
+    """extrae la matriz de rigidez por diferenciacion numerica y halla el modo de desplazamiento que crece mas rapido."""
+    n = len(x0)
+    K = np.zeros((n, n))
+    for j in range(n):
+        p = np.zeros(n)
+        p[j] = eps
+        K[:, j] = (accel(p, x0, h, L, m, rho0, E, sig0)
+                   - accel(-p, x0, h, L, m, rho0, E, sig0)) / (2.0 * eps)
+    lam, V = np.linalg.eig(K)                # u'' = K u, por lo tanto omega^2 = -lam
+    i = int(np.argmax(lam.real))
+    rate = np.sqrt(max(lam[i].real, 0.0))    # tasa de crecimiento en unidades de c/dx
+    spec = np.abs(np.fft.rfft(V[:, i].real))
+    kmode = int(np.argmax(spec[1:])) + 1
+    return rate, L / kmode
+
+n, dx, rho0, E = 64, 1.0, 1.0, 1.0
+x0 = np.arange(n) * dx
+L, m = n * dx, rho0 * dx
+
+print("sigma0/E   h/dx   Eulerian rate   worst lambda/dx   frozen-kernel rate")
+for sig in (+0.05, 0.0, -0.05):
+    for hf in (1.0, 1.2, 1.5):
+        ge, lam = worst_mode(eulerian_accel, x0, hf * dx, L, m, rho0, E, sig * E)
+        gl, _ = worst_mode(lagrangian_accel, x0, hf * dx, L, m, rho0, E, sig * E)
+        tag = f"{lam:.2f}" if ge > 1e-4 else "none"       # sin modo creciente no hay longitud de onda
+        print(f"{sig:+8.2f}   {hf:4.2f}   {ge:13.6f}   {tag:>15}   {gl:18.6f}")
+
+print("\nwidening the kernel at sigma0/E = +0.05")
+print(" h/dx   rate   worst lambda/dx")
+for hf in (1.0, 1.2, 1.4, 1.5, 1.7, 2.0):
+    ge, lam = worst_mode(eulerian_accel, x0, hf * dx, L, m, rho0, E, +0.05 * E)
+    print(f"{hf:5.2f}   {ge:6.4f}   {lam:13.2f}")
+
+print("\nrate scaling with the pre-stress at h/dx = 1.2")
+for sig in (0.01, 0.02, 0.05, 0.10, 0.20):
+    ge, _ = worst_mode(eulerian_accel, x0, 1.2 * dx, L, m, rho0, E, sig * E)
+    print(f"sigma0/E = {sig:+5.2f}   rate = {ge:6.4f}   rate/sqrt(sigma0/E) = {ge / np.sqrt(sig):6.4f}")
+```
+
+```text
+sigma0/E   h/dx   Eulerian rate   worst lambda/dx   frozen-kernel rate
+   +0.05   1.00        0.632456              2.00             0.000000
+   +0.05   1.20        0.333437              2.00             0.000012
+   +0.05   1.50        0.048837              2.29             0.000007
+   +0.00   1.00        0.000000              none             0.000000
+   +0.00   1.20        0.000000              none             0.000000
+   +0.00   1.50        0.000000              none             0.000000
+   -0.05   1.00        0.000000              none             0.000000
+   -0.05   1.20        0.000004              none             0.000012
+   -0.05   1.50        0.000000              none             0.000000
+
+widening the kernel at sigma0/E = +0.05
+ h/dx   rate   worst lambda/dx
+ 1.00   0.6325            2.00
+ 1.20   0.3334            2.00
+ 1.40   0.1372            2.00
+ 1.50   0.0488            2.29
+ 1.70   0.0920            2.56
+ 2.00   0.1335            3.20
+
+rate scaling with the pre-stress at h/dx = 1.2
+sigma0/E = +0.01   rate = 0.1375   rate/sqrt(sigma0/E) = 1.3755
+sigma0/E = +0.02   rate = 0.2049   rate/sqrt(sigma0/E) = 1.4489
+sigma0/E = +0.05   rate = 0.3334   rate/sqrt(sigma0/E) = 1.4912
+sigma0/E = +0.10   rate = 0.4759   rate/sqrt(sigma0/E) = 1.5050
+sigma0/E = +0.20   rate = 0.6761   rate/sqrt(sigma0/E) = 1.5119
+```
+
+## El modo más rápido tenía longitud de onda $2\Delta x$
+
+Solo las tres filas de tracción de la primera tabla llevan una tasa distinta de cero. En
+$h/\Delta x=1.2$ vale 0.3334; en compresión es cero. Los valores del orden de $10^{-5}$ son redondeo
+sobre el modo de traslación rígida, así que se leen como cero.
+
+La columna interesante es la siguiente. El modo que crece más rápido tiene longitud de onda
+$2.00\,\Delta x$: la longitud de onda más corta que la disposición puede representar, con cada
+partícula empujada alternadamente a izquierda y derecha. Por eso el síntoma en pantalla es un par de
+partículas. Dos partículas se acercan y a su lado queda un hueco sin nadie dentro. La suma de densidad
+lee un $\rho$ bajo en ese hueco, lo que vuelve la tensión de ahí aún más traccionada, y el lazo se
+cierra. Que un solo nodo gobierne todo el cálculo es la misma estructura que se vio en
+[el tiempo de relajación local de un fluido de ley de potencia](/es/posts/2026-09-21-power-law-lbm-local-relaxation-time/).
+
+La tercera tabla dice que la tasa va montada sobre $\sqrt{\sigma_0}$. El cociente de la última columna
+se queda entre 1.38 y 1.51. Al cuadruplicar la tracción, la tasa se duplica. También significa que con
+apenas un 1% de tensión la tasa sigue siendo 0.1375. Con suficientes pasos, reventará igual.
+
+## ¿Ensanchar $h$ hace que desaparezca?
+
+La segunda tabla es la parte más contraintuitiva de este artículo. Subir $h/\Delta x$ de 1.0 a 1.5
+recorta la tasa de 0.6325 a 0.0488, un factor de 13. Hasta ahí, lo previsto. Pero pasado 1.5 vuelve a
+subir: 0.0920 en 1.7 y 0.1335 en 2.0.
+
+La columna de longitud de onda lo explica. El peor modo, $2.00\,\Delta x$ hasta $h/\Delta x = 1.4$,
+pasa a $2.29\,\Delta x$ en 1.5 y a $3.20\,\Delta x$ en 2.0. Ensanchar $h$ mete más vecinos dentro de
+$r=2h$. Si el $W''$ de un vecino recién admitido vuelve a tener el signo desestabilizador, la
+inestabilidad no desaparece: se traslada a una longitud de onda mayor.
+
+Por qué eso incomoda en la práctica está claro. Las inestabilidades de longitud de onda larga cuestan
+más de detectar. Que las partículas se emparejen se nota solo con el registro. Un grumo de tres celdas
+parece "localización física". Ensanchar $h$ trata menos el síntoma que lo vuelve difícil de reconocer.
+
+## Atar el núcleo a la configuración inicial
+
+La última columna de la tabla es la cura. El SPH Total Lagrangiano calcula el núcleo y su derivada una
+sola vez sobre la configuración inicial $X$ y los mantiene fijos hasta el final. La deformación entra
+por el gradiente de deformación.
+
+$$
+F_i=1+\sum_j \frac{m_j}{\rho_0}\,(u_j-u_i)\,\frac{\partial W^{0}_{ij}}{\partial X_i},
+\qquad P_i=\sigma_0+E\,(F_i-1)
+$$
+
+Aquí $u$ es el desplazamiento, $W^0$ el núcleo construido sobre la configuración inicial y $P$ la
+primera tensión de Piola–Kirchhoff. La posición ya no aparece dentro de $W^0$, así que se corta el
+camino por el cual la deformación reescribe el núcleo. Que la tasa salga cero con cualquier nivel de
+tensión es el resultado. En el sentido de que la estabilidad la decide qué identidades heredan intactos
+los operadores discretos, esto pertenece a la misma familia de lecciones que
+[las restricciones de rotacional en una malla escalonada](/es/posts/2026-09-20-curl-involution-staggered-twophase/).
+
+La factura es igual de clara. Como la lista inicial de vecinos se usa hasta el final, los problemas
+donde cambian las propias relaciones de vecindad —fractura, fragmentación, deformación muy grande—
+quedan fuera de alcance. Tampoco pueden formarse contactos nuevos. Por eso los códigos de impacto en
+sólidos conservan la formulación TL, le atornillan un modelo de fallo aparte y eligen a mano los
+momentos de refrescar los vecinos.
+
+## Dónde vive cada uno: puntos de tensión, tensión artificial y $\delta$-SPH
+
+Las prescripciones restantes de la reseña tocan cada una un camino distinto.
+
+Los puntos de tensión colocan desplazamiento y tensión en posiciones distintas. El modo $2\Delta x$
+produce entonces una deformación no nula en los puntos de tensión, así que el peor modo de antes
+adquiere rigidez. Es el mismo principio con el que una disposición escalonada mata los modos de
+tablero de ajedrez.
+
+La tensión artificial añade un término repulsivo en las zonas traccionadas que actúa solo a corta
+distancia. No arregla $\sigma W''\gt 0$ de forma directa: lo tapa con una fuerza en sentido contrario.
+La elección del coeficiente cambia la respuesta, así que la carga de verificación es pesada.
+
+El suavizado conservativo filtra el campo de deformación en cada paso. Las longitudes de onda cortas
+quedan recortadas, así que el peor modo muere primero, pero la localización física genuina de tensiones
+se recorta con él.
+
+El $\delta$-SPH no es en realidad una prescripción para la inestabilidad en tracción. Añade un término
+de difusión al campo de densidad para reducir el ruido de presión en corridas de fluido débilmente
+compresible. La reseña pone ambos en la misma página porque los síntomas se parecen, pero las causas
+difieren. El ruido del lado fluido surge porque la ecuación de estado amplifica el error de densidad.
+El emparejamiento del lado sólido viene del producto del signo de la tensión por $W''$. Prestar una
+prescripción para el otro problema solo enmascara el síntoma.
+
+## Lo que se firma de verdad al elegir un método de partículas
+
+El precio que SPH pagó por borrar la malla se reduce a una línea: el núcleo depende de la solución. En
+problemas dominados por compresión esa dependencia parece gratis. La factura llega en el momento en
+que entra la tracción.
+
+Así que la pregunta sobre un código no es cuántas opciones de estabilización trae. Son solo dos cosas:
+cuánto se sostiene la tracción en este cálculo y si las relaciones de vecindad tienen que cambiar.
+Tracción prolongada con vecinos fijos significa que la formulación TL es la correcta. Vecinos que deben
+cambiar sin parar significa un núcleo que se actualiza, con los coeficientes de estabilización
+ascendidos a objeto de verificación. Una tasa de 0.3334 no pregunta cuántas opciones se activaron.

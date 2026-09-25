@@ -1,0 +1,293 @@
+---
+title: "[Paper Review] 0.333 in Tension, 0 in Compression — Where SPH Particles Start Pairing Up"
+date: 2026-09-26
+description: "The same SPH code survives compression and dies in tension. An eigenvalue measurement pins the growth rate on the sign of stress times the kernel's second derivative, and shows why freezing the kernel drives it to zero."
+tags: ["Tensile-Instability", "SPH", "Meshfree", "Paper-Review", "Numerical-Analysis"]
+locale: en
+slug: 2026-09-26-sph-tensile-instability-fixed-kernel
+takeaway: "SPH tensile instability is set by the sign of stress times the kernel's second derivative, not by the magnitude of the stress. Freeze the kernel on the initial lattice and the growth rate drops to zero."
+draft: false
+---
+
+import { ParticlePairingTensionLab } from '@/components/post-viz/2026-09-26-sph-tensile-instability-fixed-kernel/ParticlePairingTensionLab'
+import { SwegleSignBandKernel } from '@/components/post-viz/2026-09-26-sph-tensile-instability-fixed-kernel/SwegleSignBandKernel'
+
+## The Same Bar Only Blew Up When I Pulled On It
+
+I ran the same material through the same code twice. Once squeezed, once stretched. The squeezed run
+finished. The stretched run had particles sticking together in twos, with holes opening between them,
+and then it died. This post measures where that asymmetry comes from using a single eigenvalue, and
+then sorts out what each of the published cures actually charges you. By the end you will know what to
+look at first — instead of the stress magnitude — when an SPH tension run falls over.
+
+The source is the SPH review Xu and coauthors published in *Acta Mechanica Sinica* (2023). It sweeps
+fluid, solid and biomechanics, and the solid section sets tensile instability aside as a standing
+challenge, listing stress points, conservative smoothing, artificial stress and Total Lagrangian SPH
+side by side. Four cures for one problem seemed worth measuring directly.
+
+## The Feedback Loop That Opens When the Kernel Recounts Its Neighbours
+
+The SPH momentum equation looks like this, with stress $\sigma$ positive in tension.
+
+$$
+\frac{dv_i}{dt}=\sum_j m_j\left(\frac{\sigma_i}{\rho_i^{2}}+\frac{\sigma_j}{\rho_j^{2}}\right)
+\frac{\partial W_{ij}}{\partial x_i}
+$$
+
+Here $m_j$ is particle mass, $\rho_i$ is density, and $W_{ij}=W(|x_i-x_j|/h)$ is the kernel built on
+smoothing length $h$. Density does not come from a grid — it comes from counting neighbours.
+
+$$
+\rho_i=\sum_j m_j\,W(|x_i-x_j|/h)
+$$
+
+A trap hides in there. When particles move, both $W_{ij}$ and $\partial W_{ij}/\partial x_i$ move
+with them. Deformation generates force, and that force then edits the very tool used to compute
+force. Finite elements have no such loop, because shape functions are pinned to the node layout. SPH
+has one, because it rebuilds the kernel from current positions every step.
+
+Play with the simulation below.
+
+<ParticlePairingTensionLab />
+
+Push `sigma0 / E` positive and the seeded $2\Delta x$ zig-zag grows exponentially until particles
+visibly pair up. Leave the same seed under negative stress and the line on the log axis lies flat.
+Tick the checkbox to freeze the kernel on the initial lattice and the line stays flat at every value
+of the stress.
+
+## One Sign Decides It
+
+What Swegle settled in 1995 is a statement about a sign combination, not about a magnitude. Put a
+small displacement of wavenumber $k$ on a uniformly stressed particle layout, linearize, and the
+frequency comes out as a difference of two terms.
+
+$$
+\rho_0\,\omega^{2}(k)=E\,A(k)-\sigma_0\,B(k)
+$$
+
+$A(k)$ comes from elastic stiffness and is never negative. $B(k)$ comes from rebuilding the kernel,
+and it is a sum that collects $W''(r_{ij})$ over neighbours. Once $\omega^2$ turns negative, $\omega$
+becomes purely imaginary and the displacement grows exponentially. Reduce the condition to a single
+neighbour and you get the famous form.
+
+$$
+\sigma\,W''(r_{ij})\gt 0 \;\Longrightarrow\; \text{unstable}
+$$
+
+That explains the asymmetry. The second derivative of the cubic B-spline kernel flips sign once
+$r/h$ passes roughly $2/3$. In tension ($\sigma\gt 0$) the distant neighbours are the dangerous ones;
+in compression ($\sigma\lt 0$) the close ones are. On a real layout most neighbours sit on the
+$r/h\gt 2/3$ side, so the danger piles up on the tension side.
+
+<SwegleSignBandKernel />
+
+The vertical lines are one particle's lattice neighbours, and each dot sits on $W''$ at that
+separation. Drag `h / dx` and watch neighbours cross the sign change at $r/h=2/3$ while new ones
+enter at $r=2h$. Flip `sigma0 / E` negative without touching the curve and every red dot turns blue.
+Only the sign of the product changed.
+
+## Measuring the Growth Rate as an Eigenvalue Directly
+
+The sign condition is per neighbour. What you need from real code is the growth rate of the fastest
+mode on the whole layout. Time integration mixes in lattice noise and time error, so it is cleaner to
+extract the stiffness matrix of the acceleration operator by numerical differentiation and look at
+its eigenvalues. On a periodic one-dimensional particle row with $E=\rho_0=1$ and $\Delta x=1$, the
+rate is directly in units of $c/\Delta x$.
+
+```python
+import numpy as np
+
+def spline_w(q):
+    w = np.zeros_like(q)
+    a, b = q < 1.0, (q >= 1.0) & (q < 2.0)
+    w[a] = 1.0 - 1.5 * q[a] ** 2 + 0.75 * q[a] ** 3
+    w[b] = 0.25 * (2.0 - q[b]) ** 3
+    return (2.0 / 3.0) * w
+
+def spline_dw(q):
+    d = np.zeros_like(q)
+    a, b = q < 1.0, (q >= 1.0) & (q < 2.0)
+    d[a] = -3.0 * q[a] + 2.25 * q[a] ** 2
+    d[b] = -0.75 * (2.0 - q[b]) ** 2
+    return (2.0 / 3.0) * d
+
+def pair_tables(x, h, L):
+    d = x[:, None] - x[None, :]
+    d -= L * np.round(d / L)                 # shortest separation under periodic boundaries
+    q = np.abs(d) / h
+    dW = spline_dw(q) / h ** 2 * np.sign(d)  # dW/dx_i
+    np.fill_diagonal(dW, 0.0)
+    return spline_w(q) / h, dW
+
+def eulerian_accel(u, x0, h, L, m, rho0, E, sig0):
+    """classic SPH: the kernel is rebuilt from the deformed current positions."""
+    W, dW = pair_tables(x0 + u, h, L)
+    rho = m * W.sum(axis=1)
+    sig = sig0 + E * (rho0 / rho - 1.0)
+    return (m * ((sig / rho ** 2)[:, None] + (sig / rho ** 2)[None, :]) * dW).sum(axis=1)
+
+def lagrangian_accel(u, x0, h, L, m, rho0, E, sig0):
+    """total-Lagrangian SPH: the kernel is frozen on the initial lattice."""
+    _, dW0 = pair_tables(x0, h, L)
+    F = 1.0 + ((m / rho0) * (u[None, :] - u[:, None]) * dW0).sum(axis=1)
+    P = sig0 + E * (F - 1.0)
+    return (m / rho0 ** 2 * (P[:, None] + P[None, :]) * dW0).sum(axis=1)
+
+def worst_mode(accel, x0, h, L, m, rho0, E, sig0, eps=1e-7):
+    """pull the stiffness matrix out by numerical differentiation, then find the fastest growing displacement mode."""
+    n = len(x0)
+    K = np.zeros((n, n))
+    for j in range(n):
+        p = np.zeros(n)
+        p[j] = eps
+        K[:, j] = (accel(p, x0, h, L, m, rho0, E, sig0)
+                   - accel(-p, x0, h, L, m, rho0, E, sig0)) / (2.0 * eps)
+    lam, V = np.linalg.eig(K)                # u'' = K u, so omega^2 = -lam
+    i = int(np.argmax(lam.real))
+    rate = np.sqrt(max(lam[i].real, 0.0))    # growth rate in units of c/dx
+    spec = np.abs(np.fft.rfft(V[:, i].real))
+    kmode = int(np.argmax(spec[1:])) + 1
+    return rate, L / kmode
+
+n, dx, rho0, E = 64, 1.0, 1.0, 1.0
+x0 = np.arange(n) * dx
+L, m = n * dx, rho0 * dx
+
+print("sigma0/E   h/dx   Eulerian rate   worst lambda/dx   frozen-kernel rate")
+for sig in (+0.05, 0.0, -0.05):
+    for hf in (1.0, 1.2, 1.5):
+        ge, lam = worst_mode(eulerian_accel, x0, hf * dx, L, m, rho0, E, sig * E)
+        gl, _ = worst_mode(lagrangian_accel, x0, hf * dx, L, m, rho0, E, sig * E)
+        tag = f"{lam:.2f}" if ge > 1e-4 else "none"       # no growing mode means no wavelength
+        print(f"{sig:+8.2f}   {hf:4.2f}   {ge:13.6f}   {tag:>15}   {gl:18.6f}")
+
+print("\nwidening the kernel at sigma0/E = +0.05")
+print(" h/dx   rate   worst lambda/dx")
+for hf in (1.0, 1.2, 1.4, 1.5, 1.7, 2.0):
+    ge, lam = worst_mode(eulerian_accel, x0, hf * dx, L, m, rho0, E, +0.05 * E)
+    print(f"{hf:5.2f}   {ge:6.4f}   {lam:13.2f}")
+
+print("\nrate scaling with the pre-stress at h/dx = 1.2")
+for sig in (0.01, 0.02, 0.05, 0.10, 0.20):
+    ge, _ = worst_mode(eulerian_accel, x0, 1.2 * dx, L, m, rho0, E, sig * E)
+    print(f"sigma0/E = {sig:+5.2f}   rate = {ge:6.4f}   rate/sqrt(sigma0/E) = {ge / np.sqrt(sig):6.4f}")
+```
+
+```text
+sigma0/E   h/dx   Eulerian rate   worst lambda/dx   frozen-kernel rate
+   +0.05   1.00        0.632456              2.00             0.000000
+   +0.05   1.20        0.333437              2.00             0.000012
+   +0.05   1.50        0.048837              2.29             0.000007
+   +0.00   1.00        0.000000              none             0.000000
+   +0.00   1.20        0.000000              none             0.000000
+   +0.00   1.50        0.000000              none             0.000000
+   -0.05   1.00        0.000000              none             0.000000
+   -0.05   1.20        0.000004              none             0.000012
+   -0.05   1.50        0.000000              none             0.000000
+
+widening the kernel at sigma0/E = +0.05
+ h/dx   rate   worst lambda/dx
+ 1.00   0.6325            2.00
+ 1.20   0.3334            2.00
+ 1.40   0.1372            2.00
+ 1.50   0.0488            2.29
+ 1.70   0.0920            2.56
+ 2.00   0.1335            3.20
+
+rate scaling with the pre-stress at h/dx = 1.2
+sigma0/E = +0.01   rate = 0.1375   rate/sqrt(sigma0/E) = 1.3755
+sigma0/E = +0.02   rate = 0.2049   rate/sqrt(sigma0/E) = 1.4489
+sigma0/E = +0.05   rate = 0.3334   rate/sqrt(sigma0/E) = 1.4912
+sigma0/E = +0.10   rate = 0.4759   rate/sqrt(sigma0/E) = 1.5050
+sigma0/E = +0.20   rate = 0.6761   rate/sqrt(sigma0/E) = 1.5119
+```
+
+## The Fastest Growing Mode Had Wavelength $2\Delta x$
+
+Only the three tension rows of the first table carry a nonzero rate. At $h/\Delta x=1.2$ it is
+0.3334; in compression it is zero. The values at the $10^{-5}$ level are round-off on the rigid
+translation mode, so read them as zero.
+
+The interesting column is the next one. The fastest growing mode has wavelength $2.00\,\Delta x$ —
+the shortest wavelength the layout can represent, with every particle pushed alternately left and
+right. That is why the symptom on screen is a particle pair. Two particles close in on each other,
+and next to them sits a hole with nobody in it. The density summation reads $\rho$ low in that hole,
+which makes the stress there even more tensile, and the loop closes. A single node steering the whole
+calculation is the same structure seen in
+[the local relaxation time of a power-law fluid](/en/posts/2026-09-21-power-law-lbm-local-relaxation-time/).
+
+The third table says the rate rides on $\sqrt{\sigma_0}$. The ratio in the last column stays between
+1.38 and 1.51. Quadruple the tension and the rate doubles. It also means a mere 1% stress still gives
+a rate of 0.1375. Run long enough and it blows up anyway.
+
+## Does Widening $h$ Make It Go Away?
+
+The second table is the most counterintuitive part of this post. Raising $h/\Delta x$ from 1.0 to 1.5
+cuts the rate from 0.6325 to 0.0488, a factor of 13. So far, as expected. But past 1.5 it climbs back
+up: 0.0920 at 1.7, and 0.1335 at 2.0.
+
+The wavelength column explains it. The worst mode, $2.00\,\Delta x$ up to $h/\Delta x = 1.4$, becomes
+$2.29\,\Delta x$ at 1.5 and $3.20\,\Delta x$ at 2.0. Widening $h$ pulls more neighbours inside
+$r=2h$. If a newly admitted neighbour's $W''$ has the destabilizing sign again, the instability does
+not disappear — it relocates to a longer wavelength.
+
+Why that is awkward in practice is clear enough. Longer-wavelength instabilities are harder to spot.
+Particles pairing up is obvious from the log alone. A three-cell clump looks like "physical
+localization". Widening $h$ is less a treatment of the symptom than a way of making it harder to
+recognize.
+
+## Tying the Kernel to the Initial Layout
+
+The last column of the table is the cure. Total Lagrangian SPH computes the kernel and its derivative
+once on the initial configuration $X$ and holds them fixed forever. Deformation enters through the
+deformation gradient.
+
+$$
+F_i=1+\sum_j \frac{m_j}{\rho_0}\,(u_j-u_i)\,\frac{\partial W^{0}_{ij}}{\partial X_i},
+\qquad P_i=\sigma_0+E\,(F_i-1)
+$$
+
+Here $u$ is displacement, $W^0$ is the kernel built on the initial configuration, and $P$ is the
+first Piola–Kirchhoff stress. Position no longer appears inside $W^0$, so the path by which
+deformation edits the kernel is cut. The rate coming out as zero at every stress level is the result.
+In the sense that stability is decided by which identities the discrete operators inherit intact,
+this belongs to the same family of lessons as
+[curl constraints on a staggered grid](/en/posts/2026-09-20-curl-involution-staggered-twophase/).
+
+The bill is equally clear. Because the initial neighbour list is used to the end, problems where the
+neighbour relations themselves change — fracture, fragmentation, very large deformation — are out of
+reach. New contacts cannot form either. So solid impact codes keep the TL formulation, bolt a
+separate failure model onto it, and pick the moments to refresh neighbours by hand.
+
+## Where Stress Points, Artificial Stress and $\delta$-SPH Each Live
+
+The remaining prescriptions in the review each touch a different path.
+
+Stress points put displacement and stress at different locations. The $2\Delta x$ mode then produces
+a nonzero strain at the stress points, so the worst mode from earlier acquires stiffness. It is the
+same principle by which a staggered layout kills checkerboard modes.
+
+Artificial stress adds a repulsive term in tensile regions that only acts at short range. It does not
+fix $\sigma W''\gt 0$ directly; it covers it with a force in the opposite direction. The coefficient
+choice changes the answer, so the verification burden is heavy.
+
+Conservative smoothing filters the strain field every step. Short wavelengths get shaved, so the
+worst mode dies first — but genuine physical stress localization gets shaved along with it.
+
+$\delta$-SPH is not really a tensile-instability prescription at all. It adds a diffusion term to the
+density field to reduce pressure noise in weakly compressible fluid runs. The review puts the two on
+the same page because the symptoms look alike, but the causes differ. Fluid-side noise arises because
+the equation of state amplifies density error. Solid-side pairing comes from the product of the
+stress sign and $W''$. Borrow one prescription for the other problem and you only mask the symptom.
+
+## What You Actually Sign For When You Pick a Particle Method
+
+The price SPH paid for erasing the grid reduces to one line: the kernel depends on the solution. In
+compression-dominated problems that dependence looks free. The invoice arrives the moment tension
+enters.
+
+So the question to ask about a code is not how many stabilization options it ships. It is only two
+things: how long tension is sustained in this calculation, and whether neighbour relations have to
+change. Long tension with fixed neighbours means the TL formulation is right. Neighbours that must
+keep changing means an updating kernel, with the stabilization coefficients promoted to something you
+verify. A rate of 0.3334 does not ask how many options you switched on.
