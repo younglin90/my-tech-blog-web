@@ -1,0 +1,240 @@
+---
+title: "[Paper Review] The Pressure Went Implicit and Δt Still Shrank 100× — the Second 1/M² Hiding in the Relative Velocity"
+date: 2026-09-27
+description: "In the all-Mach splitting for isentropic two-phase flow, the enthalpy difference carries a second stiff scale. Here is where it sits, what its eigenvalues cost, and why it must go implicit before the CFL condition lets go of the Mach number."
+tags: ["All-Mach", "Asymptotic-Preserving", "Operator-Splitting", "Compressible-Multiphase", "Paper-Review"]
+locale: en
+slug: 2026-09-27-all-mach-twophase-enthalpy-stiffness
+takeaway: "Making only the pressure implicit is not enough: the enthalpy difference in the relative-velocity equation carries its own 1/M², and the time step stays tied to the Mach number until that term goes implicit too."
+draft: false
+---
+
+import { SubsystemEigenFanDial } from '@/components/post-viz/2026-09-27-all-mach-twophase-enthalpy-stiffness/SubsystemEigenFanDial'
+import { RelativeVelocityBlowupLab } from '@/components/post-viz/2026-09-27-all-mach-twophase-enthalpy-stiffness/RelativeVelocityBlowupLab'
+
+## The pressure went implicit and the time step only got smaller
+
+There is a failure everybody hits once while writing a low-Mach two-phase solver. You notice that the pressure terms are stiff, so you treat them implicitly. Believing you are now free of the sound speed, you raise $\Delta t$ to the material-velocity scale. It blows up. At $M=0.01$ you end up with a time step 100 times smaller than the one that worked at $M=1$.
+
+The 2022 paper by Lukáčová-Medviďová and co-authors pins down exactly where that failure lives. The isentropic two-phase model carries $1/M^2$ in **two** places. One is the familiar pressure. The other rides on the enthalpy difference in the relative-velocity equation. This post finds the second one, then measures on a 64-cell grid whether moving it implicit really releases the time-step bound from the Mach number.
+
+## Two copies of 1/M² in one isentropic two-phase model
+
+The state vector in the paper is $W = (\rho,\ \alpha\rho,\ \alpha_1\rho_1,\ \rho u,\ u_1-u_2)^T$: mixture density, volume fraction (the fraction of cell volume occupied by phase 1), partial density, mixture momentum, and the difference of the two phase velocities. That last component is what makes this model distinctive. Instead of carrying one velocity per phase, it carries a mixture velocity and a **velocity difference**.
+
+Non-dimensionalising puts $M_k$ into the flux. In the momentum equation, the pressure enters as
+
+$$
+\frac{\alpha\varrho_1\hat{p}_1}{M_1^2} + \frac{\alpha_2\hat{p}_2}{M_2^2}
+$$
+
+where $\hat{p}_k$ is the truncated pressure about a reference state, $M_k$ is the Mach number of phase $k$, and $\varrho_k$ is a reference density ratio. This term diverges as $M\to 0$; it is the first stiff term, and it is handled implicitly exactly as in single-phase IMEX schemes.
+
+The trouble is the fifth equation. The velocity difference is driven by an enthalpy difference:
+
+$$
+\partial_t (u_1-u_2) + \partial_x\!\left(\frac{\hat{h}_1}{M_1^2} - \frac{\hat{h}_2}{M_2^2}\right) = 0
+$$
+
+Here $\hat{h}_k$ is the truncated enthalpy of phase $k$. The same $M_k^2$ sits in the denominator. Making the pressure implicit leaves this term untouched.
+
+## Three subsystems, their characteristics on one chart
+
+The paper splits the flux into $f^a$ (fast acoustics), $f^b$ (material transport) and $f^c$ (stiff mixture terms), then appends the relaxation source $r(W)$ last. Each piece carries its own eigenvalues. Try the simulation below and move the controls yourself.
+
+<SubsystemEigenFanDial />
+
+Slide $\log_{10}M$ to the left and the blue fan ($f^a$) and the pink fan ($f^c$) open up **together**; only the green one ($f^b$) stays put. With just `f^a implicit` checked, watch the bar underneath — the admissible $\Delta t$ still shrinks in proportion to $M$. Check `f^c implicit` as well and the bar fills green. That is the entire content of Section 3.2.3 of the paper.
+
+## Writing out the eigenvalues of the relative-velocity subsystem
+
+What remains in $f^c$ is three equations: partial density, momentum, and velocity difference. The eigenvalues of this $3\times 3$ system are
+
+$$
+\lambda^0 = 0, \qquad \lambda^{\pm} = \frac{\varrho_1}{2}(1-2\chi_1)(u_1-u_2) \pm \frac{1}{2}\sqrt{\mathcal{A}}
+$$
+
+with the discriminant
+
+$$
+\mathcal{A} = \varrho_1^2(1-2\chi_1)^2(u_1-u_2)^2 + 4\rho\,\chi(1-\chi)\!\left(\frac{(c_1^{RS})^2}{\alpha_1 M_1^2 \rho_1^{RS}} + \frac{(c_2^{RS})^2}{\alpha_2 M_2^2 \rho_2^{RS}}\right)
+$$
+
+where $\chi$ is the mass fraction and the superscript $RS$ marks reference-solution values. The second term of $\mathcal{A}$ still holds $1/M_k^2$, so $\lambda^{\pm} \sim \mathcal{O}(1/M)$.
+
+Because $\mathcal{A} > 0$ the eigenvalues are real: the subsystem is hyperbolic, which is why it can be solved on its own. But its characteristic speed goes like $1/M$. Treat it explicitly and the CFL condition becomes $\Delta t \le \Delta x \cdot M / \text{const}$. Everything you gained by making the pressure implicit is handed straight back.
+
+The momentum equation belongs to $\lambda^0=0$, so it puts no constraint on the time step. That is why the paper couples only two equations — partial density and velocity difference — in the implicit solve. Compare this with [the L∞ stability of a semi-implicit pressure scheme](/en/posts/2026-09-19-semi-implicit-pressure-linf-flattener/), where a single-phase low-Mach scheme needed nothing but the pressure to be implicit. Two phases mean two stiff terms.
+
+## The real constraint on how you split
+
+The paper states two conditions on the splitting: every subsystem must be **hyperbolic in its own right**, and it must be **easy to solve**. The first is the demanding one. Group the terms carelessly and the eigenvalues turn complex, and the subsystem step goes unstable on its own.
+
+How you solve the implicit step is part of the condition too. Substituting the velocity-difference update into the partial-density update yields a nonlinear elliptic problem for $(\alpha\rho_1)^{\star\star\star}$, which the paper solves with a linearised iteration. The coefficient matrix is symmetric positive definite because the two quantities
+
+$$
+s(W) = \varrho_1(\alpha\rho_1)\left(1 - \frac{\varrho_1(\alpha\rho_1)}{\rho}\right), \qquad
+\tilde{s}(W) = \frac{(c_1^{RS})^2}{\rho_1^{RS}M_1^2\,\alpha_1} + \frac{(c_2^{RS})^2}{\rho_2^{RS}M_2^2\,\alpha_2}
+$$
+
+are both positive. For $s$ this follows from $\varrho_1(\alpha\rho_1)/\rho = \chi \in (0,1)$. That one sign is what holds up the claim that standard linear solvers handle the step efficiently. It is the same species of argument as [the identity a curl involution demands of the discrete operators](/en/posts/2026-09-20-curl-involution-staggered-twophase/): a property that holds at the continuous level is not automatically inherited by the discretisation.
+
+## Explicit and implicit on the same grid, in Python
+
+Linearising about $u_1-u_2 = 0$ reduces the core of $f^c$ to a 2×2 wave system,
+
+$$
+\partial_t m + \partial_x (s\,w) = 0, \qquad \partial_t w + \partial_x(\tilde{s}\,m) = 0
+$$
+
+with $m = \alpha\rho_1$ and $w = u_1-u_2$. The wave speed is $\sqrt{s\tilde{s}}$, and since $\tilde{s} \propto 1/M^2$ it scales as $1/M$. I ran both treatments on the same periodic 64-cell grid. The explicit run is a Rusanov flux whose numerical viscosity uses the correct $\lambda_c$; the implicit run eliminates $w$ and solves the resulting elliptic problem with a periodic tridiagonal solver. $\Delta t$ is **held fixed** at a material-velocity CFL of 0.5.
+
+```python
+import math
+
+N, L = 64, 1.0
+dx = L / N
+RHO, ALPHA, CHI, U_MAT = 1.0, 0.5, 0.5, 0.2
+M0 = CHI * RHO                 # alpha*rho_1, background state
+S = M0 * (1.0 - M0 / RHO)      # s(W) from Eq. (3.25)
+
+def stiff_coeff(mach):
+    """s-tilde: enthalpy coefficient, O(1/M^2)"""
+    return 1.0 / (mach**2 * ALPHA) + 1.0 / (mach**2 * (1.0 - ALPHA))
+
+def relative_wave_speed(mach):
+    return math.sqrt(S * stiff_coeff(mach))
+
+def initial_state():
+    m = [M0 + 1e-3 * math.sin(2*math.pi*(i+0.5)*dx) for i in range(N)]
+    return m, [0.0] * N
+
+def explicit_enthalpy(mach, dt, nstep):
+    """Rusanov on (3.19a)+(3.19c), enthalpy term explicit"""
+    k, lam = stiff_coeff(mach), relative_wave_speed(mach)
+    m, w = initial_state()
+    for _ in range(nstep):
+        fm = [0.0]*N; fw = [0.0]*N
+        for i in range(N):
+            j = (i+1) % N
+            fm[i] = 0.5*S*(w[i]+w[j]) - 0.5*lam*(m[j]-m[i])
+            fw[i] = 0.5*k*(m[i]+m[j]) - 0.5*lam*(w[j]-w[i])
+        m = [m[i] - dt/dx*(fm[i]-fm[i-1]) for i in range(N)]
+        w = [w[i] - dt/dx*(fw[i]-fw[i-1]) for i in range(N)]
+        if not all(abs(v) < 1e12 for v in m):
+            return float('inf')
+    return max(abs(v-M0) for v in m)
+
+def periodic_tridiag(a, b, c, d):
+    """Solve the periodic tridiagonal system by Sherman-Morrison"""
+    n = len(d)
+    gam = -b[0]
+    bb = b[:]; bb[0] -= gam; bb[n-1] -= c[n-1]*a[0]/gam
+    def thomas(rhs):
+        cp = [0.0]*n; dp = [0.0]*n
+        cp[0] = c[0]/bb[0]; dp[0] = rhs[0]/bb[0]
+        for i in range(1, n):
+            den = bb[i] - a[i]*cp[i-1]
+            cp[i] = c[i]/den
+            dp[i] = (rhs[i] - a[i]*dp[i-1])/den
+        x = [0.0]*n; x[n-1] = dp[n-1]
+        for i in range(n-2, -1, -1):
+            x[i] = dp[i] - cp[i]*x[i+1]
+        return x
+    u = [0.0]*n; u[0] = gam; u[n-1] = c[n-1]
+    y = thomas(d); z = thomas(u)
+    fac = (y[0] + a[0]*y[n-1]/gam) / (1.0 + z[0] + a[0]*z[n-1]/gam)
+    return [y[i] - fac*z[i] for i in range(n)]
+
+def implicit_enthalpy(mach, dt, nstep):
+    """Eq. (3.23): eliminate w, solve the elliptic problem for m"""
+    k = stiff_coeff(mach)
+    beta = dt*dt*S*k/(dx*dx)
+    a = [-beta]*N; b = [1.0 + 2*beta]*N; c = [-beta]*N
+    m, w = initial_state()
+    for _ in range(nstep):
+        rhs = [m[i] - dt/(2*dx)*S*(w[(i+1) % N]-w[i-1]) for i in range(N)]
+        m = periodic_tridiag(a, b, c, rhs)
+        w = [w[i] - dt/(2*dx)*k*(m[(i+1) % N]-m[i-1]) for i in range(N)]
+    return max(abs(v-M0) for v in m)
+
+def max_stable_dt(mach, nstep=200):
+    lo, hi = 1e-9, 1.0
+    for _ in range(40):
+        mid = math.sqrt(lo*hi)
+        if explicit_enthalpy(mach, mid, nstep) == float('inf'):
+            hi = mid
+        else:
+            lo = mid
+    return lo
+
+dt_mat = 0.5*dx/U_MAT
+print(f"dx={dx:.5f}  material CFL dt={dt_mat:.5f}  (u={U_MAT})")
+print(f"{'M':>8} {'lambda_c':>10} {'dt_exp_max':>11} {'ratio':>7} {'|dm|_exp':>10} {'|dm|_imp':>10}")
+for mach in (1.0, 0.3, 0.1, 0.03, 0.01):
+    lam = relative_wave_speed(mach)
+    dte = max_stable_dt(mach)
+    e = explicit_enthalpy(mach, dt_mat, 200)
+    i = implicit_enthalpy(mach, dt_mat, 200)
+    es = "blow-up" if e == float('inf') else f"{e:.3e}"
+    print(f"{mach:8.3g} {lam:10.2f} {dte:11.2e} {dte/dt_mat:7.3f} {es:>10} {i:10.3e}")
+```
+
+```text
+dx=0.01562  material CFL dt=0.03906  (u=0.2)
+       M   lambda_c  dt_exp_max   ratio   |dm|_exp   |dm|_imp
+       1       1.00    1.87e-02   0.479    blow-up  1.718e-06
+     0.3       3.33    5.61e-03   0.144    blow-up  1.771e-14
+     0.1      10.00    1.87e-03   0.048    blow-up  4.731e-13
+    0.03      33.33    5.60e-04   0.014    blow-up  6.318e-12
+    0.01     100.00    1.87e-04   0.005    blow-up  5.195e-11
+```
+
+## Why the bound tracks M exactly
+
+Look at the `dt_exp_max` column: as $M$ drops by a factor of 100 from 1 to 0.01, the bound drops from $1.87\times 10^{-2}$ to $1.87\times 10^{-4}$ — the same factor of 100. That is no accident. In $\lambda_c = \sqrt{s\tilde{s}}$, $s$ is independent of $M$ while $\tilde{s} \propto M^{-2}$, so $\lambda_c \propto M^{-1}$. Plug that into the Rusanov stability condition $\lambda_c \Delta t/\Delta x \le 1$ and you get $\Delta t_{\max} \propto M$.
+
+The `ratio` column is the number that hurts in practice. At $M=0.01$ you may use only 0.5% of the time step you wanted from the material CFL, which means 200 times more steps for the same physical time. The implicit column, by contrast, completed all 200 steps at the fixed $\Delta t$ without diverging; at $M=0.01$ that corresponds to an acoustic CFL of 256.
+
+## Unconditionally stable is not unconditionally accurate
+
+Read the `|dm|_imp` column honestly. The initial amplitude was $10^{-3}$ and the implicit run left behind $10^{-11}$ or less. Backward Euler has all but annihilated the fast mode. That is not a bug; it is what an AP (asymptotic-preserving) scheme is designed to do. When $\Delta t$ far exceeds the acoustic time, waves on that scale are not resolved but filtered out. What you want to keep is the dynamics at the material-velocity scale.
+
+Do not mistake that damping for accuracy, though. To use the same scheme in compressible regimes ($M \sim 1$) you have to restore the truncated terms $\bar{p}_k$ and $\bar{h}_k$ and add them explicitly, which is the job of Section 3.2.4. Those higher-order terms vanish in the low-Mach limit for well-prepared initial data, so adding them explicitly does not reintroduce a Mach dependence into the CFL condition.
+
+Run the same system live below.
+
+<RelativeVelocityBlowupLab />
+
+Uncheck `enthalpy implicit` and push $\log_{10}M$ below $-1$: the log plot underneath hits the ceiling within a few steps. Check it again and the amplitude subsides quietly at the very same $\Delta t$. Then lower the `material CFL` slider to find where the explicit run comes back to life — that value is the `ratio` from the table above.
+
+## Two relaxation terms, two different treatments
+
+Once the homogeneous system is done, the relaxation source remains: pressure relaxation on the volume fraction, friction on the velocity difference.
+
+$$
+\partial_t (\rho\alpha) = -\frac{1}{\tau}\left(\frac{\varrho_2 p_2}{M_2^2} - \frac{\varrho_1 p_1}{M_1^2}\right), \qquad
+\partial_t (u_1-u_2) = -\zeta\,\chi(1-\chi)(u_1-u_2)
+$$
+
+Here $\tau$ is the pressure relaxation time and $\zeta$ the friction coefficient. Both can be stiff and both are integrated implicitly, but they cost very different amounts.
+
+The friction term is **linear** in $u_1-u_2$, so backward Euler closes with a single division:
+
+$$
+\left(1 + \Delta t\,\zeta\,\chi^{n+1}(1-\chi^{n+1})\right)(u_1-u_2)^{n+1} = (u_1-u_2)^{\star\star\star}
+$$
+
+Pressure relaxation is different: the phase pressures are nonlinear in $\alpha$. The paper applies Newton's method to $g(\alpha)=0$, and the Jacobian pulls in the sound speeds:
+
+$$
+\frac{\partial g}{\partial \alpha} = -1 - \frac{\Delta t}{\tau}\left(\frac{\varrho_2 c_2^2}{M_2^2}\frac{1-\chi}{1-\alpha} + \frac{\varrho_1 c_1^2}{M_1^2}\frac{\chi}{\alpha}\right)
+$$
+
+This derivative blows up as $\alpha \to 0$ or $1$, which is precisely where Newton starts to struggle near a pure phase. The common practice of clipping $\alpha$ away from its endpoints is explained by this single expression. Note that $\tau \to 0$ gives instantaneous relaxation while $\tau \to \infty$ recovers the homogeneous model.
+
+## The line I will check first next time
+
+Reading or writing a new low-Mach scheme, I now go through it in this order. First, count **every** term carrying $1/M^2$. Second, write down which subsystem's eigenvalues each of them enters. Third, confirm that subsystem is implicit.
+
+Skip the second step in a two-phase model and you will miss the enthalpy difference. A solver that made only the pressure implicit and then raised $\Delta t$ is a solver that runs 200 times slower at $M=0.01$. Writing the eigenvalues out by hand once costs far less than that.

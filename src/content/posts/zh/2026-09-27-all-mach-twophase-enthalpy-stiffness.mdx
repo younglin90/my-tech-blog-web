@@ -1,0 +1,240 @@
+---
+title: "[论文评述] 压力改成隐式后 Δt 反而小了100倍 — 藏在相对速度里的第二个 1/M²"
+date: 2026-09-27
+description: "等熵两相流 all-Mach 分裂中，焓差贡献了第二个刚性尺度；它在哪里，以及为何必须一起隐式处理 CFL 才能摆脱马赫数"
+tags: ["All-Mach", "Asymptotic-Preserving", "Operator-Splitting", "Compressible-Multiphase", "Paper-Review"]
+locale: zh
+slug: 2026-09-27-all-mach-twophase-enthalpy-stiffness
+takeaway: "只把压力改成隐式还不够：相对速度方程中的焓差同样带着 1/M²，只有连它一起隐式，时间步长才真正脱离马赫数。"
+draft: false
+---
+
+import { SubsystemEigenFanDial } from '@/components/post-viz/2026-09-27-all-mach-twophase-enthalpy-stiffness/SubsystemEigenFanDial'
+import { RelativeVelocityBlowupLab } from '@/components/post-viz/2026-09-27-all-mach-twophase-enthalpy-stiffness/RelativeVelocityBlowupLab'
+
+## 压力改成隐式了，时间步长却只是越来越小
+
+写低马赫两相求解器的人几乎都撞过同一堵墙。发现压力项刚性(stiff)，于是改成隐式。以为已经脱离声速，就把 $\Delta t$ 提到物质速度的量级。结果炸了。在 $M=0.01$ 处，能用的时间步长只有 $M=1$ 时的百分之一。
+
+Lukáčová-Medviďová 等人2022年的论文精确指出了这次失败的位置。等熵两相模型里的 $1/M^2$ 出现在**两处**。一处是熟悉的压力，另一处挂在相对速度方程的焓差上。本文把第二处挖出来，并在64格网上实测：把它改成隐式，时间步长的上限是否真的脱离马赫数。
+
+## 一个模型里的两个 1/M²
+
+论文使用的状态向量是 $W = (\rho,\ \alpha\rho,\ \alpha_1\rho_1,\ \rho u,\ u_1-u_2)^T$：混合密度、体积分数(单元内相1所占体积的比例)、分密度、混合动量，以及两相速度之差。最后一个分量是该模型的特色。它不为每一相单独携带速度，而是用一个混合速度加一个**速度差**来写。
+
+无量纲化后流通量中出现 $M_k$。动量方程里的压力以
+
+$$
+\frac{\alpha\varrho_1\hat{p}_1}{M_1^2} + \frac{\alpha_2\hat{p}_2}{M_2^2}
+$$
+
+的形式进入。其中 $\hat{p}_k$ 是围绕参考状态截断后的压力，$M_k$ 是相 $k$ 的马赫数，$\varrho_k$ 是参考密度比。这一项在 $M\to 0$ 时发散，是第一个刚性项，处理方式与单相 IMEX 完全一致：隐式。
+
+麻烦在第五个方程。速度差由焓差驱动：
+
+$$
+\partial_t (u_1-u_2) + \partial_x\!\left(\frac{\hat{h}_1}{M_1^2} - \frac{\hat{h}_2}{M_2^2}\right) = 0
+$$
+
+$\hat{h}_k$ 是相 $k$ 的截断焓。分母里是同一个 $M_k^2$。把压力改成隐式，这一项丝毫未动。
+
+## 把三个子系统的特征线叠在一张图上
+
+论文的分裂把通量切成 $f^a$(快速声学)、$f^b$(物质输运)、$f^c$(刚性混合项)三块，最后再补上松弛源项 $r(W)$。每一块都有自己的特征值。请在下面的模拟里亲手操作一下。
+
+<SubsystemEigenFanDial />
+
+把 $\log_{10}M$ 滑块往左推，蓝色扇面($f^a$)和粉色扇面($f^c$)会**一起**张开，只有绿色($f^b$)留在原地。只勾选 `f^a implicit` 时看下方的条：允许的 $\Delta t$ 仍然随 $M$ 成比例缩小。再勾上 `f^c implicit`，条立刻填满绿色。这就是论文3.2.3节做的全部事情。
+
+## 把相对速度子系统的特征值写出来
+
+$f^c$ 中剩下的是分密度、动量和速度差三个方程。这个 $3\times 3$ 系统的特征值是
+
+$$
+\lambda^0 = 0, \qquad \lambda^{\pm} = \frac{\varrho_1}{2}(1-2\chi_1)(u_1-u_2) \pm \frac{1}{2}\sqrt{\mathcal{A}}
+$$
+
+判别式为
+
+$$
+\mathcal{A} = \varrho_1^2(1-2\chi_1)^2(u_1-u_2)^2 + 4\rho\,\chi(1-\chi)\!\left(\frac{(c_1^{RS})^2}{\alpha_1 M_1^2 \rho_1^{RS}} + \frac{(c_2^{RS})^2}{\alpha_2 M_2^2 \rho_2^{RS}}\right)
+$$
+
+其中 $\chi$ 是质量分数，上标 $RS$ 表示参考解(reference solution)的值。$\mathcal{A}$ 的第二项里 $1/M_k^2$ 原封不动地活着，也就是说 $\lambda^{\pm} \sim \mathcal{O}(1/M)$。
+
+由于 $\mathcal{A} > 0$，特征值是实数：子系统是双曲型的，因此可以单独求解。但它的特征速度是 $1/M$ 量级。显式处理，CFL 条件就变成 $\Delta t \le \Delta x \cdot M / \text{const}$。把压力改成隐式换来的好处，在这里被全部退回。
+
+动量方程对应 $\lambda^0=0$，不约束时间步长。所以论文只把分密度和速度差两个方程耦合进隐式求解。对比[半隐式压力格式的 L∞ 稳定性](/zh/posts/2026-09-19-semi-implicit-pressure-linf-flattener/)：单相低马赫格式只需把压力做成隐式就够了。有两相，就有两个刚性项。
+
+## 选择分裂时真正的约束
+
+论文明确给出的分裂条件有两条：每个子系统**本身必须是双曲型的**，而且**必须容易求解**。前一条最挑人。若把项随意归类，特征值会变成复数，子系统这一步自己就不稳定。
+
+隐式步怎么解也属于条件之一。把速度差的更新代入分密度的更新，会得到关于 $(\alpha\rho_1)^{\star\star\star}$ 的非线性椭圆型问题，论文用线性化迭代求解。系数矩阵对称正定的依据是两个量
+
+$$
+s(W) = \varrho_1(\alpha\rho_1)\left(1 - \frac{\varrho_1(\alpha\rho_1)}{\rho}\right), \qquad
+\tilde{s}(W) = \frac{(c_1^{RS})^2}{\rho_1^{RS}M_1^2\,\alpha_1} + \frac{(c_2^{RS})^2}{\rho_2^{RS}M_2^2\,\alpha_2}
+$$
+
+都为正。对 $s$ 而言，这由 $\varrho_1(\alpha\rho_1)/\rho = \chi \in (0,1)$ 得到。就是这一个符号，支撑起"用标准线性求解器即可高效求解"这句话。这与[旋度不变约束对离散算子提出的恒等式](/zh/posts/2026-09-20-curl-involution-staggered-twophase/)属于同一类问题：连续层面的性质不会自动被离散层面继承。
+
+## 用 Python 在同一套网格上并排跑显式与隐式
+
+把 $u_1-u_2$ 在0附近线性化，$f^c$ 的核心就是一个 2×2 波动系统。
+
+$$
+\partial_t m + \partial_x (s\,w) = 0, \qquad \partial_t w + \partial_x(\tilde{s}\,m) = 0
+$$
+
+其中 $m = \alpha\rho_1$，$w = u_1-u_2$。波速为 $\sqrt{s\tilde{s}}$，而 $\tilde{s} \propto 1/M^2$，所以正比于 $1/M$。我在同一套周期网格(64格)上跑了两种处理。显式用 Rusanov，其数值黏性取正确的 $\lambda_c$；隐式则消去 $w$，用周期三对角求解由此得到的椭圆型问题。$\Delta t$ **固定**为物质速度 CFL 0.5。
+
+```python
+import math
+
+N, L = 64, 1.0
+dx = L / N
+RHO, ALPHA, CHI, U_MAT = 1.0, 0.5, 0.5, 0.2
+M0 = CHI * RHO                 # alpha*rho_1，背景状态
+S = M0 * (1.0 - M0 / RHO)      # 式 (3.25) 中的 s(W)
+
+def stiff_coeff(mach):
+    """s-tilde: 焓系数，O(1/M^2)"""
+    return 1.0 / (mach**2 * ALPHA) + 1.0 / (mach**2 * (1.0 - ALPHA))
+
+def relative_wave_speed(mach):
+    return math.sqrt(S * stiff_coeff(mach))
+
+def initial_state():
+    m = [M0 + 1e-3 * math.sin(2*math.pi*(i+0.5)*dx) for i in range(N)]
+    return m, [0.0] * N
+
+def explicit_enthalpy(mach, dt, nstep):
+    """对 (3.19a)+(3.19c) 用 Rusanov，焓项显式"""
+    k, lam = stiff_coeff(mach), relative_wave_speed(mach)
+    m, w = initial_state()
+    for _ in range(nstep):
+        fm = [0.0]*N; fw = [0.0]*N
+        for i in range(N):
+            j = (i+1) % N
+            fm[i] = 0.5*S*(w[i]+w[j]) - 0.5*lam*(m[j]-m[i])
+            fw[i] = 0.5*k*(m[i]+m[j]) - 0.5*lam*(w[j]-w[i])
+        m = [m[i] - dt/dx*(fm[i]-fm[i-1]) for i in range(N)]
+        w = [w[i] - dt/dx*(fw[i]-fw[i-1]) for i in range(N)]
+        if not all(abs(v) < 1e12 for v in m):
+            return float('inf')
+    return max(abs(v-M0) for v in m)
+
+def periodic_tridiag(a, b, c, d):
+    """用 Sherman-Morrison 求解周期三对角系统"""
+    n = len(d)
+    gam = -b[0]
+    bb = b[:]; bb[0] -= gam; bb[n-1] -= c[n-1]*a[0]/gam
+    def thomas(rhs):
+        cp = [0.0]*n; dp = [0.0]*n
+        cp[0] = c[0]/bb[0]; dp[0] = rhs[0]/bb[0]
+        for i in range(1, n):
+            den = bb[i] - a[i]*cp[i-1]
+            cp[i] = c[i]/den
+            dp[i] = (rhs[i] - a[i]*dp[i-1])/den
+        x = [0.0]*n; x[n-1] = dp[n-1]
+        for i in range(n-2, -1, -1):
+            x[i] = dp[i] - cp[i]*x[i+1]
+        return x
+    u = [0.0]*n; u[0] = gam; u[n-1] = c[n-1]
+    y = thomas(d); z = thomas(u)
+    fac = (y[0] + a[0]*y[n-1]/gam) / (1.0 + z[0] + a[0]*z[n-1]/gam)
+    return [y[i] - fac*z[i] for i in range(n)]
+
+def implicit_enthalpy(mach, dt, nstep):
+    """式 (3.23): 消去 w，求解关于 m 的椭圆型问题"""
+    k = stiff_coeff(mach)
+    beta = dt*dt*S*k/(dx*dx)
+    a = [-beta]*N; b = [1.0 + 2*beta]*N; c = [-beta]*N
+    m, w = initial_state()
+    for _ in range(nstep):
+        rhs = [m[i] - dt/(2*dx)*S*(w[(i+1) % N]-w[i-1]) for i in range(N)]
+        m = periodic_tridiag(a, b, c, rhs)
+        w = [w[i] - dt/(2*dx)*k*(m[(i+1) % N]-m[i-1]) for i in range(N)]
+    return max(abs(v-M0) for v in m)
+
+def max_stable_dt(mach, nstep=200):
+    lo, hi = 1e-9, 1.0
+    for _ in range(40):
+        mid = math.sqrt(lo*hi)
+        if explicit_enthalpy(mach, mid, nstep) == float('inf'):
+            hi = mid
+        else:
+            lo = mid
+    return lo
+
+dt_mat = 0.5*dx/U_MAT
+print(f"dx={dx:.5f}  material CFL dt={dt_mat:.5f}  (u={U_MAT})")
+print(f"{'M':>8} {'lambda_c':>10} {'dt_exp_max':>11} {'ratio':>7} {'|dm|_exp':>10} {'|dm|_imp':>10}")
+for mach in (1.0, 0.3, 0.1, 0.03, 0.01):
+    lam = relative_wave_speed(mach)
+    dte = max_stable_dt(mach)
+    e = explicit_enthalpy(mach, dt_mat, 200)
+    i = implicit_enthalpy(mach, dt_mat, 200)
+    es = "blow-up" if e == float('inf') else f"{e:.3e}"
+    print(f"{mach:8.3g} {lam:10.2f} {dte:11.2e} {dte/dt_mat:7.3f} {es:>10} {i:10.3e}")
+```
+
+```text
+dx=0.01562  material CFL dt=0.03906  (u=0.2)
+       M   lambda_c  dt_exp_max   ratio   |dm|_exp   |dm|_imp
+       1       1.00    1.87e-02   0.479    blow-up  1.718e-06
+     0.3       3.33    5.61e-03   0.144    blow-up  1.771e-14
+     0.1      10.00    1.87e-03   0.048    blow-up  4.731e-13
+    0.03      33.33    5.60e-04   0.014    blow-up  6.318e-12
+    0.01     100.00    1.87e-04   0.005    blow-up  5.195e-11
+```
+
+## 上限为何与 M 精确成正比
+
+看 `dt_exp_max` 一列：$M$ 从1降到0.01，缩小100倍，上限也从 $1.87\times 10^{-2}$ 精确地降到 $1.87\times 10^{-4}$。这不是巧合。在 $\lambda_c = \sqrt{s\tilde{s}}$ 中，$s$ 与 $M$ 无关而 $\tilde{s} \propto M^{-2}$，于是 $\lambda_c \propto M^{-1}$。把它代入 Rusanov 稳定条件 $\lambda_c \Delta t/\Delta x \le 1$，就得到 $\Delta t_{\max} \propto M$。
+
+工程上真正疼的是 `ratio` 这一列。在 $M=0.01$ 处，只能用到物质 CFL 所期望的 $\Delta t$ 的 0.5%。要看同样长的物理时间，就得多走200倍的步数。相反，隐式那一列在固定 $\Delta t$ 下走完了全部200步且没有发散；$M=0.01$ 时对应的声学 CFL 是256。
+
+## 无条件稳定不等于无条件准确
+
+诚实地读 `|dm|_imp` 一列。初始振幅是 $10^{-3}$，隐式却只留下 $10^{-11}$ 以下。后向 Euler 几乎把快模式抹平了。这不是 bug，而是 AP(asymptotic preserving，渐近保持)格式的设计意图。当 $\Delta t$ 远大于声学时间时，该尺度的波不会被分辨，而是被滤掉。要保留的是物质速度尺度上的动力学。
+
+但不要把这种衰减误认为精度。若想在可压缩区域($M \sim 1$)使用同一格式，就必须把截断项 $\bar{p}_k,\ \bar{h}_k$ 恢复出来并以显式加回去，这是论文3.2.4节的工作。被截去的高阶项在 well-prepared 初值的低马赫极限下会消失，所以显式加入不会把 $M$ 依赖重新带进 CFL 条件。
+
+在下面实时跑一下同一个系统。
+
+<RelativeVelocityBlowupLab />
+
+取消 `enthalpy implicit`，再把 $\log_{10}M$ 降到 $-1$ 以下：下方的对数曲线几步之内就顶到天花板。重新勾上，在完全相同的 $\Delta t$ 下振幅安静地沉下去。然后下调 `material CFL` 滑块，找出显式在哪里重新活过来 — 那个数值就是上表的 `ratio`。
+
+## 两个松弛项为何待遇不同
+
+处理完齐次系统，剩下的是松弛源项：体积分数上是压力松弛，速度差上是摩擦。
+
+$$
+\partial_t (\rho\alpha) = -\frac{1}{\tau}\left(\frac{\varrho_2 p_2}{M_2^2} - \frac{\varrho_1 p_1}{M_1^2}\right), \qquad
+\partial_t (u_1-u_2) = -\zeta\,\chi(1-\chi)(u_1-u_2)
+$$
+
+$\tau$ 是压力松弛时间，$\zeta$ 是摩擦系数。两者都可能刚性，都用隐式积分，但代价差别很大。
+
+摩擦项对 $u_1-u_2$ 是**线性**的，所以后向 Euler 一次除法就闭合：
+
+$$
+\left(1 + \Delta t\,\zeta\,\chi^{n+1}(1-\chi^{n+1})\right)(u_1-u_2)^{n+1} = (u_1-u_2)^{\star\star\star}
+$$
+
+压力松弛不同：相压力对 $\alpha$ 是非线性的。论文对 $g(\alpha)=0$ 用 Newton 法，雅可比里出现了声速：
+
+$$
+\frac{\partial g}{\partial \alpha} = -1 - \frac{\Delta t}{\tau}\left(\frac{\varrho_2 c_2^2}{M_2^2}\frac{1-\chi}{1-\alpha} + \frac{\varrho_1 c_1^2}{M_1^2}\frac{\chi}{\alpha}\right)
+$$
+
+$\alpha \to 0$ 或 $1$ 时该导数发散，这正是接近纯相时 Newton 开始吃力的位置。代码里给 $\alpha$ 设上下限的惯例，用这一个式子就能解释。$\tau \to 0$ 为瞬时松弛，$\tau \to \infty$ 回到齐次模型。
+
+## 下次我会先确认的一行
+
+以后读或写新的低马赫格式，我按这个顺序看。第一，把带 $1/M^2$ 的项**全部**数出来。第二，写下每一项进入哪个子系统的特征值。第三，确认那个子系统是隐式的。
+
+在两相模型里跳过第二步，就会漏掉焓差。只把压力改成隐式然后提高 $\Delta t$ 的代码，在 $M=0.01$ 处是慢200倍的代码。动手把特征值写一遍的成本，远低于此。

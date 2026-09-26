@@ -1,0 +1,240 @@
+---
+title: "[論文レビュー] 圧力を陰解法にしたのに Δt は100分の1になった — 相対速度に隠れた二つ目の 1/M²"
+date: 2026-09-27
+description: "等エントロピー二相流の all-Mach 分割で、エンタルピー差が二つ目の硬いスケールを生む場所と、それを陰解法に移さないと CFL が Mach 数から解放されない理由"
+tags: ["All-Mach", "Asymptotic-Preserving", "Operator-Splitting", "Compressible-Multiphase", "Paper-Review"]
+locale: ja
+slug: 2026-09-27-all-mach-twophase-enthalpy-stiffness
+takeaway: "圧力だけを陰解法にしても足りません。相対速度方程式のエンタルピー差も 1/M² を抱えており、それまで陰解法に含めて初めて Δt が Mach 数から解放されます。"
+draft: false
+---
+
+import { SubsystemEigenFanDial } from '@/components/post-viz/2026-09-27-all-mach-twophase-enthalpy-stiffness/SubsystemEigenFanDial'
+import { RelativeVelocityBlowupLab } from '@/components/post-viz/2026-09-27-all-mach-twophase-enthalpy-stiffness/RelativeVelocityBlowupLab'
+
+## 圧力を陰解法にしたのに時間刻みは小さくなるばかりだった
+
+低 Mach の二相ソルバを書くと、誰もが一度は同じ失敗をします。圧力項が硬い(stiff)ことに気づき、陰解法へ移します。音速から解放されたつもりで $\Delta t$ を物質速度のスケールまで上げます。そこで破綻します。$M=0.01$ では、$M=1$ で通った時間刻みの100分の1しか使えません。
+
+Lukáčová-Medviďová らの2022年の論文は、この失敗がどこに潜んでいるかを正確に示します。等エントロピー二相モデルには $1/M^2$ が**二箇所**あります。一つはおなじみの圧力です。もう一つは相対速度方程式に掛かるエンタルピー差です。この記事では二つ目を掘り出し、それを陰解法に移すと時間刻みの上限が本当に Mach 数から解放されるのかを、64セル格子で実測します。
+
+## 一つのモデルに二つある 1/M²
+
+論文が扱う状態ベクトルは $W = (\rho,\ \alpha\rho,\ \alpha_1\rho_1,\ \rho u,\ u_1-u_2)^T$ です。混合密度、体積分率(セル内で相1が占める体積の割合)、部分密度、混合運動量、そして二相の速度差です。最後の成分がこのモデルの特徴です。相ごとに速度を持つのではなく、混合速度一つと**速度差**一つで書きます。
+
+無次元化すると流束に $M_k$ が入ります。運動量方程式には圧力が
+
+$$
+\frac{\alpha\varrho_1\hat{p}_1}{M_1^2} + \frac{\alpha_2\hat{p}_2}{M_2^2}
+$$
+
+という形で現れます。$\hat{p}_k$ は基準状態のまわりで切り落とした圧力、$M_k$ は相 $k$ の Mach 数、$\varrho_k$ は基準密度比です。$M\to 0$ で発散するこの項が一つ目の硬い項で、単相の IMEX と同じように陰解法で扱います。
+
+問題は五番目の方程式です。速度差はエンタルピー差で駆動されます。
+
+$$
+\partial_t (u_1-u_2) + \partial_x\!\left(\frac{\hat{h}_1}{M_1^2} - \frac{\hat{h}_2}{M_2^2}\right) = 0
+$$
+
+$\hat{h}_k$ は相 $k$ の切り落とされたエンタルピーです。分母に同じ $M_k^2$ があります。圧力を陰解法に移しても、この項はそのまま残ります。
+
+## 三つの部分系の特性曲線を一枚に重ねる
+
+論文の分割は、流束を $f^a$(速い音響)、$f^b$(物質移流)、$f^c$(硬い混合項)の三つに割り、最後に緩和源項 $r(W)$ を加えます。それぞれが固有値を持ちます。下のシミュレーションで直接操作してみましょう。
+
+<SubsystemEigenFanDial />
+
+$\log_{10}M$ のスライダを左へ動かすと、青い扇($f^a$)とピンクの扇($f^c$)が**一緒に**開きます。緑($f^b$)だけがその場に留まります。`f^a implicit` だけを入れた状態で下のバーを見てください。許容 $\Delta t$ は依然として $M$ に比例して縮みます。`f^c implicit` も入れた瞬間、バーが緑で満たされます。これが論文3.2.3節の内容そのものです。
+
+## 相対速度部分系の固有値を書き下す
+
+$f^c$ に残るのは部分密度、運動量、速度差の三式です。この $3\times 3$ 系の固有値は
+
+$$
+\lambda^0 = 0, \qquad \lambda^{\pm} = \frac{\varrho_1}{2}(1-2\chi_1)(u_1-u_2) \pm \frac{1}{2}\sqrt{\mathcal{A}}
+$$
+
+で、判別式は
+
+$$
+\mathcal{A} = \varrho_1^2(1-2\chi_1)^2(u_1-u_2)^2 + 4\rho\,\chi(1-\chi)\!\left(\frac{(c_1^{RS})^2}{\alpha_1 M_1^2 \rho_1^{RS}} + \frac{(c_2^{RS})^2}{\alpha_2 M_2^2 \rho_2^{RS}}\right)
+$$
+
+です。$\chi$ は質量分率、上添字 $RS$ は基準解(reference solution)の値です。$\mathcal{A}$ の第二項に $1/M_k^2$ がそのまま生きています。つまり $\lambda^{\pm} \sim \mathcal{O}(1/M)$ です。
+
+$\mathcal{A} > 0$ なので固有値は実数です。部分系は双曲型であり、だから単独で解けます。ところが特性速度が $1/M$ です。陽解法で解けば CFL 条件が $\Delta t \le \Delta x \cdot M / \text{const}$ になります。圧力を陰解法に移して得た利得が、ここで全部返却されます。
+
+運動量方程式は $\lambda^0=0$ に対応するので時間刻みを制約しません。だから論文は部分密度と速度差の二式だけを陰解法で結合します。[半陰的圧力スキームの L∞ 安定性](/ja/posts/2026-09-19-semi-implicit-pressure-linf-flattener/)では、単相の低 Mach スキームは圧力だけを陰解法にすれば足りました。相が二つなら硬い項も二つです。
+
+## 分割を選ぶときの本当の制約
+
+論文が明示する分割の条件は二つです。各部分系が**それ自体で双曲型**であること、そして**容易に解けること**です。前者が厄介です。項を適当にまとめると固有値が複素数になり、部分系の段階で不安定になります。
+
+陰解法の段をどう解くかも条件に含まれます。部分密度の更新に速度差の更新を代入すると、$(\alpha\rho_1)^{\star\star\star}$ についての非線形楕円型問題が現れ、論文はそれを線形化反復で解きます。係数行列が対称正定値になる根拠は、二つの量
+
+$$
+s(W) = \varrho_1(\alpha\rho_1)\left(1 - \frac{\varrho_1(\alpha\rho_1)}{\rho}\right), \qquad
+\tilde{s}(W) = \frac{(c_1^{RS})^2}{\rho_1^{RS}M_1^2\,\alpha_1} + \frac{(c_2^{RS})^2}{\rho_2^{RS}M_2^2\,\alpha_2}
+$$
+
+がともに正であることです。$s$ については $\varrho_1(\alpha\rho_1)/\rho = \chi \in (0,1)$ から従います。この符号一つが「標準的な線形ソルバで効率よく解ける」という一文を支えます。[カール拘束条件が離散作用素に要求する恒等式](/ja/posts/2026-09-20-curl-involution-staggered-twophase/)と同じ種類の話です。連続レベルの性質は離散レベルで自動的には継承されません。
+
+## Python で同じ格子に陽解法と陰解法を並べる
+
+$u_1-u_2$ を0の近くで線形化すると、$f^c$ の核は 2×2 の波動系になります。
+
+$$
+\partial_t m + \partial_x (s\,w) = 0, \qquad \partial_t w + \partial_x(\tilde{s}\,m) = 0
+$$
+
+$m = \alpha\rho_1$、$w = u_1-u_2$ です。波速は $\sqrt{s\tilde{s}}$ で、$\tilde{s} \propto 1/M^2$ なので $1/M$ に比例します。同じ周期格子(64セル)に二つの方式を掛けました。陽解法は正しい $\lambda_c$ で数値粘性を与えた Rusanov、陰解法は $w$ を消去して得た楕円型問題を周期三重対角で解きます。$\Delta t$ は物質速度 CFL 0.5 に**固定**します。
+
+```python
+import math
+
+N, L = 64, 1.0
+dx = L / N
+RHO, ALPHA, CHI, U_MAT = 1.0, 0.5, 0.5, 0.2
+M0 = CHI * RHO                 # alpha*rho_1、背景状態
+S = M0 * (1.0 - M0 / RHO)      # 式 (3.25) の s(W)
+
+def stiff_coeff(mach):
+    """s-tilde: エンタルピー係数、O(1/M^2)"""
+    return 1.0 / (mach**2 * ALPHA) + 1.0 / (mach**2 * (1.0 - ALPHA))
+
+def relative_wave_speed(mach):
+    return math.sqrt(S * stiff_coeff(mach))
+
+def initial_state():
+    m = [M0 + 1e-3 * math.sin(2*math.pi*(i+0.5)*dx) for i in range(N)]
+    return m, [0.0] * N
+
+def explicit_enthalpy(mach, dt, nstep):
+    """(3.19a)+(3.19c) に Rusanov、エンタルピー項は陽解法"""
+    k, lam = stiff_coeff(mach), relative_wave_speed(mach)
+    m, w = initial_state()
+    for _ in range(nstep):
+        fm = [0.0]*N; fw = [0.0]*N
+        for i in range(N):
+            j = (i+1) % N
+            fm[i] = 0.5*S*(w[i]+w[j]) - 0.5*lam*(m[j]-m[i])
+            fw[i] = 0.5*k*(m[i]+m[j]) - 0.5*lam*(w[j]-w[i])
+        m = [m[i] - dt/dx*(fm[i]-fm[i-1]) for i in range(N)]
+        w = [w[i] - dt/dx*(fw[i]-fw[i-1]) for i in range(N)]
+        if not all(abs(v) < 1e12 for v in m):
+            return float('inf')
+    return max(abs(v-M0) for v in m)
+
+def periodic_tridiag(a, b, c, d):
+    """周期三重対角系を Sherman-Morrison で解く"""
+    n = len(d)
+    gam = -b[0]
+    bb = b[:]; bb[0] -= gam; bb[n-1] -= c[n-1]*a[0]/gam
+    def thomas(rhs):
+        cp = [0.0]*n; dp = [0.0]*n
+        cp[0] = c[0]/bb[0]; dp[0] = rhs[0]/bb[0]
+        for i in range(1, n):
+            den = bb[i] - a[i]*cp[i-1]
+            cp[i] = c[i]/den
+            dp[i] = (rhs[i] - a[i]*dp[i-1])/den
+        x = [0.0]*n; x[n-1] = dp[n-1]
+        for i in range(n-2, -1, -1):
+            x[i] = dp[i] - cp[i]*x[i+1]
+        return x
+    u = [0.0]*n; u[0] = gam; u[n-1] = c[n-1]
+    y = thomas(d); z = thomas(u)
+    fac = (y[0] + a[0]*y[n-1]/gam) / (1.0 + z[0] + a[0]*z[n-1]/gam)
+    return [y[i] - fac*z[i] for i in range(n)]
+
+def implicit_enthalpy(mach, dt, nstep):
+    """式 (3.23): w を消去し m についての楕円型問題を解く"""
+    k = stiff_coeff(mach)
+    beta = dt*dt*S*k/(dx*dx)
+    a = [-beta]*N; b = [1.0 + 2*beta]*N; c = [-beta]*N
+    m, w = initial_state()
+    for _ in range(nstep):
+        rhs = [m[i] - dt/(2*dx)*S*(w[(i+1) % N]-w[i-1]) for i in range(N)]
+        m = periodic_tridiag(a, b, c, rhs)
+        w = [w[i] - dt/(2*dx)*k*(m[(i+1) % N]-m[i-1]) for i in range(N)]
+    return max(abs(v-M0) for v in m)
+
+def max_stable_dt(mach, nstep=200):
+    lo, hi = 1e-9, 1.0
+    for _ in range(40):
+        mid = math.sqrt(lo*hi)
+        if explicit_enthalpy(mach, mid, nstep) == float('inf'):
+            hi = mid
+        else:
+            lo = mid
+    return lo
+
+dt_mat = 0.5*dx/U_MAT
+print(f"dx={dx:.5f}  material CFL dt={dt_mat:.5f}  (u={U_MAT})")
+print(f"{'M':>8} {'lambda_c':>10} {'dt_exp_max':>11} {'ratio':>7} {'|dm|_exp':>10} {'|dm|_imp':>10}")
+for mach in (1.0, 0.3, 0.1, 0.03, 0.01):
+    lam = relative_wave_speed(mach)
+    dte = max_stable_dt(mach)
+    e = explicit_enthalpy(mach, dt_mat, 200)
+    i = implicit_enthalpy(mach, dt_mat, 200)
+    es = "blow-up" if e == float('inf') else f"{e:.3e}"
+    print(f"{mach:8.3g} {lam:10.2f} {dte:11.2e} {dte/dt_mat:7.3f} {es:>10} {i:10.3e}")
+```
+
+```text
+dx=0.01562  material CFL dt=0.03906  (u=0.2)
+       M   lambda_c  dt_exp_max   ratio   |dm|_exp   |dm|_imp
+       1       1.00    1.87e-02   0.479    blow-up  1.718e-06
+     0.3       3.33    5.61e-03   0.144    blow-up  1.771e-14
+     0.1      10.00    1.87e-03   0.048    blow-up  4.731e-13
+    0.03      33.33    5.60e-04   0.014    blow-up  6.318e-12
+    0.01     100.00    1.87e-04   0.005    blow-up  5.195e-11
+```
+
+## 上限が M にぴったり比例した理由
+
+`dt_exp_max` の列を見ると、$M$ が1から0.01へ100分の1になるとき、上限も $1.87\times 10^{-2}$ から $1.87\times 10^{-4}$ へ正確に100分の1になりました。偶然ではありません。$\lambda_c = \sqrt{s\tilde{s}}$ において $s$ は $M$ に依らず $\tilde{s} \propto M^{-2}$ なので、$\lambda_c \propto M^{-1}$ です。Rusanov の安定条件 $\lambda_c \Delta t/\Delta x \le 1$ にそのまま代入すれば $\Delta t_{\max} \propto M$ が出ます。
+
+実務で痛いのは `ratio` の列です。$M=0.01$ では物質 CFL から使いたかった $\Delta t$ の0.5%しか使えません。同じ物理時間を見るには200倍のステップを踏みます。一方、陰解法の列は固定 $\Delta t$ で200ステップを走りきり、発散しませんでした。$M=0.01$ での音響 CFL は256でした。
+
+## 無条件安定は無条件正確ではない
+
+`|dm|_imp` の列を正直に読みましょう。初期振幅は $10^{-3}$ でしたが、陰解法は $10^{-11}$ 以下しか残しませんでした。後退 Euler が速いモードを事実上消滅させたのです。これはバグではなく、AP(asymptotic preserving、漸近保存)スキームが意図した動作です。$\Delta t$ が音響時間よりはるかに大きければ、そのスケールの波は解像されず濾し取られます。残したいのは物質速度スケールの力学です。
+
+ただし、この減衰を精度と取り違えてはいけません。圧縮性領域($M \sim 1$)でも同じスキームを使うには、切り落とした項 $\bar{p}_k,\ \bar{h}_k$ を復活させて陽解法で足す必要があります。論文3.2.4節がその仕事をします。切られた高次項は well-prepared な初期データの低 Mach 極限で消えるので、陽解法で入れても CFL に $M$ 依存性を持ち込みません。
+
+下で同じ系をリアルタイムに走らせてみましょう。
+
+<RelativeVelocityBlowupLab />
+
+`enthalpy implicit` を外して $\log_{10}M$ を $-1$ より下げると、下の対数グラフが数ステップで天井を打ちます。もう一度入れると、同じ $\Delta t$ で振幅が静かに沈みます。`material CFL` のスライダを下げて、陽解法がどこで生き返るかを探してください。その値が上の表の `ratio` です。
+
+## 二つの緩和項が異なる扱いを受ける理由
+
+均質系を終えて残るのは緩和源項です。体積分率には圧力緩和が、速度差には摩擦が掛かります。
+
+$$
+\partial_t (\rho\alpha) = -\frac{1}{\tau}\left(\frac{\varrho_2 p_2}{M_2^2} - \frac{\varrho_1 p_1}{M_1^2}\right), \qquad
+\partial_t (u_1-u_2) = -\zeta\,\chi(1-\chi)(u_1-u_2)
+$$
+
+$\tau$ は圧力緩和時間、$\zeta$ は摩擦係数です。どちらも硬くなりうるので陰解法で積分しますが、費用が違います。
+
+摩擦項は $u_1-u_2$ について**線形**です。だから後退 Euler が一回の除算で閉じます。
+
+$$
+\left(1 + \Delta t\,\zeta\,\chi^{n+1}(1-\chi^{n+1})\right)(u_1-u_2)^{n+1} = (u_1-u_2)^{\star\star\star}
+$$
+
+圧力緩和は違います。相圧力が $\alpha$ について非線形です。論文は $g(\alpha)=0$ に Newton 法を用い、ヤコビアンに音速が入ってきます。
+
+$$
+\frac{\partial g}{\partial \alpha} = -1 - \frac{\Delta t}{\tau}\left(\frac{\varrho_2 c_2^2}{M_2^2}\frac{1-\chi}{1-\alpha} + \frac{\varrho_1 c_1^2}{M_1^2}\frac{\chi}{\alpha}\right)
+$$
+
+$\alpha \to 0$ または $1$ でこの微分が発散します。純粋相の近くで Newton が苦しくなる地点がここです。コードで $\alpha$ に上下限を置く慣行は、この式一つで説明できます。$\tau \to 0$ は瞬時緩和、$\tau \to \infty$ は均質モデルです。
+
+## 次に私がまず確認する一行
+
+新しい低 Mach スキームを読むときも書くときも、これからはこの順で見ます。第一に、$1/M^2$ が付いた項を**全部**数えます。第二に、それぞれがどの部分系の固有値に入るかを書きます。第三に、その部分系が陰解法かを確認します。
+
+二相モデルで第二段を飛ばすと、エンタルピー差を取りこぼします。圧力だけを陰解法にして $\Delta t$ を上げたコードは、$M=0.01$ で200倍遅いコードです。固有値を一度手で書き下す費用は、それよりずっと安いです。
