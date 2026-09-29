@@ -1,0 +1,300 @@
+---
+title: "老实补上三阶矩后误差反而涨了2.8倍 — 力项真正需要守住的几行"
+date: 2026-09-30
+description: "把LBM力项的三阶矩补成动理论要求的值，误差反而变大。要同时看清格子锁死的分量和该项到达的阶数。"
+tags: ["Forcing-Term", "Chapman-Enskog", "LBM", "Kinetic-Theory", "Numerical-Analysis"]
+locale: zh
+slug: 2026-09-30-lbm-forcing-term-third-moment-limit
+takeaway: "力项的三阶矩只在Burnett阶才到达动量方程。格子只允许一半的张量修正，补了比不补更糟。"
+draft: false
+---
+
+import { ForceMomentLockLadder } from '@/components/post-viz/2026-09-30-lbm-forcing-term-third-moment-limit/ForceMomentLockLadder'
+import { ThirdMomentLeakStreamer } from '@/components/post-viz/2026-09-30-lbm-forcing-term-third-moment-limit/ThirdMomentLeakStreamer'
+
+## 力项要匹配到几阶矩
+
+在LBM代码里加入重力或表面张力时，我们匹配的是三行。
+零阶矩为0，一阶矩为 $\mathbf{F}$，二阶矩为 $\mathbf{u}\mathbf{F}+\mathbf{F}\mathbf{u}$。
+那么三阶呢？连续玻尔兹曼方程的力项同样有一个明确的三阶矩。
+把这个值在格子上也补齐，看起来能白拿一份精度。
+
+这篇文章记录了用数字检验这个期待的过程。结果是反的。
+把三阶矩补成动理论要求的值之后，误差从0.053%涨到了0.150%。
+为什么会这样，以及真正该先修的是什么，就是本文的内容。
+
+## 连续玻尔兹曼给出的力的三阶矩
+
+在有体积力 $\mathbf{F}$ 的玻尔兹曼方程中，力项是速度空间的导数。
+
+$$
+\Omega^F = -\frac{F_\lambda}{\rho}\,\frac{\partial f^{eq}}{\partial \xi_\lambda}
+$$
+
+$\xi$ 是分子速度，$\rho$ 是密度。三阶矩只需一次分部积分就闭合。
+
+$$
+\int \xi_\alpha \xi_\beta \xi_\gamma\, \Omega^F \, d\boldsymbol{\xi}
+= \frac{F_\alpha}{\rho} M_{\beta\gamma} + \frac{F_\beta}{\rho} M_{\alpha\gamma} + \frac{F_\gamma}{\rho} M_{\alpha\beta}
+$$
+
+其中 $M_{\alpha\beta}=\int f^{eq}\xi_\alpha\xi_\beta\,d\boldsymbol{\xi} = \rho(u_\alpha u_\beta + c_s^2\delta_{\alpha\beta})$。
+于是被要求的三阶矩可以写成下式。
+
+$$
+\Phi_{\alpha\beta\gamma} = F_\alpha\!\left(u_\beta u_\gamma + c_s^2\delta_{\beta\gamma}\right)
++ F_\beta\!\left(u_\alpha u_\gamma + c_s^2\delta_{\alpha\gamma}\right)
++ F_\gamma\!\left(u_\alpha u_\beta + c_s^2\delta_{\alpha\beta}\right)
+$$
+
+$c_s^2$ 项和 $uuF$ 项并列其中。前者与速度无关，后者是速度的二次量。
+
+## Guo forcing实际提供的值
+
+放到格子上的力项通常写成Guo的形式。去掉半步因子，只把括号里叫做 $\hat{S}_i$。
+
+$$
+\hat{S}_i = w_i\left[\frac{\mathbf{c}_i\cdot\mathbf{F}}{c_s^2}
++ \frac{\left(u_\alpha F_\beta + u_\beta F_\alpha\right)\left(c_{i\alpha}c_{i\beta} - c_s^2\delta_{\alpha\beta}\right)}{2\,c_s^4}\right]
+$$
+
+$w_i$ 是格子权重，$\mathbf{c}_i$ 是离散速度。真正的 $S_i$ 还要再乘 $(1-1/2\tau)$。
+这个因子为什么必需，在[离散LBE留下的半步](/zh/posts/2026-09-28-lbm-half-step-viscosity-taylor-expansion/)里单独讲过。
+
+用D2Q9的四阶各向同性计算这个 $\hat{S}_i$ 的三阶矩，剩下的只有下式。
+
+$$
+\sum_i \hat{S}_i c_{i\alpha}c_{i\beta}c_{i\gamma}
+= c_s^2\left(F_\alpha\delta_{\beta\gamma} + F_\beta\delta_{\alpha\gamma} + F_\gamma\delta_{\alpha\beta}\right)
+$$
+
+$c_s^2$ 项完全正确。$uuF$ 项一个都没有。第二项构成五阶矩，在D2Q9上为0。
+
+在下面的模拟里亲手调一调。
+
+<ForceMomentLockLadder />
+
+用滑块把 $u_x$、$u_y$ 推向0，所有行都对齐。加大速度，两条黄行张开，
+复选框能关掉的正是这两行。红行无论怎么做都关不上。
+
+## $c_x^3 = c_x$ — 格子锁死的两个分量
+
+红行的真身就是格子本身。D2Q9的速度分量只有 $-1, 0, 1$。
+于是每个方向上都有 $c_{ix}^3 = c_{ix}$。两个向量其实是同一个向量。
+
+$$
+\sum_i \hat{S}_i c_{ix}^3 = \sum_i \hat{S}_i c_{ix} = F_x
+$$
+
+$\Phi_{xxx}$ 不是可以挑的值。一阶矩定成 $F_x$ 的那一刻它就一起定了。
+要求值是 $3F_x(u_x^2+c_s^2) = F_x + 3F_x u_x^2$，所以 $3F_x u_x^2$ 是永久亏空。
+
+相比之下 $\Phi_{xxy}$ 和 $\Phi_{xyy}$ 是独立的。九个自由度里零到二阶用掉六个，还剩三个。
+所以四个分量里两个自由、两个被锁。**也就是说张量只能修一半。**
+
+## 既不搬质量也不搬动量的项却搬走了动量
+
+可以构造一个只把 $\Phi_{xyy}$ 改变 $d$ 的修正向量 $v_i$。
+它的零阶、一阶、二阶矩全为0，所以在原地既不动密度，也不动动量和应力。
+在D2Q9上这个向量长这样。
+
+$$
+v_i = \left(0,\,-\tfrac12,\,0,\,\tfrac12,\,0,\,\tfrac14,\,-\tfrac14,\,-\tfrac14,\,\tfrac14\right)
+$$
+
+可是只要迁移一步，情况就变了。各个分量飞向不同的邻点。
+只把 $x$ 方向的动量收集起来，剩下的是下式。
+
+$$
+\Delta(\rho u_x)(y) = \tfrac{1}{2}\left[\,d(y-1) - 2\,d(y) + d(y+1)\,\right]
+$$
+
+这是二阶中心差分。$d$ 均匀时严格为0，$d$ 振荡时按波数的平方增长。
+在下面改一改波形和波长。
+
+<ThirdMomentLeakStreamer />
+
+切到 `uniform`，点照样在飞，绿色柱子却全部归零。
+在 `sine` 下缩短波长，柱子就沿着黄色虚线长起来。总和始终为0。
+
+## 固定力的图样并通上横流的通道
+
+验证需要有精确解的问题。在周期区域里固定一个 $x$ 方向的正弦体积力，
+再沿 $y$ 方向通入均匀横流 $V$。相当于多孔壁一侧吹入、另一侧抽出。
+
+$$
+\nu \frac{d^2 u_x}{dy^2} - V\frac{d u_x}{dy} + \frac{a_0}{\rho}\sin(ky) = 0
+$$
+
+$\nu$ 是运动粘度，$k$ 是波数，$a_0$ 是力的幅值。单一模态给出闭式解。
+
+$$
+u_x(y) = C_1\sin(ky) - \frac{V C_1}{\nu k}\cos(ky), \qquad
+C_1 = \frac{a_0/\rho}{\nu k^2 + V^2/\nu}
+$$
+
+横流做两件事。削掉幅值，并把相位推迟 $\arctan\!\left(V/\nu k\right)$。
+同时 $u_y = V$ 一直存在，于是 $d = F_x u_y^2$ 在空间上振荡。这正是上一节那个泄漏的开关。
+
+## 把四种组合放在同一个格子上
+
+16节点周期格子，$\tau = 1$，$a_0 = 4\times10^{-3}$，跑了四种。
+标准Guo、补力的三阶、补平衡分布的三阶、两个都补。
+
+```python
+import numpy as np
+
+CX  = np.array([0, 1, 0,-1, 0, 1,-1,-1, 1], float)
+CY  = np.array([0, 0, 1, 0,-1, 1, 1,-1,-1], float)
+WT  = np.array([4/9, 1/9, 1/9, 1/9, 1/9, 1/36, 1/36, 1/36, 1/36])
+CS2 = 1.0/3.0
+
+def hermite3_vectors():
+    """0~2阶矩为0，仅让3阶 xxy / xyy 为1的修正向量。"""
+    rows = np.vstack([np.ones(9), CX, CY, CX*CX, CX*CY, CY*CY, CX*CX*CY, CX*CY*CY])
+    pinv = np.linalg.pinv(rows)
+    return pinv @ np.eye(8)[6], pinv @ np.eye(8)[7]
+
+VXXY, VXYY = hermite3_vectors()
+
+def feq_second_order(rho, ux, uy):
+    cu = CX[:, None, None]*ux + CY[:, None, None]*uy
+    return WT[:, None, None]*rho*(1 + cu/CS2 + cu*cu/(2*CS2**2)
+                                  - (ux*ux + uy*uy)/(2*CS2))
+
+def force_populations(ux, uy, fx, fy, tau):
+    """Guo forcing：一阶矩为 F，二阶矩为 uF+Fu。"""
+    cF  = CX[:, None, None]*fx + CY[:, None, None]*fy
+    gxx, gyy, gxy = ux*fx, uy*fy, 0.5*(ux*fy + uy*fx)
+    quad = (gxx*(CX[:, None, None]**2 - CS2) + gyy*(CY[:, None, None]**2 - CS2)
+            + 2*gxy*(CX*CY)[:, None, None])
+    return WT[:, None, None]*(1 - 1/(2*tau))*(cF/CS2 + quad/CS2**2)
+
+def analytic_wave(ny, nu, V, a0):
+    """nu u'' - V u' + a0 sin(ky) = 0 的周期定常解。"""
+    k = 2*np.pi/ny
+    y = np.arange(ny, dtype=float)
+    c1 = a0/(nu*k*k + V*V/nu)
+    return c1*np.sin(k*y) - (V*c1/(nu*k))*np.cos(k*y)
+
+def run_cross_flow(ny, tau, V, a0, cubic_eq, cubic_force, nstep=6000, tol=1e-12):
+    nx = 3
+    k  = 2*np.pi/ny
+    fx = np.tile(a0*np.sin(k*np.arange(ny)), (nx, 1))
+    fy = np.zeros((nx, ny))
+    rho = np.ones((nx, ny)); ux = np.zeros((nx, ny)); uy = np.full((nx, ny), V)
+    f = feq_second_order(rho, ux, uy)
+    half, prev = 1 - 1/(2*tau), ux.copy()
+    for s in range(nstep):
+        rho = f.sum(0)
+        ux  = ((CX[:, None, None]*f).sum(0) + 0.5*fx)/rho
+        uy  = ((CY[:, None, None]*f).sum(0) + 0.5*fy)/rho
+        feq = feq_second_order(rho, ux, uy)
+        if cubic_eq:                      # 补上平衡分布的三阶缺失 rho*u*u*u
+            feq = feq + VXXY[:, None, None]*(rho*ux*ux*uy) \
+                      + VXYY[:, None, None]*(rho*ux*uy*uy)
+        src = force_populations(ux, uy, fx, fy, tau)
+        if cubic_force:                   # 补上力项的三阶缺失 F*u*u
+            src = src + half*(VXXY[:, None, None]*(2*fx*ux*uy + fy*ux*ux)
+                              + VXYY[:, None, None]*(fx*uy*uy + 2*fy*ux*uy))
+        f = f - (f - feq)/tau + src
+        for i in range(9):
+            f[i] = np.roll(f[i], (int(CX[i]), int(CY[i])), axis=(0, 1))
+        if s % 1000 == 999:
+            if np.max(np.abs(ux - prev)) < tol:
+                break
+            prev = ux.copy()
+    return ux[0]
+
+print("D2Q9 lock check:  max|cx^3 - cx| =", float(np.abs(CX**3 - CX).max()))
+for tag, mom in (("xxy", CX*CX*CY), ("xyy", CX*CY*CY), ("xxx", CX**3), ("xy", CX*CY)):
+    print(f"  correction vector v_xxy :  sum v_i c_{tag:3s} = {float(mom @ VXXY): .6f}")
+
+NY, TAU = 16, 1.0
+NU, A0  = CS2*(TAU - 0.5), 0.004
+print(f"\nny={NY}  tau={TAU}  nu={NU:.5f}  k={2*np.pi/NY:.4f}  a0={A0}")
+print("\n   V    |u|max   Guo       +force    +feq3     +both")
+for V in (0.05, 0.10, 0.20):
+    ref = analytic_wave(NY, NU, V, A0)
+    errs = []
+    for ce, cf in ((0, 0), (0, 1), (1, 0), (1, 1)):
+        u = run_cross_flow(NY, TAU, V, A0, bool(ce), bool(cf))
+        errs.append(100*np.linalg.norm(u - ref)/np.linalg.norm(ref))
+    print(f"{V:5.2f}  {np.abs(ref).max():.5f}  " + "  ".join(f"{e:7.4f}%" for e in errs))
+```
+
+```text
+D2Q9 lock check:  max|cx^3 - cx| = 0.0
+  correction vector v_xxy :  sum v_i c_xxy =  1.000000
+  correction vector v_xxy :  sum v_i c_xyy = -0.000000
+  correction vector v_xxy :  sum v_i c_xxx =  0.000000
+  correction vector v_xxy :  sum v_i c_xy  = -0.000000
+
+ny=16  tau=1.0  nu=0.16667  k=0.3927  a0=0.004
+
+   V    |u|max   Guo       +force    +feq3     +both
+ 0.05  0.12258   0.5993%   0.5915%   0.0181%   0.0143%
+ 0.10  0.08374   1.6422%   1.6207%   0.0295%   0.0375%
+ 0.20  0.04826   3.7307%   3.6840%   0.0531%   0.1503%
+```
+
+## 把0.053%变成0.150%的修正
+
+一行一行读表格，顺序就出来了。数字取 $V=0.20$。
+
+| 组合 | $L_2$ 误差 | 与标准相比 |
+|---|---|---|
+| 标准Guo | 3.7307% | — |
+| 补力的三阶 | 3.6840% | 改善1.3% |
+| 补平衡分布的三阶 | 0.0531% | 改善70倍 |
+| 两个都补 | 0.1503% | 比只补平衡分布差2.8倍 |
+
+补力的三阶矩顶多换来1.3%。补平衡分布的三阶却把误差压到七十分之一。
+两个一起放进去又变差。三个数字讲的是同一件事。
+
+原因在Chapman-Enskog展开的阶数上。力的二阶矩直接进入 $O(\varepsilon)$ 的应力方程。
+力的三阶矩进入 $O(\varepsilon)$ 的**三阶矩方程**，再从那里下降一级到应力，
+又从应力下降一级到动量。它到达动量方程时已经是 $O(\varepsilon^3)$，也就是Burnett阶。
+对以Navier-Stokes为目标的等温LBM来说，这一项不是要匹配的对象。
+
+平衡分布的三阶矩则直接进入 $O(\varepsilon)$ 的应力。这就是
+[平衡分布的三阶缺失](/zh/posts/2026-09-16-lbm-cubic-defect-galilean-invariance/)占主导的原因。
+
+## 修正制造误差的路径
+
+那么补力的三阶为什么反而有害？上一节的泄漏公式给出答案。
+因为 $d = F_x u_y^2 = a_0 V^2 \sin(ky)$，迁移会制造出如下大小的伪体积力。
+
+$$
+\tfrac{1}{2}\left(1-\frac{1}{2\tau}\right) V^2 k^2 a_0
+$$
+
+代入 $V=0.2$、$k=0.3927$、$\tau=1$，它是 $a_0$ 的 $0.154\%$。
+代码里量到的两个解的最大差是 $|u|_{\max}$ 的 $0.156\%$。两个数字吻合。
+动量方程根本没要的项，被格子老老实实送到了。
+
+$V^2 k^2$ 的依赖关系也照样可见。把 $V$ 从 $0.05$ 提到 $0.10$ 再到 $0.20$，
+两个解的差是 $0.010\% \to 0.039\% \to 0.156\%$。每次四倍。
+
+## 三阶矩真正开始重要的地方
+
+这并不意味着 $\Phi_{\alpha\beta\gamma}$ 的推导没有意义。确实有需要它的地方。
+
+在同时求解能量方程的热与可压缩LBM里，三阶矩就是热流。
+那里力的三阶矩直接进入 $O(\varepsilon^2)$ 的能量方程，不必绕到Burnett阶。
+用非理想状态方程生成界面的多相LBM也类似。力很大，而且在空间上很陡。
+一旦 $k$ 接近1，$V^2k^2$ 就不再小了。
+
+[多组分LBM的扩散速度修正](/zh/posts/2026-09-23-multicomponent-lbm-correction-velocity/)里加修正项，也是同一类理由。
+先确认目标方程是什么，以及该项在第几阶到达。
+
+## 为什么不能只补一半格子没有的项
+
+这次实验真正的教训在阶数之前。$\Phi_{\alpha\beta\gamma}$ 是张量。
+D2Q9只允许其中的 $xxy$、$xyy$，把 $xxx$、$yyy$ 锁住。
+只补张量的一半，等于放进了一个各向同性被破坏的修正。
+原本互相抵消的误差可能因此露头，这次就是如此。
+
+发现格子搬不了的项时，选择只有两个。
+扩大速度集合直到拿到那个矩（D2Q17、D2Q37），或者干脆不碰。
+没有中间选项。给力项加一行之前，先数一数这一行剩下的分量在格子上是否存在。
