@@ -73,7 +73,7 @@ date: YYYY-MM-DD
 description: "한 문장 요약 (50자 이내)"
 tags: ["구체태그", "...", "..."]   # 3~5개, 5 locale 공통(영문), 첫 태그가 가장 구체적
 locale: ko                          # 파일별 ko/en/ja/zh/es
-slug: {공통 영문 slug}
+slug: {DATE}-{공통 영문 slug}       # 파일명과 완전히 동일. 날짜 접두사 필수
 takeaway: "이 글의 답 한 문장"       # description과 다른 문장. 본문 상단에 노출된다.
 draft: false                        # 항상 false
 ---
@@ -114,7 +114,10 @@ Krylov/Multiphase/Turbulence/Combustion/Heat-Transfer/Compressible/Incompressibl
 - viz 삽입 직전 1문장 안내("아래 시뮬레이션에서 직접 조작해보자"), 직후 1~2문장 관찰 포인트
   (무엇을 조작하고 무엇을 관찰하는지).
 - **첫 viz는 본문 앞 1/4 안에.** 뒤쪽에만 있으면 대부분의 방문자는 보지 못하고 이탈한다.
-- **본문 내부 링크 2개 이상 필수.** 형식은 `[텍스트](/{그 파일의 locale}/posts/{slug}/)` —
+- **본문 내부 링크 2개 이상 필수.** 형식은 `[텍스트](/{그 파일의 locale}/posts/{DATE}-{slug}/)` —
+  **URL slug에는 날짜 접두사가 들어간다**(`/ko/posts/2026-09-28-lbm-half-step-viscosity.../`).
+  날짜를 빼면 빌드 마지막의 `check-internal-links`가 5 locale × 링크 수만큼 깨진 링크로 잡는다 —
+  `verify-post-set.mjs`는 이걸 못 잡으므로 빌드 한 사이클을 그대로 버린다.
   locale 세그먼트와 끝 슬래시를 모두 붙인다. ja 파일은 `/ja/posts/...`로 쓴다(ko URL 복사 금지).
   연결할 글 후보는 `daily-context.mjs`가 출력한다.
 
@@ -178,4 +181,5 @@ index.yaml 1, 검증 2(verify + build), 커밋·푸시 2. **총 15회 안쪽.**
 subagent·Task 위임 / 1단계 출력에 이미 있는 정보를 bash로 재조회 /
 import만 넣고 post-viz 파일 없음 / 상호작용 없는 viz / post-viz에 새 npm 패키지 /
 하드코딩 날짜 / `source-docs/` 밖의 개인 자료 / ko 1개만 만들고 종료 /
-비ASCII·공백 태그 / locale 세그먼트 없는 본문 링크 / 본문 내부 링크 0개.
+비ASCII·공백 태그 / locale 세그먼트 없는 본문 링크 / 본문 내부 링크 0개 /
+날짜 접두사 없는 `slug:`·본문 링크.

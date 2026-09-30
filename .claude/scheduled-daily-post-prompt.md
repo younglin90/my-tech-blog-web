@@ -23,10 +23,13 @@ post-viz 1~2개 작성 → 5 locale MDX 작성 → index.yaml 갱신 →
 node scripts/verify-post-set.mjs {slug} --run 및 npm run build 통과 → commit & push → 3~5줄 보고.
 
 토큰은 비용이다. 같은 정보를 ad-hoc bash로 다시 캐지 말고, 위 스크립트 출력을 그대로 쓴다.
+frontmatter `slug:`와 본문 내부 링크에는 날짜 접두사가 들어간다({DATE}-{slug}). 빼면 빌드가 깨진다.
 ```
 
 ---
 
 ## 스케줄 편집기 확인 사항
+- **모델: Opus 5.5 (`claude-opus-5-5`)** — 프롬프트가 아니라 스케줄 항목의 모델 설정이다.
+  레포에서 바꿀 수 없으니 routine 편집기에서 직접 고른다. 확인은 세션에서 "무슨 모델이냐"로.
 - 실행 시각: 월–금 10:05 (KST)
 - 이 프롬프트 외에 별도 지침을 넣지 말 것 — rule 파일과 어긋나면 규칙이 두 벌이 된다.
