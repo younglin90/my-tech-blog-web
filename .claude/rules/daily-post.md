@@ -11,7 +11,8 @@ paths:
 트리거: "오늘 포스트 만들어줘" / `/daily-post` / 예약작업 `cfd-daily-post`(월~금 10:05).
 목표: 오늘 날짜로 포스트 1개를 **5개 locale 동시** 작성 → `main`에 push (Cloudflare 자동 배포).
 
-**이 파일 하나로 충분하다.** `scripts/prompts/*.txt`는 폐기된 API 파이프라인 잔재 — 읽지 말 것.
+**이 파일 하나로 충분하다.** 구 Actions + API 파이프라인(`daily-post.yml`, `auto-translate.yml`,
+`scripts/prompts/`)은 2026-10-01에 전부 삭제했다.
 탐색·검증은 아래 스크립트로만. ad-hoc bash 왕복으로 같은 정보를 다시 캐지 않는다.
 
 ## 0. 브랜치
