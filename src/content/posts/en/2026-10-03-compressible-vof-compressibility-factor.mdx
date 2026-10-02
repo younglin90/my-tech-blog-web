@@ -1,0 +1,256 @@
+---
+title: "I dropped K and the water compressed 1.86x too much — an interface error that refinement does not remove"
+date: 2026-10-03
+description: "Deriving the compressibility factor K of compressible VOF straight from the isobaric closure, then measuring how much liquid volume a zeroed or sign-flipped K shaves off in a 1D compression test."
+tags: ["Compressibility-Factor", "Compressible-Multiphase", "VOF", "Interface-Capturing", "Paper-Review"]
+locale: en
+slug: 2026-10-03-compressible-vof-compressibility-factor
+takeaway: "In an interface cell ψ+K is almost exactly zero. K is the coefficient that erases ψ∇·u, and without it the liquid gets squeezed at the gas's compressibility."
+draft: false
+---
+
+import { WoodSpeedDipTrack } from '@/components/post-viz/2026-10-03-compressible-vof-compressibility-factor/WoodSpeedDipTrack'
+import { AcidClosureSqueezeCell } from '@/components/post-viz/2026-10-03-compressible-vof-compressibility-factor/AcidClosureSqueezeCell'
+
+The colour-function transport equation of compressible VOF carries one extra term: $-(\psi+K)\nabla\cdot u$. I coded that $K$ up and printed its value. In a water–air interface cell at $\psi=0.5$ it came out as $K=-0.499947$, so $\psi+K=5.3\times10^{-5}$. The coefficient added to make the term correct had very nearly erased the term.
+
+This post derives $K$ from the isobaric closure, the same assumption Denner's pressure-based fully-coupled compressible multiphase finite-volume method uses. It then reproduces what happens in a 1D compression problem when $K$ is zeroed or sign-flipped: the liquid volume shrinks 1.86x and 4.23x more than physics allows. Finally it shows why refining the grid 8x removes only 7% of that error.
+
+## Why compressible VOF carries $-(\psi+K)\nabla\cdot u$
+
+In incompressible VOF the colour function simply rides along. With $\nabla\cdot u=0$, advection is the whole story. Once the flow is compressible, the fluid expands and contracts. The colour function is a volume fraction, so it has to follow that expansion.
+
+The paper writes it as
+
+$$
+\frac{\partial \psi}{\partial t} + \frac{\partial u_i \psi}{\partial x_i} - (\psi + K)\frac{\partial u_i}{\partial x_i} = 0
+$$
+
+Here $\psi$ is the liquid volume fraction, $u_i$ the velocity, and $K$ a material-dependent compressibility factor. Moving the third term over gives a material-derivative form.
+
+$$
+\frac{\mathrm{D}\psi}{\mathrm{D}t} = K\,\nabla\cdot u
+$$
+
+With $K=0$ the volume fraction never changes along a material path. That looks plausible and it is wrong. The $\nabla\cdot u$ seen by an interface cell is the *mixture* value, and the compressibility of a mixture is **dominated by the soft phase**.
+
+Put numbers on it. At 1 atm the bulk modulus of water is $\rho_l a_l^2 = 2.64\times10^9$ Pa; for air it is $\rho_g a_g^2 = 1.40\times10^5$ Pa. The ratio is 18,857. Mixture compressibility is a volume-fraction-weighted sum, so even at $\psi=0.5$ the air term accounts for essentially all of it. The mixture sound speed collapses to 23.65 m/s — 69 times slower than water and 14 times slower than air.
+
+Drag the volume fraction around in the simulation below.
+
+<WoodSpeedDipTrack />
+
+Lift the $\psi$ slider a hair above zero and the sound speed falls off a cliff, from 341 m/s to below 100 m/s. The track underneath shows how long an acoustic pulse needs to cross the same 2 m slab. With just 0.1% liquid by volume, the mixture lane visibly trails the pure-gas lane.
+
+## Where the number $K$ comes from
+
+$K$ comes out of an assumption: the **isobaric closure**. The two phases inside an interface cell share one pressure, and each responds with its own bulk modulus. This is the same content as the local single-phase assumption the paper uses for ACID.
+
+Follow a Lagrangian cell and require that the mass of phase $k$ is conserved:
+
+$$
+\frac{1}{V_k}\frac{\mathrm{D}V_k}{\mathrm{D}t} = -\frac{1}{\rho_k a_k^2}\frac{\mathrm{D}p}{\mathrm{D}t}
+$$
+
+$V_k$ is the volume that phase occupies and $\rho_k a_k^2$ is its bulk modulus. Summing over both phases gives the mixture divergence.
+
+$$
+\nabla\cdot u = -\left[\frac{\psi}{\rho_l a_l^2} + \frac{1-\psi}{\rho_g a_g^2}\right]\frac{\mathrm{D}p}{\mathrm{D}t}
+$$
+
+The bracket is the mixture compressibility, and the Wood sound speed drops out of it for free. Now differentiate $\psi = V_l/V$ and substitute both results:
+
+$$
+\frac{\mathrm{D}\psi}{\mathrm{D}t} = \psi(1-\psi)\left[\frac{1}{\rho_g a_g^2} - \frac{1}{\rho_l a_l^2}\right]\frac{\mathrm{D}p}{\mathrm{D}t}
+$$
+
+What multiplies through is the **difference** of the two compressibilities. If both phases share a bulk modulus, the volume fraction does not move at all. Comparing against $\mathrm{D}\psi/\mathrm{D}t = K\nabla\cdot u$ and cancelling $\mathrm{D}p/\mathrm{D}t$ leaves $K$:
+
+$$
+K = \frac{\rho_g a_g^2 - \rho_l a_l^2}{\dfrac{\rho_g a_g^2}{1-\psi} + \dfrac{\rho_l a_l^2}{\psi}}
+$$
+
+The denominator holds $1/\psi$ and $1/(1-\psi)$, which blow up in pure cells. Code the cancelled form instead:
+
+$$
+K = \frac{(\rho_g a_g^2 - \rho_l a_l^2)\,\psi(1-\psi)}{\rho_g a_g^2\,\psi + \rho_l a_l^2\,(1-\psi)}
+$$
+
+This version is simply zero at $\psi=0$ and $\psi=1$. The sign of the numerator depends entirely on which phase $\psi$ labels. Copy a published formula without checking that label and the sign can land inverted. We will measure what that costs.
+
+## If $\psi+K$ is $5\times10^{-5}$, can both terms go?
+
+Take the limit $\rho_l a_l^2 \gg \rho_g a_g^2$. The numerator tends to $-\rho_l a_l^2$ and the denominator to $\rho_l a_l^2(1-\psi)$, so
+
+$$
+K \to -\psi, \qquad \psi + K \to 0
+$$
+
+Physically that is exactly right. Water barely compresses, so the volume of water should only be advected. Driving $(\psi+K)\nabla\cdot u$ to zero is that behaviour.
+
+So why not skip both terms? Two reasons.
+
+First, a pure liquid cell has $\psi=1$ and $K=0$, which makes $(\psi+K)\nabla\cdot u = \nabla\cdot u$. Liquid does compress at its own rate, and that term is what delivers it. Second, how complete the cancellation is depends on the bulk-modulus ratio. For a ratio near 10 — supercritical fluids, or gas against gas — $\psi=0.5$ gives $\psi+K=0.0909$. That is not zero.
+
+The simulation below follows one interface cell in a Lagrangian frame while a piston squeezes it. You can switch between three closures.
+
+<AcidClosureSqueezeCell />
+
+The two columns on the left are the exact answer (isobaric closure) and the selected closure. Turn on `K = 0`, press play, and the blue liquid block shrinks far faster than the exact one. Pull the bulk-modulus-ratio slider down to 1.0 and all three closures converge. Watch the $\psi+K$ readout at the same time and the reason is visible.
+
+## What a 1 bar to 10 bar squeeze actually costs
+
+Measure it on an Eulerian grid. Fill the left half of $[0,1]$ with water and the right half with air. The left end is a wall ($u=0$); the right end is an open boundary that admits pure air. Raise the pressure linearly from 1 bar to 10 bar, spatially uniform. Use a stiffened-gas equation of state ($\gamma_l=4.4$, $\Pi_l=6\times10^8$ Pa) and integrate the face velocities from the mixture compressibility derived above.
+
+The water never reaches the right boundary, so liquid mass is conserved. That makes the exact liquid volume simply $\psi_0\,\rho_l(p_0)/\rho_l(p)$ — a reference solution for free.
+
+```python
+import math
+
+P0, PEND = 1.0e5, 1.0e6                    # 1 bar -> 10 bar
+GAM_L, PI_L, RHO_L0 = 4.4, 6.0e8, 1000.0   # water  (stiffened gas)
+GAM_G, PI_G, RHO_G0 = 1.4, 0.0,   1.2      # air
+
+def stiffened_rho(p, gam, pi, rho0):
+    return rho0 * ((p + pi) / (P0 + pi)) ** (1.0 / gam)
+
+def stiffened_bulk(p, gam, pi):
+    return gam * (p + pi)                  # rho*a^2
+
+def wood_speed(psi, p):
+    rho_m = psi * stiffened_rho(p, GAM_L, PI_L, RHO_L0) \
+          + (1 - psi) * stiffened_rho(p, GAM_G, PI_G, RHO_G0)
+    comp  = psi / stiffened_bulk(p, GAM_L, PI_L) \
+          + (1 - psi) / stiffened_bulk(p, GAM_G, PI_G)
+    return math.sqrt(1.0 / (rho_m * comp)), rho_m
+
+def compressibility_factor(psi, p, mode):
+    bl = stiffened_bulk(p, GAM_L, PI_L)
+    bg = stiffened_bulk(p, GAM_G, PI_G)
+    k = (bg - bl) * psi * (1 - psi) / (bg * psi + bl * (1 - psi))
+    return 0.0 if mode == 'zero' else (-k if mode == 'flip' else k)
+
+def squeeze_column(mode, ncell, nstep, psi0=0.5):
+    """left wall u=0, pure gas enters on the right, p(t) linear 1->10 bar"""
+    dx, dt = 1.0 / ncell, 1.0 / nstep
+    psi = [1.0 if (i + 0.5) * dx < psi0 else 0.0 for i in range(ncell)]
+    for n in range(nstep):
+        p    = P0 + (PEND - P0) * (n * dt)
+        pdot = PEND - P0
+        bl   = stiffened_bulk(p, GAM_L, PI_L)
+        bg   = stiffened_bulk(p, GAM_G, PI_G)
+        u = [0.0] * (ncell + 1)            # mixture compressibility -> du/dx
+        for i in range(ncell):
+            u[i + 1] = u[i] - dx * pdot * (psi[i] / bl + (1 - psi[i]) / bg)
+        nxt = psi[:]
+        for i in range(ncell):
+            ur, ul = u[i + 1], u[i]
+            right  = psi[i + 1] if i + 1 < ncell else 0.0
+            fr = ur * (psi[i] if ur > 0 else right)
+            fl = (ul * (psi[i - 1] if ul > 0 else psi[i])) if i > 0 else 0.0
+            src = (psi[i] + compressibility_factor(psi[i], p, mode)) * (ur - ul) / dx
+            nxt[i] = min(1.0, max(0.0, psi[i] - dt * (fr - fl) / dx + dt * src))
+        psi = nxt
+    exact = psi0 * stiffened_rho(P0, GAM_L, PI_L, RHO_L0) \
+                 / stiffened_rho(PEND, GAM_L, PI_L, RHO_L0)
+    return sum(psi) * dx, exact
+
+print("[1] stiffened-gas properties")
+for p in (P0, PEND):
+    rl = stiffened_rho(p, GAM_L, PI_L, RHO_L0)
+    rg = stiffened_rho(p, GAM_G, PI_G, RHO_G0)
+    print(f"  p={p/1e5:4.1f} bar  rho_l={rl:8.3f}  rho_g={rg:6.3f}"
+          f"  rho_l*a_l^2={stiffened_bulk(p,GAM_L,PI_L):.3e}"
+          f"  rho_g*a_g^2={stiffened_bulk(p,GAM_G,PI_G):.3e}")
+
+print("\n[2] K and (psi+K) at 1 bar")
+for psi in (0.10, 0.25, 0.50, 0.75, 0.90):
+    k = compressibility_factor(psi, P0, 'acid')
+    a, _ = wood_speed(psi, P0)
+    print(f"  psi={psi:4.2f}  K={k:+9.6f}  psi+K={psi+k:+.3e}  a_wood={a:7.2f} m/s")
+
+print("\n[3] liquid-volume change after 1->10 bar compression")
+print("  N     exact        ACID         K=0          K flipped    | x exact")
+for ncell in (50, 100, 200, 400):
+    out = {}
+    for mode in ('acid', 'zero', 'flip'):
+        v, exact = squeeze_column(mode, ncell, 10 * ncell)
+        out[mode] = v - 0.5
+    d = exact - 0.5
+    print(f"  {ncell:4d}  {d:.4e}  {out['acid']:.4e}  {out['zero']:.4e}  "
+          f"{out['flip']:.4e} |  {out['zero']/d:5.3f}  {out['flip']/d:5.3f}")
+```
+
+```text
+[1] stiffened-gas properties
+  p= 1.0 bar  rho_l=1000.000  rho_g= 1.200  rho_l*a_l^2=2.640e+09  rho_g*a_g^2=1.400e+05
+  p=10.0 bar  rho_l=1000.341  rho_g= 6.215  rho_l*a_l^2=2.644e+09  rho_g*a_g^2=1.400e+06
+
+[2] K and (psi+K) at 1 bar
+  psi=0.10  K=-0.099994  psi+K=+5.891e-06  a_wood=  39.23 m/s
+  psi=0.25  K=-0.249982  psi+K=+1.767e-05  a_wood=  27.28 m/s
+  psi=0.50  K=-0.499947  psi+K=+5.302e-05  a_wood=  23.65 m/s
+  psi=0.75  K=-0.749841  psi+K=+1.590e-04  a_wood=  27.32 m/s
+  psi=0.90  K=-0.899523  psi+K=+4.770e-04  a_wood=  39.43 m/s
+
+[3] liquid-volume change after 1->10 bar compression
+  N     exact        ACID         K=0          K flipped    | x exact
+    50  -1.7027e-04  -1.7027e-04  -3.1695e-04  -7.1967e-04 |  1.861  4.227
+   100  -1.7027e-04  -1.7027e-04  -3.1559e-04  -7.0606e-04 |  1.853  4.147
+   200  -1.7027e-04  -1.7027e-04  -3.1256e-04  -6.7737e-04 |  1.836  3.978
+   400  -1.7027e-04  -1.7027e-04  -3.0670e-04  -6.2727e-04 |  1.801  3.684
+```
+
+Over a tenfold pressure rise the water actually loses $1.70\times10^{-4}$ of volume, or 0.034% of its initial amount. The ACID closure reproduces that to five decimal places. Zeroing $K$ removes $3.13\times10^{-4}$ instead — 1.84 times the physical compression.
+
+The gap between 0.034% and 0.062% sounds small. But the quantity to compare against is not the total volume, it is the **physical compression**. The scheme added 84% of that amount out of nowhere. In a problem where the volume change *is* the answer — bubble collapse, cavitation — that ratio decides the result.
+
+## Does refining the grid 8x make it go away?
+
+The last two columns of table [3] answer that. Taking $N$ from 50 to 400 moved the $K=0$ ratio from 1.861 to 1.801. In absolute terms the error went from $1.467\times10^{-4}$ to $1.364\times10^{-4}$: a 7% reduction. That is not convergence.
+
+The reason is that $K=0$ is not a discretisation error. Setting $K=0$ changes the equation being solved into $\mathrm{D}\psi/\mathrm{D}t=0$. The scheme converges to the solution of a different equation, and there is no reason for the gap to vanish as $\Delta x\to0$.
+
+The remaining 7% comes from the smeared interface band changing shape slightly with the grid. The error equals the integral of $\psi\,\nabla\cdot u$ across that band, and the numerical diffusion of first-order upwinding widens the band in cell count as the grid refines. The band's physical thickness stays roughly fixed, so the integral does too.
+
+That property is bad news and good news. A grid-convergence study will not catch this bug. Conversely, if two grids leave the ratio flat, that flatness itself says the closure is wrong.
+
+## What an inverted sign looks like
+
+The third column is the sign-flipped run. With $K\to-K$ the factor becomes $\psi+K \to 2\psi$, and the compression jumps to 3.68–4.23 times the physical value. The direction flips too: the liquid fraction falls during compression, so on screen a bubble appears to grow.
+
+The trouble is that this also produces a plausible picture. The interface stays smooth, the volume fraction stays inside $[0,1]$, nothing diverges. Checking single-phase limits will not catch it either, because $K$ is zero at $\psi\to0$ and $\psi\to1$ for both signs.
+
+So when you transcribe the published formula, pin down in a comment which phase $\psi$ measures, then lock the sign with the 1D compression test above. On 50 cells it runs in about a second.
+
+## Where the same assumption shows up again, in the enthalpy
+
+The paper's ACID (Acoustically-Conservative Interface Discretisation) applies this isobaric closure to density and to enthalpy separately. Density is the easy half. Linearly interpolating the partial densities gives
+
+$$
+\rho = \rho_g + \psi(\rho_l - \rho_g)
+$$
+
+and that is mathematically identical to the isobaric closure. Mass and momentum conservation follow directly.
+
+Enthalpy is different. $h$ is a primary variable solved inside the linear system, so you cannot swap its interpolation the way you can for density. Instead the method computes a **target face enthalpy** that carries the ACID assumption:
+
+$$
+\hat{h}_f = \frac{1}{\tilde{\rho}_f}\left[\rho_U h_U + \xi_f L_f (\rho_D h_D - \rho_U h_U)\right]
+$$
+
+$U$ and $D$ are the upwind and downwind cells, $L_f$ is the interpolation weight, and $\xi_f$ is a limiter. The difference from the current value is then added to the energy equation as a deferred correction.
+
+$$
+\delta h_f = \hat{h}_f - \tilde{h}_f
+$$
+
+$K$ and $\delta h_f$ are two faces of one assumption. In the volume-fraction equation it closes algebraically and collapses into a single coefficient; in the enthalpy, a primary variable, it does not close and is deferred into an explicit source. The deferred half has to converge inside the iteration, so it shows up in the nonlinear iteration count. The same structure appears in [the linearisation of a pressure-based fully-coupled solver](/en/posts/2026-08-02-coupled-pressure-based-linearisation-all-mach/).
+
+## What let Denner drop the Riemann solver
+
+A density-based method keeps the contact discontinuity sharp by solving a Riemann problem at the interface. The pressure-based fully-coupled method removes $\rho$ from the solution variables and binds $u$, $p$ and $h$ into one linear system. The pressure–velocity decoupling of a collocated grid is suppressed by MWI, whose structure belongs to the same family as the pressure-gradient filtering in [SIMPLE and Rhie-Chow interpolation](/en/posts/2026-07-22-simple-pressure-velocity-coupling-rhie-chow/). At extreme density ratios the face density is weighted by a harmonic average.
+
+Dropping the Riemann solver also drops the machinery that handled interface physics for you. That gap has to be filled in by hand, with closure assumptions. $K$ and $\delta h_f$ are the filling.
+
+Stepping implicitly over a 23.65 m/s mixture sound speed without smearing the contact discontinuity demands that the closure be exact. The same trade shows up in low-Mach two-phase models. In [the second 1/M² hidden in the relative velocity](/en/posts/2026-09-27-all-mach-twophase-enthalpy-stiffness/), making the acoustics implicit simply moved the bill for $\Delta t$ elsewhere. The number 1.86 is a measurement of how much work that closure is doing.

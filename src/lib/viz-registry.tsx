@@ -23,6 +23,7 @@ function lazyViz(load: () => Promise<{ default: ComponentType }>): ComponentType
 
 export const VIZ_COMPONENTS: Record<string, ComponentType> = {
   "AbsoluteStabilityRegion": lazyViz(() => import("@/components/post-viz/2026-06-22-lu-sgs-implicit-time-integration/AbsoluteStabilityRegion").then((m) => ({ default: m.AbsoluteStabilityRegion }))),
+  "AcidClosureSqueezeCell": lazyViz(() => import("@/components/post-viz/2026-10-03-compressible-vof-compressibility-factor/AcidClosureSqueezeCell").then((m) => ({ default: m.AcidClosureSqueezeCell }))),
   "AcousticCFLBudget": lazyViz(() => import("@/components/post-viz/2026-07-26-imex-tvd-ap-low-mach/AcousticCFLBudget").then((m) => ({ default: m.AcousticCFLBudget }))),
   "AcousticCflBudgetDial": lazyViz(() => import("@/components/post-viz/2026-09-19-semi-implicit-pressure-linf-flattener/AcousticCflBudgetDial").then((m) => ({ default: m.AcousticCflBudgetDial }))),
   "AcousticConvectiveScales": lazyViz(() => import("@/components/post-viz/2026-06-06-weston-block-preconditioner-jfnk/AcousticConvectiveScales").then((m) => ({ default: m.AcousticConvectiveScales }))),
@@ -331,6 +332,7 @@ export const VIZ_COMPONENTS: Record<string, ComponentType> = {
   "WaveSpeedSplitChart": lazyViz(() => import("@/components/post-viz/2026-07-11-acoustic-convective-splitting-lagrange-projection/WaveSpeedSplitChart").then((m) => ({ default: m.WaveSpeedSplitChart }))),
   "WeberRegimeLadder": lazyViz(() => import("@/components/post-viz/2026-07-07-tab-droplet-breakup-weber/WeberRegimeLadder").then((m) => ({ default: m.WeberRegimeLadder }))),
   "WetDryAquifer1D": lazyViz(() => import("@/components/post-viz/2026-05-16-casulli-zanolli-2012-nested-newton-free-surface/WetDryAquifer1D").then((m) => ({ default: m.WetDryAquifer1D }))),
+  "WoodSpeedDipTrack": lazyViz(() => import("@/components/post-viz/2026-10-03-compressible-vof-compressibility-factor/WoodSpeedDipTrack").then((m) => ({ default: m.WoodSpeedDipTrack }))),
   "WoodVsFrozenSoundSpeed": lazyViz(() => import("@/components/post-viz/2026-05-09-saurel-2009-pressure-relaxation-multiphase/WoodVsFrozenSoundSpeed").then((m) => ({ default: m.WoodVsFrozenSoundSpeed }))),
   "WrinkledFlameFrontLab": lazyViz(() => import("@/components/post-viz/2026-07-28-turbulent-flame-speed-damkohler-bending/WrinkledFlameFrontLab").then((m) => ({ default: m.WrinkledFlameFrontLab }))),
 }
