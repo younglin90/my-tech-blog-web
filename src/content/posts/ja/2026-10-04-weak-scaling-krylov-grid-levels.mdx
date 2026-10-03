@@ -1,0 +1,207 @@
+---
+title: "コアを64倍にしたら効率が16.3%まで落ちた — 格子を細かくして測るweak scalingの罠"
+date: 2026-10-04
+description: "格子を細かくするweak scalingでKrylov反復が6.1倍になった理由と、マルチグリッドのレベル1段がその線を平らに戻す場所。"
+tags: ["Weak-Scaling", "Newton-Krylov", "Preconditioning", "Krylov", "Paper-Review"]
+locale: ja
+slug: 2026-10-04-weak-scaling-krylov-grid-levels
+takeaway: "weak scalingの線が平らかどうかを決めるのは並列化の質ではなく、前処理のレベル数である。"
+draft: false
+---
+
+import { WeakScalingTreadmillLab } from '@/components/post-viz/2026-10-04-weak-scaling-krylov-grid-levels/WeakScalingTreadmillLab'
+import { LevelLadderEfficiencyDial } from '@/components/post-viz/2026-10-04-weak-scaling-krylov-grid-levels/LevelLadderEfficiencyDial'
+
+## 効率16.3%、しかし並列化に欠点はなかった
+
+スーパーコンピュータの計算資源申請書にはscalingのグラフを添える必要があります。コアあたりのセル数を固定し、コアを1→4→16→64と増やしながら時間を測ります。理想的には線が平らになるはずです。私が得た線は平らではありませんでした。効率が1.000から0.163へ落ちたのです。MPI通信量でも負荷不均衡でもありません。原因は測り方そのものに隠れていました。この記事ではHammond・Lichtner・Mills(2014)のPFLOTRAN性能論文が指摘した箇所をたどり、同じ現象をPython約100行で再現し、レベル1段で元に戻します。
+
+読み終えると二つのものが残ります。第一に、weak scalingの線が傾いたとき、コードを疑うべきか前処理を疑うべきかを見分ける基準です。第二に、「マルチグリッドはweak scalingに強い」という言い方がどんな条件で成り立ち、どんな条件で崩れるかです。
+
+## 格子を細かくする側を選ぶと問題そのものが変わる
+
+weak scalingの測り方は二つあります。格子間隔を固定して**領域を大きくする**か、領域を固定して**格子を細かくする**かです。PFLOTRANの著者らは後者を選びました。理由は実務的です。帯水層ひとつをモデル化するのに、その帯水層がコア数に比例して大きくなることはありません。領域はいつも5000 m × 2500 mです。コアが増えればその領域をより細かく刻むだけです。
+
+ところがこの選択は静かに一線を越えます。領域を大きくする側では自由度が増えるだけで、解く問題は変わりません。格子を細かくする側では**解く問題が毎回変わります**。離散化行列の固有値スペクトルが格子間隔に連れて動くからです。64コアの実行と1コアの実行は、同じ仕事を64等分したものではなく、別々の線形系を解いたものです。
+
+下のシミュレーションで前処理と格子の細かさを直接変えてみましょう。
+
+<WeakScalingTreadmillLab />
+
+スライダーを右に動かすとコア数と格子がともに4倍ずつ増え、コアあたりのセル数は2048に固定されます。三つのボタンで前処理を切り替え、sweepsカウンタを比べてください。point Jacobiでは注入井・揚水井の近くの短い揺らぎはすぐ消えますが、領域全体にまたがる緩やかな染みが最後まで残ります。その染みが反復回数を決めています。
+
+## strongとweakは別の問いに答えている
+
+二つの指標の定義をはっきりさせます。strong scalingは問題サイズを固定したままコアを増やします。相対加速比と相対効率はこう書きます。
+$$
+S_p = \frac{T_{\mathrm{base}}}{T_p}, \qquad
+E_p = \frac{T_{\mathrm{base}}\, p_{\mathrm{base}}}{T_p\, p} = \frac{S_p}{S_{p,\mathrm{ideal}}}
+$$
+$T_p$はコア$p$個での壁時計時間、$p_{\mathrm{base}}$は基準コア数です。数千コア規模ではコア1個に問題が収まらないので、基準は常に相対的です。
+
+weak scalingはコアあたりの問題サイズを固定し、両方を同じ倍率$\alpha$で大きくします。
+$$
+E_{n,p} = \frac{T_{n_{\mathrm{base}},\, p_{\mathrm{base}}}}{T_{n,p}},
+\qquad n = \alpha\, n_{\mathrm{base}}, \quad p = \alpha\, p_{\mathrm{base}}
+$$
+ここでの理想値は$E_{n,p} = 1$、つまり平らな線です。負荷不均衡は別に測ります。$\mathrm{LI} = (\mathrm{dof}_{\max} - \mathrm{dof}_{\min}) / \mathrm{dof}_{\min}$が0に近ければ均等に分かれたという意味です。私の場合、領域分割は完全に均等だったので$\mathrm{LI} = 0$でした。したがって不均衡は容疑者から外れます。
+
+## 反復回数が$h^{-1}$で伸びる算数
+
+残る容疑者は線形ソルバです。離散ラプラシアンの固有値を見れば答えが出ます。一辺$L$の領域を間隔$h$で切った5点差分行列では
+$$
+\lambda_{\min} \simeq \frac{\pi^2 h^2}{L^2}, \qquad
+\lambda_{\max} \simeq 8, \qquad
+\kappa(A) = \frac{\lambda_{\max}}{\lambda_{\min}} \simeq \frac{8 L^2}{\pi^2 h^2}
+$$
+$\kappa$は条件数、すなわち最大固有値と最小固有値の比です。格子を半分に詰めると$\kappa$は4倍になります。共役勾配法の反復回数の上限は条件数の平方根に比例します。
+$$
+k_{\mathrm{CG}} \lesssim \tfrac{1}{2}\sqrt{\kappa}\, \ln\frac{2}{\varepsilon} \sim \mathcal{O}(h^{-1}) = \mathcal{O}(N^{1/2})
+$$
+$N$は未知数の個数、$\varepsilon$は目標相対残差です。二次元では$h$を半分にするとセルは4倍、反復は2倍です。[GMRESとArnoldi過程](/ja/posts/2026-06-24-gmres-arnoldi-krylov-solver/)で見たように、Krylov部分空間は行列ベクトル積1回で1次元ずつしか伸びません。情報が格子を横切る速さは1反復で1セルなのです。
+
+点Jacobi前処理はこの算数を変えません。対角成分で割るのはスペクトルを平行移動・スケール変更するだけで、両端の比には触れません。ブロックJacobiも事情は似ています。ブロック内は正確に解きますが、ブロック境界を越える長い波長は依然として反復だけで伝わります。コアが増えればブロックはより細かく割れるので、むしろ不利になります。
+
+## 同じdoubletに前処理を三つ掛けた
+
+論文のregional doubletを縮小して再現しました。5000 m × 2500 mの均質帯水層、西から東へ掛けた水頭差、そして注入井ひとつと揚水井ひとつです。定常の飽和流なので$-\nabla\cdot(K\nabla h) = q$の一行です。コアあたりセル2048個を固定し、格子を四段階で細かくしながらPCGの反復回数を数えました。
+
+```python
+import numpy as np
+
+def apply_laplace(x):
+    """h^2-scaled 5-point operator: Dirichlet on x-faces, no-flow on y-faces."""
+    ny, nx = x.shape
+    xp = np.empty((ny + 2, nx + 2))
+    xp[1:-1, 1:-1] = x
+    xp[0, 1:-1] = x[0, :]        # no-flow (ghost = mirror)
+    xp[-1, 1:-1] = x[-1, :]
+    xp[1:-1, 0] = -x[:, 0]       # Dirichlet 0 (ghost = -x)
+    xp[1:-1, -1] = -x[:, -1]
+    return 4.0 * x - xp[1:-1, :-2] - xp[1:-1, 2:] - xp[:-2, 1:-1] - xp[2:, 1:-1]
+
+def diag_of(ny, nx):
+    d = np.full((ny, nx), 4.0)
+    d[:, 0] += 1.0
+    d[:, -1] += 1.0
+    d[0, :] -= 1.0
+    d[-1, :] -= 1.0
+    return d
+
+def make_rhs(ny, nx, head_w, head_e, well_rate):
+    """regional gradient + injection/extraction doublet, h^2-scaled."""
+    b = np.zeros((ny, nx))
+    b[:, 0] += 2.0 * head_w
+    b[:, -1] += 2.0 * head_e
+    b[ny // 2, nx // 10 * 3] += well_rate
+    b[ny // 2, nx // 10 * 7] -= well_rate
+    return b
+
+def jacobi_smooth(x, b, d, nu, omega=0.8):
+    for _ in range(nu):
+        x += omega * (b - apply_laplace(x)) / d
+    return x
+
+def restrict_avg(r):
+    return 0.25 * (r[0::2, 0::2] + r[1::2, 0::2] + r[0::2, 1::2] + r[1::2, 1::2])
+
+def prolong_const(e):
+    return np.repeat(np.repeat(e, 2, axis=0), 2, axis=1)
+
+def vcycle(x, b, level, max_level):
+    ny, nx = x.shape
+    d = diag_of(ny, nx)
+    if level == max_level or min(ny, nx) <= 4:
+        return jacobi_smooth(x, b, d, 40)
+    x = jacobi_smooth(x, b, d, 2)
+    rc = 4.0 * restrict_avg(b - apply_laplace(x))
+    ec = vcycle(np.zeros_like(rc), rc, level + 1, max_level)
+    x += prolong_const(ec)
+    return jacobi_smooth(x, b, d, 2)
+
+def pcg_solve(b, precond, rtol=1e-8, maxit=20000):
+    x = np.zeros_like(b)
+    r = b - apply_laplace(x)
+    nrm0 = np.linalg.norm(r)
+    z = precond(r)
+    p, rz = z.copy(), float(np.sum(r * z))
+    for k in range(1, maxit + 1):
+        Ap = apply_laplace(p)
+        alpha = rz / float(np.sum(p * Ap))
+        x += alpha * p
+        r -= alpha * Ap
+        if np.linalg.norm(r) / nrm0 < rtol:
+            return x, k
+        z = precond(r)
+        rz_new = float(np.sum(r * z))
+        p = z + (rz_new / rz) * p
+        rz = rz_new
+    return x, maxit
+
+def weak_scaling_table(dof_per_proc=2048):
+    print(f"{'procs':>6}{'grid':>12}{'dof':>9} | {'Jacobi':>7}{'E':>7} | "
+          f"{'MG-3lv':>7}{'E':>7} | {'MG-grow':>8}{'E':>7}")
+    base = {}
+    for k in range(4):
+        p = 4 ** k
+        ny, nx = 32 * 2 ** k, 64 * 2 ** k
+        b = make_rhs(ny, nx, 10.0, 0.0, 40.0)
+        assert ny * nx == dof_per_proc * p
+        row = []
+        for name, pre in (
+            ("jac", lambda r: r / diag_of(*r.shape)),
+            ("mg3", lambda r: vcycle(np.zeros_like(r), r, 0, 2)),
+            ("mgg", lambda r: vcycle(np.zeros_like(r), r, 0, 99)),
+        ):
+            _, it = pcg_solve(b, pre)
+            base.setdefault(name, it)
+            row.append((it, base[name] / it))
+        print(f"{p:>6}{f'{nx}x{ny}':>12}{ny*nx:>9} | " + " | ".join(
+            f"{it:>7}{eff:>7.3f}" for it, eff in row))
+
+weak_scaling_table()
+```
+
+```text
+ procs        grid      dof |  Jacobi      E |  MG-3lv      E |  MG-grow      E
+     1       64x32     2048 |     210  1.000 |      10  1.000 |       9  1.000
+     4      128x64     8192 |     407  0.516 |      16  0.625 |       9  1.000
+    16     256x128    32768 |     754  0.279 |      28  0.357 |      10  0.900
+    64     512x256   131072 |    1285  0.163 |      47  0.213 |      10  0.900
+```
+
+点Jacobi列の反復回数は210→407→754→1285です。格子が8倍に詰まるあいだに6.1倍になりました。段階ごとの比は1.94、1.85、1.70で、前節の$\mathcal{O}(h^{-1})$という見積もりと合います。コアあたりのセル数は固定なので、反復1回あたりのコアあたり費用も固定です。したがって効率は反復回数の逆比そのままに0.163まで落ちます。通信やキャッシュを手直しして取り戻せる数字ではありません。
+
+## レベル1段が47を10に戻した
+
+三列目が答えです。V-サイクルのレベルを3段に**固定**すると反復は10→47に伸びます。レベルを格子とともに増やし、最も粗い格子が常に8 × 4セルで残るようにすると9→10です。効率0.900。実質的に平らです。
+
+理由は一文で書けます。Krylovソルバは単一格子上の緩和子のように振る舞い、高周波の誤差を速く消して低周波の誤差を残します。一方[マルチグリッドのV-サイクル](/ja/posts/2026-05-06-multigrid-v-cycle-poisson-acceleration/)は格子階層の全体で緩和するので、すべての波長を1サイクルで触ります。ただしその階層が最も長い波長まで届くという条件が付きます。レベルを3段に縛れば、512 × 256の格子で最も粗い格子は128 × 64です。128セル幅の誤差波はその格子でも依然として低周波です。誰もそれを消しません。
+
+レベル数と格子を別々に動かし、どの組み合わせで線が平らになるか確かめてみましょう。
+
+<LevelLadderEfficiencyDial />
+
+左の梯子の各段が1レベルで、横の棒がその段が減衰させる波長の範囲です。レベルのスライダーを1にすると棒がひとつだけ残ります。格子のスライダーを右に動かしながら、最も粗い格子の大きさがどう変わるか、右の効率曲線のどれが強調されるかを見てください。
+
+## マルチグリッドが無料ではない場所
+
+ここで止めると「常にマルチグリッドを使え」という結論になります。論文は反対側も書き留めています。
+
+第一に、レベルを増やすには代償があります。問題が大きくなるたびに階層をもう一段積まないと最適な収束が保てませんが、その設定費用がコア数とともに伸びます。hypreやGAMGのような代数マルチグリッドではcoarsening自体が通信集約的です。Kollet他(2010)の結果では、solver setupの効率が16,384コア付近でほぼ0まで落ちます。反復回数は平らなのに設定時間が全体を食う形です。
+
+第二に、すべてのPDEがマルチグリッドに向くわけではありません。地下水流のように楕円型・放物型で初期推定が解から遠いときはマルチグリッドが光ります。一方、移流が支配する地化学輸送は時間刻みが小さく、行列が強く対角優位になります。そういう行列では点JacobiやILU(0)のような平凡な前処理で既に十分です。レベルを積む理由がありません。多相流を表す系へのマルチグリッド適用はまだ研究課題です。
+
+第三に、前処理の適正な費用は格子の性質に依ります。伸張格子では方向ごとの結合の強さが大きく違うので、[ラインレット前処理](/ja/posts/2026-07-31-linelet-preconditioner-stretched-grid/)のように一方向だけ正確に解くほうが安く効きます。
+
+## PFLOTRANの著者がstrong scalingを先に見よと言う理由
+
+論文の論調は明確です。実務では固定された領域が与えられ、コアをより多く使って同じ問題を速く解きたいのであり、その問いに答えるのはstrong scalingです。ところがマルチグリッドのソルバ論文はweak scalingだけを載せることが多いのです。マルチグリッドは問題が大きくなるときに際立つので当然の選択です。問題は片側だけ見せるとKrylovソルバに対するstrong scaling性能を比較できないことです。逆にstrong scalingだけを載せる論文にも同じ欠点があります。
+
+PFLOTRAN自身のstrong scalingは銅浸出シナリオで4096コアまでほぼ理想的で、そこから折れます。折れる地点でコアあたりの自由度は768個でした。自由度3.1 Mの問題も49 Kの問題も同じ比で折れました。この数字のほうが実務的には効率曲線全体より有用です。コアあたりの自由度が1000個を下回ってはいけない、という意味です。
+
+## scalingのグラフで最初に確かめる数字
+
+壁時計時間より先に見るべきは**反復回数**です。非線形反復と線形反復をコア数とともに書き留めておけば、傾いた線が並列化のせいかソルバのせいか一目で分かれます。反復が平らなのに時間が伸びるなら通信・メモリの問題です。反復がともに伸びるならそれはアルゴリズムの問題で、MPIをいくら手直ししても取り戻せません。
+
+そしてweak scalingのグラフを描くときは、どちら向きに大きくしたのかをキャプションに書いておきましょう。領域を大きくしたのか、格子を細かくしたのか。同じグラフの形がまったく違う意味になります。

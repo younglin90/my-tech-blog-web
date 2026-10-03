@@ -1,0 +1,207 @@
+---
+title: "Multipliqué los núcleos por 64 y la eficiencia cayó a 16.3% — la trampa de medir weak scaling refinando la malla"
+date: 2026-10-04
+description: "Por qué las iteraciones de Krylov crecieron 6.1 veces en un estudio de weak scaling que refina la malla, y cómo un nivel más de multigrid devuelve la curva a plana."
+tags: ["Weak-Scaling", "Newton-Krylov", "Preconditioning", "Krylov", "Paper-Review"]
+locale: es
+slug: 2026-10-04-weak-scaling-krylov-grid-levels
+takeaway: "Que una curva de weak scaling salga plana lo decide el número de niveles del precondicionador, no la calidad de la paralelización."
+draft: false
+---
+
+import { WeakScalingTreadmillLab } from '@/components/post-viz/2026-10-04-weak-scaling-krylov-grid-levels/WeakScalingTreadmillLab'
+import { LevelLadderEfficiencyDial } from '@/components/post-viz/2026-10-04-weak-scaling-krylov-grid-levels/LevelLadderEfficiencyDial'
+
+## Eficiencia del 16.3%, y nada que reprochar a la paralelización
+
+Una solicitud de horas de supercómputo exige adjuntar una gráfica de scaling. Se fija el número de celdas por núcleo, se sube el número de núcleos de 1 a 4, a 16 y a 64, y se mide el tiempo de cada corrida. Lo ideal es que la línea salga plana. La mía no salió plana. La eficiencia cayó de 1.000 a 0.163. Ni el tráfico MPI ni el desbalance de carga eran los culpables. El culpable estaba escondido en la propia forma de medir. Este artículo recorre el punto que señalaron Hammond, Lichtner y Mills (2014) en su artículo de rendimiento de PFLOTRAN, reproduce el mismo comportamiento en unas cien líneas de Python y lo revierte con un nivel más.
+
+Al terminar quedan dos cosas. Primero, un criterio para decidir si una curva de weak scaling inclinada acusa al código o al precondicionador. Segundo, en qué condiciones se sostiene la frase "multigrid es bueno para weak scaling" y en qué condiciones se derrumba.
+
+## Elegir el refinamiento de malla cambia el problema mismo
+
+Hay dos formas de medir weak scaling. Mantener fijo el espaciamiento y **agrandar el dominio**, o mantener fijo el dominio y **refinar la malla**. Los autores de PFLOTRAN eligieron lo segundo. La razón es práctica. Se modela un acuífero, y ese acuífero no crece en proporción al número de núcleos. El dominio sigue siendo de 5000 m por 2500 m. Más núcleos solo significa cortarlo más fino.
+
+Pero esa elección cruza una línea en silencio. Agrandar el dominio solo suma grados de libertad y el problema que se resuelve no cambia. Refinar la malla significa que **el problema cambia en cada punto de la gráfica**. El espectro de valores propios de la matriz de discretización viaja junto con el espaciamiento. Una corrida de 64 núcleos y una de 1 núcleo no son el mismo trabajo repartido en 64 partes: son dos sistemas lineales distintos.
+
+Cambia el precondicionador y el grado de refinamiento en la simulación de abajo.
+
+<WeakScalingTreadmillLab />
+
+Al mover el deslizador a la derecha, el número de núcleos y la malla crecen por cuatro a la vez, y las celdas por núcleo quedan fijas en 2048. Con los tres botones se cambia el precondicionador: conviene comparar los contadores de sweeps. Con point Jacobi, las ondulaciones cortas cerca del pozo de inyección y del de extracción desaparecen de inmediato, pero una mancha suave que cubre todo el dominio sobrevive hasta el final. Esa mancha es la que fija el número de iteraciones.
+
+## Strong y weak responden preguntas distintas
+
+Conviene fijar las dos métricas. El strong scaling mantiene fijo el tamaño del problema y agrega núcleos. La aceleración y la eficiencia relativas se escriben así.
+$$
+S_p = \frac{T_{\mathrm{base}}}{T_p}, \qquad
+E_p = \frac{T_{\mathrm{base}}\, p_{\mathrm{base}}}{T_p\, p} = \frac{S_p}{S_{p,\mathrm{ideal}}}
+$$
+Donde $T_p$ es el tiempo de reloj en $p$ núcleos y $p_{\mathrm{base}}$ es el número de núcleos de referencia. A escala de miles de núcleos el problema no cabe en un solo núcleo, así que la referencia siempre es relativa.
+
+El weak scaling fija el tamaño del problema por núcleo y hace crecer ambos por el mismo factor $\alpha$.
+$$
+E_{n,p} = \frac{T_{n_{\mathrm{base}},\, p_{\mathrm{base}}}}{T_{n,p}},
+\qquad n = \alpha\, n_{\mathrm{base}}, \quad p = \alpha\, p_{\mathrm{base}}
+$$
+Aquí el valor ideal es $E_{n,p} = 1$, es decir, una línea plana. El desbalance de carga se mide aparte: $\mathrm{LI} = (\mathrm{dof}_{\max} - \mathrm{dof}_{\min}) / \mathrm{dof}_{\min}$ cercano a cero indica un reparto parejo. En este caso la descomposición de dominio era exactamente pareja, con $\mathrm{LI} = 0$, así que el desbalance sale de la lista de sospechosos.
+
+## La aritmética que hace crecer las iteraciones como $h^{-1}$
+
+El sospechoso que queda es el solver lineal, y los valores propios del laplaciano discreto lo delatan. Para una matriz de cinco puntos sobre un dominio de lado $L$ cortado con espaciamiento $h$,
+$$
+\lambda_{\min} \simeq \frac{\pi^2 h^2}{L^2}, \qquad
+\lambda_{\max} \simeq 8, \qquad
+\kappa(A) = \frac{\lambda_{\max}}{\lambda_{\min}} \simeq \frac{8 L^2}{\pi^2 h^2}
+$$
+donde $\kappa$ es el número de condición, la razón entre el mayor y el menor valor propio. Si el espaciamiento se reduce a la mitad, $\kappa$ se cuadruplica. La cota de iteraciones del método de gradiente conjugado va con la raíz cuadrada del número de condición.
+$$
+k_{\mathrm{CG}} \lesssim \tfrac{1}{2}\sqrt{\kappa}\, \ln\frac{2}{\varepsilon} \sim \mathcal{O}(h^{-1}) = \mathcal{O}(N^{1/2})
+$$
+$N$ es la cantidad de incógnitas y $\varepsilon$ el residuo relativo objetivo. En dos dimensiones, al reducir $h$ a la mitad las celdas se multiplican por cuatro y las iteraciones por dos. Como se vio en [GMRES y el proceso de Arnoldi](/es/posts/2026-06-24-gmres-arnoldi-krylov-solver/), un subespacio de Krylov crece exactamente una dimensión por cada producto matriz-vector. La información cruza la malla a razón de una celda por iteración.
+
+El precondicionamiento de Jacobi puntual no cambia esa aritmética. Dividir por la diagonal traslada y reescala el espectro sin tocar la razón entre sus extremos. Al Jacobi por bloques le pasa algo parecido. Resuelve cada bloque de forma exacta, pero las longitudes de onda largas que cruzan las fronteras de bloque siguen viajando solo por iteración. Más núcleos implica bloques más pequeños, lo cual empeora el panorama.
+
+## Tres precondicionadores sobre el mismo doublet
+
+Reduje el regional doublet del artículo y lo volví a correr: un acuífero homogéneo de 5000 m por 2500 m, una diferencia de carga hidráulica impuesta de oeste a este, un pozo de inyección y uno de extracción. Flujo saturado estacionario, así que todo el modelo es $-\nabla\cdot(K\nabla h) = q$. Con 2048 celdas por núcleo fijas, refiné la malla en cuatro etapas y conté las iteraciones de PCG.
+
+```python
+import numpy as np
+
+def apply_laplace(x):
+    """h^2-scaled 5-point operator: Dirichlet on x-faces, no-flow on y-faces."""
+    ny, nx = x.shape
+    xp = np.empty((ny + 2, nx + 2))
+    xp[1:-1, 1:-1] = x
+    xp[0, 1:-1] = x[0, :]        # no-flow (ghost = mirror)
+    xp[-1, 1:-1] = x[-1, :]
+    xp[1:-1, 0] = -x[:, 0]       # Dirichlet 0 (ghost = -x)
+    xp[1:-1, -1] = -x[:, -1]
+    return 4.0 * x - xp[1:-1, :-2] - xp[1:-1, 2:] - xp[:-2, 1:-1] - xp[2:, 1:-1]
+
+def diag_of(ny, nx):
+    d = np.full((ny, nx), 4.0)
+    d[:, 0] += 1.0
+    d[:, -1] += 1.0
+    d[0, :] -= 1.0
+    d[-1, :] -= 1.0
+    return d
+
+def make_rhs(ny, nx, head_w, head_e, well_rate):
+    """regional gradient + injection/extraction doublet, h^2-scaled."""
+    b = np.zeros((ny, nx))
+    b[:, 0] += 2.0 * head_w
+    b[:, -1] += 2.0 * head_e
+    b[ny // 2, nx // 10 * 3] += well_rate
+    b[ny // 2, nx // 10 * 7] -= well_rate
+    return b
+
+def jacobi_smooth(x, b, d, nu, omega=0.8):
+    for _ in range(nu):
+        x += omega * (b - apply_laplace(x)) / d
+    return x
+
+def restrict_avg(r):
+    return 0.25 * (r[0::2, 0::2] + r[1::2, 0::2] + r[0::2, 1::2] + r[1::2, 1::2])
+
+def prolong_const(e):
+    return np.repeat(np.repeat(e, 2, axis=0), 2, axis=1)
+
+def vcycle(x, b, level, max_level):
+    ny, nx = x.shape
+    d = diag_of(ny, nx)
+    if level == max_level or min(ny, nx) <= 4:
+        return jacobi_smooth(x, b, d, 40)
+    x = jacobi_smooth(x, b, d, 2)
+    rc = 4.0 * restrict_avg(b - apply_laplace(x))
+    ec = vcycle(np.zeros_like(rc), rc, level + 1, max_level)
+    x += prolong_const(ec)
+    return jacobi_smooth(x, b, d, 2)
+
+def pcg_solve(b, precond, rtol=1e-8, maxit=20000):
+    x = np.zeros_like(b)
+    r = b - apply_laplace(x)
+    nrm0 = np.linalg.norm(r)
+    z = precond(r)
+    p, rz = z.copy(), float(np.sum(r * z))
+    for k in range(1, maxit + 1):
+        Ap = apply_laplace(p)
+        alpha = rz / float(np.sum(p * Ap))
+        x += alpha * p
+        r -= alpha * Ap
+        if np.linalg.norm(r) / nrm0 < rtol:
+            return x, k
+        z = precond(r)
+        rz_new = float(np.sum(r * z))
+        p = z + (rz_new / rz) * p
+        rz = rz_new
+    return x, maxit
+
+def weak_scaling_table(dof_per_proc=2048):
+    print(f"{'procs':>6}{'grid':>12}{'dof':>9} | {'Jacobi':>7}{'E':>7} | "
+          f"{'MG-3lv':>7}{'E':>7} | {'MG-grow':>8}{'E':>7}")
+    base = {}
+    for k in range(4):
+        p = 4 ** k
+        ny, nx = 32 * 2 ** k, 64 * 2 ** k
+        b = make_rhs(ny, nx, 10.0, 0.0, 40.0)
+        assert ny * nx == dof_per_proc * p
+        row = []
+        for name, pre in (
+            ("jac", lambda r: r / diag_of(*r.shape)),
+            ("mg3", lambda r: vcycle(np.zeros_like(r), r, 0, 2)),
+            ("mgg", lambda r: vcycle(np.zeros_like(r), r, 0, 99)),
+        ):
+            _, it = pcg_solve(b, pre)
+            base.setdefault(name, it)
+            row.append((it, base[name] / it))
+        print(f"{p:>6}{f'{nx}x{ny}':>12}{ny*nx:>9} | " + " | ".join(
+            f"{it:>7}{eff:>7.3f}" for it, eff in row))
+
+weak_scaling_table()
+```
+
+```text
+ procs        grid      dof |  Jacobi      E |  MG-3lv      E |  MG-grow      E
+     1       64x32     2048 |     210  1.000 |      10  1.000 |       9  1.000
+     4      128x64     8192 |     407  0.516 |      16  0.625 |       9  1.000
+    16     256x128    32768 |     754  0.279 |      28  0.357 |      10  0.900
+    64     512x256   131072 |    1285  0.163 |      47  0.213 |      10  0.900
+```
+
+La columna de Jacobi puntual marca 210, 407, 754 y 1285. Mientras la malla se apretaba ocho veces, el conteo creció 6.1 veces. Las razones por etapa son 1.94, 1.85 y 1.70, acordes con la estimación $\mathcal{O}(h^{-1})$ de la sección anterior. Las celdas por núcleo están fijas, así que el costo por núcleo de cada iteración también lo está, y la eficiencia cae a 0.163 como el inverso exacto del crecimiento de iteraciones. No es un número que se recupere ajustando la comunicación o el uso de caché.
+
+## Un nivel convirtió 47 otra vez en 10
+
+La tercera columna tiene la respuesta. Si el V-cycle se **congela** en tres niveles, las iteraciones crecen de 10 a 47. Si los niveles crecen junto con la malla, de modo que la malla más gruesa se mantenga siempre en 8 por 4 celdas, el conteo va de 9 a 10. Eficiencia 0.900. Plana, para fines prácticos.
+
+La razón cabe en una frase. Un solver de Krylov se comporta como un suavizador sobre una sola malla: borra rápido el error de alta frecuencia y deja atrás el de baja frecuencia. En cambio, un [V-cycle de multigrid](/es/posts/2026-05-06-multigrid-v-cycle-poisson-acceleration/) relaja sobre toda la jerarquía de mallas, así que toca todas las longitudes de onda en un solo ciclo. La condición es que esa jerarquía alcance la longitud de onda más larga. Con tres niveles fijos, la malla más gruesa bajo un problema de 512 por 256 es de 128 por 64. Una onda de error de 128 celdas de ancho sigue siendo de baja frecuencia allí. Nadie la borra.
+
+Conviene mover el número de niveles y la malla por separado para ver qué combinación aplana la curva.
+
+<LevelLadderEfficiencyDial />
+
+Cada escalón de la escalera de la izquierda es un nivel, y la barra de al lado es la banda de longitudes de onda que ese nivel amortigua. Con el deslizador de niveles en 1 queda una sola barra. Al mover el deslizador de malla a la derecha se puede observar cómo cambia el tamaño de la malla más gruesa y cuál de las tres curvas de eficiencia de la derecha queda resaltada.
+
+## Dónde multigrid no sale gratis
+
+Detenerse aquí se leería como "usar siempre multigrid". El artículo también anota el otro lado.
+
+Primero, agregar niveles cuesta. Cada vez que el problema crece hay que apilar un escalón más para preservar la convergencia óptima, y ese costo de preparación crece con el número de núcleos. En multigrid algebraico como hypre o GAMG, el propio coarsening es intensivo en comunicación. En los resultados de Kollet et al. (2010), la eficiencia del solver setup baja a casi cero cerca de los 16,384 núcleos. El conteo de iteraciones queda plano mientras el tiempo de preparación se come la corrida.
+
+Segundo, no toda EDP le queda bien a multigrid. Multigrid brilla en problemas elípticos y parabólicos como el flujo subterráneo, donde la estimación inicial está lejos de la solución. El transporte geoquímico dominado por advección es lo contrario: los pasos de tiempo pequeños vuelven la matriz fuertemente dominante en la diagonal, y sobre esas matrices precondicionadores corrientes como Jacobi puntual e ILU(0) ya resultan suficientes. No hay motivo para apilar niveles. Aplicar multigrid a sistemas que describen flujo multifásico sigue siendo tema de investigación.
+
+Tercero, el costo razonable del precondicionador depende del carácter de la malla. En mallas estiradas las intensidades de acoplamiento por dirección difieren mucho, y algo como un [precondicionador linelet](/es/posts/2026-07-31-linelet-preconditioner-stretched-grid/), que resuelve una sola dirección de forma exacta, logra el mismo efecto por menos.
+
+## Por qué los autores de PFLOTRAN piden ver primero el strong scaling
+
+La postura del artículo es clara. En la práctica se recibe un dominio fijo y se quiere resolver ese mismo problema más rápido gastando más núcleos, y lo que responde esa pregunta es el strong scaling. Sin embargo, los artículos de solvers multigrid suelen reportar solo weak scaling. Multigrid destaca cuando el problema crece, así que la elección no sorprende. El problema es que mostrar un solo lado vuelve imposible evaluar el rendimiento de strong scaling frente a un solver de Krylov. Los artículos que reportan solo strong scaling cargan el defecto espejo.
+
+El propio strong scaling de PFLOTRAN es casi ideal hasta 4096 núcleos en el escenario de lixiviación de cobre, y después se dobla. En el codo, cada núcleo tenía 768 grados de libertad. Tanto el caso de 3.1 M como el de 49 K se doblaron en la misma razón. Ese único número resulta más útil en la práctica que toda la curva de eficiencia: no bajar de unos 1000 grados de libertad por núcleo.
+
+## El número que conviene revisar primero en una gráfica de scaling
+
+Antes del tiempo de reloj hay que mirar el **conteo de iteraciones**. Al tabular las iteraciones no lineales y lineales contra el número de núcleos, una línea inclinada se separa limpiamente en un problema de paralelización o un problema de solver. Iteraciones planas con tiempo creciente apunta a comunicación o memoria. Iteraciones que crecen junto con el tiempo es un problema algorítmico, y ningún ajuste de MPI lo recupera.
+
+Y al graficar weak scaling, conviene anotar en el pie de figura hacia dónde se hizo crecer el caso: el dominio o la malla. La misma forma de curva carga un significado completamente distinto.

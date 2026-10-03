@@ -1,0 +1,207 @@
+---
+title: "I Added 64x the Cores and Weak-Scaling Efficiency Fell to 16.3% — The Trap of Measuring It by Refining the Grid"
+date: 2026-10-04
+description: "Why Krylov iterations grew 6.1x in a weak-scaling study that refined the grid, and how adding one multigrid level put the efficiency curve back to flat."
+tags: ["Weak-Scaling", "Newton-Krylov", "Preconditioning", "Krylov", "Paper-Review"]
+locale: en
+slug: 2026-10-04-weak-scaling-krylov-grid-levels
+takeaway: "Whether a weak-scaling curve stays flat is decided by the number of preconditioner levels, not by the quality of your parallelization."
+draft: false
+---
+
+import { WeakScalingTreadmillLab } from '@/components/post-viz/2026-10-04-weak-scaling-krylov-grid-levels/WeakScalingTreadmillLab'
+import { LevelLadderEfficiencyDial } from '@/components/post-viz/2026-10-04-weak-scaling-krylov-grid-levels/LevelLadderEfficiencyDial'
+
+## Efficiency of 16.3%, and Nothing Wrong With the Parallelization
+
+A supercomputer allocation request wants a scaling plot attached. You fix the cell count per core, push the core count from 1 to 4 to 16 to 64, and time each run. Ideally the line comes out flat. Mine did not. Efficiency dropped from 1.000 to 0.163. Neither MPI traffic nor load imbalance was the culprit. The culprit was hiding in the measurement itself. This post follows the spot that Hammond, Lichtner and Mills (2014) identified in their PFLOTRAN performance paper, then reproduces the same behavior in about a hundred lines of Python and undoes it with one extra level.
+
+You walk away with two things. First, a criterion for deciding whether a tilted weak-scaling curve indicts your code or your preconditioner. Second, the conditions under which "multigrid is good for weak scaling" holds, and the conditions under which it collapses.
+
+## Refining the Grid Changes the Problem Itself
+
+There are two ways to run a weak-scaling study. Hold the grid spacing fixed and **grow the domain**, or hold the domain fixed and **refine the grid**. The PFLOTRAN authors chose the latter. The reason is practical. You are modeling one aquifer, and that aquifer does not get larger in proportion to your core count. The domain stays 5000 m by 2500 m. More cores just means slicing it finer.
+
+That choice quietly crosses a line. Growing the domain adds degrees of freedom while the problem you solve stays the same. Refining the grid means **the problem changes at every data point**. The eigenvalue spectrum of the discretization matrix rides along with the grid spacing. A 64-core run and a 1-core run are not the same work split 64 ways; they are two different linear systems.
+
+Change the preconditioner and the refinement level yourself in the simulation below.
+
+<WeakScalingTreadmillLab />
+
+Pushing the slider right grows both the core count and the grid by a factor of four, holding 2048 cells per core. Switch preconditioners with the three buttons and compare the sweep counters. Under point Jacobi the short wiggles near the injection and extraction wells vanish immediately, but a gentle, domain-wide stain survives to the end. That stain is what sets the iteration count.
+
+## Strong and Weak Answer Different Questions
+
+Pin down the two metrics. Strong scaling holds the problem size fixed and adds cores. Relative speedup and relative efficiency read
+$$
+S_p = \frac{T_{\mathrm{base}}}{T_p}, \qquad
+E_p = \frac{T_{\mathrm{base}}\, p_{\mathrm{base}}}{T_p\, p} = \frac{S_p}{S_{p,\mathrm{ideal}}}
+$$
+where $T_p$ is wall-clock time on $p$ cores and $p_{\mathrm{base}}$ is the baseline core count. At thousands of cores the problem will not fit on one core, so the baseline is always relative.
+
+Weak scaling fixes the problem size per core and grows both by the same factor $\alpha$.
+$$
+E_{n,p} = \frac{T_{n_{\mathrm{base}},\, p_{\mathrm{base}}}}{T_{n,p}},
+\qquad n = \alpha\, n_{\mathrm{base}}, \quad p = \alpha\, p_{\mathrm{base}}
+$$
+Here the ideal is $E_{n,p} = 1$, a flat line. Load imbalance is measured separately: $\mathrm{LI} = (\mathrm{dof}_{\max} - \mathrm{dof}_{\min}) / \mathrm{dof}_{\min}$ near zero means the work divided evenly. My decomposition was exactly even, so $\mathrm{LI} = 0$, and imbalance drops off the suspect list.
+
+## The Arithmetic That Grows Iterations Like $h^{-1}$
+
+The remaining suspect is the linear solver, and the eigenvalues of the discrete Laplacian give it away. For a five-point stencil on a domain of side $L$ cut at spacing $h$,
+$$
+\lambda_{\min} \simeq \frac{\pi^2 h^2}{L^2}, \qquad
+\lambda_{\max} \simeq 8, \qquad
+\kappa(A) = \frac{\lambda_{\max}}{\lambda_{\min}} \simeq \frac{8 L^2}{\pi^2 h^2}
+$$
+where $\kappa$ is the condition number, the ratio of largest to smallest eigenvalue. Halve the spacing and $\kappa$ quadruples. The conjugate-gradient iteration bound scales with the square root of the condition number.
+$$
+k_{\mathrm{CG}} \lesssim \tfrac{1}{2}\sqrt{\kappa}\, \ln\frac{2}{\varepsilon} \sim \mathcal{O}(h^{-1}) = \mathcal{O}(N^{1/2})
+$$
+$N$ is the number of unknowns and $\varepsilon$ the target relative residual. In two dimensions, halving $h$ multiplies cells by four and iterations by two. As [GMRES and the Arnoldi process](/en/posts/2026-06-24-gmres-arnoldi-krylov-solver/) showed, a Krylov subspace grows by exactly one dimension per matrix-vector product. Information crosses the grid one cell per iteration.
+
+Point Jacobi preconditioning does not change that arithmetic. Dividing by the diagonal shifts and rescales the spectrum without touching the ratio of its ends. Block Jacobi fares much the same. It solves each block exactly, but long wavelengths crossing block boundaries still travel by iteration alone. More cores means smaller blocks, which makes it worse.
+
+## Three Preconditioners on the Same Doublet
+
+I shrank the paper's regional doublet and reran it: a homogeneous aquifer 5000 m by 2500 m, a head difference imposed from west to east, one injection well and one extraction well. Steady saturated flow, so the whole model is $-\nabla\cdot(K\nabla h) = q$. Holding 2048 cells per core, I refined the grid through four stages and counted PCG iterations.
+
+```python
+import numpy as np
+
+def apply_laplace(x):
+    """h^2-scaled 5-point operator: Dirichlet on x-faces, no-flow on y-faces."""
+    ny, nx = x.shape
+    xp = np.empty((ny + 2, nx + 2))
+    xp[1:-1, 1:-1] = x
+    xp[0, 1:-1] = x[0, :]        # no-flow (ghost = mirror)
+    xp[-1, 1:-1] = x[-1, :]
+    xp[1:-1, 0] = -x[:, 0]       # Dirichlet 0 (ghost = -x)
+    xp[1:-1, -1] = -x[:, -1]
+    return 4.0 * x - xp[1:-1, :-2] - xp[1:-1, 2:] - xp[:-2, 1:-1] - xp[2:, 1:-1]
+
+def diag_of(ny, nx):
+    d = np.full((ny, nx), 4.0)
+    d[:, 0] += 1.0
+    d[:, -1] += 1.0
+    d[0, :] -= 1.0
+    d[-1, :] -= 1.0
+    return d
+
+def make_rhs(ny, nx, head_w, head_e, well_rate):
+    """regional gradient + injection/extraction doublet, h^2-scaled."""
+    b = np.zeros((ny, nx))
+    b[:, 0] += 2.0 * head_w
+    b[:, -1] += 2.0 * head_e
+    b[ny // 2, nx // 10 * 3] += well_rate
+    b[ny // 2, nx // 10 * 7] -= well_rate
+    return b
+
+def jacobi_smooth(x, b, d, nu, omega=0.8):
+    for _ in range(nu):
+        x += omega * (b - apply_laplace(x)) / d
+    return x
+
+def restrict_avg(r):
+    return 0.25 * (r[0::2, 0::2] + r[1::2, 0::2] + r[0::2, 1::2] + r[1::2, 1::2])
+
+def prolong_const(e):
+    return np.repeat(np.repeat(e, 2, axis=0), 2, axis=1)
+
+def vcycle(x, b, level, max_level):
+    ny, nx = x.shape
+    d = diag_of(ny, nx)
+    if level == max_level or min(ny, nx) <= 4:
+        return jacobi_smooth(x, b, d, 40)
+    x = jacobi_smooth(x, b, d, 2)
+    rc = 4.0 * restrict_avg(b - apply_laplace(x))
+    ec = vcycle(np.zeros_like(rc), rc, level + 1, max_level)
+    x += prolong_const(ec)
+    return jacobi_smooth(x, b, d, 2)
+
+def pcg_solve(b, precond, rtol=1e-8, maxit=20000):
+    x = np.zeros_like(b)
+    r = b - apply_laplace(x)
+    nrm0 = np.linalg.norm(r)
+    z = precond(r)
+    p, rz = z.copy(), float(np.sum(r * z))
+    for k in range(1, maxit + 1):
+        Ap = apply_laplace(p)
+        alpha = rz / float(np.sum(p * Ap))
+        x += alpha * p
+        r -= alpha * Ap
+        if np.linalg.norm(r) / nrm0 < rtol:
+            return x, k
+        z = precond(r)
+        rz_new = float(np.sum(r * z))
+        p = z + (rz_new / rz) * p
+        rz = rz_new
+    return x, maxit
+
+def weak_scaling_table(dof_per_proc=2048):
+    print(f"{'procs':>6}{'grid':>12}{'dof':>9} | {'Jacobi':>7}{'E':>7} | "
+          f"{'MG-3lv':>7}{'E':>7} | {'MG-grow':>8}{'E':>7}")
+    base = {}
+    for k in range(4):
+        p = 4 ** k
+        ny, nx = 32 * 2 ** k, 64 * 2 ** k
+        b = make_rhs(ny, nx, 10.0, 0.0, 40.0)
+        assert ny * nx == dof_per_proc * p
+        row = []
+        for name, pre in (
+            ("jac", lambda r: r / diag_of(*r.shape)),
+            ("mg3", lambda r: vcycle(np.zeros_like(r), r, 0, 2)),
+            ("mgg", lambda r: vcycle(np.zeros_like(r), r, 0, 99)),
+        ):
+            _, it = pcg_solve(b, pre)
+            base.setdefault(name, it)
+            row.append((it, base[name] / it))
+        print(f"{p:>6}{f'{nx}x{ny}':>12}{ny*nx:>9} | " + " | ".join(
+            f"{it:>7}{eff:>7.3f}" for it, eff in row))
+
+weak_scaling_table()
+```
+
+```text
+ procs        grid      dof |  Jacobi      E |  MG-3lv      E |  MG-grow      E
+     1       64x32     2048 |     210  1.000 |      10  1.000 |       9  1.000
+     4      128x64     8192 |     407  0.516 |      16  0.625 |       9  1.000
+    16     256x128    32768 |     754  0.279 |      28  0.357 |      10  0.900
+    64     512x256   131072 |    1285  0.163 |      47  0.213 |      10  0.900
+```
+
+The point-Jacobi column reads 210, 407, 754, 1285. While the grid tightened eightfold the count grew 6.1 times. The step ratios are 1.94, 1.85 and 1.70, matching the $\mathcal{O}(h^{-1})$ estimate from the previous section. Cells per core are fixed, so per-core cost per iteration is fixed too, and efficiency falls to 0.163 as the exact inverse of the iteration growth. That is not a number you win back by tuning communication or cache behavior.
+
+## One Level Turned 47 Back Into 10
+
+The third column holds the answer. **Freeze** the V-cycle at three levels and iterations grow from 10 to 47. Grow the levels along with the grid, so the coarsest grid always stays 8 by 4 cells, and the count goes from 9 to 10. Efficiency 0.900. Flat, for practical purposes.
+
+The reason fits in one sentence. A Krylov solver behaves like a smoother on a single grid: it erases high-frequency error fast and leaves low-frequency error behind. A [multigrid V-cycle](/en/posts/2026-05-06-multigrid-v-cycle-poisson-acceleration/) relaxes on the whole hierarchy of grids, so it touches every wavelength within one cycle. The catch is that the hierarchy has to reach the longest wavelength. Pin it at three levels and the coarsest grid under a 512 by 256 problem is 128 by 64. An error wave 128 cells wide is still low-frequency there. Nobody erases it.
+
+Move the level count and the grid independently and see which combination flattens the curve.
+
+<LevelLadderEfficiencyDial />
+
+Each rung of the ladder on the left is one level, and the bar beside it is the band of wavelengths that level damps. Set the level slider to 1 and a single bar remains. Push the grid slider right and watch how the coarsest grid size changes, and which of the three efficiency curves on the right gets highlighted.
+
+## Where Multigrid Is Not Free
+
+Stopping here would read as "always use multigrid." The paper writes down the other side too.
+
+First, adding levels costs something. Every time the problem grows you stack another rung to preserve optimal convergence, and that setup cost grows with the core count. In algebraic multigrid such as hypre or GAMG, the coarsening itself is communication heavy. In the results of Kollet et al. (2010) the solver-setup efficiency drops to nearly zero near 16,384 cores. The iteration count stays flat while setup time eats the run.
+
+Second, not every PDE suits multigrid. Multigrid shines on elliptic and parabolic problems such as groundwater flow, where the initial guess is far from the solution. Advection-dominated geochemical transport is the opposite: small time steps make the matrix strongly diagonally dominant, and on such matrices plain preconditioners like point Jacobi and ILU(0) are already good enough. There is no reason to stack levels. Multigrid for systems describing multiphase flow remains an open research topic.
+
+Third, the right preconditioner cost depends on the character of the grid. On stretched grids the directional coupling strengths differ sharply, and something like a [linelet preconditioner](/en/posts/2026-07-31-linelet-preconditioner-stretched-grid/), solving one direction exactly, buys the same effect for less.
+
+## Why the PFLOTRAN Authors Ask for Strong Scaling First
+
+The paper's position is clear. In practice you are handed a fixed domain and you want to solve that same problem faster by spending more cores, and strong scaling is what answers that question. Yet multigrid papers often report weak scaling alone. Multigrid excels as the problem grows, so the choice is unsurprising. The trouble is that showing one side makes strong-scaling performance against a Krylov solver impossible to assess. Papers that report only strong scaling carry the mirror-image flaw.
+
+PFLOTRAN's own strong scaling is near ideal out to 4096 cores on the copper-leaching scenario, then rolls off. At the knee each core held 768 degrees of freedom. The 3.1 M case and the 49 K case both turned over at the same ratio. That single number is more useful in practice than the whole efficiency curve: do not go below roughly 1000 degrees of freedom per core.
+
+## The Number to Check First on a Scaling Plot
+
+Before wall-clock time, look at **iteration counts**. Tabulate nonlinear and linear iterations against core count and a tilted line separates cleanly into a parallel problem or a solver problem. Flat iterations with growing time means communication or memory. Iterations that grow along with time is an algorithmic problem, and no amount of MPI tuning wins it back.
+
+And when you plot weak scaling, say in the caption which way you grew it: the domain, or the grid. The same curve shape carries an entirely different meaning.

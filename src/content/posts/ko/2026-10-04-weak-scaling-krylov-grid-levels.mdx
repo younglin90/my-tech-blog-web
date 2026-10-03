@@ -1,0 +1,215 @@
+---
+title: "코어를 64배 늘렸더니 효율이 16.3%로 떨어졌다 — 격자를 조이며 재는 weak scaling의 함정"
+date: 2026-10-04
+description: "격자를 조이는 weak scaling에서 Krylov 반복이 6.1배 늘어난 이유, 그리고 다중격자 레벨 하나가 그것을 되돌리는 자리."
+tags: ["Weak-Scaling", "Newton-Krylov", "Preconditioning", "Krylov", "Paper-Review"]
+locale: ko
+slug: 2026-10-04-weak-scaling-krylov-grid-levels
+takeaway: "weak scaling 그래프가 평평한지는 코드의 병렬화 품질이 아니라 전처리기의 레벨 수가 결정한다."
+draft: false
+---
+
+import { WeakScalingTreadmillLab } from '@/components/post-viz/2026-10-04-weak-scaling-krylov-grid-levels/WeakScalingTreadmillLab'
+import { LevelLadderEfficiencyDial } from '@/components/post-viz/2026-10-04-weak-scaling-krylov-grid-levels/LevelLadderEfficiencyDial'
+
+## 효율 16.3%, 그런데 병렬화에는 흠이 없었다
+
+슈퍼컴퓨터 계산자원 신청서에는 scaling 그래프를 붙여야 한다. 코어당 셀 수를 고정하고 코어를 1 → 4 → 16 → 64로 늘리면서 시간을 재면, 이상적으로는 선이 평평해야 한다. 내가 받은 선은 평평하지 않았다. 효율이 1.000에서 0.163으로 떨어졌다. MPI 통신량도, 부하 불균형도 범인이 아니었다. 범인은 측정 방식 자체에 숨어 있었다. 이 글은 Hammond·Lichtner·Mills(2014)의 PFLOTRAN 성능 논문이 짚은 그 자리를 따라간 뒤, 같은 현상을 Python 100줄로 재현하고 레벨 하나로 되돌린다.
+
+읽고 나면 두 가지를 얻는다. 첫째, weak scaling 그래프가 기울어졌을 때 코드를 의심해야 하는지 전처리기를 의심해야 하는지 구분하는 기준. 둘째, "다중격자가 weak scaling에 좋다"는 말이 어떤 조건에서 성립하고 어떤 조건에서 무너지는지.
+
+## 격자를 조이는 쪽을 고르면 문제 자체가 바뀐다
+
+weak scaling을 재는 방법은 두 가지다. 격자 간격을 고정하고 **영역을 키우거나**, 영역을 고정하고 **격자를 조이는** 것이다. PFLOTRAN 저자들은 후자를 골랐다. 이유는 실무적이다. 대수층 하나를 모델링하는데 대수층 크기가 코어 수에 비례해서 커지지는 않는다. 영역은 늘 5000 m × 2500 m다. 코어를 더 받으면 그 영역을 더 잘게 쪼갠다.
+
+그런데 이 선택은 조용히 선을 넘는다. 영역을 키우는 쪽은 자유도만 늘고 푸는 문제는 그대로다. 격자를 조이는 쪽은 **푸는 문제가 매번 달라진다**. 이산화 행렬의 고유값 스펙트럼이 격자 간격에 딸려 움직이기 때문이다. 코어 64개짜리 실행과 코어 1개짜리 실행은 같은 일을 64배 나눠 한 것이 아니라, 서로 다른 선형계를 푼 것이다.
+
+아래 시뮬레이션에서 전처리기와 격자 조임 정도를 직접 바꿔보자.
+
+<WeakScalingTreadmillLab />
+
+슬라이더를 오른쪽으로 밀면 코어 수와 격자가 함께 4배씩 늘고, 코어당 셀 수는 2048로 고정된다. 세 버튼으로 전처리기를 바꿔가며 sweeps 카운터를 비교해보자. point Jacobi에서는 주입·양수정 근처의 짧은 요동이 금방 사라지지만, 영역 전체에 걸친 완만한 얼룩이 끝까지 버틴다. 그 얼룩이 반복 횟수를 결정한다.
+
+## strong과 weak은 서로 다른 질문에 답한다
+
+두 지표의 정의를 분명히 해두자. strong scaling은 문제 크기를 고정한 채 코어를 늘린다. 상대 가속비와 상대 효율은 이렇게 쓴다.
+
+$$
+S_p = \frac{T_{\mathrm{base}}}{T_p}, \qquad
+E_p = \frac{T_{\mathrm{base}}\, p_{\mathrm{base}}}{T_p\, p} = \frac{S_p}{S_{p,\mathrm{ideal}}}
+$$
+
+$T_p$는 코어 $p$개에서의 벽시계 시간이고, $p_{\mathrm{base}}$는 기준 코어 수다. 수천 코어 규모에서는 코어 1개에 문제가 들어가지 않으므로 기준은 늘 상대적이다.
+
+weak scaling은 코어당 문제 크기를 고정하고 둘을 같은 배수 $\alpha$로 키운다.
+
+$$
+E_{n,p} = \frac{T_{n_{\mathrm{base}},\, p_{\mathrm{base}}}}{T_{n,p}},
+\qquad n = \alpha\, n_{\mathrm{base}}, \quad p = \alpha\, p_{\mathrm{base}}
+$$
+
+여기서 이상값은 $E_{n,p} = 1$, 즉 평평한 선이다. 부하 불균형은 따로 잰다. $\mathrm{LI} = (\mathrm{dof}_{\max} - \mathrm{dof}_{\min}) / \mathrm{dof}_{\min}$이 0에 가까우면 고르게 나뉘었다는 뜻이다. 내 경우 영역 분할은 완전히 균등했으니 $\mathrm{LI} = 0$이었다. 그래서 불균형은 용의자에서 빠진다.
+
+## 반복 횟수가 $h^{-1}$로 자라는 산수
+
+남은 용의자는 선형 솔버다. 이산 라플라시안의 고유값을 보면 답이 나온다. 한 변 $L$의 영역을 간격 $h$로 자른 5점 차분 행렬에서
+
+$$
+\lambda_{\min} \simeq \frac{\pi^2 h^2}{L^2}, \qquad
+\lambda_{\max} \simeq 8, \qquad
+\kappa(A) = \frac{\lambda_{\max}}{\lambda_{\min}} \simeq \frac{8 L^2}{\pi^2 h^2}
+$$
+
+$\kappa$는 조건수(최대·최소 고유값의 비)다. 격자를 절반으로 조이면 $\kappa$가 4배가 된다. 켤레기울기법의 반복 횟수 상한은 조건수의 제곱근에 비례한다.
+
+$$
+k_{\mathrm{CG}} \lesssim \tfrac{1}{2}\sqrt{\kappa}\, \ln\frac{2}{\varepsilon} \sim \mathcal{O}(h^{-1}) = \mathcal{O}(N^{1/2})
+$$
+
+$N$은 미지수 개수, $\varepsilon$은 목표 상대 잔차다. 2차원에서 $h$를 절반으로 줄이면 셀은 4배, 반복은 2배다. [GMRES와 Arnoldi 과정](/ko/posts/2026-06-24-gmres-arnoldi-krylov-solver/)에서 봤듯 Krylov 부공간은 행렬-벡터 곱 한 번에 한 차원씩만 자란다. 즉 정보가 격자를 가로지르는 속도가 한 반복에 한 칸이다.
+
+점 Jacobi 전처리는 이 산수를 바꾸지 못한다. 대각 성분으로 나누는 것은 스펙트럼을 평행이동·배율조정할 뿐 양 끝의 비를 건드리지 않는다. 블록 Jacobi도 사정이 비슷하다. 블록 안에서는 정확히 풀지만 블록 경계를 넘는 긴 파장은 여전히 반복으로만 전달된다. 코어가 많아지면 블록이 더 잘게 쪼개지므로 오히려 불리해진다.
+
+## 같은 doublet에 전처리 세 가지를 걸었다
+
+논문의 regional doublet을 축소해 재현했다. 5000 m × 2500 m 균질 대수층, 서쪽에서 동쪽으로 걸린 수두차, 그리고 주입정 하나와 양수정 하나. 정상 상태 포화 흐름이므로 $-\nabla\cdot(K\nabla h) = q$ 한 줄이다. 코어당 셀 2048개를 고정하고 격자를 네 단계로 조이며 PCG 반복 횟수를 세었다.
+
+```python
+import numpy as np
+
+def apply_laplace(x):
+    """h^2-scaled 5-point operator: Dirichlet on x-faces, no-flow on y-faces."""
+    ny, nx = x.shape
+    xp = np.empty((ny + 2, nx + 2))
+    xp[1:-1, 1:-1] = x
+    xp[0, 1:-1] = x[0, :]        # no-flow (ghost = mirror)
+    xp[-1, 1:-1] = x[-1, :]
+    xp[1:-1, 0] = -x[:, 0]       # Dirichlet 0 (ghost = -x)
+    xp[1:-1, -1] = -x[:, -1]
+    return 4.0 * x - xp[1:-1, :-2] - xp[1:-1, 2:] - xp[:-2, 1:-1] - xp[2:, 1:-1]
+
+def diag_of(ny, nx):
+    d = np.full((ny, nx), 4.0)
+    d[:, 0] += 1.0
+    d[:, -1] += 1.0
+    d[0, :] -= 1.0
+    d[-1, :] -= 1.0
+    return d
+
+def make_rhs(ny, nx, head_w, head_e, well_rate):
+    """regional gradient + injection/extraction doublet, h^2-scaled."""
+    b = np.zeros((ny, nx))
+    b[:, 0] += 2.0 * head_w
+    b[:, -1] += 2.0 * head_e
+    b[ny // 2, nx // 10 * 3] += well_rate
+    b[ny // 2, nx // 10 * 7] -= well_rate
+    return b
+
+def jacobi_smooth(x, b, d, nu, omega=0.8):
+    for _ in range(nu):
+        x += omega * (b - apply_laplace(x)) / d
+    return x
+
+def restrict_avg(r):
+    return 0.25 * (r[0::2, 0::2] + r[1::2, 0::2] + r[0::2, 1::2] + r[1::2, 1::2])
+
+def prolong_const(e):
+    return np.repeat(np.repeat(e, 2, axis=0), 2, axis=1)
+
+def vcycle(x, b, level, max_level):
+    ny, nx = x.shape
+    d = diag_of(ny, nx)
+    if level == max_level or min(ny, nx) <= 4:
+        return jacobi_smooth(x, b, d, 40)
+    x = jacobi_smooth(x, b, d, 2)
+    rc = 4.0 * restrict_avg(b - apply_laplace(x))
+    ec = vcycle(np.zeros_like(rc), rc, level + 1, max_level)
+    x += prolong_const(ec)
+    return jacobi_smooth(x, b, d, 2)
+
+def pcg_solve(b, precond, rtol=1e-8, maxit=20000):
+    x = np.zeros_like(b)
+    r = b - apply_laplace(x)
+    nrm0 = np.linalg.norm(r)
+    z = precond(r)
+    p, rz = z.copy(), float(np.sum(r * z))
+    for k in range(1, maxit + 1):
+        Ap = apply_laplace(p)
+        alpha = rz / float(np.sum(p * Ap))
+        x += alpha * p
+        r -= alpha * Ap
+        if np.linalg.norm(r) / nrm0 < rtol:
+            return x, k
+        z = precond(r)
+        rz_new = float(np.sum(r * z))
+        p = z + (rz_new / rz) * p
+        rz = rz_new
+    return x, maxit
+
+def weak_scaling_table(dof_per_proc=2048):
+    print(f"{'procs':>6}{'grid':>12}{'dof':>9} | {'Jacobi':>7}{'E':>7} | "
+          f"{'MG-3lv':>7}{'E':>7} | {'MG-grow':>8}{'E':>7}")
+    base = {}
+    for k in range(4):
+        p = 4 ** k
+        ny, nx = 32 * 2 ** k, 64 * 2 ** k
+        b = make_rhs(ny, nx, 10.0, 0.0, 40.0)
+        assert ny * nx == dof_per_proc * p
+        row = []
+        for name, pre in (
+            ("jac", lambda r: r / diag_of(*r.shape)),
+            ("mg3", lambda r: vcycle(np.zeros_like(r), r, 0, 2)),
+            ("mgg", lambda r: vcycle(np.zeros_like(r), r, 0, 99)),
+        ):
+            _, it = pcg_solve(b, pre)
+            base.setdefault(name, it)
+            row.append((it, base[name] / it))
+        print(f"{p:>6}{f'{nx}x{ny}':>12}{ny*nx:>9} | " + " | ".join(
+            f"{it:>7}{eff:>7.3f}" for it, eff in row))
+
+weak_scaling_table()
+```
+
+```text
+ procs        grid      dof |  Jacobi      E |  MG-3lv      E |  MG-grow      E
+     1       64x32     2048 |     210  1.000 |      10  1.000 |       9  1.000
+     4      128x64     8192 |     407  0.516 |      16  0.625 |       9  1.000
+    16     256x128    32768 |     754  0.279 |      28  0.357 |      10  0.900
+    64     512x256   131072 |    1285  0.163 |      47  0.213 |      10  0.900
+```
+
+점 Jacobi 열의 반복 횟수는 210 → 407 → 754 → 1285이다. 격자가 8배 조여지는 동안 6.1배가 됐다. 단계별 비는 1.94, 1.85, 1.70으로 앞 절의 $\mathcal{O}(h^{-1})$ 예측과 맞는다. 코어당 셀 수는 고정이므로 반복 1회의 코어당 비용도 고정이다. 따라서 효율은 반복 횟수의 역비 그대로 0.163까지 떨어진다. 통신이나 캐시를 손봐서 되찾을 수 있는 숫자가 아니다.
+
+## 레벨 하나가 47을 10으로 되돌렸다
+
+세 번째 열이 답이다. V-사이클 레벨을 3개로 **고정**하면 반복은 10 → 47로 자란다. 레벨을 격자와 함께 늘려 가장 거친 격자가 항상 8 × 4 셀로 남게 하면 9 → 10이다. 효율 0.900. 사실상 평평하다.
+
+이유는 한 문장으로 적을 수 있다. Krylov 솔버는 단일 격자 위의 완화자처럼 행동해서 고주파 오차를 빨리 지우고 저주파 오차를 남긴다. 반면 [다중격자 V-사이클](/ko/posts/2026-05-06-multigrid-v-cycle-poisson-acceleration/)은 격자 계층 전체에서 완화하므로 모든 파장을 한 사이클에 건드린다. 단, 그 계층이 가장 긴 파장까지 닿아야 한다는 조건이 붙는다. 레벨을 3개로 묶어두면 512 × 256 격자에서 가장 거친 격자가 128 × 64다. 128셀 폭의 오차 파동은 그 격자에서도 여전히 저주파다. 아무도 그것을 지우지 않는다.
+
+레벨 수와 격자를 따로 움직여 어느 조합에서 선이 평평해지는지 확인해보자.
+
+<LevelLadderEfficiencyDial />
+
+왼쪽 사다리의 각 칸이 한 레벨이고, 옆의 막대가 그 레벨이 감쇠하는 파장 범위다. 레벨 슬라이더를 1에 두면 막대 하나만 남는다. 격자 슬라이더를 오른쪽으로 밀면서 가장 거친 격자 크기가 어떻게 변하는지, 오른쪽 효율 곡선 중 어느 것이 강조되는지 보자.
+
+## 다중격자가 공짜가 아닌 자리
+
+여기서 멈추면 "항상 다중격자를 쓰라"는 결론이 된다. 논문은 그 반대쪽도 적어두었다.
+
+첫째, 레벨을 늘리는 데는 대가가 있다. 문제가 커질 때마다 계층을 한 단 더 쌓아야 최적 수렴이 유지되는데, 그 설정 비용이 코어 수와 함께 자란다. hypre나 GAMG 같은 대수적 다중격자에서는 coarsening 자체가 통신 집약적이다. Kollet 등(2010)의 결과에서 solver setup 효율은 16,384 코어 근처에서 거의 0으로 떨어진다. 반복 횟수는 평평한데 설정 시간이 전체를 먹는 모양이다.
+
+둘째, 모든 PDE가 다중격자에 맞지는 않는다. 지하수 흐름처럼 타원형·포물형이고 초기 추정이 해에서 멀면 다중격자가 빛난다. 반면 이송이 지배하는 지화학 수송은 시간 간격이 작아서 행렬이 강하게 대각 지배적이 된다. 그런 행렬에서는 점 Jacobi와 ILU(0) 같은 평범한 전처리기가 이미 충분히 좋다. 레벨을 쌓을 이유가 없다. 다상 유동 계에 다중격자를 붙이는 것은 아직 연구 주제다.
+
+셋째, 전처리기의 적정 비용은 격자의 성질에 달려 있다. 늘어난 격자에서는 방향별 결합 세기가 크게 달라지므로 [라인렛 전처리기](/ko/posts/2026-07-31-linelet-preconditioner-stretched-grid/)처럼 한 방향만 정확히 푸는 것이 더 싸게 효과를 낸다.
+
+## PFLOTRAN 저자들이 strong scaling을 먼저 보라고 한 이유
+
+논문의 논조는 분명하다. 실무에서 고정된 영역이 주어지고, 코어를 더 써서 같은 문제를 더 빨리 풀고 싶다면 그 질문에 답하는 것은 strong scaling이다. 그런데 다중격자 솔버 논문은 weak scaling만 싣는 경우가 많다. 다중격자는 문제가 커질 때 돋보이므로 당연한 선택이다. 문제는 한쪽만 보여주면 Krylov 솔버 대비 strong scaling 성능을 비교할 수 없다는 것이다. 반대로 strong scaling만 싣는 논문도 같은 흠이 있다.
+
+PFLOTRAN의 strong scaling은 구리 침출 시나리오에서 4096 코어까지 거의 이상적이었다가 꺾인다. 꺾이는 지점의 코어당 자유도는 768개였다. 자유도 3.1 M 문제도, 49 K 문제도 같은 비율에서 꺾였다. 이 숫자가 실무적으로는 효율 곡선 전체보다 유용하다. 코어당 자유도 1000개 아래로는 내려가지 말라는 뜻이다.
+
+## 스케일링 그래프에서 먼저 확인할 숫자
+
+벽시계 시간보다 먼저 볼 것은 **반복 횟수**다. 비선형 반복과 선형 반복을 코어 수와 함께 적어두면, 기울어진 선이 병렬화 탓인지 솔버 탓인지 한눈에 갈린다. 반복이 평평한데 시간이 늘면 통신·메모리 문제다. 반복이 함께 늘면 그것은 알고리즘 문제이고, MPI를 아무리 손봐도 되찾지 못한다.
+
+그리고 weak scaling 그래프를 그릴 때는 어느 쪽으로 키웠는지 캡션에 적어두자. 영역을 키운 것인지 격자를 조인 것인지. 같은 그래프 모양이 전혀 다른 뜻이 된다.
