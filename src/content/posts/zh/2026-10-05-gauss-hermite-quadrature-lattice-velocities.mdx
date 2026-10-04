@@ -1,0 +1,330 @@
+---
+title: "六阶矩里15掉成了9 — 决定D2Q9的三个厄米根"
+date: 2026-10-05
+description: "LBM代码里的 c_s²=1/3 和权重 1/36 究竟从哪来，一路追到高斯-厄米求积的代数精度。"
+tags: ["Gauss-Hermite", "Lattice-Boltzmann", "Kinetic-Theory", "LBM", "Numerical-Analysis"]
+locale: zh
+slug: 2026-10-05-gauss-hermite-quadrature-lattice-velocities
+takeaway: "格子速度集合不是设计偏好，而是高斯-厄米求积节点。Q个节点只能精确到2Q−1阶。"
+draft: false
+---
+
+import { HermiteNodeMomentBench } from '@/components/post-viz/2026-10-05-gauss-hermite-quadrature-lattice-velocities/HermiteNodeMomentBench'
+import { LatticeTensorMomentDial } from '@/components/post-viz/2026-10-05-gauss-hermite-quadrature-lattice-velocities/LatticeTensorMomentDial'
+
+## 1864年，一组与流体毫无关系的多项式
+
+夏尔·厄米在1864年整理了以高斯函数为权函数的正交多项式。那是与流体力学毫不相干的纯粹分析。八十五年后，Harold Grad 用同一组多项式展开了玻尔兹曼方程的分布函数。再过半个世纪，这个展开的求积节点变成了LBM代码里的速度数组。
+
+本文把每份LBM代码开头都有的那一行 `cs2 = 1.0/3.0` 追到底。终点只有一个数：三阶厄米多项式的根 $\pm\sqrt{3}$。权重 4/9、1/9、1/36 也出自同一处。而同一套推导还会顺带交出一份"D2Q9做不到的事"清单。
+
+## 速度空间的积分里本来就带着权函数
+
+流体计算需要的从来不是分布函数 $f$ 本身，而是矩。
+
+$$
+\rho = \int f \, d\mathbf{v}, \qquad
+\rho \mathbf{u} = \int f \, \mathbf{v} \, d\mathbf{v}, \qquad
+\mathbf{\Pi} = \int f \, \mathbf{v}\mathbf{v} \, d\mathbf{v}
+$$
+
+$\rho$ 是密度，$\mathbf{u}$ 是流速，$\mathbf{\Pi}$ 是动量通量张量。在平衡态附近，$f$ 是麦克斯韦分布乘以一个多项式。麦克斯韦分布就是高斯函数。所以上面每个积分都是"高斯权函数乘多项式"。
+
+形状定了，展开方式也就定了。在权函数 $w(\mathbf{v}) = (2\pi)^{-D/2} e^{-v^2/2}$ 下正交的多项式，正是厄米多项式。
+
+$$
+f(\mathbf{v}) = w(\mathbf{v}) \sum_{n=0}^{N} \frac{1}{n!} \, \mathbf{a}^{(n)} : \mathbf{H}^{(n)}(\mathbf{v})
+$$
+
+$\mathbf{H}^{(n)}$ 是 $n$ 阶厄米张量，$\mathbf{a}^{(n)} = \int f \mathbf{H}^{(n)} d\mathbf{v}$ 是它的系数。积分现在是"高斯加权多项式积分"，而用有限个点把这类积分精确算完的工具，就是高斯-厄米求积。下面的模拟可以直接上手操作。
+
+<HermiteNodeMomentBench />
+
+改变节点数 Q，下方的柱状图会整体移动。绿柱表示该阶矩算对了，红柱表示算错了。黄色虚线 $2Q-1$ 右侧柱子突然变红的位置，就是全文的主题。
+
+## 为什么Q个节点停在2Q−1阶
+
+高斯求积的规则很短：把节点放在 $Q$ 次正交多项式的根上，$2Q-1$ 阶以下的多项式都能**精确**积出。这是把 $Q$ 个节点和 $Q$ 个权重、共 $2Q$ 个自由度全部用尽的结果。
+
+之所以是 $2Q-1$ 而不是 $2Q$，只因为阶数从 $0$ 开始数。$0, 1, \dots, 2Q-1$ 刚好 $2Q$ 个。直接测一次就看得很清楚。
+
+```python
+from math import factorial
+
+def he(n, v):
+    """概率论者的厄米多项式 He_n(v): He_0=1, He_1=v, He_{k+1}=v*He_k - k*He_{k-1}"""
+    a, b = 1.0, v
+    if n == 0:
+        return a
+    for k in range(1, n):
+        a, b = b, v * b - k * a
+    return b
+
+def gauss_hermite(Q):
+    """节点 = He_Q 的根, 权重 = Q! / (Q^2 He_{Q-1}(v)^2)"""
+    nodes, lo, step = [], -8.0, 1e-3
+    x0, f0 = lo, he(Q, lo)
+    while x0 < 8.0:
+        x1 = x0 + step
+        f1 = he(Q, x1)
+        if f0 == 0.0 or f0 * f1 < 0.0:
+            a, b = x0, x1
+            for _ in range(80):                 # 二分法
+                m = 0.5 * (a + b)
+                if he(Q, a) * he(Q, m) <= 0.0:
+                    b = m
+                else:
+                    a = m
+            nodes.append(0.5 * (a + b))
+        x0, f0 = x1, f1
+    wts = [factorial(Q) / (Q * Q * he(Q - 1, v) ** 2) for v in nodes]
+    return nodes, wts
+
+def exact_moment(n):
+    """int v^n N(0,1) dv = 0 (奇数), (n-1)!! (偶数)"""
+    if n % 2:
+        return 0.0
+    m = 1.0
+    for k in range(1, n, 2):
+        m *= k
+    return m
+
+def moment_errors(Q, nmax):
+    v, w = gauss_hermite(Q)
+    return [abs(sum(wi * vi ** n for vi, wi in zip(v, w)) - exact_moment(n))
+            for n in range(nmax + 1)]
+
+for Q in (3, 5):
+    v, w = gauss_hermite(Q)
+    print("Q=%d  nodes  %s" % (Q, "  ".join("%+9.6f" % x for x in v)))
+    print("      wts    %s" % "  ".join("%9.6f" % x for x in w))
+
+tab = {Q: moment_errors(Q, 10) for Q in (1, 3, 5)}
+print()
+print(" n |    Q=1    |    Q=3    |    Q=5    |  exact")
+for n in range(11):
+    print("%2d | %9.2e | %9.2e | %9.2e | %6.1f"
+          % (n, tab[1][n], tab[3][n], tab[5][n], exact_moment(n)))
+print()
+for Q in (1, 3, 5):
+    bad = [n for n in range(11) if tab[Q][n] > 1e-9]
+    first = bad[0] if bad else 11
+    print("Q=%d: exact through degree %d, first failure at %d   (2Q-1 = %d)"
+          % (Q, first - 1, first, 2 * Q - 1))
+```
+
+```text
+Q=3  nodes  -1.732051  +0.000000  +1.732051
+      wts     0.166667   0.666667   0.166667
+Q=5  nodes  -2.856970  -1.355626  +0.000000  +1.355626  +2.856970
+      wts     0.011257   0.222076   0.533333   0.222076   0.011257
+
+ n |    Q=1    |    Q=3    |    Q=5    |  exact
+ 0 |  0.00e+00 |  0.00e+00 |  2.22e-16 |    1.0
+ 1 |  3.93e-28 |  0.00e+00 |  1.39e-17 |    0.0
+ 2 |  1.00e+00 |  2.22e-16 |  4.44e-16 |    1.0
+ 3 |  6.05e-83 |  0.00e+00 |  0.00e+00 |    0.0
+ 4 |  3.00e+00 |  8.88e-16 |  1.78e-15 |    3.0
+ 5 | 9.33e-138 |  0.00e+00 |  0.00e+00 |    0.0
+ 6 |  1.50e+01 |  6.00e+00 |  1.24e-14 |   15.0
+ 7 | 1.44e-192 |  0.00e+00 |  0.00e+00 |    0.0
+ 8 |  1.05e+02 |  7.80e+01 |  8.53e-14 |  105.0
+ 9 | 2.22e-247 |  0.00e+00 |  0.00e+00 |    0.0
+10 |  9.45e+02 |  8.64e+02 |  1.20e+02 |  945.0
+
+Q=1: exact through degree 1, first failure at 2   (2Q-1 = 1)
+Q=3: exact through degree 5, first failure at 6   (2Q-1 = 5)
+Q=5: exact through degree 9, first failure at 10   (2Q-1 = 9)
+```
+
+三行都恰好断在 $2Q-1$。这不是巧合，是定理。
+
+## 15变成9的那笔算术
+
+Q=3 在六阶失手的过程可以心算。节点是 $0, \pm\sqrt{3}$，权重是 $2/3, 1/6, 1/6$。用求积公式算六阶矩：
+
+$$
+\frac{1}{6}(\sqrt{3})^6 + \frac{2}{3}\cdot 0^6 + \frac{1}{6}(-\sqrt{3})^6
+= 2 \times \frac{27}{6} = 9
+$$
+
+真值是 $5!! = 15$。整整缺了6。只有三个节点，就没有地方承载 $v^6$ 这种重尾函数。中间节点因为 $0^6 = 0$ 毫无贡献，外侧两个被钉在 $\pm\sqrt{3}$，更远处的贡献就永远丢掉了。
+
+四阶倒是完美：$2 \times 9/6 = 3 = 3!!$。这个"四阶精确、六阶崩盘"的分界，直接规定了D2Q9的能力上限。
+
+## 把 $\sqrt{3}$ 折算成1，就得到 $c_s^2 = 1/3$
+
+到这里为止全是纯数值分析。LBM只多加一个条件：**迁移步必须精确**。要让 $f_i(\mathbf{x} + \mathbf{c}_i \Delta t, t + \Delta t) = f_i(\mathbf{x}, t)$ 无需插值就成立，$\mathbf{c}_i \Delta t$ 必须正好落在格点上。
+
+节点已经定死在 $0, \pm\sqrt{3}$。要把它们送到 $0, \pm 1$，只需把单位除以 $\sqrt{3}$，热速度单位也随之缩小。
+
+$$
+c_s = \frac{1}{\sqrt{3}} \frac{\Delta x}{\Delta t}, \qquad c_s^2 = \frac{1}{3}
+$$
+
+$c_s$ 是格子声速。所以 $1/3$ 不是物理常数，而是"决定让三阶厄米多项式的根坐在格点上"那一刻带出来的单位换算。五点公式的根是 $\pm 1.3556, \pm 2.8570$，不成整数比，这就是D2Q25一类格子要么接受插值和非整数格点、要么改用根略微移动的变体的原因。
+
+## 一维权重相乘就得到D2Q9权重
+
+二维不是新的推导，而是一维公式的张量积。把 $(1/6, 2/3, 1/6)$ 和自己相乘就结束了。
+
+$$
+\frac{2}{3}\cdot\frac{2}{3} = \frac{4}{9}, \qquad
+\frac{2}{3}\cdot\frac{1}{6} = \frac{1}{9}, \qquad
+\frac{1}{6}\cdot\frac{1}{6} = \frac{1}{36}
+$$
+
+静止方向 4/9，四个轴向 1/9，四条对角 1/36。LBM教科书第一页那张表，三次乘法就出来了。三维再乘一次，就是D3Q27的 8/27、2/27、1/54、1/216。D3Q19和D3Q15则不是张量积，而是在此基础上删掉部分方向、重新配平权重的简化版。
+
+## 平衡分布截到二阶会丢掉什么
+
+除了求积阶数，还有另一个选择：把展开截在 $N$ 阶。标准LBM取 $N = 2$。
+
+$$
+f_i^{eq} = w_i \rho \left[ 1 + \frac{\mathbf{c}_i \cdot \mathbf{u}}{c_s^2}
++ \frac{(\mathbf{c}_i \cdot \mathbf{u})^2 - c_s^2 u^2}{2 c_s^4} \right]
+$$
+
+$w_i$ 是上面求出的权重，$\mathbf{c}_i$ 是格子速度。用这个形式去测三阶和四阶矩，就能把两个误差源各自索要的份额分开看。
+
+```python
+from itertools import product
+from math import factorial
+
+def he(n, v):
+    a, b = 1.0, v
+    if n == 0:
+        return a
+    for k in range(1, n):
+        a, b = b, v * b - k * a
+    return b
+
+def gauss_hermite(Q):
+    nodes, x0, step = [], -8.0, 1e-3
+    f0 = he(Q, x0)
+    while x0 < 8.0:
+        x1 = x0 + step
+        f1 = he(Q, x1)
+        if f0 == 0.0 or f0 * f1 < 0.0:
+            a, b = x0, x1
+            for _ in range(80):
+                m = 0.5 * (a + b)
+                if he(Q, a) * he(Q, m) <= 0.0:
+                    b = m
+                else:
+                    a = m
+            nodes.append(0.5 * (a + b))
+        x0, f0 = x1, f1
+    wts = [factorial(Q) / (Q * Q * he(Q - 1, v) ** 2) for v in nodes]
+    return nodes, wts
+
+def tensor_lattice(Q):
+    """一维高斯-厄米法则 -> 二维张量积法则。热单位下 c_s = 1。"""
+    n, w = gauss_hermite(Q)
+    cs, ws = [], []
+    for (vx, wx), (vy, wy) in product(zip(n, w), repeat=2):
+        cs.append((vx, vy))
+        ws.append(wx * wy)
+    return cs, ws
+
+def feq_hermite(rho, ux, c, w, order):
+    """截断的厄米平衡分布, u = (ux, 0), c_s = 1"""
+    out = []
+    for (cx, _cy), wi in zip(c, w):
+        s = 1.0 + cx * ux
+        if order >= 2:
+            s += 0.5 * ux * ux * (cx * cx - 1.0)
+        if order >= 3:
+            s += ux ** 3 * (cx ** 3 - 3.0 * cx) / 6.0
+        out.append(wi * rho * s)
+    return out
+
+def raw_moment(f, c, p):
+    return sum(fi * cx ** p for fi, (cx, _cy) in zip(f, c))
+
+print("D2Q9 from the 3-node rule (rescaled by c_s = 1/sqrt(3)):")
+c9, w9 = tensor_lattice(3)
+for (cx, cy), wi in zip(c9, w9):
+    ex, ey = round(cx / 3 ** 0.5), round(cy / 3 ** 0.5)
+    print("   e = (%+2.0f,%+2.0f)   w = %9.6f  ~ %.0f/36" % (ex, ey, wi, round(wi * 36)))
+
+c25, w25 = tensor_lattice(5)
+print("\n   u    |  Pi_xxx exact | D2Q9 (N=2) |   gap    | D2Q25 (N=3) |  gap")
+for u in (0.02, 0.05, 0.10, 0.20):
+    ex = 3.0 * u + u ** 3
+    m9 = raw_moment(feq_hermite(1.0, u, c9, w9, 2), c9, 3)
+    m25 = raw_moment(feq_hermite(1.0, u, c25, w25, 3), c25, 3)
+    print("  %.2f  |   %10.6f  | %10.6f | %+8.1e |  %10.6f | %+8.1e"
+          % (u, ex, m9, m9 - ex, m25, m25 - ex))
+
+print("\n   u    | Pi_xxxx exact | D2Q9 (N=2) |   gap    | D2Q25 (N=3) |  gap")
+for u in (0.02, 0.05, 0.10, 0.20):
+    ex = 3.0 + 6.0 * u ** 2 + u ** 4
+    m9 = raw_moment(feq_hermite(1.0, u, c9, w9, 2), c9, 4)
+    m25 = raw_moment(feq_hermite(1.0, u, c25, w25, 3), c25, 4)
+    print("  %.2f  |   %10.6f  | %10.6f | %+8.1e |  %10.6f | %+8.1e"
+          % (u, ex, m9, m9 - ex, m25, m25 - ex))
+```
+
+```text
+D2Q9 from the 3-node rule (rescaled by c_s = 1/sqrt(3)):
+   e = (-1,-1)   w =  0.027778  ~ 1/36
+   e = (-1,+0)   w =  0.111111  ~ 4/36
+   e = (-1,+1)   w =  0.027778  ~ 1/36
+   e = (+0,-1)   w =  0.111111  ~ 4/36
+   e = (+0,+0)   w =  0.444444  ~ 16/36
+   e = (+0,+1)   w =  0.111111  ~ 4/36
+   e = (+1,-1)   w =  0.027778  ~ 1/36
+   e = (+1,+0)   w =  0.111111  ~ 4/36
+   e = (+1,+1)   w =  0.027778  ~ 1/36
+
+   u    |  Pi_xxx exact | D2Q9 (N=2) |   gap    | D2Q25 (N=3) |  gap
+  0.02  |     0.060008  |   0.060000 | -8.0e-06 |    0.060008 | +1.8e-16
+  0.05  |     0.150125  |   0.150000 | -1.3e-04 |    0.150125 | +2.8e-16
+  0.10  |     0.301000  |   0.300000 | -1.0e-03 |    0.301000 | +2.2e-16
+  0.20  |     0.608000  |   0.600000 | -8.0e-03 |    0.608000 | +4.4e-16
+
+   u    | Pi_xxxx exact | D2Q9 (N=2) |   gap    | D2Q25 (N=3) |  gap
+  0.02  |     3.002400  |   3.001200 | -1.2e-03 |    3.002400 | -1.6e-07
+  0.05  |     3.015006  |   3.007500 | -7.5e-03 |    3.015000 | -6.2e-06
+  0.10  |     3.060100  |   3.030000 | -3.0e-02 |    3.060000 | -1.0e-04
+  0.20  |     3.241600  |   3.120000 | -1.2e-01 |    3.240000 | -1.6e-03
+```
+
+权重表果然由张量积原样复现。下面两张表才是正题。
+
+## $u = 0.2$ 时3.2416变成3.1200
+
+$\Pi_{xxx}$ 的缺口正好是 $-\rho u_x^3$。$u = 0.2$ 时为 $-8.0 \times 10^{-3}$，$u = 0.1$ 时为 $-1.0 \times 10^{-3}$。速度减半，误差变成八分之一。三阶。
+
+原因是格子强制 $c_x^3 = c_x$。$c_x$ 只有 $-1, 0, 1$，立方之后还是它自己。于是 $\sum f_i c_x^3$ 给出 $\sum f_i c_x = \rho u_x$，而连续体要求的是 $\rho(3c_s^2 u_x + u_x^3) = \rho(u_x + u_x^3)$。$u_x^3$ 整项不见了。同样的约束对力项一视同仁，那一侧在[力项必须对上的三阶矩](/zh/posts/2026-09-30-lbm-forcing-term-third-moment-limit/)里另行讨论过。
+
+四阶更大。$u = 0.2$ 时真值3.2416变成3.1200，相对误差3.75%。缺口是 $-\rho(u_x^2 + u_x^4)$，从二阶就开始。下面的模拟可以直接上手操作。
+
+<LatticeTensorMomentDial />
+
+把Q从3调到5，格子就从D2Q9换成D2Q25。把N从2调到3，平衡分布会多出三阶项。可以确认一下：只抬高其中一个，$\Pi_{xxx}$ 的缺口永远合不拢。
+
+## 两个误差源彼此独立
+
+表里D2Q25那一列把它们分开了。$\Pi_{xxx}$ 的缺口降到 $10^{-16}$，也就是机器精度，因为求积阶数9和展开阶数3都够用。
+
+可是同一个D2Q25上，$\Pi_{xxxx}$ 在 $u = 0.2$ 时仍残留 $-1.6 \times 10^{-3}$。这个数恰好是 $-u^4$。它不是求积造成的，而是展开截在三阶的代价。节点再多也不会让它变小，只有把 $N$ 提到4才会消失。
+
+归纳一下，误差来源有两个。**展开阶数 $N$** 决定平衡分布能携带 $u$ 的几次幂，**求积阶数 $2Q-1$** 决定这个多项式能被精确积分的上限。想正确拿到 $M$ 阶矩，就需要 $2Q-1 \ge N + M$。D2Q9的 $2Q-1 = 5$、$N = 2$，所以三阶矩已经踩在边界上。
+
+## 这个不等式实际挡住了什么
+
+第一是伽利略不变性。$\Pi_{xxx}$ 里缺失的 $u^3$ 会在Chapman–Enskog展开中以 $\partial_x(\rho u_x^3)$ 形式的伪项复活。在带平均流的状态下测剪切波衰减率，粘性看起来会随流速漂移。再叠上[离散化索要的半步](/zh/posts/2026-09-28-lbm-half-step-viscosity-taylor-expansion/)，测得粘性与输入 $\tau$ 的关系会被模糊两次。
+
+第二是热流动。能量通量是三阶矩，要对上它的平衡值就需要 $N = 3$，因而 $2Q-1 \ge 6$。D2Q9停在5。标准D2Q9只能当等温模型用，原因就是这一行。从动理论推导气体输运系数时，看看[粘性与热导率出自不同矩](/zh/posts/2026-10-01-kinetic-theory-prandtl-eucken-correction/)的来龙去脉，就明白热的那一侧为什么总要多付一阶。
+
+第三是高马赫数。缺失项按 $u^3$、$u^4$ 走，$u$ 一大就涨得很快。$\Pi_{xxxx}$ 的误差在 $u = 0.02$ 时是0.04%，在 $u = 0.2$ 时是3.75%。"格子马赫数压到0.1以下"这条经验法则不只是稳定性问题，就是这张表上的数字。
+
+第四，有绕路的办法。保留D2Q9，只用修正项把 $u^3$ 的缺口补回来：把 $c_x^3 = c_x$ 抹掉的分量用空间导数近似后重新加上。这不是免费的。多了一阶导数，边界附近精度会掉，和非平衡部分的干扰也要重新核算。
+
+## 选格子表时真正签下的东西
+
+把 `e[9][2]` 和 `w[9]` 写进代码，不是在挑速度集合，而是在给积分阶数签字。选定三个节点的那一刻，就签下了"只精确到五阶"的合同，而这份合同会以等温、低马赫、近似伽利略三个条件回到你面前。
+
+下次在D3Q19和D3Q27之间犹豫时，先要问的不是内存。而是这份代码需要的最高矩是几阶，以及平衡分布要截在几阶。有 $2Q-1 \ge N + M$ 这一行，其余自然跟上。

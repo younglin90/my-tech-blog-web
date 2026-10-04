@@ -1,0 +1,330 @@
+---
+title: "Degree six returned 9 where 15 was required — the three Hermite roots that fixed D2Q9"
+date: 2026-10-05
+description: "Where c_s² = 1/3 and the weights 4/9, 1/9, 1/36 actually come from, traced all the way back to the degree of a Gauss–Hermite quadrature rule."
+tags: ["Gauss-Hermite", "Lattice-Boltzmann", "Kinetic-Theory", "LBM", "Numerical-Analysis"]
+locale: en
+slug: 2026-10-05-gauss-hermite-quadrature-lattice-velocities
+takeaway: "A lattice velocity set is not a design preference. It is a Gauss–Hermite rule, and Q nodes stay exact only through degree 2Q−1."
+draft: false
+---
+
+import { HermiteNodeMomentBench } from '@/components/post-viz/2026-10-05-gauss-hermite-quadrature-lattice-velocities/HermiteNodeMomentBench'
+import { LatticeTensorMomentDial } from '@/components/post-viz/2026-10-05-gauss-hermite-quadrature-lattice-velocities/LatticeTensorMomentDial'
+
+## A polynomial family written down in 1864 with no fluid in sight
+
+Charles Hermite organized the orthogonal polynomials of a Gaussian weight in 1864. It was pure analysis, with nothing fluid about it. Eighty-five years later Harold Grad expanded the Boltzmann distribution function in those same polynomials. Half a century after that, the quadrature points of that expansion became the velocity array at the top of every LBM code.
+
+This post follows one line, `cs2 = 1.0/3.0`, all the way to its origin. The destination is a single number: the root $\pm\sqrt{3}$ of the third Hermite polynomial. The weights 4/9, 1/9 and 1/36 fall out of the same place. The same derivation also hands over the list of things D2Q9 simply cannot do.
+
+## The velocity integral already carries a Gaussian weight
+
+A flow solver never wants the distribution function $f$ itself. It wants moments.
+
+$$
+\rho = \int f \, d\mathbf{v}, \qquad
+\rho \mathbf{u} = \int f \, \mathbf{v} \, d\mathbf{v}, \qquad
+\mathbf{\Pi} = \int f \, \mathbf{v}\mathbf{v} \, d\mathbf{v}
+$$
+
+Here $\rho$ is density, $\mathbf{u}$ is velocity and $\mathbf{\Pi}$ is the momentum flux tensor. Near equilibrium, $f$ is a Maxwellian multiplied by a polynomial. A Maxwellian is a Gaussian. So every integral above is a Gaussian weight times a polynomial.
+
+That shape picks the expansion for you. The polynomials orthogonal under the weight $w(\mathbf{v}) = (2\pi)^{-D/2} e^{-v^2/2}$ are exactly the Hermite polynomials.
+
+$$
+f(\mathbf{v}) = w(\mathbf{v}) \sum_{n=0}^{N} \frac{1}{n!} \, \mathbf{a}^{(n)} : \mathbf{H}^{(n)}(\mathbf{v})
+$$
+
+$\mathbf{H}^{(n)}$ is the rank-$n$ Hermite tensor and $\mathbf{a}^{(n)} = \int f \mathbf{H}^{(n)} d\mathbf{v}$ is its coefficient. The integral is now a Gaussian-weighted polynomial integral, and the tool that finishes such an integral exactly with finitely many points is Gauss–Hermite quadrature. Try it directly in the simulation below.
+
+<HermiteNodeMomentBench />
+
+Change the node count Q and the whole bar chart underneath shifts. Green bars are moment degrees the rule nails exactly; red bars are the ones it misses. The point where the bars turn red, just right of the dashed $2Q-1$ marker, is the subject of this entire post.
+
+## Why Q nodes stop at degree 2Q−1
+
+The rule of Gaussian quadrature is short. Place the nodes at the roots of the degree-$Q$ orthogonal polynomial and every polynomial of degree $2Q-1$ or lower integrates **exactly**. That uses all $2Q$ degrees of freedom: $Q$ abscissae and $Q$ weights.
+
+It is $2Q-1$ rather than $2Q$ only because degrees are counted from zero. Degrees $0, 1, \dots, 2Q-1$ are exactly $2Q$ of them. Measuring it directly makes the cliff obvious.
+
+```python
+from math import factorial
+
+def he(n, v):
+    """probabilists' Hermite He_n(v): He_0=1, He_1=v, He_{k+1}=v*He_k - k*He_{k-1}"""
+    a, b = 1.0, v
+    if n == 0:
+        return a
+    for k in range(1, n):
+        a, b = b, v * b - k * a
+    return b
+
+def gauss_hermite(Q):
+    """nodes = roots of He_Q, weights = Q! / (Q^2 He_{Q-1}(v)^2)"""
+    nodes, lo, step = [], -8.0, 1e-3
+    x0, f0 = lo, he(Q, lo)
+    while x0 < 8.0:
+        x1 = x0 + step
+        f1 = he(Q, x1)
+        if f0 == 0.0 or f0 * f1 < 0.0:
+            a, b = x0, x1
+            for _ in range(80):                 # bisection
+                m = 0.5 * (a + b)
+                if he(Q, a) * he(Q, m) <= 0.0:
+                    b = m
+                else:
+                    a = m
+            nodes.append(0.5 * (a + b))
+        x0, f0 = x1, f1
+    wts = [factorial(Q) / (Q * Q * he(Q - 1, v) ** 2) for v in nodes]
+    return nodes, wts
+
+def exact_moment(n):
+    """int v^n N(0,1) dv = 0 (odd), (n-1)!! (even)"""
+    if n % 2:
+        return 0.0
+    m = 1.0
+    for k in range(1, n, 2):
+        m *= k
+    return m
+
+def moment_errors(Q, nmax):
+    v, w = gauss_hermite(Q)
+    return [abs(sum(wi * vi ** n for vi, wi in zip(v, w)) - exact_moment(n))
+            for n in range(nmax + 1)]
+
+for Q in (3, 5):
+    v, w = gauss_hermite(Q)
+    print("Q=%d  nodes  %s" % (Q, "  ".join("%+9.6f" % x for x in v)))
+    print("      wts    %s" % "  ".join("%9.6f" % x for x in w))
+
+tab = {Q: moment_errors(Q, 10) for Q in (1, 3, 5)}
+print()
+print(" n |    Q=1    |    Q=3    |    Q=5    |  exact")
+for n in range(11):
+    print("%2d | %9.2e | %9.2e | %9.2e | %6.1f"
+          % (n, tab[1][n], tab[3][n], tab[5][n], exact_moment(n)))
+print()
+for Q in (1, 3, 5):
+    bad = [n for n in range(11) if tab[Q][n] > 1e-9]
+    first = bad[0] if bad else 11
+    print("Q=%d: exact through degree %d, first failure at %d   (2Q-1 = %d)"
+          % (Q, first - 1, first, 2 * Q - 1))
+```
+
+```text
+Q=3  nodes  -1.732051  +0.000000  +1.732051
+      wts     0.166667   0.666667   0.166667
+Q=5  nodes  -2.856970  -1.355626  +0.000000  +1.355626  +2.856970
+      wts     0.011257   0.222076   0.533333   0.222076   0.011257
+
+ n |    Q=1    |    Q=3    |    Q=5    |  exact
+ 0 |  0.00e+00 |  0.00e+00 |  2.22e-16 |    1.0
+ 1 |  3.93e-28 |  0.00e+00 |  1.39e-17 |    0.0
+ 2 |  1.00e+00 |  2.22e-16 |  4.44e-16 |    1.0
+ 3 |  6.05e-83 |  0.00e+00 |  0.00e+00 |    0.0
+ 4 |  3.00e+00 |  8.88e-16 |  1.78e-15 |    3.0
+ 5 | 9.33e-138 |  0.00e+00 |  0.00e+00 |    0.0
+ 6 |  1.50e+01 |  6.00e+00 |  1.24e-14 |   15.0
+ 7 | 1.44e-192 |  0.00e+00 |  0.00e+00 |    0.0
+ 8 |  1.05e+02 |  7.80e+01 |  8.53e-14 |  105.0
+ 9 | 2.22e-247 |  0.00e+00 |  0.00e+00 |    0.0
+10 |  9.45e+02 |  8.64e+02 |  1.20e+02 |  945.0
+
+Q=1: exact through degree 1, first failure at 2   (2Q-1 = 1)
+Q=3: exact through degree 5, first failure at 6   (2Q-1 = 5)
+Q=5: exact through degree 9, first failure at 10   (2Q-1 = 9)
+```
+
+All three rows stop precisely at $2Q-1$. That is a theorem, not a coincidence.
+
+## The arithmetic that turns 15 into 9
+
+The failure of Q=3 at degree six is short enough to do in your head. The nodes are $0, \pm\sqrt{3}$ and the weights are $2/3, 1/6, 1/6$. The sixth moment comes out as
+
+$$
+\frac{1}{6}(\sqrt{3})^6 + \frac{2}{3}\cdot 0^6 + \frac{1}{6}(-\sqrt{3})^6
+= 2 \times \frac{27}{6} = 9
+$$
+
+The true value is $5!! = 15$. A full 6 is missing. With only three nodes there is nowhere to put a heavy-tailed integrand like $v^6$. The central node contributes nothing because $0^6 = 0$, and the outer two are pinned at $\pm\sqrt{3}$, so everything further out is lost forever.
+
+Degree four is perfect: $2 \times 9/6 = 3 = 3!!$. This split, exact through four and broken at six, is what defines the reach of D2Q9.
+
+## Rescaling $\sqrt{3}$ to 1 is where $c_s^2 = 1/3$ comes from
+
+Everything so far is pure numerical analysis. LBM adds exactly one extra demand: **streaming must be exact**. For $f_i(\mathbf{x} + \mathbf{c}_i \Delta t, t + \Delta t) = f_i(\mathbf{x}, t)$ to hold without interpolation, $\mathbf{c}_i \Delta t$ has to land on a grid point.
+
+The nodes are already fixed at $0, \pm\sqrt{3}$. Sending them to $0, \pm 1$ means dividing the unit by $\sqrt{3}$, and the thermal velocity unit shrinks along with it.
+
+$$
+c_s = \frac{1}{\sqrt{3}} \frac{\Delta x}{\Delta t}, \qquad c_s^2 = \frac{1}{3}
+$$
+
+$c_s$ is the lattice sound speed. So 1/3 is not a physical constant. It is the unit conversion forced by the decision to seat the roots of the third Hermite polynomial on grid points. A five-point rule has roots at $\pm 1.3556$ and $\pm 2.8570$, which are not in integer ratio, which is why D2Q25-class lattices either accept interpolation and off-grid points or use variants with slightly shifted abscissae.
+
+## Multiplying the 1D weights produces the D2Q9 table
+
+Two dimensions is not a new derivation. It is the tensor product of the 1D rule. Multiply $(1/6, 2/3, 1/6)$ by itself and you are done.
+
+$$
+\frac{2}{3}\cdot\frac{2}{3} = \frac{4}{9}, \qquad
+\frac{2}{3}\cdot\frac{1}{6} = \frac{1}{9}, \qquad
+\frac{1}{6}\cdot\frac{1}{6} = \frac{1}{36}
+$$
+
+4/9 for the rest population, 1/9 for the four axis directions, 1/36 for the four diagonals. The table on page one of every LBM textbook is three multiplications. One more factor gives D3Q27 with 8/27, 2/27, 1/54 and 1/216. D3Q19 and D3Q15 are not product rules at all: they drop directions from D3Q27 and refit the weights.
+
+## What truncating the equilibrium at second order throws away
+
+Separate from the quadrature degree, there is a second choice: where to truncate the expansion at order $N$. Standard LBM uses $N = 2$.
+
+$$
+f_i^{eq} = w_i \rho \left[ 1 + \frac{\mathbf{c}_i \cdot \mathbf{u}}{c_s^2}
++ \frac{(\mathbf{c}_i \cdot \mathbf{u})^2 - c_s^2 u^2}{2 c_s^4} \right]
+$$
+
+$w_i$ are the weights derived above and $\mathbf{c}_i$ are the lattice velocities. Measuring the third and fourth moments of this form separates the two error sources and shows what each one charges.
+
+```python
+from itertools import product
+from math import factorial
+
+def he(n, v):
+    a, b = 1.0, v
+    if n == 0:
+        return a
+    for k in range(1, n):
+        a, b = b, v * b - k * a
+    return b
+
+def gauss_hermite(Q):
+    nodes, x0, step = [], -8.0, 1e-3
+    f0 = he(Q, x0)
+    while x0 < 8.0:
+        x1 = x0 + step
+        f1 = he(Q, x1)
+        if f0 == 0.0 or f0 * f1 < 0.0:
+            a, b = x0, x1
+            for _ in range(80):
+                m = 0.5 * (a + b)
+                if he(Q, a) * he(Q, m) <= 0.0:
+                    b = m
+                else:
+                    a = m
+            nodes.append(0.5 * (a + b))
+        x0, f0 = x1, f1
+    wts = [factorial(Q) / (Q * Q * he(Q - 1, v) ** 2) for v in nodes]
+    return nodes, wts
+
+def tensor_lattice(Q):
+    """1D Gauss-Hermite rule -> 2D product rule. thermal units: c_s = 1."""
+    n, w = gauss_hermite(Q)
+    cs, ws = [], []
+    for (vx, wx), (vy, wy) in product(zip(n, w), repeat=2):
+        cs.append((vx, vy))
+        ws.append(wx * wy)
+    return cs, ws
+
+def feq_hermite(rho, ux, c, w, order):
+    """truncated Hermite equilibrium, u = (ux, 0), c_s = 1"""
+    out = []
+    for (cx, _cy), wi in zip(c, w):
+        s = 1.0 + cx * ux
+        if order >= 2:
+            s += 0.5 * ux * ux * (cx * cx - 1.0)
+        if order >= 3:
+            s += ux ** 3 * (cx ** 3 - 3.0 * cx) / 6.0
+        out.append(wi * rho * s)
+    return out
+
+def raw_moment(f, c, p):
+    return sum(fi * cx ** p for fi, (cx, _cy) in zip(f, c))
+
+print("D2Q9 from the 3-node rule (rescaled by c_s = 1/sqrt(3)):")
+c9, w9 = tensor_lattice(3)
+for (cx, cy), wi in zip(c9, w9):
+    ex, ey = round(cx / 3 ** 0.5), round(cy / 3 ** 0.5)
+    print("   e = (%+2.0f,%+2.0f)   w = %9.6f  ~ %.0f/36" % (ex, ey, wi, round(wi * 36)))
+
+c25, w25 = tensor_lattice(5)
+print("\n   u    |  Pi_xxx exact | D2Q9 (N=2) |   gap    | D2Q25 (N=3) |  gap")
+for u in (0.02, 0.05, 0.10, 0.20):
+    ex = 3.0 * u + u ** 3
+    m9 = raw_moment(feq_hermite(1.0, u, c9, w9, 2), c9, 3)
+    m25 = raw_moment(feq_hermite(1.0, u, c25, w25, 3), c25, 3)
+    print("  %.2f  |   %10.6f  | %10.6f | %+8.1e |  %10.6f | %+8.1e"
+          % (u, ex, m9, m9 - ex, m25, m25 - ex))
+
+print("\n   u    | Pi_xxxx exact | D2Q9 (N=2) |   gap    | D2Q25 (N=3) |  gap")
+for u in (0.02, 0.05, 0.10, 0.20):
+    ex = 3.0 + 6.0 * u ** 2 + u ** 4
+    m9 = raw_moment(feq_hermite(1.0, u, c9, w9, 2), c9, 4)
+    m25 = raw_moment(feq_hermite(1.0, u, c25, w25, 3), c25, 4)
+    print("  %.2f  |   %10.6f  | %10.6f | %+8.1e |  %10.6f | %+8.1e"
+          % (u, ex, m9, m9 - ex, m25, m25 - ex))
+```
+
+```text
+D2Q9 from the 3-node rule (rescaled by c_s = 1/sqrt(3)):
+   e = (-1,-1)   w =  0.027778  ~ 1/36
+   e = (-1,+0)   w =  0.111111  ~ 4/36
+   e = (-1,+1)   w =  0.027778  ~ 1/36
+   e = (+0,-1)   w =  0.111111  ~ 4/36
+   e = (+0,+0)   w =  0.444444  ~ 16/36
+   e = (+0,+1)   w =  0.111111  ~ 4/36
+   e = (+1,-1)   w =  0.027778  ~ 1/36
+   e = (+1,+0)   w =  0.111111  ~ 4/36
+   e = (+1,+1)   w =  0.027778  ~ 1/36
+
+   u    |  Pi_xxx exact | D2Q9 (N=2) |   gap    | D2Q25 (N=3) |  gap
+  0.02  |     0.060008  |   0.060000 | -8.0e-06 |    0.060008 | +1.8e-16
+  0.05  |     0.150125  |   0.150000 | -1.3e-04 |    0.150125 | +2.8e-16
+  0.10  |     0.301000  |   0.300000 | -1.0e-03 |    0.301000 | +2.2e-16
+  0.20  |     0.608000  |   0.600000 | -8.0e-03 |    0.608000 | +4.4e-16
+
+   u    | Pi_xxxx exact | D2Q9 (N=2) |   gap    | D2Q25 (N=3) |  gap
+  0.02  |     3.002400  |   3.001200 | -1.2e-03 |    3.002400 | -1.6e-07
+  0.05  |     3.015006  |   3.007500 | -7.5e-03 |    3.015000 | -6.2e-06
+  0.10  |     3.060100  |   3.030000 | -3.0e-02 |    3.060000 | -1.0e-04
+  0.20  |     3.241600  |   3.120000 | -1.2e-01 |    3.240000 | -1.6e-03
+```
+
+The weight table reproduces itself from the tensor product, as promised. The two tables below it are the real result.
+
+## At $u = 0.2$, 3.2416 comes back as 3.1200
+
+The hole in $\Pi_{xxx}$ is exactly $-\rho u_x^3$. It is $-8.0 \times 10^{-3}$ at $u = 0.2$ and $-1.0 \times 10^{-3}$ at $u = 0.1$. Halving the velocity divides the error by eight. Third order.
+
+The cause is that the lattice enforces $c_x^3 = c_x$. With $c_x$ restricted to $-1, 0, 1$, cubing changes nothing. So $\sum f_i c_x^3$ returns $\sum f_i c_x = \rho u_x$, while the continuum demands $\rho(3c_s^2 u_x + u_x^3) = \rho(u_x + u_x^3)$. The whole $u_x^3$ term is absent. The same constraint binds the forcing term, which I covered separately in [the third moment a force term has to match](/en/posts/2026-09-30-lbm-forcing-term-third-moment-limit/).
+
+The fourth moment is worse. At $u = 0.2$ the true 3.2416 comes back as 3.1200, a relative error of 3.75%. The gap is $-\rho(u_x^2 + u_x^4)$, so it starts at second order. Try it directly in the simulation below.
+
+<LatticeTensorMomentDial />
+
+Raising Q from 3 to 5 swaps D2Q9 for D2Q25. Raising N from 2 to 3 adds the cubic term to the equilibrium. Watch that lifting only one of the two never closes the $\Pi_{xxx}$ gap.
+
+## The two error sources are independent
+
+The D2Q25 column separates them. The $\Pi_{xxx}$ gap drops to $10^{-16}$, machine precision, because quadrature degree 9 and expansion order 3 are both sufficient.
+
+Yet on that same D2Q25, $\Pi_{xxxx}$ still leaves $-1.6 \times 10^{-3}$ at $u = 0.2$. That number is exactly $-u^4$. It is not a quadrature defect; it is what truncating the expansion at third order costs. Adding nodes will never shrink it. Only raising $N$ to 4 removes it.
+
+So there are two independent sources. **Expansion order $N$** sets which powers of $u$ the equilibrium carries, and **quadrature degree $2Q-1$** sets the highest polynomial that can be integrated exactly. To get an $M$-th moment right you need $2Q-1 \ge N + M$. D2Q9 has $2Q-1 = 5$ and $N = 2$, so the third moment is already on the boundary.
+
+## What that inequality actually blocks
+
+First, Galilean invariance. The missing $u^3$ in $\Pi_{xxx}$ reappears in the Chapman–Enskog expansion as a spurious $\partial_x(\rho u_x^3)$ term. Measure shear-wave decay on top of a mean flow and the apparent viscosity drifts with the flow speed. Combined with [the half step the discretization charges](/en/posts/2026-09-28-lbm-half-step-viscosity-taylor-expansion/), the relation between measured viscosity and the input $\tau$ gets blurred twice over.
+
+Second, thermal flow. Heat flux is a third moment, and matching its equilibrium value requires $N = 3$ and therefore $2Q-1 \ge 6$. D2Q9 stops at 5. That single line is why standard D2Q9 is used only as an athermal model. Looking at [how viscosity and conductivity emerge from different moments](/en/posts/2026-10-01-kinetic-theory-prandtl-eucken-correction/) in kinetic theory makes it clear why the thermal side always costs one extra order.
+
+Third, high Mach number. Because the missing terms scale as $u^3$ and $u^4$, they grow fast. The $\Pi_{xxxx}$ error is 0.04% at $u = 0.02$ and 3.75% at $u = 0.2$. The rule of thumb to keep the lattice Mach number below 0.1 is not only about stability; it is this table.
+
+Fourth, there is a workaround. You can keep D2Q9 and restore the missing $u^3$ with a correction term, approximating what $c_x^3 = c_x$ erased by a spatial derivative. It is not free. One more derivative means reduced order near boundaries, and the interference with the non-equilibrium part has to be checked again.
+
+## What you are really signing when you pick a lattice table
+
+Writing `e[9][2]` and `w[9]` into a code is not choosing a velocity set. It is signing a quadrature degree. The moment three nodes are chosen, the contract says exact through degree five, and that contract comes back as three conditions: athermal, low Mach, approximately Galilean.
+
+Next time the choice is between D3Q19 and D3Q27, the first question is not memory. It is what the highest moment this solver needs actually is, and where the equilibrium will be truncated. One line, $2Q-1 \ge N + M$, decides the rest.

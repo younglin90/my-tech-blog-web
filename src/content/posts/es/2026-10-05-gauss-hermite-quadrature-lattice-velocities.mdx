@@ -1,0 +1,330 @@
+---
+title: "El sexto momento devolvió 9 donde hacían falta 15 — las tres raíces de Hermite que fijaron D2Q9"
+date: 2026-10-05
+description: "De dónde salen realmente c_s² = 1/3 y los pesos 4/9, 1/9 y 1/36 en un código LBM, rastreados hasta el grado de una regla de cuadratura de Gauss–Hermite."
+tags: ["Gauss-Hermite", "Lattice-Boltzmann", "Kinetic-Theory", "LBM", "Numerical-Analysis"]
+locale: es
+slug: 2026-10-05-gauss-hermite-quadrature-lattice-velocities
+takeaway: "Un conjunto de velocidades reticulares no es una preferencia de diseño: es una cuadratura de Gauss–Hermite, y Q nodos solo son exactos hasta grado 2Q−1."
+draft: false
+---
+
+import { HermiteNodeMomentBench } from '@/components/post-viz/2026-10-05-gauss-hermite-quadrature-lattice-velocities/HermiteNodeMomentBench'
+import { LatticeTensorMomentDial } from '@/components/post-viz/2026-10-05-gauss-hermite-quadrature-lattice-velocities/LatticeTensorMomentDial'
+
+## Una familia de polinomios escrita en 1864 sin fluido a la vista
+
+Charles Hermite ordenó en 1864 los polinomios ortogonales de un peso gaussiano. Era análisis puro, sin nada fluido alrededor. Ochenta y cinco años después, Harold Grad desarrolló la función de distribución de Boltzmann en esos mismos polinomios. Medio siglo más tarde, los puntos de cuadratura de ese desarrollo se convirtieron en el arreglo de velocidades que encabeza todo código LBM.
+
+Este texto sigue una sola línea, `cs2 = 1.0/3.0`, hasta su origen. El destino es un único número: la raíz $\pm\sqrt{3}$ del tercer polinomio de Hermite. Los pesos 4/9, 1/9 y 1/36 salen del mismo sitio. Y la misma derivación entrega además la lista de cosas que D2Q9 sencillamente no puede hacer.
+
+## La integral en el espacio de velocidades ya trae un peso gaussiano
+
+Un solver de fluidos nunca quiere la función de distribución $f$ en sí. Quiere momentos.
+
+$$
+\rho = \int f \, d\mathbf{v}, \qquad
+\rho \mathbf{u} = \int f \, \mathbf{v} \, d\mathbf{v}, \qquad
+\mathbf{\Pi} = \int f \, \mathbf{v}\mathbf{v} \, d\mathbf{v}
+$$
+
+Aquí $\rho$ es la densidad, $\mathbf{u}$ la velocidad y $\mathbf{\Pi}$ el tensor de flujo de cantidad de movimiento. Cerca del equilibrio, $f$ es una maxwelliana multiplicada por un polinomio. Una maxwelliana es una gaussiana. Así que todas las integrales anteriores son un peso gaussiano por un polinomio.
+
+Esa forma ya elige el desarrollo. Los polinomios ortogonales bajo el peso $w(\mathbf{v}) = (2\pi)^{-D/2} e^{-v^2/2}$ son justamente los de Hermite.
+
+$$
+f(\mathbf{v}) = w(\mathbf{v}) \sum_{n=0}^{N} \frac{1}{n!} \, \mathbf{a}^{(n)} : \mathbf{H}^{(n)}(\mathbf{v})
+$$
+
+$\mathbf{H}^{(n)}$ es el tensor de Hermite de rango $n$ y $\mathbf{a}^{(n)} = \int f \mathbf{H}^{(n)} d\mathbf{v}$ es su coeficiente. La integral pasa a ser una integral polinómica con peso gaussiano, y la herramienta que cierra exactamente ese tipo de integral con un número finito de puntos es la cuadratura de Gauss–Hermite. Conviene manipularlo directamente en la simulación de abajo.
+
+<HermiteNodeMomentBench />
+
+Al cambiar el número de nodos Q, el gráfico de barras inferior se desplaza entero. Las barras verdes son los grados de momento que la regla acierta exactamente; las rojas, los que falla. El punto donde las barras se vuelven rojas, justo a la derecha de la línea discontinua $2Q-1$, es el tema de todo el artículo.
+
+## Por qué Q nodos se detienen en el grado 2Q−1
+
+La regla de la cuadratura gaussiana es breve. Si los nodos se colocan en las raíces del polinomio ortogonal de grado $Q$, todo polinomio de grado $2Q-1$ o menor se integra de forma **exacta**. Eso agota los $2Q$ grados de libertad: $Q$ abscisas y $Q$ pesos.
+
+Es $2Q-1$ y no $2Q$ solo porque los grados se cuentan desde cero. Los grados $0, 1, \dots, 2Q-1$ son exactamente $2Q$. Medirlo directamente deja el corte a la vista.
+
+```python
+from math import factorial
+
+def he(n, v):
+    """polinomio de Hermite probabilista He_n(v): He_0=1, He_1=v, He_{k+1}=v*He_k - k*He_{k-1}"""
+    a, b = 1.0, v
+    if n == 0:
+        return a
+    for k in range(1, n):
+        a, b = b, v * b - k * a
+    return b
+
+def gauss_hermite(Q):
+    """nodos = raices de He_Q, pesos = Q! / (Q^2 He_{Q-1}(v)^2)"""
+    nodes, lo, step = [], -8.0, 1e-3
+    x0, f0 = lo, he(Q, lo)
+    while x0 < 8.0:
+        x1 = x0 + step
+        f1 = he(Q, x1)
+        if f0 == 0.0 or f0 * f1 < 0.0:
+            a, b = x0, x1
+            for _ in range(80):                 # biseccion
+                m = 0.5 * (a + b)
+                if he(Q, a) * he(Q, m) <= 0.0:
+                    b = m
+                else:
+                    a = m
+            nodes.append(0.5 * (a + b))
+        x0, f0 = x1, f1
+    wts = [factorial(Q) / (Q * Q * he(Q - 1, v) ** 2) for v in nodes]
+    return nodes, wts
+
+def exact_moment(n):
+    """int v^n N(0,1) dv = 0 (impar), (n-1)!! (par)"""
+    if n % 2:
+        return 0.0
+    m = 1.0
+    for k in range(1, n, 2):
+        m *= k
+    return m
+
+def moment_errors(Q, nmax):
+    v, w = gauss_hermite(Q)
+    return [abs(sum(wi * vi ** n for vi, wi in zip(v, w)) - exact_moment(n))
+            for n in range(nmax + 1)]
+
+for Q in (3, 5):
+    v, w = gauss_hermite(Q)
+    print("Q=%d  nodes  %s" % (Q, "  ".join("%+9.6f" % x for x in v)))
+    print("      wts    %s" % "  ".join("%9.6f" % x for x in w))
+
+tab = {Q: moment_errors(Q, 10) for Q in (1, 3, 5)}
+print()
+print(" n |    Q=1    |    Q=3    |    Q=5    |  exact")
+for n in range(11):
+    print("%2d | %9.2e | %9.2e | %9.2e | %6.1f"
+          % (n, tab[1][n], tab[3][n], tab[5][n], exact_moment(n)))
+print()
+for Q in (1, 3, 5):
+    bad = [n for n in range(11) if tab[Q][n] > 1e-9]
+    first = bad[0] if bad else 11
+    print("Q=%d: exact through degree %d, first failure at %d   (2Q-1 = %d)"
+          % (Q, first - 1, first, 2 * Q - 1))
+```
+
+```text
+Q=3  nodes  -1.732051  +0.000000  +1.732051
+      wts     0.166667   0.666667   0.166667
+Q=5  nodes  -2.856970  -1.355626  +0.000000  +1.355626  +2.856970
+      wts     0.011257   0.222076   0.533333   0.222076   0.011257
+
+ n |    Q=1    |    Q=3    |    Q=5    |  exact
+ 0 |  0.00e+00 |  0.00e+00 |  2.22e-16 |    1.0
+ 1 |  3.93e-28 |  0.00e+00 |  1.39e-17 |    0.0
+ 2 |  1.00e+00 |  2.22e-16 |  4.44e-16 |    1.0
+ 3 |  6.05e-83 |  0.00e+00 |  0.00e+00 |    0.0
+ 4 |  3.00e+00 |  8.88e-16 |  1.78e-15 |    3.0
+ 5 | 9.33e-138 |  0.00e+00 |  0.00e+00 |    0.0
+ 6 |  1.50e+01 |  6.00e+00 |  1.24e-14 |   15.0
+ 7 | 1.44e-192 |  0.00e+00 |  0.00e+00 |    0.0
+ 8 |  1.05e+02 |  7.80e+01 |  8.53e-14 |  105.0
+ 9 | 2.22e-247 |  0.00e+00 |  0.00e+00 |    0.0
+10 |  9.45e+02 |  8.64e+02 |  1.20e+02 |  945.0
+
+Q=1: exact through degree 1, first failure at 2   (2Q-1 = 1)
+Q=3: exact through degree 5, first failure at 6   (2Q-1 = 5)
+Q=5: exact through degree 9, first failure at 10   (2Q-1 = 9)
+```
+
+Las tres filas se cortan justo en $2Q-1$. No es casualidad, es un teorema.
+
+## La aritmética que convierte 15 en 9
+
+El fallo de Q=3 en el grado seis se puede hacer de cabeza. Los nodos son $0, \pm\sqrt{3}$ y los pesos $2/3, 1/6, 1/6$. El sexto momento sale así:
+
+$$
+\frac{1}{6}(\sqrt{3})^6 + \frac{2}{3}\cdot 0^6 + \frac{1}{6}(-\sqrt{3})^6
+= 2 \times \frac{27}{6} = 9
+$$
+
+El valor verdadero es $5!! = 15$. Falta un 6 entero. Con solo tres nodos no hay dónde sostener un integrando de cola pesada como $v^6$. El nodo central no aporta nada porque $0^6 = 0$, y los dos exteriores están clavados en $\pm\sqrt{3}$, de modo que todo lo que queda más lejos se pierde para siempre.
+
+El grado cuatro es perfecto: $2 \times 9/6 = 3 = 3!!$. Esa frontera, exacto hasta cuatro y roto en seis, define el alcance de D2Q9.
+
+## Reescalar $\sqrt{3}$ a 1 es de donde viene $c_s^2 = 1/3$
+
+Todo lo anterior es análisis numérico puro. LBM añade una sola exigencia: **el paso de transporte debe ser exacto**. Para que $f_i(\mathbf{x} + \mathbf{c}_i \Delta t, t + \Delta t) = f_i(\mathbf{x}, t)$ se cumpla sin interpolación, $\mathbf{c}_i \Delta t$ tiene que caer sobre un punto de la malla.
+
+Los nodos ya están fijados en $0, \pm\sqrt{3}$. Llevarlos a $0, \pm 1$ equivale a dividir la unidad por $\sqrt{3}$, y la unidad de velocidad térmica se encoge con ella.
+
+$$
+c_s = \frac{1}{\sqrt{3}} \frac{\Delta x}{\Delta t}, \qquad c_s^2 = \frac{1}{3}
+$$
+
+$c_s$ es la velocidad del sonido reticular. Es decir, 1/3 no es una constante física. Es la conversión de unidades que impone la decisión de sentar las raíces del tercer polinomio de Hermite sobre los puntos de la malla. Una regla de cinco puntos tiene raíces en $\pm 1.3556$ y $\pm 2.8570$, que no guardan razón entera; por eso las redes del tipo D2Q25 o aceptan interpolación y puntos fuera de malla, o usan variantes con abscisas ligeramente desplazadas.
+
+## Multiplicar los pesos 1D produce la tabla de D2Q9
+
+Dos dimensiones no es una derivación nueva. Es el producto tensorial de la regla 1D. Basta multiplicar $(1/6, 2/3, 1/6)$ por sí misma.
+
+$$
+\frac{2}{3}\cdot\frac{2}{3} = \frac{4}{9}, \qquad
+\frac{2}{3}\cdot\frac{1}{6} = \frac{1}{9}, \qquad
+\frac{1}{6}\cdot\frac{1}{6} = \frac{1}{36}
+$$
+
+4/9 para la población en reposo, 1/9 para las cuatro direcciones axiales y 1/36 para las cuatro diagonales. La tabla de la primera página de cualquier libro de LBM son tres multiplicaciones. Un factor más da D3Q27 con 8/27, 2/27, 1/54 y 1/216. D3Q19 y D3Q15 no son reglas producto: eliminan direcciones de D3Q27 y reajustan los pesos.
+
+## Qué se pierde al truncar el equilibrio en segundo orden
+
+Aparte del grado de cuadratura hay una segunda decisión: dónde truncar el desarrollo, en el orden $N$. El LBM estándar usa $N = 2$.
+
+$$
+f_i^{eq} = w_i \rho \left[ 1 + \frac{\mathbf{c}_i \cdot \mathbf{u}}{c_s^2}
++ \frac{(\mathbf{c}_i \cdot \mathbf{u})^2 - c_s^2 u^2}{2 c_s^4} \right]
+$$
+
+$w_i$ son los pesos deducidos arriba y $\mathbf{c}_i$ las velocidades reticulares. Medir los momentos tercero y cuarto de esta forma separa las dos fuentes de error y muestra cuánto cobra cada una.
+
+```python
+from itertools import product
+from math import factorial
+
+def he(n, v):
+    a, b = 1.0, v
+    if n == 0:
+        return a
+    for k in range(1, n):
+        a, b = b, v * b - k * a
+    return b
+
+def gauss_hermite(Q):
+    nodes, x0, step = [], -8.0, 1e-3
+    f0 = he(Q, x0)
+    while x0 < 8.0:
+        x1 = x0 + step
+        f1 = he(Q, x1)
+        if f0 == 0.0 or f0 * f1 < 0.0:
+            a, b = x0, x1
+            for _ in range(80):
+                m = 0.5 * (a + b)
+                if he(Q, a) * he(Q, m) <= 0.0:
+                    b = m
+                else:
+                    a = m
+            nodes.append(0.5 * (a + b))
+        x0, f0 = x1, f1
+    wts = [factorial(Q) / (Q * Q * he(Q - 1, v) ** 2) for v in nodes]
+    return nodes, wts
+
+def tensor_lattice(Q):
+    """regla 1D de Gauss-Hermite -> regla producto 2D. unidades termicas: c_s = 1."""
+    n, w = gauss_hermite(Q)
+    cs, ws = [], []
+    for (vx, wx), (vy, wy) in product(zip(n, w), repeat=2):
+        cs.append((vx, vy))
+        ws.append(wx * wy)
+    return cs, ws
+
+def feq_hermite(rho, ux, c, w, order):
+    """equilibrio de Hermite truncado, u = (ux, 0), c_s = 1"""
+    out = []
+    for (cx, _cy), wi in zip(c, w):
+        s = 1.0 + cx * ux
+        if order >= 2:
+            s += 0.5 * ux * ux * (cx * cx - 1.0)
+        if order >= 3:
+            s += ux ** 3 * (cx ** 3 - 3.0 * cx) / 6.0
+        out.append(wi * rho * s)
+    return out
+
+def raw_moment(f, c, p):
+    return sum(fi * cx ** p for fi, (cx, _cy) in zip(f, c))
+
+print("D2Q9 from the 3-node rule (rescaled by c_s = 1/sqrt(3)):")
+c9, w9 = tensor_lattice(3)
+for (cx, cy), wi in zip(c9, w9):
+    ex, ey = round(cx / 3 ** 0.5), round(cy / 3 ** 0.5)
+    print("   e = (%+2.0f,%+2.0f)   w = %9.6f  ~ %.0f/36" % (ex, ey, wi, round(wi * 36)))
+
+c25, w25 = tensor_lattice(5)
+print("\n   u    |  Pi_xxx exact | D2Q9 (N=2) |   gap    | D2Q25 (N=3) |  gap")
+for u in (0.02, 0.05, 0.10, 0.20):
+    ex = 3.0 * u + u ** 3
+    m9 = raw_moment(feq_hermite(1.0, u, c9, w9, 2), c9, 3)
+    m25 = raw_moment(feq_hermite(1.0, u, c25, w25, 3), c25, 3)
+    print("  %.2f  |   %10.6f  | %10.6f | %+8.1e |  %10.6f | %+8.1e"
+          % (u, ex, m9, m9 - ex, m25, m25 - ex))
+
+print("\n   u    | Pi_xxxx exact | D2Q9 (N=2) |   gap    | D2Q25 (N=3) |  gap")
+for u in (0.02, 0.05, 0.10, 0.20):
+    ex = 3.0 + 6.0 * u ** 2 + u ** 4
+    m9 = raw_moment(feq_hermite(1.0, u, c9, w9, 2), c9, 4)
+    m25 = raw_moment(feq_hermite(1.0, u, c25, w25, 3), c25, 4)
+    print("  %.2f  |   %10.6f  | %10.6f | %+8.1e |  %10.6f | %+8.1e"
+          % (u, ex, m9, m9 - ex, m25, m25 - ex))
+```
+
+```text
+D2Q9 from the 3-node rule (rescaled by c_s = 1/sqrt(3)):
+   e = (-1,-1)   w =  0.027778  ~ 1/36
+   e = (-1,+0)   w =  0.111111  ~ 4/36
+   e = (-1,+1)   w =  0.027778  ~ 1/36
+   e = (+0,-1)   w =  0.111111  ~ 4/36
+   e = (+0,+0)   w =  0.444444  ~ 16/36
+   e = (+0,+1)   w =  0.111111  ~ 4/36
+   e = (+1,-1)   w =  0.027778  ~ 1/36
+   e = (+1,+0)   w =  0.111111  ~ 4/36
+   e = (+1,+1)   w =  0.027778  ~ 1/36
+
+   u    |  Pi_xxx exact | D2Q9 (N=2) |   gap    | D2Q25 (N=3) |  gap
+  0.02  |     0.060008  |   0.060000 | -8.0e-06 |    0.060008 | +1.8e-16
+  0.05  |     0.150125  |   0.150000 | -1.3e-04 |    0.150125 | +2.8e-16
+  0.10  |     0.301000  |   0.300000 | -1.0e-03 |    0.301000 | +2.2e-16
+  0.20  |     0.608000  |   0.600000 | -8.0e-03 |    0.608000 | +4.4e-16
+
+   u    | Pi_xxxx exact | D2Q9 (N=2) |   gap    | D2Q25 (N=3) |  gap
+  0.02  |     3.002400  |   3.001200 | -1.2e-03 |    3.002400 | -1.6e-07
+  0.05  |     3.015006  |   3.007500 | -7.5e-03 |    3.015000 | -6.2e-06
+  0.10  |     3.060100  |   3.030000 | -3.0e-02 |    3.060000 | -1.0e-04
+  0.20  |     3.241600  |   3.120000 | -1.2e-01 |    3.240000 | -1.6e-03
+```
+
+La tabla de pesos se reproduce sola a partir del producto tensorial, como estaba previsto. Las dos tablas siguientes son el resultado de fondo.
+
+## En $u = 0.2$, 3.2416 vuelve como 3.1200
+
+El hueco en $\Pi_{xxx}$ es exactamente $-\rho u_x^3$. Vale $-8.0 \times 10^{-3}$ en $u = 0.2$ y $-1.0 \times 10^{-3}$ en $u = 0.1$. Al reducir la velocidad a la mitad, el error se divide por ocho. Tercer orden.
+
+La causa es que la red impone $c_x^3 = c_x$. Con $c_x$ limitado a $-1, 0, 1$, elevar al cubo no cambia nada. Así que $\sum f_i c_x^3$ devuelve $\sum f_i c_x = \rho u_x$, mientras que el continuo exige $\rho(3c_s^2 u_x + u_x^3) = \rho(u_x + u_x^3)$. El término $u_x^3$ falta por completo. La misma restricción ata al término de fuerza, tratado aparte en [el tercer momento que debe cumplir un término de fuerza](/es/posts/2026-09-30-lbm-forcing-term-third-moment-limit/).
+
+El cuarto momento es peor. En $u = 0.2$ el valor verdadero 3.2416 vuelve como 3.1200, un error relativo del 3.75%. El hueco es $-\rho(u_x^2 + u_x^4)$, de modo que arranca en segundo orden. Conviene manipularlo directamente en la simulación de abajo.
+
+<LatticeTensorMomentDial />
+
+Subir Q de 3 a 5 cambia D2Q9 por D2Q25. Subir N de 2 a 3 añade el término cúbico al equilibrio. Vale la pena comprobar que levantar solo uno de los dos nunca cierra el hueco de $\Pi_{xxx}$.
+
+## Las dos fuentes de error son independientes
+
+La columna de D2Q25 las separa. El hueco de $\Pi_{xxx}$ cae a $10^{-16}$, precisión de máquina, porque el grado de cuadratura 9 y el orden de desarrollo 3 bastan a la vez.
+
+Sin embargo, en esa misma D2Q25 el momento $\Pi_{xxxx}$ sigue dejando $-1.6 \times 10^{-3}$ en $u = 0.2$. Ese número es exactamente $-u^4$. No es un defecto de cuadratura: es lo que cuesta truncar el desarrollo en tercer orden. Añadir nodos no lo reducirá jamás. Solo desaparece al subir $N$ a 4.
+
+En resumen, hay dos fuentes independientes. El **orden de desarrollo $N$** fija qué potencias de $u$ carga el equilibrio, y el **grado de cuadratura $2Q-1$** fija el polinomio más alto que puede integrarse de forma exacta. Para obtener bien un momento de orden $M$ hace falta $2Q-1 \ge N + M$. D2Q9 tiene $2Q-1 = 5$ y $N = 2$, así que el tercer momento ya está en el límite.
+
+## Qué bloquea esa desigualdad en la práctica
+
+Primero, la invariancia galileana. El $u^3$ ausente en $\Pi_{xxx}$ reaparece en el desarrollo de Chapman–Enskog como un término espurio del tipo $\partial_x(\rho u_x^3)$. Al medir el decaimiento de una onda de cizalla sobre un flujo medio, la viscosidad aparente se desplaza con la velocidad del flujo. Combinado con [el medio paso que cobra la discretización](/es/posts/2026-09-28-lbm-half-step-viscosity-taylor-expansion/), la relación entre la viscosidad medida y el $\tau$ de entrada se enturbia dos veces.
+
+Segundo, el flujo térmico. El flujo de energía es un tercer momento, y ajustar su valor de equilibrio exige $N = 3$ y por tanto $2Q-1 \ge 6$. D2Q9 se queda en 5. Esa única línea explica por qué el D2Q9 estándar solo se usa como modelo isotermo. Observar [cómo viscosidad y conductividad salen de momentos distintos](/es/posts/2026-10-01-kinetic-theory-prandtl-eucken-correction/) en teoría cinética deja claro por qué el lado térmico siempre cuesta un orden más.
+
+Tercero, número de Mach alto. Como los términos ausentes escalan con $u^3$ y $u^4$, crecen rápido. El error de $\Pi_{xxxx}$ es del 0.04% en $u = 0.02$ y del 3.75% en $u = 0.2$. La regla práctica de mantener el Mach reticular por debajo de 0.1 no es solo cuestión de estabilidad: son los números de esta tabla.
+
+Cuarto, existe un rodeo. Se puede conservar D2Q9 y devolver solo el $u^3$ ausente mediante un término de corrección, aproximando con una derivada espacial lo que borró $c_x^3 = c_x$. No sale gratis. Una derivada más implica pérdida de orden cerca de las fronteras, y la interferencia con la parte de no equilibrio hay que revisarla de nuevo.
+
+## Lo que se firma realmente al elegir una tabla reticular
+
+Escribir `e[9][2]` y `w[9]` en un código no es elegir un conjunto de velocidades. Es firmar un grado de cuadratura. En el momento en que se eligen tres nodos, el contrato dice exacto hasta grado cinco, y ese contrato regresa en forma de tres condiciones: isotermo, Mach bajo, galileano aproximado.
+
+La próxima vez que la duda sea entre D3Q19 y D3Q27, la primera pregunta no es la memoria. Es cuál es el momento más alto que este solver necesita y en qué orden se truncará el equilibrio. Una sola línea, $2Q-1 \ge N + M$, decide el resto.

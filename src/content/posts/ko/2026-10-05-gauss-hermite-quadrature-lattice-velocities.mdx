@@ -1,0 +1,330 @@
+---
+title: "6차 모멘트에서 15가 9로 내려앉았다 — D2Q9를 정한 세 개의 에르미트 근"
+date: 2026-10-05
+description: "LBM 코드의 c_s²=1/3과 가중치 1/36이 어디서 왔는지 가우스–에르미트 적분 차수로 끝까지 따라간다."
+tags: ["Gauss-Hermite", "Lattice-Boltzmann", "Kinetic-Theory", "LBM", "Numerical-Analysis"]
+locale: ko
+slug: 2026-10-05-gauss-hermite-quadrature-lattice-velocities
+takeaway: "격자속도 집합은 설계 취향이 아니라 가우스–에르미트 적분점이다. 노드 Q개는 2Q−1차 모멘트까지만 정확하다."
+draft: false
+---
+
+import { HermiteNodeMomentBench } from '@/components/post-viz/2026-10-05-gauss-hermite-quadrature-lattice-velocities/HermiteNodeMomentBench'
+import { LatticeTensorMomentDial } from '@/components/post-viz/2026-10-05-gauss-hermite-quadrature-lattice-velocities/LatticeTensorMomentDial'
+
+## 1864년, 유체와 무관하게 정리된 다항식
+
+샤를 에르미트는 1864년에 가우시안을 가중함수로 쓰는 직교 다항식을 정리했다. 유체역학과는 아무 상관이 없는 순수 해석학이었다. 85년 뒤 Harold Grad가 같은 다항식으로 볼츠만 방정식의 분포함수를 전개했다. 다시 반세기 뒤, 그 전개의 적분점이 LBM 코드의 속도 배열이 됐다.
+
+이 글은 모든 LBM 코드 맨 위에 적혀 있는 `cs2 = 1.0/3.0` 한 줄을 끝까지 따라간다. 도착지는 3차 에르미트 다항식의 근 $\pm\sqrt{3}$ 하나다. 가중치 4/9, 1/9, 1/36도 같은 자리에서 나온다. 그리고 같은 유도가 "D2Q9로는 할 수 없는 일"의 목록도 함께 내놓는다.
+
+## 속도공간 적분에는 가중함수가 이미 들어 있다
+
+유체가 필요로 하는 것은 분포함수 $f$ 자체가 아니다. 모멘트다.
+
+$$
+\rho = \int f \, d\mathbf{v}, \qquad
+\rho \mathbf{u} = \int f \, \mathbf{v} \, d\mathbf{v}, \qquad
+\mathbf{\Pi} = \int f \, \mathbf{v}\mathbf{v} \, d\mathbf{v}
+$$
+
+$\rho$는 밀도, $\mathbf{u}$는 유속, $\mathbf{\Pi}$는 운동량 선속 텐서다. 평형 근처에서 $f$는 맥스웰 분포에 다항식을 곱한 모양이다. 맥스웰 분포는 가우시안이다. 그러니 위 적분은 전부 "가우시안 가중함수 곱하기 다항식"의 적분이다.
+
+이 모양이면 전개 방식이 정해진다. 가중함수 $w(\mathbf{v}) = (2\pi)^{-D/2} e^{-v^2/2}$에 대해 직교하는 다항식이 바로 에르미트 다항식이다.
+
+$$
+f(\mathbf{v}) = w(\mathbf{v}) \sum_{n=0}^{N} \frac{1}{n!} \, \mathbf{a}^{(n)} : \mathbf{H}^{(n)}(\mathbf{v})
+$$
+
+$\mathbf{H}^{(n)}$은 $n$차 에르미트 텐서, $\mathbf{a}^{(n)} = \int f \mathbf{H}^{(n)} d\mathbf{v}$는 그 계수다. 이제 적분은 "가우시안 가중 다항식 적분"이고, 그런 적분을 유한 개 점으로 정확히 끝내는 도구가 가우스–에르미트 구적법이다. 아래 시뮬레이션에서 직접 조작해보자.
+
+<HermiteNodeMomentBench />
+
+노드 수 Q를 바꾸면 아래 막대가 통째로 움직인다. 초록 막대는 그 차수의 모멘트를 정확히 맞춘 것, 빨간 막대는 틀린 것이다. 노란 점선 $2Q-1$ 오른쪽에서 막대가 갑자기 붉어지는 지점이 이 글 전체의 주제다.
+
+## 노드 Q개가 2Q−1차에서 멈추는 이유
+
+가우스 구적법의 규칙은 간단하다. 노드를 $Q$차 직교다항식의 근에 놓으면 $2Q-1$차 이하 다항식을 **정확히** 적분한다. 근 $Q$개와 가중치 $Q$개, 합쳐서 자유도 $2Q$개를 모두 쓴 결과다.
+
+$2Q$가 아니라 $2Q-1$인 것은 차수 $0$부터 세기 때문이다. $0, 1, \dots, 2Q-1$이면 정확히 $2Q$개다. 직접 재보면 더 분명하다.
+
+```python
+from math import factorial
+
+def he(n, v):
+    """probabilists' Hermite He_n(v): He_0=1, He_1=v, He_{k+1}=v*He_k - k*He_{k-1}"""
+    a, b = 1.0, v
+    if n == 0:
+        return a
+    for k in range(1, n):
+        a, b = b, v * b - k * a
+    return b
+
+def gauss_hermite(Q):
+    """nodes = roots of He_Q, weights = Q! / (Q^2 He_{Q-1}(v)^2)"""
+    nodes, lo, step = [], -8.0, 1e-3
+    x0, f0 = lo, he(Q, lo)
+    while x0 < 8.0:
+        x1 = x0 + step
+        f1 = he(Q, x1)
+        if f0 == 0.0 or f0 * f1 < 0.0:
+            a, b = x0, x1
+            for _ in range(80):                 # bisection
+                m = 0.5 * (a + b)
+                if he(Q, a) * he(Q, m) <= 0.0:
+                    b = m
+                else:
+                    a = m
+            nodes.append(0.5 * (a + b))
+        x0, f0 = x1, f1
+    wts = [factorial(Q) / (Q * Q * he(Q - 1, v) ** 2) for v in nodes]
+    return nodes, wts
+
+def exact_moment(n):
+    """int v^n N(0,1) dv = 0 (odd), (n-1)!! (even)"""
+    if n % 2:
+        return 0.0
+    m = 1.0
+    for k in range(1, n, 2):
+        m *= k
+    return m
+
+def moment_errors(Q, nmax):
+    v, w = gauss_hermite(Q)
+    return [abs(sum(wi * vi ** n for vi, wi in zip(v, w)) - exact_moment(n))
+            for n in range(nmax + 1)]
+
+for Q in (3, 5):
+    v, w = gauss_hermite(Q)
+    print("Q=%d  nodes  %s" % (Q, "  ".join("%+9.6f" % x for x in v)))
+    print("      wts    %s" % "  ".join("%9.6f" % x for x in w))
+
+tab = {Q: moment_errors(Q, 10) for Q in (1, 3, 5)}
+print()
+print(" n |    Q=1    |    Q=3    |    Q=5    |  exact")
+for n in range(11):
+    print("%2d | %9.2e | %9.2e | %9.2e | %6.1f"
+          % (n, tab[1][n], tab[3][n], tab[5][n], exact_moment(n)))
+print()
+for Q in (1, 3, 5):
+    bad = [n for n in range(11) if tab[Q][n] > 1e-9]
+    first = bad[0] if bad else 11
+    print("Q=%d: exact through degree %d, first failure at %d   (2Q-1 = %d)"
+          % (Q, first - 1, first, 2 * Q - 1))
+```
+
+```text
+Q=3  nodes  -1.732051  +0.000000  +1.732051
+      wts     0.166667   0.666667   0.166667
+Q=5  nodes  -2.856970  -1.355626  +0.000000  +1.355626  +2.856970
+      wts     0.011257   0.222076   0.533333   0.222076   0.011257
+
+ n |    Q=1    |    Q=3    |    Q=5    |  exact
+ 0 |  0.00e+00 |  0.00e+00 |  2.22e-16 |    1.0
+ 1 |  3.93e-28 |  0.00e+00 |  1.39e-17 |    0.0
+ 2 |  1.00e+00 |  2.22e-16 |  4.44e-16 |    1.0
+ 3 |  6.05e-83 |  0.00e+00 |  0.00e+00 |    0.0
+ 4 |  3.00e+00 |  8.88e-16 |  1.78e-15 |    3.0
+ 5 | 9.33e-138 |  0.00e+00 |  0.00e+00 |    0.0
+ 6 |  1.50e+01 |  6.00e+00 |  1.24e-14 |   15.0
+ 7 | 1.44e-192 |  0.00e+00 |  0.00e+00 |    0.0
+ 8 |  1.05e+02 |  7.80e+01 |  8.53e-14 |  105.0
+ 9 | 2.22e-247 |  0.00e+00 |  0.00e+00 |    0.0
+10 |  9.45e+02 |  8.64e+02 |  1.20e+02 |  945.0
+
+Q=1: exact through degree 1, first failure at 2   (2Q-1 = 1)
+Q=3: exact through degree 5, first failure at 6   (2Q-1 = 5)
+Q=5: exact through degree 9, first failure at 10   (2Q-1 = 9)
+```
+
+세 줄 모두 $2Q-1$에서 정확히 끊긴다. 우연이 아니라 정리다.
+
+## 15가 9로 내려앉는 산수
+
+Q=3이 6차에서 틀리는 과정은 암산으로 따라갈 수 있다. 노드는 $0, \pm\sqrt{3}$이고 가중치는 $2/3, 1/6, 1/6$이다. 6차 모멘트를 구적법으로 계산하면 이렇게 된다.
+
+$$
+\frac{1}{6}(\sqrt{3})^6 + \frac{2}{3}\cdot 0^6 + \frac{1}{6}(-\sqrt{3})^6
+= 2 \times \frac{27}{6} = 9
+$$
+
+참값은 $5!! = 15$다. 6이 통째로 비었다. 노드가 세 개뿐이니 $v^6$처럼 꼬리가 무거운 함수를 담을 자리가 없다. 중앙의 노드는 $0^6 = 0$이라 아무 기여도 하지 않고, 바깥 두 노드가 $\pm\sqrt{3}$에 고정되어 있으니 그보다 먼 곳의 기여는 영원히 잃는다.
+
+4차까지는 완벽하다. $2 \times 9/6 = 3 = 3!!$. 이 "4차까지 정확, 6차부터 실패"가 D2Q9의 능력 한계를 그대로 규정한다.
+
+## $\sqrt{3}$을 1로 만드는 환산이 $c_s^2 = 1/3$이다
+
+여기까지는 순수 수치해석이다. LBM이 더하는 조건은 하나뿐이다. **이류 단계가 정확해야 한다.** $f_i(\mathbf{x} + \mathbf{c}_i \Delta t, t + \Delta t) = f_i(\mathbf{x}, t)$가 보간 없이 성립하려면 $\mathbf{c}_i \Delta t$가 정확히 격자점이어야 한다.
+
+노드는 $0, \pm\sqrt{3}$으로 이미 정해졌다. 이것을 $0, \pm 1$로 보내려면 단위를 $\sqrt{3}$으로 나누면 된다. 그 환산에서 열속도 단위가 함께 줄어든다.
+
+$$
+c_s = \frac{1}{\sqrt{3}} \frac{\Delta x}{\Delta t}, \qquad c_s^2 = \frac{1}{3}
+$$
+
+$c_s$는 격자 음속이다. 즉 $1/3$은 물리 상수가 아니다. 3차 에르미트 다항식의 근을 격자점 위에 앉히겠다고 결정한 순간 따라 나온 단위 환산이다. D1Q5를 쓰면 근이 $\pm 1.3556, \pm 2.8570$이라 정수비가 아니고, 그래서 D2Q25 계열은 보간이나 비정수 격자를 감수하거나 근을 살짝 조정한 변형을 쓴다.
+
+## 1D 가중치를 곱하면 D2Q9 가중치가 나온다
+
+2차원은 새 유도가 아니다. 1D 규칙의 텐서곱이다. $(1/6, 2/3, 1/6)$을 자기 자신과 곱하면 끝난다.
+
+$$
+\frac{2}{3}\cdot\frac{2}{3} = \frac{4}{9}, \qquad
+\frac{2}{3}\cdot\frac{1}{6} = \frac{1}{9}, \qquad
+\frac{1}{6}\cdot\frac{1}{6} = \frac{1}{36}
+$$
+
+정지 방향 4/9, 축 방향 4개 1/9, 대각 4개 1/36. LBM 교과서 첫 장의 표가 곱셈 세 번으로 나온다. 3차원이면 같은 곱을 한 번 더 해서 D3Q27의 8/27, 2/27, 1/54, 1/216이 된다. D3Q19와 D3Q15는 텐서곱이 아니라 거기서 일부 방향을 쳐내고 가중치를 다시 맞춘 축약판이다.
+
+## 평형분포를 2차에서 자르면 무엇이 빠지나
+
+구적법 차수와 별개로, 전개를 $N$차에서 자르는 선택이 또 있다. 표준 LBM은 $N = 2$다.
+
+$$
+f_i^{eq} = w_i \rho \left[ 1 + \frac{\mathbf{c}_i \cdot \mathbf{u}}{c_s^2}
++ \frac{(\mathbf{c}_i \cdot \mathbf{u})^2 - c_s^2 u^2}{2 c_s^4} \right]
+$$
+
+$w_i$는 위에서 구한 가중치, $\mathbf{c}_i$는 격자속도다. 이 형태로 3차·4차 모멘트를 재보면 두 오차원이 각각 얼마를 청구하는지 분리해서 볼 수 있다.
+
+```python
+from itertools import product
+from math import factorial
+
+def he(n, v):
+    a, b = 1.0, v
+    if n == 0:
+        return a
+    for k in range(1, n):
+        a, b = b, v * b - k * a
+    return b
+
+def gauss_hermite(Q):
+    nodes, x0, step = [], -8.0, 1e-3
+    f0 = he(Q, x0)
+    while x0 < 8.0:
+        x1 = x0 + step
+        f1 = he(Q, x1)
+        if f0 == 0.0 or f0 * f1 < 0.0:
+            a, b = x0, x1
+            for _ in range(80):
+                m = 0.5 * (a + b)
+                if he(Q, a) * he(Q, m) <= 0.0:
+                    b = m
+                else:
+                    a = m
+            nodes.append(0.5 * (a + b))
+        x0, f0 = x1, f1
+    wts = [factorial(Q) / (Q * Q * he(Q - 1, v) ** 2) for v in nodes]
+    return nodes, wts
+
+def tensor_lattice(Q):
+    """1D Gauss-Hermite rule -> 2D product rule. thermal units: c_s = 1."""
+    n, w = gauss_hermite(Q)
+    cs, ws = [], []
+    for (vx, wx), (vy, wy) in product(zip(n, w), repeat=2):
+        cs.append((vx, vy))
+        ws.append(wx * wy)
+    return cs, ws
+
+def feq_hermite(rho, ux, c, w, order):
+    """truncated Hermite equilibrium, u = (ux, 0), c_s = 1"""
+    out = []
+    for (cx, _cy), wi in zip(c, w):
+        s = 1.0 + cx * ux
+        if order >= 2:
+            s += 0.5 * ux * ux * (cx * cx - 1.0)
+        if order >= 3:
+            s += ux ** 3 * (cx ** 3 - 3.0 * cx) / 6.0
+        out.append(wi * rho * s)
+    return out
+
+def raw_moment(f, c, p):
+    return sum(fi * cx ** p for fi, (cx, _cy) in zip(f, c))
+
+print("D2Q9 from the 3-node rule (rescaled by c_s = 1/sqrt(3)):")
+c9, w9 = tensor_lattice(3)
+for (cx, cy), wi in zip(c9, w9):
+    ex, ey = round(cx / 3 ** 0.5), round(cy / 3 ** 0.5)
+    print("   e = (%+2.0f,%+2.0f)   w = %9.6f  ~ %.0f/36" % (ex, ey, wi, round(wi * 36)))
+
+c25, w25 = tensor_lattice(5)
+print("\n   u    |  Pi_xxx exact | D2Q9 (N=2) |   gap    | D2Q25 (N=3) |  gap")
+for u in (0.02, 0.05, 0.10, 0.20):
+    ex = 3.0 * u + u ** 3
+    m9 = raw_moment(feq_hermite(1.0, u, c9, w9, 2), c9, 3)
+    m25 = raw_moment(feq_hermite(1.0, u, c25, w25, 3), c25, 3)
+    print("  %.2f  |   %10.6f  | %10.6f | %+8.1e |  %10.6f | %+8.1e"
+          % (u, ex, m9, m9 - ex, m25, m25 - ex))
+
+print("\n   u    | Pi_xxxx exact | D2Q9 (N=2) |   gap    | D2Q25 (N=3) |  gap")
+for u in (0.02, 0.05, 0.10, 0.20):
+    ex = 3.0 + 6.0 * u ** 2 + u ** 4
+    m9 = raw_moment(feq_hermite(1.0, u, c9, w9, 2), c9, 4)
+    m25 = raw_moment(feq_hermite(1.0, u, c25, w25, 3), c25, 4)
+    print("  %.2f  |   %10.6f  | %10.6f | %+8.1e |  %10.6f | %+8.1e"
+          % (u, ex, m9, m9 - ex, m25, m25 - ex))
+```
+
+```text
+D2Q9 from the 3-node rule (rescaled by c_s = 1/sqrt(3)):
+   e = (-1,-1)   w =  0.027778  ~ 1/36
+   e = (-1,+0)   w =  0.111111  ~ 4/36
+   e = (-1,+1)   w =  0.027778  ~ 1/36
+   e = (+0,-1)   w =  0.111111  ~ 4/36
+   e = (+0,+0)   w =  0.444444  ~ 16/36
+   e = (+0,+1)   w =  0.111111  ~ 4/36
+   e = (+1,-1)   w =  0.027778  ~ 1/36
+   e = (+1,+0)   w =  0.111111  ~ 4/36
+   e = (+1,+1)   w =  0.027778  ~ 1/36
+
+   u    |  Pi_xxx exact | D2Q9 (N=2) |   gap    | D2Q25 (N=3) |  gap
+  0.02  |     0.060008  |   0.060000 | -8.0e-06 |    0.060008 | +1.8e-16
+  0.05  |     0.150125  |   0.150000 | -1.3e-04 |    0.150125 | +2.8e-16
+  0.10  |     0.301000  |   0.300000 | -1.0e-03 |    0.301000 | +2.2e-16
+  0.20  |     0.608000  |   0.600000 | -8.0e-03 |    0.608000 | +4.4e-16
+
+   u    | Pi_xxxx exact | D2Q9 (N=2) |   gap    | D2Q25 (N=3) |  gap
+  0.02  |     3.002400  |   3.001200 | -1.2e-03 |    3.002400 | -1.6e-07
+  0.05  |     3.015006  |   3.007500 | -7.5e-03 |    3.015000 | -6.2e-06
+  0.10  |     3.060100  |   3.030000 | -3.0e-02 |    3.060000 | -1.0e-04
+  0.20  |     3.241600  |   3.120000 | -1.2e-01 |    3.240000 | -1.6e-03
+```
+
+가중치 표가 텐서곱으로 그대로 재현된다. 그 아래 두 표가 본론이다.
+
+## $u = 0.2$에서 3.2416이 3.1200이 된다
+
+$\Pi_{xxx}$의 빈칸은 정확히 $-\rho u_x^3$이다. $u = 0.2$에서 $-8.0 \times 10^{-3}$, $u = 0.1$에서 $-1.0 \times 10^{-3}$. 속도를 반으로 줄이면 오차는 8분의 1이 된다. 3차다.
+
+이유는 격자가 $c_x^3 = c_x$를 강제하기 때문이다. $c_x$가 $-1, 0, 1$뿐이니 세제곱해도 자기 자신이다. 그래서 $\sum f_i c_x^3$는 $\sum f_i c_x = \rho u_x$를 내놓는데, 연속계가 요구하는 값은 $\rho(3c_s^2 u_x + u_x^3) = \rho(u_x + u_x^3)$다. $u_x^3$ 하나가 통째로 없다. 같은 제약이 힘 항에서도 똑같이 걸린다. 그쪽은 [힘 텀이 맞춰야 하는 3차 모멘트](/ko/posts/2026-09-30-lbm-forcing-term-third-moment-limit/)에서 따로 다뤘다.
+
+4차는 더 크다. $u = 0.2$에서 참값 3.2416 대신 3.1200, 상대오차 3.75%다. 빈칸은 $-\rho(u_x^2 + u_x^4)$로 2차부터 시작한다. 아래 시뮬레이션에서 직접 조작해보자.
+
+<LatticeTensorMomentDial />
+
+Q를 3에서 5로 올리면 격자가 D2Q9에서 D2Q25로 바뀐다. N을 2에서 3으로 올리면 평형분포에 3차 항이 붙는다. 둘 중 하나만 올려서는 $\Pi_{xxx}$ 간극이 닫히지 않는다는 점을 확인해보자.
+
+## 두 오차원은 서로 독립이다
+
+표의 D2Q25 열이 이 점을 분리해서 보여준다. $\Pi_{xxx}$ 간극은 $10^{-16}$으로 기계 정밀도까지 내려간다. 구적법 차수 9와 전개 차수 3이 둘 다 충분하기 때문이다.
+
+그런데 같은 D2Q25에서 $\Pi_{xxxx}$는 $u = 0.2$에서 $-1.6 \times 10^{-3}$이 남는다. 이것은 정확히 $-u^4$다. 구적법 탓이 아니라 전개를 3차에서 잘랐기 때문에 생긴 값이다. 노드를 더 늘려도 이 항은 줄지 않는다. $N$을 4로 올려야 사라진다.
+
+정리하면 오차의 출처는 둘이다. **전개 차수 $N$**은 평형분포가 담는 $u$의 멱수를 정하고, **구적 차수 $2Q-1$**은 그 다항식을 정확히 적분할 수 있는 상한을 정한다. $M$차 모멘트를 제대로 얻으려면 $2Q-1 \ge N + M$이어야 한다. D2Q9는 $2Q-1 = 5$, $N = 2$이므로 3차 모멘트가 이미 경계선이다.
+
+## 이 부등식이 실제로 막는 일들
+
+첫째, 갈릴레이 불변성이다. $\Pi_{xxx}$의 $u^3$ 결손은 Chapman–Enskog 전개에서 $\partial_x(\rho u_x^3)$ 꼴의 가짜 항으로 되살아난다. 평균류가 걸린 상태에서 전단파 감쇠율을 재면 점성이 유속에 따라 달라 보인다. 같은 격자가 [이산화에서 반 스텝을 청구하는 방식](/ko/posts/2026-09-28-lbm-half-step-viscosity-taylor-expansion/)과 겹쳐서, 측정 점성과 입력 $\tau$의 관계를 두 번 흐린다.
+
+둘째, 열유동이다. 에너지 선속은 3차 모멘트이고, 그 평형값을 맞추려면 $N = 3$, 따라서 $2Q-1 \ge 6$이 필요하다. D2Q9는 5에서 끝난다. 표준 D2Q9가 등온 모델로만 쓰이는 이유가 이 한 줄이다. 기체의 수송계수를 운동론에서 유도할 때 [점성과 열전도도가 서로 다른 모멘트에서 나오는 사정](/ko/posts/2026-10-01-kinetic-theory-prandtl-eucken-correction/)을 보면, 열 쪽이 왜 항상 한 차수 비싼지가 분명해진다.
+
+셋째, 고마하수다. 결손항이 $u^3$, $u^4$이므로 $u$가 커질수록 빠르게 자란다. $u = 0.02$에서 $\Pi_{xxxx}$ 오차는 0.04%지만 $u = 0.2$에서 3.75%다. "격자 마하수를 0.1 이하로"라는 경험칙은 안정성만의 문제가 아니라 이 표의 숫자다.
+
+넷째, 우회로가 있다. D2Q9를 유지한 채 $u^3$ 결손만 보정항으로 되돌리는 방법이 있다. $c_x^3 = c_x$가 지운 성분을 공간 미분으로 근사해 다시 더하는 식이다. 공짜는 아니다. 미분이 하나 더 들어가므로 경계 근처에서 차수가 떨어지고, 비평형 부분과의 간섭도 다시 따져야 한다.
+
+## 격자 표를 고를 때 실제로 서명하는 것
+
+`e[9][2]`와 `w[9]`를 코드에 적는 일은 속도 집합을 고르는 것이 아니다. 적분 차수에 서명하는 일이다. 노드 3개를 고른 순간 5차까지만 정확하다는 계약이 맺어지고, 그 계약이 등온·저마하·갈릴레이 근사라는 세 조건으로 되돌아온다.
+
+다음에 D3Q19와 D3Q27 사이에서 고민한다면 먼저 물어볼 것은 메모리가 아니다. 이 코드가 필요로 하는 가장 높은 모멘트가 몇 차인가, 그리고 평형분포를 몇 차에서 자를 것인가. $2Q-1 \ge N + M$ 한 줄이면 나머지는 따라온다.
