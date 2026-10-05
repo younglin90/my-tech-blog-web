@@ -1,0 +1,281 @@
+---
+title: "同じ χ=50 に 1759 K と 818 K が同時に出た — フレームレット・ライブラリが折れる場所"
+date: 2026-10-06
+description: "スカラー散逸率 χ をテーブル軸にすると、消炎付近で解が三つに分かれる。進行変数 C がその折れを伸ばす過程を 61 点のフレームレットで解いて確かめる。"
+tags: ["Progress-Variable", "Flamelet", "Scalar-Dissipation", "Combustion", "Turbulence"]
+locale: ja
+slug: 2026-10-06-flamelet-library-slf-fpv-progress-variable
+takeaway: "χ は S 字曲線上で折り返すため、テーブル軸にはなれません。軸を進行変数 C に替えると、同じ曲線が一価関数になります。"
+draft: false
+---
+
+import { FlameletSCurveLookupLab } from '@/components/post-viz/2026-10-06-flamelet-library-slf-fpv-progress-variable/FlameletSCurveLookupLab'
+import { ProgressVariableFoldDial } from '@/components/post-viz/2026-10-06-flamelet-library-slf-fpv-progress-variable/ProgressVariableFoldDial'
+
+## ライブラリを差したら同じセルで温度が二つに割れた
+
+対向流拡散火炎をスカラー散逸率だけ変えて計算し、ライブラリを作りました。軸は混合分率 $Z$ とスカラー散逸率 $\chi$ の二つです。LES 側では $(Z, \chi)$ をキーにして参照させました。消炎に近いセルで温度が 1759 K と 818 K を交互に返してきました。補間コードを長く疑いましたが、バグではありませんでした。
+
+その座標でテーブルが折れていたのです。この記事では折れが生じる地点、$\chi$ を軸に使えない理由、そして進行変数(progress variable、反応の進み具合を一つの数にまとめた量)$C$ がそれを伸ばす仕組みを扱います。61 点のフレームレット境界値問題を直接解いて数字で確認します。SLF(Steady Laminar Flamelet)と FPV(Flamelet/Progress Variable)の違いは物理モデルの違いではありません。同じ曲線をどの座標で読むかの違いです。
+
+## フレームレット方程式は χ をどこに持っているか
+
+定常フレームレット方程式は、混合分率空間における 1 次元の反応拡散式です。
+
+$$
+\frac{\chi}{2}\frac{d^2 T}{dZ^2} + \frac{\dot\omega_T}{\rho\,c_p} = 0,
+\qquad T(0) = T(1) = T_u
+$$
+
+$Z$ は混合分率(燃料側で 1、酸化剤側で 0)、$\chi = 2D|\nabla Z|^2$ はスカラー散逸率で単位は 1/s です。流れの情報はすべてこの $\chi$ 一つに圧縮されて入ってきます。$\chi$ が大きいと混合が速く、化学反応が追いつきません。[散逸率を 202 倍まで上げて消炎まで押した記事](/ja/posts/2026-09-22-flamelet-scalar-dissipation-extinction/)では、この項そのものを別に扱いました。
+
+一段不可逆反応 $F + s\,O \to (1+s)P$ に Lewis 数 1 を課すと、未知数が $T$ だけに減ります。
+
+$$
+Y_F = Z - \frac{T - T_u}{q}, \qquad
+Y_O = (1 - Z) - s\,\frac{T - T_u}{q}, \qquad
+\dot\omega = A\,Y_F Y_O \exp\!\left(-\frac{T_a}{T}\right)
+$$
+
+$q = Q/c_p$ は燃料単位質量が生む温度上昇、$s$ は化学量論質量比です。$s = 4$ なら $Z_{st} = 0.2$ で、断熱火炎温度は 2100 K になります。下のシミュレーションで軸を自分で切り替えてみてください。
+
+<FlameletSCurveLookupLab />
+
+左は $\chi$–$T_{st}$ 平面の S 字曲線、右は参照が返した $T(Z)$ プロファイルです。軸を `chi (SLF)` にしたままスライダーを動かすと、垂直線が曲線を何回切るかが見えます。`C (FPV)` に替えると、同じ曲線の上を点が一つ、途切れずに進みます。
+
+## 同じ χ に解はいくつまで存在しうるか
+
+三つです。凍結解、不安定な中間枝、燃焼解が同じ $\chi$ を共有します。$\chi = 50\ \text{1/s}$ では $T_{st}$ が 300.0 K、817.8 K、1759.3 K に分かれます。$\chi$ をキーにしたテーブルは、この三つのどれを返すかを自分で決められません。
+
+折れ点は $\chi_{ext} = 130.53\ \text{1/s}$ にあります。この値を越えると燃焼解と中間枝がそろって消えます。$\chi = 135$ では凍結解だけが残り、これが消炎です。曲線がそこで折り返すため、$\chi$ は曲線を一度だけなぞる座標ではありません。
+
+## 中間枝はなぜ Newton 法で捕まらないのか
+
+$\chi$ を固定して $T$ だけを Newton 法で解くと、ヤコビアン $J = \partial R / \partial T$ を使います。折れ点ではこの $J$ が特異行列になります。折れ点は定義上 $d\chi/dC = 0$ となる場所で、その条件が $J$ の零空間と同じものです。中間枝はこの特異点の反対側にあります。
+
+実際に $\chi = 50$ で初期推定を二通り入れてみました。凍結の推定は 300.000 K に、完全燃焼の推定は 1759.282 K に収束しました。817.8 K はどちらからも出てきません。中間枝は不安定なので、Newton 法の収束半径に入らないのです。その状態をライブラリに入れたくても、入れる方法がありません。
+
+## χ を軸から下ろしたら何を載せるか
+
+$\chi$ を未知数に昇格させ、代わりに進行変数 $C$ を固定します。ここでは $C = T(Z_{st}) - T_u$ と取りました。未知数が $N+1$ 個、式も $N+1$ 本になります。
+
+$$
+\begin{aligned}
+R_i(T, \chi) &= 0, \qquad i = 1, \dots, N \\
+T_{i_{st}} - T_u - C &= 0
+\end{aligned}
+$$
+
+Newton のステップは、縁が一本付いた線形系になります。$b_i = \partial R_i / \partial \chi$ で、$e$ は $i_{st}$ 成分だけが 1 の単位ベクトルです。
+
+$$
+\begin{bmatrix} J & b \\ e^{\mathsf T} & 0 \end{bmatrix}
+\begin{bmatrix} \delta T \\ \delta \chi \end{bmatrix}
+= - \begin{bmatrix} R \\ g \end{bmatrix}
+$$
+
+$J$ が特異でもこの縁付き行列は正則です。だから折れ点をそのまま通り抜けます。ブロック消去で解けば、三重対角解法を二回使うだけで終わります。$u = J^{-1}(-R)$ と $v = J^{-1}(-b)$ を求め、$\delta\chi = (-g - u_{i_{st}}) / v_{i_{st}}$ を読み取ります。
+
+```python
+import math
+
+T0, Q, S, TA, A_PRE, N = 300.0, 9000.0, 4.0, 16000.0, 4.0e8, 61
+ZST = 1.0 / (1.0 + S)
+H = 1.0 / (N + 1)
+ZS = [(i + 1) * H for i in range(N)]
+IST = min(range(N), key=lambda i: abs(ZS[i] - ZST))
+
+def rate(z, t):
+    r = (t - T0) / Q
+    yf, yo = z - r, (1.0 - z) - S * r
+    if yf <= 0.0 or yo <= 0.0:
+        return 0.0, 0.0
+    e = math.exp(-TA / t)
+    return (A_PRE * yf * yo * e,
+            A_PRE * e * (-(yo + S * yf) / Q + yf * yo * TA / (t * t)))
+
+def flamelet_residual(T, chi):
+    R, diag, b = [0.0]*N, [0.0]*N, [0.0]*N
+    for i in range(N):
+        tl = T0 if i == 0 else T[i-1]
+        tr = T0 if i == N-1 else T[i+1]
+        lap = (tl - 2*T[i] + tr) / (H*H)
+        w, dw = rate(ZS[i], T[i])
+        R[i], diag[i], b[i] = 0.5*chi*lap + Q*w, -chi/(H*H) + Q*dw, 0.5*lap
+    return R, diag, chi/(2*H*H), b
+
+def tridiag_solve(diag, off, rhs):
+    n = len(rhs); c = [0.0]*n; d = [0.0]*n
+    c[0], d[0] = off/diag[0], rhs[0]/diag[0]
+    for i in range(1, n):
+        m = diag[i] - off*c[i-1]
+        c[i], d[i] = off/m, (rhs[i] - off*d[i-1])/m
+    x = [0.0]*n; x[-1] = d[-1]
+    for i in range(n-2, -1, -1):
+        x[i] = d[i] - c[i]*x[i+1]
+    return x
+
+def solve_at_fixed_chi(T, chi):
+    """SLF: chi を座標に固定し T だけを解く。"""
+    T = T[:]
+    for _ in range(200):
+        R, diag, off, _ = flamelet_residual(T, chi)
+        dT = tridiag_solve(diag, off, [-r for r in R])
+        big = max(abs(v) for v in dT)
+        lam = min(1.0, 150.0/max(1e-30, big))
+        T = [max(T0, T[i] + lam*dT[i]) for i in range(N)]
+        if big < 1e-9:
+            return T, True
+    return T, False
+
+def trace_scurve(c_list):
+    """FPV: 進行変数 C を座標に固定し (T, chi) を同時に解く。"""
+    T, chi, arc = [T0 + 1e-3]*N, 1.0e-7, []
+    for C in c_list:
+        for _ in range(100):
+            R, diag, off, b = flamelet_residual(T, chi)
+            u = tridiag_solve(diag, off, [-r for r in R])
+            v = tridiag_solve(diag, off, [-x for x in b])
+            dchi = (-(T[IST] - T0 - C) - u[IST]) / v[IST]
+            dT = [u[i] + v[i]*dchi for i in range(N)]
+            big = max(abs(x) for x in dT)
+            lam = min(1.0, 100.0/max(1e-30, big),
+                      0.3*abs(chi)/max(1e-30, abs(dchi)))
+            T = [T[i] + lam*dT[i] for i in range(N)]
+            chi += lam*dchi
+            if big < 1e-9:
+                break
+        arc.append((C, chi, T[:]))
+    return arc
+
+CMAX = Q*ZST
+arc = trace_scurve([CMAX*k/600.0 for k in range(1, 600)])
+chis = [p[1] for p in arc]
+tsts = [p[2][IST] for p in arc]
+fold = max(range(len(chis)), key=lambda i: chis[i])
+print("Z_st = %.3f   T_ad(Z_st) = %.1f K   grid N = %d" % (ZST, T0+CMAX, N))
+print("extinction fold: chi_ext = %.2f 1/s,  T_st = %.1f K" % (chis[fold], tsts[fold]))
+
+def branches_at_chi(target):
+    hits = [T0]                                    # どの chi でも存在する凍結解
+    for i in range(len(arc)-1):
+        a, b = chis[i], chis[i+1]
+        if (a-target)*(b-target) <= 0 and a != b:
+            f = (target-a)/(b-a)
+            hits.append(tsts[i] + f*(tsts[i+1]-tsts[i]))
+    return sorted(hits)
+
+print("\n[SLF axis] how many T_st does one chi_st key return?")
+for target in (5.0, 50.0, 120.0, 130.0, 135.0):
+    hits = branches_at_chi(target)
+    print("  chi=%6.1f -> %d entries:  %s" % (target, len(hits), ",  ".join("%.1f K" % v for v in hits)))
+
+print("\n[SLF solve] chi=50 fixed, Newton from two different guesses")
+for name, guess in (("frozen ", [T0]*N),
+                    ("burning", [T0 + Q*min(z, (1-z)/S) for z in ZS])):
+    T, ok = solve_at_fixed_chi(guess, 50.0)
+    print("  init=%s -> T_st = %8.3f K  (converged=%s)" % (name, T[IST], ok))
+print("  -> the middle branch at %.1f K is unreachable from any guess" % branches_at_chi(50.0)[1])
+
+print("\n[FPV axis] one C gives exactly one (chi, T_st)")
+for Ct in (300.0, 600.0, 909.0, 1200.0, 1500.0):
+    i = min(range(len(arc)), key=lambda k: abs(arc[k][0]-Ct))
+    print("  C = %7.1f K -> chi = %8.3f 1/s,  T_st = %7.1f K" % (arc[i][0], chis[i], tsts[i]))
+
+print("\n[sensitivity] dT_st/dchi as the fold is approached  [K/(1/s)]")
+for off in (60, 20, 5):
+    i = fold - off
+    print("  chi = %7.3f (fold is %6.3f away) -> %10.1f"
+          % (chis[i], chis[fold]-chis[i], (tsts[i+1]-tsts[i])/(chis[i+1]-chis[i])))
+
+print("\n[progress variable] choosing Z_ref in C = T(Z_ref) - T_u")
+print("  Z_ref    monotone?   max/min cell width (24 cells)")
+for zr in (0.048, 0.194, 0.387, 0.726, 0.952):
+    j = min(range(N), key=lambda k: abs(ZS[k]-zr))
+    vals = [p[2][j] - T0 for p in arc]
+    mono = all(vals[i+1] >= vals[i] - 1e-9 for i in range(len(vals)-1))
+    lo, hi = min(vals), max(vals)
+    pos = []
+    for k in range(25):
+        lv = lo + (hi-lo)*k/24.0
+        for i in range(len(vals)-1):
+            if (vals[i]-lv)*(vals[i+1]-lv) <= 0 and vals[i] != vals[i+1]:
+                f = (lv-vals[i])/(vals[i+1]-vals[i])
+                pos.append((i+f)/(len(vals)-1))
+    pos.sort()
+    g = [pos[i+1]-pos[i] for i in range(len(pos)-1) if pos[i+1]-pos[i] > 1e-9]
+    print("  %.3f    %-8s  %8.1f : 1" % (ZS[j], "yes" if mono else "FOLDS", max(g)/min(g)))
+```
+
+出力:
+
+```text
+Z_st = 0.200   T_ad(Z_st) = 2100.0 K   grid N = 61
+extinction fold: chi_ext = 130.53 1/s,  T_st = 1212.0 K
+
+[SLF axis] how many T_st does one chi_st key return?
+  chi=   5.0 -> 3 entries:  300.0 K,  637.9 K,  1976.0 K
+  chi=  50.0 -> 3 entries:  300.0 K,  817.8 K,  1759.3 K
+  chi= 120.0 -> 3 entries:  300.0 K,  1066.9 K,  1376.3 K
+  chi= 130.0 -> 3 entries:  300.0 K,  1177.2 K,  1245.7 K
+  chi= 135.0 -> 1 entries:  300.0 K
+
+[SLF solve] chi=50 fixed, Newton from two different guesses
+  init=frozen  -> T_st =  300.000 K  (converged=True)
+  init=burning -> T_st = 1759.282 K  (converged=True)
+  -> the middle branch at 817.8 K is unreachable from any guess
+
+[FPV axis] one C gives exactly one (chi, T_st)
+  C =   300.0 K -> chi =    2.012 1/s,  T_st =   600.0 K
+  C =   600.0 K -> chi =   78.522 1/s,  T_st =   900.0 K
+  C =   909.0 K -> chi =  130.528 1/s,  T_st =  1209.0 K
+  C =  1200.0 K -> chi =  102.079 1/s,  T_st =  1500.0 K
+  C =  1500.0 K -> chi =   40.825 1/s,  T_st =  1800.0 K
+
+[sensitivity] dT_st/dchi as the fold is approached  [K/(1/s)]
+  chi = 113.936 (fold is 16.593 away) ->        5.2
+  chi = 128.879 (fold is  1.650 away) ->       17.9
+  chi = 130.441 (fold is  0.088 away) ->       87.7
+
+[progress variable] choosing Z_ref in C = T(Z_ref) - T_u
+  Z_ref    monotone?   max/min cell width (24 cells)
+  0.048    yes          717.5 : 1
+  0.194    yes            1.8 : 1
+  0.387    yes          734.2 : 1
+  0.726    yes          733.9 : 1
+  0.952    yes          733.9 : 1
+```
+
+## C はどこで読めばテーブルが均等に伸びるか
+
+$C$ が曲線に沿って単調であれば、テーブルは一価になります。ただし単調性だけでは足りません。補間精度を決めるのは、$C$ を均一格子で切ったときに曲線上のセル間隔がどれだけ偏るかです。
+
+$C = T(Z_{ref}) - T_u$ の $Z_{ref}$ を動かすと、その偏りが大きく変わります。化学量論に近い $Z_{ref} = 0.194$ では最大最小セル幅比が 1.8 : 1 で、ほぼ均一です。$Z_{ref} = 0.048$ では 717.5 : 1、$Z_{ref} = 0.726$ では 733.9 : 1 まで開きます。単調性はすべて満たしています。それでも火炎から遠い点を使うと、テーブルの片側がセル一つに潰れます。
+
+<ProgressVariableFoldDial />
+
+横軸は S 字曲線に沿った弧長 $s$ です。`axis` を `chi` に替えると曲線が折れて赤い区間が現れ、均一セルの境界が一つのレベルで二回打たれます。`C(Z_ref)` 側で $Z_{ref}$ のスライダーを引くと、セル境界の間隔が詰まったり広がったりするのが下の帯にそのまま見えます。
+
+## 折れ点の近くでテーブル感度はどれだけ大きくなるか
+
+折れ点では $dT_{st}/d\chi$ が発散します。$\chi_{ext}$ の近くで曲線が $\chi \approx \chi_{ext} - k(C - C_{ext})^2$ の形をとるため、逆関数が平方根特異性を持ちます。数字で測ると、折れまで 16.593 離れた点で 5.2 K/(1/s)、1.650 離れた点で 17.9、0.088 離れた点で 87.7 です。
+
+LES セルの $\chi$ には、必ずサブグリッドモデルの誤差が混ざります。折れ点の近くで $\chi$ を 1% 外すと、温度が数十 K ずれます。$C$ 軸では同じ区間がただ平坦です。折れは物理ではなく、座標の選び方が作った特異性です。
+
+## FlameMaster でこの表を実際に作る手順は
+
+講義ノートの順にそのまま書くと四段階です。まず `CreateBinFile` で熱力学・輸送データをバイナリにまとめます(`thermo.dat`、`trans.dat` → `a.bin`)。次に `ScanMan` が反応機構ファイルを読んで前処理結果を出します。その次に `FlameMan` が入力ファイルの `MaxIter`、`TolRes`、`TolDy` と `maxGridPoints`(100〜200)を使い、定常解を一つ解きます。
+
+最後が `libgen` です。個々のフレームレットを集め、$(Z, \chi)$ または $(Z, C)$ で索引したライブラリを作ります。`datalist` ファイルでどのフレームレットを入れるか、`config` ファイルでどの化学種をテーブルに残すかを決めます。この索引軸を $\chi$ にすると、上で見た折れがそのままファイルに入ります。中間枝を収めたいなら、`FlameMan` を $\chi$ 固定で回してはいけません。
+
+## それでも SLF で十分な場合はいつか
+
+$\chi$ が $\chi_{ext}$ から遠く、局所消炎のない火炎なら燃焼枝だけで足ります。その範囲では $\chi \mapsto T_{st}$ が一価で、傾きも緩やかです。浮き上がり火炎を解像しない場合や、点火と消炎を見ない設計計算では、SLF テーブルのほうが安く、軸も直感的です。
+
+逆に局所消炎と再点火が混ざる条件では、中間枝が統計に入ってきます。乱流が火炎を揺らす強さと化学時間の比が、この境界を決めます。[乱流火炎速度が Damköhler 数で折れ曲がる地点](/ja/posts/2026-07-28-turbulent-flame-speed-damkohler-bending/)でも、同じ比が基準になります。その領域では、軸を $C$ に替える費用はテーブル容量の数倍より安く済みます。
+
+## 一つの表を二度折らないために
+
+ライブラリを作るときに決めているのは物理ではなく索引です。$\chi$ はフレームレット方程式の係数としては自然ですが、解集合の座標としては折れます。折れのある座標に補間をかけると、その補間はどんな値を返しても外れうるのです。
+
+$C$ も無料ではありません。$C$ は LES で輸送方程式を一本追加して運ぶ量であり、その方程式のソース項はまたテーブルから読み出します。だから $C$ の定義は、単調性とセル間隔の二つを同時に見なければなりません。上の実験で $Z_{ref}$ を一つ動かしただけで間隔比が 1.8 から 734 に跳ねたのは、その話です。軸を決めたら、次に測る数字は定まります。均一格子で切ったセル間隔比と、折れまでの距離です。

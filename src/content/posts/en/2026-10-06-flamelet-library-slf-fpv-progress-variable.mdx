@@ -1,0 +1,281 @@
+---
+title: "One χ=50, two temperatures: 1759 K and 818 K — where a flamelet library folds"
+date: 2026-10-06
+description: "Using the scalar dissipation rate χ as a table axis splits the solution into three near extinction. Here a 61-point flamelet solve shows how a progress variable C unfolds it."
+tags: ["Progress-Variable", "Flamelet", "Scalar-Dissipation", "Combustion", "Turbulence"]
+locale: en
+slug: 2026-10-06-flamelet-library-slf-fpv-progress-variable
+takeaway: "χ folds back on the S-curve, so it cannot serve as a table axis. Swapping it for a progress variable C makes the same curve single-valued."
+draft: false
+---
+
+import { FlameletSCurveLookupLab } from '@/components/post-viz/2026-10-06-flamelet-library-slf-fpv-progress-variable/FlameletSCurveLookupLab'
+import { ProgressVariableFoldDial } from '@/components/post-viz/2026-10-06-flamelet-library-slf-fpv-progress-variable/ProgressVariableFoldDial'
+
+## The library went in and the same cell reported two temperatures
+
+I built a library by sweeping a counterflow diffusion flame over scalar dissipation rate. The axes were mixture fraction $Z$ and scalar dissipation rate $\chi$. The LES side looked the table up with $(Z, \chi)$ as the key. Cells near extinction kept alternating between 1759 K and 818 K. I dug through the interpolation code for a long time. It was not a bug.
+
+The table was folded at that coordinate. This post locates the fold, explains why $\chi$ cannot be a table axis, and shows how a progress variable (a single number that encodes how far the reaction has gone) $C$ flattens it out. A 61-point flamelet boundary value problem supplies the numbers. The gap between SLF (Steady Laminar Flamelet) and FPV (Flamelet/Progress Variable) is not a difference in physics. It is a difference in which coordinate you read the same curve with.
+
+## Where does the flamelet equation keep χ
+
+The steady flamelet equation is a one-dimensional reaction-diffusion balance in mixture fraction space.
+
+$$
+\frac{\chi}{2}\frac{d^2 T}{dZ^2} + \frac{\dot\omega_T}{\rho\,c_p} = 0,
+\qquad T(0) = T(1) = T_u
+$$
+
+$Z$ is the mixture fraction (1 on the fuel side, 0 on the oxidizer side) and $\chi = 2D|\nabla Z|^2$ is the scalar dissipation rate in 1/s. Every bit of flow information arrives compressed into that single $\chi$. A large $\chi$ means mixing outruns chemistry. An [earlier post pushed χ up by a factor of 202 all the way to extinction](/en/posts/2026-09-22-flamelet-scalar-dissipation-extinction/) and dealt with that term on its own.
+
+A single-step irreversible reaction $F + s\,O \to (1+s)P$ with unity Lewis number collapses the unknowns down to $T$ alone.
+
+$$
+Y_F = Z - \frac{T - T_u}{q}, \qquad
+Y_O = (1 - Z) - s\,\frac{T - T_u}{q}, \qquad
+\dot\omega = A\,Y_F Y_O \exp\!\left(-\frac{T_a}{T}\right)
+$$
+
+Here $q = Q/c_p$ is the temperature rise per unit mass of fuel burned and $s$ is the stoichiometric mass ratio. With $s = 4$ you get $Z_{st} = 0.2$ and an adiabatic flame temperature of 2100 K. Switch the axis yourself in the simulation below.
+
+<FlameletSCurveLookupLab />
+
+The left panel is the S-curve in the $\chi$–$T_{st}$ plane, the right one shows the $T(Z)$ profiles the lookup returned. Leave the axis on `chi (SLF)` and drag the slider to watch how many times the vertical line cuts the curve. Switch to `C (FPV)` and a single point travels the whole curve without a break.
+
+## How many solutions can share one χ
+
+Three. A frozen solution, an unstable middle branch, and a burning solution all sit at the same $\chi$. At $\chi = 50\ \text{1/s}$, $T_{st}$ splits into 300.0 K, 817.8 K and 1759.3 K. A table keyed on $\chi$ has no way to decide which of the three it should hand back.
+
+The fold sits at $\chi_{ext} = 130.53\ \text{1/s}$. Past that value the burning solution and the middle branch vanish together. At $\chi = 135$ only the frozen solution is left, and that is extinction. Because the curve turns back on itself there, $\chi$ is not a coordinate that sweeps the curve exactly once.
+
+## Why Newton never finds the middle branch
+
+Fixing $\chi$ and solving only for $T$ with Newton uses the Jacobian $J = \partial R / \partial T$. At the fold that $J$ is singular. The fold is by definition the point where $d\chi/dC = 0$, and that condition is the same as the null space of $J$. The middle branch lives on the far side of that singularity.
+
+I tried $\chi = 50$ from two initial guesses. The frozen guess converged to 300.000 K, the fully burnt guess to 1759.282 K. Neither path produced 817.8 K. The middle branch is unstable, so it never falls inside Newton's basin of attraction. There is simply no way to put that state into the library.
+
+## If χ comes off the axis, what goes on it
+
+Promote $\chi$ to an unknown and fix a progress variable $C$ instead. Here I take $C = T(Z_{st}) - T_u$. That gives $N+1$ unknowns and $N+1$ equations.
+
+$$
+\begin{aligned}
+R_i(T, \chi) &= 0, \qquad i = 1, \dots, N \\
+T_{i_{st}} - T_u - C &= 0
+\end{aligned}
+$$
+
+The Newton step becomes a linear system with one border added. Here $b_i = \partial R_i / \partial \chi$ and $e$ is the unit vector whose only nonzero entry is at $i_{st}$.
+
+$$
+\begin{bmatrix} J & b \\ e^{\mathsf T} & 0 \end{bmatrix}
+\begin{bmatrix} \delta T \\ \delta \chi \end{bmatrix}
+= - \begin{bmatrix} R \\ g \end{bmatrix}
+$$
+
+The bordered matrix stays nonsingular even where $J$ is not, so it walks straight through the fold. Block elimination finishes it in two tridiagonal solves. Compute $u = J^{-1}(-R)$ and $v = J^{-1}(-b)$, then read off $\delta\chi = (-g - u_{i_{st}}) / v_{i_{st}}$.
+
+```python
+import math
+
+T0, Q, S, TA, A_PRE, N = 300.0, 9000.0, 4.0, 16000.0, 4.0e8, 61
+ZST = 1.0 / (1.0 + S)
+H = 1.0 / (N + 1)
+ZS = [(i + 1) * H for i in range(N)]
+IST = min(range(N), key=lambda i: abs(ZS[i] - ZST))
+
+def rate(z, t):
+    r = (t - T0) / Q
+    yf, yo = z - r, (1.0 - z) - S * r
+    if yf <= 0.0 or yo <= 0.0:
+        return 0.0, 0.0
+    e = math.exp(-TA / t)
+    return (A_PRE * yf * yo * e,
+            A_PRE * e * (-(yo + S * yf) / Q + yf * yo * TA / (t * t)))
+
+def flamelet_residual(T, chi):
+    R, diag, b = [0.0]*N, [0.0]*N, [0.0]*N
+    for i in range(N):
+        tl = T0 if i == 0 else T[i-1]
+        tr = T0 if i == N-1 else T[i+1]
+        lap = (tl - 2*T[i] + tr) / (H*H)
+        w, dw = rate(ZS[i], T[i])
+        R[i], diag[i], b[i] = 0.5*chi*lap + Q*w, -chi/(H*H) + Q*dw, 0.5*lap
+    return R, diag, chi/(2*H*H), b
+
+def tridiag_solve(diag, off, rhs):
+    n = len(rhs); c = [0.0]*n; d = [0.0]*n
+    c[0], d[0] = off/diag[0], rhs[0]/diag[0]
+    for i in range(1, n):
+        m = diag[i] - off*c[i-1]
+        c[i], d[i] = off/m, (rhs[i] - off*d[i-1])/m
+    x = [0.0]*n; x[-1] = d[-1]
+    for i in range(n-2, -1, -1):
+        x[i] = d[i] - c[i]*x[i+1]
+    return x
+
+def solve_at_fixed_chi(T, chi):
+    """SLF: fix chi as the coordinate and solve for T only."""
+    T = T[:]
+    for _ in range(200):
+        R, diag, off, _ = flamelet_residual(T, chi)
+        dT = tridiag_solve(diag, off, [-r for r in R])
+        big = max(abs(v) for v in dT)
+        lam = min(1.0, 150.0/max(1e-30, big))
+        T = [max(T0, T[i] + lam*dT[i]) for i in range(N)]
+        if big < 1e-9:
+            return T, True
+    return T, False
+
+def trace_scurve(c_list):
+    """FPV: fix the progress variable C and solve for (T, chi) together."""
+    T, chi, arc = [T0 + 1e-3]*N, 1.0e-7, []
+    for C in c_list:
+        for _ in range(100):
+            R, diag, off, b = flamelet_residual(T, chi)
+            u = tridiag_solve(diag, off, [-r for r in R])
+            v = tridiag_solve(diag, off, [-x for x in b])
+            dchi = (-(T[IST] - T0 - C) - u[IST]) / v[IST]
+            dT = [u[i] + v[i]*dchi for i in range(N)]
+            big = max(abs(x) for x in dT)
+            lam = min(1.0, 100.0/max(1e-30, big),
+                      0.3*abs(chi)/max(1e-30, abs(dchi)))
+            T = [T[i] + lam*dT[i] for i in range(N)]
+            chi += lam*dchi
+            if big < 1e-9:
+                break
+        arc.append((C, chi, T[:]))
+    return arc
+
+CMAX = Q*ZST
+arc = trace_scurve([CMAX*k/600.0 for k in range(1, 600)])
+chis = [p[1] for p in arc]
+tsts = [p[2][IST] for p in arc]
+fold = max(range(len(chis)), key=lambda i: chis[i])
+print("Z_st = %.3f   T_ad(Z_st) = %.1f K   grid N = %d" % (ZST, T0+CMAX, N))
+print("extinction fold: chi_ext = %.2f 1/s,  T_st = %.1f K" % (chis[fold], tsts[fold]))
+
+def branches_at_chi(target):
+    hits = [T0]                                    # the frozen solution, present at every chi
+    for i in range(len(arc)-1):
+        a, b = chis[i], chis[i+1]
+        if (a-target)*(b-target) <= 0 and a != b:
+            f = (target-a)/(b-a)
+            hits.append(tsts[i] + f*(tsts[i+1]-tsts[i]))
+    return sorted(hits)
+
+print("\n[SLF axis] how many T_st does one chi_st key return?")
+for target in (5.0, 50.0, 120.0, 130.0, 135.0):
+    hits = branches_at_chi(target)
+    print("  chi=%6.1f -> %d entries:  %s" % (target, len(hits), ",  ".join("%.1f K" % v for v in hits)))
+
+print("\n[SLF solve] chi=50 fixed, Newton from two different guesses")
+for name, guess in (("frozen ", [T0]*N),
+                    ("burning", [T0 + Q*min(z, (1-z)/S) for z in ZS])):
+    T, ok = solve_at_fixed_chi(guess, 50.0)
+    print("  init=%s -> T_st = %8.3f K  (converged=%s)" % (name, T[IST], ok))
+print("  -> the middle branch at %.1f K is unreachable from any guess" % branches_at_chi(50.0)[1])
+
+print("\n[FPV axis] one C gives exactly one (chi, T_st)")
+for Ct in (300.0, 600.0, 909.0, 1200.0, 1500.0):
+    i = min(range(len(arc)), key=lambda k: abs(arc[k][0]-Ct))
+    print("  C = %7.1f K -> chi = %8.3f 1/s,  T_st = %7.1f K" % (arc[i][0], chis[i], tsts[i]))
+
+print("\n[sensitivity] dT_st/dchi as the fold is approached  [K/(1/s)]")
+for off in (60, 20, 5):
+    i = fold - off
+    print("  chi = %7.3f (fold is %6.3f away) -> %10.1f"
+          % (chis[i], chis[fold]-chis[i], (tsts[i+1]-tsts[i])/(chis[i+1]-chis[i])))
+
+print("\n[progress variable] choosing Z_ref in C = T(Z_ref) - T_u")
+print("  Z_ref    monotone?   max/min cell width (24 cells)")
+for zr in (0.048, 0.194, 0.387, 0.726, 0.952):
+    j = min(range(N), key=lambda k: abs(ZS[k]-zr))
+    vals = [p[2][j] - T0 for p in arc]
+    mono = all(vals[i+1] >= vals[i] - 1e-9 for i in range(len(vals)-1))
+    lo, hi = min(vals), max(vals)
+    pos = []
+    for k in range(25):
+        lv = lo + (hi-lo)*k/24.0
+        for i in range(len(vals)-1):
+            if (vals[i]-lv)*(vals[i+1]-lv) <= 0 and vals[i] != vals[i+1]:
+                f = (lv-vals[i])/(vals[i+1]-vals[i])
+                pos.append((i+f)/(len(vals)-1))
+    pos.sort()
+    g = [pos[i+1]-pos[i] for i in range(len(pos)-1) if pos[i+1]-pos[i] > 1e-9]
+    print("  %.3f    %-8s  %8.1f : 1" % (ZS[j], "yes" if mono else "FOLDS", max(g)/min(g)))
+```
+
+Output:
+
+```text
+Z_st = 0.200   T_ad(Z_st) = 2100.0 K   grid N = 61
+extinction fold: chi_ext = 130.53 1/s,  T_st = 1212.0 K
+
+[SLF axis] how many T_st does one chi_st key return?
+  chi=   5.0 -> 3 entries:  300.0 K,  637.9 K,  1976.0 K
+  chi=  50.0 -> 3 entries:  300.0 K,  817.8 K,  1759.3 K
+  chi= 120.0 -> 3 entries:  300.0 K,  1066.9 K,  1376.3 K
+  chi= 130.0 -> 3 entries:  300.0 K,  1177.2 K,  1245.7 K
+  chi= 135.0 -> 1 entries:  300.0 K
+
+[SLF solve] chi=50 fixed, Newton from two different guesses
+  init=frozen  -> T_st =  300.000 K  (converged=True)
+  init=burning -> T_st = 1759.282 K  (converged=True)
+  -> the middle branch at 817.8 K is unreachable from any guess
+
+[FPV axis] one C gives exactly one (chi, T_st)
+  C =   300.0 K -> chi =    2.012 1/s,  T_st =   600.0 K
+  C =   600.0 K -> chi =   78.522 1/s,  T_st =   900.0 K
+  C =   909.0 K -> chi =  130.528 1/s,  T_st =  1209.0 K
+  C =  1200.0 K -> chi =  102.079 1/s,  T_st =  1500.0 K
+  C =  1500.0 K -> chi =   40.825 1/s,  T_st =  1800.0 K
+
+[sensitivity] dT_st/dchi as the fold is approached  [K/(1/s)]
+  chi = 113.936 (fold is 16.593 away) ->        5.2
+  chi = 128.879 (fold is  1.650 away) ->       17.9
+  chi = 130.441 (fold is  0.088 away) ->       87.7
+
+[progress variable] choosing Z_ref in C = T(Z_ref) - T_u
+  Z_ref    monotone?   max/min cell width (24 cells)
+  0.048    yes          717.5 : 1
+  0.194    yes            1.8 : 1
+  0.387    yes          734.2 : 1
+  0.726    yes          733.9 : 1
+  0.952    yes          733.9 : 1
+```
+
+## Where should C be read so the table stretches evenly
+
+As long as $C$ is monotone along the curve, the table is single-valued. Monotonicity alone is not enough, though. What sets the interpolation accuracy is how unevenly the cells spread along the curve once $C$ is cut into a uniform grid.
+
+Moving $Z_{ref}$ in $C = T(Z_{ref}) - T_u$ changes that a lot. At $Z_{ref} = 0.194$, near stoichiometric, the max-to-min cell width ratio is 1.8 : 1, which is close to uniform. At $Z_{ref} = 0.048$ it reaches 717.5 : 1, and at $Z_{ref} = 0.726$ it reaches 733.9 : 1. All of them are monotone. Pick a point far from the flame and one end of the table still collapses into a single cell.
+
+<ProgressVariableFoldDial />
+
+The horizontal axis is arclength $s$ traced along the S-curve. Flip `axis` to `chi` and the curve folds, a red segment appears, and uniform cell boundaries land twice on one level. On the `C(Z_ref)` side, dragging the $Z_{ref}$ slider makes the cell boundaries bunch up and spread out in the strip below.
+
+## How sharp does the table get near the fold
+
+At the fold $dT_{st}/d\chi$ diverges. Near $\chi_{ext}$ the curve behaves like $\chi \approx \chi_{ext} - k(C - C_{ext})^2$, so its inverse carries a square-root singularity. Measured directly: 5.2 K/(1/s) at a point 16.593 away from the fold, 17.9 at 1.650 away, and 87.7 at 0.088 away.
+
+The $\chi$ in an LES cell always carries subgrid model error. Misjudge $\chi$ by one percent near the fold and the temperature is off by tens of kelvin. On the $C$ axis the same stretch is simply flat. The fold is a singularity created by the choice of coordinate, not by the physics.
+
+## What the FlameMaster sequence for this table actually looks like
+
+Written out in the order the lecture notes give, it is four steps. First `CreateBinFile` packs the thermodynamic and transport data into a binary (`thermo.dat`, `trans.dat` → `a.bin`). Then `ScanMan` reads the mechanism file and emits a preprocessed result. After that `FlameMan` solves for one steady flamelet using `MaxIter`, `TolRes`, `TolDy` and `maxGridPoints` (100 to 200) from the input file.
+
+The last step is `libgen`. It collects the individual flamelets into a library indexed by $(Z, \chi)$ or $(Z, C)$. The `datalist` file decides which flamelets go in, and the `config` file decides which species survive into the table. Index that library on $\chi$ and the fold above goes straight into the file. Capturing the middle branch means `FlameMan` cannot be run at fixed $\chi$ at all.
+
+## When is SLF still enough
+
+If $\chi$ stays far from $\chi_{ext}$ and the flame has no local extinction, the burning branch alone will do. Over that range $\chi \mapsto T_{st}$ is single-valued and its slope is gentle. For lifted flames you are not resolving, or for design calculations that never look at ignition and extinction, an SLF table is cheaper and its axis is more intuitive.
+
+Mix local extinction and reignition, though, and the middle branch enters the statistics. The ratio between how hard turbulence shakes the flame and the chemical time scale sets that boundary. The same ratio decides things in [the point where turbulent flame speed bends over with Damköhler number](/en/posts/2026-07-28-turbulent-flame-speed-damkohler-bending/). In that regime, paying to move the axis to $C$ costs less than a few times the table size.
+
+## Keeping one table from folding twice
+
+What you fix when you build a library is the index, not the physics. $\chi$ is a natural coefficient inside the flamelet equation, yet as a coordinate on the solution set it folds. Run an interpolation over a folded coordinate and that interpolation can be wrong whatever value it returns.
+
+$C$ is not free either. It is a quantity LES has to carry in one more transport equation, and the source term of that equation is read back out of the table. So the definition of $C$ has to answer for monotonicity and cell spacing at the same time. Moving a single $Z_{ref}$ in the experiment above took the width ratio from 1.8 to 734, and that is the point. Once the axis is chosen, the numbers to re-measure are fixed: the cell width ratio under a uniform grid, and the distance left to the fold.

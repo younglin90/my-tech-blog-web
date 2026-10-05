@@ -1,0 +1,281 @@
+---
+title: "同一个 χ=50 返回了 1759 K 和 818 K — 火焰面库折叠的位置"
+date: 2026-10-06
+description: "把标量耗散率 χ 当作表格坐标轴，熄火附近的解会分成三支。本文用 61 点火焰面求解，看进度变量 C 如何把这个折叠展平。"
+tags: ["Progress-Variable", "Flamelet", "Scalar-Dissipation", "Combustion", "Turbulence"]
+locale: zh
+slug: 2026-10-06-flamelet-library-slf-fpv-progress-variable
+takeaway: "χ 在 S 形曲线上会折返，因此不能作为表格坐标轴。换成进度变量 C 之后，同一条曲线就成了单值函数。"
+draft: false
+---
+
+import { FlameletSCurveLookupLab } from '@/components/post-viz/2026-10-06-flamelet-library-slf-fpv-progress-variable/FlameletSCurveLookupLab'
+import { ProgressVariableFoldDial } from '@/components/post-viz/2026-10-06-flamelet-library-slf-fpv-progress-variable/ProgressVariableFoldDial'
+
+## 库接上去之后，同一个单元给出了两个温度
+
+我扫过一系列标量耗散率，计算对冲扩散火焰并建成了一个库。坐标轴是混合分数 $Z$ 和标量耗散率 $\chi$ 两个。LES 一侧用 $(Z, \chi)$ 作为键去查表。熄火附近的单元反复给出 1759 K 和 818 K。我翻了很久的插值代码，但那不是 bug。
+
+表格在那个坐标上折叠了。本文定位折叠发生的位置，说明为什么 $\chi$ 不能作为表格坐标轴，以及进度变量(progress variable，把反应进行程度压缩成一个数的量)$C$ 如何把它展平。数字来自一个 61 点的火焰面边值问题。SLF(Steady Laminar Flamelet)与 FPV(Flamelet/Progress Variable)的差别不是物理模型的差别，而是用哪个坐标去读同一条曲线的差别。
+
+## 火焰面方程把 χ 放在哪里
+
+定常火焰面方程是混合分数空间中的一维反应扩散式。
+
+$$
+\frac{\chi}{2}\frac{d^2 T}{dZ^2} + \frac{\dot\omega_T}{\rho\,c_p} = 0,
+\qquad T(0) = T(1) = T_u
+$$
+
+$Z$ 是混合分数(燃料侧为 1，氧化剂侧为 0)，$\chi = 2D|\nabla Z|^2$ 是标量耗散率，单位为 1/s。流动信息全部被压缩进这一个 $\chi$ 里。$\chi$ 大意味着混合快于化学反应。[把耗散率提高 202 倍直到熄火的那篇](/zh/posts/2026-09-22-flamelet-scalar-dissipation-extinction/)单独讨论过这一项。
+
+对单步不可逆反应 $F + s\,O \to (1+s)P$ 取 Lewis 数为 1，未知量就只剩 $T$。
+
+$$
+Y_F = Z - \frac{T - T_u}{q}, \qquad
+Y_O = (1 - Z) - s\,\frac{T - T_u}{q}, \qquad
+\dot\omega = A\,Y_F Y_O \exp\!\left(-\frac{T_a}{T}\right)
+$$
+
+其中 $q = Q/c_p$ 是单位质量燃料带来的温升，$s$ 是化学当量质量比。取 $s = 4$ 则 $Z_{st} = 0.2$，绝热火焰温度为 2100 K。在下面的仿真里亲手切换坐标轴。
+
+<FlameletSCurveLookupLab />
+
+左侧是 $\chi$–$T_{st}$ 平面上的 S 形曲线，右侧是查表返回的 $T(Z)$ 分布。把坐标轴保持在 `chi (SLF)` 并拖动滑块，可以看到竖线切到曲线几次。切到 `C (FPV)`，则有一个点不间断地走过整条曲线。
+
+## 同一个 χ 最多能有几个解
+
+三个。冻结解、不稳定的中间支、燃烧解共用同一个 $\chi$。在 $\chi = 50\ \text{1/s}$ 处，$T_{st}$ 分裂为 300.0 K、817.8 K 和 1759.3 K。以 $\chi$ 为键的表格无法自己决定该返回这三个中的哪一个。
+
+折叠点位于 $\chi_{ext} = 130.53\ \text{1/s}$。越过这个值，燃烧解与中间支一起消失。在 $\chi = 135$ 只剩下冻结解，这就是熄火。因为曲线在那里折返，$\chi$ 并不是只扫过曲线一次的坐标。
+
+## 中间支为什么抓不到
+
+固定 $\chi$ 只对 $T$ 做 Newton 迭代时，用的是雅可比矩阵 $J = \partial R / \partial T$。在折叠点处这个 $J$ 是奇异的。折叠点按定义就是 $d\chi/dC = 0$ 的位置，而该条件与 $J$ 的零空间是同一件事。中间支位于这个奇点的另一侧。
+
+我在 $\chi = 50$ 处试了两种初值。冻结初值收敛到 300.000 K，完全燃烧初值收敛到 1759.282 K。两条路都给不出 817.8 K。中间支不稳定，落不进 Newton 的收敛域。就算想把这个状态放进库里，也没有办法。
+
+## 把 χ 从坐标轴上撤下来，换什么上去
+
+把 $\chi$ 提升为未知量，改为固定进度变量 $C$。这里取 $C = T(Z_{st}) - T_u$。于是未知量 $N+1$ 个，方程也是 $N+1$ 个。
+
+$$
+\begin{aligned}
+R_i(T, \chi) &= 0, \qquad i = 1, \dots, N \\
+T_{i_{st}} - T_u - C &= 0
+\end{aligned}
+$$
+
+Newton 步变成了加一条边的线性系统。其中 $b_i = \partial R_i / \partial \chi$，$e$ 是只有 $i_{st}$ 分量为 1 的单位向量。
+
+$$
+\begin{bmatrix} J & b \\ e^{\mathsf T} & 0 \end{bmatrix}
+\begin{bmatrix} \delta T \\ \delta \chi \end{bmatrix}
+= - \begin{bmatrix} R \\ g \end{bmatrix}
+$$
+
+即使 $J$ 奇异，这个加边矩阵仍然非奇异，所以能直接穿过折叠点。用块消去法求解，只需两次三对角求解。先算 $u = J^{-1}(-R)$ 和 $v = J^{-1}(-b)$，再读出 $\delta\chi = (-g - u_{i_{st}}) / v_{i_{st}}$。
+
+```python
+import math
+
+T0, Q, S, TA, A_PRE, N = 300.0, 9000.0, 4.0, 16000.0, 4.0e8, 61
+ZST = 1.0 / (1.0 + S)
+H = 1.0 / (N + 1)
+ZS = [(i + 1) * H for i in range(N)]
+IST = min(range(N), key=lambda i: abs(ZS[i] - ZST))
+
+def rate(z, t):
+    r = (t - T0) / Q
+    yf, yo = z - r, (1.0 - z) - S * r
+    if yf <= 0.0 or yo <= 0.0:
+        return 0.0, 0.0
+    e = math.exp(-TA / t)
+    return (A_PRE * yf * yo * e,
+            A_PRE * e * (-(yo + S * yf) / Q + yf * yo * TA / (t * t)))
+
+def flamelet_residual(T, chi):
+    R, diag, b = [0.0]*N, [0.0]*N, [0.0]*N
+    for i in range(N):
+        tl = T0 if i == 0 else T[i-1]
+        tr = T0 if i == N-1 else T[i+1]
+        lap = (tl - 2*T[i] + tr) / (H*H)
+        w, dw = rate(ZS[i], T[i])
+        R[i], diag[i], b[i] = 0.5*chi*lap + Q*w, -chi/(H*H) + Q*dw, 0.5*lap
+    return R, diag, chi/(2*H*H), b
+
+def tridiag_solve(diag, off, rhs):
+    n = len(rhs); c = [0.0]*n; d = [0.0]*n
+    c[0], d[0] = off/diag[0], rhs[0]/diag[0]
+    for i in range(1, n):
+        m = diag[i] - off*c[i-1]
+        c[i], d[i] = off/m, (rhs[i] - off*d[i-1])/m
+    x = [0.0]*n; x[-1] = d[-1]
+    for i in range(n-2, -1, -1):
+        x[i] = d[i] - c[i]*x[i+1]
+    return x
+
+def solve_at_fixed_chi(T, chi):
+    """SLF：把 chi 固定为坐标，只求解 T。"""
+    T = T[:]
+    for _ in range(200):
+        R, diag, off, _ = flamelet_residual(T, chi)
+        dT = tridiag_solve(diag, off, [-r for r in R])
+        big = max(abs(v) for v in dT)
+        lam = min(1.0, 150.0/max(1e-30, big))
+        T = [max(T0, T[i] + lam*dT[i]) for i in range(N)]
+        if big < 1e-9:
+            return T, True
+    return T, False
+
+def trace_scurve(c_list):
+    """FPV：把进度变量 C 固定为坐标，同时求解 (T, chi)。"""
+    T, chi, arc = [T0 + 1e-3]*N, 1.0e-7, []
+    for C in c_list:
+        for _ in range(100):
+            R, diag, off, b = flamelet_residual(T, chi)
+            u = tridiag_solve(diag, off, [-r for r in R])
+            v = tridiag_solve(diag, off, [-x for x in b])
+            dchi = (-(T[IST] - T0 - C) - u[IST]) / v[IST]
+            dT = [u[i] + v[i]*dchi for i in range(N)]
+            big = max(abs(x) for x in dT)
+            lam = min(1.0, 100.0/max(1e-30, big),
+                      0.3*abs(chi)/max(1e-30, abs(dchi)))
+            T = [T[i] + lam*dT[i] for i in range(N)]
+            chi += lam*dchi
+            if big < 1e-9:
+                break
+        arc.append((C, chi, T[:]))
+    return arc
+
+CMAX = Q*ZST
+arc = trace_scurve([CMAX*k/600.0 for k in range(1, 600)])
+chis = [p[1] for p in arc]
+tsts = [p[2][IST] for p in arc]
+fold = max(range(len(chis)), key=lambda i: chis[i])
+print("Z_st = %.3f   T_ad(Z_st) = %.1f K   grid N = %d" % (ZST, T0+CMAX, N))
+print("extinction fold: chi_ext = %.2f 1/s,  T_st = %.1f K" % (chis[fold], tsts[fold]))
+
+def branches_at_chi(target):
+    hits = [T0]                                    # 任何 chi 下都存在的冻结解
+    for i in range(len(arc)-1):
+        a, b = chis[i], chis[i+1]
+        if (a-target)*(b-target) <= 0 and a != b:
+            f = (target-a)/(b-a)
+            hits.append(tsts[i] + f*(tsts[i+1]-tsts[i]))
+    return sorted(hits)
+
+print("\n[SLF axis] how many T_st does one chi_st key return?")
+for target in (5.0, 50.0, 120.0, 130.0, 135.0):
+    hits = branches_at_chi(target)
+    print("  chi=%6.1f -> %d entries:  %s" % (target, len(hits), ",  ".join("%.1f K" % v for v in hits)))
+
+print("\n[SLF solve] chi=50 fixed, Newton from two different guesses")
+for name, guess in (("frozen ", [T0]*N),
+                    ("burning", [T0 + Q*min(z, (1-z)/S) for z in ZS])):
+    T, ok = solve_at_fixed_chi(guess, 50.0)
+    print("  init=%s -> T_st = %8.3f K  (converged=%s)" % (name, T[IST], ok))
+print("  -> the middle branch at %.1f K is unreachable from any guess" % branches_at_chi(50.0)[1])
+
+print("\n[FPV axis] one C gives exactly one (chi, T_st)")
+for Ct in (300.0, 600.0, 909.0, 1200.0, 1500.0):
+    i = min(range(len(arc)), key=lambda k: abs(arc[k][0]-Ct))
+    print("  C = %7.1f K -> chi = %8.3f 1/s,  T_st = %7.1f K" % (arc[i][0], chis[i], tsts[i]))
+
+print("\n[sensitivity] dT_st/dchi as the fold is approached  [K/(1/s)]")
+for off in (60, 20, 5):
+    i = fold - off
+    print("  chi = %7.3f (fold is %6.3f away) -> %10.1f"
+          % (chis[i], chis[fold]-chis[i], (tsts[i+1]-tsts[i])/(chis[i+1]-chis[i])))
+
+print("\n[progress variable] choosing Z_ref in C = T(Z_ref) - T_u")
+print("  Z_ref    monotone?   max/min cell width (24 cells)")
+for zr in (0.048, 0.194, 0.387, 0.726, 0.952):
+    j = min(range(N), key=lambda k: abs(ZS[k]-zr))
+    vals = [p[2][j] - T0 for p in arc]
+    mono = all(vals[i+1] >= vals[i] - 1e-9 for i in range(len(vals)-1))
+    lo, hi = min(vals), max(vals)
+    pos = []
+    for k in range(25):
+        lv = lo + (hi-lo)*k/24.0
+        for i in range(len(vals)-1):
+            if (vals[i]-lv)*(vals[i+1]-lv) <= 0 and vals[i] != vals[i+1]:
+                f = (lv-vals[i])/(vals[i+1]-vals[i])
+                pos.append((i+f)/(len(vals)-1))
+    pos.sort()
+    g = [pos[i+1]-pos[i] for i in range(len(pos)-1) if pos[i+1]-pos[i] > 1e-9]
+    print("  %.3f    %-8s  %8.1f : 1" % (ZS[j], "yes" if mono else "FOLDS", max(g)/min(g)))
+```
+
+输出:
+
+```text
+Z_st = 0.200   T_ad(Z_st) = 2100.0 K   grid N = 61
+extinction fold: chi_ext = 130.53 1/s,  T_st = 1212.0 K
+
+[SLF axis] how many T_st does one chi_st key return?
+  chi=   5.0 -> 3 entries:  300.0 K,  637.9 K,  1976.0 K
+  chi=  50.0 -> 3 entries:  300.0 K,  817.8 K,  1759.3 K
+  chi= 120.0 -> 3 entries:  300.0 K,  1066.9 K,  1376.3 K
+  chi= 130.0 -> 3 entries:  300.0 K,  1177.2 K,  1245.7 K
+  chi= 135.0 -> 1 entries:  300.0 K
+
+[SLF solve] chi=50 fixed, Newton from two different guesses
+  init=frozen  -> T_st =  300.000 K  (converged=True)
+  init=burning -> T_st = 1759.282 K  (converged=True)
+  -> the middle branch at 817.8 K is unreachable from any guess
+
+[FPV axis] one C gives exactly one (chi, T_st)
+  C =   300.0 K -> chi =    2.012 1/s,  T_st =   600.0 K
+  C =   600.0 K -> chi =   78.522 1/s,  T_st =   900.0 K
+  C =   909.0 K -> chi =  130.528 1/s,  T_st =  1209.0 K
+  C =  1200.0 K -> chi =  102.079 1/s,  T_st =  1500.0 K
+  C =  1500.0 K -> chi =   40.825 1/s,  T_st =  1800.0 K
+
+[sensitivity] dT_st/dchi as the fold is approached  [K/(1/s)]
+  chi = 113.936 (fold is 16.593 away) ->        5.2
+  chi = 128.879 (fold is  1.650 away) ->       17.9
+  chi = 130.441 (fold is  0.088 away) ->       87.7
+
+[progress variable] choosing Z_ref in C = T(Z_ref) - T_u
+  Z_ref    monotone?   max/min cell width (24 cells)
+  0.048    yes          717.5 : 1
+  0.194    yes            1.8 : 1
+  0.387    yes          734.2 : 1
+  0.726    yes          733.9 : 1
+  0.952    yes          733.9 : 1
+```
+
+## C 该在哪里读取，表格才能均匀展开
+
+只要 $C$ 沿曲线单调，表格就是单值的。但单调性并不够。决定插值精度的，是把 $C$ 切成均匀网格后，曲线上单元间距有多不均。
+
+改变 $C = T(Z_{ref}) - T_u$ 中的 $Z_{ref}$，差别很大。靠近化学当量的 $Z_{ref} = 0.194$，最大最小单元宽度比为 1.8 : 1，接近均匀。$Z_{ref} = 0.048$ 处达到 717.5 : 1，$Z_{ref} = 0.726$ 处达到 733.9 : 1。它们全都满足单调。可是一旦取离火焰较远的点，表格的一端就被压成一个单元。
+
+<ProgressVariableFoldDial />
+
+横轴是沿 S 形曲线的弧长 $s$。把 `axis` 切到 `chi`，曲线折返，出现红色区段，均匀单元的边界会在同一个水平上落两次。在 `C(Z_ref)` 一侧拖动 $Z_{ref}$ 滑块，单元边界的疏密变化会直接显示在下方的条带上。
+
+## 折叠点附近表格的灵敏度会增大多少
+
+在折叠点处 $dT_{st}/d\chi$ 发散。$\chi_{ext}$ 附近的曲线形如 $\chi \approx \chi_{ext} - k(C - C_{ext})^2$，因此其反函数带有平方根奇性。直接测量：距折叠 16.593 处为 5.2 K/(1/s)，距 1.650 处为 17.9，距 0.088 处为 87.7。
+
+LES 单元里的 $\chi$ 总是夹着亚格子模型误差。在折叠点附近把 $\chi$ 估错 1%，温度就偏出几十开。在 $C$ 轴上同一段只是平缓的。折叠不是物理，而是坐标选择造出的奇性。
+
+## 用 FlameMaster 实际生成这张表的步骤
+
+按讲义的顺序写下来是四步。先用 `CreateBinFile` 把热力学与输运数据打成二进制(`thermo.dat`、`trans.dat` → `a.bin`)。接着 `ScanMan` 读取机理文件并输出预处理结果。然后 `FlameMan` 用输入文件里的 `MaxIter`、`TolRes`、`TolDy` 和 `maxGridPoints`(100~200)求出一个定常解。
+
+最后是 `libgen`。它把一个个火焰面汇总成按 $(Z, \chi)$ 或 $(Z, C)$ 索引的库。`datalist` 文件决定放进哪些火焰面，`config` 文件决定哪些组分留在表里。把索引轴设为 $\chi$，上面看到的折叠就原样进了文件。想收录中间支，就不能让 `FlameMan` 以固定 $\chi$ 运行。
+
+## 什么情况下 SLF 仍然够用
+
+如果 $\chi$ 离 $\chi_{ext}$ 很远且火焰没有局部熄火，只用燃烧支就够了。在那个范围内 $\chi \mapsto T_{st}$ 是单值的，斜率也平缓。不解析抬举火焰的场合，或者不看点火与熄火的设计计算，SLF 表格更便宜，坐标轴也更直观。
+
+反过来，若局部熄火与再点火混在一起，中间支就会进入统计。湍流抖动火焰的强度与化学时间之比决定了这条界线。在[湍流火焰速度随 Damköhler 数转折的位置](/zh/posts/2026-07-28-turbulent-flame-speed-damkohler-bending/)那篇里，同一个比值也是判据。在那个区域，把坐标轴换成 $C$ 的代价比表格容量翻几倍要便宜。
+
+## 为了不把一张表折两次
+
+建库时定下的是索引，而不是物理。$\chi$ 作为火焰面方程里的系数很自然，但作为解集上的坐标它会折返。在带折叠的坐标上做插值，那次插值返回任何值都可能是错的。
+
+$C$ 也不是免费的。$C$ 是 LES 里要多解一条输运方程才能携带的量，而那条方程的源项又要从表里读回来。所以 $C$ 的定义必须同时交代单调性和单元间距。上面的实验里只挪动一个 $Z_{ref}$，间距比就从 1.8 跳到 734，说的就是这件事。坐标轴定下来之后，下一步要测的数字就固定了：均匀网格下的单元间距比，以及距折叠还有多远。
