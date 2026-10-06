@@ -1,0 +1,344 @@
+---
+title: "同一份代码同时给出0.79阶和2.00阶 — 验证算例真正测量的东西"
+date: 2026-10-07
+description: "Sod激波管上测到的收敛阶0.79并不是格式的缺陷。用同一份代码测量间断、范数和斜率限制器各自如何削减阶数。"
+tags: ["Order-Of-Accuracy", "CFD-Verification", "Shock-Capturing", "Slope-Limiter", "Compressible"]
+locale: zh
+slug: 2026-10-07-sod-vortex-order-verification
+takeaway: "在含间断的解上测到的收敛阶不是格式的阶数。阶数只在光滑解上测，Sod激波管用来检查激波位置和单调性。"
+draft: false
+---
+
+import { ShockNormSplitBench } from '@/components/post-viz/2026-10-07-sod-vortex-order-verification/ShockNormSplitBench'
+import { SolutionSmoothnessOrderDial } from '@/components/post-viz/2026-10-07-sod-vortex-order-verification/SolutionSmoothnessOrderDial'
+
+## 二阶格式报出了0.79阶
+
+可压缩代码的验证清单上列着三项：Sod激波管、等熵涡输运、激波–涡干扰。我按顺序从Sod开始。
+
+把网格从100加密到800，分四级，测密度的$L_1$误差。收敛阶算出来是0.79。MUSCL重构配HLLC通量，时间推进用两级SSP Runge–Kutta。设计阶数是2。
+
+我花两天翻查重构和边界条件。没有bug。0.79是正常结果。
+
+本文用数字说明原因。还会看同一份代码在另一个算例上报出2.001，并理清三个验证算例各自能测什么。
+
+## 收敛阶是解的性质，不是格式的性质
+
+阶数的证明来自泰勒展开。要用展开，解必须可微到那个阶数。在间断处$\rho'$不存在。前提破了，结论也跟着破。
+
+所以"二阶格式"是"在光滑解上二阶"的简写。去掉括号里的限定，这句话就是错的。
+
+在下面的模拟里直接动手试试。
+
+<ShockNormSplitBench />
+
+拉高N滑块，抹开区间的**宽度**变窄，但跨过间断的**高度**不动。按`show Linf`切换范数，看同一次计算给出的两个数字有完全不同的斜率。数值解是把精确解按网格尺度抹开的模型。
+
+## 抹开的间断在$L_1$里留下的面积
+
+激波捕捉格式把间断摊到几个单元上。摊开的单元数$\alpha$在加密时基本不变。物理抹开宽度是$\alpha h$。
+
+$$
+\|e\|_{1} = \int_0^1 |\rho_h - \rho|\,\mathrm{d}x \approx |\Delta\rho|\,\alpha h
+$$
+
+$\Delta\rho$是间断两侧的密度差，$\alpha$是抹开跨过的单元数，$h$是网格尺度。高度固定，只有宽度缩小。面积与$h$成正比。这是一阶。
+
+Sod解里有两个间断：激波和接触面。两者抹开的方式不同。
+
+激波自带把自己磨锐的压缩机制。抹开宽度被钉在几个单元内，给出$O(h)$。接触面没有这个机制。数值扩散随时间累积，宽度缩得比$h$慢。单调格式上已知的估计约为$O(h^{2/3})$。
+
+测到的0.79是两者的混合，落在2/3和1之间。
+
+## $L_\infty$停在0.083的原因
+
+用最大范数重读同一次计算，数字根本不动。
+
+$$
+\|e\|_{\infty} = \max_i |\rho_{h,i} - \rho(x_i)| \approx \beta\,|\Delta\rho|
+$$
+
+抹开区间里总有一个单元，数值解与精确解相差$|\Delta\rho|$的某个固定比例。这个比例$\beta$与网格无关。
+
+测到的值是0.0678 → 0.0830 → 0.0834 → 0.0857，换成阶数是−0.29、−0.01、−0.04。加密八倍也纹丝不动。加密不消失的误差之前在[可压缩VOF的界面封闭](/zh/posts/2026-10-03-compressible-vof-compressibility-factor/)和[修正波数](/zh/posts/2026-09-29-fourier-series-modified-wavenumber/)里见过。那里的原因是模型，这里的原因是范数的选择。
+
+## 同一份代码、同一个格式、光滑的解
+
+可压缩欧拉方程也有容易写下的光滑精确解：均匀压力、均匀速度，只扰动密度。它是单纯的接触波，形状被原样搬运。
+
+$$
+\rho(x,t) = \rho_0(x - u_0 t), \qquad u \equiv u_0, \qquad p \equiv p_0
+$$
+
+$\rho_0$是初始密度分布，$u_0$是均匀速度，$p_0$是均匀压力。在周期域里跑一整周，再与初始场比较即可。二维等熵涡担的正是这个角色。
+
+我把一个高斯峰以$u_0 = 1$输运了一周。关掉限制器、用中心斜率时，阶数给出2.001、2.002、2.001。设计阶数原封不动地显现出来。
+
+下面只改变解的光滑度，看阶数怎么移动。
+
+<SolutionSmoothnessOrderDial />
+
+拉高sharpness滑块$m$，峰形从高斯变成方波。格式一行都没改，测到的阶数却从2落到1。切到`show Linf`，它会从2一路走到0。
+
+## minmod把2.001削到1.491的位置
+
+生产代码里限制器是开着的。两个差分符号不一致时，minmod把斜率置零。
+
+$$
+\sigma_i = \operatorname{minmod}(\rho_i - \rho_{i-1},\; \rho_{i+1} - \rho_i)
+$$
+
+$\sigma_i$是单元$i$的重构斜率。在峰顶，左差分为正、右差分为负。条件触发，$\sigma_i = 0$。那一个单元掉回一阶重构。
+
+测到的阶数是1.491 → 1.808 → 1.869，正在爬回2。阶数没有变，只是极值点那一个一阶误差还没洗掉。同一网格上关掉限制器，误差小2.8倍。
+
+实际含义只有一条。阶数验证要关掉限制器，或用保极值的限制器；生产计算把限制器开着。把两种设置混进同一张表，哪一行都不可信。
+
+## 一个求解器一次取出四个数字
+
+我把Sod和光滑波先后送进同一个求解器。参考解是黎曼问题的精确解和平移的高斯峰。
+
+```python
+import numpy as np
+G = 1.4
+
+def riemann_star_pressure(rl, ul, pl, rr, ur, pr):
+    al, ar = np.sqrt(G*pl/rl), np.sqrt(G*pr/rr)
+    def fk(p, r, u, a, pk):
+        if p > pk:
+            A, B = 2.0/((G+1)*r), (G-1)/(G+1)*pk
+            f = (p-pk)*np.sqrt(A/(p+B))
+            df = np.sqrt(A/(B+p))*(1.0-0.5*(p-pk)/(B+p))
+        else:
+            f = 2*a/(G-1)*((p/pk)**((G-1)/(2*G))-1.0)
+            df = 1.0/(r*a)*(p/pk)**(-(G+1)/(2*G))
+        return f, df
+    p = 0.5*(pl+pr)
+    for _ in range(80):
+        f1, d1 = fk(p, rl, ul, al, pl)
+        f2, d2 = fk(p, rr, ur, ar, pr)
+        dp = (f1+f2+(ur-ul))/(d1+d2)
+        p = max(p-dp, 1e-10)
+        if abs(dp) < 1e-13: break
+    f1, _ = fk(p, rl, ul, al, pl)
+    f2, _ = fk(p, rr, ur, ar, pr)
+    return p, 0.5*(ul+ur)+0.5*(f2-f1)
+
+def sample_exact_riemann(x, t, rl, ul, pl, rr, ur, pr):
+    ps, us = riemann_star_pressure(rl, ul, pl, rr, ur, pr)
+    al, ar = np.sqrt(G*pl/rl), np.sqrt(G*pr/rr)
+    s = x/t
+    rho = np.empty_like(s)
+    for i, si in enumerate(s):
+        if si <= us:                                  # 接触面左侧
+            if ps > pl:                               # 左行激波
+                rsl = rl*((ps/pl+(G-1)/(G+1))/((G-1)/(G+1)*ps/pl+1))
+                ss = ul-al*np.sqrt((G+1)/(2*G)*ps/pl+(G-1)/(2*G))
+                rho[i] = rl if si < ss else rsl
+            else:                                     # 左行膨胀波
+                asl = al*(ps/pl)**((G-1)/(2*G))
+                if si < ul-al: rho[i] = rl
+                elif si > us-asl: rho[i] = rl*(ps/pl)**(1/G)
+                else:
+                    c = 2/(G+1)+(G-1)/((G+1)*al)*(ul-si)
+                    rho[i] = rl*c**(2/(G-1))
+        else:
+            if ps > pr:
+                rsr = rr*((ps/pr+(G-1)/(G+1))/((G-1)/(G+1)*ps/pr+1))
+                ss = ur+ar*np.sqrt((G+1)/(2*G)*ps/pr+(G-1)/(2*G))
+                rho[i] = rr if si > ss else rsr
+            else:
+                asr = ar*(ps/pr)**((G-1)/(2*G))
+                if si > ur+ar: rho[i] = rr
+                elif si < us+asr: rho[i] = rr*(ps/pr)**(1/G)
+                else:
+                    c = 2/(G+1)-(G-1)/((G+1)*ar)*(ur-si)
+                    rho[i] = rr*c**(2/(G-1))
+    return rho
+
+def to_prim(U):
+    r = U[0]; u = U[1]/r; p = (G-1)*(U[2]-0.5*r*u*u)
+    return r, u, p
+
+def hllc_flux(rL, uL, pL, rR, uR, pR):
+    aL, aR = np.sqrt(G*pL/rL), np.sqrt(G*pR/rR)
+    EL = pL/(G-1)+0.5*rL*uL**2; ER = pR/(G-1)+0.5*rR*uR**2
+    sL = np.minimum(uL-aL, uR-aR); sR = np.maximum(uL+aL, uR+aR)
+    sM = (pR-pL+rL*uL*(sL-uL)-rR*uR*(sR-uR))/(rL*(sL-uL)-rR*(sR-uR))
+    FL = np.array([rL*uL, rL*uL**2+pL, uL*(EL+pL)])
+    FR = np.array([rR*uR, rR*uR**2+pR, uR*(ER+pR)])
+    UL = np.array([rL, rL*uL, EL]); UR = np.array([rR, rR*uR, ER])
+    UsL = rL*(sL-uL)/(sL-sM)*np.array([np.ones_like(rL), sM, EL/rL+(sM-uL)*(sM-pL/(rL*(sL-uL)))])
+    UsR = rR*(sR-uR)/(sR-sM)*np.array([np.ones_like(rR), sM, ER/rR+(sM-uR)*(sM-pR/(rR*(sR-uR)))])
+    F = np.where(sL >= 0, FL, np.where(sM >= 0, FL+sL*(UsL-UL),
+        np.where(sR >= 0, FR+sR*(UsR-UR), FR)))
+    return F
+
+def minmod_slope(q, limited):
+    dL = q[1:-1]-q[:-2]; dR = q[2:]-q[1:-1]
+    if not limited:
+        return 0.5*(dL+dR)
+    return np.where(dL*dR <= 0, 0.0, np.where(np.abs(dL) < np.abs(dR), dL, dR))
+
+def residual(U, h, periodic, limited):
+    V = np.vstack(to_prim(U))                      # 3 x (N+4)
+    sl = np.zeros_like(V)
+    for k in range(3):
+        sl[k, 1:-1] = minmod_slope(V[k], limited)
+    VL = V[:, 1:-1]+0.5*sl[:, 1:-1]                # 单元 i 的右面
+    VR = V[:, 2:]-0.5*sl[:, 2:]                    # 单元 i+1 的左面
+    F = hllc_flux(VL[0], VL[1], VL[2], VR[0], VR[1], VR[2])
+    R = np.zeros_like(U)
+    R[:, 2:-2] = -(F[:, 1:-1]-F[:, :-2])/h
+    return R
+
+def fill_ghost(U, periodic):
+    if periodic:
+        U[:, :2] = U[:, -4:-2]; U[:, -2:] = U[:, 2:4]
+    else:
+        U[:, 0] = U[:, 2]; U[:, 1] = U[:, 2]
+        U[:, -1] = U[:, -3]; U[:, -2] = U[:, -3]
+
+def evolve(U, h, tend, periodic, limited, cfl=0.4):
+    t = 0.0
+    while t < tend-1e-14:
+        fill_ghost(U, periodic)
+        r, u, p = to_prim(U[:, 2:-2])
+        dt = cfl*h/np.max(np.abs(u)+np.sqrt(G*p/r))
+        dt = min(dt, tend-t)
+        U1 = U+dt*residual(U, h, periodic, limited); fill_ghost(U1, periodic)
+        U = 0.5*(U+U1+dt*residual(U1, h, periodic, limited))
+        t += dt
+    fill_ghost(U, periodic)
+    return U
+
+def order_table(ns, errs):
+    return [None]+[np.log(errs[i-1]/errs[i])/np.log(ns[i]/ns[i-1]) for i in range(1, len(ns))]
+
+def run_sod(ns, tend=0.2):
+    e1, ei = [], []
+    for N in ns:
+        h = 1.0/N
+        x = (np.arange(N)+0.5)*h
+        r = np.where(x < 0.5, 1.0, 0.125); u = np.zeros(N)
+        p = np.where(x < 0.5, 1.0, 0.1)
+        U = np.zeros((3, N+4))
+        U[:, 2:-2] = np.vstack([r, r*u, p/(G-1)+0.5*r*u*u])
+        U = evolve(U, h, tend, False, True)
+        re = sample_exact_riemann(x-0.5, tend, 1.0, 0.0, 1.0, 0.125, 0.0, 0.1)
+        d = np.abs(U[0, 2:-2]-re)
+        e1.append(np.sum(d)*h); ei.append(np.max(d))
+    return e1, ei
+
+def run_wave(ns, limited, tend=1.0):
+    e1 = []
+    for N in ns:
+        h = 1.0/N
+        x = (np.arange(N)+0.5)*h
+        prof = lambda z: 1.0+0.5*np.exp(-60.0*(np.mod(z-0.5, 1.0)-0.5)**2)
+        r = prof(x); u = np.ones(N); p = np.ones(N)
+        U = np.zeros((3, N+4))
+        U[:, 2:-2] = np.vstack([r, r*u, p/(G-1)+0.5*r*u*u])
+        U = evolve(U, h, tend, True, limited)
+        e1.append(np.sum(np.abs(U[0, 2:-2]-prof(x-tend)))*h)
+    return e1
+
+
+def rankine_hugoniot(m1):
+    """静止激波的兰金-于戈尼奥比值（激波-涡算例）"""
+    rr = ((G+1)*m1**2)/((G-1)*m1**2+2)
+    pr = (2*G*m1**2-(G-1))/(G+1)
+    m2 = np.sqrt((1+0.5*(G-1)*m1**2)/(G*m1**2-0.5*(G-1)))
+    return rr, pr, m2
+
+NS = [100, 200, 400, 800]
+s1, si = run_sod(NS)
+wl, wc = run_wave(NS, True), run_wave(NS, False)
+o_s1, o_si, o_wl, o_wc = (order_table(NS, e) for e in (s1, si, wl, wc))
+fmt = lambda o: "    -  " if o is None else f"{o:7.3f}"
+print("Sod shock tube (two discontinuities), t = 0.2")
+print("    N      L1 error   order     Linf error  order")
+for i, N in enumerate(NS):
+    print(f" {N:4d}   {s1[i]:.4e} {fmt(o_s1[i])}   {si[i]:.4e} {fmt(o_si[i])}")
+print()
+print("smooth density wave (exact = translated Gaussian), t = 1.0")
+print("    N      L1 minmod  order     L1 unlim.   order")
+for i, N in enumerate(NS):
+    print(f" {N:4d}   {wl[i]:.4e} {fmt(o_wl[i])}   {wc[i]:.4e} {fmt(o_wc[i])}")
+ps, us = riemann_star_pressure(1.0, 0.0, 1.0, 0.125, 0.0, 0.1)
+print(f"\nSod star state   p* = {ps:.6f}  u* = {us:.6f}")
+rr, pr, m2 = rankine_hugoniot(1.2)
+print(f"RH at M1 = 1.2   rho2/rho1 = {rr:.4f}  p2/p1 = {pr:.4f}  M2 = {m2:.4f}")
+amp = (G-1)*25.0/(8*G*np.pi**2)
+for r in (2.5, 5.0):
+    print(f"vortex tail r = {r:.1f}  exp(1-r^2) = {np.exp(1-r*r):.3e}  dT(beta=5) = {amp*np.exp(1-r*r):.3e}")
+```
+
+输出：
+
+```text
+Sod shock tube (two discontinuities), t = 0.2
+    N      L1 error   order     Linf error  order
+  100   6.5089e-03     -     6.7837e-02     -  
+  200   3.7579e-03   0.792   8.3037e-02  -0.292
+  400   2.1461e-03   0.808   8.3428e-02  -0.007
+  800   1.2420e-03   0.789   8.5667e-02  -0.038
+
+smooth density wave (exact = translated Gaussian), t = 1.0
+    N      L1 minmod  order     L1 unlim.   order
+  100   5.6574e-03     -     2.0251e-03     -  
+  200   2.0125e-03   1.491   5.0589e-04   2.001
+  400   5.7467e-04   1.808   1.2630e-04   2.002
+  800   1.5736e-04   1.869   3.1562e-05   2.001
+
+Sod star state   p* = 0.303130  u* = 0.927453
+RH at M1 = 1.2   rho2/rho1 = 1.3416  p2/p1 = 1.5133  M2 = 0.8422
+vortex tail r = 2.5  exp(1-r^2) = 5.248e-03  dT(beta=5) = 4.747e-04
+vortex tail r = 5.0  exp(1-r^2) = 3.775e-11  dT(beta=5) = 3.415e-12
+```
+
+$p^{*} = 0.303130$和$u^{*} = 0.927453$就是教科书上Sod的星号状态，对应激波速度1.7522。代码能否复现这些数字，才是Sod激波管真正在看的东西。
+
+## 等熵涡担的角色
+
+二维里测阶数的标准算例是等熵涡输运。在$[0,10]^2$的周期域上铺一层均匀流，再叠加涡扰动。
+
+$$
+\delta u = -\frac{\beta}{2\pi}(y - y_c)\,e^{(1-r^2)/2}, \qquad \delta v = \frac{\beta}{2\pi}(x - x_c)\,e^{(1-r^2)/2}
+$$
+
+$\beta$是涡强度，$r$是到涡心的距离，$(x_c, y_c)$是涡心坐标。温度由等熵关系确定。
+
+$$
+T = 1 - \frac{(\gamma-1)\beta^2}{8\gamma\pi^2}e^{1-r^2}, \qquad \rho = T^{1/(\gamma-1)}, \qquad p = \rho^{\gamma}
+$$
+
+这个场是以自由流速度平移的精确解。它光滑、无间断，所以在它上面测阶数是合法的。
+
+陷阱在尾部。扰动按$e^{1-r^2}$衰减，但永远不到零。在域边界截断，"精确解"就不再精确。
+
+在$[0,10]^2$上到边界的距离是5。那里$e^{1-r^2}$是$3.8 \times 10^{-11}$，$\beta = 5$时温度扰动是$3.4 \times 10^{-12}$。对二阶格式足够安全。把域缩到$[0,5]^2$，在$r = 2.5$处这两个量变成$5.2 \times 10^{-3}$和$4.7 \times 10^{-4}$。高阶格式在加密过程中会先撞上这层地板，阶数就在那里塌掉。
+
+## 激波–涡不测阶数
+
+第三个算例性质不同。左边立一道$M = 1.2$的静止激波，右侧状态由兰金–于戈尼奥关系确定，再让等熵涡穿过这道激波。
+
+这个问题没有闭式解，取不出阶数。可以改为检查三件事。
+
+第一，激波前后的比值是否与兰金–于戈尼奥一致。在$M_1 = 1.2$、$\gamma = 1.4$下，$\rho_2/\rho_1 = 1.3416$、$p_2/p_1 = 1.5133$、$M_2 = 0.8422$。代码若给不出这些数字，激波下游的所有图都没有意义。
+
+第二，守恒量是否保持。周期方向上的质量与动量积分应在机器精度内保持不变。
+
+第三，加密时关心量是否收敛。在三套网格上测一个泛函，比如声波幅值或涡量积分，把最细的网格当作参考解。这是网格收敛性，不是精度阶数。
+
+## 在报告里写下一个数字时所做的选择
+
+"已确认二阶精度"这一句里藏着三个选择：哪个解、哪个范数、限制器是否开着。
+
+| 算例 | 精确解 | 光滑性 | 可测量的内容 |
+|---|---|---|---|
+| Sod激波管 | 有（黎曼） | 间断 | 激波位置与速度、单调性、正值性 |
+| 等熵涡 | 有（平移） | 光滑 | 设计收敛阶 |
+| 激波–涡 | 无 | 混合 | 守恒量、RH一致性、网格收敛性 |
+
+如果Sod报出0.79，该改的是报告里的句子，不是格式。如果涡报出2.00，限制器的设置应该写在旁边。验证就是测量[离散方程实际给出的值](/zh/posts/2026-09-28-lbm-half-step-viscosity-taylor-expansion/)，而选择在哪里测量占了一半工作。
