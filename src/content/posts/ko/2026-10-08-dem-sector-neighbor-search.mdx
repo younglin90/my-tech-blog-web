@@ -1,0 +1,284 @@
+---
+title: "거리 계산을 574배 줄였더니 접촉 104개가 사라졌다 — DEM 섹터 크기를 정하는 입자는 하나다"
+date: 2026-10-08
+description: "DEM 이웃 탐색을 섹터로 가지치기할 때 안전 조건과 비용 최소점을 2400개 입자로 직접 재본다."
+tags: ["Neighbor-Search", "DEM", "Algorithms", "Combustion", "Paper-Review"]
+locale: ko
+slug: 2026-10-08-dem-sector-neighbor-search
+takeaway: "섹터 탐색의 안전 조건은 shell·s ≥ d_max 하나이고, 그 d_max는 보통 입자 한 개가 혼자 정한다."
+draft: false
+---
+
+import { SectorPruneSearchLab } from '@/components/post-viz/2026-10-08-dem-sector-neighbor-search/SectorPruneSearchLab'
+import { ShellCostCrossoverDial } from '@/components/post-viz/2026-10-08-dem-sector-neighbor-search/ShellCostCrossoverDial'
+
+## 574배 빨라진 코드가 접촉 104개를 잃었다
+
+알루미늄 입자 응집(agglomeration)을 DEM으로 풀 때 가장 먼저 느려지는 곳은 이웃 탐색이다.
+입자 2400개를 한 덩어리로 모아놓고 접촉 쌍을 찾아봤다.
+전수 비교는 거리 계산 287만 8800번에 접촉 1539쌍을 찾는다.
+섹터를 입자 지름의 1/4로 잘라 27칸만 뒤지게 하니 거리 계산이 5015번으로 떨어졌다.
+574배다. 그런데 찾은 접촉은 1435쌍이었다.
+
+104쌍이 조용히 사라졌다. 에러도 경고도 없다.
+응집체 하나가 둘로 갈라졌을 뿐이다.
+이 글은 그 104쌍이 어디로 갔는지, 섹터를 얼마나 잘게 잘라야 하는지를 숫자로 정리한다.
+
+## DEM의 비용은 통신이 아니라 이중 루프에 있다
+
+DPM(Discrete Parcel Method)은 입자와 유동장만 양방향으로 주고받는다.
+입자끼리는 서로를 모른다. 비용은 입자 수에 비례한다.
+
+DEM(Discrete Element Method)은 여기에 입자 간 충돌·척력·인력을 더한다.
+구조는 분자동역학과 거의 같다.
+입자 $i$가 누구와 닿아 있는지 알아야 하므로, 쌍을 세는 루프가 생긴다.
+
+$$
+N_{\text{pair}} = \frac{N(N-1)}{2}
+$$
+
+$N$은 입자 수다. 2400개면 287만 쌍, 9310개면 4334만 쌍이다.
+MPI 통신량이 아니라 이 이차항이 벽이다.
+병렬화를 잘해도 각 프로세서 안에서 같은 이중 루프가 돈다.
+코어를 늘리는 쪽으로 도망가면 [weak scaling의 함정](/ko/posts/2026-10-04-weak-scaling-krylov-grid-levels/)을 그대로 만난다.
+
+## 섹터가 줄이는 것은 거리 계산 횟수다
+
+영역을 한 변 $s$의 정육면체 섹터로 자른다.
+각 입자를 자기 섹터 목록에 넣고, 탐색은 자기 섹터와 이웃 섹터로만 제한한다.
+한 변에 $2k+1$칸을 보면 훑는 부피는 다음과 같다.
+
+$$
+V_k = \big[(2k+1)\,s\big]^3
+$$
+
+$k$는 몇 겹까지 볼지 정하는 shell 반경이다.
+그 안에 들어 있는 입자 수의 기댓값은 $N V_k / L^3$이다.
+$L$은 영역 한 변이다. 거리 계산 횟수는 $N$의 일차항으로 내려온다.
+
+아래 시뮬레이션에서 섹터 크기와 shell을 직접 움직여보자.
+
+<SectorPruneSearchLab />
+
+`s / d_max`를 1.00에서 0.25까지 내리면 파란 박스가 줄고 거리 계산도 함께 줄어든다.
+동시에 빨간 선이 나타난다. 그 선이 놓친 접촉이다.
+`shell`을 올려 빨간 선이 사라지는 지점을 찾아보면, 뒤에 나올 부등식이 눈에 보인다.
+
+## 안전 조건은 부등식 하나로 끝난다
+
+입자 $i$와 $j$가 접촉하는 조건은 중심 거리가 반지름 합보다 작은 것이다.
+
+$$
+|\mathbf{x}_i - \mathbf{x}_j| < r_i + r_j \le 2\,r_{\max} = d_{\max}
+$$
+
+$r_{\max}$는 영역 내 최대 반지름, $d_{\max}$는 그 지름이다.
+한편 $2k+1$칸 스텐실이 보장하는 탐색 반경은 $k\,s$다.
+자기 섹터 안에서 입자가 섹터 경계에 바짝 붙어 있을 수 있으므로, 안전하게 닿는 거리는 $k\,s$까지다.
+따라서 놓치지 않을 조건은 이것 하나다.
+
+$$
+k\,s \ge d_{\max} \quad\Longleftrightarrow\quad k \ge \left\lceil \frac{d_{\max}}{s} \right\rceil
+$$
+
+$s = d_{\max}$이면 $k=1$, 즉 27칸이면 충분하다.
+$s = d_{\max}/4$로 잘게 자르면 $k=4$, 729칸을 봐야 한다.
+위 실험에서 27칸을 유지한 채 $s$만 1/4로 줄였으니 조건이 깨진 것이다.
+104쌍은 스텐실 밖에서 닿아 있던 쌍이었다.
+
+## 6개 면, 12개 에지, 8개 꼭지점
+
+$k=1$ 스텐실은 자기 섹터 1개와 이웃 26개로 구성된다.
+그 26개는 면을 공유하는 6개, 에지를 공유하는 12개, 꼭지점만 공유하는 8개다.
+리뷰한 발표자료에는 면 12개, 에지 6개로 적혀 있었다.
+숫자가 서로 바뀌어 있다.
+
+이 구분이 중요한 이유는 꼭지점 이웃 8개가 가장 빼먹기 쉽기 때문이다.
+면과 에지만 돌면 19칸이 된다. 같은 입자 구름에서 19칸으로 돌려보면 1539쌍 중 1쌍이 빠졌다.
+1쌍이라 무해해 보이지만, 그 1쌍이 응집체의 연결 고리였다면 덩어리 하나가 두 개로 보고된다.
+꼭지점 이웃은 두 입자가 공유 꼭지점 근처에 함께 있을 때만 걸리므로, 테스트 케이스에서 거의 안 터진다.
+터질 때는 실제 계산 중반이다.
+
+## 가장 큰 입자 하나가 전 영역 격자를 정한다
+
+부등식에 들어가는 것은 평균 지름이 아니라 $d_{\max}$다.
+단분산 입자라면 차이가 없다. 응집 문제는 보통 그렇지 않다.
+
+리뷰한 자료의 Idea 1은 "중앙 입자는 전체 domain에서 가장 큰 지름을 갖는다"를 가정 1번으로 둔다.
+중앙 입자가 나머지를 끌어당기고, 나머지끼리는 척력만 본다.
+이 설정에서 $d_{\max}$는 중앙 입자 하나가 결정한다.
+
+실험에서 중앙 입자 지름은 0.060, 나머지의 최대 지름은 0.030이었다.
+입자 2399개가 0.030 이하인데, 섹터 한 변은 0.060으로 잡아야 안전하다.
+섹터 하나가 필요보다 8배 큰 부피를 갖는다.
+거리 계산도 그만큼 늘어난다. 측정값으로 26만 9450번이다.
+
+## 잘게 자르면 빈 섹터 조회가 새 비용이 된다
+
+그렇다면 $s$를 줄이고 $k$를 올리면 되지 않나.
+$s = d_{\max}/k$를 넣으면 훑는 부피는 이렇게 변한다.
+
+$$
+V_k = \left[\frac{(2k+1)d_{\max}}{k}\right]^3 = \left(2 + \frac{1}{k}\right)^3 d_{\max}^3
+$$
+
+$k=1$에서 $27\,d_{\max}^3$, $k\to\infty$에서 $8\,d_{\max}^3$로 수렴한다.
+아무리 잘게 잘라도 거리 계산은 27/8배, 즉 3.4배까지만 줄어든다.
+반면 조회해야 하는 섹터 수는 $(2k+1)^3 \approx 8k^3$로 커진다.
+$k=4$면 입자당 729번, 2400개면 175만 번의 해시 조회다.
+대부분은 빈 섹터다.
+
+측정 결과가 그대로 나왔다. $k=4$, $s=d_{\max}/4$는 거리 계산을 12만 5548번으로 줄였지만
+섹터 조회가 174만 9600번으로 늘어 벽시계 시간은 0.291초였다.
+$k=1$, $s=d_{\max}$의 0.082초보다 3.5배 느리다.
+거리 계산만 보면 2.1배 이득인데 전체는 손실이다.
+
+아래 다이얼에서 두 비용이 교차하는 지점을 찾아보자.
+
+<ShellCostCrossoverDial />
+
+`s/d`를 왼쪽으로 밀면 파란 곡선(거리 계산)은 내려가다 평평해지고 주황 곡선(총비용)은 다시 올라간다.
+`lookup / check cost`를 키울수록 최소점이 오른쪽으로 옮겨간다.
+`pin grain at cell corner`를 켜면 입자를 섹터 꼭지점에 붙여 최악의 위치를 만든다. 빨간 칸이 왜 생기는지 보인다.
+
+## 같은 입자 구름 2400개에 다섯 설정을 걸었다
+
+가정과 측정을 한 파일에 담았다. 표준 라이브러리만 쓴다.
+
+```python
+import math, random
+
+def pack_particles(n, seed=7):
+    """중앙에 가장 큰 입자 1개, 나머지는 가우시안 구름으로 주입"""
+    rng = random.Random(seed)
+    p = []
+    for _ in range(n):
+        d = 0.012 + 0.018 * rng.random() ** 2          # 지름 0.012 ~ 0.030
+        c = [min(0.97, max(0.03, 0.5 + rng.gauss(0, 0.105))) for _ in range(3)]
+        p.append((c[0], c[1], c[2], 0.5 * d))
+    p[0] = (0.5, 0.5, 0.5, 0.030)                      # center: 지름 0.060
+    return p
+
+def brute_contacts(p):
+    pairs, ev = set(), 0
+    for i in range(len(p)):
+        xi, yi, zi, ri = p[i]
+        for j in range(i + 1, len(p)):
+            xj, yj, zj, rj = p[j]
+            ev += 1
+            if (xi-xj)**2 + (yi-yj)**2 + (zi-zj)**2 < (ri + rj)**2:
+                pairs.add((i, j))
+    return pairs, ev
+
+def sector_bins(p, s, start=0):
+    b = {}
+    for i in range(start, len(p)):
+        x, y, z, _ = p[i]
+        b.setdefault((int(x/s), int(y/s), int(z/s)), []).append(i)
+    return b
+
+def neighbor_offsets(shell):
+    r = range(-shell, shell + 1)
+    return [(a, b, c) for a in r for b in r for c in r]
+
+def binned_contacts(p, s, shell, start=0):
+    bins, off = sector_bins(p, s, start), neighbor_offsets(shell)
+    pairs, ev, look = set(), 0, 0
+    for i in range(start, len(p)):
+        xi, yi, zi, ri = p[i]
+        cx, cy, cz = int(xi/s), int(yi/s), int(zi/s)
+        for a, b, c in off:
+            look += 1
+            for j in bins.get((cx+a, cy+b, cz+c), ()):
+                if j <= i:
+                    continue
+                xj, yj, zj, rj = p[j]
+                ev += 1
+                if (xi-xj)**2 + (yi-yj)**2 + (zi-zj)**2 < (ri + rj)**2:
+                    pairs.add((i, j))
+    return pairs, ev, look
+
+def split_big_contacts(p, s, shell):
+    """0번(최대) 입자만 전수 비교로 떼어내고, 섹터는 나머지 크기로 자른다"""
+    pairs, ev, look = binned_contacts(p, s, shell, start=1)
+    xb, yb, zb, rb = p[0]
+    for j in range(1, len(p)):
+        xj, yj, zj, rj = p[j]
+        ev += 1
+        if (xb-xj)**2 + (yb-yj)**2 + (zb-zj)**2 < (rb + rj)**2:
+            pairs.add((0, j))
+    return pairs, ev, look
+
+N = 2400
+P = pack_particles(N)
+DMAX = 2 * max(q[3] for q in P)                 # 전체 최대 지름
+DSUB = 2 * max(q[3] for q in P[1:])             # 중앙 입자 제외 최대 지름
+truth, ev0 = brute_contacts(P)
+print("N=%d  L=1.0  d_max=%.3f  d_max(sub)=%.3f" % (N, DMAX, DSUB))
+print("all-pairs : contacts=%d  dist=%d" % (len(truth), ev0))
+print()
+print("%-20s %-7s %-6s %-9s %-9s %-5s %s" %
+      ("case", "s/dmax", "cells", "dist", "lookups", "miss", "safe?"))
+for f, shell in ((1.0, 1), (0.5, 1), (0.25, 1), (0.25, 4)):
+    s = DMAX * f
+    got, ev, look = binned_contacts(P, s, shell)
+    print("%-20s %-7.2f %-6d %-9d %-9d %-5d %s" %
+          ("sector shell=%d" % shell, f, (2*shell+1)**3, ev, look,
+           len(truth - got), "yes" if shell*s >= DMAX - 1e-12 else "NO"))
+got, ev, look = split_big_contacts(P, DSUB, 1)
+print("%-20s %-7.2f %-6d %-9d %-9d %-5d %s" %
+      ("big-split shell=1", DSUB/DMAX, 27, ev, look, len(truth - got), "yes"))
+print()
+print("required shell = ceil(d_max/s) :", [(f, math.ceil(1/f)) for f in (1.0, 0.5, 0.25)])
+```
+
+출력은 이렇다.
+
+```text
+N=2400  L=1.0  d_max=0.060  d_max(sub)=0.030
+all-pairs : contacts=1539  dist=2878800
+
+case                 s/dmax  cells  dist      lookups   miss  safe?
+sector shell=1       1.00    27     269450    64800     0     yes
+sector shell=1       0.50    27     38914     64800     0     NO
+sector shell=1       0.25    27     5015      64800     104   NO
+sector shell=4       0.25    729    125548    1749600   0     yes
+big-split shell=1    0.50    27     41229     64773     0     yes
+
+required shell = ceil(d_max/s) : [(1.0, 1), (0.5, 2), (0.25, 4)]
+```
+
+세 번째 줄을 보자. `s/dmax=0.50`, `shell=1`은 안전 조건을 만족하지 않는데 놓친 쌍이 0이다.
+운이다. 0.060 지름을 가진 입자가 딱 하나뿐이고, 그 입자의 접촉 상대가 꼭지점 방향에 없었을 뿐이다.
+입자를 다시 주입하거나 한 스텝 전진하면 숫자가 바뀐다.
+"돌려봤는데 맞았다"는 이런 종류의 조건에서는 근거가 되지 못한다.
+[검증 케이스가 실제로 재는 것](/ko/posts/2026-10-07-sod-vortex-order-verification/)과 같은 함정이다.
+
+## 큰 입자를 떼어내면 안전과 속도를 같이 얻는다
+
+마지막 줄이 해법이다.
+중앙 입자 1개만 전수 비교로 따로 처리하고, 섹터는 나머지 2399개의 최대 지름 0.030으로 자른다.
+추가 비용은 2399번의 거리 계산, 즉 $O(N)$ 한 번이다.
+
+거리 계산은 4만 1229번으로 떨어졌다. $s=d_{\max}$ 설정의 26만 9450번 대비 6.5배 적다.
+섹터 조회는 6만 4773번으로 그대로다.
+놓친 쌍은 0이고, 이번에는 운이 아니라 부등식이 보장한다.
+나머지 입자들끼리는 $r_i + r_j \le 0.030 = 1 \cdot s$를 만족한다.
+벽시계 시간은 0.023초, 전수 비교 0.668초의 1/29다.
+
+규모를 키우면 더 벌어진다. 응집체는 큰 입자 몇 개에 작은 입자 수천 개가 붙는 구조다.
+크기 분포의 꼬리에 있는 소수를 따로 처리하는 것이 두 레벨 격자를 만드는 것보다 코드가 짧다.
+[화염편 라이브러리를 접는 자리](/ko/posts/2026-10-06-flamelet-library-slf-fpv-progress-variable/)와 비슷하게,
+소수의 예외가 전체 표의 해상도를 결정하는 구조를 끊어주는 것이 요점이다.
+
+## 놓친 접촉 104개가 바꾸는 것
+
+접촉 하나를 놓치면 그 쌍의 척력이 0이 된다.
+두 입자는 서로를 통과하거나, 겹친 채로 표면적 변화 계산에서 빠진다.
+알루미늄 입자 연소에서 응집체의 겹친 표면적은 산화막 면적과 직결된다.
+연소율이 과대 평가된다. 질량 보존은 깨지지 않으므로 잔차로는 안 잡힌다.
+
+그래서 탐색 코드에 섹터 크기를 적을 때 실제로 확인할 것은 세 가지다.
+$k\,s \ge d_{\max}$가 성립하는지, 그 $d_{\max}$를 매 스텝 다시 재는지(입자 병합·분열로 변한다),
+그리고 $d_{\max}$를 혼자 끌어올리는 입자가 몇 개인지.
+세 번째 답이 한 자리 수라면, 그 입자들은 섹터에 넣지 말고 따로 세는 쪽이 싸다.

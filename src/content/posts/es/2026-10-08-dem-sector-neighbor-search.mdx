@@ -1,0 +1,284 @@
+---
+title: "Reducir 574 veces los cálculos de distancia costó 104 contactos — un solo grano fija el sector en DEM"
+date: 2026-10-08
+description: "La poda por sectores en la búsqueda de vecinos de DEM solo es segura si shell·s supera d_max, medido sobre 2400 granos en aglomeración."
+tags: ["Neighbor-Search", "DEM", "Algorithms", "Combustion", "Paper-Review"]
+locale: es
+slug: 2026-10-08-dem-sector-neighbor-search
+takeaway: "La búsqueda por sectores tiene una sola condición de seguridad, shell·s ≥ d_max, y ese d_max suele quedar fijado por un único grano."
+draft: false
+---
+
+import { SectorPruneSearchLab } from '@/components/post-viz/2026-10-08-dem-sector-neighbor-search/SectorPruneSearchLab'
+import { ShellCostCrossoverDial } from '@/components/post-viz/2026-10-08-dem-sector-neighbor-search/ShellCostCrossoverDial'
+
+## Un código 574 veces más rápido perdió 104 contactos
+
+Al resolver la aglomeración de partículas de aluminio con DEM, lo primero que se vuelve lento es la búsqueda de vecinos.
+Se agruparon 2400 granos en un solo cúmulo para buscar los pares en contacto.
+La comparación exhaustiva necesita 2 878 800 cálculos de distancia y encuentra 1539 contactos.
+Al cortar los sectores a un cuarto del diámetro del grano y recorrer solo 27 celdas, la cuenta baja a 5015.
+Son 574 veces menos. Los contactos encontrados fueron 1435.
+
+104 pares desaparecieron en silencio. Sin error y sin aviso.
+Un aglomerado simplemente se partió en dos.
+Este artículo rastrea a dónde fueron esos 104 pares y hasta qué punto conviene afinar la malla de sectores.
+
+## El costo de DEM vive en un doble bucle, no en la comunicación
+
+DPM (Discrete Parcel Method) acopla las partículas con el campo de flujo en ambos sentidos y nada más.
+Los granos nunca se ven entre sí. El costo escala con el número de granos.
+
+DEM (Discrete Element Method) añade colisiones, repulsión y atracción entre granos.
+La estructura es casi idéntica a la dinámica molecular.
+Como el grano $i$ debe saber a quién toca, aparece un bucle sobre pares.
+
+$$
+N_{\text{pair}} = \frac{N(N-1)}{2}
+$$
+
+$N$ es el número de granos. Con 2400 granos salen 2,88 millones de pares; con 9310, 43,3 millones.
+El muro es este término cuadrático, no el tráfico MPI.
+Incluso con buena paralelización, cada proceso recorre localmente el mismo doble bucle.
+Huir hacia más núcleos lleva directo a [la trampa del weak scaling](/es/posts/2026-10-04-weak-scaling-krylov-grid-levels/).
+
+## Lo que la malla de sectores recorta son evaluaciones de distancia
+
+Se corta el dominio en sectores cúbicos de arista $s$.
+Cada grano se registra en la lista de su sector y la búsqueda se limita a ese sector y a sus vecinos.
+Al recorrer $2k+1$ celdas por eje, el volumen barrido es
+
+$$
+V_k = \big[(2k+1)\,s\big]^3
+$$
+
+donde $k$ es el radio de shell, es decir cuántas capas se miran.
+El número esperado de granos allí dentro es $N V_k / L^3$, con $L$ la arista del dominio.
+Las evaluaciones de distancia bajan a un término lineal en $N$.
+
+En la simulación de abajo conviene mover el tamaño de sector y el shell directamente.
+
+<SectorPruneSearchLab />
+
+Bajar `s / d_max` de 1,00 hacia 0,25 encoge la caja azul y con ella la cuenta de distancias.
+Al mismo tiempo aparecen líneas rojas: son los contactos perdidos.
+Subir `shell` hasta que las líneas rojas desaparecen pone en pantalla la desigualdad de la sección siguiente.
+
+## La condición de seguridad cabe en una desigualdad
+
+Los granos $i$ y $j$ se tocan cuando la distancia entre centros queda por debajo de la suma de radios.
+
+$$
+|\mathbf{x}_i - \mathbf{x}_j| < r_i + r_j \le 2\,r_{\max} = d_{\max}
+$$
+
+Aquí $r_{\max}$ es el radio mayor del dominio y $d_{\max}$ su diámetro.
+Por su parte, una plantilla de $2k+1$ celdas garantiza un alcance de búsqueda de $k\,s$.
+Un grano puede quedar pegado al borde de su propio sector, así que el alcance confiable llega hasta $k\,s$.
+La condición para no perder nada es entonces una sola línea.
+
+$$
+k\,s \ge d_{\max} \quad\Longleftrightarrow\quad k \ge \left\lceil \frac{d_{\max}}{s} \right\rceil
+$$
+
+Con $s = d_{\max}$ basta $k=1$, es decir 27 celdas.
+Afinar hasta $s = d_{\max}/4$ exige $k=4$, o sea 729 celdas.
+El experimento anterior mantuvo 27 celdas mientras reducía $s$ a un cuarto, y la condición se rompió.
+Esos 104 pares se tocaban fuera de la plantilla.
+
+## Seis caras, doce aristas, ocho vértices
+
+La plantilla con $k=1$ está formada por el sector propio y 26 vecinos.
+Esos 26 se reparten en 6 que comparten cara, 12 que comparten arista y 8 que solo comparten vértice.
+La presentación revisada anotaba 12 caras y 6 aristas.
+Los dos números están intercambiados.
+
+La distinción importa porque los 8 vecinos de vértice son los más fáciles de omitir.
+Solo caras y aristas dan 19 celdas. Al recorrer el mismo cúmulo con 19 celdas faltó 1 par de 1539.
+Un par parece inofensivo, pero si era el nudo que unía un aglomerado, un cúmulo se reporta como dos.
+El vecino de vértice solo salta cuando ambos granos están cerca del vértice compartido, así que los casos de prueba casi nunca lo activan.
+Se activa a mitad de un cálculo de producción.
+
+## Un grano sobredimensionado fija la malla de todo el dominio
+
+Lo que entra en la desigualdad es $d_{\max}$, no el diámetro medio.
+Con granos monodispersos no hay diferencia. Los problemas de aglomeración casi nunca lo son.
+
+La Idea 1 del material revisado pone como suposición 1 que el grano central tiene el diámetro mayor de todo el domain.
+El grano central atrae al resto, y el resto solo siente repulsión entre sí.
+En ese montaje, $d_{\max}$ queda fijado por un único grano.
+
+En el experimento el diámetro central era 0,060 y el mayor del resto, 0,030.
+2399 granos quedan en 0,030 o menos, y aun así la arista del sector debe ser 0,060 para no fallar.
+Cada sector carga entonces ocho veces más volumen del necesario.
+Las evaluaciones de distancia escalan igual: 269 450 según la medición.
+
+## Al afinar más, las consultas a sectores vacíos pasan a ser el costo
+
+Entonces, ¿por qué no reducir $s$ y subir $k$?
+Sustituyendo $s = d_{\max}/k$, el volumen barrido queda
+
+$$
+V_k = \left[\frac{(2k+1)d_{\max}}{k}\right]^3 = \left(2 + \frac{1}{k}\right)^3 d_{\max}^3
+$$
+
+que vale $27\,d_{\max}^3$ en $k=1$ y converge a $8\,d_{\max}^3$ cuando $k\to\infty$.
+Por fino que sea el corte, las distancias solo caen un factor 27/8, es decir 3,4 veces.
+En cambio, el número de sectores a visitar crece como $(2k+1)^3 \approx 8k^3$.
+Con $k=4$ son 729 consultas por grano, o sea 1,75 millones de consultas de hash para 2400 granos.
+La mayoría cae en sectores vacíos.
+
+La medición lo dice tal cual. $k=4$ con $s=d_{\max}/4$ bajó las distancias a 125 548,
+pero las consultas de sector subieron a 1 749 600 y el tiempo de reloj quedó en 0,291 s.
+Es 3,5 veces más lento que los 0,082 s de $k=1$ con $s=d_{\max}$.
+Mirando solo las distancias hay una ganancia de 2,1 veces, y el total empeora.
+
+El dial de abajo sirve para encontrar dónde se cruzan los dos costos.
+
+<ShellCostCrossoverDial />
+
+Empujar `s/d` hacia la izquierda hunde la curva azul (distancias) hasta una meseta mientras la naranja (total) vuelve a subir.
+Al aumentar `lookup / check cost`, el mínimo se corre hacia la derecha.
+Activar `pin grain at cell corner` pega el grano al vértice del sector, el peor caso, y deja ver por qué aparecen las celdas rojas.
+
+## Cinco configuraciones sobre el mismo cúmulo de 2400 granos
+
+Las suposiciones y las mediciones están en un solo archivo, con la biblioteca estándar únicamente.
+
+```python
+import math, random
+
+def pack_particles(n, seed=7):
+    """Un grano mayor en el centro; el resto se inyecta como nube gaussiana"""
+    rng = random.Random(seed)
+    p = []
+    for _ in range(n):
+        d = 0.012 + 0.018 * rng.random() ** 2          # diametro 0.012 ~ 0.030
+        c = [min(0.97, max(0.03, 0.5 + rng.gauss(0, 0.105))) for _ in range(3)]
+        p.append((c[0], c[1], c[2], 0.5 * d))
+    p[0] = (0.5, 0.5, 0.5, 0.030)                      # center: diametro 0.060
+    return p
+
+def brute_contacts(p):
+    pairs, ev = set(), 0
+    for i in range(len(p)):
+        xi, yi, zi, ri = p[i]
+        for j in range(i + 1, len(p)):
+            xj, yj, zj, rj = p[j]
+            ev += 1
+            if (xi-xj)**2 + (yi-yj)**2 + (zi-zj)**2 < (ri + rj)**2:
+                pairs.add((i, j))
+    return pairs, ev
+
+def sector_bins(p, s, start=0):
+    b = {}
+    for i in range(start, len(p)):
+        x, y, z, _ = p[i]
+        b.setdefault((int(x/s), int(y/s), int(z/s)), []).append(i)
+    return b
+
+def neighbor_offsets(shell):
+    r = range(-shell, shell + 1)
+    return [(a, b, c) for a in r for b in r for c in r]
+
+def binned_contacts(p, s, shell, start=0):
+    bins, off = sector_bins(p, s, start), neighbor_offsets(shell)
+    pairs, ev, look = set(), 0, 0
+    for i in range(start, len(p)):
+        xi, yi, zi, ri = p[i]
+        cx, cy, cz = int(xi/s), int(yi/s), int(zi/s)
+        for a, b, c in off:
+            look += 1
+            for j in bins.get((cx+a, cy+b, cz+c), ()):
+                if j <= i:
+                    continue
+                xj, yj, zj, rj = p[j]
+                ev += 1
+                if (xi-xj)**2 + (yi-yj)**2 + (zi-zj)**2 < (ri + rj)**2:
+                    pairs.add((i, j))
+    return pairs, ev, look
+
+def split_big_contacts(p, s, shell):
+    """El grano 0 (el mayor) va por comparacion exhaustiva; sectores segun el resto"""
+    pairs, ev, look = binned_contacts(p, s, shell, start=1)
+    xb, yb, zb, rb = p[0]
+    for j in range(1, len(p)):
+        xj, yj, zj, rj = p[j]
+        ev += 1
+        if (xb-xj)**2 + (yb-yj)**2 + (zb-zj)**2 < (rb + rj)**2:
+            pairs.add((0, j))
+    return pairs, ev, look
+
+N = 2400
+P = pack_particles(N)
+DMAX = 2 * max(q[3] for q in P)                 # diametro mayor global
+DSUB = 2 * max(q[3] for q in P[1:])             # diametro mayor sin el grano central
+truth, ev0 = brute_contacts(P)
+print("N=%d  L=1.0  d_max=%.3f  d_max(sub)=%.3f" % (N, DMAX, DSUB))
+print("all-pairs : contacts=%d  dist=%d" % (len(truth), ev0))
+print()
+print("%-20s %-7s %-6s %-9s %-9s %-5s %s" %
+      ("case", "s/dmax", "cells", "dist", "lookups", "miss", "safe?"))
+for f, shell in ((1.0, 1), (0.5, 1), (0.25, 1), (0.25, 4)):
+    s = DMAX * f
+    got, ev, look = binned_contacts(P, s, shell)
+    print("%-20s %-7.2f %-6d %-9d %-9d %-5d %s" %
+          ("sector shell=%d" % shell, f, (2*shell+1)**3, ev, look,
+           len(truth - got), "yes" if shell*s >= DMAX - 1e-12 else "NO"))
+got, ev, look = split_big_contacts(P, DSUB, 1)
+print("%-20s %-7.2f %-6d %-9d %-9d %-5d %s" %
+      ("big-split shell=1", DSUB/DMAX, 27, ev, look, len(truth - got), "yes"))
+print()
+print("required shell = ceil(d_max/s) :", [(f, math.ceil(1/f)) for f in (1.0, 0.5, 0.25)])
+```
+
+La salida es esta.
+
+```text
+N=2400  L=1.0  d_max=0.060  d_max(sub)=0.030
+all-pairs : contacts=1539  dist=2878800
+
+case                 s/dmax  cells  dist      lookups   miss  safe?
+sector shell=1       1.00    27     269450    64800     0     yes
+sector shell=1       0.50    27     38914     64800     0     NO
+sector shell=1       0.25    27     5015      64800     104   NO
+sector shell=4       0.25    729    125548    1749600   0     yes
+big-split shell=1    0.50    27     41229     64773     0     yes
+
+required shell = ceil(d_max/s) : [(1.0, 1), (0.5, 2), (0.25, 4)]
+```
+
+Conviene mirar la tercera fila. `s/dmax=0.50` con `shell=1` no cumple la condición de seguridad y aun así no pierde nada.
+Es suerte. Solo un grano tiene diámetro 0,060, y ninguno de sus contactos cayó en dirección de vértice.
+Al reinicializar el cúmulo o avanzar un paso, el número cambia.
+"Lo corrí y salió bien" no es evidencia para una condición de este tipo.
+Es la misma trampa que [lo que un caso de verificación mide en realidad](/es/posts/2026-10-07-sod-vortex-order-verification/).
+
+## Separar el grano grande da seguridad y velocidad a la vez
+
+La última fila es la solución.
+Se trata ese único grano central aparte, por comparación exhaustiva, y los sectores se cortan con el diámetro mayor de los 2399 restantes, 0,030.
+El costo extra son 2399 evaluaciones de distancia, una pasada $O(N)$.
+
+Las distancias caen a 41 229, 6,5 veces menos que las 269 450 de la configuración con $s=d_{\max}$.
+Las consultas de sector se mantienen en 64 773.
+No se pierde nada, y esta vez lo garantiza la desigualdad y no la suerte.
+Entre los granos restantes, $r_i + r_j \le 0{,}030 = 1 \cdot s$ se cumple por construcción.
+El tiempo de reloj es 0,023 s, una veintinovena parte de los 0,668 s de la comparación exhaustiva.
+
+La brecha se abre con el tamaño. Un aglomerado son unos pocos granos grandes con miles de pequeños pegados.
+Tratar aparte el puñado que vive en la cola de la distribución exige menos código que montar una malla de dos niveles.
+Igual que en [el punto donde se pliega una librería de flamelet](/es/posts/2026-10-06-flamelet-library-slf-fpv-progress-variable/),
+la idea es romper la estructura en la que una minoría diminuta dicta la resolución de toda la tabla.
+
+## Qué cambian esos 104 contactos perdidos
+
+Si se pierde un contacto, la repulsión de ese par queda en cero.
+Los dos granos se atraviesan, o siguen solapados y quedan fuera de la actualización de área superficial.
+En la combustión de partículas de aluminio, el área solapada de un aglomerado se traduce directamente en área de capa de óxido.
+La tasa de combustión sale sobreestimada. La conservación de masa no se rompe, así que ningún residuo lo delata.
+
+Así que al escribir un tamaño de sector en el código de búsqueda hay tres cosas que vale la pena revisar.
+Si se cumple $k\,s \ge d_{\max}$, si ese $d_{\max}$ se vuelve a medir en cada paso (la fusión y la ruptura lo cambian),
+y cuántos granos están empujando $d_{\max}$ hacia arriba por sí solos.
+Si la respuesta al tercer punto es de una cifra, esos granos salen más baratos contados aparte que metidos en sectores.

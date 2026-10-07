@@ -1,0 +1,284 @@
+---
+title: "距离计算减少574倍，却丢掉104对接触 — 决定DEM扇区尺寸的只有一个颗粒"
+date: 2026-10-08
+description: "DEM邻居搜索的扇区剪枝只有一个安全条件 shell·s ≥ d_max，用2400个颗粒实测代价。"
+tags: ["Neighbor-Search", "DEM", "Algorithms", "Combustion", "Paper-Review"]
+locale: zh
+slug: 2026-10-08-dem-sector-neighbor-search
+takeaway: "扇区搜索的安全条件只有 shell·s ≥ d_max 一条，而这个 d_max 通常由单独一个颗粒决定。"
+draft: false
+---
+
+import { SectorPruneSearchLab } from '@/components/post-viz/2026-10-08-dem-sector-neighbor-search/SectorPruneSearchLab'
+import { ShellCostCrossoverDial } from '@/components/post-viz/2026-10-08-dem-sector-neighbor-search/ShellCostCrossoverDial'
+
+## 快了574倍的代码丢掉了104对接触
+
+用DEM求解铝颗粒团聚(agglomeration)时，最先变慢的是邻居搜索。
+把2400个颗粒聚成一团，再去找接触对。
+全对比较需要287万8800次距离计算，找到1539对接触。
+把扇区切到颗粒直径的四分之一、只扫27个单元，距离计算降到5015次。
+减少了574倍。但找到的接触是1435对。
+
+104对悄悄消失了，没有报错，也没有警告。
+只是一个团聚体裂成了两个。
+本文追查这104对去了哪里，以及扇区网格究竟能切到多细。
+
+## DEM的代价在双重循环里，不在通信上
+
+DPM(Discrete Parcel Method)只在颗粒与流场之间做双向耦合。
+颗粒彼此看不见对方，代价与颗粒数成正比。
+
+DEM(Discrete Element Method)在此之上加入颗粒间的碰撞、斥力与引力。
+结构与分子动力学几乎一致。
+由于颗粒 $i$ 必须知道自己与谁接触，于是出现了配对循环。
+
+$$
+N_{\text{pair}} = \frac{N(N-1)}{2}
+$$
+
+$N$ 是颗粒数。2400个对应287万对，9310个对应4334万对。
+真正的墙是这个二次项，而不是MPI通信量。
+即使并行做得好，每个进程内部仍然跑同一个双重循环。
+往增加核数的方向逃，会直接撞上[weak scaling的陷阱](/zh/posts/2026-10-04-weak-scaling-krylov-grid-levels/)。
+
+## 扇区减少的是距离计算次数
+
+把区域切成边长为 $s$ 的立方体扇区。
+每个颗粒登记到自己所属扇区的列表里，搜索只限于本扇区及相邻扇区。
+每个方向看 $2k+1$ 个单元时，扫过的体积为
+
+$$
+V_k = \big[(2k+1)\,s\big]^3
+$$
+
+其中 $k$ 是决定看几层的 shell 半径。
+其中包含的颗粒数期望值是 $N V_k / L^3$，$L$ 为区域边长。
+距离计算次数于是降到 $N$ 的一次项。
+
+在下面的模拟中自己调整扇区尺寸和 shell。
+
+<SectorPruneSearchLab />
+
+把 `s / d_max` 从1.00降到0.25，蓝框会收缩，距离计算随之减少。
+同时出现红线，那些就是漏掉的接触。
+提高 `shell` 直到红线消失，下一节的不等式就直接显示在屏幕上了。
+
+## 安全条件只有一条不等式
+
+颗粒 $i$ 与 $j$ 接触的条件是中心距离小于半径之和。
+
+$$
+|\mathbf{x}_i - \mathbf{x}_j| < r_i + r_j \le 2\,r_{\max} = d_{\max}
+$$
+
+$r_{\max}$ 是区域内最大半径，$d_{\max}$ 是对应直径。
+而 $2k+1$ 模板所保证的搜索半径是 $k\,s$。
+颗粒可能紧贴自己扇区的边界，因此可靠的到达距离最多是 $k\,s$。
+所以不漏掉的条件就是这一行。
+
+$$
+k\,s \ge d_{\max} \quad\Longleftrightarrow\quad k \ge \left\lceil \frac{d_{\max}}{s} \right\rceil
+$$
+
+$s = d_{\max}$ 时 $k=1$，27个单元就够了。
+切到 $s = d_{\max}/4$ 则要求 $k=4$，也就是729个单元。
+上面的实验保持27个单元却把 $s$ 缩到四分之一，条件被破坏了。
+那104对正是在模板之外相互接触的。
+
+## 6个面、12条棱、8个顶点
+
+$k=1$ 模板由本扇区1个加上相邻26个组成。
+这26个分为共享面的6个、共享棱的12个、只共享顶点的8个。
+我评阅的那份幻灯片写的是面12个、棱6个。
+两个数字对调了。
+
+这个区分重要，是因为8个顶点邻居最容易被漏掉。
+只取面和棱得到19个单元。用19个单元跑同一团颗粒，1539对里漏了1对。
+1对看起来无害，但若它正是连接团聚体的那个节点，一个团块就会被报告成两个。
+顶点邻居只在两个颗粒同时靠近共享顶点时才触发，所以测试用例几乎碰不到。
+它会在正式计算进行到一半时触发。
+
+## 一个最大颗粒决定了整个区域的网格
+
+进入不等式的是 $d_{\max}$，不是平均直径。
+单分散时没有差别，而团聚问题通常不是单分散的。
+
+评阅资料中的Idea 1把"中央颗粒在整个domain内直径最大"列为假设1。
+中央颗粒吸引其余颗粒，其余颗粒之间只考虑斥力。
+在这个设定下，$d_{\max}$ 由单独一个颗粒决定。
+
+实验中中央颗粒直径为0.060，其余颗粒的最大直径为0.030。
+2399个颗粒都不超过0.030，扇区边长却必须取0.060才安全。
+于是每个扇区的体积是实际需要的8倍。
+距离计算也按同样比例增加，实测为26万9450次。
+
+## 切得更细，空扇区查询就成了新的代价
+
+那么缩小 $s$ 再提高 $k$ 如何。
+代入 $s = d_{\max}/k$，扫过的体积变成
+
+$$
+V_k = \left[\frac{(2k+1)d_{\max}}{k}\right]^3 = \left(2 + \frac{1}{k}\right)^3 d_{\max}^3
+$$
+
+在 $k=1$ 时为 $27\,d_{\max}^3$，当 $k\to\infty$ 时收敛到 $8\,d_{\max}^3$。
+无论切得多细，距离计算最多只能减少27/8倍，也就是3.4倍。
+而需要访问的扇区数按 $(2k+1)^3 \approx 8k^3$ 增长。
+$k=4$ 时每个颗粒729次，2400个颗粒就是175万次哈希查询。
+其中大部分落在空扇区上。
+
+实测结果正是如此。$k=4$、$s=d_{\max}/4$ 把距离计算降到12万5548次，
+但扇区查询升到174万9600次，墙钟时间为0.291秒。
+比 $k=1$、$s=d_{\max}$ 的0.082秒慢3.5倍。
+只看距离计算是2.1倍的收益，整体却是亏损。
+
+在下面的旋钮里找出两种代价交叉的位置。
+
+<ShellCostCrossoverDial />
+
+把 `s/d` 往左推，蓝色曲线(距离计算)先下降后变平，橙色曲线(总代价)则重新上升。
+`lookup / check cost` 越大，最小点越往右移。
+打开 `pin grain at cell corner` 会把颗粒固定到扇区顶点，构造最坏位置，红色单元为什么出现就看得清了。
+
+## 对同一团2400个颗粒施加五种设置
+
+假设与实测都放在一个文件里，只用标准库。
+
+```python
+import math, random
+
+def pack_particles(n, seed=7):
+    """中央放一个最大颗粒，其余按高斯云投放"""
+    rng = random.Random(seed)
+    p = []
+    for _ in range(n):
+        d = 0.012 + 0.018 * rng.random() ** 2          # 直径 0.012 ~ 0.030
+        c = [min(0.97, max(0.03, 0.5 + rng.gauss(0, 0.105))) for _ in range(3)]
+        p.append((c[0], c[1], c[2], 0.5 * d))
+    p[0] = (0.5, 0.5, 0.5, 0.030)                      # center: 直径 0.060
+    return p
+
+def brute_contacts(p):
+    pairs, ev = set(), 0
+    for i in range(len(p)):
+        xi, yi, zi, ri = p[i]
+        for j in range(i + 1, len(p)):
+            xj, yj, zj, rj = p[j]
+            ev += 1
+            if (xi-xj)**2 + (yi-yj)**2 + (zi-zj)**2 < (ri + rj)**2:
+                pairs.add((i, j))
+    return pairs, ev
+
+def sector_bins(p, s, start=0):
+    b = {}
+    for i in range(start, len(p)):
+        x, y, z, _ = p[i]
+        b.setdefault((int(x/s), int(y/s), int(z/s)), []).append(i)
+    return b
+
+def neighbor_offsets(shell):
+    r = range(-shell, shell + 1)
+    return [(a, b, c) for a in r for b in r for c in r]
+
+def binned_contacts(p, s, shell, start=0):
+    bins, off = sector_bins(p, s, start), neighbor_offsets(shell)
+    pairs, ev, look = set(), 0, 0
+    for i in range(start, len(p)):
+        xi, yi, zi, ri = p[i]
+        cx, cy, cz = int(xi/s), int(yi/s), int(zi/s)
+        for a, b, c in off:
+            look += 1
+            for j in bins.get((cx+a, cy+b, cz+c), ()):
+                if j <= i:
+                    continue
+                xj, yj, zj, rj = p[j]
+                ev += 1
+                if (xi-xj)**2 + (yi-yj)**2 + (zi-zj)**2 < (ri + rj)**2:
+                    pairs.add((i, j))
+    return pairs, ev, look
+
+def split_big_contacts(p, s, shell):
+    """只把0号(最大)颗粒拆出来做全对比较，扇区按其余颗粒的尺寸切"""
+    pairs, ev, look = binned_contacts(p, s, shell, start=1)
+    xb, yb, zb, rb = p[0]
+    for j in range(1, len(p)):
+        xj, yj, zj, rj = p[j]
+        ev += 1
+        if (xb-xj)**2 + (yb-yj)**2 + (zb-zj)**2 < (rb + rj)**2:
+            pairs.add((0, j))
+    return pairs, ev, look
+
+N = 2400
+P = pack_particles(N)
+DMAX = 2 * max(q[3] for q in P)                 # 全体最大直径
+DSUB = 2 * max(q[3] for q in P[1:])             # 不含中央颗粒的最大直径
+truth, ev0 = brute_contacts(P)
+print("N=%d  L=1.0  d_max=%.3f  d_max(sub)=%.3f" % (N, DMAX, DSUB))
+print("all-pairs : contacts=%d  dist=%d" % (len(truth), ev0))
+print()
+print("%-20s %-7s %-6s %-9s %-9s %-5s %s" %
+      ("case", "s/dmax", "cells", "dist", "lookups", "miss", "safe?"))
+for f, shell in ((1.0, 1), (0.5, 1), (0.25, 1), (0.25, 4)):
+    s = DMAX * f
+    got, ev, look = binned_contacts(P, s, shell)
+    print("%-20s %-7.2f %-6d %-9d %-9d %-5d %s" %
+          ("sector shell=%d" % shell, f, (2*shell+1)**3, ev, look,
+           len(truth - got), "yes" if shell*s >= DMAX - 1e-12 else "NO"))
+got, ev, look = split_big_contacts(P, DSUB, 1)
+print("%-20s %-7.2f %-6d %-9d %-9d %-5d %s" %
+      ("big-split shell=1", DSUB/DMAX, 27, ev, look, len(truth - got), "yes"))
+print()
+print("required shell = ceil(d_max/s) :", [(f, math.ceil(1/f)) for f in (1.0, 0.5, 0.25)])
+```
+
+输出如下。
+
+```text
+N=2400  L=1.0  d_max=0.060  d_max(sub)=0.030
+all-pairs : contacts=1539  dist=2878800
+
+case                 s/dmax  cells  dist      lookups   miss  safe?
+sector shell=1       1.00    27     269450    64800     0     yes
+sector shell=1       0.50    27     38914     64800     0     NO
+sector shell=1       0.25    27     5015      64800     104   NO
+sector shell=4       0.25    729    125548    1749600   0     yes
+big-split shell=1    0.50    27     41229     64773     0     yes
+
+required shell = ceil(d_max/s) : [(1.0, 1), (0.5, 2), (0.25, 4)]
+```
+
+看第三行。`s/dmax=0.50` 配 `shell=1` 并不满足安全条件，漏掉的却是0。
+这是运气。直径0.060的颗粒恰好只有一个，而它的接触对象没有落在顶点方向上。
+重新投放颗粒或往前推进一步，数字就会变。
+"跑过一遍没问题"对这类条件并不构成依据。
+这与[验证案例实际在测什么](/zh/posts/2026-10-07-sod-vortex-order-verification/)是同一个陷阱。
+
+## 把大颗粒拆出来，安全与速度可以同时拿到
+
+最后一行就是解法。
+只把中央那一个颗粒单独做全对比较，扇区则按其余2399个颗粒的最大直径0.030来切。
+额外代价是2399次距离计算，一趟 $O(N)$。
+
+距离计算降到4万1229次，比 $s=d_{\max}$ 设置的26万9450次少6.5倍。
+扇区查询保持在6万4773次不变。
+漏掉为0，而这一次是不等式在保证，不是运气。
+其余颗粒之间，$r_i + r_j \le 0.030 = 1 \cdot s$ 由构造成立。
+墙钟时间0.023秒，是全对比较0.668秒的二十九分之一。
+
+规模越大差距越明显。团聚体的结构是少数大颗粒上附着数千个小颗粒。
+把粒径分布尾部的少数单独处理，比搭一套两级网格的代码更短。
+这与[火焰面库折叠的位置](/zh/posts/2026-10-06-flamelet-library-slf-fpv-progress-variable/)类似，
+要点都是切断"少数例外决定整张表分辨率"的结构。
+
+## 漏掉的104对接触会改变什么
+
+漏掉一个接触，这一对的斥力就变成零。
+两个颗粒要么互相穿过，要么保持重叠却从表面积更新中掉队。
+在铝颗粒燃烧里，团聚体的重叠面积直接对应氧化膜面积。
+燃烧率会被高估。质量守恒并不破坏，所以残差抓不到它。
+
+所以在搜索代码里写下扇区尺寸时，真正要确认的是三件事。
+$k\,s \ge d_{\max}$ 是否成立；这个 $d_{\max}$ 是否每步重新测量(合并与破碎会改变它)；
+以及单独把 $d_{\max}$ 抬上去的颗粒有几个。
+如果第三个答案是个位数，那些颗粒不要放进扇区，单独数反而更便宜。

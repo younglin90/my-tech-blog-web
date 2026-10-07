@@ -1,0 +1,284 @@
+---
+title: "距離計算を574倍減らしたら接触104組が消えた — DEMのセクタ寸法を決めるのは1個の粒子"
+date: 2026-10-08
+description: "DEM近傍探索のセクタ分割は shell·s ≥ d_max が唯一の安全条件。粒子2400個で実測する。"
+tags: ["Neighbor-Search", "DEM", "Algorithms", "Combustion", "Paper-Review"]
+locale: ja
+slug: 2026-10-08-dem-sector-neighbor-search
+takeaway: "セクタ探索の安全条件は shell·s ≥ d_max だけで、その d_max は多くの場合たった1個の粒子が決めます。"
+draft: false
+---
+
+import { SectorPruneSearchLab } from '@/components/post-viz/2026-10-08-dem-sector-neighbor-search/SectorPruneSearchLab'
+import { ShellCostCrossoverDial } from '@/components/post-viz/2026-10-08-dem-sector-neighbor-search/ShellCostCrossoverDial'
+
+## 574倍速くなったコードが接触104組を失った
+
+アルミニウム粒子の凝集(agglomeration)をDEMで解くとき、最初に遅くなるのは近傍探索です。
+粒子2400個を一塊に集めて接触ペアを探しました。
+全数比較は距離計算287万8800回で接触1539組を見つけます。
+セクタを粒子直径の1/4に切り、27セルだけ探すようにすると距離計算は5015回まで落ちました。
+574倍です。見つかった接触は1435組でした。
+
+104組が静かに消えています。エラーも警告も出ません。
+凝集体が1つから2つに割れただけです。
+この記事ではその104組がどこへ行ったのか、セクタをどこまで細かく切れるのかを数値で整理します。
+
+## DEMのコストは通信ではなく二重ループにある
+
+DPM(Discrete Parcel Method)は粒子と流れ場だけを双方向にやり取りします。
+粒子同士は互いを知りません。コストは粒子数に比例します。
+
+DEM(Discrete Element Method)はそこに粒子間の衝突・斥力・引力を加えます。
+構造は分子動力学とほぼ同じです。
+粒子 $i$ が誰と接しているかを知る必要があるため、ペアを数えるループが現れます。
+
+$$
+N_{\text{pair}} = \frac{N(N-1)}{2}
+$$
+
+$N$ は粒子数です。2400個なら287万組、9310個なら4334万組になります。
+壁になるのはMPI通信量ではなく、この二次項です。
+並列化がうまくいっても、各プロセス内で同じ二重ループが回ります。
+コア数を増やす方向へ逃げると[weak scalingの罠](/ja/posts/2026-10-04-weak-scaling-krylov-grid-levels/)にそのまま入ります。
+
+## セクタが減らすのは距離計算の回数
+
+領域を一辺 $s$ の立方体セクタに切ります。
+各粒子を自分のセクタのリストに登録し、探索を自セクタと隣接セクタだけに制限します。
+一辺あたり $2k+1$ セルを見ると、掃く体積は次のようになります。
+
+$$
+V_k = \big[(2k+1)\,s\big]^3
+$$
+
+$k$ は何層まで見るかを決める shell 半径です。
+その中に含まれる粒子数の期待値は $N V_k / L^3$ で、$L$ は領域の一辺です。
+距離計算の回数は $N$ の一次項まで下がります。
+
+下のシミュレーションでセクタ寸法と shell を自分で動かしてみてください。
+
+<SectorPruneSearchLab />
+
+`s / d_max` を1.00から0.25へ下げると青い枠が縮み、距離計算も一緒に減ります。
+同時に赤い線が現れます。それが見落とした接触です。
+`shell` を上げて赤い線が消える点を探すと、次に出てくる不等式が画面上に見えてきます。
+
+## 安全条件は不等式ひとつで終わる
+
+粒子 $i$ と $j$ が接触する条件は、中心間距離が半径の和より小さいことです。
+
+$$
+|\mathbf{x}_i - \mathbf{x}_j| < r_i + r_j \le 2\,r_{\max} = d_{\max}
+$$
+
+$r_{\max}$ は領域内の最大半径、$d_{\max}$ はその直径です。
+一方 $2k+1$ セルのステンシルが保証する探索半径は $k\,s$ です。
+粒子は自セクタの境界にぴったり寄っていることがあるので、頼れる到達距離は $k\,s$ までです。
+したがって見落とさない条件はこの一行だけです。
+
+$$
+k\,s \ge d_{\max} \quad\Longleftrightarrow\quad k \ge \left\lceil \frac{d_{\max}}{s} \right\rceil
+$$
+
+$s = d_{\max}$ なら $k=1$、つまり27セルで足ります。
+$s = d_{\max}/4$ まで細かく切ると $k=4$、729セルを見る必要があります。
+先の実験は27セルのまま $s$ だけを1/4にしたので、条件が壊れました。
+104組はステンシルの外で接していたペアでした。
+
+## 面6個、エッジ12個、頂点8個
+
+$k=1$ のステンシルは自セクタ1個と隣接26個で構成されます。
+その26個は面を共有する6個、エッジを共有する12個、頂点だけを共有する8個に分かれます。
+レビューした発表資料には面12個、エッジ6個と書かれていました。
+数字が入れ替わっています。
+
+この区別が重要なのは、頂点隣接の8個がもっとも抜け落ちやすいからです。
+面とエッジだけなら19セルです。同じ粒子雲を19セルで回すと1539組のうち1組が抜けました。
+1組なら無害に見えますが、それが凝集体をつなぐ結び目だった場合、1つの塊が2つとして報告されます。
+頂点隣接は2粒子が共有頂点の近くに同時にいるときだけ当たるので、テストケースではほぼ発火しません。
+発火するのは本番計算の途中です。
+
+## 最大粒子1個が領域全体の格子を決める
+
+不等式に入るのは平均直径ではなく $d_{\max}$ です。
+単分散ならこの差はありません。凝集問題はたいてい単分散ではありません。
+
+レビューした資料のIdea 1は、仮定1として「中央粒子は全domainで最大の直径をもつ」と置いています。
+中央粒子が残りを引き寄せ、残り同士は斥力だけを見ます。
+この設定では $d_{\max}$ をたった1個の粒子が決めます。
+
+実験では中央粒子の直径が0.060、残りの最大直径が0.030でした。
+2399個が0.030以下なのに、セクタの一辺は安全のために0.060にしなければなりません。
+セクタ1個が必要の8倍の体積をもつことになります。
+距離計算もそれに比例します。実測で26万9450回です。
+
+## 細かく切ると空セクタの参照が新たなコストになる
+
+では $s$ を縮めて $k$ を上げればよいのでは、となります。
+$s = d_{\max}/k$ を入れると掃く体積はこう変わります。
+
+$$
+V_k = \left[\frac{(2k+1)d_{\max}}{k}\right]^3 = \left(2 + \frac{1}{k}\right)^3 d_{\max}^3
+$$
+
+$k=1$ で $27\,d_{\max}^3$、$k\to\infty$ で $8\,d_{\max}^3$ に収束します。
+どれだけ細かく切っても距離計算は27/8倍、つまり3.4倍までしか減りません。
+一方で参照すべきセクタ数は $(2k+1)^3 \approx 8k^3$ で増えます。
+$k=4$ なら粒子あたり729回、2400個で175万回のハッシュ参照です。
+その大半は空セクタに当たります。
+
+実測がそのまま出ました。$k=4$、$s=d_{\max}/4$ は距離計算を12万5548回まで減らしましたが、
+セクタ参照が174万9600回に増え、壁時計時間は0.291秒でした。
+$k=1$、$s=d_{\max}$ の0.082秒より3.5倍遅いです。
+距離計算だけ見れば2.1倍の得なのに、全体では損です。
+
+下のダイヤルで2つのコストが交差する点を探してみてください。
+
+<ShellCostCrossoverDial />
+
+`s/d` を左に押すと青い曲線(距離計算)は下がってから平らになり、橙の曲線(総コスト)は再び上がります。
+`lookup / check cost` を大きくするほど最小点は右へ移ります。
+`pin grain at cell corner` を入れると粒子をセクタ頂点に寄せて最悪位置を作ります。赤いセルが生まれる理由が見えます。
+
+## 同じ粒子雲2400個に5つの設定をかけた
+
+仮定と実測を1ファイルにまとめました。標準ライブラリのみを使います。
+
+```python
+import math, random
+
+def pack_particles(n, seed=7):
+    """中央に最大の粒子1個、残りはガウス雲として投入"""
+    rng = random.Random(seed)
+    p = []
+    for _ in range(n):
+        d = 0.012 + 0.018 * rng.random() ** 2          # 直径 0.012 ~ 0.030
+        c = [min(0.97, max(0.03, 0.5 + rng.gauss(0, 0.105))) for _ in range(3)]
+        p.append((c[0], c[1], c[2], 0.5 * d))
+    p[0] = (0.5, 0.5, 0.5, 0.030)                      # center: 直径 0.060
+    return p
+
+def brute_contacts(p):
+    pairs, ev = set(), 0
+    for i in range(len(p)):
+        xi, yi, zi, ri = p[i]
+        for j in range(i + 1, len(p)):
+            xj, yj, zj, rj = p[j]
+            ev += 1
+            if (xi-xj)**2 + (yi-yj)**2 + (zi-zj)**2 < (ri + rj)**2:
+                pairs.add((i, j))
+    return pairs, ev
+
+def sector_bins(p, s, start=0):
+    b = {}
+    for i in range(start, len(p)):
+        x, y, z, _ = p[i]
+        b.setdefault((int(x/s), int(y/s), int(z/s)), []).append(i)
+    return b
+
+def neighbor_offsets(shell):
+    r = range(-shell, shell + 1)
+    return [(a, b, c) for a in r for b in r for c in r]
+
+def binned_contacts(p, s, shell, start=0):
+    bins, off = sector_bins(p, s, start), neighbor_offsets(shell)
+    pairs, ev, look = set(), 0, 0
+    for i in range(start, len(p)):
+        xi, yi, zi, ri = p[i]
+        cx, cy, cz = int(xi/s), int(yi/s), int(zi/s)
+        for a, b, c in off:
+            look += 1
+            for j in bins.get((cx+a, cy+b, cz+c), ()):
+                if j <= i:
+                    continue
+                xj, yj, zj, rj = p[j]
+                ev += 1
+                if (xi-xj)**2 + (yi-yj)**2 + (zi-zj)**2 < (ri + rj)**2:
+                    pairs.add((i, j))
+    return pairs, ev, look
+
+def split_big_contacts(p, s, shell):
+    """0番(最大)の粒子だけ全数比較で別扱いし、セクタは残りの寸法で切る"""
+    pairs, ev, look = binned_contacts(p, s, shell, start=1)
+    xb, yb, zb, rb = p[0]
+    for j in range(1, len(p)):
+        xj, yj, zj, rj = p[j]
+        ev += 1
+        if (xb-xj)**2 + (yb-yj)**2 + (zb-zj)**2 < (rb + rj)**2:
+            pairs.add((0, j))
+    return pairs, ev, look
+
+N = 2400
+P = pack_particles(N)
+DMAX = 2 * max(q[3] for q in P)                 # 全体の最大直径
+DSUB = 2 * max(q[3] for q in P[1:])             # 中央粒子を除いた最大直径
+truth, ev0 = brute_contacts(P)
+print("N=%d  L=1.0  d_max=%.3f  d_max(sub)=%.3f" % (N, DMAX, DSUB))
+print("all-pairs : contacts=%d  dist=%d" % (len(truth), ev0))
+print()
+print("%-20s %-7s %-6s %-9s %-9s %-5s %s" %
+      ("case", "s/dmax", "cells", "dist", "lookups", "miss", "safe?"))
+for f, shell in ((1.0, 1), (0.5, 1), (0.25, 1), (0.25, 4)):
+    s = DMAX * f
+    got, ev, look = binned_contacts(P, s, shell)
+    print("%-20s %-7.2f %-6d %-9d %-9d %-5d %s" %
+          ("sector shell=%d" % shell, f, (2*shell+1)**3, ev, look,
+           len(truth - got), "yes" if shell*s >= DMAX - 1e-12 else "NO"))
+got, ev, look = split_big_contacts(P, DSUB, 1)
+print("%-20s %-7.2f %-6d %-9d %-9d %-5d %s" %
+      ("big-split shell=1", DSUB/DMAX, 27, ev, look, len(truth - got), "yes"))
+print()
+print("required shell = ceil(d_max/s) :", [(f, math.ceil(1/f)) for f in (1.0, 0.5, 0.25)])
+```
+
+出力はこうなります。
+
+```text
+N=2400  L=1.0  d_max=0.060  d_max(sub)=0.030
+all-pairs : contacts=1539  dist=2878800
+
+case                 s/dmax  cells  dist      lookups   miss  safe?
+sector shell=1       1.00    27     269450    64800     0     yes
+sector shell=1       0.50    27     38914     64800     0     NO
+sector shell=1       0.25    27     5015      64800     104   NO
+sector shell=4       0.25    729    125548    1749600   0     yes
+big-split shell=1    0.50    27     41229     64773     0     yes
+
+required shell = ceil(d_max/s) : [(1.0, 1), (0.5, 2), (0.25, 4)]
+```
+
+3行目を見てください。`s/dmax=0.50`、`shell=1` は安全条件を満たしていないのに見落としが0です。
+運です。直径0.060の粒子がちょうど1個だけで、その接触相手が頂点方向にいなかっただけです。
+粒子を再配置するか1ステップ進めれば数字は変わります。
+「回してみたら合っていた」は、この種の条件では根拠になりません。
+[検証ケースが実際に測っているもの](/ja/posts/2026-10-07-sod-vortex-order-verification/)と同じ罠です。
+
+## 大粒子を切り離せば安全と速度を同時に得る
+
+最後の行が解法です。
+中央粒子1個だけを全数比較で別扱いし、セクタは残り2399個の最大直径0.030で切ります。
+追加コストは2399回の距離計算、$O(N)$ 一巡分です。
+
+距離計算は4万1229回まで落ちました。$s=d_{\max}$ の設定の26万9450回に比べて6.5倍少ない値です。
+セクタ参照は6万4773回で変わりません。
+見落としは0で、今回は運ではなく不等式が保証します。
+残りの粒子同士では $r_i + r_j \le 0.030 = 1 \cdot s$ が構成上成り立ちます。
+壁時計時間は0.023秒、全数比較0.668秒の1/29です。
+
+規模を上げるとさらに開きます。凝集体は少数の大粒子に数千個の小粒子が付く構造です。
+粒径分布の裾にある少数を別扱いするほうが、2レベル格子を組むよりコードが短くなります。
+[火炎素ライブラリが折り返す場所](/ja/posts/2026-10-06-flamelet-library-slf-fpv-progress-variable/)と似て、
+少数の例外が表全体の解像度を決める構造を断ち切ることが要点です。
+
+## 見落とした接触104組が変えるもの
+
+接触を1つ見落とすと、そのペアの斥力が0になります。
+2粒子は互いを通り抜けるか、重なったまま表面積の更新から抜け落ちます。
+アルミニウム粒子燃焼では、凝集体の重なり面積が酸化膜面積に直結します。
+燃焼率が過大評価されます。質量保存は壊れないので残差では捕まりません。
+
+ですから探索コードにセクタ寸法を書くとき、実際に確認すべきことは3つです。
+$k\,s \ge d_{\max}$ が成り立つか、その $d_{\max}$ を毎ステップ測り直しているか(合体・分裂で変わります)、
+そして $d_{\max}$ を単独で押し上げている粒子が何個あるかです。
+3つ目の答えが一桁なら、その粒子はセクタに入れず別に数えるほうが安いです。
