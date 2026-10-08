@@ -1,0 +1,252 @@
+---
+title: "静止液滴融掉了一半 — 守恒型 Allen–Cahn 抹掉的那个曲率项"
+date: 2026-10-09
+description: "流速为零的液滴在经典 Allen–Cahn 下丢失49.4%质量，守恒型只有1e-14。本文把这个曲率项一路追到LB的源项。"
+tags: ["Conservative-Allen-Cahn", "Allen-Cahn", "Phase-Field", "LBM", "Interface-Capturing"]
+locale: zh
+slug: 2026-10-09-conservative-allen-cahn-curvature-term
+takeaway: "守恒型 Allen–Cahn 的锐化项不是维持界面厚度的装置，而是恰好抵消曲率驱动消亡的那一项。"
+draft: false
+---
+
+import { CurvatureMeltDropletLab } from '@/components/post-viz/2026-10-09-conservative-allen-cahn-curvature-term/CurvatureMeltDropletLab'
+import { SharpFluxMomentDial } from '@/components/post-viz/2026-10-09-conservative-allen-cahn-curvature-term/SharpFluxMomentDial'
+
+## 流速为零，液滴却缩掉了一半
+
+只有曲率、没有流动的界面，应该自己运动吗？把 phase-field 模型(把界面当作有厚度的过渡层来处理的模型)第一次写进代码时，这个问题最容易被跳过。把静止初始化的二维液滴用 Allen–Cahn 方程推进4000步，答案就出来了。半径从20.083缩到14.286，体积分数总和消失了49.4%。速度场从头到尾恰好为零。
+
+本文按项追查这个消亡来自哪里。把经典 Allen–Cahn 和守恒型(conservative)Allen–Cahn 并排放，差别只是一个曲率项。接着把同一个项追到格子玻尔兹曼(LB)代码里，看它必须坐在哪一阶矩上。读完之后，代码里的 `W` 和源项各自承诺了什么，就分得清了。
+
+## 两个 Allen–Cahn 的逐项对照
+
+| 项目 | 经典 Allen–Cahn | 守恒型 Allen–Cahn |
+|---|---|---|
+| 形式 | 反应扩散型 | 通量散度型 |
+| 界面维持 | 双井 $\phi(1-\phi)(1-2\phi)$ | 反向通量 $\frac{4}{W}\phi(1-\phi)\hat{\mathbf n}$ |
+| $\int\phi\,dV$ | 不守恒 | 离散层面守恒 |
+| 一维平衡解 | tanh | 同一个 tanh |
+| 对曲率的响应 | $v_n=-M\kappa$ | 零 |
+
+两个方程写出来是这样。
+
+$$
+\frac{\partial \phi}{\partial t} = M\left(\nabla^2\phi - \frac{16}{W^2}\phi(1-\phi)(1-2\phi)\right)
+$$
+
+$$
+\frac{\partial \phi}{\partial t} + \nabla\cdot(\phi\mathbf u) = \nabla\cdot\left[M\left(\nabla\phi - \frac{4\phi(1-\phi)}{W}\hat{\mathbf n}\right)\right]
+$$
+
+其中 $\phi$ 是体积分数，$M$ 是迁移率(决定界面松弛快慢的系数)，$W$ 是界面厚度，$\hat{\mathbf n}=\nabla\phi/|\nabla\phi|$ 是界面法向，$\kappa=\nabla\cdot\hat{\mathbf n}$ 是曲率。在下面的模拟里把两个方程同时加在同一个 tanh 界面上，亲手调一调。
+
+<CurvatureMeltDropletLab />
+
+左半圆是经典型，右半圆是守恒型。把 `M` 调大，只有左半边融得更快，并且沿着虚线画的 $\sqrt{R_0^2-2Mt}$ 走。改变 `W`，左边的消亡速度几乎不动——说明罪魁是曲率，不是厚度。
+
+## tanh 界面白送的两个恒等式
+
+$W$ 为什么以不同形状进入这两个方程，答案来自一维平衡解。平面界面的解就是下面这个 tanh。
+
+$$
+\phi(x) = \frac{1}{2}\left(1 + \tanh\frac{2x}{W}\right)
+$$
+
+对它求导，两个恒等式白送上门。
+
+$$
+\frac{d\phi}{dx} = \frac{4}{W}\phi(1-\phi), \qquad \frac{d^2\phi}{dx^2} = \frac{16}{W^2}\phi(1-\phi)(1-2\phi)
+$$
+
+第一式说梯度可以只用 $\phi$ 写出来。不需要界面坐标，只靠局部值就能造出锐化通量。第二式是经典型双井系数 $16/W^2$ 的来源。把两式分别代入各自方程，右端都为零。一维下两个模型拥有同一个平衡解。
+
+## 曲率项是留下还是被抹掉
+
+差别出现在界面弯曲的那一刻。取法向坐标 $s$，拉普拉斯算子裂成两块。
+
+$$
+\nabla^2\phi = \frac{\partial^2\phi}{\partial s^2} + \kappa\frac{\partial\phi}{\partial s}
+$$
+
+把上面的恒等式代进去。经典型右端的 $\partial^2\phi/\partial s^2$ 与双井项恰好抵消，只剩曲率那一块。
+
+$$
+\left.\frac{\partial\phi}{\partial t}\right|_{\text{classical}} = M\kappa\frac{\partial\phi}{\partial s} = M\kappa\frac{4\phi(1-\phi)}{W}
+$$
+
+这一项就是 $v_n=-M\kappa$，即曲率驱动运动。对液滴而言 $\kappa=-1/R$，于是 $dR/dt=-M/R$，积分得到 $R^2=R_0^2-2Mt$。半径20、$M=0.05$ 时寿命是4000个时间单位。
+
+守恒型把同一个项在散度形式里又造了一遍。把反向通量的散度展开，得到
+
+$$
+\nabla\cdot\left[\frac{4\phi(1-\phi)}{W}\hat{\mathbf n}\right] = \frac{16}{W^2}\phi(1-\phi)(1-2\phi) + \frac{4\phi(1-\phi)}{W}\kappa
+$$
+
+它同时给出双井项和曲率项。经典型只有前半块。后半块加进来之后，$M\kappa\,\partial\phi/\partial s$ 就被抹掉了。[三相 Allen–Cahn 中不存在的相渗进界面的那个位置](/zh/posts/2026-10-02-nphase-allen-cahn-pairwise-tension/)也是同样的结构。漏掉哪一项会破坏哪个守恒量，事先就定好了。
+
+## 同一个 tanh，两套更新式，4000步
+
+把两套更新式放在轴对称一维网格上。只解径向方向，曲率就以 $1/r$ 自动进来。拉普拉斯项和锐化通量都写成面(face)通量，于是散度部分在两个模型里都是离散守恒的。因此经典型的质量损失全部只来自双井项。
+
+```python
+import math
+
+NR, DR, R0, W, M, DT, NSTEP = 256, 0.5, 20.0, 4.0, 0.05, 0.5, 4000
+rc = [(i + 0.5) * DR for i in range(NR)]          # 单元中心
+rf = [(i + 1.0) * DR for i in range(NR - 1)]      # 内部面
+
+def tanh_disk(w):
+    return [0.5 * (1.0 - math.tanh(2.0 * (r - R0) / w)) for r in rc]
+
+def disk_mass(f):
+    return sum(r * v for r, v in zip(rc, f)) * DR
+
+def disk_radius(f):
+    return math.sqrt(2.0 * disk_mass(f))
+
+def peak_slope(f):
+    return max(abs(f[i + 1] - f[i]) / DR for i in range(NR - 1))
+
+def well_drive(v, w):
+    return (16.0 / w ** 2) * v * (1.0 - v) * (1.0 - 2.0 * v)
+
+def flux_div(F):
+    out = [0.0] * NR
+    for i in range(NR):
+        lo = rf[i - 1] * F[i - 1] if i > 0 else 0.0
+        hi = rf[i] * F[i] if i < NR - 1 else 0.0
+        out[i] = (hi - lo) / (rc[i] * DR)
+    return out
+
+def grad_faces(f):
+    return [(f[i + 1] - f[i]) / DR for i in range(NR - 1)]
+
+def sharp_faces(f, w, eps=1e-12):
+    F = []
+    for i in range(NR - 1):
+        g = (f[i + 1] - f[i]) / DR
+        pf = 0.5 * (f[i] + f[i + 1])
+        F.append(g - (4.0 / w) * pf * (1.0 - pf) * g / (abs(g) + eps))
+    return F
+
+def step_classical(f, w, dt):
+    lap = flux_div(grad_faces(f))
+    return [v + dt * M * (lap[i] - well_drive(v, w)) for i, v in enumerate(f)]
+
+def step_conservative(f, w, dt):
+    div = flux_div(sharp_faces(f, w))
+    return [v + dt * M * div[i] for i, v in enumerate(f)]
+
+f0 = tanh_disk(W)
+m0 = disk_mass(f0)
+fk, fc = list(f0), list(f0)
+print("    t   R_classic  R_conserv   mass_classic  mass_conserv")
+for s in range(NSTEP + 1):
+    if s % 1000 == 0:
+        print("%5.0f  %9.3f  %9.3f  %13.9f  %13.9f"
+              % (s * DT, disk_radius(fk), disk_radius(fc),
+                 disk_mass(fk) / m0, disk_mass(fc) / m0))
+    fk = step_classical(fk, W, DT)
+    fc = step_conservative(fc, W, DT)
+print("curvature law  sqrt(R0^2-2*M*t) = %.3f" % math.sqrt(R0 ** 2 - 2 * M * NSTEP * DT))
+print("interface width  init %.3f  classic %.3f  conserv %.3f"
+      % (1 / peak_slope(f0), 1 / peak_slope(fk), 1 / peak_slope(fc)))
+print("mass drift  classic %+.3e  conserv %+.3e"
+      % (disk_mass(fk) / m0 - 1, disk_mass(fc) / m0 - 1))
+```
+
+## 半径停在20.083，质量误差1e-14
+
+```text
+    t   R_classic  R_conserv   mass_classic  mass_conserv
+    0     20.083     20.083    1.000000000    1.000000000
+  500     18.803     20.083    0.876607772    1.000000000
+ 1000     17.429     20.083    0.753192944    1.000000000
+ 1500     15.936     20.083    0.629689171    1.000000000
+ 2000     14.286     20.083    0.506056483    1.000000000
+curvature law  sqrt(R0^2-2*M*t) = 14.142
+interface width  init 4.021  classic 4.032  conserv 4.000
+mass drift  classic -4.941e-01  conserv -2.631e-14
+```
+
+经典型的14.286与解析式14.142相差1.0%。这个差来自0.5的网格间距和面积等效半径的定义。趋势严格遵循 $R^2=R_0^2-2Mt$。守恒型在小数第三位上都没有离开20.083。
+
+质量那一侧的数字更直白。经典型是 $-4.941\times10^{-1}$，守恒型是 $-2.631\times10^{-14}$。后者是双精度累积舍入误差，加密网格也不会变小。它不是加密就能减少的误差，而是从一开始就不存在的误差。界面厚度在两个模型里都守在4附近。维持厚度不是这两个模型的区别。
+
+## 搬到 LB 上，这一项坐在源项里
+
+在 LB 里求解守恒型的标准做法，是为 $\phi$ 另外带一个分布函数 $h_i$。在 D2Q9 格子上更新式这样写。
+
+$$
+h_i(\mathbf x+\mathbf c_i\Delta t,\ t+\Delta t) = h_i(\mathbf x,t) - \frac{h_i-h_i^{eq}}{\tau_\phi} + F_i
+$$
+
+$$
+h_i^{eq} = \phi\,w_i\left(1+\frac{\mathbf c_i\cdot\mathbf u}{c_s^2}\right), \qquad M = c_s^2\left(\tau_\phi-\frac{1}{2}\right)\Delta t
+$$
+
+$h_i$ 是运载 $\phi$ 的分布函数，$\tau_\phi$ 是无量纲松弛时间，$w_i$ 是格子权重，$c_s^2=1/3$。平衡分布里只有对流项。锐化项不由平衡分布提供，而由源项 $F_i$ 提供。
+
+$$
+F_i = \Delta t\,w_i\left(1-\frac{1}{2\tau_\phi}\right)\frac{4\phi(1-\phi)}{W}\frac{\mathbf c_i\cdot\hat{\mathbf n}}{c_s^2}
+$$
+
+Chapman–Enskog 展开(按格子间距比的阶次整理平衡附近小偏差的方法)要求的条件只有两行矩。零阶矩必须满足 $\sum_i F_i = 0$。由于 $\phi=\sum_i h_i$，零阶矩不为零就意味着源项在制造或抹去体积分数。一阶矩必须准确给出反向通量。因为 $\sum_i w_i(\mathbf c_i\cdot\hat{\mathbf n})\mathbf c_i = c_s^2\hat{\mathbf n}$，上式 $F_i$ 里的 $c_s^2$ 被约掉，正好得到目标值。这与追究[力项要匹配到几阶矩](/zh/posts/2026-09-30-lbm-forcing-term-third-moment-limit/)是同一类约束，只是这里要守的行到两条就结束了。
+
+## 碰了零阶矩，质量就开始漏
+
+常见的事故是把 $F_i$ 写成平衡分布的样子，也就是在括号里一并放个1，写成 $w_i\,\mathrm{amp}\,(1+\mathbf c_i\cdot\hat{\mathbf n}/c_s^2)$。一阶矩照样是对的。所以界面厚度看着正常，代码也安静地跑。
+
+```python
+CX = [0, 1, -1, 0, 0, 1, -1, -1, 1]
+CY = [0, 0, 0, 1, -1, 1, 1, -1, -1]
+WT = [4/9, 1/9, 1/9, 1/9, 1/9, 1/36, 1/36, 1/36, 1/36]
+CS2 = 1.0 / 3.0
+W, TAU, PHI, NX, NY = 4.0, 0.8, 0.5, 0.6, 0.8
+
+def sharp_source(phi, nx, ny, w, tau, spill=False):
+    amp = (1.0 - 0.5 / tau) * 4.0 * phi * (1.0 - phi) / w
+    out = []
+    for k in range(9):
+        proj = (CX[k] * nx + CY[k] * ny) / CS2        # 供一阶矩用的投影
+        out.append(WT[k] * amp * (proj + 1.0 if spill else proj))
+    return out
+
+amp = (1.0 - 0.5 / TAU) * 4.0 * PHI * (1.0 - PHI) / W
+print("target            sum c_i F_i = [%+.6f %+.6f]" % (amp * NX, amp * NY))
+for tag, spill in (("moment-safe", False), ("0th-moment spill", True)):
+    F = sharp_source(PHI, NX, NY, W, TAU, spill)
+    sx = sum(CX[k] * F[k] for k in range(9))
+    sy = sum(CY[k] * F[k] for k in range(9))
+    print("%-17s sum F_i = %+.3e   sum c_i F_i = [%+.6f %+.6f]" % (tag, sum(F), sx, sy))
+```
+
+```text
+target            sum c_i F_i = [+0.056250 +0.075000]
+moment-safe       sum F_i = +8.674e-19   sum c_i F_i = [+0.056250 +0.075000]
+0th-moment spill  sum F_i = +9.375e-02   sum c_i F_i = [+0.056250 +0.075000]
+```
+
+两个变体的一阶矩到小数第六位都相同。只有零阶矩从零升到 $9.375\times10^{-2}$。这个值正是 $(1-1/2\tau_\phi)\cdot4\phi(1-\phi)/W$ 本身，意思是每一步都在每个界面格点上塞进那么多体积分数。在下面的旋钮里把两种源模式轮流打开看看。
+
+<SharpFluxMomentDial />
+
+把 `W_init` 和 `W_model` 设成不同值，红色 net flux 曲线会抬起来，随着剖面松弛到虚线 tanh 又落回零。按 `source` 按钮破坏零阶矩，`W_eff` 照样贴在 `W_model` 上，只有质量曲线从1离开。只做厚度检验抓不到这个 bug 的原因，就在这里。
+
+## 选哪个模型的对照表
+
+| 场景 | 经典型 | 守恒型 |
+|---|---|---|
+| 平面界面松弛 | 合适 | 合适 |
+| 长时间保持静止液滴 | 不合适 | 合适 |
+| 模拟晶粒生长与曲率驱动运动 | 合适 | 不合适 |
+| 报告体积分数总和 | 需要修正 | 直接用 |
+| LB 实现成本 | 无源项 | 需要算 $\hat{\mathbf n}$ |
+
+表里第三行最关键。守恒型并不总是对的。如果**想要模拟**的正是曲率驱动运动，那经典型才是正确的模型。只有在要输运流体界面时，那一项才成为误差。无论哪一种都得算 $\hat{\mathbf n}$，所以守恒型还留下一件额外工作：在 $|\nabla\phi|$ 趋近于零的主体区域保护除法。格子究竟能承载多少界面项，与[定下格子速度的那三个厄米根](/zh/posts/2026-10-05-gauss-hermite-quadrature-lattice-velocities/)那边的约束是重叠的。
+
+## 在界面捕捉代码里写下 W 的时候
+
+在代码里写 `W = 4` 的那一刻，定下的不只是一个厚度。双井系数 $16/W^2$ 和反向通量系数 $4/W$ 都出自同一个数。只改其中一个，平衡解就不再是 tanh。两个系数是否由同一个 $W$ 推出，是第一条检查项。
+
+第二条检查是守恒量。每一步打印体积分数总和，1e-14 和 1e-1 一眼就分开。厚度在两个模型里都显得正常，所以只看厚度筛不出任何东西。如果是 LB 实现，检查一行就够：打印 $\sum_i F_i$，确认它是零。
