@@ -1,0 +1,240 @@
+---
+title: "Water's 1625 m/s Sound Speed Became 18 m/s in the Pressure Subsystem — Where Toro–Vázquez Splitting Moves the Stiffness"
+date: 2026-10-10
+description: "We compute the split eigenvalue A from Schropff et al.'s 2026 two-phase IMEX scheme for four materials, then use a pulse test to show why the pressure step must be implicit."
+tags: ["Flux-Splitting", "IMEX", "Low-Mach", "Compressible-Multiphase", "Paper-Review"]
+locale: en
+slug: 2026-10-10-toro-vazquez-split-pressure-wave-speed
+takeaway: "The wave speed A of the split pressure subsystem is not the sound speed. For water A/c is 0.011, and the missing stiffness moves into the equation-of-state update between the two steps."
+draft: false
+---
+import { SplitCharacteristicFanLab } from '@/components/post-viz/2026-10-10-toro-vazquez-split-pressure-wave-speed/SplitCharacteristicFanLab'
+import { ImplicitPressurePulseLab } from '@/components/post-viz/2026-10-10-toro-vazquez-split-pressure-wave-speed/ImplicitPressurePulseLab'
+
+## Water at 1625 m/s, computed at 18 m/s
+
+Sound travels through water at about 1625 m/s. Yet the pressure subsystem in this paper gives water at 1 bar a wave speed of 18.44 m/s. That's not a bug. It falls straight out of a single formula.
+
+This post reads the 2026 JCP paper by Schropff, Petitpas, and Daniel, "Semi-implicit method for two-phase flows in pressure disequilibrium." It's an IMEX (implicit–explicit) scheme for two phases at different pressures sharing one velocity. You'll come away with two things. What the eigenvalues of a split subsystem do and don't tell you. And why the pressure step has to be implicit.
+
+Try it yourself in the simulation below. Switch materials and move the pressure and Mach sliders.
+
+<SplitCharacteristicFanLab />
+
+The gray dashed lines are the full-system characteristics $u\pm c$. The orange lines are the pressure subsystem's $\pm A$, and the blue line is the advection speed $u$. Pick Water or Spinel and the orange lines stand almost vertical. The bars on the right show, on a log scale, how much larger the time step gets at low Mach.
+
+## 1993: splitting pressure off from convection
+
+The starting point is the Zha–Bilgen splitting (flux splitting: dividing the flux by physical role and treating each part separately). It cuts the Euler flux into two pieces. One is the convective part carried by the flow velocity. The other is the part driven by pressure.
+
+In 2012, Toro and Vázquez rewrote this splitting in Godunov form. That made it possible to pose a Riemann problem for each subsystem on its own. Schropff and coworkers carry the idea over to a two-phase model with pressure disequilibrium. Fluxes and non-conservative terms tied to pressure go into the first subsystem. The remaining transport terms go into the second.
+
+## 2026: two phases, two subsystems
+
+The primitive variables are $W=(\alpha_1,\alpha_2,\rho_1,\rho_2,p_1,p_2,u)^T$. The pressure subsystem reads:
+
+$$
+\begin{aligned}
+&\partial_t \alpha_k = 0,\qquad \partial_t(\alpha_k\rho_k) = 0,\\
+&\partial_t(\alpha_k\rho_k e_k) + \alpha_k p_k\,\nabla\cdot u = 0,\\
+&\partial_t(\rho u) + \nabla p = 0.
+\end{aligned}
+$$
+
+$\alpha_k$ is the volume fraction of phase $k$, $\rho_k$ its density, and $e_k$ its specific internal energy. $p=\sum_k\alpha_k p_k$ is the mixture pressure.
+
+The advection subsystem has no pressure at all. Volume fractions, mass, internal energy, and momentum are all carried by $u$. So all seven eigenvalues equal $u$. Adding the two subsystems recovers the original model. Relaxation terms are left out of the analysis.
+
+## Density is frozen during the pressure step
+
+Look at the pressure subsystem again. Both $\alpha_k$ and $\alpha_k\rho_k$ are constant in time, so $\rho_k$ doesn't move either. The only route for changing pressure is internal energy. In primitive form:
+
+$$
+\partial_t p_k + p_k\Gamma_k\,\nabla\cdot u = 0,\qquad \Gamma_k = (\rho_k e_{p,k})^{-1}
+$$
+
+$\Gamma_k$ is the Grüneisen parameter (how much pressure rises when you add energy at fixed density). $e_{p,k}$ is $\partial e_k/\partial p_k$ at fixed density. Combining this with the momentum equation gives waves at $\pm A$:
+
+$$
+A^2 = \frac{1}{\rho}\sum_k \alpha_k p_k \Gamma_k
+$$
+
+Here $\rho=\sum_k\alpha_k\rho_k$ is the mixture density. $A$ contains no $u$. That's why the paper says this wave pattern is always subsonic.
+
+For a stiffened-gas equation of state, $\Gamma_k=\gamma_k-1$. That gives the paper's Eq. (14):
+
+$$
+A^2 = c_f^2 - \frac{p + \sum_k \alpha_k\gamma_k p_{\infty,k}}{\rho}
+$$
+
+$c_f$ is the frozen sound speed (the mixture sound speed with no interphase relaxation), and $p_{\infty,k}$ is the stiffened-gas stiffness pressure. For an ideal gas, $A^2=c^2-p/\rho$, so air gets $A/c=\sqrt{(\gamma-1)/\gamma}=0.535$. Water is a different story. The $\gamma p_\infty$ term makes up almost all of $c^2$, and that entire share drops out.
+
+## A and c for four materials, side by side
+
+Using the stiffened-gas parameters from the paper's Table 1 (air, water, epoxy, spinel), we compute $A$ and $c$. The same script also isolates the pressure subsystem for air and runs a pulse test. It compares explicit Lax–Friedrichs against implicit backward Euler at the same Courant number. The last block is the low-Mach time-step ratio.
+
+```python
+import math
+
+# Stiffened-gas parameters (gamma, p_inf [Pa]) from the paper's Table 1
+MATS = {"Air": (1.4, 0.0), "Water": (4.4, 6e8), "Epoxy": (2.43, 5.3e9), "Spinel": (1.62, 141e9)}
+RHO = {"Air": 1.2, "Water": 1000.0, "Epoxy": 1185.0, "Spinel": 3622.0}
+
+def split_speeds(gam, pinf, p, rho):
+    c = math.sqrt(gam * (p + pinf) / rho)     # full sound speed
+    A = math.sqrt((gam - 1.0) * p / rho)       # pressure-subsystem speed, Eq. (14)
+    return c, A
+
+def thomas_solve(rhs, beta):
+    # (I - beta*L) x = rhs, compact Laplacian, zero-gradient ends
+    n = len(rhs)
+    cp, dp = [0.0] * n, [0.0] * n
+    b0 = 1 + beta
+    cp[0], dp[0] = -beta / b0, rhs[0] / b0
+    for i in range(1, n):
+        b = 1 + beta if i == n - 1 else 1 + 2 * beta
+        m = b + beta * cp[i - 1]
+        cp[i] = -beta / m
+        dp[i] = (rhs[i] + beta * dp[i - 1]) / m
+    x = [0.0] * n
+    x[-1] = dp[-1]
+    for i in range(n - 2, -1, -1):
+        x[i] = dp[i] - cp[i] * x[i + 1]
+    return x
+
+def ddx(f, dx):
+    n = len(f)
+    return [(f[min(i + 1, n - 1)] - f[max(i - 1, 0)]) / (2 * dx) for i in range(n)]
+
+def pulse_run(courant, implicit, n=200, travel=0.3):
+    # linearised pressure subsystem (air, 1 bar): p_t + K u_x = 0, u_t + p_x / rho = 0
+    rho, K = 1.2, 0.4 * 1e5
+    A = math.sqrt(K / rho)
+    dx = 1.0 / n
+    x = [(i + 0.5) * dx for i in range(n)]
+    p = [100.0 * math.exp(-((xi - 0.5) / 0.04) ** 2) for xi in x]
+    u = [0.0] * n
+    dt = courant * dx / A
+    steps = math.ceil(travel / A / dt)
+    for _ in range(steps):
+        if implicit:
+            ux = ddx(u, dx)
+            p = thomas_solve([p[i] - dt * K * ux[i] for i in range(n)], dt * dt * K / rho / dx ** 2)
+            px = ddx(p, dx)
+            u = [u[i] - dt / rho * px[i] for i in range(n)]
+        else:  # Lax-Friedrichs
+            P = [p[0]] + p + [p[-1]]; U = [u[0]] + u + [u[-1]]
+            p = [0.5 * (P[i] + P[i + 2]) - dt * K * (U[i + 2] - U[i]) / (2 * dx) for i in range(n)]
+            u = [0.5 * (U[i] + U[i + 2]) - dt / rho * (P[i + 2] - P[i]) / (2 * dx) for i in range(n)]
+        if max(abs(v) for v in p) > 1e9:
+            return steps, float("inf"), float("nan")
+    right = max(range(n // 2, n), key=lambda i: p[i])
+    speed = (x[right] - 0.5) / (steps * dt)
+    return steps, max(abs(v) for v in p[n // 2:]), speed
+
+print("material  p[bar]     c[m/s]     A[m/s]      A/c")
+for name, (g, pinf) in MATS.items():
+    for pbar in (1.0, 100.0):
+        rho = RHO[name] * (pbar if name == "Air" else 1.0)  # isothermal air
+        c, A = split_speeds(g, pinf, pbar * 1e5, rho)
+        print(f"{name:7s} {pbar:7.0f} {c:10.1f} {A:10.2f} {A / c:9.5f}")
+
+print("\nwater/air mixture, 1 bar, Eq. (13)")
+for aw in (0.01, 0.5, 0.99):
+    rho = aw * 1000.0 + (1 - aw) * 1.2
+    A = math.sqrt((aw * 1e5 * 3.4 + (1 - aw) * 1e5 * 0.4) / rho)
+    print(f"alpha_w={aw:4.2f}  rho={rho:7.1f}  A={A:7.2f} m/s")
+
+A_air = math.sqrt(0.4e5 / 1.2)
+print(f"\npressure pulse, air 1 bar, A = {A_air:.1f} m/s, c = {math.sqrt(1.4e5 / 1.2):.1f} m/s")
+print("Courant_A steps  exp_peak  exp_speed  imp_peak  imp_speed")
+for cr in (0.5, 0.9, 1.5, 5.0, 20.0):
+    s, pe, ve = pulse_run(cr, False)
+    _, pi, vi = pulse_run(cr, True)
+    print(f"{cr:7.1f} {s:6d} {pe:9.2f} {ve:9.1f} {pi:9.2f} {vi:9.1f}")
+
+print("\nlow-Mach air: dt ratio at equal Courant number = (|u|+c)/|u|")
+for M in (0.3, 0.1, 0.01, 0.001):
+    print(f"M={M:6.3f}  ratio={(1 + M) / M:9.1f}")
+```
+
+```text
+material  p[bar]     c[m/s]     A[m/s]      A/c
+Air           1      341.6     182.57   0.53452
+Air         100      341.6     182.57   0.53452
+Water         1     1624.9      18.44   0.01135
+Water       100     1638.3     184.39   0.11255
+Epoxy         1     3296.7      10.99   0.00333
+Epoxy       100     3299.8     109.85   0.03329
+Spinel        1     7941.3       4.14   0.00052
+Spinel      100     7941.6      41.37   0.00521
+
+water/air mixture, 1 bar, Eq. (13)
+alpha_w=0.01  rho=   11.2  A=  62.00 m/s
+alpha_w=0.50  rho=  500.6  A=  19.48 m/s
+alpha_w=0.99  rho=  990.0  A=  18.45 m/s
+
+pressure pulse, air 1 bar, A = 182.6 m/s, c = 341.6 m/s
+Courant_A steps  exp_peak  exp_speed  imp_peak  imp_speed
+    0.5    120     25.59     184.1     35.90     181.1
+    0.9     67     42.37     183.2     30.52     180.2
+    1.5     40    240.14     129.3     25.76     178.0
+    5.0     12 102438.55      13.7     16.02     168.9
+   20.0      3   3336.76      32.0      9.82     129.3
+
+low-Mach air: dt ratio at equal Courant number = (|u|+c)/|u|
+M= 0.300  ratio=      4.3
+M= 0.100  ratio=     11.0
+M= 0.010  ratio=    101.0
+M= 0.001  ratio=   1001.0
+```
+
+For water at 1 bar, $A/c$ is 0.01135. Epoxy drops to 0.00333 and spinel to 0.00052. Raise the pressure to 100 bar and water's $A$ grows by exactly 10×, because $A^2$ scales with $p$. Meanwhile $c$ only moves from 1624.9 to 1638.3, a 0.8% change. Air stays fixed at 0.53452 regardless of pressure.
+
+The water–air mixture is worth a look too. At a water volume fraction of 0.5, $A$ is 19.48 m/s. That's nearly the 18.45 m/s at 0.99. Water sets both the mixture density and the numerator $\sum\alpha_k p_k\Gamma_k$. Only at 99% air does $A$ jump to 62.00 m/s.
+
+## The stiffness doesn't vanish — it moves between the steps
+
+So where did water's 1625 m/s go? Neither subsystem contains $u\pm c$. The pressure subsystem has $\pm A$, the advection subsystem only $u$.
+
+The real sound speed comes back when the two steps alternate. During the advection step, $\rho_k$ changes. The equation of state turns that change into a pressure change at the rate $\rho c^2$. That pressure becomes the input to the next pressure step. Water's stiffness has left the subsystem eigenvalues and moved into the equation-of-state update between steps.
+
+From here on, this is my reading, not a statement from the paper. Taken alone, the pressure step looks like it could run explicitly with $\Delta t\le\Delta x/A$. But that inequality says nothing about the stability of the composed scheme. In that light, it makes sense that the paper always solves the pressure step implicitly, even for water where $A$ is tiny.
+
+## An implicit pressure step keeps the pulse alive but flattens it
+
+The second block of the output is the pulse test. Try it yourself in the simulation below. Push the Courant number above 1 and switch schemes.
+
+<ImplicitPressurePulseLab />
+
+Explicit Lax–Friedrichs holds up through Courant 0.9 and breaks at 1.5. At 1.5 the peak pressure hit 240 Pa, above the initial value. At 5.0 it passed 100,000 Pa. The implicit scheme doesn't diverge even at 20. Instead its peak is flattened to 9.82 Pa, a fifth of the exact 50 Pa.
+
+That damping is the deal IMEX makes. In low-Mach problems, acoustic amplitude isn't what you care about. You only need the pressure field to follow the velocity field instantly. If your problem needs accurate acoustics, this trade costs you.
+
+In the implicit pressure step, the paper builds a pressure equation for each phase. Since $\Gamma_k$ depends on pressure, the equation is nonlinear. It's solved with Picard iteration (a linearization that freezes some coefficients at the previous iterate). The spatial discretization uses a compact stencil, so the matrix is narrowly banded. The `thomas_solve` in the code above solves exactly one such banded matrix in 1D.
+
+## The arithmetic behind a 1001× time step at low Mach
+
+An explicit scheme's time step is tied to $\Delta x/(|u|+c)$. In IMEX only the advection step is explicit, so it relaxes to $\Delta x/|u|$. The paper uses $\Delta t_{IMEX}=0.5\,\Delta x/|\sigma|$. Assuming the same Courant number, the ratio is:
+
+$$
+\frac{\Delta t_{IMEX}}{\Delta t_{exp}} = \frac{|u|+c}{|u|} = 1 + \frac{1}{M}
+$$
+
+$M$ is the Mach number. At $M=0.3$ that's 4.3×; at $M=0.001$, 1001×. But this is an upper bound that treats per-step cost as equal. The implicit step solves a linear system on every Picard iteration. The paper's conclusion says the same. The gain is large for low-Mach problems and small or absent for shock tubes.
+
+For the same low-Mach IMEX viewed from the enthalpy side, see [the second stiffness hidden in relative velocity](/en/posts/2026-09-27-all-mach-twophase-enthalpy-stiffness/). The compressibility-factor issue in compressible two-phase flow is covered in [the K term in compressible VOF](/en/posts/2026-10-03-compressible-vof-compressibility-factor/).
+
+## A final step to return energy lost to non-conservative terms
+
+Splitting leaves one cleanup job. The per-phase internal energy equations carry non-conservative terms like $\alpha_k p_k\nabla\cdot u$. Discretized, these terms don't conserve total energy exactly.
+
+So the paper adds a correction operator as a third step. Mass, momentum, mixture total energy, and volume fraction keep their predicted values. Only the per-phase internal energies get $\alpha_k^n\,\delta\varepsilon$ added. This distributes the mismatch so it agrees with the mixture total energy. Pressure relaxation runs separately, after the IMEX step finishes.
+
+## Questions to ask before putting this splitting in your code
+
+First, what is $A/c$ for your material? For liquids and solids, values below 0.01 are common. That's why you can't choose an explicit pressure step from its eigenvalue alone.
+
+Second, what Mach number do you care about? The $1+1/M$ factor has to beat the iteration cost to pay off. The paper demonstrates this in 1D. Extending to multiple dimensions is left as a wider-band matrix problem.
+
+Third, does acoustic amplitude enter your result? If it does, backward Euler at Courant 20 shaves the pulse to a fifth. In that case, size the time step for acoustics or use a higher-order implicit integrator.
