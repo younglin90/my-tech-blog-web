@@ -1,0 +1,223 @@
+---
+title: "Subir solo el término viscoso a segundo orden empeoró el error 1.82 veces — por qué el esquema Gear semi-implícito extrapola la convección"
+date: 2026-10-12
+description: "Combinar BDF2 con la convección evaluada en N^n degrada el esquema a primer orden y aumenta el error. Una línea, 2N^n − N^(n−1), recupera el segundo orden; aquí se verifica con código."
+tags: ["BDF2", "Projection-Method", "IMEX", "Incompressible", "Fractional-Step"]
+locale: es
+slug: 2026-10-12-semi-implicit-gear-convection-extrapolation
+takeaway: "BDF2 es una diferencia apuntada a t^{n+1}; si la convección entra con un paso de retraso, ese retraso se convierte íntegro en error de primer orden. Solo la extrapolación 2N^n − N^{n−1} conserva el segundo orden."
+draft: false
+---
+import { GearModeSpiralLab } from '@/components/post-viz/2026-10-12-semi-implicit-gear-convection-extrapolation/GearModeSpiralLab'
+import { ViscousStiffnessDial } from '@/components/post-viz/2026-10-12-semi-implicit-gear-convection-extrapolation/ViscousStiffnessDial'
+
+## Cambié a BDF2 y el error subió
+
+Ese día el objetivo era llevar la integración temporal de un código incompresible de primer a segundo orden. El Euler implícito del término viscoso se reemplazó por BDF2. La convección quedó intacta, evaluada en $N^n$. Luego se fue reduciendo el paso de tiempo a la mitad para medir el error. El error solo se reducía a la mitad. Peor aún, era 1.82 veces mayor que el del esquema original de primer orden.
+
+Este artículo rastrea de dónde sale ese factor 1.82. El artículo de Chiu y Lin (2011) sobre phase-field conservativo avanza Navier–Stokes con un **esquema Gear semi-implícito** y un método de proyección. En el lugar de la convección de ese esquema hay una extrapolación, $2N^n - N^{n-1}$. Se mide con números qué se rompe al quitar esa línea y qué se recupera al ponerla. Al final queda una regla para conservar el orden de un esquema IMEX y una forma de estimar lo que aporta tratar la viscosidad de manera implícita.
+
+## Qué hace cada uno de los tres términos en un paso
+
+La ecuación de momento de Navier–Stokes incompresible se divide en tres bloques.
+
+$$
+\frac{\partial \mathbf{u}}{\partial t} + \underbrace{(\mathbf{u}\cdot\nabla)\mathbf{u}}_{\mathbf{N}(\mathbf{u})} = -\nabla p + \nu \nabla^2 \mathbf{u}, \qquad \nabla\cdot\mathbf{u} = 0
+$$
+
+$\mathbf{N}$ es el término convectivo, $\nu$ la viscosidad cinemática y $p$ la presión dividida por la densidad.
+
+Los tres bloques se comportan distinto. La convección es no lineal. Tratarla implícitamente obliga a resolver un sistema no lineal en cada paso. La viscosidad es lineal pero rígida (stiff). Rigidez significa que las longitudes de onda más cortas decaen más rápido y estrangulan el paso explícito. La presión es una restricción sin derivada temporal propia.
+
+Por eso cada uno recibe un trato distinto. La convección va explícita, la viscosidad implícita y la presión se maneja por proyección. Esta mezcla se llama IMEX (implicit–explicit). El [esquema de ondas a bajo Mach](/es/posts/2026-06-21-asymptotic-preserving-low-mach-wave/) usaba la misma idea. Allí las ondas acústicas rápidas pasaban a implícito. Aquí es el decaimiento viscoso rápido el que pasa a implícito.
+
+## El esquema Gear apunta a t^(n+1)
+
+El esquema Gear es otro nombre de BDF2 (diferencias regresivas de segundo orden). En la forma de Chiu–Lin se escribe así.
+
+$$
+\frac{3\mathbf{u}^* - 4\mathbf{u}^n + \mathbf{u}^{n-1}}{2\Delta t} = -\left(2\mathbf{N}^n - \mathbf{N}^{n-1}\right) + \nu\nabla^2\mathbf{u}^*
+$$
+
+$\mathbf{u}^*$ es la velocidad intermedia antes de la corrección de presión, y el superíndice $n$ es el nivel temporal.
+
+Un desarrollo de Taylor muestra que el lado izquierdo aproxima $\partial_t \mathbf{u}$ justo en $t^{n+1}$. El error es $O(\Delta t^2)$. Entonces todos los términos del lado derecho también deben evaluarse en $t^{n+1}$. El término viscoso usa $\mathbf{u}^*$, así que no hay problema. La convección necesita $\mathbf{N}^{n+1}$, que todavía no se conoce. Una extrapolación lineal a partir de los dos valores anteriores llena el hueco.
+
+$$
+2\mathbf{N}^n - \mathbf{N}^{n-1} = \mathbf{N}^{n+1} - \Delta t^2\, \partial_{tt}\mathbf{N} + O(\Delta t^3)
+$$
+
+El error de extrapolación es $\Delta t^2$, así que no le quita orden a BDF2. En cambio, usar solo $\mathbf{N}^n$ da $\mathbf{N}^{n+1} - \Delta t\,\partial_t\mathbf{N}$. Es el valor visto con un $\Delta t$ completo de retraso. Ese retraso sobrevive como error global de primer orden.
+
+¿Por qué el esquema de primer orden sufre menos? El lado izquierdo del Euler implícito, $(\mathbf{u}^{n+1}-\mathbf{u}^n)/\Delta t$, es en realidad más preciso cerca de $t^{n+1/2}$. Medido desde ahí, $\mathbf{N}^n$ se retrasa solo $\Delta t/2$. BDF2 movió el punto de referencia a $t^{n+1}$. Ahora el mismo $\mathbf{N}^n$ carga con todo el retraso $\Delta t$. El 1.82 es ese retraso duplicado, compensado un poco por la parte viscosa.
+
+En la simulación de abajo se puede manipular directamente. Resuelve un único modo de Fourier $dy/dt = -(d + ia)y$ con los tres esquemas y dibuja la espiral en el plano complejo junto a la gráfica de error contra paso de tiempo.
+
+<GearModeSpiralLab />
+
+Al reducir el número de pasos, la trayectoria roja (BDF2 + $N^n$) es la que más se aleja de la espiral exacta en línea blanca discontinua. A la derecha, naranja y rojo siguen pendiente 1; solo el verde (Gear) sigue pendiente 2. Subir la tasa viscosa $d$ no cambia ese orden.
+
+## La proyección elimina la divergencia
+
+$\mathbf{u}^*$ no tiene divergencia nula. La presión la elimina.
+
+$$
+\nabla^2 p^{n+1} = \frac{3}{2\Delta t}\nabla\cdot\mathbf{u}^*, \qquad \mathbf{u}^{n+1} = \mathbf{u}^* - \frac{2\Delta t}{3}\nabla p^{n+1}
+$$
+
+El factor $3/(2\Delta t)$ viene del $3/2$ del lado izquierdo de BDF2. La presión actúa como multiplicador de Lagrange (variable auxiliar que impone una restricción) y retira la componente de gradiente de $\mathbf{u}^*$.
+
+Con fronteras periódicas, esta proyección conmuta con el operador viscoso. Por eso el error de división (splitting error) es cero. Con paredes, el panorama cambia. Una condición de frontera artificial para la presión crea una capa límite numérica junto a la pared. Según la revisión de Guermond, Minev y Shen (2006), la proyección incremental estándar alcanza segundo orden en velocidad ($L^2$) y alrededor de primer orden en presión. La corrección rotacional eleva la presión a orden 3/2. El experimento de abajo corre en una caja periódica, así que solo aparece el orden del integrador temporal.
+
+## Un solo código pseudoespectral, tres esquemas
+
+La configuración es una caja periódica 2D $[0,2\pi]^2$, malla de 32×32 y $\nu = 0.05$. El flujo inicial sale de la función de corriente $\psi = \sin x\sin y + 0.6\cos(2x + y)$. En un vórtice de Taylor–Green puro la convección es exactamente un gradiente y la proyección la borra. Añadir un segundo modo hace que la convección realmente trabaje.
+
+Las derivadas espaciales se calculan con FFT, lo que lleva el error espacial cerca de la precisión de máquina. La solución de referencia es Gear con $\Delta t = T/5120$. En el espacio de Fourier tanto la resolución viscosa implícita como la de Poisson para la presión son diagonales. Cada una es una sola división. El último bloque sube $\nu$ a 0.5 y compara con una corrida totalmente explícita (AB2).
+
+```python
+import numpy as np
+
+N, nu, T = 32, 0.05, 1.0
+x = np.arange(N) * 2 * np.pi / N
+X, Y = np.meshgrid(x, x, indexing="ij")
+k = np.fft.fftfreq(N, 1.0 / N)
+KX, KY = np.meshgrid(k, k, indexing="ij")
+K2 = KX**2 + KY**2
+K2s = np.where(K2 == 0, 1.0, K2)
+dealias = (np.abs(KX) < N / 3) & (np.abs(KY) < N / 3)
+
+def project(uh, vh):
+    # eliminar la parte divergente en el espacio espectral (Poisson de presión + corrección)
+    div = KX * uh + KY * vh
+    return uh - KX * div / K2s, vh - KY * div / K2s
+
+def advect_hat(uh, vh):
+    # convección (u·∇)u calculada de forma pseudoespectral
+    u, v = np.fft.ifft2(uh).real, np.fft.ifft2(vh).real
+    ux, uy = np.fft.ifft2(1j * KX * uh).real, np.fft.ifft2(1j * KY * uh).real
+    vx, vy = np.fft.ifft2(1j * KX * vh).real, np.fft.ifft2(1j * KY * vh).real
+    return (np.fft.fft2(u * ux + v * uy) * dealias,
+            np.fft.fft2(u * vx + v * vy) * dealias)
+
+def initial():
+    psi = np.sin(X) * np.sin(Y) + 0.6 * np.cos(2 * X + Y)
+    ph = np.fft.fft2(psi)
+    return 1j * KY * ph, -1j * KX * ph   # u = ψ_y, v = -ψ_x
+
+def march(dt, mode):
+    """mode: 'euler' (BDF1+N^n), 'lagged' (BDF2+N^n), 'gear' (BDF2+2N^n-N^{n-1}),
+    'explicit' (totalmente explícito: convección AB2 + viscosidad AB2)"""
+    uh, vh = initial()
+    nsteps = int(round(T / dt))
+    prev = None
+    for n in range(nsteps):
+        Nu, Nv = advect_hat(uh, vh)
+        if mode == "explicit":
+            Lu, Lv = -nu * K2 * uh, -nu * K2 * vh
+            if prev is None:
+                ru, rv = uh + dt * (Lu - Nu), vh + dt * (Lv - Nv)
+            else:
+                ru = uh + dt * (1.5 * (Lu - Nu) - 0.5 * prev[0])
+                rv = vh + dt * (1.5 * (Lv - Nv) - 0.5 * prev[1])
+            prev = (Lu - Nu, Lv - Nv)
+            uh, vh = project(ru, rv)
+            continue
+        if prev is None or mode == "euler":
+            # primer paso (o esquema de primer orden): BDF1, convección N^n
+            a = 1.0
+            ru, rv = uh - dt * Nu, vh - dt * Nv
+        else:
+            u0, v0, Nu0, Nv0 = prev
+            a = 1.5
+            if mode == "gear":
+                Eu, Ev = 2 * Nu - Nu0, 2 * Nv - Nv0
+            else:
+                Eu, Ev = Nu, Nv
+            ru = 2 * uh - 0.5 * u0 - dt * Eu
+            rv = 2 * vh - 0.5 * v0 - dt * Ev
+        prev = (uh, vh, Nu, Nv)
+        # viscosidad implícita: (a - dt ν ∇²) u* = rhs  → diagonal en el espacio espectral
+        us, vs = ru / (a + dt * nu * K2), rv / (a + dt * nu * K2)
+        uh, vh = project(us, vs)
+    return uh, vh
+
+ref = march(T / 5120, "gear")
+def err(sol):
+    d = np.fft.ifft2(sol[0] - ref[0]).real, np.fft.ifft2(sol[1] - ref[1]).real
+    return np.sqrt(np.mean(d[0]**2 + d[1]**2))
+
+print(f"{'dt':>9} {'euler':>10} {'p':>5} {'lagged':>10} {'p':>5} {'gear':>10} {'p':>5}")
+last = {}
+for m in [20, 40, 80, 160, 320]:
+    dt = T / m
+    row = f"{dt:9.5f}"
+    for mode in ["euler", "lagged", "gear"]:
+        e = err(march(dt, mode))
+        p = np.log2(last[mode] / e) if mode in last else float("nan")
+        last[mode] = e
+        row += f" {e:10.3e} {p:5.2f}"
+    print(row)
+
+# estabilidad: viscosidad grande (ν=0.5), viscosidad explícita vs implícita
+nu, T = 0.5, 0.64
+print("max|u| at nu=0.5, t=0.64")
+for dt in [0.004, 0.008, 0.016, 0.032]:
+    out = []
+    for mode in ["explicit", "gear"]:
+        with np.errstate(all="ignore"):
+            uh, vh = march(dt, mode)
+        m = np.abs(np.fft.ifft2(uh).real).max()
+        out.append(f"{m:10.4f}" if np.isfinite(m) and m < 1e3 else "  blow-up ")
+    print(f"dt={dt:.3f}  explicit {out[0]}  gear {out[1]}")
+```
+
+```text
+       dt      euler     p     lagged     p       gear     p
+  0.05000  1.491e-02   nan  2.678e-02   nan  1.386e-03   nan
+  0.02500  7.413e-03  1.01  1.341e-02  1.00  3.490e-04  1.99
+  0.01250  3.695e-03  1.00  6.704e-03  1.00  8.764e-05  1.99
+  0.00625  1.845e-03  1.00  3.350e-03  1.00  2.195e-05  2.00
+  0.00313  9.217e-04  1.00  1.675e-03  1.00  5.478e-06  2.00
+max|u| at nu=0.5, t=0.64
+dt=0.004  explicit     0.6172  gear     0.6172
+dt=0.008  explicit   blow-up   gear     0.6172
+dt=0.016  explicit   blow-up   gear     0.6173
+dt=0.032  explicit   blow-up   gear     0.6175
+```
+
+## La línea que separa 1.00 de 2.00
+
+Las columnas de orden lo dicen todo. euler y lagged quedan en 1.00; gear, en 2.00. Con $\Delta t = 0.003125$ el error de lagged es $1.675\times10^{-3}$ y el de euler $9.217\times10^{-4}$. Una diferencia de 1.82 veces. En el mismo punto gear llega a $5.478\times10^{-6}$, 306 veces menos que lagged.
+
+La columna lagged es la más instructiva. El esfuerzo de subir el lado izquierdo a segundo orden no sirvió de nada. El orden lo fija el término de menor orden. Y la constante de error terminó peor que la del esquema de primer orden. Quien arregló el término viscoso esperaba una mejora, así que el resultado parece un bug. No lo es. Es la aritmética del retraso.
+
+Qué mide realmente una medición de orden de convergencia se trató en el [artículo sobre casos de verificación](/es/posts/2026-10-07-sod-vortex-order-verification/). Aquí la solución es suave y no hay error espacial. Por eso el valor medido es exactamente el orden temporal del esquema.
+
+## Qué se gana con la viscosidad implícita
+
+El último bloque muestra por qué la viscosidad va implícita. AB2 totalmente explícito resistió con $\Delta t = 0.004$. Desde $0.008$ divergió. Solo por viscosidad, el límite es $\Delta t \le 1/(\nu k_{\max}^2) = 0.01$. Los autovalores imaginarios de la convección consumen parte de ese margen, así que falla antes. Gear con $\Delta t = 0.032$ todavía da 0.6175, pegado a la referencia 0.6172. Es un paso ocho veces mayor.
+
+Este límite se reduce como $h^2$ al refinar la malla. Al reducir el espaciado a la mitad, el esquema explícito necesita cuatro veces más pasos. La viscosidad implícita cambia ese costo por una resolución de Helmholtz. Pero la convección sigue explícita, así que la condición CFL $|u|\Delta t/h \lesssim O(1)$ sigue vigente.
+
+Abajo se pueden variar $\nu$ y $\Delta t$ para observar el factor de amplificación por número de onda.
+
+<ViscousStiffnessDial />
+
+En modo fully explicit, al subir $\Delta t$ por encima del límite difusivo $h^2/(2\nu)$, las barras de número de onda alto se ponen rojas primero y cruzan 1. En la curva de la izquierda crece un diente de sierra a escala de malla. Al pasar a semi-implicit Gear, con el mismo $\Delta t$ las barras bajan de 1. Con $\nu$ cerca de cero y $\Delta t$ grande, Gear también choca con el CFL convectivo. Es la misma familia de límite que explica por qué [FTCS oscilaba](/es/posts/2026-05-08-advection-ftcs-upwind-cfl/) en advección de primer orden.
+
+## Lo que se pasa por alto: el paso inicial y Δt variable
+
+El primer paso no tiene $\mathbf{u}^{n-1}$. El código ejecuta solo ese paso con BDF1. Un paso con error local $O(\Delta t^2)$ no reduce el orden global. El 2.00 de la tabla lo demuestra.
+
+Si $\Delta t$ cambia de un paso a otro, cambian los coeficientes. Con la razón $\omega = \Delta t_n/\Delta t_{n-1}$, la extrapolación pasa a ser $(1+\omega)\mathbf{N}^n - \omega\mathbf{N}^{n-1}$. Los coeficientes de BDF2 también pasan a depender de $\omega$. Si se dejan fijos 3/2, 2 y 1/2, el segundo orden desaparece en silencio. El $3/(2\Delta t)$ de la etapa de presión debe cambiar junto con ellos.
+
+Los archivos de reinicio esconden otra trampa. Guardar solo $\mathbf{u}^n$ hace que el primer paso tras el reinicio caiga a BDF1. Una vez no hace daño. Con reinicios frecuentes, los pasos de primer orden se acumulan. Lo seguro es guardar también $\mathbf{u}^{n-1}$ y $\mathbf{N}^{n-1}$.
+
+## Tres preguntas cuando se duda del orden temporal del código
+
+- ¿En qué instante aproxima la derivada la diferencia del lado izquierdo? En BDF2, $t^{n+1}$.
+- ¿Con qué orden se extrapolan los términos explícitos hasta ese instante? Un $\mathbf{N}^n$ solo es primer orden.
+- ¿Los coeficientes de presión y de $\Delta t$ variable salen del mismo esquema que el lado izquierdo?
+
+Si las tres respuestas son correctas, la tabla muestra 2.00. Si falla una sola, muestra 1.00. Y esa constante de error puede ser incluso peor que la del esquema original de primer orden.

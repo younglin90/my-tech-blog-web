@@ -1,0 +1,223 @@
+---
+title: "只把粘性项升到二阶，误差反而大了1.82倍 — 半隐式Gear格式为什么要外推对流项"
+date: 2026-10-12
+description: "BDF2配上取N^n的对流项会退化为一阶，误差反而变大。用代码验证2N^n−N^(n−1)这一行外推如何把二阶找回来。"
+tags: ["BDF2", "Projection-Method", "IMEX", "Incompressible", "Fractional-Step"]
+locale: zh
+slug: 2026-10-12-semi-implicit-gear-convection-extrapolation
+takeaway: "BDF2是瞄准t^{n+1}的差分，对流项晚一步代入，这段滞后就原封不动变成一阶误差。用2N^n−N^{n−1}外推，二阶才保得住。"
+draft: false
+---
+import { GearModeSpiralLab } from '@/components/post-viz/2026-10-12-semi-implicit-gear-convection-extrapolation/GearModeSpiralLab'
+import { ViscousStiffnessDial } from '@/components/post-viz/2026-10-12-semi-implicit-gear-convection-extrapolation/ViscousStiffnessDial'
+
+## 换成BDF2之后误差变大了
+
+那天我在把一个不可压缩代码的时间推进从一阶升到二阶。粘性项的隐式Euler换成了BDF2。对流项没动，仍然用 $N^n$。然后把时间步长逐次减半来测误差。误差每次只减半。更糟的是，它比原来的一阶格式还大1.82倍。
+
+本文追查这1.82倍从何而来。Chiu与Lin(2011)的守恒型phase-field论文，在Navier–Stokes时间推进中使用**半隐式Gear格式**加投影法。该格式的对流项位置上放着一个外推 $2N^n - N^{n-1}$。我们用数字确认：去掉这一行会垮掉什么，加回来又能找回什么。读完后，你会得到一条保持IMEX格式阶数的规则，以及估算粘性项隐式处理收益的方法。
+
+## 一个时间步里三项各管什么
+
+不可压缩Navier–Stokes方程的动量式可分成三块。
+
+$$
+\frac{\partial \mathbf{u}}{\partial t} + \underbrace{(\mathbf{u}\cdot\nabla)\mathbf{u}}_{\mathbf{N}(\mathbf{u})} = -\nabla p + \nu \nabla^2 \mathbf{u}, \qquad \nabla\cdot\mathbf{u} = 0
+$$
+
+$\mathbf{N}$ 是对流项，$\nu$ 是运动粘度，$p$ 是除以密度后的压力。
+
+三块的性质各不相同。对流项是非线性的。若隐式处理，每步都要解非线性方程组。粘性项是线性的，但具有刚性(stiff)。刚性指最短波长衰减最快，从而把显式时间步长卡得极小。压力则是没有时间导数的约束条件。
+
+因此三者分别处理。对流显式，粘性隐式，压力用投影(projection)处理。这种混合方式称为IMEX(implicit–explicit)。[低马赫波动格式](/zh/posts/2026-06-21-asymptotic-preserving-low-mach-wave/)里也见过同样的思路。那里把快速声波交给隐式。这里把快速的粘性衰减交给隐式。
+
+## Gear格式瞄准的是t^(n+1)
+
+Gear格式是BDF2(二阶向后差分)的别名。按Chiu–Lin的写法如下。
+
+$$
+\frac{3\mathbf{u}^* - 4\mathbf{u}^n + \mathbf{u}^{n-1}}{2\Delta t} = -\left(2\mathbf{N}^n - \mathbf{N}^{n-1}\right) + \nu\nabla^2\mathbf{u}^*
+$$
+
+$\mathbf{u}^*$ 是去掉压力后得到的中间速度，上标 $n$ 是时间层。
+
+对左边做泰勒展开，可知它恰好在 $t^{n+1}$ 处近似 $\partial_t \mathbf{u}$。误差为 $O(\Delta t^2)$。所以右边每一项也都应取 $t^{n+1}$ 的值。粘性项用的是 $\mathbf{u}^*$，没有问题。对流项需要尚未知道的 $\mathbf{N}^{n+1}$。这个空位由过去两个值的线性外推来填。
+
+$$
+2\mathbf{N}^n - \mathbf{N}^{n-1} = \mathbf{N}^{n+1} - \Delta t^2\, \partial_{tt}\mathbf{N} + O(\Delta t^3)
+$$
+
+外推误差是 $\Delta t^2$，不会削掉BDF2的阶数。反过来，只用 $\mathbf{N}^n$ 得到的是 $\mathbf{N}^{n+1} - \Delta t\,\partial_t\mathbf{N}$。这是晚了整整一个 $\Delta t$ 看到的值。这段滞后以一阶形式留在全局误差里。
+
+那为什么一阶格式吃亏少？隐式Euler的左边 $(\mathbf{u}^{n+1}-\mathbf{u}^n)/\Delta t$ 其实在 $t^{n+1/2}$ 附近最准。以此为基准，$\mathbf{N}^n$ 只滞后 $\Delta t/2$。BDF2把基准点挪到了 $t^{n+1}$。于是同一个 $\mathbf{N}^n$ 要整个背负 $\Delta t$ 的滞后。1.82倍正是这翻倍的滞后，再加上粘性项一侧的少量抵消。
+
+在下面的模拟中亲手操作看看。它用三种格式求解单个傅里叶模态 $dy/dt = -(d + ia)y$，同时画出复平面上的螺旋和误差–时间步长曲线。
+
+<GearModeSpiralLab />
+
+减少步数时，红色轨迹(BDF2 + $N^n$)离白色虚线最远。右图中橙色和红色沿斜率1，只有绿色(Gear)沿斜率2。把粘性 $d$ 调高，这个顺序也不变。
+
+## 用投影消去散度
+
+$\mathbf{u}^*$ 的散度不为零。用压力把它消掉。
+
+$$
+\nabla^2 p^{n+1} = \frac{3}{2\Delta t}\nabla\cdot\mathbf{u}^*, \qquad \mathbf{u}^{n+1} = \mathbf{u}^* - \frac{2\Delta t}{3}\nabla p^{n+1}
+$$
+
+系数 $3/(2\Delta t)$ 来自BDF2左边的 $3/2$。压力扮演拉格朗日乘子(用于施加约束的辅助变量)的角色，剥离 $\mathbf{u}^*$ 的梯度分量。
+
+在周期边界下，这个投影与粘性算子可交换。因此分裂误差(splitting error)为零。有壁面时情况就不同了。压力边界条件是人为给定的，壁面附近会出现数值边界层。据Guermond、Minev、Shen(2006)的综述，标准增量型投影的速度 $L^2$ 为二阶，压力约为一阶。旋转型(rotational)修正可把压力提升到3/2阶。下面的实验在周期盒中进行，所以只显示时间积分本身的阶数。
+
+## 一套伪谱代码跑三种格式
+
+设定为二维周期盒 $[0,2\pi]^2$、32×32网格、$\nu = 0.05$。初始流场由流函数 $\psi = \sin x\sin y + 0.6\cos(2x + y)$ 给出。纯Taylor–Green涡的对流项恰好是梯度，会被投影整个抹掉。混入第二个模态，让对流项真正起作用。
+
+空间导数用FFT计算，把空间误差压到接近机器精度。参考解用Gear在 $\Delta t = T/5120$ 下得到。在傅里叶空间中，粘性隐式求解和压力泊松求解都是对角的。一次除法就完成。最后一段把 $\nu$ 提到0.5，与全显式(AB2)的结果对比。
+
+```python
+import numpy as np
+
+N, nu, T = 32, 0.05, 1.0
+x = np.arange(N) * 2 * np.pi / N
+X, Y = np.meshgrid(x, x, indexing="ij")
+k = np.fft.fftfreq(N, 1.0 / N)
+KX, KY = np.meshgrid(k, k, indexing="ij")
+K2 = KX**2 + KY**2
+K2s = np.where(K2 == 0, 1.0, K2)
+dealias = (np.abs(KX) < N / 3) & (np.abs(KY) < N / 3)
+
+def project(uh, vh):
+    # 在谱空间去除散度分量 (压力泊松 + 修正)
+    div = KX * uh + KY * vh
+    return uh - KX * div / K2s, vh - KY * div / K2s
+
+def advect_hat(uh, vh):
+    # 用伪谱法计算对流项 (u·∇)u
+    u, v = np.fft.ifft2(uh).real, np.fft.ifft2(vh).real
+    ux, uy = np.fft.ifft2(1j * KX * uh).real, np.fft.ifft2(1j * KY * uh).real
+    vx, vy = np.fft.ifft2(1j * KX * vh).real, np.fft.ifft2(1j * KY * vh).real
+    return (np.fft.fft2(u * ux + v * uy) * dealias,
+            np.fft.fft2(u * vx + v * vy) * dealias)
+
+def initial():
+    psi = np.sin(X) * np.sin(Y) + 0.6 * np.cos(2 * X + Y)
+    ph = np.fft.fft2(psi)
+    return 1j * KY * ph, -1j * KX * ph   # u = ψ_y, v = -ψ_x
+
+def march(dt, mode):
+    """mode: 'euler' (BDF1+N^n), 'lagged' (BDF2+N^n), 'gear' (BDF2+2N^n-N^{n-1}),
+    'explicit' (全显式: AB2 对流 + AB2 粘性)"""
+    uh, vh = initial()
+    nsteps = int(round(T / dt))
+    prev = None
+    for n in range(nsteps):
+        Nu, Nv = advect_hat(uh, vh)
+        if mode == "explicit":
+            Lu, Lv = -nu * K2 * uh, -nu * K2 * vh
+            if prev is None:
+                ru, rv = uh + dt * (Lu - Nu), vh + dt * (Lv - Nv)
+            else:
+                ru = uh + dt * (1.5 * (Lu - Nu) - 0.5 * prev[0])
+                rv = vh + dt * (1.5 * (Lv - Nv) - 0.5 * prev[1])
+            prev = (Lu - Nu, Lv - Nv)
+            uh, vh = project(ru, rv)
+            continue
+        if prev is None or mode == "euler":
+            # 第一步(或一阶格式): BDF1, 对流项 N^n
+            a = 1.0
+            ru, rv = uh - dt * Nu, vh - dt * Nv
+        else:
+            u0, v0, Nu0, Nv0 = prev
+            a = 1.5
+            if mode == "gear":
+                Eu, Ev = 2 * Nu - Nu0, 2 * Nv - Nv0
+            else:
+                Eu, Ev = Nu, Nv
+            ru = 2 * uh - 0.5 * u0 - dt * Eu
+            rv = 2 * vh - 0.5 * v0 - dt * Ev
+        prev = (uh, vh, Nu, Nv)
+        # 粘性项隐式: (a - dt ν ∇²) u* = rhs  → 在谱空间为对角
+        us, vs = ru / (a + dt * nu * K2), rv / (a + dt * nu * K2)
+        uh, vh = project(us, vs)
+    return uh, vh
+
+ref = march(T / 5120, "gear")
+def err(sol):
+    d = np.fft.ifft2(sol[0] - ref[0]).real, np.fft.ifft2(sol[1] - ref[1]).real
+    return np.sqrt(np.mean(d[0]**2 + d[1]**2))
+
+print(f"{'dt':>9} {'euler':>10} {'p':>5} {'lagged':>10} {'p':>5} {'gear':>10} {'p':>5}")
+last = {}
+for m in [20, 40, 80, 160, 320]:
+    dt = T / m
+    row = f"{dt:9.5f}"
+    for mode in ["euler", "lagged", "gear"]:
+        e = err(march(dt, mode))
+        p = np.log2(last[mode] / e) if mode in last else float("nan")
+        last[mode] = e
+        row += f" {e:10.3e} {p:5.2f}"
+    print(row)
+
+# 稳定性: 大粘性(ν=0.5)时 显式粘性 vs 隐式粘性
+nu, T = 0.5, 0.64
+print("max|u| at nu=0.5, t=0.64")
+for dt in [0.004, 0.008, 0.016, 0.032]:
+    out = []
+    for mode in ["explicit", "gear"]:
+        with np.errstate(all="ignore"):
+            uh, vh = march(dt, mode)
+        m = np.abs(np.fft.ifft2(uh).real).max()
+        out.append(f"{m:10.4f}" if np.isfinite(m) and m < 1e3 else "  blow-up ")
+    print(f"dt={dt:.3f}  explicit {out[0]}  gear {out[1]}")
+```
+
+```text
+       dt      euler     p     lagged     p       gear     p
+  0.05000  1.491e-02   nan  2.678e-02   nan  1.386e-03   nan
+  0.02500  7.413e-03  1.01  1.341e-02  1.00  3.490e-04  1.99
+  0.01250  3.695e-03  1.00  6.704e-03  1.00  8.764e-05  1.99
+  0.00625  1.845e-03  1.00  3.350e-03  1.00  2.195e-05  2.00
+  0.00313  9.217e-04  1.00  1.675e-03  1.00  5.478e-06  2.00
+max|u| at nu=0.5, t=0.64
+dt=0.004  explicit     0.6172  gear     0.6172
+dt=0.008  explicit   blow-up   gear     0.6172
+dt=0.016  explicit   blow-up   gear     0.6173
+dt=0.032  explicit   blow-up   gear     0.6175
+```
+
+## 隔开1.00与2.00的那一行
+
+表中的阶数列说明了一切。euler和lagged是1.00，gear是2.00。在 $\Delta t = 0.003125$ 处，lagged误差为 $1.675\times10^{-3}$，euler为 $9.217\times10^{-4}$。相差1.82倍。同一点上gear为 $5.478\times10^{-6}$，比lagged小306倍。
+
+lagged这一列最有教训意义。把左边升到二阶的努力毫无用处。阶数由最低阶的那一项决定。误差常数反而比一阶格式更差。改粘性项的人本来期待改进，很容易把这个结果当成bug。其实不是bug，而是滞后的算术。
+
+收敛阶测量到底在测什么，在[验证算例一文](/zh/posts/2026-10-07-sod-vortex-order-verification/)中讨论过。这里解是光滑的，也没有空间误差。所以测得的值就是格式的时间阶数。
+
+## 粘性隐式处理换来了什么
+
+最后一段说明了粘性为何要隐式处理。全显式AB2在 $\Delta t = 0.004$ 时还撑得住。从 $0.008$ 开始就发散了。只看粘性，极限是 $\Delta t \le 1/(\nu k_{\max}^2) = 0.01$。对流的虚轴特征值吃掉了一部分余量，所以垮得更早。Gear在 $\Delta t = 0.032$ 时仍为0.6175，紧贴参考值0.6172。步长大了8倍。
+
+这个极限随网格加密按 $h^2$ 缩小。网格加密一倍，显式格式的步数就增加四倍。隐式粘性把这笔开销换成一次Helmholtz求解。不过对流项仍是显式，CFL条件 $|u|\Delta t/h \lesssim O(1)$ 依然要遵守。
+
+下面改变 $\nu$ 与 $\Delta t$，观察各波数的放大因子。
+
+<ViscousStiffnessDial />
+
+在fully explicit下把 $\Delta t$ 调到扩散极限 $h^2/(2\nu)$ 以上，高波数的柱子会先变红并超过1。左侧曲线上长出网格尺度的锯齿。切换到semi-implicit Gear，同样的 $\Delta t$ 下柱子都落到1以下。把 $\nu$ 调到接近0并增大 $\Delta t$，Gear也会撞上对流CFL。这与一阶对流中 [FTCS振荡的原因](/zh/posts/2026-05-08-advection-ftcs-upwind-cfl/)属于同一类限制。
+
+## 起步步与变Δt中容易忽略的地方
+
+第一步没有 $\mathbf{u}^{n-1}$。代码只在第一步用BDF1。一步的 $O(\Delta t^2)$ 局部误差不会降低全局阶数。表中的2.00就是证据。
+
+若每步改变 $\Delta t$，系数也随之改变。对比值 $\omega = \Delta t_n/\Delta t_{n-1}$，外推变为 $(1+\omega)\mathbf{N}^n - \omega\mathbf{N}^{n-1}$。BDF2系数也变成 $\omega$ 的函数。若仍用固定系数3/2、2、1/2，二阶会悄无声息地消失。压力步中的 $3/(2\Delta t)$ 也必须一起改。
+
+重启文件里也有陷阱。只保存 $\mathbf{u}^n$ 的话，重启后的第一步会退回BDF1。一次无妨。若以很短的间隔反复重启，一阶步就会累积。把 $\mathbf{u}^{n-1}$ 和 $\mathbf{N}^{n-1}$ 也存下来更稳妥。
+
+## 怀疑代码时间阶数时要问的三个问题
+
+- 左边的差分近似的是哪个时刻？BDF2是 $t^{n+1}$。
+- 显式项外推到那个时刻用的是几阶？只有一个 $\mathbf{N}^n$ 就是一阶。
+- 压力系数和变 $\Delta t$ 系数是否来自与左边相同的格式？
+
+三个问题都答对，表里就会出现2.00。只要错一个，就会出现1.00。那时的误差常数甚至可能比原来的一阶格式更差。

@@ -1,0 +1,223 @@
+---
+title: "粘性項だけ2次にしたら誤差が1.82倍に増えた — semi-implicit Gearスキームが対流項を外挿する理由"
+date: 2026-10-12
+description: "BDF2に対流項をN^nのまま組み合わせると1次に落ち、誤差はむしろ増えます。外挿2N^n−N^(n−1)の1行で2次が戻ることをコードで確かめます。"
+tags: ["BDF2", "Projection-Method", "IMEX", "Incompressible", "Fractional-Step"]
+locale: ja
+slug: 2026-10-12-semi-implicit-gear-convection-extrapolation
+takeaway: "BDF2は時刻t^{n+1}に合わせた差分なので、対流項を1ステップ遅れで入れるとその遅れがそのまま1次誤差になります。2N^n−N^{n−1}で外挿してはじめて2次が保たれます。"
+draft: false
+---
+import { GearModeSpiralLab } from '@/components/post-viz/2026-10-12-semi-implicit-gear-convection-extrapolation/GearModeSpiralLab'
+import { ViscousStiffnessDial } from '@/components/post-viz/2026-10-12-semi-implicit-gear-convection-extrapolation/ViscousStiffnessDial'
+
+## BDF2に変えたら誤差が増えた
+
+非圧縮性コードの時間進行を1次から2次に上げようとした日のことです。粘性項の陰的Eulerを BDF2 に置き換えました。対流項には手を付けず、$N^n$ のままにしました。時間刻みを半分ずつにして誤差を測りました。誤差は半分ずつしか減りません。しかも元の1次スキームより1.82倍大きかったのです。
+
+この記事では、その1.82倍がどこから来るのかを追います。Chiu と Lin(2011)の保存型 phase-field 論文は、Navier–Stokes の時間進行に **semi-implicit Gear スキーム**と projection 法を使っています。そのスキームの対流項の位置には $2N^n - N^{n-1}$ という外挿が置かれています。この1行を抜くと何が崩れ、戻すと何が回復するのかを数値で確かめます。読み終えると、IMEX スキームの次数を守るための規則が1つと、粘性項を陰的に扱う利得を見積もる方法が手に入ります。
+
+## 1ステップの中で3つの項が担う役割
+
+非圧縮性 Navier–Stokes 方程式の運動量式は3つの塊に分かれます。
+
+$$
+\frac{\partial \mathbf{u}}{\partial t} + \underbrace{(\mathbf{u}\cdot\nabla)\mathbf{u}}_{\mathbf{N}(\mathbf{u})} = -\nabla p + \nu \nabla^2 \mathbf{u}, \qquad \nabla\cdot\mathbf{u} = 0
+$$
+
+$\mathbf{N}$ は対流項、$\nu$ は動粘性係数、$p$ は密度で割った圧力です。
+
+3つの塊は性質が違います。対流項は非線形です。陰的に扱うと毎ステップ非線形連立方程式を解く必要があります。粘性項は線形ですが硬い(stiff)項です。硬いとは、最も短い波長が最も速く減衰し、陽的な時間刻みを極端に縛る性質のことです。圧力は時間微分を持たない拘束条件です。
+
+そこで、それぞれ別の扱いをします。対流は陽的、粘性は陰的、圧力は projection(射影)で処理します。このように混ぜる方式を IMEX(implicit–explicit)と呼びます。[低マッハ波動スキーム](/ja/posts/2026-06-21-asymptotic-preserving-low-mach-wave/)でも同じ発想を見ました。そこでは速い音波を陰的に回しました。ここでは速い粘性減衰を陰的に回します。
+
+## Gearスキームは時刻t^(n+1)を狙う
+
+Gear スキームは BDF2(2次後退差分)の別名です。Chiu–Lin の形で書くと次のとおりです。
+
+$$
+\frac{3\mathbf{u}^* - 4\mathbf{u}^n + \mathbf{u}^{n-1}}{2\Delta t} = -\left(2\mathbf{N}^n - \mathbf{N}^{n-1}\right) + \nu\nabla^2\mathbf{u}^*
+$$
+
+$\mathbf{u}^*$ は圧力を除いて得た中間速度、上付きの $n$ は時間ステップです。
+
+左辺をテイラー展開すると、$\partial_t \mathbf{u}$ をちょうど $t^{n+1}$ で近似していることがわかります。誤差は $O(\Delta t^2)$ です。したがって右辺のすべての項も $t^{n+1}$ の値でなければなりません。粘性項は $\mathbf{u}^*$ で書いたので問題ありません。対流項には、まだわからない $\mathbf{N}^{n+1}$ が必要です。その穴を過去2つの値の線形外挿が埋めます。
+
+$$
+2\mathbf{N}^n - \mathbf{N}^{n-1} = \mathbf{N}^{n+1} - \Delta t^2\, \partial_{tt}\mathbf{N} + O(\Delta t^3)
+$$
+
+外挿誤差が $\Delta t^2$ なので、BDF2 の次数を削りません。逆に $\mathbf{N}^n$ だけを使うと $\mathbf{N}^{n+1} - \Delta t\,\partial_t\mathbf{N}$ になります。$\Delta t$ 1回分遅れて見た値です。この遅れが全体誤差に1次で残ります。
+
+では、なぜ1次スキームは損が少ないのでしょうか。陰的 Euler の左辺 $(\mathbf{u}^{n+1}-\mathbf{u}^n)/\Delta t$ は、実は $t^{n+1/2}$ 付近で最も精度が高くなります。そこを基準にすると $\mathbf{N}^n$ の遅れは $\Delta t/2$ です。BDF2 は基準点を $t^{n+1}$ に移しました。そのため同じ $\mathbf{N}^n$ が遅れ $\Delta t$ を丸ごと背負います。1.82倍は、この2倍の遅れに粘性項側の打ち消しが少し混ざった値です。
+
+下のシミュレーションで実際に操作してみましょう。フーリエモード1つ $dy/dt = -(d + ia)y$ を3つのスキームで解き、複素平面のらせんと誤差–時間刻みのグラフを並べて描きます。
+
+<GearModeSpiralLab />
+
+ステップ数を減らすと、赤い軌跡(BDF2 + $N^n$)が白い点線から最も大きく離れます。右のグラフではオレンジと赤が傾き1、緑(Gear)だけが傾き2に沿います。粘性 $d$ を上げてもこの順序は変わりません。
+
+## projectionで発散を消す
+
+$\mathbf{u}^*$ の発散はゼロではありません。圧力でこれを消します。
+
+$$
+\nabla^2 p^{n+1} = \frac{3}{2\Delta t}\nabla\cdot\mathbf{u}^*, \qquad \mathbf{u}^{n+1} = \mathbf{u}^* - \frac{2\Delta t}{3}\nabla p^{n+1}
+$$
+
+係数 $3/(2\Delta t)$ は BDF2 左辺の $3/2$ から来ています。圧力は $\mathbf{u}^*$ の勾配成分を取り除くラグランジュ乗数(拘束を課す補助変数)の役割を果たします。
+
+周期境界では、この射影が粘性演算子と可換になります。そのため分割誤差(splitting error)はゼロです。壁があると事情が変わります。圧力境界条件が人工的に決まるため、壁の近くに数値境界層が生まれます。Guermond・Minev・Shen(2006)のレビューによると、標準的な増分型射影は速度 $L^2$ で2次、圧力で1次程度です。回転型(rotational)補正は圧力を3/2次まで引き上げます。以下の実験は周期箱で行うので、時間積分そのものの次数だけが現れます。
+
+## 擬スペクトルコード1本で3つのスキームを回す
+
+2D 周期箱 $[0,2\pi]^2$、32×32 格子、$\nu = 0.05$ としました。初期流れは流れ関数 $\psi = \sin x\sin y + 0.6\cos(2x + y)$ から作りました。純粋な Taylor–Green 渦では対流項がちょうど勾配になり、射影が消してしまいます。2つ目のモードを混ぜて、対流項が実際に働くようにしました。
+
+空間微分は FFT で行い、空間誤差を機械精度近くまで抑えました。参照解は Gear で $\Delta t = T/5120$ として作りました。フーリエ空間では粘性の陰的解法も圧力ポアソン方程式もすべて対角です。割り算1回で終わります。最後のブロックでは $\nu = 0.5$ に上げ、すべて陽的(AB2)で回した場合と比べます。
+
+```python
+import numpy as np
+
+N, nu, T = 32, 0.05, 1.0
+x = np.arange(N) * 2 * np.pi / N
+X, Y = np.meshgrid(x, x, indexing="ij")
+k = np.fft.fftfreq(N, 1.0 / N)
+KX, KY = np.meshgrid(k, k, indexing="ij")
+K2 = KX**2 + KY**2
+K2s = np.where(K2 == 0, 1.0, K2)
+dealias = (np.abs(KX) < N / 3) & (np.abs(KY) < N / 3)
+
+def project(uh, vh):
+    # スペクトル空間で発散成分を除去 (圧力ポアソン + 補正)
+    div = KX * uh + KY * vh
+    return uh - KX * div / K2s, vh - KY * div / K2s
+
+def advect_hat(uh, vh):
+    # 対流項 (u·∇)u を擬スペクトル法で計算
+    u, v = np.fft.ifft2(uh).real, np.fft.ifft2(vh).real
+    ux, uy = np.fft.ifft2(1j * KX * uh).real, np.fft.ifft2(1j * KY * uh).real
+    vx, vy = np.fft.ifft2(1j * KX * vh).real, np.fft.ifft2(1j * KY * vh).real
+    return (np.fft.fft2(u * ux + v * uy) * dealias,
+            np.fft.fft2(u * vx + v * vy) * dealias)
+
+def initial():
+    psi = np.sin(X) * np.sin(Y) + 0.6 * np.cos(2 * X + Y)
+    ph = np.fft.fft2(psi)
+    return 1j * KY * ph, -1j * KX * ph   # u = ψ_y, v = -ψ_x
+
+def march(dt, mode):
+    """mode: 'euler' (BDF1+N^n), 'lagged' (BDF2+N^n), 'gear' (BDF2+2N^n-N^{n-1}),
+    'explicit' (すべて陽的: AB2 対流 + AB2 粘性)"""
+    uh, vh = initial()
+    nsteps = int(round(T / dt))
+    prev = None
+    for n in range(nsteps):
+        Nu, Nv = advect_hat(uh, vh)
+        if mode == "explicit":
+            Lu, Lv = -nu * K2 * uh, -nu * K2 * vh
+            if prev is None:
+                ru, rv = uh + dt * (Lu - Nu), vh + dt * (Lv - Nv)
+            else:
+                ru = uh + dt * (1.5 * (Lu - Nu) - 0.5 * prev[0])
+                rv = vh + dt * (1.5 * (Lv - Nv) - 0.5 * prev[1])
+            prev = (Lu - Nu, Lv - Nv)
+            uh, vh = project(ru, rv)
+            continue
+        if prev is None or mode == "euler":
+            # 最初のステップ(または1次スキーム): BDF1, 対流項 N^n
+            a = 1.0
+            ru, rv = uh - dt * Nu, vh - dt * Nv
+        else:
+            u0, v0, Nu0, Nv0 = prev
+            a = 1.5
+            if mode == "gear":
+                Eu, Ev = 2 * Nu - Nu0, 2 * Nv - Nv0
+            else:
+                Eu, Ev = Nu, Nv
+            ru = 2 * uh - 0.5 * u0 - dt * Eu
+            rv = 2 * vh - 0.5 * v0 - dt * Ev
+        prev = (uh, vh, Nu, Nv)
+        # 粘性項を陰的に: (a - dt ν ∇²) u* = rhs  → スペクトル空間で対角
+        us, vs = ru / (a + dt * nu * K2), rv / (a + dt * nu * K2)
+        uh, vh = project(us, vs)
+    return uh, vh
+
+ref = march(T / 5120, "gear")
+def err(sol):
+    d = np.fft.ifft2(sol[0] - ref[0]).real, np.fft.ifft2(sol[1] - ref[1]).real
+    return np.sqrt(np.mean(d[0]**2 + d[1]**2))
+
+print(f"{'dt':>9} {'euler':>10} {'p':>5} {'lagged':>10} {'p':>5} {'gear':>10} {'p':>5}")
+last = {}
+for m in [20, 40, 80, 160, 320]:
+    dt = T / m
+    row = f"{dt:9.5f}"
+    for mode in ["euler", "lagged", "gear"]:
+        e = err(march(dt, mode))
+        p = np.log2(last[mode] / e) if mode in last else float("nan")
+        last[mode] = e
+        row += f" {e:10.3e} {p:5.2f}"
+    print(row)
+
+# 安定性: 粘性が大きい場合(ν=0.5) 陽的粘性 vs 陰的粘性
+nu, T = 0.5, 0.64
+print("max|u| at nu=0.5, t=0.64")
+for dt in [0.004, 0.008, 0.016, 0.032]:
+    out = []
+    for mode in ["explicit", "gear"]:
+        with np.errstate(all="ignore"):
+            uh, vh = march(dt, mode)
+        m = np.abs(np.fft.ifft2(uh).real).max()
+        out.append(f"{m:10.4f}" if np.isfinite(m) and m < 1e3 else "  blow-up ")
+    print(f"dt={dt:.3f}  explicit {out[0]}  gear {out[1]}")
+```
+
+```text
+       dt      euler     p     lagged     p       gear     p
+  0.05000  1.491e-02   nan  2.678e-02   nan  1.386e-03   nan
+  0.02500  7.413e-03  1.01  1.341e-02  1.00  3.490e-04  1.99
+  0.01250  3.695e-03  1.00  6.704e-03  1.00  8.764e-05  1.99
+  0.00625  1.845e-03  1.00  3.350e-03  1.00  2.195e-05  2.00
+  0.00313  9.217e-04  1.00  1.675e-03  1.00  5.478e-06  2.00
+max|u| at nu=0.5, t=0.64
+dt=0.004  explicit     0.6172  gear     0.6172
+dt=0.008  explicit   blow-up   gear     0.6172
+dt=0.016  explicit   blow-up   gear     0.6173
+dt=0.032  explicit   blow-up   gear     0.6175
+```
+
+## 1.00と2.00を分ける1行
+
+表の次数の列がすべてを物語っています。euler と lagged は1.00、gear は2.00です。$\Delta t = 0.003125$ で lagged の誤差は $1.675\times10^{-3}$、euler は $9.217\times10^{-4}$ です。1.82倍の差です。同じ点で gear は $5.478\times10^{-6}$ で、lagged より306倍小さくなります。
+
+lagged の列が特に教訓的です。左辺を2次にした努力がまったく役に立っていません。次数は最も低い項が決めます。誤差定数は1次スキームよりむしろ悪化しました。粘性項を直した人は改善を期待していたので、この結果をバグだと疑いがちです。実際はバグではなく、遅れの算数です。
+
+収束次数の測定が何を測っているのかは[検証ケースの記事](/ja/posts/2026-10-07-sod-vortex-order-verification/)で扱いました。ここでは解が滑らかで、空間誤差もありません。そのため測定値はスキームの時間次数そのものです。
+
+## 粘性を陰的にすると何が得られるか
+
+最後のブロックは、粘性を陰的に扱う理由を示しています。すべて陽的な AB2 は $\Delta t = 0.004$ では持ちこたえました。$0.008$ からは発散しました。粘性だけで考えると限界は $\Delta t \le 1/(\nu k_{\max}^2) = 0.01$ です。対流の虚軸固有値がその余裕を一部食うので、もっと早く崩れます。Gear は $\Delta t = 0.032$ でも0.6175で、参照値0.6172にぴったり付いています。8倍大きな刻みです。
+
+この限界は格子を細かくするほど $h^2$ で縮みます。格子を2倍細かくすると、陽的スキームのステップ数は4倍に増えます。陰的粘性はそのコストをヘルムホルツ方程式1回の求解に置き換えます。ただし対流項は陽的のままなので、CFL 条件 $|u|\Delta t/h \lesssim O(1)$ は引き続き守る必要があります。
+
+下で $\nu$ と $\Delta t$ を変えながら、波数ごとの増幅率を見てみましょう。
+
+<ViscousStiffnessDial />
+
+fully explicit で $\Delta t$ を拡散限界 $h^2/(2\nu)$ より大きくすると、高波数の棒から先に赤くなって1を超えます。左の曲線には格子スケールのギザギザが育ちます。semi-implicit Gear に切り替えると、同じ $\Delta t$ で棒が1の下に下がります。$\nu$ をほぼ0にして $\Delta t$ を大きくすると、Gear も対流 CFL に引っかかります。1次移流で [FTCS が振動した理由](/ja/posts/2026-05-08-advection-ftcs-upwind-cfl/)と同じ系統の限界です。
+
+## 開始ステップと可変Δtで見落としやすいこと
+
+最初のステップには $\mathbf{u}^{n-1}$ がありません。コードは最初のステップだけ BDF1 で回します。1ステップ分の $O(\Delta t^2)$ 局所誤差は全体の次数を削りません。表の2.00がその証拠です。
+
+$\Delta t$ をステップごとに変えると係数が変わります。比 $\omega = \Delta t_n/\Delta t_{n-1}$ に対して、外挿は $(1+\omega)\mathbf{N}^n - \omega\mathbf{N}^{n-1}$ になります。BDF2 の係数も $\omega$ の関数に変わります。固定係数 3/2、2、1/2 のままにすると、2次は静かに消えます。圧力段階の $3/(2\Delta t)$ も一緒に直す必要があります。
+
+リスタートファイルにも落とし穴があります。$\mathbf{u}^n$ だけを保存すると、リスタート後の最初のステップが BDF1 に落ちます。1回なら問題ありません。短い間隔でリスタートを繰り返すと、1次ステップが積み重なります。$\mathbf{u}^{n-1}$ と $\mathbf{N}^{n-1}$ まで保存しておくほうが安全です。
+
+## 自分のコードの時間次数を疑うときの3つの問い
+
+- 左辺の差分が近似している時刻はいつか。BDF2 なら $t^{n+1}$ です。
+- 陽的な項はその時刻まで何次で外挿されているか。$\mathbf{N}^n$ 1つなら1次です。
+- 圧力の係数と可変 $\Delta t$ の係数は、左辺と同じスキームから導かれているか。
+
+3つの問いの答えがすべて正しければ、表に2.00が現れます。1つでもずれると1.00になります。その誤差定数は元の1次スキームより悪いこともあります。

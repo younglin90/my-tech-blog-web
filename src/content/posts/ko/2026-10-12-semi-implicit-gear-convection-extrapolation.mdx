@@ -1,0 +1,223 @@
+---
+title: "점성항만 2차로 올렸더니 오차가 1.82배 커졌다 — semi-implicit Gear 스킴이 대류항을 외삽하는 이유"
+date: 2026-10-12
+description: "BDF2에 대류항을 N^n으로 붙이면 1차로 떨어지고 오차는 오히려 커진다. 2N^n−N^(n−1) 외삽 한 줄이 2차를 되찾는 과정을 코드로 확인한다."
+tags: ["BDF2", "Projection-Method", "IMEX", "Incompressible", "Fractional-Step"]
+locale: ko
+slug: 2026-10-12-semi-implicit-gear-convection-extrapolation
+takeaway: "BDF2는 시간 t^{n+1}에 맞춘 차분이라 대류항을 한 스텝 늦게 넣으면 그 지연이 고스란히 1차 오차가 된다. 2N^n−N^{n−1}로 외삽해야 2차가 산다."
+draft: false
+---
+import { GearModeSpiralLab } from '@/components/post-viz/2026-10-12-semi-implicit-gear-convection-extrapolation/GearModeSpiralLab'
+import { ViscousStiffnessDial } from '@/components/post-viz/2026-10-12-semi-implicit-gear-convection-extrapolation/ViscousStiffnessDial'
+
+## BDF2로 바꿨는데 오차가 늘었다
+
+비압축성 코드의 시간전진을 1차에서 2차로 올리던 날이었다. 점성항의 음해 Euler를 BDF2로 바꿨다. 대류항은 손대지 않고 그대로 $N^n$을 썼다. 시간 간격을 절반씩 줄이며 오차를 쟀다. 오차는 절반씩만 줄었다. 게다가 원래의 1차 스킴보다 1.82배 컸다.
+
+이 글은 그 1.82배가 어디서 오는지 따라간다. Chiu와 Lin(2011)의 보존형 phase-field 논문은 Navier–Stokes 시간전진에 **semi-implicit Gear 스킴**과 projection 기법을 쓴다. 그 스킴의 대류항 자리에는 $2N^n - N^{n-1}$이라는 외삽이 앉아 있다. 이 한 줄을 빼면 무엇이 무너지는지, 넣으면 무엇이 돌아오는지를 숫자로 확인한다. 끝까지 읽으면 IMEX 스킴의 차수를 지키는 규칙 하나와, 점성항을 음해로 두는 이득을 가늠하는 법을 얻는다.
+
+## 한 스텝 안에서 세 항이 맡는 일
+
+비압축성 Navier–Stokes 방정식의 운동량 식은 세 덩어리로 갈린다.
+
+$$
+\frac{\partial \mathbf{u}}{\partial t} + \underbrace{(\mathbf{u}\cdot\nabla)\mathbf{u}}_{\mathbf{N}(\mathbf{u})} = -\nabla p + \nu \nabla^2 \mathbf{u}, \qquad \nabla\cdot\mathbf{u} = 0
+$$
+
+$\mathbf{N}$은 대류항, $\nu$는 동점성계수, $p$는 밀도로 나눈 압력이다.
+
+세 덩어리는 성질이 다르다. 대류항은 비선형이다. 음해로 두면 매 스텝 비선형 연립방정식을 풀어야 한다. 점성항은 선형이지만 강성(stiff)이다. 강성이란 가장 짧은 파장이 가장 빨리 감쇠해서 양해 시간 간격을 극단적으로 묶는 성질이다. 압력은 시간미분이 없는 구속조건이다.
+
+그래서 각각 다르게 다룬다. 대류는 양해, 점성은 음해, 압력은 projection(투영)으로 처리한다. 이렇게 섞는 방식을 IMEX(implicit–explicit)라 부른다. [저마하 파동 스킴](/ko/posts/2026-06-21-asymptotic-preserving-low-mach-wave/)에서도 같은 발상을 봤다. 거기서는 빠른 음파를 음해로 넘겼다. 여기서는 빠른 점성 감쇠를 음해로 넘긴다.
+
+## Gear 스킴은 시간 t^(n+1)을 겨눈다
+
+Gear 스킴은 BDF2(2차 후퇴차분)의 다른 이름이다. Chiu–Lin 형태로 쓰면 이렇다.
+
+$$
+\frac{3\mathbf{u}^* - 4\mathbf{u}^n + \mathbf{u}^{n-1}}{2\Delta t} = -\left(2\mathbf{N}^n - \mathbf{N}^{n-1}\right) + \nu\nabla^2\mathbf{u}^*
+$$
+
+$\mathbf{u}^*$는 압력을 빼고 얻은 중간 속도, 위첨자 $n$은 시간 단계다.
+
+좌변을 테일러 전개하면 $\partial_t \mathbf{u}$를 정확히 $t^{n+1}$에서 근사한다. 오차는 $O(\Delta t^2)$다. 그러니 우변의 모든 항도 $t^{n+1}$의 값이어야 한다. 점성항은 $\mathbf{u}^*$로 썼으니 문제없다. 대류항은 아직 모르는 $\mathbf{N}^{n+1}$이 필요하다. 그 자리를 과거 두 값의 선형 외삽이 메운다.
+
+$$
+2\mathbf{N}^n - \mathbf{N}^{n-1} = \mathbf{N}^{n+1} - \Delta t^2\, \partial_{tt}\mathbf{N} + O(\Delta t^3)
+$$
+
+외삽 오차가 $\Delta t^2$이므로 BDF2의 차수를 깎지 않는다. 반대로 $\mathbf{N}^n$만 쓰면 $\mathbf{N}^{n+1} - \Delta t\,\partial_t\mathbf{N}$이 된다. $\Delta t$ 한 번만큼 늦게 본 값이다. 이 지연이 전역 오차에 1차로 남는다.
+
+1차 스킴은 왜 덜 손해를 볼까. 음해 Euler의 좌변 $(\mathbf{u}^{n+1}-\mathbf{u}^n)/\Delta t$는 사실 $t^{n+1/2}$ 부근에서 가장 정확하다. 그 기준에서 $\mathbf{N}^n$의 지연은 $\Delta t/2$다. BDF2는 기준점을 $t^{n+1}$으로 옮겼다. 그래서 같은 $\mathbf{N}^n$이 지연 $\Delta t$를 통째로 떠안는다. 1.82배는 이 두 배 지연에 점성항 쪽 상쇄가 조금 섞인 값이다.
+
+아래 시뮬레이션에서 직접 조작해보자. 푸리에 모드 하나 $dy/dt = -(d + ia)y$를 세 스킴으로 풀어, 복소평면의 나선과 오차–시간간격 그래프를 함께 그린다.
+
+<GearModeSpiralLab />
+
+스텝 수를 줄이면 빨간 궤적(BDF2 + $N^n$)이 흰 점선에서 가장 크게 벌어진다. 오른쪽 그래프에서 주황·빨강은 기울기 1, 초록(Gear)만 기울기 2를 따라간다. 점성 $d$를 올려도 이 순서는 바뀌지 않는다.
+
+## projection으로 발산을 지운다
+
+$\mathbf{u}^*$는 발산이 0이 아니다. 압력으로 이를 지운다.
+
+$$
+\nabla^2 p^{n+1} = \frac{3}{2\Delta t}\nabla\cdot\mathbf{u}^*, \qquad \mathbf{u}^{n+1} = \mathbf{u}^* - \frac{2\Delta t}{3}\nabla p^{n+1}
+$$
+
+계수 $3/(2\Delta t)$는 BDF2 좌변의 $3/2$에서 온다. 압력은 $\mathbf{u}^*$의 기울기 성분을 걷어내는 라그랑주 승수(제약을 강제하는 보조 변수) 역할을 한다.
+
+주기 경계에서는 이 투영이 점성 연산자와 교환된다. 그래서 분할 오차(splitting error)가 0이 된다. 벽이 있으면 사정이 다르다. 압력 경계조건이 인공적으로 정해지면서 벽 근처에 수치 경계층이 생긴다. Guermond·Minev·Shen(2006)의 리뷰에 따르면 표준 증분형 투영은 속도 $L^2$ 2차, 압력 1차 수준이다. 회전형(rotational) 보정이 압력을 3/2차까지 끌어올린다. 아래 실험은 주기 상자에서 하므로 시간 적분 자체의 차수만 드러난다.
+
+## 의사스펙트럴 코드 한 벌로 세 스킴을 돌린다
+
+2D 주기 상자 $[0,2\pi]^2$, 32×32 격자, $\nu = 0.05$로 놓았다. 초기 유동은 유선함수 $\psi = \sin x\sin y + 0.6\cos(2x + y)$에서 뽑았다. 순수 Taylor–Green 와동은 대류항이 정확히 기울기라서 투영이 지워 버린다. 두 번째 모드를 섞어 대류항이 실제로 일하게 했다.
+
+공간 미분은 FFT로 해서 공간 오차를 기계 정밀도 근처로 눌렀다. 기준해는 Gear로 $\Delta t = T/5120$에서 만들었다. 푸리에 공간에서는 점성 음해 풀이와 압력 푸아송 풀이가 모두 대각이다. 나눗셈 한 번으로 끝난다. 마지막 블록은 $\nu = 0.5$로 올려서 전부 양해(AB2)로 돌린 경우와 비교한다.
+
+```python
+import numpy as np
+
+N, nu, T = 32, 0.05, 1.0
+x = np.arange(N) * 2 * np.pi / N
+X, Y = np.meshgrid(x, x, indexing="ij")
+k = np.fft.fftfreq(N, 1.0 / N)
+KX, KY = np.meshgrid(k, k, indexing="ij")
+K2 = KX**2 + KY**2
+K2s = np.where(K2 == 0, 1.0, K2)
+dealias = (np.abs(KX) < N / 3) & (np.abs(KY) < N / 3)
+
+def project(uh, vh):
+    # 스펙트럴 공간에서 발산 성분 제거 (압력 푸아송 + 보정)
+    div = KX * uh + KY * vh
+    return uh - KX * div / K2s, vh - KY * div / K2s
+
+def advect_hat(uh, vh):
+    # 대류항 (u·∇)u 를 의사스펙트럴로 계산
+    u, v = np.fft.ifft2(uh).real, np.fft.ifft2(vh).real
+    ux, uy = np.fft.ifft2(1j * KX * uh).real, np.fft.ifft2(1j * KY * uh).real
+    vx, vy = np.fft.ifft2(1j * KX * vh).real, np.fft.ifft2(1j * KY * vh).real
+    return (np.fft.fft2(u * ux + v * uy) * dealias,
+            np.fft.fft2(u * vx + v * vy) * dealias)
+
+def initial():
+    psi = np.sin(X) * np.sin(Y) + 0.6 * np.cos(2 * X + Y)
+    ph = np.fft.fft2(psi)
+    return 1j * KY * ph, -1j * KX * ph   # u = ψ_y, v = -ψ_x
+
+def march(dt, mode):
+    """mode: 'euler' (BDF1+N^n), 'lagged' (BDF2+N^n), 'gear' (BDF2+2N^n-N^{n-1}),
+    'explicit' (전부 양해: AB2 대류 + AB2 점성)"""
+    uh, vh = initial()
+    nsteps = int(round(T / dt))
+    prev = None
+    for n in range(nsteps):
+        Nu, Nv = advect_hat(uh, vh)
+        if mode == "explicit":
+            Lu, Lv = -nu * K2 * uh, -nu * K2 * vh
+            if prev is None:
+                ru, rv = uh + dt * (Lu - Nu), vh + dt * (Lv - Nv)
+            else:
+                ru = uh + dt * (1.5 * (Lu - Nu) - 0.5 * prev[0])
+                rv = vh + dt * (1.5 * (Lv - Nv) - 0.5 * prev[1])
+            prev = (Lu - Nu, Lv - Nv)
+            uh, vh = project(ru, rv)
+            continue
+        if prev is None or mode == "euler":
+            # 첫 스텝(또는 1차 스킴): BDF1, 대류항 N^n
+            a = 1.0
+            ru, rv = uh - dt * Nu, vh - dt * Nv
+        else:
+            u0, v0, Nu0, Nv0 = prev
+            a = 1.5
+            if mode == "gear":
+                Eu, Ev = 2 * Nu - Nu0, 2 * Nv - Nv0
+            else:
+                Eu, Ev = Nu, Nv
+            ru = 2 * uh - 0.5 * u0 - dt * Eu
+            rv = 2 * vh - 0.5 * v0 - dt * Ev
+        prev = (uh, vh, Nu, Nv)
+        # 점성항 음해: (a - dt ν ∇²) u* = rhs  → 스펙트럴에서 대각
+        us, vs = ru / (a + dt * nu * K2), rv / (a + dt * nu * K2)
+        uh, vh = project(us, vs)
+    return uh, vh
+
+ref = march(T / 5120, "gear")
+def err(sol):
+    d = np.fft.ifft2(sol[0] - ref[0]).real, np.fft.ifft2(sol[1] - ref[1]).real
+    return np.sqrt(np.mean(d[0]**2 + d[1]**2))
+
+print(f"{'dt':>9} {'euler':>10} {'p':>5} {'lagged':>10} {'p':>5} {'gear':>10} {'p':>5}")
+last = {}
+for m in [20, 40, 80, 160, 320]:
+    dt = T / m
+    row = f"{dt:9.5f}"
+    for mode in ["euler", "lagged", "gear"]:
+        e = err(march(dt, mode))
+        p = np.log2(last[mode] / e) if mode in last else float("nan")
+        last[mode] = e
+        row += f" {e:10.3e} {p:5.2f}"
+    print(row)
+
+# 안정성: 점성이 큰 경우(ν=0.5) 양해 점성 vs 음해 점성
+nu, T = 0.5, 0.64
+print("max|u| at nu=0.5, t=0.64")
+for dt in [0.004, 0.008, 0.016, 0.032]:
+    out = []
+    for mode in ["explicit", "gear"]:
+        with np.errstate(all="ignore"):
+            uh, vh = march(dt, mode)
+        m = np.abs(np.fft.ifft2(uh).real).max()
+        out.append(f"{m:10.4f}" if np.isfinite(m) and m < 1e3 else "  blow-up ")
+    print(f"dt={dt:.3f}  explicit {out[0]}  gear {out[1]}")
+```
+
+```text
+       dt      euler     p     lagged     p       gear     p
+  0.05000  1.491e-02   nan  2.678e-02   nan  1.386e-03   nan
+  0.02500  7.413e-03  1.01  1.341e-02  1.00  3.490e-04  1.99
+  0.01250  3.695e-03  1.00  6.704e-03  1.00  8.764e-05  1.99
+  0.00625  1.845e-03  1.00  3.350e-03  1.00  2.195e-05  2.00
+  0.00313  9.217e-04  1.00  1.675e-03  1.00  5.478e-06  2.00
+max|u| at nu=0.5, t=0.64
+dt=0.004  explicit     0.6172  gear     0.6172
+dt=0.008  explicit   blow-up   gear     0.6172
+dt=0.016  explicit   blow-up   gear     0.6173
+dt=0.032  explicit   blow-up   gear     0.6175
+```
+
+## 1.00과 2.00 사이에 놓인 한 줄
+
+표의 차수 열이 모든 것을 말한다. euler와 lagged는 1.00, gear는 2.00이다. $\Delta t = 0.003125$에서 lagged 오차는 $1.675\times10^{-3}$, euler는 $9.217\times10^{-4}$다. 1.82배 차이다. 같은 지점에서 gear는 $5.478\times10^{-6}$으로 lagged보다 306배 작다.
+
+lagged 열이 특히 교훈적이다. 좌변을 2차로 바꾸는 데 든 노력이 아무 소용이 없다. 차수는 가장 낮은 항이 정한다. 오차 상수는 1차 스킴보다 오히려 나빠졌다. 점성항을 고친 사람은 개선을 기대했으니 이 결과를 버그로 의심하기 쉽다. 사실은 버그가 아니라 지연의 산수다.
+
+수렴차수 측정이 무엇을 재는지는 [검증 케이스 글](/ko/posts/2026-10-07-sod-vortex-order-verification/)에서 다뤘다. 여기서는 해가 매끄럽고 공간 오차가 없다. 그래서 측정값이 스킴의 시간 차수 그대로다.
+
+## 점성을 음해로 두면 무엇을 사는가
+
+마지막 블록은 점성을 음해로 두는 이유를 보여준다. 전부 양해인 AB2는 $\Delta t = 0.004$에서 버텼다. $0.008$부터는 발산했다. 점성만 따지면 한계는 $\Delta t \le 1/(\nu k_{\max}^2) = 0.01$이다. 대류의 허수축 고유값이 그 여유를 일부 먹어서 더 일찍 무너진다. Gear는 $\Delta t = 0.032$에서도 0.6175로 기준값 0.6172에 붙어 있다. 8배 큰 간격이다.
+
+이 한계는 격자를 조일수록 $h^2$로 줄어든다. 격자를 두 배 조이면 양해 스킴의 스텝 수는 네 배 는다. 음해 점성은 그 비용을 헬름홀츠 풀이 한 번으로 바꾼다. 대신 대류항이 양해로 남아 있으므로 CFL 조건 $|u|\Delta t/h \lesssim O(1)$은 여전히 지켜야 한다.
+
+아래에서 $\nu$와 $\Delta t$를 바꾸며 파수별 증폭률을 보자.
+
+<ViscousStiffnessDial />
+
+fully explicit에서 $\Delta t$를 확산 한계 $h^2/(2\nu)$ 위로 올리면 높은 파수 막대가 먼저 빨갛게 1을 넘는다. 왼쪽 곡선에는 격자 크기의 톱니가 자라난다. semi-implicit Gear로 바꾸면 같은 $\Delta t$에서 막대가 1 아래로 내려간다. $\nu$를 거의 0으로 줄이고 $\Delta t$를 키우면 Gear도 대류 CFL에 걸린다. 1차 이류에서 [FTCS가 떨리던 이유](/ko/posts/2026-05-08-advection-ftcs-upwind-cfl/)와 같은 계열의 한계다.
+
+## 시작 스텝과 가변 Δt에서 놓치기 쉬운 것
+
+첫 스텝에는 $\mathbf{u}^{n-1}$이 없다. 코드는 첫 스텝만 BDF1로 돌린다. 한 스텝의 $O(\Delta t^2)$ 국소 오차는 전역 차수를 깎지 않는다. 표의 2.00이 그 증거다.
+
+$\Delta t$를 스텝마다 바꾸면 계수가 달라진다. 비율 $\omega = \Delta t_n/\Delta t_{n-1}$에 대해 외삽은 $(1+\omega)\mathbf{N}^n - \omega\mathbf{N}^{n-1}$이 된다. BDF2 계수도 $\omega$의 함수로 바뀐다. 고정 계수 3/2, 2, 1/2를 그대로 두면 2차가 조용히 사라진다. 압력 단계의 $3/(2\Delta t)$도 함께 고쳐야 한다.
+
+재시작 파일에도 함정이 있다. $\mathbf{u}^n$만 저장하면 재시작 첫 스텝이 BDF1로 떨어진다. 한 번이면 괜찮다. 짧은 주기로 재시작을 반복하면 1차 스텝이 누적된다. $\mathbf{u}^{n-1}$과 $\mathbf{N}^{n-1}$까지 저장하는 편이 안전하다.
+
+## 내 코드의 시간 차수를 의심할 때 묻는 세 질문
+
+- 좌변 차분이 근사하는 시점은 언제인가. BDF2라면 $t^{n+1}$이다.
+- 양해 항이 그 시점까지 몇 차로 외삽되는가. $\mathbf{N}^n$ 하나면 1차다.
+- 압력 계수와 가변 $\Delta t$ 계수가 좌변과 같은 스킴에서 나왔는가.
+
+세 질문에 모두 답이 맞으면 표에서 2.00을 보게 된다. 하나라도 어긋나면 1.00이 나온다. 그 오차 상수는 원래 1차 스킴보다 나쁠 수도 있다.

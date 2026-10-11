@@ -1,0 +1,223 @@
+---
+title: "Upgrading Only the Viscous Term to Second Order Made the Error 1.82x Worse — Why the Semi-Implicit Gear Scheme Extrapolates Convection"
+date: 2026-10-12
+description: "Pair BDF2 with a convection term evaluated at N^n and the scheme drops to first order with a larger error. One line, 2N^n − N^(n−1), restores second order, verified in code."
+tags: ["BDF2", "Projection-Method", "IMEX", "Incompressible", "Fractional-Step"]
+locale: en
+slug: 2026-10-12-semi-implicit-gear-convection-extrapolation
+takeaway: "BDF2 is a difference aimed squarely at t^{n+1}, so feeding it convection from one step back turns that lag into a first-order error. Extrapolating with 2N^n − N^{n−1} keeps second order."
+draft: false
+---
+import { GearModeSpiralLab } from '@/components/post-viz/2026-10-12-semi-implicit-gear-convection-extrapolation/GearModeSpiralLab'
+import { ViscousStiffnessDial } from '@/components/post-viz/2026-10-12-semi-implicit-gear-convection-extrapolation/ViscousStiffnessDial'
+
+## I switched to BDF2 and the error went up
+
+I was upgrading the time stepping of an incompressible code from first to second order. I replaced the implicit Euler on the viscous term with BDF2. I left the convection term alone, still evaluated at $N^n$. Then I halved the time step repeatedly and measured the error. The error only halved each time. Worse, it was 1.82 times larger than the original first-order scheme.
+
+This post tracks down where that factor of 1.82 comes from. Chiu and Lin's 2011 conservative phase-field paper advances Navier–Stokes with a **semi-implicit Gear scheme** plus a projection method. In the convection slot of that scheme sits an extrapolation, $2N^n - N^{n-1}$. We will measure what breaks when that line is removed and what comes back when it is restored. By the end you will have one rule for keeping the order of an IMEX scheme, and a way to size up what an implicit viscous term buys you.
+
+## What each of the three terms does in one step
+
+The momentum equation of incompressible Navier–Stokes splits into three pieces.
+
+$$
+\frac{\partial \mathbf{u}}{\partial t} + \underbrace{(\mathbf{u}\cdot\nabla)\mathbf{u}}_{\mathbf{N}(\mathbf{u})} = -\nabla p + \nu \nabla^2 \mathbf{u}, \qquad \nabla\cdot\mathbf{u} = 0
+$$
+
+$\mathbf{N}$ is the convection term, $\nu$ the kinematic viscosity, and $p$ the pressure divided by density.
+
+The three pieces behave differently. Convection is nonlinear. Treating it implicitly means solving a nonlinear system every step. Viscosity is linear but stiff. Stiffness here means the shortest wavelengths decay fastest and choke the explicit time step. Pressure is a constraint with no time derivative of its own.
+
+So each gets its own treatment. Convection goes explicit, viscosity implicit, and pressure is handled by projection. Mixing the two treatments is called IMEX (implicit–explicit). The [low-Mach wave scheme](/en/posts/2026-06-21-asymptotic-preserving-low-mach-wave/) used the same idea. There, fast acoustic waves went implicit. Here, fast viscous decay goes implicit.
+
+## The Gear scheme aims at t^(n+1)
+
+The Gear scheme is another name for BDF2 (second-order backward differentiation). In the Chiu–Lin form it reads:
+
+$$
+\frac{3\mathbf{u}^* - 4\mathbf{u}^n + \mathbf{u}^{n-1}}{2\Delta t} = -\left(2\mathbf{N}^n - \mathbf{N}^{n-1}\right) + \nu\nabla^2\mathbf{u}^*
+$$
+
+$\mathbf{u}^*$ is the intermediate velocity before the pressure correction, and superscript $n$ is the time level.
+
+A Taylor expansion shows the left side approximates $\partial_t \mathbf{u}$ exactly at $t^{n+1}$. The error is $O(\Delta t^2)$. That means every term on the right must also be evaluated at $t^{n+1}$. The viscous term uses $\mathbf{u}^*$, so it is fine. Convection needs $\mathbf{N}^{n+1}$, which we do not have yet. A linear extrapolation from the two previous values fills the gap.
+
+$$
+2\mathbf{N}^n - \mathbf{N}^{n-1} = \mathbf{N}^{n+1} - \Delta t^2\, \partial_{tt}\mathbf{N} + O(\Delta t^3)
+$$
+
+The extrapolation error is $\Delta t^2$, so it does not cost BDF2 any order. Using $\mathbf{N}^n$ alone gives $\mathbf{N}^{n+1} - \Delta t\,\partial_t\mathbf{N}$ instead. That is the value seen one full $\Delta t$ late. The lag survives as a first-order global error.
+
+Why does the first-order scheme suffer less? The implicit Euler left side $(\mathbf{u}^{n+1}-\mathbf{u}^n)/\Delta t$ is actually most accurate near $t^{n+1/2}$. Measured from there, $\mathbf{N}^n$ lags by only $\Delta t/2$. BDF2 moved the reference point to $t^{n+1}$. Now the same $\mathbf{N}^n$ carries the full $\Delta t$ lag. The 1.82 is that doubled lag, slightly offset by the viscous part.
+
+Try it yourself in the simulation below. It solves a single Fourier mode $dy/dt = -(d + ia)y$ with all three schemes, drawing the spiral in the complex plane next to the error-versus-time-step plot.
+
+<GearModeSpiralLab />
+
+Reduce the step count and the red track (BDF2 + $N^n$) drifts farthest from the white dashed exact spiral. On the right, orange and red follow slope 1, and only green (Gear) follows slope 2. Raising the viscous rate $d$ does not change that ordering.
+
+## Projection removes the divergence
+
+$\mathbf{u}^*$ is not divergence-free. The pressure removes that part.
+
+$$
+\nabla^2 p^{n+1} = \frac{3}{2\Delta t}\nabla\cdot\mathbf{u}^*, \qquad \mathbf{u}^{n+1} = \mathbf{u}^* - \frac{2\Delta t}{3}\nabla p^{n+1}
+$$
+
+The factor $3/(2\Delta t)$ comes from the $3/2$ on the BDF2 left side. Pressure acts as a Lagrange multiplier (an auxiliary variable that enforces a constraint), stripping the gradient part from $\mathbf{u}^*$.
+
+With periodic boundaries this projection commutes with the viscous operator. The splitting error is therefore zero. Walls change the picture. An artificial pressure boundary condition creates a numerical boundary layer near the wall. According to the 2006 review by Guermond, Minev, and Shen, the standard incremental projection reaches second order in velocity ($L^2$) and about first order in pressure. The rotational correction lifts pressure to order 3/2. The experiment below runs in a periodic box, so only the order of the time integrator shows up.
+
+## One pseudo-spectral code, three schemes
+
+The setup is a 2D periodic box $[0,2\pi]^2$, a 32×32 grid, and $\nu = 0.05$. The initial flow comes from the streamfunction $\psi = \sin x\sin y + 0.6\cos(2x + y)$. In a pure Taylor–Green vortex the convection term is exactly a gradient, and the projection erases it. Mixing in a second mode makes convection actually do work.
+
+Spatial derivatives use FFTs, pushing spatial error close to machine precision. The reference solution is Gear at $\Delta t = T/5120$. In Fourier space both the implicit viscous solve and the pressure Poisson solve are diagonal. Each is a single division. The last block raises $\nu$ to 0.5 and compares against a fully explicit (AB2) run.
+
+```python
+import numpy as np
+
+N, nu, T = 32, 0.05, 1.0
+x = np.arange(N) * 2 * np.pi / N
+X, Y = np.meshgrid(x, x, indexing="ij")
+k = np.fft.fftfreq(N, 1.0 / N)
+KX, KY = np.meshgrid(k, k, indexing="ij")
+K2 = KX**2 + KY**2
+K2s = np.where(K2 == 0, 1.0, K2)
+dealias = (np.abs(KX) < N / 3) & (np.abs(KY) < N / 3)
+
+def project(uh, vh):
+    # remove the divergent part in spectral space (pressure Poisson + correction)
+    div = KX * uh + KY * vh
+    return uh - KX * div / K2s, vh - KY * div / K2s
+
+def advect_hat(uh, vh):
+    # convection (u·∇)u computed pseudo-spectrally
+    u, v = np.fft.ifft2(uh).real, np.fft.ifft2(vh).real
+    ux, uy = np.fft.ifft2(1j * KX * uh).real, np.fft.ifft2(1j * KY * uh).real
+    vx, vy = np.fft.ifft2(1j * KX * vh).real, np.fft.ifft2(1j * KY * vh).real
+    return (np.fft.fft2(u * ux + v * uy) * dealias,
+            np.fft.fft2(u * vx + v * vy) * dealias)
+
+def initial():
+    psi = np.sin(X) * np.sin(Y) + 0.6 * np.cos(2 * X + Y)
+    ph = np.fft.fft2(psi)
+    return 1j * KY * ph, -1j * KX * ph   # u = ψ_y, v = -ψ_x
+
+def march(dt, mode):
+    """mode: 'euler' (BDF1+N^n), 'lagged' (BDF2+N^n), 'gear' (BDF2+2N^n-N^{n-1}),
+    'explicit' (fully explicit: AB2 convection + AB2 viscosity)"""
+    uh, vh = initial()
+    nsteps = int(round(T / dt))
+    prev = None
+    for n in range(nsteps):
+        Nu, Nv = advect_hat(uh, vh)
+        if mode == "explicit":
+            Lu, Lv = -nu * K2 * uh, -nu * K2 * vh
+            if prev is None:
+                ru, rv = uh + dt * (Lu - Nu), vh + dt * (Lv - Nv)
+            else:
+                ru = uh + dt * (1.5 * (Lu - Nu) - 0.5 * prev[0])
+                rv = vh + dt * (1.5 * (Lv - Nv) - 0.5 * prev[1])
+            prev = (Lu - Nu, Lv - Nv)
+            uh, vh = project(ru, rv)
+            continue
+        if prev is None or mode == "euler":
+            # first step (or first-order scheme): BDF1, convection N^n
+            a = 1.0
+            ru, rv = uh - dt * Nu, vh - dt * Nv
+        else:
+            u0, v0, Nu0, Nv0 = prev
+            a = 1.5
+            if mode == "gear":
+                Eu, Ev = 2 * Nu - Nu0, 2 * Nv - Nv0
+            else:
+                Eu, Ev = Nu, Nv
+            ru = 2 * uh - 0.5 * u0 - dt * Eu
+            rv = 2 * vh - 0.5 * v0 - dt * Ev
+        prev = (uh, vh, Nu, Nv)
+        # implicit viscosity: (a - dt ν ∇²) u* = rhs  → diagonal in spectral space
+        us, vs = ru / (a + dt * nu * K2), rv / (a + dt * nu * K2)
+        uh, vh = project(us, vs)
+    return uh, vh
+
+ref = march(T / 5120, "gear")
+def err(sol):
+    d = np.fft.ifft2(sol[0] - ref[0]).real, np.fft.ifft2(sol[1] - ref[1]).real
+    return np.sqrt(np.mean(d[0]**2 + d[1]**2))
+
+print(f"{'dt':>9} {'euler':>10} {'p':>5} {'lagged':>10} {'p':>5} {'gear':>10} {'p':>5}")
+last = {}
+for m in [20, 40, 80, 160, 320]:
+    dt = T / m
+    row = f"{dt:9.5f}"
+    for mode in ["euler", "lagged", "gear"]:
+        e = err(march(dt, mode))
+        p = np.log2(last[mode] / e) if mode in last else float("nan")
+        last[mode] = e
+        row += f" {e:10.3e} {p:5.2f}"
+    print(row)
+
+# stability: large viscosity (ν=0.5), explicit vs implicit viscosity
+nu, T = 0.5, 0.64
+print("max|u| at nu=0.5, t=0.64")
+for dt in [0.004, 0.008, 0.016, 0.032]:
+    out = []
+    for mode in ["explicit", "gear"]:
+        with np.errstate(all="ignore"):
+            uh, vh = march(dt, mode)
+        m = np.abs(np.fft.ifft2(uh).real).max()
+        out.append(f"{m:10.4f}" if np.isfinite(m) and m < 1e3 else "  blow-up ")
+    print(f"dt={dt:.3f}  explicit {out[0]}  gear {out[1]}")
+```
+
+```text
+       dt      euler     p     lagged     p       gear     p
+  0.05000  1.491e-02   nan  2.678e-02   nan  1.386e-03   nan
+  0.02500  7.413e-03  1.01  1.341e-02  1.00  3.490e-04  1.99
+  0.01250  3.695e-03  1.00  6.704e-03  1.00  8.764e-05  1.99
+  0.00625  1.845e-03  1.00  3.350e-03  1.00  2.195e-05  2.00
+  0.00313  9.217e-04  1.00  1.675e-03  1.00  5.478e-06  2.00
+max|u| at nu=0.5, t=0.64
+dt=0.004  explicit     0.6172  gear     0.6172
+dt=0.008  explicit   blow-up   gear     0.6172
+dt=0.016  explicit   blow-up   gear     0.6173
+dt=0.032  explicit   blow-up   gear     0.6175
+```
+
+## The one line between 1.00 and 2.00
+
+The order columns say it all. euler and lagged sit at 1.00, gear at 2.00. At $\Delta t = 0.003125$ the lagged error is $1.675\times10^{-3}$ and euler is $9.217\times10^{-4}$. That is a 1.82x gap. At the same point gear reaches $5.478\times10^{-6}$, 306 times smaller than lagged.
+
+The lagged column is the instructive one. The effort spent upgrading the left side bought nothing. The lowest-order term sets the order. And the error constant ended up worse than the first-order scheme. Whoever fixed the viscous term expected an improvement, so this result looks like a bug. It is not a bug. It is the arithmetic of lag.
+
+What a convergence-order measurement actually measures was covered in the [verification-case post](/en/posts/2026-10-07-sod-vortex-order-verification/). Here the solution is smooth and spatial error is absent. So the measured value is the scheme's temporal order and nothing else.
+
+## What an implicit viscous term buys
+
+The last block shows why viscosity goes implicit. Fully explicit AB2 held at $\Delta t = 0.004$. From $0.008$ on, it diverged. Viscosity alone sets the limit at $\Delta t \le 1/(\nu k_{\max}^2) = 0.01$. The imaginary eigenvalues of convection eat part of that margin, so it fails earlier. Gear at $\Delta t = 0.032$ still gives 0.6175, right next to the reference 0.6172. That is an eight times larger step.
+
+This limit shrinks as $h^2$ when the grid is refined. Halve the grid spacing and the explicit scheme needs four times as many steps. An implicit viscous term trades that cost for one Helmholtz solve. Convection stays explicit, though, so the CFL condition $|u|\Delta t/h \lesssim O(1)$ still applies.
+
+Below, vary $\nu$ and $\Delta t$ and watch the amplification factor per wavenumber.
+
+<ViscousStiffnessDial />
+
+In fully explicit mode, push $\Delta t$ above the diffusive limit $h^2/(2\nu)$ and the high-wavenumber bars turn red first and cross 1. A grid-scale sawtooth grows on the left curve. Switch to semi-implicit Gear and, at the same $\Delta t$, the bars drop below 1. Shrink $\nu$ toward zero and enlarge $\Delta t$, and Gear also hits the convective CFL limit. It is the same family of limit as the reason [FTCS oscillated](/en/posts/2026-05-08-advection-ftcs-upwind-cfl/) in first-order advection.
+
+## Easy to miss: the startup step and variable Δt
+
+The first step has no $\mathbf{u}^{n-1}$. The code runs that single step with BDF1. One step of $O(\Delta t^2)$ local error does not lower the global order. The 2.00 in the table is the proof.
+
+Changing $\Delta t$ from step to step changes the coefficients. With ratio $\omega = \Delta t_n/\Delta t_{n-1}$, the extrapolation becomes $(1+\omega)\mathbf{N}^n - \omega\mathbf{N}^{n-1}$. The BDF2 coefficients also become functions of $\omega$. Keep the fixed 3/2, 2, 1/2 and second order quietly disappears. The $3/(2\Delta t)$ in the pressure step must change with them.
+
+Restart files hide a trap too. Saving only $\mathbf{u}^n$ drops the first post-restart step to BDF1. Once is harmless. Restart at short intervals and the first-order steps pile up. Saving $\mathbf{u}^{n-1}$ and $\mathbf{N}^{n-1}$ as well is the safe choice.
+
+## Three questions when you doubt your code's time order
+
+- At what instant does the left-side difference approximate the derivative? For BDF2, $t^{n+1}$.
+- To what order are the explicit terms extrapolated to that instant? A lone $\mathbf{N}^n$ is first order.
+- Do the pressure coefficient and the variable-$\Delta t$ coefficients come from the same scheme as the left side?
+
+Get all three right and the table shows 2.00. Miss any one and it shows 1.00. That error constant may even be worse than the original first-order scheme.
