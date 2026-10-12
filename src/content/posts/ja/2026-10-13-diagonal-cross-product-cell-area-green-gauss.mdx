@@ -1,0 +1,196 @@
+---
+title: "曲線セルに真の面積を入れたら∂x/∂xが1からずれた — 対角線の外積面積がGreen–Gaussと噛み合う理由"
+date: 2026-10-13
+description: "曲線格子FVMでセル体積を解析的ヤコビアンで与えると、線形場の勾配すら外れます。対角線の外積面積が正解である理由をコードで確かめます。"
+tags: ["Cell-Volume", "Grid-Metrics", "Gradient-Reconstruction", "Curvilinear", "FVM"]
+locale: ja
+slug: 2026-10-13-diagonal-cross-product-cell-area-green-gauss
+takeaway: "セル体積は「真の面積」ではなく、面ベクトルが囲む多角形の面積でなければなりません。そのとき初めて線形場の勾配が機械精度で一致します。"
+draft: false
+---
+import { QuadDiagonalCrossLab } from '@/components/post-viz/2026-10-13-diagonal-cross-product-cell-area-green-gauss/QuadDiagonalCrossLab'
+import { GreenGaussAreaMismatchMap } from '@/components/post-viz/2026-10-13-diagonal-cross-product-cell-area-green-gauss/GreenGaussAreaMismatchMap'
+
+## より正確な面積が、より悪い答えを出した
+
+$\phi = x$ の勾配は1です。格子がどう曲がっていても変わりません。ところが曲線格子FVMコードにセル面積を「正確に」積分して入れたところ、0.19%ずれました。セル中心のヤコビアンを使うと0.39%と倍になります。逆に、頂点4つから作る対角線の外積面積なら誤差は $10^{-14}$ です。
+
+この記事は大学院CFDの宿題1問から始まります。2次元セルの体積 $\Delta V$ を対角線2本の外積で求めよ、という問題です。手で解けば5行で終わります。しかし、その5行がなぜ「真の面積」より良いのかは問われません。ここでは発散定理ひとつで理由を整理し、Pythonで数値を確かめます。
+
+## 宿題の答え：四角形の面積は対角線2本で決まる
+
+計算空間のセル $(i,j)$ は、物理空間では頂点4つの四角形ABCDになります。頂点は半整数インデックス $(i\pm\tfrac12, j\pm\tfrac12)$ にあります。2次元なので奥行きを1とすれば、体積は面積と同じです。
+
+対角線 $\overline{BD}$ と $\overline{CA}$ をベクトルとみなします。平行移動して始点をそろえると平行四辺形EFGHができます。その面積は外積の大きさ $|\mathbf{BD}\times\mathbf{CA}|$ です。この平行四辺形は元の四角形のちょうど2倍の面積を持ちます。
+
+$$
+\Delta V_{i,j} = \tfrac12\Big[(x_{i+\frac12,j+\frac12}-x_{i-\frac12,j-\frac12})(y_{i-\frac12,j+\frac12}-y_{i+\frac12,j-\frac12}) - (y_{i+\frac12,j+\frac12}-y_{i-\frac12,j-\frac12})(x_{i-\frac12,j+\frac12}-x_{i+\frac12,j-\frac12})\Big]
+$$
+
+最初の括弧の組は一方の対角線の $x$ 成分と他方の $y$ 成分です。2番目の組はその逆の組み合わせです。差が2次元の外積（2つのベクトルが張る平行四辺形の符号付き面積）になります。
+
+下のキャンバスで頂点を直接ドラッグしてみましょう。
+
+<QuadDiagonalCrossLab />
+
+A–Dをドラッグすると、左上の数値と紫の平行四辺形が一緒に変わります。「sweep C」を押すと、CがDを越えて左へ移動します。セルが凸 → 凹 → ねじれと変わるときの三角形の色と面積の符号に注目してください。
+
+## なぜ対角線の外積は近似ではないのか
+
+四角形を対角線ACで切ると、三角形ABCとACDになります。各三角形の面積は辺ベクトルの外積の半分です。2つを足すと次のようにまとまります。
+
+$$
+\tfrac12\,\mathbf{AB}\times\mathbf{AC} + \tfrac12\,\mathbf{AC}\times\mathbf{AD} = \tfrac12\,\mathbf{AC}\times(\mathbf{AD}-\mathbf{AB}) = \tfrac12\,\mathbf{AC}\times\mathbf{BD}
+$$
+
+$\mathbf{AD}-\mathbf{AB}=\mathbf{BD}$ なので最後の式が出ます。凸でも凹でもこの等式は成り立ちます。つまり対角線公式は、頂点を直線で結んだ多角形の面積と厳密に一致します。靴ひも公式（頂点座標をたすき掛けして多角形面積を求める公式）とも同じ値です。
+
+ただし、これは「直線の辺」をもつ多角形の面積です。格子線が実際に曲線なら、真の面積は $\iint J\,d\xi\,d\eta$ です。$J$ はヤコビアン（計算座標から物理座標への面積拡大率）です。両者は $O(h^2)$ だけ異なります。では真の面積の方が良い選択でしょうか。答えは逆です。
+
+## Green–Gauss勾配が体積に求めるもの
+
+Green–Gauss勾配（発散定理でセル平均勾配を面積分の和に変える方法）は次のように書きます。
+
+$$
+(\nabla\phi)_P \approx \frac{1}{V_P}\sum_{f} \phi_f\,\mathbf{S}_f
+$$
+
+$\phi_f$ は面中点の値、$\mathbf{S}_f$ は面法線に面の長さを掛けたもの、$V_P$ はセル体積です。FVMコードの面は頂点を結ぶ直線です。曲がった格子線に沿う面はありません。
+
+$\phi=x$ を入れてみます。直線の辺上で $x$ は線形なので、中点値は辺平均と厳密に一致します。すると分子は、直線多角形に対する発散定理そのものになります。
+
+$$
+\sum_f x_f\,S_{x,f} = \oint_{\partial\Omega_\text{poly}} x\,n_x\,dS = |\Omega_\text{poly}|
+$$
+
+$\Omega_\text{poly}$ は頂点を直線で結んだ多角形です。結局、勾配は $|\Omega_\text{poly}|/V_P$ になります。これが1になるには、$V_P$ が多角形面積、すなわち対角線の外積面積でなければなりません。真の曲線面積を入れると、分子と分母が別々の図形を測ることになります。
+
+この不一致は、[曲線座標変換と格子メトリック](/ja/posts/2026-06-17-curvilinear-coordinate-transformation-grid-metrics/)で扱ったメトリック項を離散化するときにも同じ形で現れます。面ベクトルと体積は同じ頂点データから作る必要があります。
+
+## コード：同じ面、3通りの体積
+
+波打つ格子 $x=\xi+A\sin 2\pi\xi\,\sin 2\pi\eta$、$y=\eta+A\sin 2\pi\xi\,\sin 2\pi\eta$ を使い、$A=0.06$ とします。境界は直線のまま、内部の格子線だけが曲がります。面フラックスは3通りとも同じで、体積だけを替えます。(1) 対角線の外積、(2) セル中心の解析的 $J\cdot h^2$、(3) 4×4ガウス求積で求めた真の曲線面積です。
+
+```python
+import math
+
+A = 0.06  # 格子の波打ち振幅
+TP = 2 * math.pi
+
+def mapping(xi, eta):
+    w = A * math.sin(TP * xi) * math.sin(TP * eta)
+    return xi + w, eta + w
+
+def jac(xi, eta):
+    sx, cx = math.sin(TP * xi), math.cos(TP * xi)
+    se, ce = math.sin(TP * eta), math.cos(TP * eta)
+    wx, we = A * TP * cx * se, A * TP * sx * ce
+    return (1 + wx) * (1 + we) - we * wx
+
+def wavy_nodes(n):
+    s = [i / n for i in range(n + 1)]
+    x = [[mapping(si, sj)[0] for sj in s] for si in s]
+    y = [[mapping(si, sj)[1] for sj in s] for si in s]
+    return s, x, y
+
+def diag_area(x, y, i, j):
+    # 1/2 (BD x CA): 2本の対角線の外積
+    d1x = x[i + 1][j + 1] - x[i][j]; d1y = y[i + 1][j + 1] - y[i][j]
+    d2x = x[i][j + 1] - x[i + 1][j]; d2y = y[i][j + 1] - y[i + 1][j]
+    return 0.5 * (d1x * d2y - d1y * d2x)
+
+def jacobian_area(s, i, j):
+    # セル中心の解析的Jにh^2を掛ける
+    h = s[1] - s[0]
+    return jac(s[i] + h / 2, s[j] + h / 2) * h * h
+
+GL = [(-0.8611363115940526, 0.3478548451374538), (-0.3399810435848563, 0.6521451548625461),
+      (0.3399810435848563, 0.6521451548625461), (0.8611363115940526, 0.3478548451374538)]
+
+def exact_cell_area(s, i, j):
+    # 曲線セルの面積: Jを4x4ガウス・ルジャンドル求積
+    h = s[1] - s[0]; area = 0.0
+    for a, wa in GL:
+        for b, wb in GL:
+            area += wa * wb * jac(s[i] + h * (1 + a) / 2, s[j] + h * (1 + b) / 2)
+    return area * h * h / 4
+
+def green_gauss_dx(x, y, i, j, vol):
+    # phi = x の d(phi)/dx; 直線の面、反時計回り
+    p = [(i, j), (i + 1, j), (i + 1, j + 1), (i, j + 1)]
+    flux = 0.0
+    for k in range(4):
+        (ia, ja), (ib, jb) = p[k], p[(k + 1) % 4]
+        nx = y[ib][jb] - y[ia][ja]   # 外向き法線(x成分) x 面の長さ
+        flux += 0.5 * (x[ia][ja] + x[ib][jb]) * nx
+    return flux / vol
+
+print("  N   err(diag)  err(J centre)  err(exact curved)  order(J)")
+prev = None
+for n in (8, 16, 32, 64, 128):
+    s, x, y = wavy_nodes(n)
+    e = [0.0, 0.0, 0.0]
+    for i in range(n):
+        for j in range(n):
+            vols = (diag_area(x, y, i, j), jacobian_area(s, i, j), exact_cell_area(s, i, j))
+            for k, v in enumerate(vols):
+                e[k] = max(e[k], abs(green_gauss_dx(x, y, i, j, v) - 1.0))
+    rate = "   -" if prev is None else f"  {math.log2(prev / e[1]):.2f}"
+    print(f"{n:3d}   {e[0]:.1e}    {e[1]:.3e}      {e[2]:.3e}     {rate}")
+    prev = e[1]
+
+s, x, y = wavy_nodes(32)
+tot_d = sum(diag_area(x, y, i, j) for i in range(32) for j in range(32))
+tot_e = sum(exact_cell_area(s, i, j) for i in range(32) for j in range(32))
+print(f"total area  diag {tot_d:.15f}  exact {tot_e:.15f}")
+
+def bowtie_area(pts):
+    (ax, ay), (bx, by), (cx, cy), (dx, dy) = pts
+    return 0.5 * ((cx - ax) * (dy - by) - (cy - ay) * (dx - bx))
+
+for t in (0.0, 1.0, 2.0, 3.0):
+    a = bowtie_area([(0, 0), (1, 0), (1 - t, 1), (0, 1)])
+    print(f"C at x={1 - t:+.0f}: signed area {a:+.3f}")
+```
+
+```text
+  N   err(diag)  err(J centre)  err(exact curved)  order(J)
+  8   2.3e-15    6.032e-02      2.896e-02        -
+ 16   3.6e-15    1.543e-02      7.638e-03       1.97
+ 32   1.1e-14    3.881e-03      1.935e-03       1.99
+ 64   3.4e-14    9.716e-04      4.855e-04       2.00
+128   6.8e-14    2.430e-04      1.215e-04       2.00
+total area  diag 1.000000000000000  exact 1.000000000000000
+C at x=+1: signed area +1.000
+C at x=+0: signed area +0.500
+C at x=-1: signed area +0.000
+C at x=-2: signed area -0.500
+```
+
+## 1.1e-14と3.9e-3のあいだ
+
+$N=32$ で対角線面積の誤差は $1.1\times10^{-14}$、丸め誤差の水準です。セル中心 $J$ は $3.881\times10^{-3}$、真の曲線面積も $1.935\times10^{-3}$ です。どちらも格子を2倍細かくするとちょうど4分の1になります。次数は2.00です。
+
+全面積の合計は3方式とも1です。総量は正しく、セルごとの配分が誤っています。そのため全体の保存チェックではこの誤りは見えません。
+
+下のマップで体積の計算方法を切り替えてみましょう。
+
+<GreenGaussAreaMismatchMap />
+
+白い曲線は実際の写像の格子線、色付きの四角形は直線の辺をもつFVセルです。「½ (BD × CA)」を選ぶと全セルが緑になります。$J$ に基づく2方式では、格子が大きく曲がった所が赤くなります。Nを増やすと赤は薄くなりますが、消えはしません。
+
+$O(h^2)$ の誤差なので2次スキームなら問題ない、と考えがちです。しかし線形場すら正確に再現できなければ、2次再構成の前提が揺らぎます。リミッターもこの偽の勾配に反応します。[Green–Gaussと最小二乗勾配の比較](/ja/posts/2026-07-17-least-squares-gradient-reconstruction-unstructured/)で見たゆがみ格子の誤差に、この体積誤差がもう一層重なります。
+
+## ねじれたセルでこの公式が出すシグナル
+
+出力の最後の4行は、頂点Cを左へ引っ張った結果です。Cが $x=+1$ のとき面積は1.000、$x=0$ で0.500です。$x=-1$ では0.000、$x=-2$ では $-0.500$ になります。
+
+CがDを越えると、辺BCとDAが交差します。セルは蝶ネクタイ形（bow-tie）にねじれます。このとき対角線公式は、2つの三角形の符号付き面積の和を返します。片方の三角形が負になるので、和は0や負に落ちます。
+
+これは欠陥ではなく、役に立つシグナルです。格子生成の直後に全セルの $\Delta V$ の符号を調べれば、ねじれたセルがすぐ見つかります。ここで絶対値をとるとシグナルは消えます。ねじれたセルが正の体積をもつ普通のセルとして計算に入ってしまいます。
+
+## 曲線座標コードでJをどこに使うか
+
+解析的な $J$ が無用だという意味ではありません。格子品質の指標や誤差推定には今でも有用です。ただしFVM更新式の分母に入る $V_P$ は、面ベクトル $\mathbf{S}_f$ と同じ頂点から計算する必要があります。
+
+判定は簡単です。曲がった格子に $\phi=x$ と $\phi=y$ を入れ、Green–Gauss勾配を出力します。$\partial x/\partial x$ が丸め誤差の水準で1にならなければ、体積と面ベクトルが別々の図形を見ています。宿題の対角線5行は、この検査を通す最短の方法です。

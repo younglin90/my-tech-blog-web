@@ -1,0 +1,196 @@
+---
+title: "I Gave Curved Cells Their True Area and ∂x/∂x Stopped Being 1 — Why the Diagonal Cross-Product Area Fits Green–Gauss"
+date: 2026-10-13
+description: "On a curvilinear FVM grid, using the analytic Jacobian as cell volume breaks even the gradient of a linear field. The two-diagonal cross-product area is the one that matches the face vectors, and Python confirms it."
+tags: ["Cell-Volume", "Grid-Metrics", "Gradient-Reconstruction", "Curvilinear", "FVM"]
+locale: en
+slug: 2026-10-13-diagonal-cross-product-cell-area-green-gauss
+takeaway: "A cell volume must be the polygon area enclosed by its face vectors, not the 'true' curved area. Only then is the gradient of a linear field exact to machine precision."
+draft: false
+---
+import { QuadDiagonalCrossLab } from '@/components/post-viz/2026-10-13-diagonal-cross-product-cell-area-green-gauss/QuadDiagonalCrossLab'
+import { GreenGaussAreaMismatchMap } from '@/components/post-viz/2026-10-13-diagonal-cross-product-cell-area-green-gauss/GreenGaussAreaMismatchMap'
+
+## A more accurate area gave a worse answer
+
+The gradient of $\phi = x$ is 1. It does not matter how the grid bends. Yet when I fed a curvilinear FVM code the "exact" integrated cell area, the gradient came out 0.19% off. Using the Jacobian at the cell center doubled that to 0.39%. With the cross product of the two diagonals, built from just four corners, the error was $10^{-14}$.
+
+This post starts from a graduate CFD homework problem. It asks for the 2D cell volume $\Delta V$ from the cross product of two diagonals. By hand it takes five lines. The homework never asks why those five lines beat the "true" area. Here the reason comes from a single divergence-theorem argument, and a Python script checks the numbers.
+
+## The homework answer: two diagonals give the quad area
+
+Cell $(i,j)$ in computational space maps to a quadrilateral ABCD in physical space. Its corners sit at half-integer indices $(i\pm\tfrac12, j\pm\tfrac12)$. In 2D we take unit depth, so volume equals area.
+
+Treat diagonals $\overline{BD}$ and $\overline{CA}$ as vectors. Translate them to a common origin and they span a parallelogram EFGH. Its area is the cross-product magnitude $|\mathbf{BD}\times\mathbf{CA}|$. That parallelogram is exactly twice the area of the original quad.
+
+$$
+\Delta V_{i,j} = \tfrac12\Big[(x_{i+\frac12,j+\frac12}-x_{i-\frac12,j-\frac12})(y_{i-\frac12,j+\frac12}-y_{i+\frac12,j-\frac12}) - (y_{i+\frac12,j+\frac12}-y_{i-\frac12,j-\frac12})(x_{i-\frac12,j+\frac12}-x_{i+\frac12,j-\frac12})\Big]
+$$
+
+The first pair is the $x$ component of one diagonal times the $y$ component of the other. The second pair is the opposite combination. Their difference is the 2D cross product (the signed area of the parallelogram two vectors span).
+
+Try dragging the corners yourself below.
+
+<QuadDiagonalCrossLab />
+
+Drag A–D and watch the readout and the purple parallelogram change together. Press "sweep C" and C slides past D to the left. Watch the triangle colors and the sign of the area as the cell goes convex → concave → twisted.
+
+## Why the diagonal cross product is not an approximation
+
+Cut the quad along diagonal AC into triangles ABC and ACD. Each triangle's area is half the cross product of its edge vectors. Adding them groups neatly.
+
+$$
+\tfrac12\,\mathbf{AB}\times\mathbf{AC} + \tfrac12\,\mathbf{AC}\times\mathbf{AD} = \tfrac12\,\mathbf{AC}\times(\mathbf{AD}-\mathbf{AB}) = \tfrac12\,\mathbf{AC}\times\mathbf{BD}
+$$
+
+Since $\mathbf{AD}-\mathbf{AB}=\mathbf{BD}$, the last form follows. The identity holds for convex and concave quads alike. So the diagonal formula equals the area of the polygon whose corners are joined by straight lines. It gives the same value as the shoelace formula (the cross-multiplied corner-coordinate sum for polygon area).
+
+But that is the area of a straight-edged polygon. If the grid lines are truly curved, the real area is $\iint J\,d\xi\,d\eta$. Here $J$ is the Jacobian (the area stretch factor from computational to physical coordinates). The two differ by $O(h^2)$. So is the true area the better choice? The opposite.
+
+## What the Green–Gauss gradient demands of the volume
+
+The Green–Gauss gradient (using the divergence theorem to turn a cell-average gradient into a sum over faces) reads:
+
+$$
+(\nabla\phi)_P \approx \frac{1}{V_P}\sum_{f} \phi_f\,\mathbf{S}_f
+$$
+
+$\phi_f$ is the face-midpoint value, $\mathbf{S}_f$ is the face normal times face length, and $V_P$ is the cell volume. In an FVM code, faces are straight segments between corners. No face follows the curved grid line.
+
+Plug in $\phi=x$. On a straight edge $x$ is linear, so its midpoint value equals the edge average exactly. The numerator then is the divergence theorem applied to the straight-edged polygon.
+
+$$
+\sum_f x_f\,S_{x,f} = \oint_{\partial\Omega_\text{poly}} x\,n_x\,dS = |\Omega_\text{poly}|
+$$
+
+$\Omega_\text{poly}$ is the polygon formed by joining corners with straight lines. The gradient therefore equals $|\Omega_\text{poly}|/V_P$. For that to be 1, $V_P$ must be the polygon area, which is the diagonal cross-product area. Feed in the true curved area and the numerator and denominator measure different shapes.
+
+The same mismatch shows up when you discretize the metric terms from [curvilinear coordinate transformation and grid metrics](/en/posts/2026-06-17-curvilinear-coordinate-transformation-grid-metrics/). Face vectors and volumes must come from the same corner data.
+
+## Code: same faces, three volumes
+
+The wavy grid is $x=\xi+A\sin 2\pi\xi\,\sin 2\pi\eta$, $y=\eta+A\sin 2\pi\xi\,\sin 2\pi\eta$ with $A=0.06$. The boundary stays straight while interior grid lines bend. The face fluxes are identical in all three cases; only the volume changes: (1) the diagonal cross product, (2) the analytic $J\cdot h^2$ at the cell center, (3) the true curved area from 4×4 Gauss quadrature.
+
+```python
+import math
+
+A = 0.06  # grid waviness amplitude
+TP = 2 * math.pi
+
+def mapping(xi, eta):
+    w = A * math.sin(TP * xi) * math.sin(TP * eta)
+    return xi + w, eta + w
+
+def jac(xi, eta):
+    sx, cx = math.sin(TP * xi), math.cos(TP * xi)
+    se, ce = math.sin(TP * eta), math.cos(TP * eta)
+    wx, we = A * TP * cx * se, A * TP * sx * ce
+    return (1 + wx) * (1 + we) - we * wx
+
+def wavy_nodes(n):
+    s = [i / n for i in range(n + 1)]
+    x = [[mapping(si, sj)[0] for sj in s] for si in s]
+    y = [[mapping(si, sj)[1] for sj in s] for si in s]
+    return s, x, y
+
+def diag_area(x, y, i, j):
+    # 1/2 (BD x CA): cross product of the two diagonals
+    d1x = x[i + 1][j + 1] - x[i][j]; d1y = y[i + 1][j + 1] - y[i][j]
+    d2x = x[i][j + 1] - x[i + 1][j]; d2y = y[i][j + 1] - y[i + 1][j]
+    return 0.5 * (d1x * d2y - d1y * d2x)
+
+def jacobian_area(s, i, j):
+    # analytic J at the cell centre times h^2
+    h = s[1] - s[0]
+    return jac(s[i] + h / 2, s[j] + h / 2) * h * h
+
+GL = [(-0.8611363115940526, 0.3478548451374538), (-0.3399810435848563, 0.6521451548625461),
+      (0.3399810435848563, 0.6521451548625461), (0.8611363115940526, 0.3478548451374538)]
+
+def exact_cell_area(s, i, j):
+    # area of the curved cell: 4x4 Gauss-Legendre on J
+    h = s[1] - s[0]; area = 0.0
+    for a, wa in GL:
+        for b, wb in GL:
+            area += wa * wb * jac(s[i] + h * (1 + a) / 2, s[j] + h * (1 + b) / 2)
+    return area * h * h / 4
+
+def green_gauss_dx(x, y, i, j, vol):
+    # d(phi)/dx for phi = x; straight faces, counter-clockwise
+    p = [(i, j), (i + 1, j), (i + 1, j + 1), (i, j + 1)]
+    flux = 0.0
+    for k in range(4):
+        (ia, ja), (ib, jb) = p[k], p[(k + 1) % 4]
+        nx = y[ib][jb] - y[ia][ja]   # outward normal (x) times face length
+        flux += 0.5 * (x[ia][ja] + x[ib][jb]) * nx
+    return flux / vol
+
+print("  N   err(diag)  err(J centre)  err(exact curved)  order(J)")
+prev = None
+for n in (8, 16, 32, 64, 128):
+    s, x, y = wavy_nodes(n)
+    e = [0.0, 0.0, 0.0]
+    for i in range(n):
+        for j in range(n):
+            vols = (diag_area(x, y, i, j), jacobian_area(s, i, j), exact_cell_area(s, i, j))
+            for k, v in enumerate(vols):
+                e[k] = max(e[k], abs(green_gauss_dx(x, y, i, j, v) - 1.0))
+    rate = "   -" if prev is None else f"  {math.log2(prev / e[1]):.2f}"
+    print(f"{n:3d}   {e[0]:.1e}    {e[1]:.3e}      {e[2]:.3e}     {rate}")
+    prev = e[1]
+
+s, x, y = wavy_nodes(32)
+tot_d = sum(diag_area(x, y, i, j) for i in range(32) for j in range(32))
+tot_e = sum(exact_cell_area(s, i, j) for i in range(32) for j in range(32))
+print(f"total area  diag {tot_d:.15f}  exact {tot_e:.15f}")
+
+def bowtie_area(pts):
+    (ax, ay), (bx, by), (cx, cy), (dx, dy) = pts
+    return 0.5 * ((cx - ax) * (dy - by) - (cy - ay) * (dx - bx))
+
+for t in (0.0, 1.0, 2.0, 3.0):
+    a = bowtie_area([(0, 0), (1, 0), (1 - t, 1), (0, 1)])
+    print(f"C at x={1 - t:+.0f}: signed area {a:+.3f}")
+```
+
+```text
+  N   err(diag)  err(J centre)  err(exact curved)  order(J)
+  8   2.3e-15    6.032e-02      2.896e-02        -
+ 16   3.6e-15    1.543e-02      7.638e-03       1.97
+ 32   1.1e-14    3.881e-03      1.935e-03       1.99
+ 64   3.4e-14    9.716e-04      4.855e-04       2.00
+128   6.8e-14    2.430e-04      1.215e-04       2.00
+total area  diag 1.000000000000000  exact 1.000000000000000
+C at x=+1: signed area +1.000
+C at x=+0: signed area +0.500
+C at x=-1: signed area +0.000
+C at x=-2: signed area -0.500
+```
+
+## Between 1.1e-14 and 3.9e-3
+
+At $N=32$ the diagonal area gives an error of $1.1\times10^{-14}$, round-off level. The cell-center $J$ gives $3.881\times10^{-3}$ and the true curved area gives $1.935\times10^{-3}$. Both drop by exactly a factor of four when the grid is halved. That is order 2.00.
+
+The total area is 1 for all three methods. The global sum is right; the per-cell split is wrong. That is why a global conservation check never catches this error.
+
+Switch the volume method in the map below.
+
+<GreenGaussAreaMismatchMap />
+
+White curves are the true mapped grid lines; colored quads are the straight-edged FV cells. Pick "½ (BD × CA)" and every cell turns green. With either $J$-based method, the strongly bent cells turn red. Raising N fades the red but never removes it.
+
+It is tempting to shrug off an $O(h^2)$ error in a second-order scheme. But if a linear field is not reproduced exactly, the premise of second-order reconstruction is shaken. Limiters also react to this fake gradient. It stacks on top of the skewness errors seen in [Green–Gauss versus least-squares gradients](/en/posts/2026-07-17-least-squares-gradient-reconstruction-unstructured/).
+
+## The signal this formula gives on a twisted cell
+
+The last four lines of the output come from dragging corner C to the left. With C at $x=+1$ the area is 1.000, and at $x=0$ it is 0.500. At $x=-1$ it is 0.000, and at $x=-2$ it is $-0.500$.
+
+Once C passes D, edges BC and DA cross. The cell twists into a bow-tie. The diagonal formula then returns the signed sum of the two triangle areas. One triangle goes negative, so the sum falls to zero or below.
+
+That is a useful signal, not a defect. Check the sign of $\Delta V$ for every cell right after grid generation, and twisted cells show up immediately. Wrap the formula in an absolute value and the signal disappears. A twisted cell then enters the solver as if it were a normal cell with positive volume.
+
+## Where J belongs in a curvilinear code
+
+The analytic $J$ is not useless. It is still a good grid-quality metric and error indicator. But the $V_P$ in the denominator of the FVM update must come from the same corners as the face vectors $\mathbf{S}_f$.
+
+The test is short. Put $\phi=x$ and $\phi=y$ on any bent grid and print the Green–Gauss gradient. If $\partial x/\partial x$ is not 1 to round-off, the volume and the face vectors are looking at different shapes. The five-line diagonal answer from the homework is the shortest way to pass that test.

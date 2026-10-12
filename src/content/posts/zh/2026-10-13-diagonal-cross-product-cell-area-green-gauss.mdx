@@ -1,0 +1,196 @@
+---
+title: "给曲线单元填入真实面积后，∂x/∂x 不再等于 1 —— 对角线叉积面积为何与 Green–Gauss 相容"
+date: 2026-10-13
+description: "在曲线网格 FVM 中用解析雅可比给出单元体积，连线性场的梯度都会出错。本文用代码验证对角线叉积面积为何才是正确答案。"
+tags: ["Cell-Volume", "Grid-Metrics", "Gradient-Reconstruction", "Curvilinear", "FVM"]
+locale: zh
+slug: 2026-10-13-diagonal-cross-product-cell-area-green-gauss
+takeaway: "单元体积必须是面向量围成的多边形面积，而不是“真实”的曲线面积。只有这样，线性场的梯度才能精确到机器精度。"
+draft: false
+---
+import { QuadDiagonalCrossLab } from '@/components/post-viz/2026-10-13-diagonal-cross-product-cell-area-green-gauss/QuadDiagonalCrossLab'
+import { GreenGaussAreaMismatchMap } from '@/components/post-viz/2026-10-13-diagonal-cross-product-cell-area-green-gauss/GreenGaussAreaMismatchMap'
+
+## 更精确的面积给出了更差的答案
+
+$\phi = x$ 的梯度应当是 1。无论网格怎样弯曲都一样。可是在曲线网格 FVM 代码里把单元面积“精确”积分后填进去，结果偏离了 0.19%。改用单元中心的雅可比，偏差翻倍到 0.39%。反过来，用四个顶点算出的对角线叉积面积，误差只有 $10^{-14}$。
+
+本文从一道研究生 CFD 作业题出发。题目要求用两条对角线的叉积求二维单元体积 $\Delta V$。手算只要五行。但作业没有问：这五行为什么比“真实面积”更好。这里用一条散度定理把原因讲清楚，再用 Python 核对数字。
+
+## 作业的答案：四边形面积由两条对角线决定
+
+计算空间中的单元 $(i,j)$ 映射到物理空间后，是一个有四个顶点的四边形 ABCD。顶点位于半整数下标 $(i\pm\tfrac12, j\pm\tfrac12)$。二维情况下取单位厚度，体积就等于面积。
+
+把对角线 $\overline{BD}$ 和 $\overline{CA}$ 看作向量。平移使起点重合，就得到平行四边形 EFGH。它的面积是叉积的模 $|\mathbf{BD}\times\mathbf{CA}|$。这个平行四边形的面积恰好是原四边形的两倍。
+
+$$
+\Delta V_{i,j} = \tfrac12\Big[(x_{i+\frac12,j+\frac12}-x_{i-\frac12,j-\frac12})(y_{i-\frac12,j+\frac12}-y_{i+\frac12,j-\frac12}) - (y_{i+\frac12,j+\frac12}-y_{i-\frac12,j-\frac12})(x_{i-\frac12,j+\frac12}-x_{i+\frac12,j-\frac12})\Big]
+$$
+
+第一组括号是一条对角线的 $x$ 分量乘另一条的 $y$ 分量。第二组是相反的组合。两者之差就是二维叉积（两个向量张成的平行四边形的有向面积）。
+
+下面的画布可以直接拖动顶点。
+
+<QuadDiagonalCrossLab />
+
+拖动 A–D，左上角的数值和紫色平行四边形会一起变化。点击“sweep C”，C 会越过 D 向左移动。观察单元由凸 → 凹 → 扭曲时，三角形颜色和面积符号的变化。
+
+## 为什么对角线叉积不是近似
+
+沿对角线 AC 把四边形切开，得到三角形 ABC 和 ACD。每个三角形的面积是边向量叉积的一半。两者相加可以合并成：
+
+$$
+\tfrac12\,\mathbf{AB}\times\mathbf{AC} + \tfrac12\,\mathbf{AC}\times\mathbf{AD} = \tfrac12\,\mathbf{AC}\times(\mathbf{AD}-\mathbf{AB}) = \tfrac12\,\mathbf{AC}\times\mathbf{BD}
+$$
+
+由于 $\mathbf{AD}-\mathbf{AB}=\mathbf{BD}$，最后一式成立。无论凸还是凹，这个等式都不变。所以对角线公式与用直线连接顶点的多边形面积严格相等。它也与鞋带公式（顶点坐标交叉相乘求多边形面积的公式）给出同一个值。
+
+不过，这是“直边”多边形的面积。如果网格线确实是曲线，真实面积是 $\iint J\,d\xi\,d\eta$。$J$ 是雅可比（从计算坐标到物理坐标的面积放大率）。两者相差 $O(h^2)$。那么真实面积是不是更好的选择？答案正相反。
+
+## Green–Gauss 梯度对体积的要求
+
+Green–Gauss 梯度（用散度定理把单元平均梯度变成面积分之和的方法）写作：
+
+$$
+(\nabla\phi)_P \approx \frac{1}{V_P}\sum_{f} \phi_f\,\mathbf{S}_f
+$$
+
+$\phi_f$ 是面中点值，$\mathbf{S}_f$ 是面法向量乘以面长度，$V_P$ 是单元体积。FVM 代码里的面是连接顶点的直线段。没有任何面沿着弯曲的网格线走。
+
+代入 $\phi=x$。在直边上 $x$ 是线性的，所以中点值严格等于边上的平均值。于是分子就是直边多边形上的散度定理本身。
+
+$$
+\sum_f x_f\,S_{x,f} = \oint_{\partial\Omega_\text{poly}} x\,n_x\,dS = |\Omega_\text{poly}|
+$$
+
+$\Omega_\text{poly}$ 是用直线连接顶点得到的多边形。因此梯度等于 $|\Omega_\text{poly}|/V_P$。要让它等于 1，$V_P$ 必须是多边形面积，也就是对角线叉积面积。填入真实曲线面积，分子和分母测量的就是两个不同的图形。
+
+在[曲线坐标变换与网格度量](/zh/posts/2026-06-17-curvilinear-coordinate-transformation-grid-metrics/)中离散度量项时，也会以同样的形式出现这种不一致。面向量和体积必须来自同一组顶点数据。
+
+## 代码：同样的面，三种体积
+
+采用波纹网格 $x=\xi+A\sin 2\pi\xi\,\sin 2\pi\eta$，$y=\eta+A\sin 2\pi\xi\,\sin 2\pi\eta$，取 $A=0.06$。边界保持为直线，只有内部网格线弯曲。三种情况的面通量完全相同，只换体积：(1) 对角线叉积，(2) 单元中心的解析 $J\cdot h^2$，(3) 用 4×4 高斯积分求出的真实曲线面积。
+
+```python
+import math
+
+A = 0.06  # 网格波纹振幅
+TP = 2 * math.pi
+
+def mapping(xi, eta):
+    w = A * math.sin(TP * xi) * math.sin(TP * eta)
+    return xi + w, eta + w
+
+def jac(xi, eta):
+    sx, cx = math.sin(TP * xi), math.cos(TP * xi)
+    se, ce = math.sin(TP * eta), math.cos(TP * eta)
+    wx, we = A * TP * cx * se, A * TP * sx * ce
+    return (1 + wx) * (1 + we) - we * wx
+
+def wavy_nodes(n):
+    s = [i / n for i in range(n + 1)]
+    x = [[mapping(si, sj)[0] for sj in s] for si in s]
+    y = [[mapping(si, sj)[1] for sj in s] for si in s]
+    return s, x, y
+
+def diag_area(x, y, i, j):
+    # 1/2 (BD x CA)：两条对角线的叉积
+    d1x = x[i + 1][j + 1] - x[i][j]; d1y = y[i + 1][j + 1] - y[i][j]
+    d2x = x[i][j + 1] - x[i + 1][j]; d2y = y[i][j + 1] - y[i + 1][j]
+    return 0.5 * (d1x * d2y - d1y * d2x)
+
+def jacobian_area(s, i, j):
+    # 单元中心的解析 J 乘以 h^2
+    h = s[1] - s[0]
+    return jac(s[i] + h / 2, s[j] + h / 2) * h * h
+
+GL = [(-0.8611363115940526, 0.3478548451374538), (-0.3399810435848563, 0.6521451548625461),
+      (0.3399810435848563, 0.6521451548625461), (0.8611363115940526, 0.3478548451374538)]
+
+def exact_cell_area(s, i, j):
+    # 曲线单元面积：对 J 做 4x4 高斯-勒让德积分
+    h = s[1] - s[0]; area = 0.0
+    for a, wa in GL:
+        for b, wb in GL:
+            area += wa * wb * jac(s[i] + h * (1 + a) / 2, s[j] + h * (1 + b) / 2)
+    return area * h * h / 4
+
+def green_gauss_dx(x, y, i, j, vol):
+    # phi = x 的 d(phi)/dx；直边面，逆时针
+    p = [(i, j), (i + 1, j), (i + 1, j + 1), (i, j + 1)]
+    flux = 0.0
+    for k in range(4):
+        (ia, ja), (ib, jb) = p[k], p[(k + 1) % 4]
+        nx = y[ib][jb] - y[ia][ja]   # 外法向（x 分量）乘以面长度
+        flux += 0.5 * (x[ia][ja] + x[ib][jb]) * nx
+    return flux / vol
+
+print("  N   err(diag)  err(J centre)  err(exact curved)  order(J)")
+prev = None
+for n in (8, 16, 32, 64, 128):
+    s, x, y = wavy_nodes(n)
+    e = [0.0, 0.0, 0.0]
+    for i in range(n):
+        for j in range(n):
+            vols = (diag_area(x, y, i, j), jacobian_area(s, i, j), exact_cell_area(s, i, j))
+            for k, v in enumerate(vols):
+                e[k] = max(e[k], abs(green_gauss_dx(x, y, i, j, v) - 1.0))
+    rate = "   -" if prev is None else f"  {math.log2(prev / e[1]):.2f}"
+    print(f"{n:3d}   {e[0]:.1e}    {e[1]:.3e}      {e[2]:.3e}     {rate}")
+    prev = e[1]
+
+s, x, y = wavy_nodes(32)
+tot_d = sum(diag_area(x, y, i, j) for i in range(32) for j in range(32))
+tot_e = sum(exact_cell_area(s, i, j) for i in range(32) for j in range(32))
+print(f"total area  diag {tot_d:.15f}  exact {tot_e:.15f}")
+
+def bowtie_area(pts):
+    (ax, ay), (bx, by), (cx, cy), (dx, dy) = pts
+    return 0.5 * ((cx - ax) * (dy - by) - (cy - ay) * (dx - bx))
+
+for t in (0.0, 1.0, 2.0, 3.0):
+    a = bowtie_area([(0, 0), (1, 0), (1 - t, 1), (0, 1)])
+    print(f"C at x={1 - t:+.0f}: signed area {a:+.3f}")
+```
+
+```text
+  N   err(diag)  err(J centre)  err(exact curved)  order(J)
+  8   2.3e-15    6.032e-02      2.896e-02        -
+ 16   3.6e-15    1.543e-02      7.638e-03       1.97
+ 32   1.1e-14    3.881e-03      1.935e-03       1.99
+ 64   3.4e-14    9.716e-04      4.855e-04       2.00
+128   6.8e-14    2.430e-04      1.215e-04       2.00
+total area  diag 1.000000000000000  exact 1.000000000000000
+C at x=+1: signed area +1.000
+C at x=+0: signed area +0.500
+C at x=-1: signed area +0.000
+C at x=-2: signed area -0.500
+```
+
+## 1.1e-14 与 3.9e-3 之间
+
+$N=32$ 时，对角线面积的误差为 $1.1\times10^{-14}$，处于舍入误差水平。单元中心 $J$ 为 $3.881\times10^{-3}$，真实曲线面积也有 $1.935\times10^{-3}$。网格加密一倍时，两者都正好降到四分之一，阶数为 2.00。
+
+三种方法的总面积都是 1。总量是对的，错的是每个单元的分配。因此全局守恒检查发现不了这个错误。
+
+在下面的图中切换体积计算方法。
+
+<GreenGaussAreaMismatchMap />
+
+白色曲线是真实映射的网格线，彩色四边形是直边 FV 单元。选择“½ (BD × CA)”，所有单元都变成绿色。用基于 $J$ 的两种方法时，网格弯曲严重的地方会变红。增大 N，红色会变淡，但不会消失。
+
+既然是 $O(h^2)$ 误差，很容易认为二阶格式无所谓。但如果连线性场都无法精确再现，二阶重构的前提就动摇了。限制器也会对这个虚假梯度作出反应。它叠加在[Green–Gauss 与最小二乘梯度对比](/zh/posts/2026-07-17-least-squares-gradient-reconstruction-unstructured/)中看到的畸变网格误差之上。
+
+## 扭曲单元上这个公式给出的信号
+
+输出最后四行是把顶点 C 向左拖动的结果。C 在 $x=+1$ 时面积为 1.000，在 $x=0$ 时为 0.500。$x=-1$ 时为 0.000，$x=-2$ 时为 $-0.500$。
+
+C 越过 D 之后，边 BC 与 DA 相交。单元扭成蝴蝶结形（bow-tie）。此时对角线公式返回两个三角形有向面积之和。其中一个三角形为负，所以和会降到零或负值。
+
+这不是缺陷，而是有用的信号。网格生成后立即检查所有单元 $\Delta V$ 的符号，就能马上找到扭曲单元。若在这里取绝对值，信号就消失了。扭曲单元会被当作体积为正的正常单元带入计算。
+
+## 曲线坐标代码中 J 该用在哪里
+
+这并不是说解析 $J$ 没用。它仍然是很好的网格质量指标和误差估计量。但进入 FVM 更新式分母的 $V_P$，必须与面向量 $\mathbf{S}_f$ 由同一组顶点算出。
+
+判别方法很简单。在任意弯曲网格上代入 $\phi=x$ 和 $\phi=y$，输出 Green–Gauss 梯度。如果 $\partial x/\partial x$ 在舍入误差水平上不等于 1，说明体积和面向量看的是两个不同的图形。作业里那五行对角线公式，是通过这项检查的最短路径。
