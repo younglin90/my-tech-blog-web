@@ -1,0 +1,187 @@
+---
+title: "Changing One Relaxation Factor Moved the Converged Solution — Where Rhie–Chow Face Velocities Remember Under-Relaxation"
+date: 2026-10-14
+description: "Change only α_u in SIMPLE and the converged velocity field shifts. The culprit is how the Rhie–Chow face velocity blends previous iterates; Majumdar's fix removes it."
+tags: ["Rhie-Chow", "Under-Relaxation", "SIMPLE", "Incompressible", "FVM"]
+locale: en
+slug: 2026-10-14-rhie-chow-under-relaxation-memory
+takeaway: "Standard Rhie–Chow leaves α_u in front of the pressure-damping term even after convergence. Store the previous face velocity on the face instead of averaging cell values, and the converged solution no longer depends on α."
+draft: false
+---
+import { RelaxedRhieChowColumnLab } from '@/components/post-viz/2026-10-14-rhie-chow-under-relaxation-memory/RelaxedRhieChowColumnLab'
+
+## Only the relaxation factor changed, yet the answer moved
+
+A steady SIMPLE run drives the residual down to $10^{-8}$. You change the momentum relaxation factor $\alpha_u$ from 0.7 to 0.3 and run again. It takes about three times as many iterations, but it converges. Yet the two velocity fields differ. Same mesh, same boundary conditions, same discretization.
+
+A relaxation factor should change only the path to convergence. If the converged point moves with that knob, the result can't be trusted. This post traces the cause to one line in the Rhie–Chow face-velocity formula. A 1D hydrostatic column measures the difference, and we check why Majumdar's (1988) correction drives it to zero.
+
+Familiarity with [the basic structure of SIMPLE and Rhie–Chow](/en/posts/2026-07-22-simple-pressure-velocity-coupling-rhie-chow/) is enough background. We assume a collocated grid (velocity and pressure stored at the same cell center).
+
+## Where α enters a SIMPLE iteration
+
+The discrete momentum equation for cell P reads:
+
+$$
+a_P u_P = \sum_{nb} a_{nb} u_{nb} + b_P - V_P (\nabla p)_P
+$$
+
+$a_P$ is the diagonal coefficient, $a_{nb}$ the neighbor coefficients, $b_P$ the non-pressure source, and $V_P$ the cell volume.
+
+SIMPLE does not solve this directly. It inflates the diagonal to $a_P/\alpha_u$ and adds the same amount back on the right using the previous iterate $u_P^{old}$.
+
+$$
+\frac{a_P}{\alpha_u} u_P = \sum_{nb} a_{nb} u_{nb} + b_P - V_P (\nabla p)_P + \frac{1-\alpha_u}{\alpha_u} a_P u_P^{old}
+$$
+
+At convergence $u_P = u_P^{old}$, so the two added terms cancel. Judged by the cell-centered momentum equation alone, relaxation leaves no trace on the converged point. The trouble shows up at the faces.
+
+## A two-layer column you can drive yourself
+
+Adjust $\alpha_u$ and the face-velocity formula in the simulation below.
+
+<RelaxedRhieChowColumnLab />
+
+The yellow ticks are the converged cell velocities at $\alpha_u = 1$. In standard mode, drop $\alpha_u$ to 0.1 and the bars leave the ticks, alternating in sign and spreading wide. Switch to Majumdar mode and the bars land back on the ticks for any $\alpha_u$.
+
+## How $u^{old}$ leaks into the face velocity
+
+Solving the relaxed equation for the cell velocity gives:
+
+$$
+u_P = \hat{u}_P - d_P (\nabla p)_P,\qquad d_P = \frac{\alpha_u V_P}{a_P}
+$$
+
+$$
+\hat{u}_P = \frac{\alpha_u}{a_P}\Big(\sum_{nb} a_{nb} u_{nb} + b_P\Big) + (1-\alpha_u)\,u_P^{old}
+$$
+
+$\hat{u}_P$ is the velocity without the pressure gradient, and $d_P$ is the sensitivity of velocity to that gradient.
+
+Rhie–Chow interpolates $\hat{u}$ and $d$ to face f, but recomputes the pressure gradient from the two cells sharing the face.
+
+$$
+u_f = \overline{\hat{u}}_f - d_f (\nabla p)_f
+$$
+
+$\overline{\,\cdot\,}_f$ is linear interpolation between the two cells, and $(\nabla p)_f = (p_N - p_P)/\Delta x$ is the compact face gradient.
+
+The catch is that $\overline{\hat{u}}_f$ contains $(1-\alpha_u)\,\overline{u^{old}}_f$. The face's "previous value" has been replaced by an average of cell velocities. That average is not the face velocity. The gap between them is exactly the Rhie–Chow damping term.
+
+## At convergence, α sits in front of the damping term
+
+Substitute $u^{old} = u$ at convergence and the standard formula becomes:
+
+$$
+u_f = \overline{u}_f + \alpha_u \,\overline{\Big(\tfrac{V}{a}\Big)}_f \Big[\,\overline{(\nabla p)}_f - (\nabla p)_f\,\Big]
+$$
+
+The bracket is the difference between the averaged cell gradients and the compact face gradient. It is $O(\Delta x^2)$ for smooth pressure and largest for a checkerboard (a pressure mode that flips sign every cell). This term is what makes the checkerboard visible to continuity.
+
+Its strength is scaled down by $\alpha_u$. At $\alpha_u = 0.1$ only 10% of the damping survives. The converged solution depends on $\alpha_u$, and the lower $\alpha_u$ goes, the more [the odd–even decoupling von Neumann faced in 1950](/en/posts/2026-05-13-von-neumann-artificial-viscosity-1950/) creeps back in.
+
+Majumdar's remedy is simple. Store the previous face velocity on the face and use it directly.
+
+$$
+u_f = \overline{\hat{u}^{*}}_f - d_f (\nabla p)_f + (1-\alpha_u)\, u_f^{old}
+$$
+
+$\hat{u}^{*}$ is $\hat{u}$ with the $(1-\alpha_u)u^{old}$ term removed. At convergence $u_f = u_f^{old}$, the $(1-\alpha_u)$ cancels across both sides, and the coefficient on the damping term returns to 1.
+
+## Code: one column, five values of α
+
+The test case is deliberately one with an obvious answer. A 1D column with walls at both ends holds $\rho = 10$ in the lower half and $\rho = 1$ in the upper half, under gravity. The exact answer is rest, $u = 0$. In 1D, continuity forces $u_f = 0$ on every face, so the pressure correction is a single integration. Whatever cell velocity $u_P$ remains is pure interpolation error.
+
+```python
+# 1D hydrostatic column: rho=10 lower half, rho=1 upper half, walls at both ends. Exact answer: u = 0.
+def density_column(n, rho_lo=1.0, rho_hi=10.0):
+    return [rho_hi if (i + 0.5) / n < 0.5 else rho_lo for i in range(n)]
+
+def cell_grad(p, h):
+    # face pressure = neighbor average, wall faces linearly extrapolated
+    n = len(p)
+    pf = [1.5 * p[0] - 0.5 * p[1]]
+    pf += [0.5 * (p[i] + p[i + 1]) for i in range(n - 1)]
+    pf += [1.5 * p[-1] - 0.5 * p[-2]]
+    return [(pf[i + 1] - pf[i]) / h for i in range(n)]
+
+def simple_hydrostatic(n, alpha, majumdar, a=1.0, g=1.0, tol=1e-13):
+    h = 1.0 / n
+    f = [-r * g for r in density_column(n)]
+    p, u, uf = [0.0] * n, [0.0] * n, [0.0] * (n + 1)
+    d = alpha / a                      # d = alpha*V/a_P (V = 1 units)
+    for it in range(1, 5000):
+        gp = cell_grad(p, h)
+        # relaxed momentum predictor
+        us = [alpha * (f[i] - gp[i]) / a + (1 - alpha) * u[i] for i in range(n)]
+        # Rhie-Chow: interpolate u_hat (pressure term removed) to faces
+        uh = [us[i] + d * gp[i] - majumdar * (1 - alpha) * u[i] for i in range(n)]
+        ufs = [0.0] * (n + 1)
+        for i in range(1, n):
+            ufs[i] = 0.5 * (uh[i - 1] + uh[i]) - d * (p[i] - p[i - 1]) / h
+            ufs[i] += majumdar * (1 - alpha) * uf[i]
+        # pressure correction: in 1D continuity directly demands zero face velocity
+        pc = [0.0] * n
+        for i in range(1, n):
+            pc[i] = pc[i - 1] + h * ufs[i] / d
+        p = [p[i] + pc[i] for i in range(n)]
+        gc = cell_grad(pc, h)
+        un = [us[i] - d * gc[i] for i in range(n)]
+        uf = [0.0] * (n + 1)          # after correction the face velocity is exactly 0
+        res = max(abs(un[i] - u[i]) for i in range(n))
+        u = un
+        if res < tol and it > 5:
+            return u, p, it
+    return u, p, it
+
+n = 80
+_, p_ref, _ = simple_hydrostatic(n, 1.0, False)
+print("alpha | iters | peak|u|  cells>0.01 | max|p-p(1)|   <- standard / majumdar")
+for alpha in (1.0, 0.7, 0.5, 0.3, 0.1):
+    row = []
+    for mj in (0, 1):
+        u, p, it = simple_hydrostatic(n, alpha, mj)
+        wide = sum(abs(v) > 0.01 for v in u)
+        dp = max(abs(p[i] - p_ref[i]) for i in range(n))
+        row.append(f"{it:4d} {max(map(abs, u)):.4f} {wide:3d} {dp:.2e}")
+    print(f" {alpha:.1f}  | " + "  /  ".join(row))
+
+u, _, _ = simple_hydrostatic(n, 0.1, 0)
+print("standard, alpha=0.1, cells 34..45:", " ".join(f"{v:+.3f}" for v in u[34:46]))
+```
+
+```text
+alpha | iters | peak|u|  cells>0.01 | max|p-p(1)|   <- standard / majumdar
+ 1.0  |    6 2.2500   2 0.00e+00  /     6 2.2500   2 0.00e+00
+ 0.7  |   26 2.0499   6 4.59e-03  /    27 2.2500   2 8.88e-16
+ 0.5  |   42 1.8640   6 8.24e-03  /    45 2.2500   2 0.00e+00
+ 0.3  |   79 1.5925  10 1.27e-02  /    84 2.2500   2 8.88e-16
+ 0.1  |  247 1.0811  16 1.92e-02  /   271 2.2500   2 0.00e+00
+standard, alpha=0.1, cells 34..45: +0.041 -0.079 +0.152 -0.292 +0.562 -1.081 +1.081 -0.562 +0.292 -0.152 +0.079 -0.041
+```
+
+## What 1.0811 and 16 cells are telling us
+
+At $\alpha_u = 1$ the two formulas coincide. Two cells straddling the interface keep $\mp 2.25$. That is a separate error, unrelated to relaxation. The Rhie–Chow face does not see the step in the body force $\rho g$. For density ratio $r$ its size is $(r-1)g/4$, which you can check with the widget's density slider. Balanced-force treatments such as Denner (2013) remove it by handling the body force at the face the same way as pressure.
+
+With the standard formula, lowering $\alpha_u$ cuts the peak velocity from 2.25 to 1.0811. On that number alone it looks like an improvement. But the count of cells with $|u| > 0.01$ grows from 2 to 16. The last line shows the sign flipping every cell while the amplitude shrinks by about 1.9× per cell. With weaker damping, the error can no longer stay local and spreads as an oscillatory mode.
+
+Pressure moved too. At $\alpha_u = 0.1$ it differs from the $\alpha_u = 1$ solution by $1.92\times10^{-2}$. The Majumdar column stays below $10^{-15}$ in all five cases: the same solution to machine precision. Majumdar takes slightly more iterations, but that is only a difference in path.
+
+## What the Majumdar correction stores
+
+The cost is one real number per face. After the pressure correction, save the corrected face flux as $u_f^{old}$. Most codes already keep mass fluxes on faces, so it is essentially free.
+
+One caveat. Store the face velocity after the pressure correction, not $u_f^{*}$ right after interpolation. Saving the pre-correction value makes a flux that violates continuity the memory for the next iteration.
+
+## The time term digs the same hole
+
+In transient runs the time term plays the same role. If $\rho V u_P^n/\Delta t$ from an implicit time discretization is folded into $\hat{u}_P$ and interpolated as a cell average, the steady state you reach depends on $\Delta t$. Choi (1999) and others pointed this out. OpenFOAM's `ddtCorr` is the term that corrects it by using the previous time step's face flux directly.
+
+The principle is identical to relaxation. Wherever a "previous value" is needed, use the face's own value on the face. Multi-level schemes, like the [Gear scheme used to raise temporal order](/en/posts/2026-10-12-semi-implicit-gear-convection-extrapolation/), need correspondingly more stored face fluxes.
+
+## Keeping the relaxation factor a pure convergence knob
+
+The test is simple. Converge the same case with two values of $\alpha_u$ and subtract the results. If the difference is at the iteration tolerance, the face-velocity formula is clean. If it is comparable to the discretization error, the face interpolation is probably mixing $u^{old}$ as a cell average.
+
+For transient work, repeat the test with $\Delta t$. If a converged steady state changes with $\Delta t$, the time-term correction is missing. Either test is enough to point you to a single suspicious line of code.

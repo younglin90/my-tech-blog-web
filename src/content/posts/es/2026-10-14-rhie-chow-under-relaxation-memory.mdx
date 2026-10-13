@@ -1,0 +1,187 @@
+---
+title: "Cambiar un solo factor de relajación movió la solución convergida — Dónde la velocidad de cara de Rhie–Chow recuerda la sub-relajación"
+date: 2026-10-14
+description: "Al cambiar solo α_u en SIMPLE, el campo de velocidad convergido se desplaza. La causa es cómo la velocidad de cara de Rhie–Chow mezcla iteraciones previas; la corrección de Majumdar la elimina."
+tags: ["Rhie-Chow", "Under-Relaxation", "SIMPLE", "Incompressible", "FVM"]
+locale: es
+slug: 2026-10-14-rhie-chow-under-relaxation-memory
+takeaway: "El Rhie–Chow estándar deja α_u delante del término de amortiguamiento de presión incluso tras converger. Si la velocidad de cara previa se guarda en la cara en lugar de promediar valores de celda, la solución convergida deja de depender de α."
+draft: false
+---
+import { RelaxedRhieChowColumnLab } from '@/components/post-viz/2026-10-14-rhie-chow-under-relaxation-memory/RelaxedRhieChowColumnLab'
+
+## Solo cambió el factor de relajación, y la respuesta se movió
+
+Un cálculo SIMPLE estacionario baja el residuo hasta $10^{-8}$. Se cambia el factor de relajación del momento $\alpha_u$ de 0.7 a 0.3 y se vuelve a correr. Hacen falta unas tres veces más iteraciones, pero converge. Sin embargo, los dos campos de velocidad no coinciden. La malla, las condiciones de contorno y la discretización son las mismas.
+
+Un factor de relajación solo debería cambiar el camino hacia la convergencia. Si el punto convergido se mueve con esa perilla, el resultado no es confiable. Este artículo muestra que la causa está en una línea de la fórmula de velocidad de cara de Rhie–Chow. Con una columna hidrostática 1D se mide la diferencia y se comprueba por qué la corrección de Majumdar (1988) la lleva a cero.
+
+Como contexto basta conocer [la estructura básica de SIMPLE y Rhie–Chow](/es/posts/2026-07-22-simple-pressure-velocity-coupling-rhie-chow/). Se supone una malla colocada (velocidad y presión almacenadas en el mismo centro de celda).
+
+## Dónde entra α en una iteración de SIMPLE
+
+La ecuación de momento discreta de la celda P tiene esta forma:
+
+$$
+a_P u_P = \sum_{nb} a_{nb} u_{nb} + b_P - V_P (\nabla p)_P
+$$
+
+$a_P$ es el coeficiente diagonal, $a_{nb}$ los coeficientes vecinos, $b_P$ la fuente distinta de la presión y $V_P$ el volumen de la celda.
+
+SIMPLE no resuelve esta ecuación tal cual. Aumenta la diagonal a $a_P/\alpha_u$ y devuelve la misma cantidad al lado derecho con la iteración previa $u_P^{old}$.
+
+$$
+\frac{a_P}{\alpha_u} u_P = \sum_{nb} a_{nb} u_{nb} + b_P - V_P (\nabla p)_P + \frac{1-\alpha_u}{\alpha_u} a_P u_P^{old}
+$$
+
+Al converger, $u_P = u_P^{old}$, así que los dos términos añadidos se cancelan. Si se mira solo la ecuación de momento en el centro de celda, la relajación no deja rastro en el punto convergido. El problema aparece en las caras.
+
+## Una columna de dos capas para manipular
+
+En la simulación de abajo se puede cambiar $\alpha_u$ y la fórmula de velocidad de cara y manipularla directamente.
+
+<RelaxedRhieChowColumnLab />
+
+Las marcas amarillas son las velocidades de celda convergidas con $\alpha_u = 1$. En modo standard, al bajar $\alpha_u$ a 0.1 las barras se apartan de las marcas, alternan de signo y se extienden. Al cambiar al modo Majumdar, las barras vuelven a caer sobre las marcas para cualquier $\alpha_u$.
+
+## Cómo se cuela $u^{old}$ en la velocidad de cara
+
+Despejando la velocidad de celda en la ecuación relajada se obtiene:
+
+$$
+u_P = \hat{u}_P - d_P (\nabla p)_P,\qquad d_P = \frac{\alpha_u V_P}{a_P}
+$$
+
+$$
+\hat{u}_P = \frac{\alpha_u}{a_P}\Big(\sum_{nb} a_{nb} u_{nb} + b_P\Big) + (1-\alpha_u)\,u_P^{old}
+$$
+
+$\hat{u}_P$ es la velocidad sin el gradiente de presión y $d_P$ es la sensibilidad de la velocidad a ese gradiente.
+
+Rhie–Chow interpola $\hat{u}$ y $d$ a la cara f, pero recalcula el gradiente de presión con las dos celdas que comparten la cara.
+
+$$
+u_f = \overline{\hat{u}}_f - d_f (\nabla p)_f
+$$
+
+$\overline{\,\cdot\,}_f$ es la interpolación lineal entre las dos celdas y $(\nabla p)_f = (p_N - p_P)/\Delta x$ es el gradiente compacto de cara.
+
+El detalle es que $\overline{\hat{u}}_f$ contiene $(1-\alpha_u)\,\overline{u^{old}}_f$. El "valor previo" de la cara se sustituyó por un promedio de velocidades de celda. Ese promedio no es la velocidad de cara. La diferencia entre ambos es exactamente el término de amortiguamiento de Rhie–Chow.
+
+## Al converger, α queda delante del amortiguamiento
+
+Sustituyendo $u^{old} = u$ en el estado convergido, la fórmula estándar queda:
+
+$$
+u_f = \overline{u}_f + \alpha_u \,\overline{\Big(\tfrac{V}{a}\Big)}_f \Big[\,\overline{(\nabla p)}_f - (\nabla p)_f\,\Big]
+$$
+
+El corchete es la diferencia entre el promedio de gradientes de celda y el gradiente compacto de cara. Es $O(\Delta x^2)$ para una presión suave y máximo para un tablero de ajedrez (un modo de presión que cambia de signo en cada celda). Este término es el que hace visible el tablero para la ecuación de continuidad.
+
+Su intensidad queda escalada por $\alpha_u$. Con $\alpha_u = 0.1$ sobrevive solo el 10 % del amortiguamiento. La solución convergida depende de $\alpha_u$, y cuanto menor es $\alpha_u$, más vuelve [el desacoplamiento par–impar que enfrentó von Neumann en 1950](/es/posts/2026-05-13-von-neumann-artificial-viscosity-1950/).
+
+El remedio de Majumdar es simple. Se guarda la velocidad de cara previa en la propia cara y se usa directamente.
+
+$$
+u_f = \overline{\hat{u}^{*}}_f - d_f (\nabla p)_f + (1-\alpha_u)\, u_f^{old}
+$$
+
+$\hat{u}^{*}$ es $\hat{u}$ sin el término $(1-\alpha_u)u^{old}$. Al converger, $u_f = u_f^{old}$, el factor $(1-\alpha_u)$ se simplifica en ambos lados y el coeficiente del amortiguamiento vuelve a 1.
+
+## Código: una columna, cinco valores de α
+
+El caso de prueba se eligió a propósito con respuesta obvia. Una columna 1D con paredes en ambos extremos contiene $\rho = 10$ en la mitad inferior y $\rho = 1$ en la superior, bajo gravedad. La respuesta exacta es reposo, $u = 0$. En 1D, la continuidad impone $u_f = 0$ en todas las caras, así que la corrección de presión es una sola integración. La velocidad de celda $u_P$ que quede es error de interpolación puro.
+
+```python
+# Columna hidrostática 1D: rho=10 abajo, rho=1 arriba, paredes en ambos extremos. Respuesta exacta: u = 0.
+def density_column(n, rho_lo=1.0, rho_hi=10.0):
+    return [rho_hi if (i + 0.5) / n < 0.5 else rho_lo for i in range(n)]
+
+def cell_grad(p, h):
+    # presión de cara = promedio de vecinos, caras de pared extrapoladas linealmente
+    n = len(p)
+    pf = [1.5 * p[0] - 0.5 * p[1]]
+    pf += [0.5 * (p[i] + p[i + 1]) for i in range(n - 1)]
+    pf += [1.5 * p[-1] - 0.5 * p[-2]]
+    return [(pf[i + 1] - pf[i]) / h for i in range(n)]
+
+def simple_hydrostatic(n, alpha, majumdar, a=1.0, g=1.0, tol=1e-13):
+    h = 1.0 / n
+    f = [-r * g for r in density_column(n)]
+    p, u, uf = [0.0] * n, [0.0] * n, [0.0] * (n + 1)
+    d = alpha / a                      # d = alpha*V/a_P (unidades con V = 1)
+    for it in range(1, 5000):
+        gp = cell_grad(p, h)
+        # predictor de momento relajado
+        us = [alpha * (f[i] - gp[i]) / a + (1 - alpha) * u[i] for i in range(n)]
+        # Rhie-Chow: interpolar u_hat (sin término de presión) a las caras
+        uh = [us[i] + d * gp[i] - majumdar * (1 - alpha) * u[i] for i in range(n)]
+        ufs = [0.0] * (n + 1)
+        for i in range(1, n):
+            ufs[i] = 0.5 * (uh[i - 1] + uh[i]) - d * (p[i] - p[i - 1]) / h
+            ufs[i] += majumdar * (1 - alpha) * uf[i]
+        # corrección de presión: en 1D la continuidad exige velocidad de cara nula
+        pc = [0.0] * n
+        for i in range(1, n):
+            pc[i] = pc[i - 1] + h * ufs[i] / d
+        p = [p[i] + pc[i] for i in range(n)]
+        gc = cell_grad(pc, h)
+        un = [us[i] - d * gc[i] for i in range(n)]
+        uf = [0.0] * (n + 1)          # tras la corrección la velocidad de cara es exactamente 0
+        res = max(abs(un[i] - u[i]) for i in range(n))
+        u = un
+        if res < tol and it > 5:
+            return u, p, it
+    return u, p, it
+
+n = 80
+_, p_ref, _ = simple_hydrostatic(n, 1.0, False)
+print("alpha | iters | peak|u|  cells>0.01 | max|p-p(1)|   <- standard / majumdar")
+for alpha in (1.0, 0.7, 0.5, 0.3, 0.1):
+    row = []
+    for mj in (0, 1):
+        u, p, it = simple_hydrostatic(n, alpha, mj)
+        wide = sum(abs(v) > 0.01 for v in u)
+        dp = max(abs(p[i] - p_ref[i]) for i in range(n))
+        row.append(f"{it:4d} {max(map(abs, u)):.4f} {wide:3d} {dp:.2e}")
+    print(f" {alpha:.1f}  | " + "  /  ".join(row))
+
+u, _, _ = simple_hydrostatic(n, 0.1, 0)
+print("standard, alpha=0.1, cells 34..45:", " ".join(f"{v:+.3f}" for v in u[34:46]))
+```
+
+```text
+alpha | iters | peak|u|  cells>0.01 | max|p-p(1)|   <- standard / majumdar
+ 1.0  |    6 2.2500   2 0.00e+00  /     6 2.2500   2 0.00e+00
+ 0.7  |   26 2.0499   6 4.59e-03  /    27 2.2500   2 8.88e-16
+ 0.5  |   42 1.8640   6 8.24e-03  /    45 2.2500   2 0.00e+00
+ 0.3  |   79 1.5925  10 1.27e-02  /    84 2.2500   2 8.88e-16
+ 0.1  |  247 1.0811  16 1.92e-02  /   271 2.2500   2 0.00e+00
+standard, alpha=0.1, cells 34..45: +0.041 -0.079 +0.152 -0.292 +0.562 -1.081 +1.081 -0.562 +0.292 -0.152 +0.079 -0.041
+```
+
+## Lo que dicen 1.0811 y 16 celdas
+
+Con $\alpha_u = 1$ las dos fórmulas coinciden. Las dos celdas a ambos lados de la interfaz conservan $\mp 2.25$. Es un error distinto, ajeno a la relajación. Surge porque la cara de Rhie–Chow no ve el escalón de la fuerza de volumen $\rho g$. Para una razón de densidades $r$ su tamaño es $(r-1)g/4$, verificable con el deslizador de densidad del widget. Los tratamientos balanced-force como el de Denner (2013) lo eliminan tratando la fuerza de volumen en la cara igual que la presión.
+
+Con la fórmula estándar, al bajar $\alpha_u$ la velocidad máxima cae de 2.25 a 1.0811. Viendo solo ese número parece una mejora. Pero las celdas con $|u| > 0.01$ pasan de 2 a 16. La última línea muestra el signo alternando en cada celda, con la amplitud reduciéndose unas 1.9 veces por celda. Con menos amortiguamiento, el error ya no se queda local y se propaga como modo oscilatorio.
+
+La presión también se movió. Con $\alpha_u = 0.1$ difiere de la solución con $\alpha_u = 1$ en $1.92\times10^{-2}$. La columna de Majumdar queda por debajo de $10^{-15}$ en los cinco casos: la misma solución a precisión de máquina. Majumdar requiere algunas iteraciones más, pero es solo una diferencia de camino.
+
+## Lo que guarda la corrección de Majumdar
+
+El costo es un número real por cara. Tras la corrección de presión, se guarda el flujo de cara corregido como $u_f^{old}$. La mayoría de los códigos ya almacenan flujos másicos en las caras, así que es prácticamente gratis.
+
+Hay una advertencia. Se debe guardar la velocidad de cara después de la corrección de presión, no $u_f^{*}$ recién interpolada. Guardar el valor previo a la corrección convierte un flujo que viola la continuidad en la memoria de la siguiente iteración.
+
+## El término temporal cava el mismo pozo
+
+En cálculos transitorios, el término temporal cumple el mismo papel. Si $\rho V u_P^n/\Delta t$ de una discretización temporal implícita se incorpora en $\hat{u}_P$ y se interpola como promedio de celda, el estado estacionario alcanzado depende de $\Delta t$. Choi (1999), entre otros, señaló esta dependencia. El término `ddtCorr` de OpenFOAM corrige esa diferencia usando directamente el flujo de cara del paso temporal anterior.
+
+El principio es idéntico al de la relajación. Donde haga falta un "valor previo", en la cara se usa el valor de la cara. Los esquemas multinivel, como el [esquema de Gear para subir el orden temporal](/es/posts/2026-10-12-semi-implicit-gear-convection-extrapolation/), necesitan guardar proporcionalmente más flujos de cara.
+
+## Dejar el factor de relajación como simple perilla de convergencia
+
+La prueba es sencilla. Se converge el mismo caso con dos valores de $\alpha_u$ y se restan los resultados. Si la diferencia está al nivel de la tolerancia de iteración, la fórmula de velocidad de cara está limpia. Si es comparable al error de discretización, lo más probable es que la interpolación de cara esté mezclando $u^{old}$ como promedio de celda.
+
+En análisis transitorio, se repite la prueba con $\Delta t$. Si un estado estacionario convergido cambia con $\Delta t$, falta la corrección del término temporal. Cualquiera de las dos pruebas basta para señalar una sola línea de código sospechosa.

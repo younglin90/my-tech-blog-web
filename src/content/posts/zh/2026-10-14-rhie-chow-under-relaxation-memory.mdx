@@ -1,0 +1,187 @@
+---
+title: "只改了一个松弛因子，收敛解就变了 — Rhie–Chow 面速度记住欠松弛的地方"
+date: 2026-10-14
+description: "在 SIMPLE 中只改 α_u，收敛后的速度场就会改变。原因在于 Rhie–Chow 面速度混入前一次迭代值的方式，Majumdar 修正可以消除它。"
+tags: ["Rhie-Chow", "Under-Relaxation", "SIMPLE", "Incompressible", "FVM"]
+locale: zh
+slug: 2026-10-14-rhie-chow-under-relaxation-memory
+takeaway: "标准 Rhie–Chow 在收敛后仍在压力阻尼项前留下 α_u。只要把上一次的面速度存在面上直接使用，而不是用单元平均，收敛解就与 α 无关。"
+draft: false
+---
+import { RelaxedRhieChowColumnLab } from '@/components/post-viz/2026-10-14-rhie-chow-under-relaxation-memory/RelaxedRhieChowColumnLab'
+
+## 只改了松弛因子，答案却变了
+
+一个稳态 SIMPLE 计算的残差降到了 $10^{-8}$。把动量松弛因子 $\alpha_u$ 从 0.7 改成 0.3 再算一次。迭代次数大约变成三倍，但同样收敛了。然而两个速度场并不相同。网格、边界条件、离散格式都没变。
+
+松弛因子本应只改变迭代路径。如果收敛点随这个旋钮移动，结果就不可信。本文说明原因出在 Rhie–Chow 面速度公式的一行里。我们用一个一维静水压柱把差异量化，并确认 Majumdar（1988）的修正为何能把它变成零。
+
+背景知识只需了解 [SIMPLE 与 Rhie–Chow 的基本结构](/zh/posts/2026-07-22-simple-pressure-velocity-coupling-rhie-chow/)。本文以同位网格（速度和压力存放在同一单元中心的布置）为前提。
+
+## SIMPLE 一次迭代中 α 进入的位置
+
+单元 P 的离散动量方程形式如下。
+
+$$
+a_P u_P = \sum_{nb} a_{nb} u_{nb} + b_P - V_P (\nabla p)_P
+$$
+
+$a_P$ 是对角系数，$a_{nb}$ 是邻居系数，$b_P$ 是压力以外的源项，$V_P$ 是单元体积。
+
+SIMPLE 并不直接求解此式。它把对角放大到 $a_P/\alpha_u$，再用上一次迭代值 $u_P^{old}$ 在右端补回同样的量。
+
+$$
+\frac{a_P}{\alpha_u} u_P = \sum_{nb} a_{nb} u_{nb} + b_P - V_P (\nabla p)_P + \frac{1-\alpha_u}{\alpha_u} a_P u_P^{old}
+$$
+
+收敛时 $u_P = u_P^{old}$，添加的两项相互抵消。只看单元中心的动量方程，松弛不会在收敛点留下痕迹。问题出在面上。
+
+## 亲手操作的双层液柱
+
+在下面的模拟中切换 $\alpha_u$ 和面速度公式，亲手操作一下。
+
+<RelaxedRhieChowColumnLab />
+
+黄色刻度是 $\alpha_u = 1$ 时收敛的单元速度。在 standard 模式下把 $\alpha_u$ 降到 0.1，柱条会离开刻度，符号交替并大范围扩散。切换到 Majumdar 模式后，无论 $\alpha_u$ 取何值，柱条都会回到刻度上。
+
+## $u^{old}$ 混入面速度公式的路径
+
+把松弛后的方程对单元速度整理，得到：
+
+$$
+u_P = \hat{u}_P - d_P (\nabla p)_P,\qquad d_P = \frac{\alpha_u V_P}{a_P}
+$$
+
+$$
+\hat{u}_P = \frac{\alpha_u}{a_P}\Big(\sum_{nb} a_{nb} u_{nb} + b_P\Big) + (1-\alpha_u)\,u_P^{old}
+$$
+
+$\hat{u}_P$ 是去掉压力梯度后的剩余速度，$d_P$ 是速度对压力梯度的敏感度。
+
+Rhie–Chow 插值在面 f 上插值 $\hat{u}$ 和 $d$，只有压力梯度用面两侧单元的值重新计算。
+
+$$
+u_f = \overline{\hat{u}}_f - d_f (\nabla p)_f
+$$
+
+$\overline{\,\cdot\,}_f$ 表示两单元间的线性插值，$(\nabla p)_f = (p_N - p_P)/\Delta x$ 是紧致的面梯度。
+
+问题在于 $\overline{\hat{u}}_f$ 中包含 $(1-\alpha_u)\,\overline{u^{old}}_f$。面速度的"上一次值"被单元速度的平均所替代。单元速度的平均并不等于面速度。两者之差恰好就是 Rhie–Chow 阻尼项。
+
+## 收敛后 α 留在阻尼项前面
+
+在收敛状态代入 $u^{old} = u$ 并整理，标准公式变为：
+
+$$
+u_f = \overline{u}_f + \alpha_u \,\overline{\Big(\tfrac{V}{a}\Big)}_f \Big[\,\overline{(\nabla p)}_f - (\nabla p)_f\,\Big]
+$$
+
+方括号是单元梯度平均与紧致面梯度之差。对光滑压力它是 $O(\Delta x^2)$，对棋盘格模式（每隔一个网格就变号的压力模式）则最大。正是这一项让连续方程"看见"棋盘格。
+
+这个机制的强度被缩小为 $\alpha_u$ 倍。$\alpha_u = 0.1$ 时只剩 10% 的阻尼。收敛解依赖于 $\alpha_u$，而且 $\alpha_u$ 越小，[von Neumann 在 1950 年遇到的奇偶解耦](/zh/posts/2026-05-13-von-neumann-artificial-viscosity-1950/)就越会悄悄回来。
+
+Majumdar 的处方很简单：把上一次的面速度单独存在面上，直接使用。
+
+$$
+u_f = \overline{\hat{u}^{*}}_f - d_f (\nabla p)_f + (1-\alpha_u)\, u_f^{old}
+$$
+
+$\hat{u}^{*}$ 是从 $\hat{u}$ 中去掉 $(1-\alpha_u)u^{old}$ 项后的值。收敛时 $u_f = u_f^{old}$，$(1-\alpha_u)$ 在两边消去，阻尼项前的系数回到 1。
+
+## 代码：同一个液柱，五个 α
+
+测试问题特意选了答案显而易见的情形。一维液柱两端为壁面，下半部 $\rho = 10$，上半部 $\rho = 1$，施加重力。精确解是静止状态 $u = 0$。在一维中，连续方程要求所有面上 $u_f = 0$，所以压力修正只需一次积分。剩下的单元速度 $u_P$ 就是插值误差。
+
+```python
+# 一维静水压柱：下半部 rho=10，上半部 rho=1，两端为壁面。精确解 u = 0。
+def density_column(n, rho_lo=1.0, rho_hi=10.0):
+    return [rho_hi if (i + 0.5) / n < 0.5 else rho_lo for i in range(n)]
+
+def cell_grad(p, h):
+    # 面压力 = 相邻平均，壁面线性外推
+    n = len(p)
+    pf = [1.5 * p[0] - 0.5 * p[1]]
+    pf += [0.5 * (p[i] + p[i + 1]) for i in range(n - 1)]
+    pf += [1.5 * p[-1] - 0.5 * p[-2]]
+    return [(pf[i + 1] - pf[i]) / h for i in range(n)]
+
+def simple_hydrostatic(n, alpha, majumdar, a=1.0, g=1.0, tol=1e-13):
+    h = 1.0 / n
+    f = [-r * g for r in density_column(n)]
+    p, u, uf = [0.0] * n, [0.0] * n, [0.0] * (n + 1)
+    d = alpha / a                      # d = alpha*V/a_P（V = 1 单位）
+    for it in range(1, 5000):
+        gp = cell_grad(p, h)
+        # 松弛后的动量预测步
+        us = [alpha * (f[i] - gp[i]) / a + (1 - alpha) * u[i] for i in range(n)]
+        # Rhie-Chow：把去掉压力项的 u_hat 插值到面上
+        uh = [us[i] + d * gp[i] - majumdar * (1 - alpha) * u[i] for i in range(n)]
+        ufs = [0.0] * (n + 1)
+        for i in range(1, n):
+            ufs[i] = 0.5 * (uh[i - 1] + uh[i]) - d * (p[i] - p[i - 1]) / h
+            ufs[i] += majumdar * (1 - alpha) * uf[i]
+        # 压力修正：一维中连续方程直接要求面速度为零
+        pc = [0.0] * n
+        for i in range(1, n):
+            pc[i] = pc[i - 1] + h * ufs[i] / d
+        p = [p[i] + pc[i] for i in range(n)]
+        gc = cell_grad(pc, h)
+        un = [us[i] - d * gc[i] for i in range(n)]
+        uf = [0.0] * (n + 1)          # 修正后面速度恰好为 0
+        res = max(abs(un[i] - u[i]) for i in range(n))
+        u = un
+        if res < tol and it > 5:
+            return u, p, it
+    return u, p, it
+
+n = 80
+_, p_ref, _ = simple_hydrostatic(n, 1.0, False)
+print("alpha | iters | peak|u|  cells>0.01 | max|p-p(1)|   <- standard / majumdar")
+for alpha in (1.0, 0.7, 0.5, 0.3, 0.1):
+    row = []
+    for mj in (0, 1):
+        u, p, it = simple_hydrostatic(n, alpha, mj)
+        wide = sum(abs(v) > 0.01 for v in u)
+        dp = max(abs(p[i] - p_ref[i]) for i in range(n))
+        row.append(f"{it:4d} {max(map(abs, u)):.4f} {wide:3d} {dp:.2e}")
+    print(f" {alpha:.1f}  | " + "  /  ".join(row))
+
+u, _, _ = simple_hydrostatic(n, 0.1, 0)
+print("standard, alpha=0.1, cells 34..45:", " ".join(f"{v:+.3f}" for v in u[34:46]))
+```
+
+```text
+alpha | iters | peak|u|  cells>0.01 | max|p-p(1)|   <- standard / majumdar
+ 1.0  |    6 2.2500   2 0.00e+00  /     6 2.2500   2 0.00e+00
+ 0.7  |   26 2.0499   6 4.59e-03  /    27 2.2500   2 8.88e-16
+ 0.5  |   42 1.8640   6 8.24e-03  /    45 2.2500   2 0.00e+00
+ 0.3  |   79 1.5925  10 1.27e-02  /    84 2.2500   2 8.88e-16
+ 0.1  |  247 1.0811  16 1.92e-02  /   271 2.2500   2 0.00e+00
+standard, alpha=0.1, cells 34..45: +0.041 -0.079 +0.152 -0.292 +0.562 -1.081 +1.081 -0.562 +0.292 -0.152 +0.079 -0.041
+```
+
+## 1.0811 和 16 个单元说明了什么
+
+$\alpha_u = 1$ 时两个公式相同。界面两侧的两个单元残留 $\mp 2.25$。这是与松弛无关的另一种误差，源于 Rhie–Chow 面看不到体积力 $\rho g$ 的台阶。密度比为 $r$ 时其大小为 $(r-1)g/4$，可以用组件的密度比滑块验证。Denner（2013）等 balanced-force 处理在面上以与压力相同的方式处理体积力，从而消除它。
+
+标准公式下，$\alpha_u$ 越小，最大速度从 2.25 降到 1.0811。只看这个数字似乎变好了。但 $|u| > 0.01$ 的单元从 2 个增加到 16 个。最后一行显示符号逐格翻转，振幅每格约缩小 1.9 倍。阻尼减弱后，误差无法停留在局部，而以振荡模式扩散开来。
+
+压力也变了。$\alpha_u = 0.1$ 时与 $\alpha_u = 1$ 解的差为 $1.92\times10^{-2}$。Majumdar 一侧五种情况都在 $10^{-15}$ 以下，在机器精度上是同一个解。Majumdar 的迭代次数略多，但那只是收敛路径的差别。
+
+## Majumdar 修正保存的东西
+
+实现代价是每个面一个实数。压力修正完成后，把修正后的面通量保存为 $u_f^{old}$ 即可。多数代码本就在面上保存质量通量，所以几乎没有额外开销。
+
+有一点需要注意。保存的应是完成压力修正后的面速度，而不是插值刚结束时的 $u_f^{*}$。若保存修正前的值，不满足连续方程的通量就会成为下一次迭代的记忆。
+
+## 时间项也挖了同样的坑
+
+在非定常计算中，时间项起着同样的作用。隐式时间离散的 $\rho V u_P^n/\Delta t$ 如果混入 $\hat{u}_P$ 并以单元平均方式插值，最终达到的稳态解会依赖于 $\Delta t$。Choi（1999）等人指出了这种依赖性。OpenFOAM 的 `ddtCorr` 就是直接使用上一时间步的面通量来修正这一差异的项。
+
+原理与松弛完全相同：凡是需要"上一次值"的地方，面上就用面自己的值。像[用 Gear 格式提高时间精度的文章](/zh/posts/2026-10-12-semi-implicit-gear-convection-extrapolation/)那样使用多个时间层的格式，需要保存的面通量也相应增加。
+
+## 让松弛因子只做收敛速度的旋钮
+
+检查方法很简单。用两个 $\alpha_u$ 把同一算例算到收敛，然后把结果相减。若差异在迭代容差量级，面速度公式就是干净的。若差异与离散误差相当，面插值很可能在以单元平均的方式混入 $u^{old}$。
+
+如果是非定常分析，就用 $\Delta t$ 重复同样的检查。若收敛到的稳态随 $\Delta t$ 变化，说明缺少时间项的修正。两种检查都足以把怀疑缩小到一行代码。

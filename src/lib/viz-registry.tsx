@@ -259,6 +259,7 @@ export const VIZ_COMPONENTS: Record<string, ComponentType> = {
   "RefineCycleLadder": lazyViz(() => import("@/components/post-viz/2026-09-25-lbm-amr-recursive-time-cycle/RefineCycleLadder").then((m) => ({ default: m.RefineCycleLadder }))),
   "RefinementGateStrainInflator": lazyViz(() => import("@/components/post-viz/2026-09-02-lbm-amr-nonequilibrium-rescale/RefinementGateStrainInflator").then((m) => ({ default: m.RefinementGateStrainInflator }))),
   "RelativeVelocityBlowupLab": lazyViz(() => import("@/components/post-viz/2026-09-27-all-mach-twophase-enthalpy-stiffness/RelativeVelocityBlowupLab").then((m) => ({ default: m.RelativeVelocityBlowupLab }))),
+  "RelaxedRhieChowColumnLab": lazyViz(() => import("@/components/post-viz/2026-10-14-rhie-chow-under-relaxation-memory/RelaxedRhieChowColumnLab").then((m) => ({ default: m.RelaxedRhieChowColumnLab }))),
   "ReynoldsDyeExperiment": lazyViz(() => import("@/components/post-viz/2026-05-05-reynolds-pipe-transition-turbulence/ReynoldsDyeExperiment").then((m) => ({ default: m.ReynoldsDyeExperiment }))),
   "RiemannExactProfile1D": lazyViz(() => import("@/components/post-viz/2026-05-18-godunov-exact-riemann-shock-tube/RiemannExactProfile1D").then((m) => ({ default: m.RiemannExactProfile1D }))),
   "RiemannFan": lazyViz(() => import("@/components/post-viz/riemann-solvers/RiemannFan").then((m) => ({ default: m.RiemannFan }))),
