@@ -162,6 +162,7 @@ export const VIZ_COMPONENTS: Record<string, ComponentType> = {
   "KelvinWedgeDepthDial": lazyViz(() => import("@/components/post-viz/2026-09-24-kelvin-wake-angle-depth-froude/KelvinWedgeDepthDial").then((m) => ({ default: m.KelvinWedgeDepthDial }))),
   "KernelWobbleLab": lazyViz(() => import("@/components/post-viz/2026-08-03-immersed-boundary-direct-forcing-delta-kernel/KernelWobbleLab").then((m) => ({ default: m.KernelWobbleLab }))),
   "KineticShearMolecules": lazyViz(() => import("@/components/post-viz/2026-05-14-viscosity-kinetic-origin-transport-analogy/KineticShearMolecules").then((m) => ({ default: m.KineticShearMolecules }))),
+  "KnudsenHeatBridgeLab": lazyViz(() => import("@/components/post-viz/2026-10-15-knudsen-transition-particle-heating-sherman/KnudsenHeatBridgeLab").then((m) => ({ default: m.KnudsenHeatBridgeLab }))),
   "KolmogorovEnergySpectrum": lazyViz(() => import("@/components/post-viz/2026-06-02-kolmogorov-cascade-turbulence-scales/KolmogorovEnergySpectrum").then((m) => ({ default: m.KolmogorovEnergySpectrum }))),
   "KrylovConvergence": lazyViz(() => import("@/components/post-viz/2026-04-22-cfd-linear-solvers-krylov/KrylovConvergence").then((m) => ({ default: m.KrylovConvergence }))),
   "KrylovConvergenceRace": lazyViz(() => import("@/components/post-viz/2026-04-22-cfd-linear-solvers-krylov/KrylovConvergenceRace").then((m) => ({ default: m.KrylovConvergenceRace }))),
