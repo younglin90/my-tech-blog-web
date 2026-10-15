@@ -1,0 +1,233 @@
+---
+title: "Shuffling Cell Numbers Made LU-SGS 2.8× Slower — RCM Reordering and the Start Cell That Sets Sweep Direction"
+date: 2026-10-16
+description: "Why cell numbering on unstructured grids changes LU-SGS convergence, what Reverse Cuthill–McKee fixes, and why the RCM start cell still matters, shown on a 576-cell test."
+tags: ["Reverse-Cuthill-McKee", "LU-SGS", "Unstructured-Grid", "Implicit", "Algorithms"]
+locale: en
+slug: 2026-10-16-lu-sgs-cell-ordering-reverse-cuthill-mckee
+takeaway: "In LU-SGS, cell numbering decides how far information travels in one sweep. RCM cuts the bandwidth to 24, but what separates 9 iterations from 21 is how the start cell sits relative to the flow."
+draft: false
+---
+
+import { SweepOrderLusgsLab } from '@/components/post-viz/2026-10-16-lu-sgs-cell-ordering-reverse-cuthill-mckee/SweepOrderLusgsLab'
+
+## What changes when you shuffle cell numbers?
+
+Take a mesh and randomly shuffle its cell numbers. The matrix only gets its rows and columns permuted. The converged solution is identical. Yet LU-SGS (Lower-Upper Symmetric Gauss–Seidel, which approximates an implicit system with one lower-triangular and one upper-triangular sweep) went from 9 iterations to 25. This post traces where that gap comes from. You will see that numbering decides how far information travels per sweep. You will also see, in numbers, what RCM (Reverse Cuthill–McKee, a breadth-first renumbering that shrinks matrix bandwidth) fixes and what it cannot.
+
+## The question in a 2017 note: which neighbor is Lower?
+
+In late 2017 I added LU-SGS to an unstructured 3D code and left a note. The gist: LU-SGS splits the work into a Lower part and an Upper part. On an unstructured grid it is hard to tell which neighbors are Lower and which are Upper. So I found an open-source RCM routine and reordered the cells during initialization.
+
+Looking back, the first half of that question is only half right. The grid does not define Lower and Upper. The numbering does. Neighbors with a smaller number are Lower, larger ones are Upper. Any numbering at all lets LU-SGS run. The real question is which numbering is good.
+
+The note also says, "this RCM code supposedly only works for tetrahedral meshes, but I think it should work for others." That part is correct. RCM never looks at cell shape. It only sees the list of face neighbors, i.e. the graph.
+
+Try changing the numbering yourself in the simulation below. It runs LU-SGS cell by cell on a first-order upwind convection–diffusion problem over 20×20 cells.
+
+<SweepOrderLusgsLab />
+
+Toggle between `random labels` and `RCM`. With random numbering, one forward sweep leaves only scattered patches of color. With RCM SW, the solution fills in along the flow arrow in a single sweep. Then switch `RCM start` to SE and notice that the bandwidth (`bw`) stays the same while the iteration count does not.
+
+## The two LU-SGS sweeps as equations
+
+Say we solve the steady linear system $A\phi = b$ by pseudo-time marching. Split the matrix into diagonal and off-diagonal parts.
+
+$$
+A = D - L - U, \qquad (D + \tfrac{1}{\Delta\tau}I - L)\,(D + \tfrac{1}{\Delta\tau}I)^{-1}\,(D + \tfrac{1}{\Delta\tau}I - U)\,\Delta\phi = r
+$$
+
+$D$ is the diagonal $a_P$, $L$ holds the coefficients $a_{nb}$ of lower-numbered neighbors, $U$ those of higher-numbered ones, $r = b - A\phi$ is the residual, and $\Delta\tau$ is the pseudo-time step.
+
+This approximate factorization is solved with two sweeps. The forward sweep walks in numbering order and uses only the fresh values of lower-numbered neighbors. The backward sweep walks in reverse and adds the higher-numbered contributions.
+
+$$
+\Delta\phi^{*}_c = \frac{r_c + \sum_{k<c} a_{ck}\,\Delta\phi^{*}_k}{d}, \qquad \Delta\phi_c = \Delta\phi^{*}_c + \frac{\sum_{k>c} a_{ck}\,\Delta\phi_k}{d}
+$$
+
+$k<c$ means "a neighbor ranked before $c$", and $d = a_P + 1/\Delta\tau$.
+
+Here is the crux. If cell $c$'s upstream neighbor is ranked earlier, the correction that neighbor just received flows straight into $c$. If it is ranked later, it waits for the next iteration. For pure upwind convection numbered along the flow, $L$ contains the whole matrix. One forward sweep is the exact solve.
+
+## Cuthill–McKee is a breadth-first search
+
+The algorithm Cuthill and McKee published in 1969 is simple. Pick one start cell. Number cells by breadth-first search (BFS, visiting neighbors layer by layer outward). Within a layer, number cells with fewer neighbors first. Neighbor number gaps then never exceed the width of one layer.
+
+The largest such gap is the bandwidth.
+
+$$
+\beta = \max_{(i,j)\,\in\,\text{faces}} \lvert p(i) - p(j) \rvert
+$$
+
+$p(i)$ is the new number of cell $i$, and the maximum runs over all cell pairs sharing a face.
+
+In 1971 George showed that simply reversing this order reduces fill-in in direct factorization. That is the R in RCM. The start cell is usually taken from the "edge" of the graph. The standard approach is a pseudo-peripheral node search, which repeats BFS and hops to the farthest cell.
+
+## Code: 576 cells, four numberings
+
+We set up two problems on a 24×24 grid. One is convection-dominated, with flow at 30° and small diffusion (cell Péclet number 100). The other is pure diffusion. To mimic a mesh generator's arbitrary numbering, we shuffle the labels, then renumber with RCM. For the convection case we also try all four corners as the RCM start.
+
+```python
+import math, random
+from collections import deque
+
+def build_grid(n, ux, uy, diff):
+    # cell (i,j) -> neighbor list, coefficients a_nb, diagonal a_P (1st-order upwind + diffusion)
+    nbr, coef = [], []
+    for j in range(n):
+        for i in range(n):
+            lst, cf = [], []
+            for di, dj, nx_, ny_ in ((1,0,1,0),(-1,0,-1,0),(0,1,0,1),(0,-1,0,-1)):
+                ii, jj = i+di, j+dj
+                if 0 <= ii < n and 0 <= jj < n:
+                    lst.append(jj*n+ii)
+                    cf.append(diff + max(-(ux*nx_+uy*ny_), 0.0))
+            nbr.append(lst); coef.append(cf)
+    ap = 4*diff + abs(ux) + abs(uy)
+    return nbr, coef, ap
+
+def shuffle_labels(nbr, coef, rng):
+    m = len(nbr)
+    perm = list(range(m)); rng.shuffle(perm)   # old -> new
+    inv = [0]*m
+    for o, nw in enumerate(perm): inv[nw] = o
+    nb2 = [[int(perm[k]) for k in nbr[inv[c]]] for c in range(m)]
+    cf2 = [coef[inv[c]] for c in range(m)]
+    return nb2, cf2, perm
+
+def bfs_levels(nbr, s):
+    dist = [-1]*len(nbr); dist[s] = 0; q = deque([s]); last = s
+    while q:
+        c = q.popleft(); last = c
+        for k in nbr[c]:
+            if dist[k] < 0:
+                dist[k] = dist[c]+1; q.append(k)
+    return dist, last
+
+def peripheral_start(nbr):
+    s, ecc = 0, -1
+    while True:
+        dist, far = bfs_levels(nbr, s)
+        if dist[far] <= ecc: return s
+        ecc, s = dist[far], far
+
+def cuthill_mckee(nbr, start):
+    seen = [False]*len(nbr); seen[start] = True
+    order, q = [], deque([start])
+    while q:
+        c = q.popleft(); order.append(c)
+        for k in sorted(nbr[c], key=lambda k: len(nbr[k])):
+            if not seen[k]:
+                seen[k] = True; q.append(k)
+    return order
+
+def bandwidth(nbr, order):
+    pos = {c: p for p, c in enumerate(order)}
+    return max(abs(pos[c]-pos[k]) for c in range(len(nbr)) for k in nbr[c])
+
+def lusgs_solve(nbr, coef, ap, order, dtau, tol=1e-8, itmax=4000):
+    m = len(nbr); x = [0.0]*m; b = [1.0]*m
+    d = ap + 1.0/dtau
+    rank = [0]*m
+    for p, c in enumerate(order): rank[c] = p
+    bnorm = m**0.5
+    for it in range(1, itmax+1):
+        r = [b[c] - ap*x[c] + sum(a*x[k] for a, k in zip(coef[c], nbr[c])) for c in range(m)]
+        if sum(v*v for v in r)**0.5/bnorm < tol: return it-1
+        dx = [0.0]*m
+        for c in order:                      # forward: lower-rank neighbors only (L)
+            s = r[c] + sum(a*dx[k] for a, k in zip(coef[c], nbr[c]) if rank[k] < rank[c])
+            dx[c] = s/d
+        for c in reversed(order):            # backward: higher-rank neighbors only (U)
+            s = sum(a*dx[k] for a, k in zip(coef[c], nbr[c]) if rank[k] > rank[c])
+            dx[c] += s/d
+        for c in range(m): x[c] += dx[c]
+    return itmax
+
+rng = random.Random(7)
+n = 24
+th = math.radians(30)
+for name, ux, uy, df, dtau in (("convection", math.cos(th), math.sin(th), 0.01, 1e3),
+                               ("diffusion", 0.0, 0.0, 1.0, 0.5)):
+    nb0, cf0, ap = build_grid(n, ux, uy, df)
+    nb, cf, perm = shuffle_labels(nb0, cf0, rng)
+    m = len(nb)
+    s = peripheral_start(nb)
+    cm = cuthill_mckee(nb, s)
+    rcm = cm[::-1]
+    # natural order uses the unshuffled grid as is
+    orders = {
+        "natural (i,j)": (nb0, cf0, list(range(m))),
+        "random labels": (nb, cf, list(range(m))),
+        "Cuthill-McKee": (nb, cf, cm),
+        "reverse CM": (nb, cf, rcm),
+    }
+    print(f"[{name}] cells={m}")
+    for k, (g, c, o) in orders.items():
+        it = lusgs_solve(g, c, ap, o, dtau)
+        print(f"  {k:15s} bandwidth={bandwidth(g, o):5d}  LU-SGS iters={it:5d}")
+    if name == "convection":
+        for corner, old in (("SW", 0), ("SE", n-1), ("NW", n*n-n), ("NE", n*n-1)):
+            o = cuthill_mckee(nb, perm[old])[::-1]
+            print(f"  RCM start {corner}    bandwidth={bandwidth(nb, o):5d}  LU-SGS iters={lusgs_solve(nb, cf, ap, o, dtau):5d}")
+```
+
+```text
+[convection] cells=576
+  natural (i,j)   bandwidth=   24  LU-SGS iters=    9
+  random labels   bandwidth=  553  LU-SGS iters=   25
+  Cuthill-McKee   bandwidth=   24  LU-SGS iters=    9
+  reverse CM      bandwidth=   24  LU-SGS iters=    9
+  RCM start SW    bandwidth=   24  LU-SGS iters=    9
+  RCM start SE    bandwidth=   24  LU-SGS iters=   21
+  RCM start NW    bandwidth=   24  LU-SGS iters=   21
+  RCM start NE    bandwidth=   24  LU-SGS iters=    9
+[diffusion] cells=576
+  natural (i,j)   bandwidth=   24  LU-SGS iters= 1549
+  random labels   bandwidth=  561  LU-SGS iters= 1747
+  Cuthill-McKee   bandwidth=   24  LU-SGS iters= 1549
+  reverse CM      bandwidth=   24  LU-SGS iters= 1549
+```
+
+Same 576 cells, same matrix, same tolerance ($10^{-8}$). The only thing that changed is the order in which cells are visited.
+
+## Upstream neighbor rank separates 25 from 9
+
+With flow at 30°, each cell's upstream neighbors are to the west and south. In natural order ($i$ first, then $j$), both come earlier. So a single forward sweep carries information from the southwest corner all the way to the northeast. The remaining 9 iterations clean up the small diffusion and pseudo-time terms.
+
+With random numbering, an upstream neighbor comes earlier only half the time. Information travels a few cells per sweep and then stalls. Crossing 24 cells takes many iterations. The result is 25 iterations, about 2.8×.
+
+Bandwidth also dropped from 553 to 24. That number is a separate story from iteration count. In a real code it measures how far apart neighbor data sits in memory. Small bandwidth means better cache hits and a cheaper iteration. So RCM cuts both the iteration count and the cost per iteration. The Python test cannot measure cache effects, so here we only compare iterations.
+
+## Same bandwidth of 24, yet 9 vs. 21 iterations
+
+The four-corner test is more interesting. Every corner gives bandwidth 24. Yet SW and NE take 9 iterations, while SE and NW take 21.
+
+RCM's BFS layers are diagonal bands centered on the start corner. Starting from SW, the bands sit perpendicular to the flow and rank increases along it. Starting from NE, rank simply increases against the flow. The backward sweep then runs with the flow. SGS does both sweeps, so the two cases are symmetric. For the same reason, Cuthill–McKee and reverse CM need the same number of iterations.
+
+Starting from SE, rank grows toward the northwest. That opposes the flow's $x$ component and follows its $y$ component. Each sweep receives only one of the two upstream neighbors on time. Hence 21. Bandwidth only describes the matrix shape. It knows nothing about flow direction.
+
+## Diffusion only differs by 13%
+
+Pure diffusion tells a different story. Natural order and RCM need 1549 iterations, random numbering 1747. That is a 13% gap.
+
+Diffusion has no upstream. Information spreads equally in every direction. Gauss–Seidel's slow convergence here comes from long-wavelength error that barely decays, regardless of numbering. Ordering cannot fix that. Multigrid or Krylov acceleration has to. Ordering changes iteration counts dramatically only when convection dominates. Strongly hyperbolic problems such as compressible Euler are exactly that case.
+
+## So why "Reverse"?
+
+In the test, CM and RCM needed the same iterations. That makes reversing look pointless. Its payoff shows up somewhere else.
+
+George's result concerns fill-in during direct factorization. When you factor a banded matrix with Cholesky or LU, each row fills from its first nonzero up to the diagonal. The sum of those spans, the profile, is almost always no larger for RCM than for CM. So if you plan to use ILU preconditioning or a direct solver, RCM is the default. If you only use LU-SGS, CM and RCM behave the same. The two symmetric sweeps erase the order's direction.
+
+The [derivation of LU-SGS itself, with a Burgers example](/en/posts/2026-06-22-lu-sgs-implicit-time-integration/), is in an earlier post. Its 1D grid never had a numbering problem: you number left to right and you are done. The problem appears on 2D and 3D unstructured grids. [Delaunay and advancing-front mesh generators](/en/posts/2026-07-08-delaunay-bowyer-watson-advancing-front/) number cells in the order they are created. That order follows point insertion or front advance. From the solver's point of view it is close to random.
+
+## Adding reordering to an unstructured solver
+
+Reorder once, at initialization. There is no reason to renumber during the run.
+
+1. Build the cell adjacency graph from face connectivity. Cell shape does not matter. Mixed tets, prisms and hexes are fine.
+2. Find a pseudo-peripheral cell and build the RCM numbering. Move the cell arrays, each face's left/right cell indices and the boundary cell lists to the new numbering.
+3. For convection-dominated problems, revisit the start cell. Starting the BFS near an inflow boundary makes rank follow the flow. A pseudo-peripheral cell is merely the "farthest" cell in graph terms. In this test it happened to land on a corner along the flow axis and gave 9 iterations, but nothing guarantees that.
+4. Run the same case before and after reordering and check that the converged solutions agree to machine precision. Numbering must not change the answer. If it does, an index mapping was missed somewhere.
+
+Renumbering costs one BFS, linear in the number of cells. Given 2.8× fewer iterations plus the cache benefit, it is one of the cheapest speedups available in a solver.

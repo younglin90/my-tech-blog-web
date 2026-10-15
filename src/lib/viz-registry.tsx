@@ -310,6 +310,7 @@ export const VIZ_COMPONENTS: Record<string, ComponentType> = {
   "StreamPathStreakComparison": lazyViz(() => import("@/components/post-viz/2026-05-28-streamline-pathline-streakline-material-derivative/StreamPathStreakComparison").then((m) => ({ default: m.StreamPathStreakComparison }))),
   "SubcharacteristicSpeedChart": lazyViz(() => import("@/components/post-viz/2026-07-04-jin-xin-suliciu-relaxation-scheme/SubcharacteristicSpeedChart").then((m) => ({ default: m.SubcharacteristicSpeedChart }))),
   "SubsystemEigenFanDial": lazyViz(() => import("@/components/post-viz/2026-09-27-all-mach-twophase-enthalpy-stiffness/SubsystemEigenFanDial").then((m) => ({ default: m.SubsystemEigenFanDial }))),
+  "SweepOrderLusgsLab": lazyViz(() => import("@/components/post-viz/2026-10-16-lu-sgs-cell-ordering-reverse-cuthill-mckee/SweepOrderLusgsLab").then((m) => ({ default: m.SweepOrderLusgsLab }))),
   "SwegleSignBandKernel": lazyViz(() => import("@/components/post-viz/2026-09-26-sph-tensile-instability-fixed-kernel/SwegleSignBandKernel").then((m) => ({ default: m.SwegleSignBandKernel }))),
   "SwirlDecayDiffusionLab": lazyViz(() => import("@/components/post-viz/2026-08-11-newton-vortex-and-viscous-decay/SwirlDecayDiffusionLab").then((m) => ({ default: m.SwirlDecayDiffusionLab }))),
   "SyntheticJetWakeControl": lazyViz(() => import("@/components/post-viz/2026-06-07-drl-synthetic-jet-airfoil-flow-control/SyntheticJetWakeControl").then((m) => ({ default: m.SyntheticJetWakeControl }))),

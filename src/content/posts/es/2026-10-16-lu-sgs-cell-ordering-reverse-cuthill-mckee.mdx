@@ -1,0 +1,233 @@
+---
+title: "Barajar la numeración de celdas hizo LU-SGS 2,8 veces más lento — reordenamiento RCM y la celda inicial que fija la dirección del barrido"
+date: 2026-10-16
+description: "Por qué la numeración de celdas en mallas no estructuradas cambia la convergencia de LU-SGS, qué corrige el RCM y por qué la celda inicial importa, con 576 celdas."
+tags: ["Reverse-Cuthill-McKee", "LU-SGS", "Unstructured-Grid", "Implicit", "Algorithms"]
+locale: es
+slug: 2026-10-16-lu-sgs-cell-ordering-reverse-cuthill-mckee
+takeaway: "En LU-SGS, la numeración de celdas decide hasta dónde viaja la información en un barrido. El RCM reduce el ancho de banda a 24, pero lo que separa 9 iteraciones de 21 es la relación entre la celda inicial y la dirección del flujo."
+draft: false
+---
+
+import { SweepOrderLusgsLab } from '@/components/post-viz/2026-10-16-lu-sgs-cell-ordering-reverse-cuthill-mckee/SweepOrderLusgsLab'
+
+## ¿Qué cambia al barajar la numeración de celdas?
+
+Supóngase una malla cuyas celdas se renumeran al azar. La matriz solo permuta filas y columnas. La solución convergida es idéntica. Aun así, LU-SGS (Lower-Upper Symmetric Gauss–Seidel, que aproxima un sistema implícito con un barrido triangular inferior y otro superior) pasó de 9 iteraciones a 25. Este artículo rastrea de dónde sale esa diferencia. Se verá que la numeración decide cuánto avanza la información en cada barrido. También se comprobará, con números, qué corrige el RCM (Reverse Cuthill–McKee, una renumeración por búsqueda en anchura que reduce el ancho de banda de la matriz) y qué no puede corregir.
+
+## La pregunta de una nota de 2017: ¿qué vecino es Lower?
+
+A fines de 2017, al incorporar LU-SGS en un código 3D no estructurado, quedó una nota. La idea era esta. LU-SGS divide el cálculo en una parte Lower y otra Upper. Pero en una malla no estructurada cuesta saber qué vecinos son Lower y cuáles Upper. Por eso se buscó una rutina RCM de código abierto y se reordenaron las celdas en la inicialización.
+
+Vista hoy, la primera mitad de esa pregunta es correcta solo a medias. Lower y Upper no los define la malla. Los define la numeración. Los vecinos con número menor son Lower; los de número mayor, Upper. Con cualquier numeración, LU-SGS funciona. La verdadera pregunta es qué numeración conviene.
+
+La nota también dice: "dicen que este RCM solo sirve para mallas de tetraedros, pero parece que debería funcionar con otras". Eso sí es correcto. El RCM nunca mira la forma de la celda. Solo ve la lista de vecinos por cara, es decir, el grafo.
+
+En la simulación de abajo se puede cambiar la numeración directamente. Ejecuta LU-SGS celda por celda sobre un problema de convección–difusión upwind de primer orden en 20×20 celdas.
+
+<SweepOrderLusgsLab />
+
+Conviene alternar entre `random labels` y `RCM`. Con numeración aleatoria, un barrido hacia adelante deja apenas manchas sueltas de color. Con RCM SW, la solución se llena siguiendo la flecha del flujo en un solo barrido. Después, al cambiar `RCM start` a SE, el ancho de banda (`bw`) no cambia, pero el número de iteraciones sí.
+
+## Los dos barridos de LU-SGS en ecuaciones
+
+Se resuelve el sistema lineal estacionario $A\phi = b$ avanzando en pseudotiempo (pseudo-time). La matriz se separa en parte diagonal y fuera de la diagonal.
+
+$$
+A = D - L - U, \qquad (D + \tfrac{1}{\Delta\tau}I - L)\,(D + \tfrac{1}{\Delta\tau}I)^{-1}\,(D + \tfrac{1}{\Delta\tau}I - U)\,\Delta\phi = r
+$$
+
+$D$ es la diagonal $a_P$, $L$ contiene los coeficientes $a_{nb}$ de los vecinos con número menor, $U$ los de número mayor, $r = b - A\phi$ es el residuo y $\Delta\tau$ es el paso de pseudotiempo.
+
+Esta factorización aproximada se resuelve con dos barridos. El barrido hacia adelante recorre las celdas en orden y usa solo los valores nuevos de los vecinos con número menor. El barrido hacia atrás recorre en orden inverso y suma la contribución de los vecinos con número mayor.
+
+$$
+\Delta\phi^{*}_c = \frac{r_c + \sum_{k<c} a_{ck}\,\Delta\phi^{*}_k}{d}, \qquad \Delta\phi_c = \Delta\phi^{*}_c + \frac{\sum_{k>c} a_{ck}\,\Delta\phi_k}{d}
+$$
+
+$k<c$ significa "vecino con turno anterior a $c$", y $d = a_P + 1/\Delta\tau$.
+
+Aquí está la clave. Si el vecino aguas arriba de la celda $c$ tiene un turno anterior, la corrección que acaba de recibir pasa de inmediato a $c$. Si tiene un turno posterior, debe esperar a la siguiente iteración. En convección upwind pura numerada a lo largo del flujo, $L$ contiene toda la matriz. Un solo barrido hacia adelante da la solución exacta.
+
+## Cuthill–McKee es una búsqueda en anchura
+
+El algoritmo que Cuthill y McKee publicaron en 1969 es sencillo. Se elige una celda inicial. Se numera por búsqueda en anchura (BFS, que visita vecinos capa por capa desde lo más cercano). Dentro de cada capa, primero van las celdas con menos vecinos. Así, la diferencia de número entre vecinos nunca supera el ancho de una capa.
+
+El máximo de esa diferencia es el ancho de banda.
+
+$$
+\beta = \max_{(i,j)\,\in\,\text{faces}} \lvert p(i) - p(j) \rvert
+$$
+
+$p(i)$ es el nuevo número de la celda $i$, y el máximo se toma sobre todos los pares de celdas que comparten cara.
+
+En 1971, George mostró que basta invertir ese orden para reducir el relleno (fill-in) en una factorización directa. Esa es la R de RCM. La celda inicial suele tomarse del "borde" del grafo. Lo estándar es buscar un nodo pseudoperiférico (pseudo-peripheral node): repetir la BFS saltando cada vez a la celda más lejana.
+
+## Código: 576 celdas, cuatro numeraciones
+
+Se plantean dos problemas en una malla de 24×24. Uno está dominado por la convección, con flujo a 30° y poca difusión (número de Péclet de celda 100). El otro es difusión pura. Para imitar la numeración arbitraria de un generador de mallas, se barajan las etiquetas y luego se renumera con RCM. En el caso convectivo también se prueban las cuatro esquinas como inicio del RCM.
+
+```python
+import math, random
+from collections import deque
+
+def build_grid(n, ux, uy, diff):
+    # celda (i,j) -> lista de vecinos, coeficientes a_nb, diagonal a_P (upwind de 1er orden + difusión)
+    nbr, coef = [], []
+    for j in range(n):
+        for i in range(n):
+            lst, cf = [], []
+            for di, dj, nx_, ny_ in ((1,0,1,0),(-1,0,-1,0),(0,1,0,1),(0,-1,0,-1)):
+                ii, jj = i+di, j+dj
+                if 0 <= ii < n and 0 <= jj < n:
+                    lst.append(jj*n+ii)
+                    cf.append(diff + max(-(ux*nx_+uy*ny_), 0.0))
+            nbr.append(lst); coef.append(cf)
+    ap = 4*diff + abs(ux) + abs(uy)
+    return nbr, coef, ap
+
+def shuffle_labels(nbr, coef, rng):
+    m = len(nbr)
+    perm = list(range(m)); rng.shuffle(perm)   # old -> new
+    inv = [0]*m
+    for o, nw in enumerate(perm): inv[nw] = o
+    nb2 = [[int(perm[k]) for k in nbr[inv[c]]] for c in range(m)]
+    cf2 = [coef[inv[c]] for c in range(m)]
+    return nb2, cf2, perm
+
+def bfs_levels(nbr, s):
+    dist = [-1]*len(nbr); dist[s] = 0; q = deque([s]); last = s
+    while q:
+        c = q.popleft(); last = c
+        for k in nbr[c]:
+            if dist[k] < 0:
+                dist[k] = dist[c]+1; q.append(k)
+    return dist, last
+
+def peripheral_start(nbr):
+    s, ecc = 0, -1
+    while True:
+        dist, far = bfs_levels(nbr, s)
+        if dist[far] <= ecc: return s
+        ecc, s = dist[far], far
+
+def cuthill_mckee(nbr, start):
+    seen = [False]*len(nbr); seen[start] = True
+    order, q = [], deque([start])
+    while q:
+        c = q.popleft(); order.append(c)
+        for k in sorted(nbr[c], key=lambda k: len(nbr[k])):
+            if not seen[k]:
+                seen[k] = True; q.append(k)
+    return order
+
+def bandwidth(nbr, order):
+    pos = {c: p for p, c in enumerate(order)}
+    return max(abs(pos[c]-pos[k]) for c in range(len(nbr)) for k in nbr[c])
+
+def lusgs_solve(nbr, coef, ap, order, dtau, tol=1e-8, itmax=4000):
+    m = len(nbr); x = [0.0]*m; b = [1.0]*m
+    d = ap + 1.0/dtau
+    rank = [0]*m
+    for p, c in enumerate(order): rank[c] = p
+    bnorm = m**0.5
+    for it in range(1, itmax+1):
+        r = [b[c] - ap*x[c] + sum(a*x[k] for a, k in zip(coef[c], nbr[c])) for c in range(m)]
+        if sum(v*v for v in r)**0.5/bnorm < tol: return it-1
+        dx = [0.0]*m
+        for c in order:                      # forward: solo vecinos de rank menor (L)
+            s = r[c] + sum(a*dx[k] for a, k in zip(coef[c], nbr[c]) if rank[k] < rank[c])
+            dx[c] = s/d
+        for c in reversed(order):            # backward: solo vecinos de rank mayor (U)
+            s = sum(a*dx[k] for a, k in zip(coef[c], nbr[c]) if rank[k] > rank[c])
+            dx[c] += s/d
+        for c in range(m): x[c] += dx[c]
+    return itmax
+
+rng = random.Random(7)
+n = 24
+th = math.radians(30)
+for name, ux, uy, df, dtau in (("convection", math.cos(th), math.sin(th), 0.01, 1e3),
+                               ("diffusion", 0.0, 0.0, 1.0, 0.5)):
+    nb0, cf0, ap = build_grid(n, ux, uy, df)
+    nb, cf, perm = shuffle_labels(nb0, cf0, rng)
+    m = len(nb)
+    s = peripheral_start(nb)
+    cm = cuthill_mckee(nb, s)
+    rcm = cm[::-1]
+    # el orden natural usa la malla sin barajar
+    orders = {
+        "natural (i,j)": (nb0, cf0, list(range(m))),
+        "random labels": (nb, cf, list(range(m))),
+        "Cuthill-McKee": (nb, cf, cm),
+        "reverse CM": (nb, cf, rcm),
+    }
+    print(f"[{name}] cells={m}")
+    for k, (g, c, o) in orders.items():
+        it = lusgs_solve(g, c, ap, o, dtau)
+        print(f"  {k:15s} bandwidth={bandwidth(g, o):5d}  LU-SGS iters={it:5d}")
+    if name == "convection":
+        for corner, old in (("SW", 0), ("SE", n-1), ("NW", n*n-n), ("NE", n*n-1)):
+            o = cuthill_mckee(nb, perm[old])[::-1]
+            print(f"  RCM start {corner}    bandwidth={bandwidth(nb, o):5d}  LU-SGS iters={lusgs_solve(nb, cf, ap, o, dtau):5d}")
+```
+
+```text
+[convection] cells=576
+  natural (i,j)   bandwidth=   24  LU-SGS iters=    9
+  random labels   bandwidth=  553  LU-SGS iters=   25
+  Cuthill-McKee   bandwidth=   24  LU-SGS iters=    9
+  reverse CM      bandwidth=   24  LU-SGS iters=    9
+  RCM start SW    bandwidth=   24  LU-SGS iters=    9
+  RCM start SE    bandwidth=   24  LU-SGS iters=   21
+  RCM start NW    bandwidth=   24  LU-SGS iters=   21
+  RCM start NE    bandwidth=   24  LU-SGS iters=    9
+[diffusion] cells=576
+  natural (i,j)   bandwidth=   24  LU-SGS iters= 1549
+  random labels   bandwidth=  561  LU-SGS iters= 1747
+  Cuthill-McKee   bandwidth=   24  LU-SGS iters= 1549
+  reverse CM      bandwidth=   24  LU-SGS iters= 1549
+```
+
+Mismas 576 celdas, misma matriz, misma tolerancia ($10^{-8}$). Lo único que cambió es el orden en que se visitan las celdas.
+
+## El turno del vecino aguas arriba separa 25 de 9
+
+Con flujo a 30°, los vecinos aguas arriba de cada celda están al oeste y al sur. En el orden natural (primero $i$, luego $j$), ambos van antes. Por eso un solo barrido hacia adelante lleva la información desde la esquina suroeste hasta la noreste. Las 9 iteraciones restantes se ocupan de los pequeños términos de difusión y de pseudotiempo.
+
+Con numeración aleatoria, el vecino aguas arriba va antes solo la mitad de las veces. La información avanza unas pocas celdas por barrido y se corta. Cruzar 24 celdas exige muchas iteraciones. El resultado: 25 iteraciones, unas 2,8 veces más.
+
+El ancho de banda también bajó de 553 a 24. Ese número es otra historia, distinta del número de iteraciones. En un código real mide qué tan dispersos quedan en memoria los datos de las celdas vecinas. Un ancho de banda pequeño mejora los aciertos de caché y abarata cada iteración. Así, el RCM reduce a la vez el número de iteraciones y el costo de cada una. El experimento en Python no mide efectos de caché, de modo que aquí solo se comparan iteraciones.
+
+## Mismo ancho de banda 24, pero 9 frente a 21 iteraciones
+
+La prueba de las cuatro esquinas es más interesante. Desde cualquier esquina, el ancho de banda es 24. Sin embargo, SW y NE requieren 9 iteraciones, y SE y NW, 21.
+
+Las capas de la BFS del RCM son franjas diagonales centradas en la esquina inicial. Desde SW, las franjas quedan perpendiculares al flujo y el turno crece a lo largo de él. Desde NE, el turno simplemente crece contra el flujo. En ese caso, el barrido hacia atrás va a favor del flujo. SGS hace ambos barridos, así que los dos casos son simétricos. Por la misma razón, Cuthill–McKee y reverse CM necesitan las mismas iteraciones.
+
+Desde SE, el turno crece hacia el noroeste. Eso va contra la componente $x$ del flujo y a favor de la componente $y$. Cada barrido recibe a tiempo solo uno de los dos vecinos aguas arriba. De ahí las 21 iteraciones. El ancho de banda solo describe la forma de la matriz. No sabe nada de la dirección del flujo.
+
+## En difusión la diferencia es solo del 13%
+
+La difusión pura cuenta otra historia. El orden natural y el RCM necesitan 1549 iteraciones; la numeración aleatoria, 1747. La diferencia es del 13%.
+
+La difusión no tiene aguas arriba. La información se propaga igual en todas las direcciones. Aquí la lentitud de Gauss–Seidel viene del error de longitud de onda larga, que apenas decae sin importar la numeración. El orden no resuelve eso. Esa tarea corresponde al multimalla o a la aceleración de Krylov. El orden cambia mucho el número de iteraciones cuando domina la convección. Los problemas fuertemente hiperbólicos, como Euler compresible, son justo ese caso.
+
+## Entonces, ¿por qué "Reverse"?
+
+En la prueba, CM y RCM necesitaron las mismas iteraciones. Invertir parece inútil. Su beneficio aparece en otro lugar.
+
+Lo que George demostró se refiere al relleno en la factorización directa. Al factorizar una matriz de banda con Cholesky o LU, cada fila se llena desde su primer elemento no nulo hasta la diagonal. La suma de esos tramos, el "perfil" (profile), casi siempre resulta menor o igual con RCM que con CM. Por eso, si se planea usar precondicionamiento ILU o un solver directo, RCM es la opción por defecto. Si solo se usa LU-SGS, CM y RCM dan lo mismo. Los dos barridos simétricos borran la dirección del orden.
+
+La [deducción de LU-SGS con un ejemplo de Burgers](/es/posts/2026-06-22-lu-sgs-implicit-time-integration/) está en un artículo anterior. Su malla 1D nunca tuvo problema de numeración: se numera de izquierda a derecha y listo. El problema aparece en mallas no estructuradas 2D y 3D. Los [generadores de mallas Delaunay y de frente de avance](/es/posts/2026-07-08-delaunay-bowyer-watson-advancing-front/) numeran las celdas en el orden en que las crean. Ese orden sigue la inserción de puntos o el avance del frente. Desde el punto de vista del solver, es casi aleatorio.
+
+## Pasos para incorporar el reordenamiento en un solver no estructurado
+
+El reordenamiento se hace una sola vez, en la inicialización. No hace falta renumerar durante el cálculo.
+
+1. Construir el grafo de adyacencia de celdas a partir de la conectividad de caras. La forma de las celdas no importa. Una mezcla de tetraedros, prismas y hexaedros sirve igual.
+2. Encontrar una celda pseudoperiférica y generar la numeración RCM. Trasladar a la nueva numeración los arreglos de celdas, los índices de celda izquierda/derecha de cada cara y las listas de celdas de frontera.
+3. En problemas dominados por la convección, revisar la celda inicial. Si la BFS arranca cerca de una frontera de entrada, el turno sigue al flujo. Una celda pseudoperiférica es solo la "más lejana" en términos del grafo. En esta prueba cayó por casualidad en una esquina sobre el eje del flujo y dio 9 iteraciones, pero nada lo garantiza.
+4. Correr el mismo caso antes y después del reordenamiento y verificar que las soluciones convergidas coincidan hasta precisión de máquina. La numeración no debe cambiar la respuesta. Si la cambia, falta alguna conversión de índices.
+
+Renumerar cuesta una BFS, lineal en el número de celdas. Con 2,8 veces menos iteraciones más el beneficio de caché, es una de las aceleraciones más baratas que admite un solver.

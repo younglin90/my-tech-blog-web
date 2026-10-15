@@ -1,0 +1,233 @@
+---
+title: "セル番号を混ぜただけでLU-SGSが2.8倍遅くなった — RCM再順序付けと開始セルが決めるスイープ方向"
+date: 2026-10-16
+description: "非構造格子のセル番号がLU-SGSの収束を変える理由と、RCM再順序付け・開始セル選びの効果を576セルの実験で確かめます"
+tags: ["Reverse-Cuthill-McKee", "LU-SGS", "Unstructured-Grid", "Implicit", "Algorithms"]
+locale: ja
+slug: 2026-10-16-lu-sgs-cell-ordering-reverse-cuthill-mckee
+takeaway: "LU-SGSではセル番号が、1回のスイープで情報がどこまで届くかを決めます。RCMはバンド幅を24まで縮めますが、反復9回と21回を分けるのは開始セルと流れの向きの関係です。"
+draft: false
+---
+
+import { SweepOrderLusgsLab } from '@/components/post-viz/2026-10-16-lu-sgs-cell-ordering-reverse-cuthill-mckee/SweepOrderLusgsLab'
+
+## セル番号を混ぜると何が変わるのか
+
+同じ格子でセル番号だけをランダムに入れ替えたとします。行列は行と列の順番が変わるだけです。収束解は変わりません。それでもLU-SGS(Lower-Upper Symmetric Gauss–Seidel、下三角と上三角の2回のスイープで陰的システムを近似する手法)の反復回数は9回から25回に増えました。この記事ではその差の出どころを追います。セル番号が「1回のスイープで情報がどこまで進むか」を決めること、そしてRCM(Reverse Cuthill–McKee、幅優先探索で行列のバンド幅を縮める番号付け)が何を直し、何を直せないのかを数字で確かめます。
+
+## 2017年のメモの問い:どの隣接セルがLowerか
+
+2017年末、非構造3DコードにLU-SGSを入れたときのメモが残っています。要点はこうです。LU-SGSはLower部分とUpper部分に分けて計算します。しかし非構造格子では、周りのセルのどれがLowerでどれがUpperかが分かりにくい。そこでRCMのオープンソースを探し、初期化の段階でセルを並べ替えました。
+
+今読むと、この問いの前半は半分しか正しくありません。LowerとUpperを決めるのは格子ではありません。セルに振った番号です。自分より番号が小さい隣接セルがLower、大きいものがUpperです。番号さえ付いていればLU-SGSは動きます。本当の問いは「どの番号付けが良いか」です。
+
+メモには「このRCMコードは四面体格子専用らしいが、他の格子でも使えそうだ」という一文もあります。これは正しいです。RCMはセルの形を見ません。面を共有する隣接リスト、つまりグラフだけを見ます。
+
+下のシミュレーションで実際に番号付けを変えてみましょう。20×20セルに1次風上の対流拡散問題を設定し、LU-SGSを1セルずつ進めます。
+
+<SweepOrderLusgsLab />
+
+`random labels` と `RCM` を切り替えてみてください。ランダム番号では、前進スイープが1回通っても色がまだらにしか広がりません。RCM SWでは流れの矢印に沿って、1回のスイープでほぼ全体が埋まります。続いて `RCM start` をSEに変え、バンド幅(`bw`)は同じなのに反復回数が変わることを確かめてください。
+
+## LU-SGSの2回のスイープを式で書く
+
+定常線形システム $A\phi = b$ を擬似時間(pseudo-time)前進で解くとします。行列を対角と非対角に分けます。
+
+$$
+A = D - L - U, \qquad (D + \tfrac{1}{\Delta\tau}I - L)\,(D + \tfrac{1}{\Delta\tau}I)^{-1}\,(D + \tfrac{1}{\Delta\tau}I - U)\,\Delta\phi = r
+$$
+
+$D$ は対角 $a_P$、$L$ は番号が小さい隣接セルの係数 $a_{nb}$、$U$ は番号が大きい隣接セルの係数、$r = b - A\phi$ は残差、$\Delta\tau$ は擬似時間刻みです。
+
+この近似分解は2回のスイープで解けます。前進スイープは番号順に進み、番号が小さい隣接セルの新しい値だけを使います。後退スイープは逆順に進み、番号が大きい隣接セルの寄与を足します。
+
+$$
+\Delta\phi^{*}_c = \frac{r_c + \sum_{k<c} a_{ck}\,\Delta\phi^{*}_k}{d}, \qquad \Delta\phi_c = \Delta\phi^{*}_c + \frac{\sum_{k>c} a_{ck}\,\Delta\phi_k}{d}
+$$
+
+$k<c$ は「$c$ より順番が前の隣接セル」、$d = a_P + 1/\Delta\tau$ です。
+
+ここに要点があります。セル $c$ の上流側の隣接セルが先の順番なら、そのセルが今回のスイープで受けた修正がすぐ $c$ に渡ります。後の順番なら次の反復まで待つことになります。純粋な風上対流で、流れの向きに番号が付いていれば、$L$ が行列全体を含みます。前進スイープ1回が厳密解になります。
+
+## Cuthill–McKeeは幅優先探索です
+
+CuthillとMcKeeが1969年に発表したアルゴリズムは単純です。開始セルを1つ選びます。幅優先探索(BFS、近い隣接セルから層ごとに訪問する方法)で番号を付けます。同じ層の中では隣接数が少ないセルから付けます。こうすると、隣接セル同士の番号差は1層の幅を超えません。
+
+この番号差の最大値がバンド幅です。
+
+$$
+\beta = \max_{(i,j)\,\in\,\text{faces}} \lvert p(i) - p(j) \rvert
+$$
+
+$p(i)$ はセル $i$ の新しい番号で、最大値は面を共有するすべてのセル対について取ります。
+
+1971年、Georgeはこの順序を反転するだけで直接分解のフィルイン(fill-in)が減ることを示しました。これがRCMのRです。開始セルは通常、グラフの「端」から選びます。BFSを繰り返して最も遠いセルへ移っていく擬似周辺節点(pseudo-peripheral node)探索が標準です。
+
+## コード:576セル、4通りの番号付け
+
+24×24格子に2つの問題を設定します。1つは30°方向の流れに小さな拡散を加えた対流支配問題です(セルPéclet数100)。もう1つは純粋な拡散です。格子生成器が番号を無秩序に付けた状況をまねるため、ラベルを混ぜます。その後RCMで番号を付け直します。対流問題では、RCMの開始セルを4つの隅に変えて試します。
+
+```python
+import math, random
+from collections import deque
+
+def build_grid(n, ux, uy, diff):
+    # セル (i,j) -> 隣接リスト、係数 a_nb、対角 a_P (1次風上 + 拡散)
+    nbr, coef = [], []
+    for j in range(n):
+        for i in range(n):
+            lst, cf = [], []
+            for di, dj, nx_, ny_ in ((1,0,1,0),(-1,0,-1,0),(0,1,0,1),(0,-1,0,-1)):
+                ii, jj = i+di, j+dj
+                if 0 <= ii < n and 0 <= jj < n:
+                    lst.append(jj*n+ii)
+                    cf.append(diff + max(-(ux*nx_+uy*ny_), 0.0))
+            nbr.append(lst); coef.append(cf)
+    ap = 4*diff + abs(ux) + abs(uy)
+    return nbr, coef, ap
+
+def shuffle_labels(nbr, coef, rng):
+    m = len(nbr)
+    perm = list(range(m)); rng.shuffle(perm)   # old -> new
+    inv = [0]*m
+    for o, nw in enumerate(perm): inv[nw] = o
+    nb2 = [[int(perm[k]) for k in nbr[inv[c]]] for c in range(m)]
+    cf2 = [coef[inv[c]] for c in range(m)]
+    return nb2, cf2, perm
+
+def bfs_levels(nbr, s):
+    dist = [-1]*len(nbr); dist[s] = 0; q = deque([s]); last = s
+    while q:
+        c = q.popleft(); last = c
+        for k in nbr[c]:
+            if dist[k] < 0:
+                dist[k] = dist[c]+1; q.append(k)
+    return dist, last
+
+def peripheral_start(nbr):
+    s, ecc = 0, -1
+    while True:
+        dist, far = bfs_levels(nbr, s)
+        if dist[far] <= ecc: return s
+        ecc, s = dist[far], far
+
+def cuthill_mckee(nbr, start):
+    seen = [False]*len(nbr); seen[start] = True
+    order, q = [], deque([start])
+    while q:
+        c = q.popleft(); order.append(c)
+        for k in sorted(nbr[c], key=lambda k: len(nbr[k])):
+            if not seen[k]:
+                seen[k] = True; q.append(k)
+    return order
+
+def bandwidth(nbr, order):
+    pos = {c: p for p, c in enumerate(order)}
+    return max(abs(pos[c]-pos[k]) for c in range(len(nbr)) for k in nbr[c])
+
+def lusgs_solve(nbr, coef, ap, order, dtau, tol=1e-8, itmax=4000):
+    m = len(nbr); x = [0.0]*m; b = [1.0]*m
+    d = ap + 1.0/dtau
+    rank = [0]*m
+    for p, c in enumerate(order): rank[c] = p
+    bnorm = m**0.5
+    for it in range(1, itmax+1):
+        r = [b[c] - ap*x[c] + sum(a*x[k] for a, k in zip(coef[c], nbr[c])) for c in range(m)]
+        if sum(v*v for v in r)**0.5/bnorm < tol: return it-1
+        dx = [0.0]*m
+        for c in order:                      # forward: rank が小さい隣接セルのみ (L)
+            s = r[c] + sum(a*dx[k] for a, k in zip(coef[c], nbr[c]) if rank[k] < rank[c])
+            dx[c] = s/d
+        for c in reversed(order):            # backward: rank が大きい隣接セルのみ (U)
+            s = sum(a*dx[k] for a, k in zip(coef[c], nbr[c]) if rank[k] > rank[c])
+            dx[c] += s/d
+        for c in range(m): x[c] += dx[c]
+    return itmax
+
+rng = random.Random(7)
+n = 24
+th = math.radians(30)
+for name, ux, uy, df, dtau in (("convection", math.cos(th), math.sin(th), 0.01, 1e3),
+                               ("diffusion", 0.0, 0.0, 1.0, 0.5)):
+    nb0, cf0, ap = build_grid(n, ux, uy, df)
+    nb, cf, perm = shuffle_labels(nb0, cf0, rng)
+    m = len(nb)
+    s = peripheral_start(nb)
+    cm = cuthill_mckee(nb, s)
+    rcm = cm[::-1]
+    # 自然順序は混ぜる前の格子をそのまま使う
+    orders = {
+        "natural (i,j)": (nb0, cf0, list(range(m))),
+        "random labels": (nb, cf, list(range(m))),
+        "Cuthill-McKee": (nb, cf, cm),
+        "reverse CM": (nb, cf, rcm),
+    }
+    print(f"[{name}] cells={m}")
+    for k, (g, c, o) in orders.items():
+        it = lusgs_solve(g, c, ap, o, dtau)
+        print(f"  {k:15s} bandwidth={bandwidth(g, o):5d}  LU-SGS iters={it:5d}")
+    if name == "convection":
+        for corner, old in (("SW", 0), ("SE", n-1), ("NW", n*n-n), ("NE", n*n-1)):
+            o = cuthill_mckee(nb, perm[old])[::-1]
+            print(f"  RCM start {corner}    bandwidth={bandwidth(nb, o):5d}  LU-SGS iters={lusgs_solve(nb, cf, ap, o, dtau):5d}")
+```
+
+```text
+[convection] cells=576
+  natural (i,j)   bandwidth=   24  LU-SGS iters=    9
+  random labels   bandwidth=  553  LU-SGS iters=   25
+  Cuthill-McKee   bandwidth=   24  LU-SGS iters=    9
+  reverse CM      bandwidth=   24  LU-SGS iters=    9
+  RCM start SW    bandwidth=   24  LU-SGS iters=    9
+  RCM start SE    bandwidth=   24  LU-SGS iters=   21
+  RCM start NW    bandwidth=   24  LU-SGS iters=   21
+  RCM start NE    bandwidth=   24  LU-SGS iters=    9
+[diffusion] cells=576
+  natural (i,j)   bandwidth=   24  LU-SGS iters= 1549
+  random labels   bandwidth=  561  LU-SGS iters= 1747
+  Cuthill-McKee   bandwidth=   24  LU-SGS iters= 1549
+  reverse CM      bandwidth=   24  LU-SGS iters= 1549
+```
+
+同じ576セル、同じ行列、同じ収束判定($10^{-8}$)です。変えたのはセルを訪れる順番だけです。
+
+## 25回と9回を分けたのは上流セルの順番です
+
+流れが30°なら、各セルの上流側の隣接セルは西と南です。自然順序($i$ が先、$j$ が後)では、どちらも先の順番になります。そのため前進スイープ1回で、南西の隅から北東の隅まで情報が届きます。残りの9回は、小さな拡散項と擬似時間項を片付ける分です。
+
+ランダム番号では、上流セルが先の順番になる確率は半々です。情報は1回のスイープで数セル進んで途切れます。24セルを横切るには何度も反復が要ります。その結果が25回、約2.8倍です。
+
+バンド幅も553から24に減りました。この数字は反復回数とは別の話です。実際のコードでは、隣接セルのデータがメモリ上でどれだけ離れているかを表します。バンド幅が小さいとキャッシュヒットが良くなり、1回の反復が速くなります。つまりRCMは反復回数と1回あたりのコストを同時に減らします。ただしPythonの実験ではキャッシュ効果を測れないので、ここでは反復回数だけを比べます。
+
+## 同じバンド幅24で、反復は9回と21回
+
+4つの隅の実験のほうが興味深い結果です。どの隅から始めてもバンド幅は24です。それでもSWとNEは9回、SEとNWは21回です。
+
+RCMのBFSの層は、開始した隅を中心とする斜めの帯になります。SWから始めると帯が流れに垂直に並び、順番が流れに沿って増えます。NEから始めても、順番が流れに逆らって増えるだけです。その場合は後退スイープが流れの向きになります。SGSは前進と後退の両方を行うので、2つは対称です。同じ理由で、Cuthill–McKeeとreverse CMの反復回数も同じになります。
+
+SEから始めると、順番は北西に向かって増えます。流れの $x$ 成分とは逆、$y$ 成分とは同じ向きです。前進でも後退でも、上流セルの片方しか間に合いません。だから21回です。バンド幅は行列の形しか見ません。流れの向きは知りません。
+
+## 拡散問題では13%しか違いません
+
+純粋な拡散では数字が変わります。自然順序とRCMは1549回、ランダム番号は1747回です。差は13%です。
+
+拡散には上流がありません。情報はすべての方向に同じ速さで広がります。ここでのGauss–Seidelの遅い収束は、番号に関係なく長波長の誤差がなかなか減らないことから来ます。これは順序では解決しません。マルチグリッドやKrylov加速の仕事です。順序が反復回数を大きく変えるのは、対流が支配的なときです。圧縮性Euler計算のように双曲型の性格が強い問題がまさにそれです。
+
+## では、なぜ「Reverse」なのか
+
+実験ではCMとRCMの反復回数は同じでした。それなら反転する理由はなさそうに見えます。反転が効くのは別の場所です。
+
+Georgeが示したのは直接分解のフィルインです。帯行列をCholeskyやLUで分解すると、各行の最初の非ゼロ要素から対角までが埋まります。この「プロファイル(profile)」の合計は、RCMではほぼ常にCM以下になります。そのためILU前処理や直接法を使うつもりならRCMが標準です。LU-SGSだけを使うならCMでもRCMでも差はありません。対称な2回のスイープが、順序の向きを打ち消します。
+
+[LU-SGSそのものの導出とBurgersの例](/ja/posts/2026-06-22-lu-sgs-implicit-time-integration/)は以前の記事にまとめました。その記事の1D格子には、そもそも番号付けの問題がありませんでした。左から右に番号を振れば終わりだからです。問題は2D・3Dの非構造格子で起きます。[Delaunayや前進フロント法の格子生成器](/ja/posts/2026-07-08-delaunay-bowyer-watson-advancing-front/)は、セルを作られた順に番号付けします。その順番は点の挿入順やフロントの前進順に従います。ソルバーから見ればランダムな番号に近いものです。
+
+## 非構造ソルバーに再順序付けを入れる手順
+
+再順序付けは初期化で1回だけ行います。計算中に番号を変える必要はありません。
+
+1. 面の接続からセル隣接グラフを作ります。セルの形は関係ありません。四面体・プリズム・六面体が混在していても構いません。
+2. 擬似周辺セルを見つけてRCM番号を作ります。セル配列、各面の左右セルのインデックス、境界セルのリストをすべて新しい番号に移します。
+3. 対流支配の問題なら、開始セルを見直します。流入境界に近いセルからBFSを始めると、順番が流れに沿います。擬似周辺セルはグラフ上で「最も遠い」セルにすぎません。今回の実験では流れの軸上の隅に当たって9回になりましたが、保証はありません。
+4. 再順序付けの前後で同じケースを流し、収束解が機械精度まで一致するか確認します。番号は解を変えてはいけません。変わったなら、どこかでインデックス変換が漏れています。
+
+番号付けを変えるコストはBFS 1回で、セル数に比例します。反復回数2.8倍とキャッシュ効果を考えれば、ソルバーで最も安上がりな高速化の1つです。
