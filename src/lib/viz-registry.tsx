@@ -317,6 +317,7 @@ export const VIZ_COMPONENTS: Record<string, ComponentType> = {
   "TabDropletOscillator": lazyViz(() => import("@/components/post-viz/2026-07-07-tab-droplet-breakup-weber/TabDropletOscillator").then((m) => ({ default: m.TabDropletOscillator }))),
   "TENOvsWENOAdvection1D": lazyViz(() => import("@/components/post-viz/2026-04-25-teno-low-dissipation-shock-capturing/TENOvsWENOAdvection1D").then((m) => ({ default: m.TENOvsWENOAdvection1D }))),
   "TernaryLeakProfileLab": lazyViz(() => import("@/components/post-viz/2026-10-02-nphase-allen-cahn-pairwise-tension/TernaryLeakProfileLab").then((m) => ({ default: m.TernaryLeakProfileLab }))),
+  "TetraClusterBluntnessLab": lazyViz(() => import("@/components/post-viz/2026-10-17-tetrahedral-cluster-bluntness-separation/TetraClusterBluntnessLab").then((m) => ({ default: m.TetraClusterBluntnessLab }))),
   "ThetaBudgetSplitDial": lazyViz(() => import("@/components/post-viz/2026-08-05-positivity-preserving-flux-limiter/ThetaBudgetSplitDial").then((m) => ({ default: m.ThetaBudgetSplitDial }))),
   "ThetaOvershootPersistence": lazyViz(() => import("@/components/post-viz/2026-09-19-semi-implicit-pressure-linf-flattener/ThetaOvershootPersistence").then((m) => ({ default: m.ThetaOvershootPersistence }))),
   "ThetaPerFaceSelector": lazyViz(() => import("@/components/post-viz/2026-05-20-positivity-preserving-flux-limiter/ThetaPerFaceSelector").then((m) => ({ default: m.ThetaPerFaceSelector }))),
