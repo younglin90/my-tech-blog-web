@@ -59,6 +59,7 @@ export const VIZ_COMPONENTS: Record<string, ComponentType> = {
   "BreachFactorSpeedupWindow": lazyViz(() => import("@/components/post-viz/2026-08-30-implicit-surface-tension-timestep-window/BreachFactorSpeedupWindow").then((m) => ({ default: m.BreachFactorSpeedupWindow }))),
   "BrinkmanChannelProfile": lazyViz(() => import("@/components/post-viz/2026-05-19-darcy-forchheimer-brinkman-porous-flow/BrinkmanChannelProfile").then((m) => ({ default: m.BrinkmanChannelProfile }))),
   "BubblePairBjerknes": lazyViz(() => import("@/components/post-viz/2026-07-12-bubble-dynamics-keller-miksis-bjerknes/BubblePairBjerknes").then((m) => ({ default: m.BubblePairBjerknes }))),
+  "BubblyPipeSoundRaceLab": lazyViz(() => import("@/components/post-viz/2026-10-18-murrone-guillard-wood-sound-speed/BubblyPipeSoundRaceLab").then((m) => ({ default: m.BubblyPipeSoundRaceLab }))),
   "BurgersEntropyGlitch": lazyViz(() => import("@/components/post-viz/2026-07-13-roe-approximate-riemann-solver-entropy-fix/BurgersEntropyGlitch").then((m) => ({ default: m.BurgersEntropyGlitch }))),
   "BurgersShockBirth": lazyViz(() => import("@/components/post-viz/2026-05-01-burgers-characteristics-shock-formation/BurgersShockBirth").then((m) => ({ default: m.BurgersShockBirth }))),
   "CapillaryRiseExplorer": lazyViz(() => import("@/components/post-viz/2026-06-16-surface-tension-contact-angle-csf/CapillaryRiseExplorer").then((m) => ({ default: m.CapillaryRiseExplorer }))),
