@@ -26,4 +26,4 @@ CFD 연구자의 기술 블로그. Claude Code가 매일 소스 문서 1개를 �
 ## 함정
 - LF 고정(`.gitattributes`). CRLF 커밋 금지 — 빌드 깨짐.
 - 블록 수식 `$$`는 단독 줄. 같은 줄에 내용을 쓰면 remark-math 파싱 실패.
-- 포스트는 viz ≥ 1개, 5 locale 동시, `draft: false`.
+- 포스트는 viz 2개(개념 1 + 코드 실험 재현 1, 둘 다 조작형 애니메이션), 5 locale 동시, `draft: false`.

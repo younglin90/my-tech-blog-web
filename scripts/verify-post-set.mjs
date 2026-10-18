@@ -32,6 +32,11 @@ const parse = (t) => ({
   imports: [...t.matchAll(/^import .*$/gm)].map((m) => m[0]),
   viz: [...t.matchAll(/<([A-Z][A-Za-z0-9]+)\s*\/>/g)].map((m) => m[1]),
   heads: [...t.matchAll(/^## /gm)].length,
+  // 첫 코드 블록 이후에 viz가 하나라도 있는지 (실험 재현 viz)
+  vizAfterCode: (() => {
+    const i = t.indexOf('```text')
+    return i >= 0 && /<[A-Z][A-Za-z0-9]+\s*\/>/.test(t.slice(i))
+  })(),
   crlf: t.includes('\r\n'),
 })
 
@@ -54,7 +59,8 @@ for (const l of LOCALES) {
   if (!eq(p.fences.filter((f) => f[0] === 'text'), ko.fences.filter((f) => f[0] === 'text'))) fail.push('output-block')
   if (!eq(p.imports, ko.imports)) fail.push('import')
   if (!eq(p.viz, ko.viz)) fail.push('viz')
-  if (p.viz.length === 0) fail.push('viz-0개')
+  if (new Set(p.viz).size < 2) fail.push('viz-2개미만')
+  if (!p.vizAfterCode) fail.push('코드뒤-viz없음')
   if (p.heads !== ko.heads) fail.push('section-count')
   if (p.fm.tags !== ko.fm.tags) fail.push('tags')
   if (p.fm.date !== ko.fm.date) fail.push('date')
@@ -74,6 +80,17 @@ for (const imp of ko.imports) {
   if (!existsSync(f)) {
     console.log(`FAIL  post-viz 파일 없음: ${f}`)
     bad++
+  } else {
+    const code = readFileSync(f, 'utf-8')
+    const lack = [
+      !code.includes('requestAnimationFrame') && 'rAF',
+      !/type="range"|type='range'|onPointer|onMouse/.test(code) && 'slider/drag',
+      !/onClick/.test(code) && 'button',
+    ].filter(Boolean)
+    if (lack.length) {
+      console.log(`FAIL  조작형 viz 아님 (${lack.join(',')} 없음): ${f}`)
+      bad++
+    }
   }
 }
 
