@@ -19,7 +19,9 @@
 
 절차는 .claude/rules/daily-post.md를 읽고 그대로 따른다. 그 파일이 유일한 출처다.
 요약하면: node scripts/daily-context.mjs 로 컨텍스트를 1회 수집 → 소스 읽기 →
-post-viz 1~2개 작성 → 5 locale MDX 작성 → index.yaml 갱신 →
+post-viz 2개 작성(① 개념 viz — 본문 앞 1/4, ② 코드 실험 재현 viz — 출력 블록 바로 뒤,
+본문 Python 계산을 TS로 옮겨 rAF로 돌리고 파라미터 슬라이더·Play/Step/Reset·실시간 숫자 표시)
+→ 5 locale MDX 작성 → index.yaml 갱신 →
 node scripts/verify-post-set.mjs {slug} --run 및 npm run build 통과 → commit & push → 3~5줄 보고.
 
 토큰은 비용이다. 같은 정보를 ad-hoc bash로 다시 캐지 말고, 위 스크립트 출력을 그대로 쓴다.

@@ -112,6 +112,7 @@ export const VIZ_COMPONENTS: Record<string, ComponentType> = {
   "EulerWaveFanXT": lazyViz(() => import("@/components/post-viz/2026-06-03-euler-eigensystem-general-normal/EulerWaveFanXT").then((m) => ({ default: m.EulerWaveFanXT }))),
   "ExplosionCoalescenceClock": lazyViz(() => import("@/components/post-viz/2026-09-02-lbm-amr-nonequilibrium-rescale/ExplosionCoalescenceClock").then((m) => ({ default: m.ExplosionCoalescenceClock }))),
   "ExponentFitNoiseBench": lazyViz(() => import("@/components/post-viz/2026-09-01-poiseuille-fourth-power-diameter/ExponentFitNoiseBench").then((m) => ({ default: m.ExponentFitNoiseBench }))),
+  "FiveEqPulseSolverRace": lazyViz(() => import("@/components/post-viz/2026-10-18-murrone-guillard-wood-sound-speed/FiveEqPulseSolverRace").then((m) => ({ default: m.FiveEqPulseSolverRace }))),
   "FlameletQuenchScurveDial": lazyViz(() => import("@/components/post-viz/2026-09-22-flamelet-scalar-dissipation-extinction/FlameletQuenchScurveDial").then((m) => ({ default: m.FlameletQuenchScurveDial }))),
   "FlameletSCurveLookupLab": lazyViz(() => import("@/components/post-viz/2026-10-06-flamelet-library-slf-fpv-progress-variable/FlameletSCurveLookupLab").then((m) => ({ default: m.FlameletSCurveLookupLab }))),
   "FluxRegisterLedger": lazyViz(() => import("@/components/post-viz/2026-08-10-amr-tagging-and-refluxing/FluxRegisterLedger").then((m) => ({ default: m.FluxRegisterLedger }))),
