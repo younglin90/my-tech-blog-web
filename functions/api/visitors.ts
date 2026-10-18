@@ -69,7 +69,7 @@ export async function onRequestGet(context: { env: Env; request: Request }): Pro
 
   const base = UMAMI_API_URL.replace(/\/$/, '')
 
-  const fetchWindow = async (startAt: number, endAt: number): Promise<WindowStats & { raw?: unknown }> => {
+  const fetchWindow = async (startAt: number, endAt: number): Promise<WindowStats & { raw?: unknown; reason?: string }> => {
     const url = `${base}/websites/${UMAMI_WEBSITE_ID}/stats?startAt=${startAt}&endAt=${endAt}`
     try {
       const res = await fetch(url, {
@@ -78,7 +78,7 @@ export async function onRequestGet(context: { env: Env; request: Request }): Pro
           Accept: 'application/json',
         },
       })
-      if (!res.ok) return { visitors: null, pageviews: null, ...(debug && { raw: `upstream-${res.status}` }) }
+      if (!res.ok) return { visitors: null, pageviews: null, reason: `upstream-${res.status}`, ...(debug && { raw: `upstream-${res.status}` }) }
       const data = (await res.json().catch(() => ({}))) as Record<string, unknown>
       return {
         visitors: pickNum(data.visitors),
@@ -86,7 +86,7 @@ export async function onRequestGet(context: { env: Env; request: Request }): Pro
         ...(debug && { raw: data }),
       }
     } catch (e) {
-      return { visitors: null, pageviews: null, ...(debug && { raw: String(e) }) }
+      return { visitors: null, pageviews: null, reason: 'upstream-network', ...(debug && { raw: String(e) }) }
     }
   }
 
@@ -101,7 +101,7 @@ export async function onRequestGet(context: { env: Env; request: Request }): Pro
     return json({
       today, yesterday, total,
       visitors: null, pageviews: null,
-      error: 'upstream-failed',
+      error: today.reason ?? 'upstream-failed',
       ...(debug && { todayStart, yesterdayStart }),
     }, { status: 502 })
   }

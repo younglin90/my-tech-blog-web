@@ -26,17 +26,25 @@ export function VisitorCount() {
   const { locale } = localePathPrefix(pathname)
   const [stats, setStats] = useState<Stats | null>(null)
   const [errored, setErrored] = useState(false)
+  // 실패 사유(api-key-missing, upstream-401 …) — 툴팁에 노출해 원인을 바로 확인
+  const [reason, setReason] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
     fetch('/api/visitors', { cache: 'no-store' })
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`http-${r.status}`))))
+      .then(async (r) => {
+        if (r.ok) return r.json()
+        const body = (await r.json().catch(() => ({}))) as { error?: string }
+        throw new Error(body.error ?? `http-${r.status}`)
+      })
       .then((d: Stats) => {
         if (cancelled) return
         setStats(d)
       })
-      .catch(() => {
-        if (!cancelled) setErrored(true)
+      .catch((e: Error) => {
+        if (cancelled) return
+        setErrored(true)
+        setReason(e.message)
       })
     return () => {
       cancelled = true
@@ -57,7 +65,7 @@ export function VisitorCount() {
   const total = stats?.total?.visitors
 
   return (
-    <span title={t(locale, 'visitors.tooltip')} className="inline-flex items-center gap-1.5">
+    <span title={reason ? `${t(locale, 'visitors.tooltip')} — error: ${reason}` : t(locale, 'visitors.tooltip')} className="inline-flex items-center gap-1.5">
       <span
         aria-hidden="true"
         style={{
