@@ -1,0 +1,196 @@
+---
+title: "Al refinar la malla al doble, el error se triplicó — lo que oculta el criterio de parada por incremento en Jacobi"
+date: 2026-10-21
+description: "Si Jacobi se detiene cuando el incremento baja de una tolerancia, el error restante crece como 1/(1-ρ) al refinar. Una placa 2D compara Jacobi, SOR y ω óptimo."
+tags: ["Stopping-Criterion", "SOR", "Iterative-Solver", "Poisson", "Numerical-Analysis"]
+locale: es
+slug: 2026-10-21-jacobi-stopping-rule-finer-grid-error
+takeaway: "Cuando el incremento cae por debajo de es, el error que queda es cerca de es/(1-ρ). En Jacobi, 1-ρ decrece como h², así que refinar la malla con es fijo empeora la respuesta. SOR con ω óptimo reduce ese factor a 1/h."
+draft: false
+---
+
+import { IncrementGapGaugeLab } from '@/components/post-viz/2026-10-21-jacobi-stopping-rule-finer-grid-error/IncrementGapGaugeLab'
+import { PlateSorStopRace } from '@/components/post-viz/2026-10-21-jacobi-stopping-rule-finer-grid-error/PlateSorStopRace'
+
+## La malla más fina dio la respuesta más errónea
+
+Un informe de tarea de CFD de pregrado, de 2003, contiene esta frase: "La malla más fina requirió más cálculo, pero no mostró una precisión equivalente". El problema era la conducción de calor estacionaria en 2D, resuelta con iteración de Jacobi (reemplazar cada valor por el promedio de sus cuatro vecinos y repetir). Eso contradice la promesa básica del refinamiento. Este artículo muestra que el culpable no es la malla sino la **regla de parada**. Al final queda claro cómo debe cambiar el significado de "convergió" junto con la malla.
+
+## Una línea de un informe de 2003
+
+El problema es sencillo. Una placa rectangular tiene la pared inferior a 100 °C y las otras tres a 0 °C. El interior cumple la ecuación de Laplace $\nabla^2 T = 0$. El esquema de 5 puntos (aproximación de segundo orden con un nodo y sus cuatro vecinos) la convierte en un sistema lineal. El informe lo resolvió con Jacobi, Gauss–Seidel puntual, Gauss–Seidel por líneas, PSOR y LSOR.
+
+Todos los métodos usaron la misma regla de parada. Se detiene cuando el cambio de una iteración baja de una tolerancia $e_s$. El informe usó $e_s = 10^{-4}$. Hizo dos observaciones. Al refinar la malla, el error aumentó. Entre $\omega$ = 0.8, 1.0 y 1.2, SOR fue más rápido con 1.2. Ambas observaciones tienen la misma raíz.
+
+## El incremento no es el error
+
+Sea $T^k$ la iteración $k$ y $T^*$ la solución exacta del sistema discreto. Lo que interesa es el error $e_k = T^k - T^*$. Como $T^*$ es desconocida, se mide el incremento $d_k = T^{k+1} - T^k$. El radio espectral $\rho$ de la matriz de iteración (el mayor valor propio en módulo) relaciona ambos.
+
+$$
+e_{k+1} = \rho\, e_k \quad\Rightarrow\quad d_k = e_{k+1} - e_k = (\rho - 1)\, e_k
+$$
+
+$$
+|e_k| \approx \frac{|d_k|}{1-\rho}
+$$
+
+Aquí $\rho$ es la tasa de decaimiento del modo de error más lento. Tras unas pocas iteraciones solo sobrevive ese modo, así que la estimación es buena. Detenerse en $|d_k| < e_s$ deja, por tanto, un error de aproximadamente $e_s/(1-\rho)$. Cuando $\rho$ se acerca a 1, ese factor se dispara.
+
+En la simulación siguiente se puede manipular directamente. Aísla el modo más lento.
+
+<IncrementGapGaugeLab />
+
+Al subir $n$ de 10 a 160, la curva azul del incremento se pega al fondo mientras la joroba naranja del error casi no cambia. A la derecha, la barra amarilla en el instante de parada es esa brecha, un factor $1/(1-\rho)$.
+
+## La malla fija ρ
+
+Para Jacobi, $\rho$ se puede calcular. En una placa de $L_x \times L_y$ con espaciado uniforme $h$:
+
+$$
+\rho_J = \tfrac12\left[\cos\frac{\pi h}{L_x} + \cos\frac{\pi h}{L_y}\right] \approx 1 - \frac{\pi^2 h^2}{4}\left(\frac{1}{L_x^2} + \frac{1}{L_y^2}\right)
+$$
+
+$h$ es el espaciado de malla y $L_x, L_y$ son las dimensiones de la placa. El dato clave es $1-\rho_J \propto h^2$. Si $h$ se reduce a la mitad, $1-\rho_J$ cae a la cuarta parte. Con el mismo $e_s$, el error de iteración restante se cuadruplica.
+
+El error de discretización del esquema de 5 puntos, en cambio, decrece como $h^2$. El error total es la suma de ambos.
+
+$$
+\|T^k - T_{\text{exact}}\| \lesssim C h^2 + \frac{e_s}{1-\rho} \approx C h^2 + \frac{16\, e_s}{5\pi^2 h^2}
+$$
+
+La última forma supone $L_x=1$, $L_y=2$. El primer término baja y el segundo sube. Por debajo de cierto $h$, refinar empeora la respuesta. Eso es lo que vio el informe de 2003.
+
+## Código: una placa, tres mallas, tres iteraciones
+
+Se toma la malla 21×41 del informe como celdas cuadradas sobre una placa de 1×2. La malla se refina de forma uniforme: 21×41, 41×81, 81×161. La regla de parada es $\max|d_k| < 10^{-3}$. El $e_s$ del informe parece un error relativo; aquí se usa un valor absoluto para simplificar el análisis.
+
+Se preparan dos soluciones de referencia. Una es la solución exacta del sistema de 5 puntos, $T_{\text{discrete}}$; el error de iteración se mide contra ella. La otra es la serie de Fourier del problema continuo; el error total se mide contra ella. Las dos esquinas inferiores tienen un salto de temperatura y mucho error local, por eso el error total se toma solo en $y \ge L_y/8$. SOR se vectoriza con ordenamiento rojo–negro (dividir la malla en dos colores de tablero de ajedrez y actualizarlos por turnos).
+
+```python
+import numpy as np
+
+LX, LY, TB = 1.0, 2.0, 100.0   # placa 1 x 2, pared inferior a 100 °C, demás paredes a 0
+
+def exact_plate(nx, ny, terms=399):
+    # solución analítica (serie de Fourier) del problema de Laplace continuo
+    x = np.linspace(0, LX, nx); y = np.linspace(0, LY, ny)
+    X, Y = np.meshgrid(x, y, indexing="ij")
+    T = np.zeros_like(X)
+    for n in range(1, terms + 1, 2):
+        k = n * np.pi / LX
+        decay = np.exp(-k * Y) * (1 - np.exp(-2 * k * (LY - Y))) / (1 - np.exp(-2 * k * LY))
+        T += 4 * TB / (n * np.pi) * np.sin(k * X) * decay
+    return T
+
+def discrete_plate(nx, ny):
+    # solución exacta del sistema de 5 puntos (transformada seno en x, recurrencia en y)
+    T = np.zeros((nx, ny)); i = np.arange(1, nx - 1); J = ny - 1; j = np.arange(ny)
+    for p in range(1, nx - 1):
+        s = np.sin(p * np.pi * i / (nx - 1))
+        c = 2 / (nx - 1) * np.sum(TB * s)
+        lam = 2 - 2 * np.cos(p * np.pi / (nx - 1))
+        r = (2 + lam + np.sqrt((2 + lam) ** 2 - 4)) / 2
+        T[1:-1, :] += np.outer(s, c * (r ** (j - J) - r ** (J - j)) / (r ** -J - r ** J))
+    T[1:-1, 0] = TB
+    return T
+
+def jacobi_sweep(T, w, masks):
+    Tn = T.copy()
+    Tn[1:-1, 1:-1] = 0.25 * (T[2:, 1:-1] + T[:-2, 1:-1] + T[1:-1, 2:] + T[1:-1, :-2])
+    return Tn
+
+def rb_sor_sweep(T, w, masks):
+    T = T.copy()
+    for m in masks:                       # celdas rojas y luego negras
+        gs = np.zeros_like(T)
+        gs[1:-1, 1:-1] = 0.25 * (T[2:, 1:-1] + T[:-2, 1:-1] + T[1:-1, 2:] + T[1:-1, :-2])
+        T[m] = (1 - w) * T[m] + w * gs[m]
+    return T
+
+def omega_opt(nx, ny):
+    rho_j = 0.5 * (np.cos(np.pi / (nx - 1)) + np.cos(np.pi / (ny - 1)))
+    return rho_j, 2 / (1 + np.sqrt(1 - rho_j ** 2))
+
+def solve_until(nx, ny, sweep, w, es):
+    T = np.zeros((nx, ny)); T[1:-1, 0] = TB
+    I, Jg = np.meshgrid(np.arange(nx), np.arange(ny), indexing="ij")
+    inner = (I > 0) & (I < nx - 1) & (Jg > 0) & (Jg < ny - 1)
+    masks = [inner & ((I + Jg) % 2 == c) for c in (0, 1)]
+    for k in range(1, 100000):
+        Tn = sweep(T, w, masks)
+        d = np.abs(Tn - T).max(); T = Tn
+        if d < es:
+            return T, k
+
+es = 1e-3                                 # parar cuando max |T^(k+1) - T^k| < es
+print(f"stop rule: max|dT| < {es}   error measured on y >= LY/8 (away from hot corners)")
+print(f"{'grid':>8} {'method':>10} {'omega':>6} {'iters':>6} {'es/(1-rho)':>11} {'iter_err':>9} {'disc_err':>9} {'total':>8}")
+for nx, ny in [(21, 41), (41, 81), (81, 161)]:
+    Td, Ta = discrete_plate(nx, ny), exact_plate(nx, ny)
+    band = slice((ny - 1) // 8, None)
+    disc = np.abs(Td - Ta)[:, band].max()
+    rho_j, w_opt = omega_opt(nx, ny)
+    for name, sweep, w, rho in [("Jacobi", jacobi_sweep, 1.0, rho_j),
+                                ("SOR", rb_sor_sweep, 1.2, None),
+                                ("SOR-opt", rb_sor_sweep, w_opt, w_opt - 1)]:
+        T, k = solve_until(nx, ny, sweep, w, es)
+        bound = f"{es / (1 - rho):11.3f}" if rho is not None else f"{'-':>11}"
+        print(f"{nx:>3}x{ny:<4} {name:>10} {w:6.3f} {k:6d} {bound} "
+              f"{np.abs(T - Td).max():9.4f} {disc:9.4f} {np.abs(T - Ta)[:, band].max():8.4f}")
+```
+
+```text
+stop rule: max|dT| < 0.001   error measured on y >= LY/8 (away from hot corners)
+    grid     method  omega  iters  es/(1-rho)  iter_err  disc_err    total
+ 21x41       Jacobi  1.000    629       0.130    0.1264    0.1691   0.1525
+ 21x41          SOR  1.200    256           -    0.0422    0.1691   0.1639
+ 21x41      SOR-opt  1.780     47       0.005    0.0021    0.1691   0.1689
+ 41x81       Jacobi  1.000   1831       0.519    0.4922    0.0439   0.4850
+ 41x81          SOR  1.200    791           -    0.1683    0.0439   0.1616
+ 41x81      SOR-opt  1.883     90       0.009    0.0033    0.0439   0.0435
+ 81x161      Jacobi  1.000   4815       2.075    1.8097    0.0112   1.8078
+ 81x161         SOR  1.200   2260           -    0.6486    0.0112   0.6468
+ 81x161     SOR-opt  1.940    174       0.017    0.0048    0.0112   0.0107
+```
+
+Conviene ejecutar el código anterior directamente en el navegador. Jacobi a la izquierda y SOR a la derecha avanzan a la vez sobre la misma placa.
+
+<PlateSorStopRace />
+
+Al cambiar la malla de 21×41 a 81×161, el total err de Jacobi sube de 0.15 a 1.81. Si $\omega$ baja a 1.2, SOR cae en la misma trampa. Con `show error field` activo, el error restante aparece como una gran joroba en el centro de la placa.
+
+## Lo que dice el número 1.81
+
+Basta mirar las filas de Jacobi. El error de discretización pasa de 0.169 a 0.044 y a 0.011, exactamente un factor 4 cada vez. La malla cumplió su parte. El error de iteración pasa de 0.126 a 0.492 y a 1.810, cuatro veces mayor en cada paso. La predicción $e_s/(1-\rho)$ da 0.130, 0.519 y 2.075, muy cerca.
+
+El error total combina ambos. En 21×41 domina la discretización y el total es 0.15. Desde 41×81 domina la iteración: 0.49 y luego 1.81. La respuesta de la malla más fina es 12 veces peor que la de la más gruesa. Y eso tras 629, 1831 y 4815 iteraciones.
+
+En 21×41, el error total 0.1525 es menor que el de discretización 0.1691. Es suerte. El signo del error de iteración canceló parte del error de discretización. Esa cancelación no debe confundirse con precisión.
+
+## El informe no debió detenerse en ω = 1.2
+
+El informe probó SOR solo hasta $\omega = 1.2$. El valor óptimo para este problema es mucho mayor.
+
+$$
+\omega_{\text{opt}} = \frac{2}{1+\sqrt{1-\rho_J^2}}, \qquad \rho_{\text{SOR}} = \omega_{\text{opt}} - 1 \approx 1 - c\,h
+$$
+
+$\rho_{\text{SOR}}$ es el radio espectral de SOR con $\omega$ óptimo. Ahora $1-\rho$ escala con $h$, no con $h^2$. La salida da $\omega$ óptimos de 1.780, 1.883 y 1.940. Las iteraciones son 47, 90 y 174, entre 13 y 28 veces menos que Jacobi.
+
+La ganancia mayor es el error que queda al parar. $e_s/(1-\rho)$ vale 0.005, 0.009 y 0.017, y crece solo como $1/h$. El error total sigue entonces al de discretización: 0.169, 0.044, 0.011. El refinamiento rinde lo que debe. $\omega = 1.2$ reduce $\rho$ apenas un poco, así que su error de iteración sigue creciendo por cuatro: 0.042, 0.168, 0.649.
+
+La fórmula de $\omega_{\text{opt}}$ es exacta solo para un rectángulo con malla uniforme como este. Los problemas reales requieren prueba y error, como dice el informe. Aun así la dirección es clara: probar primero valores cercanos a 2, no valores apenas mayores que 1. Otro caso en que el orden del flujo de información cambia la convergencia aparece en [el artículo sobre reordenamiento de celdas en LU-SGS](/es/posts/2026-10-16-lu-sgs-cell-ordering-reverse-cuthill-mckee/).
+
+## Cómo hacer que la regla de parada escale con la malla
+
+Hay tres remedios. Primero, estimar el error en lugar del incremento. Se estima $\rho$ con el cociente de dos incrementos sucesivos, $\hat\rho = |d_k|/|d_{k-1}|$. Luego se prueba $|d_k|\,\hat\rho/(1-\hat\rho) < e_s$. Es una sola línea de código.
+
+Segundo, ligar la tolerancia a la malla. Basta con que el error de iteración quede muy por debajo del de discretización. Para Jacobi eso exige $e_s \propto h^4$; para SOR óptimo, $e_s \propto h^3$. Mantener $e_s$ fijo al cambiar la malla es la causa directa de esta trampa.
+
+Tercero, usar el residuo como cantidad de control. El residuo $r = b - AT$ es el error multiplicado por $A$. Su escala también cambia con la malla, así que se usa relativo al residuo inicial. Las iteraciones externas de los solvers tipo SIMPLE sufren el mismo problema. Leído junto con [el artículo sobre cómo la sub-relajación cambia la solución convergida](/es/posts/2026-10-14-rhie-chow-under-relaxation-memory/), permite separar lo que deja la regla de parada de lo que deja el factor de relajación.
+
+Esto importa sobre todo en estudios de convergencia de malla. Un error de iteración mezclado hace que el orden observado se aleje de 2. Es la misma contaminación tratada en [lo que realmente mide un caso de verificación](/es/posts/2026-10-07-sod-vortex-order-verification/).
+
+## Antes de confiar en el "converged" del solver
+
+Cuando el registro diga converged, conviene imprimir dos números más: el cociente $\hat\rho$ de los dos últimos incrementos y $1/(1-\hat\rho)$. Si ese factor está en los cientos, la tolerancia es así de optimista respecto al error real. Si se multiplica por cuatro al refinar un nivel, es la trampa $h^2$ de Jacobi. La observación del informe de 2003 era correcta. El culpable fue la regla de parada, no la malla.

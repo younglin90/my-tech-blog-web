@@ -1,0 +1,196 @@
+---
+title: "网格加密一倍,误差反而变成三倍 — Jacobi 迭代的增量收敛判据隐藏了什么"
+date: 2026-10-21
+description: "用增量判据停止 Jacobi 迭代时,网格越细,残留误差按 1/(1-ρ) 放大。以二维导热平板比较 Jacobi、SOR 与最优 ω"
+tags: ["Stopping-Criterion", "SOR", "Iterative-Solver", "Poisson", "Numerical-Analysis"]
+locale: zh
+slug: 2026-10-21-jacobi-stopping-rule-finer-grid-error
+takeaway: "增量小于 es 时,残留误差约为 es/(1-ρ)。Jacobi 的 1-ρ 按 h² 缩小,所以 es 不变而只加密网格,结果反而更差。最优 ω 的 SOR 把这个放大倍数降到 1/h。"
+draft: false
+---
+
+import { IncrementGapGaugeLab } from '@/components/post-viz/2026-10-21-jacobi-stopping-rule-finer-grid-error/IncrementGapGaugeLab'
+import { PlateSorStopRace } from '@/components/post-viz/2026-10-21-jacobi-stopping-rule-finer-grid-error/PlateSorStopRace'
+
+## 更细的网格给出了更错的答案
+
+2003 年一份本科计算流体力学作业报告里有这样一句话:"网格间距更小,计算量增加了,但精度并没有相应提高。"这是用 Jacobi 迭代(用上下左右四个邻点的平均值替换当前值的迭代法)求解二维稳态导热的结果。它与"网格越细越准"的常识相反。本文说明,原因不在网格,而在**停止规则**。读完后你会知道,"已收敛"的判据应当如何随网格一起调整。
+
+## 2003 年作业报告里的一句话
+
+问题很简单。矩形平板的下壁为 100 °C,其余三面壁为 0 °C。内部温度满足拉普拉斯方程 $\nabla^2 T = 0$。用五点差分(由中心点和上下左右四点构成的二阶近似)离散后得到线性方程组。报告分别用 Jacobi、点 Gauss–Seidel、线 Gauss–Seidel、PSOR 和 LSOR 求解。
+
+所有方法的停止规则相同:一次迭代的变化量小于容差 $e_s$ 就停止。报告取 $e_s = 10^{-4}$,并观察到两点。网格加密后误差反而变大。SOR 在 $\omega$ = 0.8、1.0、1.2 中以 1.2 最快。这两个现象出自同一个根源。
+
+## 增量不是误差
+
+设第 $k$ 次迭代的解为 $T^k$,离散方程的精确解为 $T^*$。我们想要的是误差 $e_k = T^k - T^*$。但 $T^*$ 未知,只能测量增量 $d_k = T^{k+1} - T^k$。两者的关系由迭代矩阵的谱半径(最大特征值的绝对值)$\rho$ 决定。
+
+$$
+e_{k+1} = \rho\, e_k \quad\Rightarrow\quad d_k = e_{k+1} - e_k = (\rho - 1)\, e_k
+$$
+
+$$
+|e_k| \approx \frac{|d_k|}{1-\rho}
+$$
+
+这里 $\rho$ 是衰减最慢的误差模态的衰减率。迭代若干次后只剩这一模态,所以这个近似很准。因此在 $|d_k| < e_s$ 时停止,残留误差约为 $e_s/(1-\rho)$。$\rho$ 越接近 1,这个倍数越大。
+
+下面的模拟可以直接操作。图中只取出了最慢的一个模态。
+
+<IncrementGapGaugeLab />
+
+把 $n$ 从 10 调到 160。蓝色的增量曲线几乎贴在底部,橙色的误差曲线却几乎不动。右图中停止时刻的黄色竖条就是两者的差距,即 $1/(1-\rho)$ 倍。
+
+## ρ 由网格决定
+
+Jacobi 的 $\rho$ 可以算出。对尺寸为 $L_x \times L_y$、间距为 $h$ 的均匀网格:
+
+$$
+\rho_J = \tfrac12\left[\cos\frac{\pi h}{L_x} + \cos\frac{\pi h}{L_y}\right] \approx 1 - \frac{\pi^2 h^2}{4}\left(\frac{1}{L_x^2} + \frac{1}{L_y^2}\right)
+$$
+
+$h$ 是网格间距,$L_x, L_y$ 是平板的长和宽。关键在于 $1-\rho_J \propto h^2$。$h$ 减半,$1-\rho_J$ 变为 1/4。用同样的 $e_s$ 停止,残留的迭代误差就变成 4 倍。
+
+另一方面,离散误差(五点差分本身的误差)按 $h^2$ 减小。所以总误差是两项之和。
+
+$$
+\|T^k - T_{\text{exact}}\| \lesssim C h^2 + \frac{e_s}{1-\rho} \approx C h^2 + \frac{16\, e_s}{5\pi^2 h^2}
+$$
+
+最后一式对应 $L_x=1$、$L_y=2$。前一项减小,后一项增大。当 $h$ 小于某个值后,网格越细答案越差。2003 年那份报告看到的正是这一点。
+
+## 代码:同一块板,三套网格,三种迭代
+
+把报告中的 21×41 网格视为正方形单元,平板取 1×2。网格依次均匀加密为 21×41、41×81、81×161。停止规则为 $\max|d_k| < 10^{-3}$。报告中的 $e_s$ 看起来是相对误差,这里为了便于分析使用绝对值。
+
+准备两个参考解。一个是五点离散方程的精确解 $T_{\text{discrete}}$,迭代误差与它比较。另一个是连续问题的傅里叶级数解,总误差与它比较。下壁两端的角点温度不连续,局部误差很大,所以总误差只在 $y \ge L_y/8$ 区域内计算。SOR 采用红黑排序(像棋盘一样分成两种颜色交替更新)实现向量化。
+
+```python
+import numpy as np
+
+LX, LY, TB = 1.0, 2.0, 100.0   # 1 x 2 平板,底壁 100 °C,其余壁面 0
+
+def exact_plate(nx, ny, terms=399):
+    # 连续拉普拉斯问题的解析解(傅里叶级数)
+    x = np.linspace(0, LX, nx); y = np.linspace(0, LY, ny)
+    X, Y = np.meshgrid(x, y, indexing="ij")
+    T = np.zeros_like(X)
+    for n in range(1, terms + 1, 2):
+        k = n * np.pi / LX
+        decay = np.exp(-k * Y) * (1 - np.exp(-2 * k * (LY - Y))) / (1 - np.exp(-2 * k * LY))
+        T += 4 * TB / (n * np.pi) * np.sin(k * X) * decay
+    return T
+
+def discrete_plate(nx, ny):
+    # 五点离散方程的精确解(x 方向正弦变换,y 方向递推)
+    T = np.zeros((nx, ny)); i = np.arange(1, nx - 1); J = ny - 1; j = np.arange(ny)
+    for p in range(1, nx - 1):
+        s = np.sin(p * np.pi * i / (nx - 1))
+        c = 2 / (nx - 1) * np.sum(TB * s)
+        lam = 2 - 2 * np.cos(p * np.pi / (nx - 1))
+        r = (2 + lam + np.sqrt((2 + lam) ** 2 - 4)) / 2
+        T[1:-1, :] += np.outer(s, c * (r ** (j - J) - r ** (J - j)) / (r ** -J - r ** J))
+    T[1:-1, 0] = TB
+    return T
+
+def jacobi_sweep(T, w, masks):
+    Tn = T.copy()
+    Tn[1:-1, 1:-1] = 0.25 * (T[2:, 1:-1] + T[:-2, 1:-1] + T[1:-1, 2:] + T[1:-1, :-2])
+    return Tn
+
+def rb_sor_sweep(T, w, masks):
+    T = T.copy()
+    for m in masks:                       # 先红格,后黑格
+        gs = np.zeros_like(T)
+        gs[1:-1, 1:-1] = 0.25 * (T[2:, 1:-1] + T[:-2, 1:-1] + T[1:-1, 2:] + T[1:-1, :-2])
+        T[m] = (1 - w) * T[m] + w * gs[m]
+    return T
+
+def omega_opt(nx, ny):
+    rho_j = 0.5 * (np.cos(np.pi / (nx - 1)) + np.cos(np.pi / (ny - 1)))
+    return rho_j, 2 / (1 + np.sqrt(1 - rho_j ** 2))
+
+def solve_until(nx, ny, sweep, w, es):
+    T = np.zeros((nx, ny)); T[1:-1, 0] = TB
+    I, Jg = np.meshgrid(np.arange(nx), np.arange(ny), indexing="ij")
+    inner = (I > 0) & (I < nx - 1) & (Jg > 0) & (Jg < ny - 1)
+    masks = [inner & ((I + Jg) % 2 == c) for c in (0, 1)]
+    for k in range(1, 100000):
+        Tn = sweep(T, w, masks)
+        d = np.abs(Tn - T).max(); T = Tn
+        if d < es:
+            return T, k
+
+es = 1e-3                                 # 当 max |T^(k+1) - T^k| < es 时停止
+print(f"stop rule: max|dT| < {es}   error measured on y >= LY/8 (away from hot corners)")
+print(f"{'grid':>8} {'method':>10} {'omega':>6} {'iters':>6} {'es/(1-rho)':>11} {'iter_err':>9} {'disc_err':>9} {'total':>8}")
+for nx, ny in [(21, 41), (41, 81), (81, 161)]:
+    Td, Ta = discrete_plate(nx, ny), exact_plate(nx, ny)
+    band = slice((ny - 1) // 8, None)
+    disc = np.abs(Td - Ta)[:, band].max()
+    rho_j, w_opt = omega_opt(nx, ny)
+    for name, sweep, w, rho in [("Jacobi", jacobi_sweep, 1.0, rho_j),
+                                ("SOR", rb_sor_sweep, 1.2, None),
+                                ("SOR-opt", rb_sor_sweep, w_opt, w_opt - 1)]:
+        T, k = solve_until(nx, ny, sweep, w, es)
+        bound = f"{es / (1 - rho):11.3f}" if rho is not None else f"{'-':>11}"
+        print(f"{nx:>3}x{ny:<4} {name:>10} {w:6.3f} {k:6d} {bound} "
+              f"{np.abs(T - Td).max():9.4f} {disc:9.4f} {np.abs(T - Ta)[:, band].max():8.4f}")
+```
+
+```text
+stop rule: max|dT| < 0.001   error measured on y >= LY/8 (away from hot corners)
+    grid     method  omega  iters  es/(1-rho)  iter_err  disc_err    total
+ 21x41       Jacobi  1.000    629       0.130    0.1264    0.1691   0.1525
+ 21x41          SOR  1.200    256           -    0.0422    0.1691   0.1639
+ 21x41      SOR-opt  1.780     47       0.005    0.0021    0.1691   0.1689
+ 41x81       Jacobi  1.000   1831       0.519    0.4922    0.0439   0.4850
+ 41x81          SOR  1.200    791           -    0.1683    0.0439   0.1616
+ 41x81      SOR-opt  1.883     90       0.009    0.0033    0.0439   0.0435
+ 81x161      Jacobi  1.000   4815       2.075    1.8097    0.0112   1.8078
+ 81x161         SOR  1.200   2260           -    0.6486    0.0112   0.6468
+ 81x161     SOR-opt  1.940    174       0.017    0.0048    0.0112   0.0107
+```
+
+在浏览器里直接运行上面的代码。左边是 Jacobi,右边是 SOR,在同一块板上同时推进。
+
+<PlateSorStopRace />
+
+把网格按钮从 21×41 切换到 81×161,Jacobi 的 total err 从 0.15 增长到 1.81。把 $\omega$ 降到 1.2,SOR 也会落入同样的陷阱。打开 `show error field`,可以看到残留误差在板中央形成一个大鼓包。
+
+## 1.81 这个数字说明了什么
+
+只看输出表中的 Jacobi 行。离散误差为 0.169 → 0.044 → 0.011,每次正好缩小到 1/4。网格完成了它的任务。但迭代误差为 0.126 → 0.492 → 1.810,每次增大 4 倍,与预测值 $e_s/(1-\rho)$ 的 0.130、0.519、2.075 几乎一致。
+
+总误差是两者叠加的结果。21×41 时离散误差占主导,总误差为 0.15。从 41×81 开始迭代误差占主导,增大到 0.49、1.81。最细网格的答案比最粗网格差 12 倍,而迭代次数却从 629 增加到 1831、4815。
+
+21×41 时总误差 0.1525 小于离散误差 0.1691,这是巧合。迭代误差的符号部分抵消了离散误差。不要把这种抵消误认为精度。
+
+## 不该停在 ω=1.2
+
+报告只把 SOR 的 $\omega$ 试到 1.2。而这个问题的最优值要大得多。
+
+$$
+\omega_{\text{opt}} = \frac{2}{1+\sqrt{1-\rho_J^2}}, \qquad \rho_{\text{SOR}} = \omega_{\text{opt}} - 1 \approx 1 - c\,h
+$$
+
+$\rho_{\text{SOR}}$ 是最优 $\omega$ 下 SOR 的谱半径。此时 $1-\rho$ 与 $h$ 而不是 $h^2$ 成正比。输出中最优 $\omega$ 为 1.780、1.883、1.940,迭代次数为 47、90、174,比 Jacobi 少 13~28 倍。
+
+更重要的是停止时的残留误差。$e_s/(1-\rho)$ 为 0.005、0.009、0.017,只按 $1/h$ 增长。因此总误差 0.169 → 0.044 → 0.011 完全跟随离散误差。网格加密多少,答案就改善多少。$\omega=1.2$ 只让 $\rho$ 略微减小,所以迭代误差仍按 4 倍增长:0.042 → 0.168 → 0.649。
+
+最优 $\omega$ 公式只在本文这种矩形平板加均匀网格时才精确。实际问题中正如报告所说需要反复试算。但方向很明确:应先试接近 2 的值,而不是略大于 1 的值。信息传递顺序改变收敛性的另一个例子,见[LU-SGS 单元重编号一文](/zh/posts/2026-10-16-lu-sgs-cell-ordering-reverse-cuthill-mckee/)。
+
+## 让停止规则随网格一起变化
+
+有三种办法。第一,估计误差而不是看增量。用相邻两次增量之比 $\hat\rho = |d_k|/|d_{k-1}|$ 估计 $\rho$,再用 $|d_k|\,\hat\rho/(1-\hat\rho) < e_s$ 判断。只需一行代码。
+
+第二,让容差与网格挂钩。只要迭代误差远小于离散误差即可。Jacobi 需要 $e_s \propto h^4$,最优 SOR 需要 $e_s \propto h^3$。改变网格时 $e_s$ 保持不变,正是这个陷阱的直接原因。
+
+第三,把判据改为残差。残差 $r = b - AT$ 是误差乘以 $A$。它的放大倍数同样随网格变化,所以要用相对于初始残差的值。SIMPLE 类外迭代也会遇到同样的问题。结合[欠松弛改变收敛解一文](/zh/posts/2026-10-14-rhie-chow-under-relaxation-memory/)阅读,可以区分停止判据和松弛因子各自在结果中留下的痕迹。
+
+做网格收敛研究时这一点尤其重要。混入迭代误差后,观测到的阶数会偏离二阶。这与[验证算例实际测量的是什么](/zh/posts/2026-10-07-sod-vortex-order-verification/)中讨论的阶数污染属于同一类问题。
+
+## 相信求解器的 "converged" 之前
+
+日志里出现 converged 时,再多输出两个数:最后两次增量之比 $\hat\rho$ 和 $1/(1-\hat\rho)$。如果这个倍数达到几百,容差就比真实误差乐观同样多倍。如果网格加密一级后这个倍数跳了 4 倍,那就是 Jacobi 类方法的 $h^2$ 陷阱。2003 年那份报告的观察并没有错,只是罪魁祸首是停止规则,而不是网格。

@@ -1,0 +1,196 @@
+---
+title: "Halving the Grid Spacing Tripled the Error — What an Increment-Based Stopping Rule Hides in Jacobi Iteration"
+date: 2026-10-21
+description: "Stop Jacobi when the update drops below a tolerance and the error left behind grows as 1/(1-ρ) on finer grids. A 2D heat-conduction plate compares Jacobi, SOR and optimal ω."
+tags: ["Stopping-Criterion", "SOR", "Iterative-Solver", "Poisson", "Numerical-Analysis"]
+locale: en
+slug: 2026-10-21-jacobi-stopping-rule-finer-grid-error
+takeaway: "When the increment falls below es, the error still left is about es/(1-ρ). For Jacobi, 1-ρ shrinks like h², so refining the grid with a fixed es makes the answer worse. SOR with the optimal ω cuts that factor to 1/h."
+draft: false
+---
+
+import { IncrementGapGaugeLab } from '@/components/post-viz/2026-10-21-jacobi-stopping-rule-finer-grid-error/IncrementGapGaugeLab'
+import { PlateSorStopRace } from '@/components/post-viz/2026-10-21-jacobi-stopping-rule-finer-grid-error/PlateSorStopRace'
+
+## The finer grid gave the wrong answer
+
+A 2003 undergraduate CFD homework report contains this line: "The finer grid needed more computation, but it did not deliver matching accuracy." The student had solved 2D steady heat conduction with Jacobi iteration (replace each value with the average of its four neighbors, repeat). That contradicts the basic promise of grid refinement. This post shows the culprit is not the grid but the **stopping rule**. By the end, you will know how the meaning of "converged" has to change with the grid.
+
+## One line from a 2003 homework report
+
+The problem is simple. A rectangular plate has its bottom wall at 100 °C and the other three walls at 0 °C. The interior satisfies Laplace's equation $\nabla^2 T = 0$. The 5-point stencil (a second-order approximation built from a node and its four neighbors) turns it into a linear system. The report solved it with Jacobi, point Gauss–Seidel, line Gauss–Seidel, PSOR and LSOR.
+
+Every method used the same stopping rule. Stop when the change in one iteration falls below a tolerance $e_s$. The report used $e_s = 10^{-4}$. It made two observations. Refining the grid made the error larger. Among $\omega$ = 0.8, 1.0 and 1.2, SOR was fastest at 1.2. Both observations have the same root.
+
+## The increment is not the error
+
+Let $T^k$ be the iterate and $T^*$ the exact solution of the discrete system. What we want is the error $e_k = T^k - T^*$. We don't know $T^*$, so we measure the increment $d_k = T^{k+1} - T^k$ instead. The spectral radius $\rho$ of the iteration matrix (the largest eigenvalue magnitude) links the two.
+
+$$
+e_{k+1} = \rho\, e_k \quad\Rightarrow\quad d_k = e_{k+1} - e_k = (\rho - 1)\, e_k
+$$
+
+$$
+|e_k| \approx \frac{|d_k|}{1-\rho}
+$$
+
+Here $\rho$ is the decay rate of the slowest error mode. After a few iterations only that mode survives, so the estimate is good. Stopping at $|d_k| < e_s$ therefore leaves roughly $e_s/(1-\rho)$ of error behind. As $\rho$ approaches 1, that factor blows up.
+
+Try it yourself in the simulation below. It isolates the single slowest mode.
+
+<IncrementGapGaugeLab />
+
+Push $n$ from 10 to 160. The blue increment curve hugs the floor while the orange error hump barely moves. On the right, the yellow bar at the stopping point is that gap, a factor of $1/(1-\rho)$.
+
+## The grid sets ρ
+
+For Jacobi, $\rho$ can be computed. On an $L_x \times L_y$ plate with uniform spacing $h$:
+
+$$
+\rho_J = \tfrac12\left[\cos\frac{\pi h}{L_x} + \cos\frac{\pi h}{L_y}\right] \approx 1 - \frac{\pi^2 h^2}{4}\left(\frac{1}{L_x^2} + \frac{1}{L_y^2}\right)
+$$
+
+$h$ is the grid spacing and $L_x, L_y$ are the plate dimensions. The key fact is $1-\rho_J \propto h^2$. Halve $h$ and $1-\rho_J$ drops to a quarter. With the same $e_s$, the leftover iteration error quadruples.
+
+The discretization error of the 5-point stencil, on the other hand, shrinks like $h^2$. The total error is the sum of the two.
+
+$$
+\|T^k - T_{\text{exact}}\| \lesssim C h^2 + \frac{e_s}{1-\rho} \approx C h^2 + \frac{16\, e_s}{5\pi^2 h^2}
+$$
+
+The last form assumes $L_x=1$, $L_y=2$. The first term falls and the second rises. Below some $h$, refining the grid makes the answer worse. That is what the 2003 report saw.
+
+## Code: one plate, three grids, three iterations
+
+I treat the report's 21×41 grid as square cells on a 1×2 plate. The grid is refined uniformly: 21×41, 41×81, 81×161. The stopping rule is $\max|d_k| < 10^{-3}$. The report's $e_s$ looks like a relative error; here an absolute value keeps the analysis clean.
+
+Two reference solutions are prepared. One is the exact solution of the 5-point system, $T_{\text{discrete}}$; iteration error is measured against it. The other is the Fourier-series solution of the continuous problem; total error is measured against that. The two bottom corners have a temperature jump and large local error, so total error is taken only over $y \ge L_y/8$. SOR is vectorized with red–black ordering (split the grid into two checkerboard colors and update them in turn).
+
+```python
+import numpy as np
+
+LX, LY, TB = 1.0, 2.0, 100.0   # plate 1 x 2, bottom wall 100 degC, other walls 0
+
+def exact_plate(nx, ny, terms=399):
+    # analytic Fourier series of the continuous Laplace problem
+    x = np.linspace(0, LX, nx); y = np.linspace(0, LY, ny)
+    X, Y = np.meshgrid(x, y, indexing="ij")
+    T = np.zeros_like(X)
+    for n in range(1, terms + 1, 2):
+        k = n * np.pi / LX
+        decay = np.exp(-k * Y) * (1 - np.exp(-2 * k * (LY - Y))) / (1 - np.exp(-2 * k * LY))
+        T += 4 * TB / (n * np.pi) * np.sin(k * X) * decay
+    return T
+
+def discrete_plate(nx, ny):
+    # exact solution of the 5-point system (sine transform in x, recurrence in y)
+    T = np.zeros((nx, ny)); i = np.arange(1, nx - 1); J = ny - 1; j = np.arange(ny)
+    for p in range(1, nx - 1):
+        s = np.sin(p * np.pi * i / (nx - 1))
+        c = 2 / (nx - 1) * np.sum(TB * s)
+        lam = 2 - 2 * np.cos(p * np.pi / (nx - 1))
+        r = (2 + lam + np.sqrt((2 + lam) ** 2 - 4)) / 2
+        T[1:-1, :] += np.outer(s, c * (r ** (j - J) - r ** (J - j)) / (r ** -J - r ** J))
+    T[1:-1, 0] = TB
+    return T
+
+def jacobi_sweep(T, w, masks):
+    Tn = T.copy()
+    Tn[1:-1, 1:-1] = 0.25 * (T[2:, 1:-1] + T[:-2, 1:-1] + T[1:-1, 2:] + T[1:-1, :-2])
+    return Tn
+
+def rb_sor_sweep(T, w, masks):
+    T = T.copy()
+    for m in masks:                       # red cells, then black cells
+        gs = np.zeros_like(T)
+        gs[1:-1, 1:-1] = 0.25 * (T[2:, 1:-1] + T[:-2, 1:-1] + T[1:-1, 2:] + T[1:-1, :-2])
+        T[m] = (1 - w) * T[m] + w * gs[m]
+    return T
+
+def omega_opt(nx, ny):
+    rho_j = 0.5 * (np.cos(np.pi / (nx - 1)) + np.cos(np.pi / (ny - 1)))
+    return rho_j, 2 / (1 + np.sqrt(1 - rho_j ** 2))
+
+def solve_until(nx, ny, sweep, w, es):
+    T = np.zeros((nx, ny)); T[1:-1, 0] = TB
+    I, Jg = np.meshgrid(np.arange(nx), np.arange(ny), indexing="ij")
+    inner = (I > 0) & (I < nx - 1) & (Jg > 0) & (Jg < ny - 1)
+    masks = [inner & ((I + Jg) % 2 == c) for c in (0, 1)]
+    for k in range(1, 100000):
+        Tn = sweep(T, w, masks)
+        d = np.abs(Tn - T).max(); T = Tn
+        if d < es:
+            return T, k
+
+es = 1e-3                                 # stop when max |T^(k+1) - T^k| < es
+print(f"stop rule: max|dT| < {es}   error measured on y >= LY/8 (away from hot corners)")
+print(f"{'grid':>8} {'method':>10} {'omega':>6} {'iters':>6} {'es/(1-rho)':>11} {'iter_err':>9} {'disc_err':>9} {'total':>8}")
+for nx, ny in [(21, 41), (41, 81), (81, 161)]:
+    Td, Ta = discrete_plate(nx, ny), exact_plate(nx, ny)
+    band = slice((ny - 1) // 8, None)
+    disc = np.abs(Td - Ta)[:, band].max()
+    rho_j, w_opt = omega_opt(nx, ny)
+    for name, sweep, w, rho in [("Jacobi", jacobi_sweep, 1.0, rho_j),
+                                ("SOR", rb_sor_sweep, 1.2, None),
+                                ("SOR-opt", rb_sor_sweep, w_opt, w_opt - 1)]:
+        T, k = solve_until(nx, ny, sweep, w, es)
+        bound = f"{es / (1 - rho):11.3f}" if rho is not None else f"{'-':>11}"
+        print(f"{nx:>3}x{ny:<4} {name:>10} {w:6.3f} {k:6d} {bound} "
+              f"{np.abs(T - Td).max():9.4f} {disc:9.4f} {np.abs(T - Ta)[:, band].max():8.4f}")
+```
+
+```text
+stop rule: max|dT| < 0.001   error measured on y >= LY/8 (away from hot corners)
+    grid     method  omega  iters  es/(1-rho)  iter_err  disc_err    total
+ 21x41       Jacobi  1.000    629       0.130    0.1264    0.1691   0.1525
+ 21x41          SOR  1.200    256           -    0.0422    0.1691   0.1639
+ 21x41      SOR-opt  1.780     47       0.005    0.0021    0.1691   0.1689
+ 41x81       Jacobi  1.000   1831       0.519    0.4922    0.0439   0.4850
+ 41x81          SOR  1.200    791           -    0.1683    0.0439   0.1616
+ 41x81      SOR-opt  1.883     90       0.009    0.0033    0.0439   0.0435
+ 81x161      Jacobi  1.000   4815       2.075    1.8097    0.0112   1.8078
+ 81x161         SOR  1.200   2260           -    0.6486    0.0112   0.6468
+ 81x161     SOR-opt  1.940    174       0.017    0.0048    0.0112   0.0107
+```
+
+Now run that code in your browser. Jacobi on the left and SOR on the right march on the same plate at the same time.
+
+<PlateSorStopRace />
+
+Switch the grid from 21×41 to 81×161 and Jacobi's total err climbs from 0.15 to 1.81. Drop $\omega$ to 1.2 and SOR falls into the same trap. Turn on `show error field` to see the leftover error as a big hump in the middle of the plate.
+
+## What 1.81 is telling us
+
+Look only at the Jacobi rows. Discretization error goes 0.169 → 0.044 → 0.011, exactly a factor of 4 each time. The grid did its job. Iteration error goes 0.126 → 0.492 → 1.810, growing fourfold. The prediction $e_s/(1-\rho)$ gives 0.130, 0.519 and 2.075, very close.
+
+Total error combines the two. On 21×41 discretization dominates and the total is 0.15. From 41×81 on, iteration error dominates: 0.49, then 1.81. The finest grid's answer is 12 times worse than the coarsest. And that is after 629 → 1831 → 4815 iterations.
+
+On 21×41 the total error 0.1525 is smaller than the discretization error 0.1691. That is luck. The sign of the iteration error partly canceled the discretization error. Don't mistake that cancellation for accuracy.
+
+## The report should not have stopped at ω = 1.2
+
+The report tested SOR only up to $\omega = 1.2$. The optimal value for this problem is much larger.
+
+$$
+\omega_{\text{opt}} = \frac{2}{1+\sqrt{1-\rho_J^2}}, \qquad \rho_{\text{SOR}} = \omega_{\text{opt}} - 1 \approx 1 - c\,h
+$$
+
+$\rho_{\text{SOR}}$ is the spectral radius of SOR at the optimal $\omega$. Now $1-\rho$ scales with $h$, not $h^2$. The output gives optimal $\omega$ values of 1.780, 1.883 and 1.940. Iteration counts are 47, 90 and 174, which is 13 to 28 times fewer than Jacobi.
+
+The bigger win is the error left at the stop. $e_s/(1-\rho)$ is 0.005, 0.009, 0.017, growing only like $1/h$. Total error then tracks discretization error: 0.169 → 0.044 → 0.011. Refinement pays off as it should. $\omega = 1.2$ lowers $\rho$ only a little, so its iteration error still grows fourfold: 0.042 → 0.168 → 0.649.
+
+The $\omega_{\text{opt}}$ formula is exact only for a rectangle with a uniform grid like this one. Real problems need trial and error, as the report says. The direction is still clear: try values near 2 first, not values just above 1. For another case where the order of information flow changes convergence, see [the post on LU-SGS cell reordering](/en/posts/2026-10-16-lu-sgs-cell-ordering-reverse-cuthill-mckee/).
+
+## Making the stopping rule scale with the grid
+
+There are three fixes. First, estimate the error instead of the increment. Estimate $\rho$ from the ratio of two successive increments, $\hat\rho = |d_k|/|d_{k-1}|$. Then test $|d_k|\,\hat\rho/(1-\hat\rho) < e_s$. It is one line of code.
+
+Second, tie the tolerance to the grid. The iteration error only needs to sit well below the discretization error. For Jacobi that means $e_s \propto h^4$; for optimal SOR, $e_s \propto h^3$. Leaving $e_s$ fixed while changing the grid is the direct cause of this trap.
+
+Third, switch the test quantity to the residual. The residual $r = b - AT$ is the error multiplied by $A$. Its scaling also changes with the grid, so use it relative to the initial residual. Outer iterations in SIMPLE-type solvers hit the same issue. Read alongside [the post on how under-relaxation changes the converged solution](/en/posts/2026-10-14-rhie-chow-under-relaxation-memory/), it helps separate what the stopping rule leaves behind from what the relaxation factor leaves behind.
+
+This matters most in grid convergence studies. Mixed-in iteration error makes the observed order come out different from 2. It is the same kind of contamination covered in [what a verification case actually measures](/en/posts/2026-10-07-sod-vortex-order-verification/).
+
+## Before you trust your solver's "converged"
+
+When the log says converged, print two more numbers: the ratio $\hat\rho$ of the last two increments and $1/(1-\hat\rho)$. If that factor is in the hundreds, the tolerance is that much more optimistic than the real error. If it jumps fourfold when you refine the grid one level, you are in Jacobi's $h^2$ trap. The 2003 report's observation was right. The culprit was the stopping rule, not the grid.
