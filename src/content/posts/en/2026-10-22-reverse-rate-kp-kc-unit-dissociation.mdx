@@ -1,0 +1,194 @@
+---
+title: "Dividing the Reverse Rate by Kp Split 99.6% of AlO at 2500 K — The (p°/RT)^Δn Hidden in the Equilibrium Constant"
+date: 2026-10-22
+description: "Plugging Kp into kr = kf/K skews the equilibrium of any reaction with Δn≠0 by (p°/RT)^Δn. An AlO dissociation reactor reproduces the SI and CGS versions of the mistake."
+tags: ["Equilibrium-Constant", "Detailed-Balance", "Combustion", "Algorithms"]
+locale: en
+slug: 2026-10-22-reverse-rate-kp-kc-unit-dissociation
+takeaway: "Reverse rates come from kf/Kc. Since Kc = Kp(p°/RT)^Δn, using Kp is harmless when Δn=0 and wrong by anywhere from 4x to 250,000x, depending on units, when the mole count changes."
+draft: false
+---
+
+import { AlOBondUnitBoxLab } from '@/components/post-viz/2026-10-22-reverse-rate-kp-kc-unit-dissociation/AlOBondUnitBoxLab'
+import { ReverseRateReactorRace } from '@/components/post-viz/2026-10-22-reverse-rate-kp-kc-unit-dissociation/ReverseRateReactorRace'
+
+## Chemkin and my code disagreed by 134 K
+
+A lab presentation on aluminum particle combustion describes a hand-written solver. Twelve gas-phase reactions went in as Arrhenius expressions. The same mechanism also ran in Chemkin. Peak temperature came out at 3800 K in one and 3666 K in the other. Comparing rates one by one, only the reverse rates of R2–R5 were off. The next slide was titled "Equilibrium Constant."
+
+This post fills in that next slide. The formula that builds a reverse rate hides a unit. Drop it and some reactions stay correct while others go wrong. A single AlO dissociation reactor reproduces the bug, and you get a rule for spotting which reactions are at risk.
+
+## Reverse rates are not given separately
+
+A mechanism file usually lists only forward coefficients: $A$, $b$ and $E_a$ in $k_f = A T^b \exp(-E_a/RT)$. The reverse rate comes from detailed balance (at equilibrium, forward and reverse rates are equal).
+
+$$
+k_r = \frac{k_f}{K_c}, \qquad K_c = \prod_i [X_i]_{eq}^{\nu_i}
+$$
+
+$k_r$ is the reverse rate constant, $K_c$ the concentration-based equilibrium constant, and $\nu_i$ the stoichiometric coefficient, positive for products and negative for reactants.
+
+Thermodynamics does not hand you $K_c$ directly, though. What the Gibbs free energy gives is the pressure-based $K_p$.
+
+$$
+K_p = \exp\left(\frac{\Delta S^\circ}{R} - \frac{\Delta H^\circ}{RT}\right) = \prod_i \left(\frac{p_i}{p^\circ}\right)^{\nu_i}
+$$
+
+$p^\circ$ is the standard pressure (1 atm), and $\Delta H^\circ$, $\Delta S^\circ$ are the reaction enthalpy and entropy. $K_p$ is dimensionless. $K_c$ carries units of (concentration)$^{\Delta n}$.
+
+## Between Kp and Kc sits (p°/RT)^Δn
+
+For an ideal gas, $p_i = [X_i]RT$. Substituting that into $K_p$ links the two constants.
+
+$$
+K_c = K_p \left(\frac{p^\circ}{RT}\right)^{\Delta n}, \qquad \Delta n = \sum_i \nu_i
+$$
+
+$\Delta n$ is the net change in gas moles. $p^\circ/RT$ is the molar concentration of a gas at the standard state.
+
+This factor behaves differently for each reaction. $\mathrm{Al + O_2 \rightleftharpoons AlO + O}$ has two moles on each side. With $\Delta n = 0$, $K_c = K_p$, so using $K_p$ directly is still correct. $\mathrm{AlO + M \rightleftharpoons Al + O + M}$ turns one molecule into two, so $\Delta n = +1$. At 3000 K, $p^\circ/RT = 4.06\ \mathrm{mol/m^3}$, which means an SI code underestimates $K_c$ by 4x. In a Chemkin-style code working in $\mathrm{mol/cm^3}$, the same factor is $4.06\times10^{-6}$. Now $K_c$ comes out 250,000x too large.
+
+Try it yourself in the box below.
+
+<AlOBondUnitBoxLab />
+
+Press the $\Delta n = 0$ button and all three modes give the same box. Switch to $\Delta n = +1$ with CGS mode and nearly every bond line breaks. Move the pressure slider: the true equilibrium shifts, but the $K_p$ marker doesn't budge.
+
+## Why only R2–R5 were wrong
+
+The slides don't state the cause. But the symptom, "only some reverse rates were off," fits this factor exactly. Make the same mistake on every reaction and the $\Delta n = 0$ ones still come out right. Only reactions that change the mole count, like dissociation and recombination, go wrong.
+
+An aluminum gas-phase mechanism mixes in exactly those. AlO + M dissociation and $\mathrm{Al_2O}$ formation are third-body reactions (a third molecule that only exchanges collision energy). The "Third body=?" note on the slide may not be a coincidence.
+
+The second trap is direction. Using $K_p$ in SI makes $K_c$ too small, so too little dissociates. Using it in CGS makes $K_c$ too large, so too much dissociates. The same mistake errs in opposite directions depending on the unit system. That's also why you can't predict in advance whether the peak temperature will come out high or low.
+
+## Code: 1% AlO in a 3000 K reactor
+
+An isothermal, constant-volume reactor holds 1% AlO diluted in argon. Only the dissociation reaction is solved, with the reverse rate built three ways. Thermodynamic data are fixed at approximate 298 K values. The forward pre-factor $A$ is illustrative. The goal is not an accurate combustion calculation but the size of the unit error.
+
+Time stepping is backward Euler (an implicit method that evaluates the right-hand side at the new time). The update is quadratic in $\xi$, so the quadratic formula solves each step exactly. Nothing blows up even when the reverse rate jumps by 250,000x. The way implicit time stepping tames stiff terms also comes up in the [semi-implicit Gear scheme post](/en/posts/2026-10-12-semi-implicit-gear-convection-extrapolation/).
+
+```python
+import math
+
+R = 8.314462618        # J/(mol K)
+P0 = 101325.0          # standard pressure, Pa
+
+# 298 K reaction enthalpy/entropy held constant (approximate JANAF values)
+DISSOC = dict(name="AlO + M <=> Al + O + M", DH=487.7e3, DS=107.2, dn=1)
+SHUFFLE = dict(name="Al + O2 <=> AlO + O", DH=10.7e3, DS=9.8, dn=0)
+MODES = ["Kc (correct)", "Kp as Kc, SI", "Kp as Kc, CGS"]
+
+def kp_of(rx, T):
+    return math.exp(rx["DS"] / R - rx["DH"] / (R * T))   # dimensionless
+
+def kc_true(T, rx=DISSOC):
+    return kp_of(rx, T) * (P0 / (R * T)) ** rx["dn"]      # (mol/m^3)^dn
+
+def kc_used(T, mode, rx=DISSOC):
+    if mode == "Kc (correct)":
+        return kc_true(T, rx)
+    if mode == "Kp as Kc, SI":
+        return kp_of(rx, T)                              # Kp read as mol/m^3
+    if mode == "Kp as Kc, CGS":
+        return kp_of(rx, T) * 1e6 ** rx["dn"]            # Kp read as mol/cm^3
+
+def k_forward(T):
+    return 1.0e11 * math.exp(-DISSOC["DH"] / (R * T))    # m^3/(mol s), illustrative
+
+def run_reactor(T, p, x_alo, mode, t_end=0.2, nsteps=500):
+    M = p / (R * T)                                  # dilute in Ar: [M] ~ const
+    c0 = x_alo * M
+    a = k_forward(T) * M                             # 1/s
+    b = a / kc_used(T, mode)                         # kr*[M], m^3/(mol s)
+    dt = t_end / nsteps
+    xi = 0.0
+    for _ in range(nsteps):                          # backward Euler, exact quadratic root
+        A, B, C = b * dt, 1 + a * dt, -(xi + a * dt * c0)
+        xi = (-B + math.sqrt(B * B - 4 * A * C)) / (2 * A)
+    return xi / c0, xi * xi / (c0 - xi) / kc_true(T)
+
+def alpha_exact(T, p, x_alo):
+    M = p / (R * T); c0 = x_alo * M; K = kc_true(T)
+    xi = (-K + math.sqrt(K * K + 4 * K * c0)) / 2
+    return xi / c0
+
+T, p, x = 3000.0, P0, 0.01
+print(f"T={T:.0f} K  p=1 atm  x_AlO={x}")
+print(f"Kp={kp_of(DISSOC, T):.3e}   P0/RT={P0/(R*T):.3f} mol/m^3   Kc={kc_true(T):.3e} mol/m^3")
+print(f"exact equilibrium alpha = {alpha_exact(T, p, x):.4f}")
+for mode in MODES:
+    al, q = run_reactor(T, p, x, mode)
+    print(f"{mode:15s}  alpha={al:.4f}   Q/Kc_true={q:10.3e}")
+
+print("\nT scan (alpha after 200 ms)")
+print("   T  correct  SI-bug  CGS-bug  exact")
+for T in [2500, 3000, 3500, 4000]:
+    r = [run_reactor(T, p, x, m)[0] for m in MODES]
+    print(f"{T:5d}  {r[0]:.4f}  {r[1]:.4f}  {r[2]:.4f}  {alpha_exact(T, p, x):.4f}")
+
+print("\np scan at 3000 K (alpha)")
+for pa in [0.1, 1, 10]:
+    r = [run_reactor(3000, pa*P0, x, m)[0] for m in MODES]
+    print(f"{pa:5.1f} atm  {r[0]:.4f}  {r[1]:.4f}  {r[2]:.4f}")
+
+print("\ndn=0 check:", SHUFFLE["name"])
+print("  Kc used / Kc true:", [round(kc_used(3000, m, SHUFFLE) / kc_true(3000, SHUFFLE), 6) for m in MODES])
+```
+```text
+T=3000 K  p=1 atm  x_AlO=0.01
+Kp=1.282e-03   P0/RT=4.062 mol/m^3   Kc=5.209e-03 mol/m^3
+exact equilibrium alpha = 0.2997
+Kc (correct)     alpha=0.2997   Q/Kc_true= 1.000e+00
+Kp as Kc, SI     alpha=0.1626   Q/Kc_true= 2.462e-01
+Kp as Kc, CGS    alpha=1.0000   Q/Kc_true= 2.462e+05
+
+T scan (alpha after 200 ms)
+   T  correct  SI-bug  CGS-bug  exact
+ 2500  0.0494  0.0227  0.9962  0.0494
+ 3000  0.2997  0.1626  1.0000  0.2997
+ 3500  0.7391  0.5311  1.0000  0.7391
+ 4000  0.9473  0.8658  1.0000  0.9473
+
+p scan at 3000 K (alpha)
+  0.1 atm  0.6602  0.4258  1.0000
+  1.0 atm  0.2997  0.1626  1.0000
+ 10.0 atm  0.1070  0.0546  0.9997
+
+dn=0 check: Al + O2 <=> AlO + O
+  Kc used / Kc true: [1.0, 1.0, 1.0]
+```
+
+Now run the code above right in your browser.
+
+<ReverseRateReactorRace />
+
+At the defaults the three curves settle at 0.2997, 0.1626 and 1.0000 from the output block. Drag T down to 2500 K: the green curve stays near 0.05 while the red one alone shoots to 1.
+
+## What 0.2997, 0.1626 and 1.0000 are telling you
+
+The correct mode matches the exact equilibrium of 0.2997 to four digits. $Q/K_c$ (the reaction quotient over the true equilibrium constant) is 1.000 as well. The reactor reached the real equilibrium.
+
+The SI bug stops at $Q/K_c = 0.2462$. That number is $1/4.062$, i.e., $RT/p^\circ$. The reactor converged exactly to the wrong equilibrium. The residual is zero and nothing warns you. No convergence check can catch this mistake.
+
+The CGS bug's $2.462\times10^5$ is $10^6/4.062$. The unit conversion factor $10^6$ pushes the equilibrium directly. At 2500 K only 5% of AlO should dissociate. Here 99.6% did. Dissociation is endothermic, so in a real combustion run the gas would cool sharply. Errors far larger than the slides' 134 K are possible.
+
+## Change the pressure and the bug looks different
+
+The true equilibrium of a $\Delta n = +1$ reaction is pressure-sensitive: 0.66 at 0.1 atm, 0.11 at 10 atm. As Le Chatelier predicts, low pressure favors the side with more moles.
+
+The SI bug follows this trend, just lower. At every pressure its $K_c$ is too small by $RT/p^\circ$. Because the trend is right, the plot looks plausible. Against experiments, it's the kind of error that gets absorbed into "model constant tuning."
+
+The CGS bug nearly erases the pressure dependence. Even at 10 atm it reads 0.9997. If a high-pressure combustor simulation shows this kind of insensitivity, check the units first. Heat flow into an aluminum particle also splits by pressure and size; that story is in the [Knudsen transition regime post](/en/posts/2026-10-15-knudsen-transition-particle-heating-sherman/).
+
+## Where units hide when you port a rate table
+
+It's not just the $K_c$ conversion. A Chemkin-format $A$ is in $\mathrm{cm^3/(mol\,s)}$. For a bimolecular reaction, porting to SI means multiplying by $10^{-6}$. A third-body reaction carries one more $[M]$, so the factor is $10^{-12}$. The factor changes with reaction order.
+
+That's why unit mistakes always show up tied to reaction order or $\Delta n$. If every reaction were wrong together, it would actually be easy to find. When only some are wrong, you start doubting the mechanism itself. The slides' note, "need to recheck the relation between reverse rate and Kp," pointed in exactly the right direction.
+
+## Two lines to run when one reverse rate looks suspicious
+
+All you need is an equilibrium calculator. Get the equilibrium composition from CEA or Cantera at the same T and p. Run your code as an isothermal reactor for a long time, then print $Q/K_c$ for each reaction.
+
+If every reaction reads 1, you pass. If one stalls at $RT/p^\circ$ or its inverse, it used $K_p$ as is. If it sits around $10^5$–$10^6$, the CGS conversion is stacked on top. The number itself points to the cause. Build that one table before staring at twelve reactions one at a time.
