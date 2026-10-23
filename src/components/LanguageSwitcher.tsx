@@ -4,7 +4,6 @@ import { useEffect, useRef, useState } from 'react'
 import { usePathname, useRouter } from 'next/navigation'
 import { Globe, Check } from 'lucide-react'
 import { LOCALES, LOCALE_LABELS, withLocale, type Locale, isLocale, t } from '@/lib/i18n'
-import { trackEvent } from '@/lib/analytics'
 import { loadPostIndexClient } from '@/lib/post-index'
 
 export function LanguageSwitcher({ current }: { current?: string }) {
@@ -70,7 +69,6 @@ export function LanguageSwitcher({ current }: { current?: string }) {
     e.preventDefault()
     document.cookie = `locale=${next}; path=/; max-age=31536000; samesite=lax`
     setOpen(false)
-    trackEvent('language-switch', { from: detected, to: next })
     router.push(hrefFor(next))
   }
 

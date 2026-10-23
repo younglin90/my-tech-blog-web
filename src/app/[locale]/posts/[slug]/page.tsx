@@ -9,7 +9,6 @@ import { format, parseISO, compareDesc } from 'date-fns'
 import Link from 'next/link'
 import { PostNavShortcuts } from '@/components/PostNavShortcuts'
 import { MarkAsRead } from '@/components/MarkAsRead'
-import { ScrollDepth } from '@/components/ScrollDepth'
 import { MathCopyLatex } from '@/components/MathCopyLatex'
 import { ReadingPosition } from '@/components/ReadingPosition'
 import { QuoteShare } from '@/components/QuoteShare'
@@ -260,7 +259,6 @@ export default async function PostPage({ params }: PostProps) {
       <ReadingProgress />
       <PostNavShortcuts prevUrl={prevPost ? `/${loc}/posts/${prevPost.slug}` : undefined} nextUrl={nextPost ? `/${loc}/posts/${nextPost.slug}` : undefined} />
       <MarkAsRead id={post.slug} />
-      <ScrollDepth postId={post.slug} />
 
       <nav aria-label="Breadcrumb" className="mb-6 flex flex-wrap items-center gap-x-2">
         <Link
@@ -428,9 +426,6 @@ export default async function PostPage({ params }: PostProps) {
               <Link
                 key={r.slug}
                 href={`/${loc}/posts/${r.slug}`}
-                data-umami-event="related-post-click"
-                data-umami-event-source={post.slug}
-                data-umami-event-slug={r.slug}
                 className="group flex flex-col gap-1.5 rounded-lg p-3.5 transition-colors duration-100"
                 style={{ border: '1px solid var(--border)', background: 'var(--surface)' }}
               >
@@ -464,9 +459,6 @@ export default async function PostPage({ params }: PostProps) {
         {prevPost ? (
           <Link
             href={`/${loc}/posts/${prevPost.slug}`}
-            data-umami-event="post-sequence-click"
-            data-umami-event-direction="previous"
-            data-umami-event-source={post.slug}
             className="prev-next-card group rounded-lg p-4 text-left"
             style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
           >
@@ -485,9 +477,6 @@ export default async function PostPage({ params }: PostProps) {
         {nextPost ? (
           <Link
             href={`/${loc}/posts/${nextPost.slug}`}
-            data-umami-event="post-sequence-click"
-            data-umami-event-direction="next"
-            data-umami-event-source={post.slug}
             className="prev-next-card group rounded-lg p-4 text-right"
             style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
           >

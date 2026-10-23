@@ -3,7 +3,6 @@
 import { useState } from 'react'
 import { usePathname } from 'next/navigation'
 import { localePathPrefix } from '@/lib/i18n'
-import { trackEvent } from '@/lib/analytics'
 
 interface Props {
   title: string
@@ -39,7 +38,6 @@ export function CiteButton({ title, date, slug, author }: Props) {
     await navigator.clipboard.writeText(bibtex)
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
-    trackEvent('cite', { slug })
   }
 
   return (

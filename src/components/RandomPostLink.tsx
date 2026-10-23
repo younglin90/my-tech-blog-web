@@ -5,7 +5,6 @@ import { useRouter } from 'next/navigation'
 import { Shuffle } from 'lucide-react'
 import type { Locale } from '@/lib/i18n'
 import { loadPostIndexClient } from '@/lib/post-index'
-import { trackEvent } from '@/lib/analytics'
 
 interface Props {
   locale: Locale
@@ -43,7 +42,6 @@ export function RandomPostLink({ locale, label }: Props) {
       const pick = filtered[Math.floor(Math.random() * filtered.length)]
       lastRef.current = pick.slug
       try { localStorage.setItem('cfd-lab-random-recent', pick.slug) } catch {}
-      trackEvent('random-post', { slug: pick.slug })
       router.push(pick.url)
     } finally {
       setLoading(false)

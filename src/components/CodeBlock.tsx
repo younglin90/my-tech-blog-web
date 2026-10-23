@@ -4,7 +4,6 @@ import { useRef, useState, useEffect } from 'react'
 import { usePathname } from 'next/navigation'
 import { Copy, Check, ChevronDown, Download } from 'lucide-react'
 import { localePathPrefix, t } from '@/lib/i18n'
-import { trackEvent } from '@/lib/analytics'
 
 const MAX_COLLAPSED_HEIGHT = 420 // px — ~20 lines
 
@@ -58,7 +57,6 @@ export function CodeBlock({ children, ...props }: React.HTMLAttributes<HTMLPreEl
     await navigator.clipboard.writeText(text)
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
-    trackEvent('code-copy', { lang })
   }
 
   const handleDownload = () => {
@@ -81,7 +79,6 @@ export function CodeBlock({ children, ...props }: React.HTMLAttributes<HTMLPreEl
     a.click()
     document.body.removeChild(a)
     setTimeout(() => URL.revokeObjectURL(url), 1000)
-    trackEvent('code-download', { lang, file: baseName })
   }
 
   return (

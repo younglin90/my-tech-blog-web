@@ -3,7 +3,6 @@
 import { useEffect, useState } from 'react'
 import { usePathname } from 'next/navigation'
 import { localePathPrefix, t } from '@/lib/i18n'
-import { trackEvent } from '@/lib/analytics'
 import { getPostStats, sendVote } from '@/lib/post-stats'
 
 const STORAGE_KEY = 'cfd-lab-post-feedback'
@@ -33,7 +32,6 @@ const NEGATIVE_REASONS = ['feedback.r.unclear', 'feedback.r.tooHard', 'feedback.
 
 // 포스트 끝부분에 마운트. 👍/👎 → 선택 후 짧은 사유 chip 표시 →
 // 한 번 투표하면 thank-you 메시지 + localStorage에 저장(중복 투표 방지).
-// Umami custom event 'post-feedback' 발사 (slug, vote, reason).
 // 표는 /api/feedback 으로 서버(D1)에도 보내고, 누적 👍/👎 수를 함께 보여준다.
 export function PostFeedback({ postId }: { postId: string }) {
   const pathname = usePathname() ?? '/'
@@ -58,7 +56,6 @@ export function PostFeedback({ postId }: { postId: string }) {
     store[postId] = entry
     save(store)
     setSubmitted(entry)
-    trackEvent('post-feedback', { slug: postId, vote: v, reason: reason ?? '' })
     sendVote(postId, v, reason).then((c) => { if (c) setCounts(c) })
   }
 

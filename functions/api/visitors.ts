@@ -4,7 +4,7 @@
 // 응답: { today: {visitors,pageviews}, yesterday: {...}, total: {...},
 //         visitors, pageviews }   ← 마지막 두 개는 구버전 클라이언트 호환(=today)
 //
-// 데이터: /stats/api/send 가 D1(바인딩명 DB)에 KST 일 단위로 집계한 값. 읽기는 3행 고정.
+// 데이터: /api/pageview 가 D1(바인딩명 DB)에 KST 일 단위로 집계한 값. 읽기는 3행 고정.
 // 실패해도 200 + error 로 응답 — 5xx는 "Bad gateway" 페이지에 가려 사유를 볼 수 없다.
 
 import { clientIp, edgeCached, ensureSchema, json, kstDay, rateLimited, type Env } from '../../functions-lib/guard'

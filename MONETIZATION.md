@@ -57,12 +57,11 @@ AdSense 자동광고는 퍼블리셔 ID만 있으면 사이트 전체의 로더�
 ## 매주 볼 숫자
 
 - Search Console: 검색 클릭, 색인된 페이지, `크롤링됨 - 현재 색인 미생성`
-- Umami: pageviews, `start-path-click`, `related-post-click`, `post-sequence-click`, `cfd-review-click`,
-  `subscribe-submit`, `support-click`
+- 사이트 통계(D1): 일별 방문자, 글별 조회수·👍/👎 (`/api/visitors`, `/api/top-posts`, `/api/post-stats`)
 - AdSense: Page RPM, viewable impressions, 국가별 수익
 - 전환: 프로젝트 검토 문의 수와 실제 결제 수
 
-첫 4주는 광고 수익보다 검색 유입과 문의 전환을 본다. `cfd-review-click`이 있는데 문의가 없으면
+첫 4주는 광고 수익보다 검색 유입과 문의 전환을 본다. CTA가 붙은 글의 조회수는 느는데 문의가 없으면
 폼을 짧게 만들고, 클릭 자체가 없으면 CTA 문구보다 상위 유입 글과 도구 페이지의 검색 의도를 먼저
 개선한다.
 

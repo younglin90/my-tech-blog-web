@@ -3,7 +3,6 @@
 import Link from 'next/link'
 import { ArrowUpRight } from 'lucide-react'
 import { t, type Locale } from '@/lib/i18n'
-import { trackEvent } from '@/lib/analytics'
 
 const PATHS = [
   {
@@ -46,7 +45,6 @@ export function StartHere({ locale }: { locale: Locale }) {
           <Link
             key={path.key}
             href={`/${locale}${path.href}`}
-            onClick={() => trackEvent('start-path-click', { path: path.key, locale })}
             className="group flex min-h-36 flex-col rounded-lg p-3.5 transition-colors duration-100 hover:[border-color:var(--accent)]"
             style={{ background: 'var(--bg)', border: '1px solid var(--border)' }}
           >

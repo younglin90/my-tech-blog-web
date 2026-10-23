@@ -4,7 +4,6 @@ import { usePathname } from 'next/navigation'
 import { Beer, Coffee, ExternalLink, Heart } from 'lucide-react'
 import { localePathPrefix, t } from '@/lib/i18n'
 import { SUPPORT, hasSupport } from '@/lib/monetization'
-import { trackEvent } from '@/lib/analytics'
 
 type SupportLinksProps = {
   source?: 'author' | 'about' | 'footer'
@@ -63,7 +62,6 @@ export function SupportLinks({ source = 'author' }: SupportLinksProps) {
                 href={href}
                 target="_blank"
                 rel="noopener noreferrer"
-                onClick={() => trackEvent('support-click', { tier: key, amount: key === 'coffee' ? 5000 : 10000, source, locale })}
                 className="group flex min-h-16 items-center gap-3 rounded-lg px-3.5 py-3 transition-colors duration-100 hover:[border-color:var(--accent)]"
                 style={{ background: 'var(--bg)', border: '1px solid var(--border)' }}
                 aria-label={`${label} · ${amount}`}
@@ -96,7 +94,6 @@ export function SupportLinks({ source = 'author' }: SupportLinksProps) {
             href={SUPPORT.sponsorUrl}
             target="_blank"
             rel="noopener noreferrer"
-            onClick={() => trackEvent('support-click', { tier: 'sponsor', source, locale })}
             className="inline-flex min-h-11 items-center gap-1.5 text-xs font-medium link-hover-text-accent"
             style={{ color: 'var(--text-muted)' }}
           >

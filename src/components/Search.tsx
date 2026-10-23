@@ -6,7 +6,6 @@ import { Search as SearchIcon } from 'lucide-react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { format, parseISO } from 'date-fns'
 import { localePathPrefix, t } from '@/lib/i18n'
-import { trackEvent } from '@/lib/analytics'
 import mathManifest from '@/lib/math-manifest.json'
 import { dedupePostsForLocale, loadPostIndexClient, type PostIndexItem } from '@/lib/post-index'
 
@@ -109,20 +108,6 @@ export function Search() {
     setActiveIdx(0)
   }, [query])
 
-  // 검색어 변경 시 디바운스 후 노결과 쿼리 트래킹 (콘텐츠 갭 분석용)
-  React.useEffect(() => {
-    if (!query || query.length < 2) return
-    if (indexItems.length === 0) return
-    const timer = setTimeout(() => {
-      const q = query.toLowerCase().replace(/^#/, '')
-      const has = indexItems.some(
-        (p) => !p.draft && (p.title.toLowerCase().includes(q) || (p.tags ?? []).some((t) => t.toLowerCase().includes(q)))
-      )
-      if (!has) trackEvent('search-no-results', { query })
-    }, 1500)
-    return () => clearTimeout(timer)
-  }, [query, indexItems])
-
   // locale 기준 dedupe: 현재 locale 우선, 없으면 ko fallback. 같은 slug 1개만 유지.
   const publishedPosts = React.useMemo(() => {
     if (indexItems.length === 0) return []
@@ -201,7 +186,6 @@ export function Search() {
 
   const onSelect = (url: string) => {
     if (query) {
-      trackEvent('search-select', { query, url })
       persistRecentQuery(query)
     }
     setOpen(false)

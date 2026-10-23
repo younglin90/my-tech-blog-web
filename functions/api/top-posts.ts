@@ -1,7 +1,7 @@
 // Cloudflare Pages Function: "지난 N일 인기 글 top N"
 // 엔드포인트: GET /api/top-posts?limit=5&days=7
 //
-// 데이터: /stats/api/send 가 D1(바인딩명 DB)의 post_daily 에 집계한 글별 조회수
+// 데이터: /api/pageview 가 D1(바인딩명 DB)의 post_daily 에 집계한 글별 조회수
 // (방문자·글·날짜당 1회). 응답: { items: [{slug, views}], days }
 // 엣지에 10분 캐시 — 키는 정규화된 limit/days 뿐이라 임의 파라미터로 캐시를 우회할 수 없다.
 

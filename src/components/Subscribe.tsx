@@ -5,7 +5,6 @@ import { usePathname } from 'next/navigation'
 import Link from 'next/link'
 import { Mail, Check, AlertCircle, Loader2 } from 'lucide-react'
 import { localePathPrefix, t } from '@/lib/i18n'
-import { trackEvent } from '@/lib/analytics'
 
 // Buttondown 임베드. NEXT_PUBLIC_BUTTONDOWN_USERNAME 미설정 시 안내 페이지로 폴백.
 // Buttondown 무료 플랜: 100명까지 무료. https://buttondown.email
@@ -45,7 +44,6 @@ export function Subscribe() {
     e.preventDefault()
     if (!email || status === 'submitting' || status === 'success') return
     setStatus('submitting')
-    trackEvent('subscribe-submit', { locale })
     try {
       const body = new FormData()
       body.append('email', email)

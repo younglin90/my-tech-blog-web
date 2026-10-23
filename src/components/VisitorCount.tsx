@@ -19,7 +19,7 @@ interface Stats {
   error?: string
 }
 
-// Umami 통계 프록시(/api/visitors, Cloudflare Pages Function)에서
+// D1 집계(/api/visitors, Cloudflare Pages Function)에서
 // 오늘·어제·누적 방문자 수를 가져온다 (KST 자정 경계).
 // API 미구성/오류여도 자리는 유지하고 "—" 로 표시 → 사용자가 작동 여부를 직접 확인 가능.
 export function VisitorCount() {

@@ -2,7 +2,6 @@
 
 import { ArrowUpRight, ClipboardCheck, Gauge, Grid3X3 } from 'lucide-react'
 import { usePathname } from 'next/navigation'
-import { trackEvent } from '@/lib/analytics'
 import { localePathPrefix, t } from '@/lib/i18n'
 import { CFD_REVIEW, hasCfdReview } from '@/lib/monetization'
 
@@ -76,7 +75,6 @@ export function CfdReviewCallout({ source }: { source: 'post' | 'tool' | 'about'
             href={CFD_REVIEW.url}
             target="_blank"
             rel="noopener noreferrer"
-            onClick={() => trackEvent('cfd-review-click', { locale, source })}
             className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-semibold transition-opacity hover:opacity-85"
             style={{ background: 'var(--accent)', color: 'var(--on-accent)' }}
           >

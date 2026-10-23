@@ -4,7 +4,6 @@ import { useEffect, useState } from 'react'
 import { usePathname } from 'next/navigation'
 import { Link2, Check, Twitter, Linkedin, Share2 } from 'lucide-react'
 import { localePathPrefix, t } from '@/lib/i18n'
-import { trackEvent } from '@/lib/analytics'
 
 interface ShareButtonProps {
   title: string
@@ -27,13 +26,11 @@ export function ShareButton({ title, url }: ShareButtonProps) {
     await navigator.clipboard.writeText(href)
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
-    trackEvent('share', { medium: 'copy', title })
   }
 
   const handleNativeShare = async () => {
     try {
       await navigator.share({ title, url: href })
-      trackEvent('share', { medium: 'native', title })
     } catch {}
   }
 
@@ -70,7 +67,6 @@ export function ShareButton({ title, url }: ShareButtonProps) {
         href={twitterUrl}
         target="_blank"
         rel="noopener noreferrer"
-        onClick={() => trackEvent('share', { medium: 'social', title })}
         className="share-btn flex min-h-11 min-w-11 items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium"
         style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text-muted)', textDecoration: 'none' }}
         aria-label="Share on Twitter"
@@ -81,7 +77,6 @@ export function ShareButton({ title, url }: ShareButtonProps) {
         href={linkedinUrl}
         target="_blank"
         rel="noopener noreferrer"
-        onClick={() => trackEvent('share', { medium: 'social', title })}
         className="share-btn flex min-h-11 min-w-11 items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium"
         style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text-muted)', textDecoration: 'none' }}
         aria-label="Share on LinkedIn"
@@ -92,7 +87,6 @@ export function ShareButton({ title, url }: ShareButtonProps) {
         href={hackerNewsUrl}
         target="_blank"
         rel="noopener noreferrer"
-        onClick={() => trackEvent('share', { medium: 'social', title })}
         className="share-btn flex min-h-11 min-w-11 items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium"
         style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text-muted)', textDecoration: 'none' }}
         aria-label="Share on HackerNews"

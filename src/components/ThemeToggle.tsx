@@ -5,7 +5,6 @@ import { useEffect, useState } from 'react'
 import { usePathname } from 'next/navigation'
 import { Sun, Moon } from 'lucide-react'
 import { localePathPrefix, t } from '@/lib/i18n'
-import { trackEvent } from '@/lib/analytics'
 
 export function ThemeToggle() {
   const { resolvedTheme, setTheme } = useTheme()
@@ -26,7 +25,6 @@ export function ThemeToggle() {
       onClick={() => {
         const next = isDark ? 'light' : 'dark'
         setTheme(next)
-        trackEvent('theme-toggle', { to: next })
       }}
       className="theme-toggle flex min-h-11 min-w-11 items-center justify-center rounded-md p-1.5 transition-colors duration-100"
       style={{ color: 'var(--text-muted)' }}

@@ -4,7 +4,6 @@ import { useEffect, useState } from 'react'
 import { usePathname } from 'next/navigation'
 import { Bookmark, BookmarkCheck } from 'lucide-react'
 import { localePathPrefix, t } from '@/lib/i18n'
-import { trackEvent } from '@/lib/analytics'
 
 const BOOKMARKS_KEY = 'cfd-lab-bookmarks'
 
@@ -47,7 +46,6 @@ export function BookmarkButton({ postId }: BookmarkButtonProps) {
   const handleClick = () => {
     const isNowBookmarked = toggleBookmark(postId)
     setBookmarked(isNowBookmarked)
-    trackEvent(isNowBookmarked ? 'bookmark-add' : 'bookmark-remove', { postId })
   }
 
   if (!mounted) return null
