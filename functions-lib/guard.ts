@@ -94,7 +94,9 @@ export function rateLimited(scope: string, ip: string, limit: number, windowMs =
 }
 
 // ---------- slug 화이트리스트 ----------
-const SLUG_RE = /^\d{4}-\d{2}-\d{2}-[a-z0-9-]{1,150}$/
+// 형식만 거른다. 실제 존재 여부는 아래 post-index 화이트리스트가 판단한다.
+// (예전 글은 날짜 접두사가 없거나 대문자가 섞여 있다: fdm-fem-fvm, 2026-03-27-simpleFoam-...)
+const SLUG_RE = /^[A-Za-z0-9][A-Za-z0-9-]{0,160}$/
 let slugCache: { set: Set<string>; until: number } | null = null
 export async function isKnownSlug(env: Env, request: Request, slug: string): Promise<boolean> {
   if (!SLUG_RE.test(slug)) return false
