@@ -1,0 +1,167 @@
+---
+title: "[Paper Review] Raising β to 2 froze the interface at 14 cells and made a sine worse than first-order upwind — Tallois's compressive limiter"
+date: 2026-10-24
+description: "With a β=2 compressive limiter on the volume fraction, a slab interface stays 14 cells wide after five periods. The same limiter gives a sine wave a larger L1 error than first-order upwind."
+tags: ["Compressive-Limiter", "Slope-Limiter", "Diffuse-Interface", "Compressible-Multiphase", "Paper-Review"]
+locale: en
+slug: 2026-10-24-compressive-beta-limiter-volume-fraction
+takeaway: "The β-limiter of Tallois et al. widens its bounds to neighbor values and lets φ reach β, which pins the interface sharp, but that same compression squares off smooth profiles, so it belongs on the volume fraction only."
+draft: false
+---
+
+import { BetaFaceBoundsLab } from '@/components/post-viz/2026-10-24-compressive-beta-limiter-volume-fraction/BetaFaceBoundsLab'
+import { AdvectionBetaRace } from '@/components/post-viz/2026-10-24-compressive-beta-limiter-volume-fraction/AdvectionBetaRace'
+
+## A melting film on a reentry vehicle
+
+A body entering the atmosphere at high speed starts to melt. The liquid forms a thin film that the gas flow drags along. Tallois, Peluchon and Villedieu at CEA-CESTA model that film with a five-equation diffuse-interface model (two fluids separated by a few mixture cells rather than a sharp front). The trouble is that the interface keeps spreading. Their 2022 paper fights it with second-order MUSCL and a compressive limiter.
+
+This post isolates one line of that paper: equation (3.10). A 1D advection test shows two things. With β=2 the interface is still 14 cells wide after five periods. Yet the same limiter gives a sine wave a larger error than first-order upwind (a scheme that only uses the upstream cell value). Those two numbers explain why the paper applies β=2 to the volume fraction $z$ and nothing else.
+
+## Why interfaces spread and what a limiter does
+
+In the five-equation model the volume fraction obeys a transport equation. The exact solution moves a 0-to-1 step without changing its shape. The numerical solution does not. A first-order scheme adds numerical diffusion every step. The interface width grows like $\sqrt{t}$.
+
+Second-order MUSCL (reconstructing a sloped line inside each cell) cuts that diffusion. It also creates oscillations near steps. So the slope is multiplied by a limiter $\phi_i$. The paper writes the reconstruction as follows.
+
+$$
+\hat\alpha_{ij} = \alpha_i + \phi_i\,\Delta\alpha_{i,j},\qquad \Delta\alpha_{i,j} = \frac{\kappa}{2}(\alpha_j-\alpha_i) + (1-\kappa)\,\nabla\alpha_i\cdot(\mathbf{x}_f-\mathbf{x}_i)
+$$
+
+$\hat\alpha_{ij}$ is the reconstructed value of cell $i$ on the face toward neighbor $j$, $\kappa$ is the U-MUSCL parameter (1/3 in the paper), and $\mathbf{x}_f$ is the face center. In 1D, $\kappa=1/3$ reduces to the classic third-order upwind-biased reconstruction.
+
+## Equation (3.10): letting φ exceed 1
+
+$$
+\phi_i = \min\!\left(\beta,\ \frac{\alpha_i-\alpha_i^{\min}}{|\Delta\alpha_i|_{\max}},\ \frac{\alpha_i^{\max}-\alpha_i}{|\Delta\alpha_i|_{\max}}\right)
+$$
+
+$|\Delta\alpha_i|_{\max}$ is the largest increment over all faces, and $\alpha_i^{\min},\alpha_i^{\max}$ are the extremes of $\alpha_i$ and the neighbor reference values $\bar\alpha_j$. If the increment is zero, $\phi_i=0$.
+
+There are two knobs: the cap β and the reference value $\bar\alpha_j$.
+
+- β=1 with $\bar\alpha_j$ = distance-weighted average of cells $i$ and $j$ → **monotonicity preserving**. A face value cannot pass the midpoint of the two cells. It behaves much like minmod.
+- β>1 with $\bar\alpha_j=\alpha_j$ → **compressive**. A face value may reach the neighbor's value, and the slope may grow to β times its raw size.
+
+An upwind flux takes the downstream face value of the upstream cell. The compressive limiter pushes that face value toward the neighbor. The cell ahead of the step drains faster and the cell behind fills faster. That is what steepens the interface.
+
+Try it yourself in the simulation below. A sharp step crosses five cells, and each cell's reconstructed line and right-face value (dot) are drawn.
+
+<BetaFaceBoundsLab />
+
+As the interface crosses the middle cell $i$, the orange line is much steeper than the blue one. The orange band (neighbor-value bounds) is wider than the blue band (face-average bounds). Drop the β slider to 1 and the orange peaks in the φ trace get clipped at 1.
+
+## Code: one slab, four limiters, five periods
+
+The periodic domain $[0,1]$ holds 100 cells. Velocity is $u=1$, CFL is 0.4, and time stepping is Heun's method from Section 3.2.1 of the paper. There are two initial conditions: a slab with $z=1$ on $0.3<x<0.7$, and a smooth profile $z=0.5+0.5\sin 2\pi x$.
+
+Four limiters are compared: first-order upwind, β=1 monotonicity preserving (MP), β=1 with neighbor-value bounds (nbr), and β=2 compressive. The metrics are the mixture-cell count ($0.01 < z < 0.99$), the L1 errors of the slab and the sine, and the number of sine cells above 0.95. The exact sine has 14 such cells.
+
+```python
+import math
+
+N, CFL, KAPPA = 100, 0.4, 1.0 / 3.0
+h = 1.0 / N
+x = [(i + 0.5) * h for i in range(N)]
+
+def right_face(z, beta, midpoint_bounds):
+    zf = [0.0] * N
+    for i in range(N):
+        zi, zm, zp = z[i], z[i - 1], z[(i + 1) % N]
+        grad_h = 0.5 * (zp - zm)                       # ∇z_i · h
+        # Δz_{i,j} = κ/2 (z_j - z_i) + (1-κ) ∇z_i·(x_f - x_i)   (eq. 3.9)
+        d_r = 0.5 * KAPPA * (zp - zi) + (1 - KAPPA) * 0.5 * grad_h
+        d_l = 0.5 * KAPPA * (zm - zi) - (1 - KAPPA) * 0.5 * grad_h
+        if midpoint_bounds:            # β=1 monotonicity preserving: bounded by face averages
+            bl, br = 0.5 * (zi + zm), 0.5 * (zi + zp)
+        else:                          # compressive: bounded by neighbour cell values
+            bl, br = zm, zp
+        zmin, zmax = min(zi, bl, br), max(zi, bl, br)
+        dmax = max(abs(d_l), abs(d_r))
+        phi = min(beta, (zi - zmin) / dmax, (zmax - zi) / dmax) if dmax > 0 else 0.0
+        zf[i] = zi + phi * d_r                         # u>0: only the right face is needed (eq. 3.10)
+    return zf
+
+def rhs(z, beta, mp):
+    f = right_face(z, beta, mp) if beta > 0 else z     # u = 1, upwind flux
+    return [-(f[i] - f[i - 1]) / h for i in range(N)]
+
+def advect(z0, beta, mp, periods):
+    dt = CFL * h
+    z = list(z0)
+    for _ in range(round(periods / dt)):
+        k1 = rhs(z, beta, mp)
+        z1 = [a + dt * b for a, b in zip(z, k1)]
+        k2 = rhs(z1, beta, mp)
+        z = [0.5 * (a + b + dt * c) for a, b, c in zip(z, z1, k2)]   # Heun
+    return z
+
+def l1(a, b):
+    return h * sum(abs(p - q) for p, q in zip(a, b))
+
+step = [1.0 if 0.3 < xi < 0.7 else 0.0 for xi in x]
+wave = [0.5 + 0.5 * math.sin(2 * math.pi * xi) for xi in x]
+schemes = [("1st-order", 0.0, False), ("beta=1 MP", 1.0, True),
+           ("beta=1 BJ", 1.0, False), ("beta=2", 2.0, False)]
+
+print("scheme      periods  mixture  L1(step)  L1(sine)  sine_flat")
+for name, beta, mp in schemes:
+    for periods in (1, 5):
+        zs = advect(step, beta, mp, periods)
+        zw = advect(wave, beta, mp, periods)
+        mix = sum(1 for v in zs if 0.01 < v < 0.99)
+        flat = sum(1 for v in zw if v > 0.95)          # cells on the flattened crest
+        print(f"{name:10s} {periods:6d} {mix:8d} {l1(zs, step):9.4f}"
+              f" {l1(zw, wave):9.4f} {flat:9d}")
+print("exact sine: cells with z>0.95 =", sum(1 for v in wave if v > 0.95))
+```
+
+```text
+scheme      periods  mixture  L1(step)  L1(sine)  sine_flat
+1st-order       1       87    0.1595    0.0570         0
+1st-order       5      100    0.3427    0.1997         0
+beta=1 MP       1       48    0.0687    0.0054        14
+beta=1 MP       5       81    0.1242    0.0228         0
+beta=1 BJ       1       18    0.0337    0.0011        14
+beta=1 BJ       5       26    0.0496    0.0034        15
+beta=2          1       14    0.0170    0.0616        31
+beta=2          5       14    0.0170    0.1636        46
+exact sine: cells with z>0.95 = 14
+```
+
+Now run the code above in your browser. All four limiters carry the slab and the sine for five periods, and the right panels record the mixture-cell count and the sine's L1 error.
+
+<AdvectionBetaRace />
+
+With the defaults, the numbers at one period match the output block. Lower the orange β to 1.5 and the sine error drops while the mixture count rises. Raise N to 200 and first-order upwind smears over more cells, while β=2 stays a handful of cells wide.
+
+## What 14 cells and 0.0616 say together
+
+Start with the slab. First-order upwind has 87 mixture cells after one period and all 100 after five. The step is gone. β=1 MP keeps spreading too, from 48 to 81 cells. β=2 sits at 14 cells after both one and five periods, with the same L1 error of 0.0170.
+
+The plateau at 14 is not luck. A compressive limiter turns the interface into a traveling wave of fixed shape. Its width is where numerical diffusion and compression balance. That is about 7 cells per interface, with only about 3 cells between 0.05 and 0.95.
+
+Now the sine. β=2 has an L1 error of 0.0616 after one period. First-order upwind has 0.0570. A second-order scheme loses to a first-order one. The last column shows why. Cells above 0.95 go from 14 to 31, and to 46 after five periods. The crest flattens and the flanks steepen. The sine is turning into a square wave, the same artifact superbee is known for.
+
+β=1 nbr deserves a look as well. Its slab spreads slowly, from 18 to 26 mixture cells. Its sine error, 0.0011, is the smallest of the four. Widening the bounds to neighbor values alone spreads far less than MP. What it gives up is MP's ordering guarantee on face values (equation 3.11).
+
+## So the paper gives β=2 to z only
+
+The setup in Section 3.1.3 of the paper lines up exactly with these results.
+
+- Acoustic step: $(u,p)$ reconstructed with β=1, using the 5-point stencil of edge neighbors.
+- Transport step: $(\rho_1,\rho_2,u,p)$ with β=1 and only the volume fraction $z$ with β=2, using the 9-point stencil of vertex neighbors.
+
+Densities, velocity and pressure are smooth over most of the domain. β=2 would carve steps into them, just like the sine above. The acoustic step is also implicit. As the [Toro–Vázquez splitting post](/en/posts/2026-10-10-toro-vazquez-split-pressure-wave-speed/) showed, robustness comes first in the stiff pressure subsystem. The volume fraction, on the other hand, is a step to begin with. Squaring it off costs nothing.
+
+The reconstructed variables are primitive ones, which matters too. Conservative variables are rebuilt from them with equation (3.12). Sharpening $z$ without touching the pressure is what avoids pressure oscillations at the interface. The $K\nabla\cdot u$ term in the $z$ equation of this five-equation model is covered in the [Murrone–Guillard post](/en/posts/2026-10-18-murrone-guillard-wood-sound-speed/).
+
+## How far Zalesak's disk is from a 1D test
+
+The paper validates the limiter on Zalesak's disk (a slotted disk rotated through one full turn) with a 256×256 grid at CFL 0.4. It reports that $\kappa=1/3$ resolves the slot and corners better than $\kappa=0$.
+
+The 1D test misses a few things. On unstructured grids $|\Delta\alpha_i|_{\max}$ is a maximum over many faces, so one face can clip the slope on all the others. In 2D rotation, compressive limiters also tend to staircase the interface along grid directions. The disk's round edge is the test for that.
+
+## Before moving a compressive limiter to another variable
+
+Use a compressive limiter only on variables that should be steps. Before adding β>1 to your code, advect one smooth sine for one period. If its L1 error exceeds first-order upwind, that variable needs β=1. If the mixture-cell count grows each period, the β on $z$ is too small.

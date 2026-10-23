@@ -1,0 +1,167 @@
+---
+title: "[論文レビュー] βを2にしたら界面は14セルで止まり、正弦波は1次風上より悪化した — Tallois の圧縮型リミタ"
+date: 2026-10-24
+description: "体積分率にβ=2の圧縮型リミタを使うと界面は5周後も14セル幅のままですが、同じリミタは正弦波で1次風上より大きな誤差を出します。"
+tags: ["Compressive-Limiter", "Slope-Limiter", "Diffuse-Interface", "Compressible-Multiphase", "Paper-Review"]
+locale: ja
+slug: 2026-10-24-compressive-beta-limiter-volume-fraction
+takeaway: "Tallois らのβリミタは境界を隣接セル値まで広げφをβまで許すことで界面を鋭く保ちますが、その圧縮性は滑らかな分布を矩形に削るため、体積分率だけに使うべきです。"
+draft: false
+---
+
+import { BetaFaceBoundsLab } from '@/components/post-viz/2026-10-24-compressive-beta-limiter-volume-fraction/BetaFaceBoundsLab'
+import { AdvectionBetaRace } from '@/components/post-viz/2026-10-24-compressive-beta-limiter-volume-fraction/AdvectionBetaRace'
+
+## 再突入体の表面で溶けた液膜を追う
+
+大気圏に高速で突入する物体は表面が溶けます。溶けた液体は薄い膜となり、気流に引きずられます。CEA-CESTA の Tallois、Peluchon、Villedieu はこの液膜を拡散界面(diffuse interface、2流体の境目を数セルの混合セルで表す方法)の5方程式モデルで解きました。問題は、時間とともに界面がにじむことです。2022年の論文は、これを2次 MUSCL と圧縮型リミタで抑えました。
+
+この記事では、そのリミタの式 (3.10) だけを取り出します。1D 移流実験で2つのことを確かめます。β=2 は5周後も界面を14セルに留めます。ところが同じリミタは、正弦波では1次風上(upwind、上流側セルの値だけを使う1次スキーム)より誤差が大きくなります。論文が体積分率 $z$ にだけβ=2を使う理由が、この2つの数字に表れています。
+
+## にじむ界面とリミタの役割
+
+5方程式モデルの体積分率は移流方程式に従います。厳密解では0から1への段差が形を保って動きます。数値解は違います。1次スキームは毎ステップ数値拡散を加えます。界面幅は $\sqrt{t}$ のように広がり続けます。
+
+2次 MUSCL(セル内を傾きのある直線で再構成する方法)は拡散を減らします。代わりに段差付近で振動を生みます。そこで傾きにリミタ $\phi_i$ を掛けます。論文の再構成は次の通りです。
+
+$$
+\hat\alpha_{ij} = \alpha_i + \phi_i\,\Delta\alpha_{i,j},\qquad \Delta\alpha_{i,j} = \frac{\kappa}{2}(\alpha_j-\alpha_i) + (1-\kappa)\,\nabla\alpha_i\cdot(\mathbf{x}_f-\mathbf{x}_i)
+$$
+
+$\hat\alpha_{ij}$ はセル $i$ の隣接セル $j$ 側の面での再構成値、$\kappa$ は U-MUSCL 係数(論文では1/3)、$\mathbf{x}_f$ は面中心です。1D で $\kappa=1/3$ とすると、古典的な3次風上バイアス再構成と一致します。
+
+## 式 (3.10):φが1を超えることを許す
+
+$$
+\phi_i = \min\!\left(\beta,\ \frac{\alpha_i-\alpha_i^{\min}}{|\Delta\alpha_i|_{\max}},\ \frac{\alpha_i^{\max}-\alpha_i}{|\Delta\alpha_i|_{\max}}\right)
+$$
+
+$|\Delta\alpha_i|_{\max}$ は全ての面のうち最大の増分、$\alpha_i^{\min},\alpha_i^{\max}$ は $\alpha_i$ と隣接基準値 $\bar\alpha_j$ の最小・最大です。増分が0なら $\phi_i=0$ です。
+
+調整つまみは2つあります。上限βと、基準値 $\bar\alpha_j$ です。
+
+- β=1、$\bar\alpha_j$=セル $i$ と $j$ の距離重み付き平均 → **単調性保存**(monotonicity preserving)。面の値は2セルの中間値を超えられません。minmod に近い挙動です。
+- β>1、$\bar\alpha_j=\alpha_j$ → **圧縮型**(compressive)。面の値は隣接セル値まで届き、傾きも元のβ倍まで大きくなります。
+
+風上フラックスは上流セルの下流側面の値で決まります。圧縮型リミタはその面の値を隣接値へ押し出します。段差の前のセルはより速く空になり、後ろのセルはより速く満たされます。これが界面を立たせます。
+
+下のシミュレーションで実際に操作してみましょう。鋭い段差が5つのセルを通過し、各セルの再構成直線と右面の値(点)が描かれます。
+
+<BetaFaceBoundsLab />
+
+界面が中央のセル $i$ を通るとき、オレンジの直線は青の直線よりずっと急です。オレンジの帯(隣接値の境界)が青の帯(面平均の境界)より広いためです。βスライダーを1に下げると、右側のφ軌跡のオレンジの山が1で切られます。
+
+## コード:同じスラブ、4つのリミタ、5周
+
+周期領域 $[0,1]$ に100セルを置きます。速度 $u=1$、CFL 0.4、時間積分は論文3.2.1節の Heun 法です。初期値は2種類です。$0.3<x<0.7$ で $z=1$ のスラブと、$z=0.5+0.5\sin 2\pi x$ の滑らかな分布です。
+
+比較するリミタは4つです。1次風上、β=1 単調性保存(MP)、β=1 に隣接値境界(nbr)、β=2 圧縮型です。測定値は混合セル数($0.01 < z < 0.99$)、スラブと正弦の L1 誤差、正弦で $z>0.95$ のセル数です。厳密な正弦では14セルが0.95を超えます。
+
+```python
+import math
+
+N, CFL, KAPPA = 100, 0.4, 1.0 / 3.0
+h = 1.0 / N
+x = [(i + 0.5) * h for i in range(N)]
+
+def right_face(z, beta, midpoint_bounds):
+    zf = [0.0] * N
+    for i in range(N):
+        zi, zm, zp = z[i], z[i - 1], z[(i + 1) % N]
+        grad_h = 0.5 * (zp - zm)                       # ∇z_i · h
+        # Δz_{i,j} = κ/2 (z_j - z_i) + (1-κ) ∇z_i·(x_f - x_i)   (式 3.9)
+        d_r = 0.5 * KAPPA * (zp - zi) + (1 - KAPPA) * 0.5 * grad_h
+        d_l = 0.5 * KAPPA * (zm - zi) - (1 - KAPPA) * 0.5 * grad_h
+        if midpoint_bounds:            # β=1 単調性保存: 面平均値で境界
+            bl, br = 0.5 * (zi + zm), 0.5 * (zi + zp)
+        else:                          # 圧縮型: 隣接セル値で境界
+            bl, br = zm, zp
+        zmin, zmax = min(zi, bl, br), max(zi, bl, br)
+        dmax = max(abs(d_l), abs(d_r))
+        phi = min(beta, (zi - zmin) / dmax, (zmax - zi) / dmax) if dmax > 0 else 0.0
+        zf[i] = zi + phi * d_r                         # u>0: 右面だけ必要 (式 3.10)
+    return zf
+
+def rhs(z, beta, mp):
+    f = right_face(z, beta, mp) if beta > 0 else z     # u = 1, 風上フラックス
+    return [-(f[i] - f[i - 1]) / h for i in range(N)]
+
+def advect(z0, beta, mp, periods):
+    dt = CFL * h
+    z = list(z0)
+    for _ in range(round(periods / dt)):
+        k1 = rhs(z, beta, mp)
+        z1 = [a + dt * b for a, b in zip(z, k1)]
+        k2 = rhs(z1, beta, mp)
+        z = [0.5 * (a + b + dt * c) for a, b, c in zip(z, z1, k2)]   # Heun
+    return z
+
+def l1(a, b):
+    return h * sum(abs(p - q) for p, q in zip(a, b))
+
+step = [1.0 if 0.3 < xi < 0.7 else 0.0 for xi in x]
+wave = [0.5 + 0.5 * math.sin(2 * math.pi * xi) for xi in x]
+schemes = [("1st-order", 0.0, False), ("beta=1 MP", 1.0, True),
+           ("beta=1 BJ", 1.0, False), ("beta=2", 2.0, False)]
+
+print("scheme      periods  mixture  L1(step)  L1(sine)  sine_flat")
+for name, beta, mp in schemes:
+    for periods in (1, 5):
+        zs = advect(step, beta, mp, periods)
+        zw = advect(wave, beta, mp, periods)
+        mix = sum(1 for v in zs if 0.01 < v < 0.99)
+        flat = sum(1 for v in zw if v > 0.95)          # 山頂が平らになったセル数
+        print(f"{name:10s} {periods:6d} {mix:8d} {l1(zs, step):9.4f}"
+              f" {l1(zw, wave):9.4f} {flat:9d}")
+print("exact sine: cells with z>0.95 =", sum(1 for v in wave if v > 0.95))
+```
+
+```text
+scheme      periods  mixture  L1(step)  L1(sine)  sine_flat
+1st-order       1       87    0.1595    0.0570         0
+1st-order       5      100    0.3427    0.1997         0
+beta=1 MP       1       48    0.0687    0.0054        14
+beta=1 MP       5       81    0.1242    0.0228         0
+beta=1 BJ       1       18    0.0337    0.0011        14
+beta=1 BJ       5       26    0.0496    0.0034        15
+beta=2          1       14    0.0170    0.0616        31
+beta=2          5       14    0.0170    0.1636        46
+exact sine: cells with z>0.95 = 14
+```
+
+上のコードをブラウザで直接動かしてみましょう。4つのリミタがスラブと正弦を同時に5周移流し、右側に混合セル数と正弦 L1 誤差の履歴が積み上がります。
+
+<AdvectionBetaRace />
+
+既定値では、1周時点の数字が出力ブロックと一致します。オレンジのβを1.5に下げると正弦の誤差は減り、混合セルは増えます。セル数 N を200に上げると1次風上の混合セルは増えますが、β=2は数セルに留まります。
+
+## 14セルと0.0616が一緒に語ること
+
+まずスラブ側の数字です。1次風上は1周で87セルが混合セルになりました。5周後には100セル全てです。段差は消えました。β=1 MP も48セルから81セルへとにじみ続けます。β=2は1周でも5周でも14セルで、L1 誤差も0.0170のままです。
+
+14セルで止まるのは偶然ではありません。圧縮型リミタは界面を一定形状の進行波にします。数値拡散と圧縮がつり合う幅です。界面1つあたり約7セルで、0.05〜0.95の区間は3セルほどです。
+
+次に正弦です。β=2の1周後の L1 誤差は0.0616です。1次風上の0.0570より大きいのです。2次精度スキームが1次に負けています。最後の列が理由を示します。0.95を超えるセルが14から31へ、5周後には46へ増えました。山頂が平らになり、斜面が急になっています。正弦が矩形波に変わったのです。superbee が正弦を削るのと同じ現象です。
+
+β=1 nbr も注目に値します。スラブの混合セルは18から26へとゆっくり増えます。正弦の誤差は0.0011で、4つの中で最小です。境界を隣接値に広げるだけで、MP よりずっとにじみません。ただし MP が保証する面値の順序(式 3.11)は失われます。
+
+## だから論文は z にだけβ=2を使う
+
+論文3.1.3節の配置は、この結果とぴったり合います。
+
+- 音響ステップ:$(u,p)$ をβ=1で再構成します。隣接は辺隣接の5点ステンシルです。
+- 移流ステップ:$(\rho_1,\rho_2,u,p)$ はβ=1、体積分率 $z$ だけβ=2です。隣接は頂点隣接までの9点ステンシルです。
+
+密度・速度・圧力は大部分が滑らかです。そこにβ=2を使えば、上の正弦のように段差が生まれます。しかも音響ステップは陰的です。[Toro–Vázquez 分割の記事](/ja/posts/2026-10-10-toro-vazquez-split-pressure-wave-speed/)で見たように、硬い圧力部分系では頑健さが優先されます。一方 $z$ はもともと段差です。矩形に削られても失うものはありません。
+
+再構成変数が基本変数である点も重要です。保存変数は式 (3.12) で組み直します。$z$ を鋭くしつつ圧力に触れないことで、界面での圧力振動を避けます。この5方程式モデルの $z$ 式に付く $K\nabla\cdot u$ 項は [Murrone–Guillard の記事](/ja/posts/2026-10-18-murrone-guillard-wood-sound-speed/)で扱いました。
+
+## Zalesak の円盤と1D 実験の距離
+
+論文は Zalesak の円盤(溝のある円盤を1回転させる試験)でリミタを検証しています。256×256格子、CFL 0.4です。$\kappa=1/3$ が $\kappa=0$ より溝と角をよく保ったと報告しています。
+
+1D 実験では扱えない点もあります。非構造格子では $|\Delta\alpha_i|_{\max}$ は複数の面の最大値です。1つの面のせいで他の面の傾きまで削られます。また2D 回転移流では、圧縮型リミタは界面を格子方向に階段状に折る傾向があります。円盤の丸い縁がその試金石です。
+
+## 圧縮型リミタを他の変数に移す前に
+
+圧縮型リミタは「段差であるべき変数」にだけ使います。自分のコードにβ>1を入れる前に、滑らかな正弦を1周回してみましょう。L1 誤差が1次風上より大きければ、その変数にはβ=1が適切です。混合セル数が周回ごとに増えるなら、$z$ のβが足りないサインです。

@@ -1,0 +1,167 @@
+---
+title: "[Revisión de artículo] Con β=2 la interfaz se quedó en 14 celdas y una senoide quedó peor que con upwind de primer orden — el limitador compresivo de Tallois"
+date: 2026-10-24
+description: "Con un limitador compresivo β=2 en la fracción volumétrica, la interfaz de una placa sigue midiendo 14 celdas tras cinco periodos. El mismo limitador deja en una senoide un error L1 mayor que upwind de primer orden."
+tags: ["Compressive-Limiter", "Slope-Limiter", "Diffuse-Interface", "Compressible-Multiphase", "Paper-Review"]
+locale: es
+slug: 2026-10-24-compressive-beta-limiter-volume-fraction
+takeaway: "El limitador β de Tallois et al. amplía sus cotas hasta los valores vecinos y deja que φ llegue a β, lo que mantiene la interfaz nítida; esa misma compresión cuadra los perfiles suaves, así que solo corresponde aplicarlo a la fracción volumétrica."
+draft: false
+---
+
+import { BetaFaceBoundsLab } from '@/components/post-viz/2026-10-24-compressive-beta-limiter-volume-fraction/BetaFaceBoundsLab'
+import { AdvectionBetaRace } from '@/components/post-viz/2026-10-24-compressive-beta-limiter-volume-fraction/AdvectionBetaRace'
+
+## Una película fundida sobre un vehículo de reentrada
+
+Un cuerpo que entra en la atmósfera a gran velocidad empieza a fundirse. El líquido forma una película delgada que el flujo de gas arrastra. Tallois, Peluchon y Villedieu, del CEA-CESTA, modelan esa película con un modelo de cinco ecuaciones de interfaz difusa (dos fluidos separados por unas pocas celdas de mezcla en lugar de un frente nítido). El problema es que la interfaz se ensancha sin parar. Su artículo de 2022 lo combate con MUSCL de segundo orden y un limitador compresivo.
+
+Este texto aísla una sola línea del artículo: la ecuación (3.10). Un ensayo de advección 1D muestra dos cosas. Con β=2 la interfaz sigue midiendo 14 celdas tras cinco periodos. Sin embargo, el mismo limitador deja en una senoide un error mayor que upwind de primer orden (un esquema que solo usa el valor de la celda aguas arriba). Esos dos números explican por qué el artículo aplica β=2 a la fracción volumétrica $z$ y a nada más.
+
+## Por qué se ensancha la interfaz y qué hace un limitador
+
+En el modelo de cinco ecuaciones la fracción volumétrica sigue una ecuación de transporte. La solución exacta desplaza un escalón de 0 a 1 sin deformarlo. La solución numérica no. Un esquema de primer orden añade difusión numérica en cada paso. El ancho de la interfaz crece como $\sqrt{t}$.
+
+MUSCL de segundo orden (reconstruir una recta con pendiente dentro de cada celda) reduce esa difusión. A cambio, genera oscilaciones cerca de los escalones. Por eso la pendiente se multiplica por un limitador $\phi_i$. El artículo escribe la reconstrucción así.
+
+$$
+\hat\alpha_{ij} = \alpha_i + \phi_i\,\Delta\alpha_{i,j},\qquad \Delta\alpha_{i,j} = \frac{\kappa}{2}(\alpha_j-\alpha_i) + (1-\kappa)\,\nabla\alpha_i\cdot(\mathbf{x}_f-\mathbf{x}_i)
+$$
+
+$\hat\alpha_{ij}$ es el valor reconstruido de la celda $i$ en la cara hacia el vecino $j$, $\kappa$ es el parámetro U-MUSCL (1/3 en el artículo) y $\mathbf{x}_f$ es el centro de la cara. En 1D, $\kappa=1/3$ equivale a la reconstrucción clásica de tercer orden sesgada aguas arriba.
+
+## Ecuación (3.10): permitir que φ supere 1
+
+$$
+\phi_i = \min\!\left(\beta,\ \frac{\alpha_i-\alpha_i^{\min}}{|\Delta\alpha_i|_{\max}},\ \frac{\alpha_i^{\max}-\alpha_i}{|\Delta\alpha_i|_{\max}}\right)
+$$
+
+$|\Delta\alpha_i|_{\max}$ es el mayor incremento entre todas las caras, y $\alpha_i^{\min},\alpha_i^{\max}$ son los extremos de $\alpha_i$ y de los valores de referencia vecinos $\bar\alpha_j$. Si el incremento es cero, $\phi_i=0$.
+
+Hay dos perillas: la cota β y el valor de referencia $\bar\alpha_j$.
+
+- β=1 con $\bar\alpha_j$ = promedio ponderado por distancia de las celdas $i$ y $j$ → **preserva la monotonía**. Un valor de cara no puede pasar del punto medio entre las dos celdas. Se comporta casi como minmod.
+- β>1 con $\bar\alpha_j=\alpha_j$ → **compresivo**. Un valor de cara puede llegar al valor del vecino, y la pendiente puede crecer hasta β veces su tamaño original.
+
+El flujo upwind toma el valor de la cara aguas abajo de la celda aguas arriba. El limitador compresivo empuja ese valor hacia el del vecino. La celda delante del escalón se vacía más rápido y la de atrás se llena más rápido. Así se empina la interfaz.
+
+En la simulación siguiente se puede manipular directamente. Un escalón nítido cruza cinco celdas y se dibujan la recta reconstruida de cada celda y su valor en la cara derecha (punto).
+
+<BetaFaceBoundsLab />
+
+Cuando la interfaz cruza la celda central $i$, la recta naranja es mucho más empinada que la azul. La banda naranja (cotas con valores vecinos) es más ancha que la azul (cotas con promedios de cara). Al bajar β a 1, los picos naranjas de la traza de φ quedan recortados en 1.
+
+## Código: una placa, cuatro limitadores, cinco periodos
+
+El dominio periódico $[0,1]$ tiene 100 celdas. La velocidad es $u=1$, el CFL es 0.4 y el avance temporal es el método de Heun de la sección 3.2.1 del artículo. Hay dos condiciones iniciales: una placa con $z=1$ en $0.3<x<0.7$ y un perfil suave $z=0.5+0.5\sin 2\pi x$.
+
+Se comparan cuatro limitadores: upwind de primer orden, β=1 que preserva la monotonía (MP), β=1 con cotas de valores vecinos (nbr) y β=2 compresivo. Las métricas son el número de celdas de mezcla ($0.01 < z < 0.99$), los errores L1 de la placa y de la senoide, y el número de celdas de la senoide por encima de 0.95. La senoide exacta tiene 14 celdas así.
+
+```python
+import math
+
+N, CFL, KAPPA = 100, 0.4, 1.0 / 3.0
+h = 1.0 / N
+x = [(i + 0.5) * h for i in range(N)]
+
+def right_face(z, beta, midpoint_bounds):
+    zf = [0.0] * N
+    for i in range(N):
+        zi, zm, zp = z[i], z[i - 1], z[(i + 1) % N]
+        grad_h = 0.5 * (zp - zm)                       # ∇z_i · h
+        # Δz_{i,j} = κ/2 (z_j - z_i) + (1-κ) ∇z_i·(x_f - x_i)   (ec. 3.9)
+        d_r = 0.5 * KAPPA * (zp - zi) + (1 - KAPPA) * 0.5 * grad_h
+        d_l = 0.5 * KAPPA * (zm - zi) - (1 - KAPPA) * 0.5 * grad_h
+        if midpoint_bounds:            # β=1 preserva monotonía: cotas con promedios de cara
+            bl, br = 0.5 * (zi + zm), 0.5 * (zi + zp)
+        else:                          # compresivo: cotas con valores de celdas vecinas
+            bl, br = zm, zp
+        zmin, zmax = min(zi, bl, br), max(zi, bl, br)
+        dmax = max(abs(d_l), abs(d_r))
+        phi = min(beta, (zi - zmin) / dmax, (zmax - zi) / dmax) if dmax > 0 else 0.0
+        zf[i] = zi + phi * d_r                         # u>0: solo hace falta la cara derecha (ec. 3.10)
+    return zf
+
+def rhs(z, beta, mp):
+    f = right_face(z, beta, mp) if beta > 0 else z     # u = 1, flujo upwind
+    return [-(f[i] - f[i - 1]) / h for i in range(N)]
+
+def advect(z0, beta, mp, periods):
+    dt = CFL * h
+    z = list(z0)
+    for _ in range(round(periods / dt)):
+        k1 = rhs(z, beta, mp)
+        z1 = [a + dt * b for a, b in zip(z, k1)]
+        k2 = rhs(z1, beta, mp)
+        z = [0.5 * (a + b + dt * c) for a, b, c in zip(z, z1, k2)]   # Heun
+    return z
+
+def l1(a, b):
+    return h * sum(abs(p - q) for p, q in zip(a, b))
+
+step = [1.0 if 0.3 < xi < 0.7 else 0.0 for xi in x]
+wave = [0.5 + 0.5 * math.sin(2 * math.pi * xi) for xi in x]
+schemes = [("1st-order", 0.0, False), ("beta=1 MP", 1.0, True),
+           ("beta=1 BJ", 1.0, False), ("beta=2", 2.0, False)]
+
+print("scheme      periods  mixture  L1(step)  L1(sine)  sine_flat")
+for name, beta, mp in schemes:
+    for periods in (1, 5):
+        zs = advect(step, beta, mp, periods)
+        zw = advect(wave, beta, mp, periods)
+        mix = sum(1 for v in zs if 0.01 < v < 0.99)
+        flat = sum(1 for v in zw if v > 0.95)          # celdas en la cresta aplanada
+        print(f"{name:10s} {periods:6d} {mix:8d} {l1(zs, step):9.4f}"
+              f" {l1(zw, wave):9.4f} {flat:9d}")
+print("exact sine: cells with z>0.95 =", sum(1 for v in wave if v > 0.95))
+```
+
+```text
+scheme      periods  mixture  L1(step)  L1(sine)  sine_flat
+1st-order       1       87    0.1595    0.0570         0
+1st-order       5      100    0.3427    0.1997         0
+beta=1 MP       1       48    0.0687    0.0054        14
+beta=1 MP       5       81    0.1242    0.0228         0
+beta=1 BJ       1       18    0.0337    0.0011        14
+beta=1 BJ       5       26    0.0496    0.0034        15
+beta=2          1       14    0.0170    0.0616        31
+beta=2          5       14    0.0170    0.1636        46
+exact sine: cells with z>0.95 = 14
+```
+
+Ahora se puede ejecutar el código anterior en el navegador. Los cuatro limitadores transportan la placa y la senoide durante cinco periodos, y los paneles de la derecha registran las celdas de mezcla y el error L1 de la senoide.
+
+<AdvectionBetaRace />
+
+Con los valores por defecto, los números al cabo de un periodo coinciden con el bloque de salida. Al bajar la β naranja a 1.5, el error de la senoide disminuye y las celdas de mezcla aumentan. Al subir N a 200, upwind de primer orden se extiende sobre más celdas, mientras que β=2 sigue ocupando unas pocas.
+
+## Lo que dicen juntos 14 celdas y 0.0616
+
+Primero la placa. Upwind de primer orden tiene 87 celdas de mezcla tras un periodo y las 100 tras cinco. El escalón desapareció. β=1 MP también sigue ensanchándose, de 48 a 81 celdas. β=2 se queda en 14 celdas tanto tras uno como tras cinco periodos, con el mismo error L1 de 0.0170.
+
+La meseta en 14 no es casualidad. Un limitador compresivo convierte la interfaz en una onda viajera de forma fija. Su ancho es donde la difusión numérica y la compresión se equilibran. Son unas 7 celdas por interfaz, con solo unas 3 entre 0.05 y 0.95.
+
+Ahora la senoide. β=2 tiene un error L1 de 0.0616 tras un periodo. Upwind de primer orden tiene 0.0570. Un esquema de segundo orden pierde contra uno de primer orden. La última columna muestra la causa. Las celdas por encima de 0.95 pasan de 14 a 31, y a 46 tras cinco periodos. La cresta se aplana y los flancos se empinan. La senoide se convierte en una onda cuadrada, el mismo artefacto conocido de superbee.
+
+β=1 nbr también merece atención. Su placa se ensancha despacio, de 18 a 26 celdas de mezcla. Su error en la senoide, 0.0011, es el menor de los cuatro. Solo con ampliar las cotas a los valores vecinos se difunde mucho menos que MP. Lo que pierde es la garantía de orden de los valores de cara que da MP (ecuación 3.11).
+
+## Por eso el artículo da β=2 solo a z
+
+La configuración de la sección 3.1.3 del artículo encaja exactamente con estos resultados.
+
+- Paso acústico: $(u,p)$ se reconstruyen con β=1, con el esténcil de 5 puntos de vecinos por arista.
+- Paso de transporte: $(\rho_1,\rho_2,u,p)$ con β=1 y solo la fracción volumétrica $z$ con β=2, con el esténcil de 9 puntos que incluye vecinos por vértice.
+
+Densidades, velocidad y presión son suaves en la mayor parte del dominio. β=2 les tallaría escalones, igual que a la senoide de arriba. Además, el paso acústico es implícito. Como se vio en el [artículo sobre la división de Toro–Vázquez](/es/posts/2026-10-10-toro-vazquez-split-pressure-wave-speed/), en el subsistema de presión, que es rígido, la robustez va primero. La fracción volumétrica, en cambio, ya es un escalón. Cuadrarla no cuesta nada.
+
+También importa que las variables reconstruidas sean primitivas. Las conservativas se reconstruyen a partir de ellas con la ecuación (3.12). Afilar $z$ sin tocar la presión es lo que evita oscilaciones de presión en la interfaz. El término $K\nabla\cdot u$ de la ecuación de $z$ en este modelo de cinco ecuaciones se trató en el [artículo sobre Murrone–Guillard](/es/posts/2026-10-18-murrone-guillard-wood-sound-speed/).
+
+## La distancia entre el disco de Zalesak y un ensayo 1D
+
+El artículo valida el limitador con el disco de Zalesak (un disco ranurado que da una vuelta completa) en una malla de 256×256 con CFL 0.4. Reporta que $\kappa=1/3$ resuelve la ranura y las esquinas mejor que $\kappa=0$.
+
+El ensayo 1D deja cosas fuera. En mallas no estructuradas, $|\Delta\alpha_i|_{\max}$ es un máximo sobre muchas caras, así que una sola cara puede recortar la pendiente de todas las demás. En rotación 2D, además, los limitadores compresivos tienden a escalonar la interfaz según las direcciones de la malla. El borde redondo del disco es la prueba para eso.
+
+## Antes de llevar un limitador compresivo a otra variable
+
+Un limitador compresivo se usa solo en variables que deben ser escalones. Antes de añadir β>1 a un código, conviene advectar una senoide suave durante un periodo. Si su error L1 supera al de upwind de primer orden, esa variable necesita β=1. Si el número de celdas de mezcla crece en cada periodo, la β de $z$ se queda corta.

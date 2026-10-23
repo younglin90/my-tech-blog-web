@@ -1,0 +1,167 @@
+---
+title: "[论文解读] 把 β 调到 2,界面停在 14 个网格,正弦波却比一阶迎风还差 — Tallois 的压缩型限制器"
+date: 2026-10-24
+description: "对体积分数使用 β=2 压缩型限制器,界面在五个周期后仍只有 14 个网格宽;同一限制器作用于正弦波时,误差却大于一阶迎风格式。"
+tags: ["Compressive-Limiter", "Slope-Limiter", "Diffuse-Interface", "Compressible-Multiphase", "Paper-Review"]
+locale: zh
+slug: 2026-10-24-compressive-beta-limiter-volume-fraction
+takeaway: "Tallois 等人的 β 限制器把边界放宽到相邻单元值并允许 φ 达到 β,从而把界面压得很陡;但同样的压缩性会把光滑分布削成方波,所以只应该用在体积分数上。"
+draft: false
+---
+
+import { BetaFaceBoundsLab } from '@/components/post-viz/2026-10-24-compressive-beta-limiter-volume-fraction/BetaFaceBoundsLab'
+import { AdvectionBetaRace } from '@/components/post-viz/2026-10-24-compressive-beta-limiter-volume-fraction/AdvectionBetaRace'
+
+## 再入飞行器表面的熔融液膜
+
+高速进入大气层的物体表面会熔化。熔化的液体形成薄膜,被气流拖着走。CEA-CESTA 的 Tallois、Peluchon 和 Villedieu 用扩散界面(diffuse interface,用几层混合单元表示两种流体分界的方法)五方程模型来计算这层液膜。麻烦在于界面会随时间不断抹平。他们 2022 年的论文用二阶 MUSCL 加压缩型限制器来压住它。
+
+本文只拆开其中一个式子:式 (3.10)。用一维输运实验确认两件事。β=2 在五个周期后仍把界面锁在 14 个网格。可同一个限制器作用在正弦波上时,误差比一阶迎风(upwind,只用上游单元值的一阶格式)还大。论文为什么只对体积分数 $z$ 使用 β=2,答案就在这两个数字里。
+
+## 界面为何变宽,限制器做什么
+
+五方程模型中的体积分数满足输运方程。精确解里,0 到 1 的台阶保持形状平移。数值解则不然。一阶格式每一步都会加入数值扩散。界面宽度像 $\sqrt{t}$ 那样持续增长。
+
+二阶 MUSCL(在单元内用带斜率的直线重构)能减少扩散。代价是在台阶附近产生振荡。于是给斜率乘上限制器 $\phi_i$。论文的重构写法如下。
+
+$$
+\hat\alpha_{ij} = \alpha_i + \phi_i\,\Delta\alpha_{i,j},\qquad \Delta\alpha_{i,j} = \frac{\kappa}{2}(\alpha_j-\alpha_i) + (1-\kappa)\,\nabla\alpha_i\cdot(\mathbf{x}_f-\mathbf{x}_i)
+$$
+
+$\hat\alpha_{ij}$ 是单元 $i$ 在朝向邻居 $j$ 那个面上的重构值,$\kappa$ 是 U-MUSCL 参数(论文取 1/3),$\mathbf{x}_f$ 是面心。在一维中 $\kappa=1/3$ 等同于经典的三阶迎风偏置重构。
+
+## 式 (3.10):允许 φ 大于 1
+
+$$
+\phi_i = \min\!\left(\beta,\ \frac{\alpha_i-\alpha_i^{\min}}{|\Delta\alpha_i|_{\max}},\ \frac{\alpha_i^{\max}-\alpha_i}{|\Delta\alpha_i|_{\max}}\right)
+$$
+
+$|\Delta\alpha_i|_{\max}$ 是所有面中最大的增量,$\alpha_i^{\min},\alpha_i^{\max}$ 是 $\alpha_i$ 与邻居参考值 $\bar\alpha_j$ 的最小值和最大值。增量为零时 $\phi_i=0$。
+
+可调的旋钮有两个:上限 β 和参考值 $\bar\alpha_j$。
+
+- β=1,$\bar\alpha_j$ 取单元 $i$ 与 $j$ 的距离加权平均 → **保单调**(monotonicity preserving)。面值不能越过两单元的中点值,行为接近 minmod。
+- β>1,$\bar\alpha_j=\alpha_j$ → **压缩型**(compressive)。面值可以一直到达邻居单元值,斜率也可以放大到原来的 β 倍。
+
+迎风通量取上游单元在下游一侧的面值。压缩型限制器把这个面值推向邻居值。台阶前方的单元被更快排空,后方的单元被更快填满。界面就这样被立起来。
+
+在下面的模拟中亲手操作一下。一个陡峭的台阶依次穿过五个单元,图中画出每个单元的重构直线和右侧面值(圆点)。
+
+<BetaFaceBoundsLab />
+
+界面经过中间单元 $i$ 时,橙色直线比蓝色直线陡得多。原因是橙色带(邻居值边界)比蓝色带(面平均边界)更宽。把 β 滑块拉到 1,右侧 φ 曲线上橙色的峰就会在 1 处被截平。
+
+## 代码:同一块平板,四种限制器,五个周期
+
+在周期区间 $[0,1]$ 上布置 100 个单元。速度 $u=1$,CFL 取 0.4,时间推进采用论文 3.2.1 节的 Heun 方法。初值有两种:在 $0.3<x<0.7$ 上 $z=1$ 的平板,以及光滑分布 $z=0.5+0.5\sin 2\pi x$。
+
+比较四种限制器:一阶迎风、β=1 保单调(MP)、β=1 加邻居值边界(nbr)、β=2 压缩型。测量量包括混合单元数($0.01 < z < 0.99$)、平板和正弦的 L1 误差,以及正弦中 $z>0.95$ 的单元数。精确正弦中有 14 个单元超过 0.95。
+
+```python
+import math
+
+N, CFL, KAPPA = 100, 0.4, 1.0 / 3.0
+h = 1.0 / N
+x = [(i + 0.5) * h for i in range(N)]
+
+def right_face(z, beta, midpoint_bounds):
+    zf = [0.0] * N
+    for i in range(N):
+        zi, zm, zp = z[i], z[i - 1], z[(i + 1) % N]
+        grad_h = 0.5 * (zp - zm)                       # ∇z_i · h
+        # Δz_{i,j} = κ/2 (z_j - z_i) + (1-κ) ∇z_i·(x_f - x_i)   (式 3.9)
+        d_r = 0.5 * KAPPA * (zp - zi) + (1 - KAPPA) * 0.5 * grad_h
+        d_l = 0.5 * KAPPA * (zm - zi) - (1 - KAPPA) * 0.5 * grad_h
+        if midpoint_bounds:            # β=1 保单调: 以面平均值为界
+            bl, br = 0.5 * (zi + zm), 0.5 * (zi + zp)
+        else:                          # 压缩型: 以相邻单元值为界
+            bl, br = zm, zp
+        zmin, zmax = min(zi, bl, br), max(zi, bl, br)
+        dmax = max(abs(d_l), abs(d_r))
+        phi = min(beta, (zi - zmin) / dmax, (zmax - zi) / dmax) if dmax > 0 else 0.0
+        zf[i] = zi + phi * d_r                         # u>0: 只需要右侧面 (式 3.10)
+    return zf
+
+def rhs(z, beta, mp):
+    f = right_face(z, beta, mp) if beta > 0 else z     # u = 1, 迎风通量
+    return [-(f[i] - f[i - 1]) / h for i in range(N)]
+
+def advect(z0, beta, mp, periods):
+    dt = CFL * h
+    z = list(z0)
+    for _ in range(round(periods / dt)):
+        k1 = rhs(z, beta, mp)
+        z1 = [a + dt * b for a, b in zip(z, k1)]
+        k2 = rhs(z1, beta, mp)
+        z = [0.5 * (a + b + dt * c) for a, b, c in zip(z, z1, k2)]   # Heun
+    return z
+
+def l1(a, b):
+    return h * sum(abs(p - q) for p, q in zip(a, b))
+
+step = [1.0 if 0.3 < xi < 0.7 else 0.0 for xi in x]
+wave = [0.5 + 0.5 * math.sin(2 * math.pi * xi) for xi in x]
+schemes = [("1st-order", 0.0, False), ("beta=1 MP", 1.0, True),
+           ("beta=1 BJ", 1.0, False), ("beta=2", 2.0, False)]
+
+print("scheme      periods  mixture  L1(step)  L1(sine)  sine_flat")
+for name, beta, mp in schemes:
+    for periods in (1, 5):
+        zs = advect(step, beta, mp, periods)
+        zw = advect(wave, beta, mp, periods)
+        mix = sum(1 for v in zs if 0.01 < v < 0.99)
+        flat = sum(1 for v in zw if v > 0.95)          # 波峰被压平的单元数
+        print(f"{name:10s} {periods:6d} {mix:8d} {l1(zs, step):9.4f}"
+              f" {l1(zw, wave):9.4f} {flat:9d}")
+print("exact sine: cells with z>0.95 =", sum(1 for v in wave if v > 0.95))
+```
+
+```text
+scheme      periods  mixture  L1(step)  L1(sine)  sine_flat
+1st-order       1       87    0.1595    0.0570         0
+1st-order       5      100    0.3427    0.1997         0
+beta=1 MP       1       48    0.0687    0.0054        14
+beta=1 MP       5       81    0.1242    0.0228         0
+beta=1 BJ       1       18    0.0337    0.0011        14
+beta=1 BJ       5       26    0.0496    0.0034        15
+beta=2          1       14    0.0170    0.0616        31
+beta=2          5       14    0.0170    0.1636        46
+exact sine: cells with z>0.95 = 14
+```
+
+在浏览器里直接运行上面的代码。四种限制器同时把平板和正弦输运五个周期,右侧记录混合单元数和正弦 L1 误差的历程。
+
+<AdvectionBetaRace />
+
+默认参数下,第 1 个周期时的数字与输出块一致。把橙色的 β 降到 1.5,正弦误差减小,混合单元增加。把单元数 N 提到 200,一阶迎风的混合单元变多,而 β=2 仍只占几个单元。
+
+## 14 个单元和 0.0616 合起来说明了什么
+
+先看平板。一阶迎风一个周期后就有 87 个混合单元,五个周期后 100 个全是。台阶消失了。β=1 MP 也在持续变宽,从 48 到 81。β=2 在一个周期和五个周期时都是 14 个单元,L1 误差同为 0.0170。
+
+停在 14 并非偶然。压缩型限制器把界面变成形状固定的行波,其宽度由数值扩散与压缩的平衡决定。每个界面约 7 个单元,0.05 到 0.95 之间只有 3 个左右。
+
+再看正弦。β=2 一个周期后的 L1 误差是 0.0616,一阶迎风是 0.0570。二阶格式输给了一阶格式。最后一列给出原因:超过 0.95 的单元从 14 个增加到 31 个,五个周期后到 46 个。波峰被压平,两侧变陡。正弦正在变成方波,这和 superbee 削平正弦是同一种现象。
+
+β=1 nbr 也值得一看。平板的混合单元从 18 缓慢增加到 26。正弦误差 0.0011,是四者中最小的。仅仅把边界放宽到邻居值,扩散就比 MP 少得多。代价是失去 MP 对面值顺序的保证(式 3.11)。
+
+## 所以论文只给 z 用 β=2
+
+论文 3.1.3 节的配置与上述结果完全吻合。
+
+- 声学步:$(u,p)$ 用 β=1 重构,邻居取边相邻的 5 点模板。
+- 输运步:$(\rho_1,\rho_2,u,p)$ 用 β=1,只有体积分数 $z$ 用 β=2,邻居扩展到顶点相邻的 9 点模板。
+
+密度、速度和压力在大部分区域是光滑的。对它们用 β=2,就会像上面的正弦一样出现台阶。何况声学步是隐式的。正如 [Toro–Vázquez 分裂一文](/zh/posts/2026-10-10-toro-vazquez-split-pressure-wave-speed/)所示,在刚性很强的压力子系统中,稳健性优先。而 $z$ 本来就是台阶,被削成方波也没有损失。
+
+重构变量是原始变量,这一点同样重要。守恒变量再由式 (3.12) 构造。在让 $z$ 变陡的同时不碰压力,才能避免界面处的压力振荡。这个五方程模型中 $z$ 方程里的 $K\nabla\cdot u$ 项,在 [Murrone–Guillard 一文](/zh/posts/2026-10-18-murrone-guillard-wood-sound-speed/)中讨论过。
+
+## Zalesak 圆盘与一维实验的距离
+
+论文用 Zalesak 圆盘(带槽圆盘旋转一整圈的测试)验证限制器,网格 256×256,CFL 0.4。结果表明 $\kappa=1/3$ 比 $\kappa=0$ 更好地保留了槽口和尖角。
+
+一维实验也有覆盖不到的地方。在非结构网格上,$|\Delta\alpha_i|_{\max}$ 是多个面的最大值,一个面就可能把其他面的斜率一起削掉。另外在二维旋转输运中,压缩型限制器容易让界面沿网格方向变成阶梯状。圆盘的圆形边缘正是检验这一点的地方。
+
+## 把压缩型限制器挪到其他变量之前
+
+压缩型限制器只用于"本应是台阶的变量"。在自己的代码里加入 β>1 之前,先把一个光滑正弦输运一个周期。如果 L1 误差比一阶迎风还大,这个变量就该用 β=1。如果混合单元数每个周期都在增加,说明 $z$ 的 β 还不够。
