@@ -1,7 +1,9 @@
 ---
 title: "Elegir un Solver Lineal para CFD: Comparación de la Velocidad de Convergencia desde Jacobi hasta BiCGSTAB"
 date: 2026-04-22
-description: "Comparación de las características y velocidades de convergencia de los cuatro principales solvers del subespacio de Krylov mediante código y simulaciones."
+updated: 2026-10-19
+description: "En un Poisson de 60 incógnitas, Jacobi sigue en 2.11e-2 tras 2000 pasadas, mientras CG llega a 1.87e-13 en exactamente 60 pasos."
+takeaway: "CG termina en N pasos solo mientras la matriz sigue siendo SPD. Si la advección rompe la simetría, el nombre del solver cambia."
 tags: ["Algorithms", "Linear-Solver", "Krylov", "Numerical-Analysis"]
 draft: false
 series: "numerical-methods"
@@ -9,25 +11,31 @@ series: "numerical-methods"
 
 import { KrylovConvergence } from '@/components/post-viz/2026-04-22-cfd-linear-solvers-krylov/KrylovConvergence'
 
-En 1952, Cornelius Lanczos, Magnus Hestenes y Eduard Stiefel presentaron de forma independiente el mismo resultado en una conferencia. Se trataba de un algoritmo para resolver matrices simétricas definidas positivas (SPD) en exactamente $N$ iteraciones. Es el método que hoy conocemos como **Gradiente Conjugado (CG)**. Lo interesante es que, 70 años después, el corazón de los solvers de CFD sigue latiendo con esta misma idea: **encontrar la solución en el subespacio de Krylov**. En este artículo, se compara la velocidad de convergencia de los cuatro solvers más utilizados en CFD (Jacobi, Gauss-Seidel, CG y BiCGSTAB) mediante Python y una simulación interactiva. Al terminar de leer, se podrá decidir de inmediato qué solver es el adecuado para cada problema en la práctica.
+En 1952, Lanczos, Hestenes y Stiefel llegaron al mismo congreso con el mismo algoritmo, escrito por separado. Matrices simétricas definidas positivas (SPD), terminadas en $N$ iteraciones. El nombre que quedó fue gradiente conjugado (CG). Setenta años después, la ecuación de presión de un código CFD sigue buscando la respuesta en ese subespacio.
+
+Al mover el tamaño de malla N de 20 a 80, las cuatro curvas de residuo se dibujan de nuevo. Al subir el tope de iteraciones, cambia el orden en que tocan el suelo.
+
+<KrylovConvergenceRace />
+
+Cerca de N=40, CG se quiebra hacia abajo y Jacobi queda casi horizontal en el eje logarítmico. Al empujar N hasta 80, la separación crece. Los dientes de BiCGSTAB son un residuo que no muere de forma lisa.
 
 ## ¿Por qué el CFD resuelve sistemas lineales mediante iteración?
 
-Al discretizar las ecuaciones de Navier-Stokes, en cada paso de tiempo surge un gran sistema lineal de la forma $A\mathbf{x}=\mathbf{b}$. Aquí, $A$ es la matriz de coeficientes, $\mathbf{x}$ es el vector de variables en el centro de las celdas y $\mathbf{b}$ es el término fuente del lado derecho. Para una malla 3D de un millón de celdas, $A$ se convierte en una matriz dispersa de tamaño $10^6 \times 10^6$. La descomposición LU (un método directo que divide la matriz en el producto de una triangular inferior y una superior) consumiría demasiada memoria y CPU a esta escala. Por esta razón, los códigos de CFD de código abierto como OpenFOAM, SU2 y Gerris utilizan sin excepción **métodos iterativos**.
+Al discretizar Navier–Stokes, cada paso deja un sistema $A\mathbf{x}=\mathbf{b}$. $A$ es la matriz de coeficientes, $\mathbf{x}$ las incógnitas en el centro de celda, $\mathbf{b}$ el término derecho. Con un millón de celdas, $A$ es una matriz dispersa de $10^6 \times 10^6$. La factorización LU (partir en factores triangular inferior y superior) quema memoria y tiempo a la vez en ese tamaño. OpenFOAM, SU2 y Gerris iteran por eso.
 
-La idea básica de los métodos iterativos es simple. Partiendo de una suposición inicial $\mathbf{x}_0$, se corrige $\mathbf{x}$ gradualmente hasta que el residuo $\mathbf{r} = \mathbf{b} - A\mathbf{x}$ caiga por debajo de una tolerancia permitida. La cuestión es cómo se define ese "gradualmente". Esa definición es lo que da nombre al solver.
+Se parte de una estimación $\mathbf{x}_0$ y se corrige $\mathbf{x}$ hasta que el residuo $\mathbf{r} = \mathbf{b} - A\mathbf{x}$ cae bajo la tolerancia. La definición de "poco a poco" es el nombre del solver.
 
 ## La idea del subespacio de Krylov
 
-Existe un espacio formado por los vectores resultantes de multiplicar repetidamente la matriz $A$ por el residuo inicial $\mathbf{r}_0$.
+Los productos repetidos de $A$ con el residuo inicial $\mathbf{r}_0$ llenan un espacio.
 
 $$
 \mathcal{K}_m(A, \mathbf{r}_0) = \text{span}\{\mathbf{r}_0,\, A\mathbf{r}_0,\, A^2 \mathbf{r}_0,\, \dots,\, A^{m-1} \mathbf{r}_0\}
 $$
 
-$\mathcal{K}_m$ es el **subespacio de Krylov**, $m$ es la dimensión y $\text{span}$ es el espacio cubierto por sus combinaciones lineales. Los solvers de tipo Krylov buscan la solución dentro de $\mathbf{x}_m \in \mathbf{x}_0 + \mathcal{K}_m$, decidiendo $\mathbf{r}_m$ de tal manera que satisfaga cierta condición de optimalidad.
+$\mathcal{K}_m$ es el subespacio de Krylov, $m$ su dimensión, $\text{span}$ el conjunto de combinaciones lineales. La actualización se queda en $\mathbf{x}_m \in \mathbf{x}_0 + \mathcal{K}_m$, y el residuo que queda, $\mathbf{r}_m$, tiene que cumplir una condición de optimalidad.
 
-Confinar la solución a un subespacio tiene dos ventajas principales. Primero, no hay más operaciones que el producto matriz-vector, lo que preserva la estructura dispersa de la matriz. Segundo, teóricamente es posible extraer la solución **óptima** dentro de dicho subespacio. El método CG minimiza exactamente el error en la norma A, mientras que GMRES minimiza el residuo en la norma L2 dentro del espacio de Krylov.
+La única operación necesaria es un producto matriz-vector, así que el patrón disperso sobrevive. CG minimiza ahí el error en norma A. GMRES minimiza el residuo en norma 2. Lo segundo ocurre en [el subespacio que Arnoldi construye al apilar vectores](/es/posts/2026-06-24-gmres-arnoldi-krylov-solver/).
 
 ## Diferencias de características entre los cuatro solvers
 
@@ -38,11 +46,11 @@ Confinar la solución a un subespacio tiene dos ventajas principales. Primero, n
 | CG | **Obligatorio SPD** | 4 vectores | Óptimo para SPD, ligero con recurrencia de 3 términos | No apto para asimétricas |
 | BiCGSTAB | Cualquiera | 7 vectores | Funciona con asimétricas, no requiere transposición | Convergencia errática, riesgo de "break-down" |
 
-La ecuación de Poisson para la presión $-\nabla^2 p = f$ es SPD, por lo que CG es el estándar. Las ecuaciones de momento, que mezclan advección y difusión, son asimétricas, por lo que se prefiere BiCGSTAB o GMRES. En OpenFOAM se utilizan `PCG`/`PBiCGStab` y en SU2 `BCGSTAB` para cumplir exactamente con estos roles.
+El Poisson de presión $-\nabla^2 p = f$ es SPD, así que encaja CG. La cantidad de movimiento con advección es no simétrica, así que la elección pasa a BiCGSTAB o GMRES. `PCG`/`PBiCGStab` de OpenFOAM y `BCGSTAB` de SU2 son ese reparto, escrito en el nombre de la opción.
 
 ## Velocidad de convergencia vista con Python
 
-Tomemos como ejemplo el problema de Poisson en 1D. Al discretizar $-u'' = 1$ con condiciones de contorno $u(0)=u(1)=0$ mediante diferencias finitas, obtenemos una matriz tridiagonal. Comparemos directamente Jacobi y CG.
+El problema modelo es el Poisson 1D, $-u'' = 1$, con $u(0)=u(1)=0$. Las diferencias finitas dejan una matriz tridiagonal. En $N=60$, Jacobi y CG comparten la tolerancia $10^{-10}$.
 
 ```python
 import numpy as np
@@ -97,42 +105,43 @@ print(f"Jacobi: {len(hist_j):4d} iteraciones, residuo final {hist_j[-1]:.2e}")
 print(f"CG:     {len(hist_cg):4d} iteraciones, residuo final {hist_cg[-1]:.2e}")
 ```
 
-Los resultados son contundentes:
+La corrida imprime esto.
 
 ```text
 Jacobi: 2000 iteraciones, residuo final 2.11e-02
 CG:       60 iteraciones, residuo final 1.87e-13
 ```
 
-Mientras que Jacobi no logra bajar de $10^{-2}$ después de 2000 iteraciones, CG alcanza la precisión de máquina en solo $N=60$ pasos. Teóricamente, CG llega a la solución exacta en un **máximo de $N$ pasos** (ignorando errores de punto flotante). Para matrices SPD, CG es casi un superpoder.
+Al subir el control del logaritmo del número de condición, las cuatro curvas se detienen en otro sitio dentro del mismo presupuesto de iteraciones. El tope de iteraciones decide dónde se corta el gráfico.
 
-## Veamos la competencia de convergencia directamente
+<KrylovConvergence />
 
-Se puede experimentar directamente con la siguiente simulación. Al cambiar el tamaño de la malla $N$ y el número máximo de iteraciones con los controles deslizantes, las curvas de residuo de los cuatro solvers se vuelven a dibujar en escala logarítmica.
+Con el valor base $\kappa=10^3$ y unas 80 iteraciones, Jacobi (rojo) queda casi horizontal y CG (cian) baja más empinado. Al empujar $\kappa$ hacia $10^6$, Jacobi sigue sin suelo aunque se le den 200 iteraciones. El caso impreso con $N=60$ es un punto de esa figura: Jacobi en 2.11e-2 tras 2000 pasadas, CG en 1.87e-13 tras 60.
 
-<KrylovConvergenceRace />
+El residuo impreso se lee como un factor por paso. De 1 a 2.11e-2 en 2000 pasadas sale una contracción de 0.998 por pasada, la raíz 2000 de 0.0211. Es la escala del radio espectral $1-O(1/N^2)$ de la tabla. Con $N=60$, $1/N^2$ vale 1/3600, cerca de 0.00028, y 0.998 es ese término con una constante pequeña delante.
 
-Si se aumenta $N$ hasta 80, las curvas de Jacobi y Gauss-Seidel se vuelven casi horizontales. Por el contrario, la de CG cae de forma escalonada y converge bruscamente cerca de $N$. BiCGSTAB desciende con oscilaciones; esta "irregularidad" es una señal visual del riesgo de "break-down" (una falla numérica donde el numerador o el denominador explotan hacia cero o infinito). En la práctica, si BiCGSTAB diverge repentinamente, lo habitual es reforzar el precondicionador o cambiar a GMRES.
+Si el factor se mantiene, $10^{-10}$ cuesta unas 12.000 iteraciones. Desde 2.11e-2 faltan unas 10.000 pasadas. Al duplicar $N$, $1/N^2$ cae a la cuarta parte y el mismo residuo cuesta cuatro veces más iteraciones.
+
+Las 60 iteraciones de CG igualan a $N$: el techo de como máximo $N$ pasos se gasta. 1.87e-13 es unas $1.1	imes 10^{11}$ veces menor que 2.11e-2. En doble precisión se suma a 1 del orden de $10^{-16}$, y se gastaron dos o tres dígitos. Un millón de celdas a 8 bytes son 8 MB por vector: 32 MB en los cuatro de CG y 56 MB en los siete de BiCGSTAB. Guardar el residuo es barato. La cola de iteraciones no.
+
+## La curva con el precondicionador apagado
+
+Esas curvas son iteraciones desnudas, sin precondicionador. Al encenderlo, una marca del eje horizontal significa otra cosa. Un pico vertical de BiCGSTAB es un break-down: un producto interno del denominador se pegó a cero. Sumar iteraciones no deshace eso. Se cambia el precondicionador, o se pasa a GMRES. Un periodo de reinicio $m$ cerca de 30 es el compromiso habitual entre memoria y ese salto.
 
 ## Guía de selección de solvers en la práctica
 
-**Poisson de presión, transferencia de calor solo por difusión**: CG + precondicionador ILU(0). Si se garantiza la simetría, cualquier otra opción es un desperdicio de recursos.
+Poisson de presión, y transferencia de calor que es solo difusión: CG con ILU(0). Si la simetría sigue intacta, otro nombre solo guarda más vectores.
 
-**Momento asimétrico, mezcla de advección-difusión**: BiCGSTAB es la base. Si la convergencia oscila o se estanca, se cambia a GMRES($m$). $m$ es el ciclo de reinicio y determina el compromiso entre memoria y velocidad. La práctica común en la industria es alrededor de $m=30$.
+La cantidad de movimiento no simétrica arranca en BiCGSTAB. Cuando el residuo oscila, se cambia a GMRES($m$). Aquí $m$ es el periodo de reinicio.
 
-**CFD en paralelo**: Gauss-Seidel pierde fuerza en GPU debido a su naturaleza secuencial. El estándar de los últimos 10 años es la combinación de suavizadores (smoothers) basados en Jacobi y Multigrid Algebraico (AMG).
+Gauss-Seidel es secuencial, así que en una GPU se queda sin fuerza. El patrón de la última década es un suavizador de Jacobi más multigrid algebraico (AMG).
 
-**LU-SGS de SU2**: SU2 incluye, además de Krylov, el método iterativo LU-SGS (Lower-Upper Symmetric Gauss-Seidel). Al combinarse con el avance temporal implícito en flujos compresibles, su huella de memoria es mucho menor, aunque no es tan robusto como Krylov.
+SU2 también lleva LU-SGS (Lower-Upper Symmetric Gauss-Seidel), una iteración estacionaria al lado de Krylov. Atado al avance temporal implícito en flujo compresible, la huella de memoria queda más chica. No es tan firme como Krylov.
 
-**Consejo**: En la práctica, la "elección del precondicionador" altera la velocidad de convergencia mucho más que la "elección del solver". Es común que la combinación PCG (Preconditioned CG) + AMG sea 100 veces más rápida que usar CG solo.
+El precondicionador mueve el número de iteraciones más que el nombre del solver. PCG con AMG suele ser 100 veces más rápido que CG solo. Ese factor es si se corta o no la cola de diez mil pasadas.
 
-## Resumen de 3 puntos clave
+## Tomar 2.11e-2 por un residual ya convergido
 
-- Jacobi y Gauss-Seidel son simples, pero su tasa de convergencia en problemas reales de CFD es de un deficiente $1-O(1/N^2)$. A medida que el problema crece, el número de iteraciones aumenta cuadráticamente.
-- Los métodos de tipo Krylov (CG, BiCGSTAB, GMRES) alcanzan la precisión de máquina en $N$ pasos usando solo productos matriz-vector. **Para SPD se usa CG, y para asimétricas BiCGSTAB o GMRES** como valores predeterminados.
-- El precondicionador es más importante que el solver. La combinación de ILU(0), AMG y suavizadores de Jacobi puede marcar una diferencia de velocidad de entre 10 y 100 veces.
+Entregar al paso de tiempo siguiente un residual de Poisson que sigue en 2.11e-2 tras 2000 pasadas mete ese error de presión en la iteración no lineal que viene. Mientras la matriz siga siendo SPD, el lugar es de CG. En cuanto la advección la vuelve no simétrica, CG deja de ser elegible y el relevo es BiCGSTAB. Elegir el nombre primero y medir el número de condición después es el fallo.
 
-
-Ajusta κ abajo y observa el límite de cada solver.
-
-<KrylovConvergence />
+La pregunta que queda es si hace falta apilar otras diez mil iteraciones. Un [ciclo V que barre el error en una malla gruesa](/es/posts/2026-05-06-multigrid-v-cycle-poisson-acceleration/) puede cortar esta cola $1-O(1/N^2)$, o puede volver a llamar a Jacobi como suavizador de la malla fina. Este residual no lo decide.

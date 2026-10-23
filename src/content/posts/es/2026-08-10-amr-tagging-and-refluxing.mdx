@@ -1,7 +1,9 @@
 ---
 title: "El mismo resultado con el 18 % de las celdas — criterios de marcado AMR y reflujo coarse-fine"
 date: 2026-08-10
-description: "El sensor de Löhner, el ancho del búfer y la fuga de masa en la interfaz que solo el registro de flujos detiene"
+updated: 2026-10-19
+description: "Una capa de cortadura en 256^2 baja de 65 536 celdas a 11 776 hojas, un 18 %. Sin reflujo la masa deriva cerca del 1 % en 60 pasos."
+takeaway: "Un búfer más estrecho que el CFL por el intervalo de regrid deja salir la interfaz del parche, y omitir el reflujo cambia el signo de la deriva."
 tags: ["AMR", "Mesh-Refinement", "Flux-Register", "Conservation", "OpenFOAM"]
 locale: es
 slug: amr-tagging-and-refluxing
@@ -11,7 +13,15 @@ draft: false
 import { LohnerTagBufferQuadtree } from '@/components/post-viz/2026-08-10-amr-tagging-and-refluxing/LohnerTagBufferQuadtree'
 import { FluxRegisterLedger } from '@/components/post-viz/2026-08-10-amr-tagging-and-refluxing/FluxRegisterLedger'
 
-En un cálculo de 50 millones de celdas, ¿cuántas deciden realmente el resultado? Una onda de choque, una capa de cortadura, un frente de llama. Al contarlas, suelen ser un puñado de puntos porcentuales del total. El resto son celdas que gastan tiempo resolviendo con esmero zonas que ya eran suaves. El refinamiento adaptativo de malla AMR (adaptive mesh refinement: sembrar celdas solo donde la solución las exige) ataca esa proporción de frente, y hoy tocan sus dos puntos sensibles en la práctica: el sensor que decide dónde subdividir, y la fuga de masa en la interfaz que aparece sin falta después de subdividir.
+En un cálculo de 50 millones de celdas, ¿cuántas deciden realmente el resultado? Una onda de choque, una capa de cortadura, un frente de llama. Suelen ser un puñado de puntos porcentuales del total. El resto gasta tiempo resolviendo con esmero zonas que ya eran suaves.
+
+Al bajar `n_buf` a 0 y empujar `regrid every` hasta 30, crecen celdas rojas a lo largo de la interfaz. El sensor va adelante y la malla no alcanza.
+
+<LohnerTagBufferQuadtree />
+
+Al subir `n_buf` a 2 el rojo desaparece y sube el número de celdas hoja. Ese número es el precio de ensanchar el búfer.
+
+El refinamiento adaptativo de malla AMR (adaptive mesh refinement: sembrar celdas solo donde la solución las exige) ataca esa proporción de frente. El sensor que decide dónde subdividir, y la masa que se escapa en la interfaz después de subdividir. Los dos quedan en números.
 
 ## 11 mil celdas de 65 mil
 
@@ -23,7 +33,9 @@ $$
 N_{\rm AMR} \sim \left(\frac{L}{h}\right)^{D-1} = N_{\rm uni}^{(D-1)/D}
 $$
 
-donde $L$ es el tamaño del dominio y $h$ el espaciamiento de la malla más fina. En 2D el exponente vale 1/2; en 3D, 2/3. Es decir: al duplicar la finura, la malla uniforme multiplica sus celdas por 8 y el AMR solo por 4. La ventaja crece con la resolución, y esa es la única razón para usar AMR.
+donde $L$ es el tamaño del dominio y $h$ el espaciamiento de la malla más fina. En 2D el exponente vale 1/2; en 3D, 2/3. Es decir: al duplicar la finura, la malla uniforme multiplica sus celdas por 8 y el AMR solo por 4. La ventaja crece con la resolución. Por eso se usa AMR.
+
+Al meter esta malla en la estimación, el número deja de ser vago. La uniforme $256^2$ tiene 65 536 celdas. La suma de hojas que se cuenta más adelante es 11 776, y $11776/65536=0.180$. Una interfaz recta en 2D sería solo $(L/h)^{1}=256$ celdas, el 0.39 % de la uniforme. La capa enrollada, más el búfer y las hojas gruesas, es lo que llega al 18 %. Si en 3D se parte el espaciamiento a la mitad, la uniforme crece por $2^3=8$ y el AMR de la interfaz por $2^{2}=4$. El exponente $(D-1)/D$ vale 2/3 en 3D, así que la fracción frente a la malla uniforme sigue bajando al afinar.
 
 ## El gradiente no sirve para decidir dónde subdividir
 
@@ -51,11 +63,7 @@ $$
 
 donde $\nu$ es el número de CFL de ese nivel. Con CFL 0.4 y regrid cada 10 pasos hacen falta al menos 4 celdas. La relación es independiente del nivel: con subciclado, $\Delta t_\ell$ y $h_\ell$ se reducen en la misma proporción.
 
-Conviene manipular directamente la simulación de abajo.
-
-<LohnerTagBufferQuadtree />
-
-Al bajar `n_buf` a 0 y empujar `regrid every` hasta 30, crecen celdas rojas a lo largo de la interfaz: son celdas donde el sensor dice "hay que subdividir aquí" y la malla todavía no llegó. Al subir `n_buf` a 2 el rojo desaparece, pero sube el número de celdas hoja. Ese número es exactamente el precio de ensanchar el búfer.
+El piso, escrito, es $n_{\rm buf}\ge 0.4\times 10=4$. El búfer de 2 del código queda por debajo. Más estrecho que eso, y la interfaz sale de la zona marcada antes del próximo regrid. Esas celdas rojas son lo que muestra el dial del principio con `n_buf` en 0.
 
 ## Bloque, celda o parche — lo que define la unidad de corte
 
@@ -67,7 +75,7 @@ Con el mismo resultado de marcado, la unidad con la que se subdivide cambia tant
 | Basado en celdas | Una celda | Árbol por celda | Nulo | OpenFOAM `hexRef8`, RAGE |
 | Basado en parches | Parche rectangular de tamaño libre | Lista de cajas | Pequeño | Chombo, BoxLib/AMReX |
 
-El enfoque por bloques tiene la estructura de datos más simple y buena localidad de caché, pero basta una sola celda marcada para que se subdivida el bloque entero. El enfoque por celdas no genera ningún exceso, aunque cada búsqueda de vecinos implica recorrer el árbol. Ahí entra OpenFOAM: `dynamicRefineFvMesh` es el motor, `hexRef8` el cortador (un hexaedro en ocho) y `refinementHistory` el historial para poder deshacer. El enfoque por parches queda en el medio y, dentro del rectángulo, permite conservar los bucles de malla estructurada, lo que favorece la vectorización.
+El enfoque por bloques tiene la estructura de datos más simple y buena localidad de caché, pero basta una sola celda marcada para que se subdivida el bloque entero. El enfoque por celdas no genera ningún exceso, aunque cada búsqueda de vecinos implica recorrer el árbol. Ahí entra OpenFOAM: `dynamicRefineFvMesh` es el motor, `hexRef8` el cortador (un hexaedro en ocho) y `refinementHistory` el historial para poder deshacer. Un [árbol cuaternario que solo hace crecer las celdas que lo piden](/es/posts/2026-04-27-amr-quadtree-cell-refinement/) usa esa misma unidad. No parte un bloque entero por una sola celda marcada. El enfoque por parches queda en el medio y, dentro del rectángulo, permite conservar los bucles de malla estructurada, lo que favorece la vectorización.
 
 ## Una misma cara con dos respuestas distintas
 
@@ -95,11 +103,7 @@ $$
 
 El signo lo fija el lado de la cara en que se encuentra esa celda. Las celdas interiores al parche no se tocan: ya fueron sobrescritas con el promedio de los valores finos. Esta única línea devuelve la masa de todo el dominio hasta la precisión de máquina.
 
-Conviene correr abajo, lado a lado, la versión con reflujo activado y la versión sin él.
-
-<FluxRegisterLedger />
-
-Desde el instante en que el pulso toca la cara rosada, la traza roja se despega del cero y no vuelve nunca. La verde sigue pegada al cero. Al reducir `pulse sigma` para afilar el pulso, la desviación roja se agranda, y el $\delta F$ anotado en el registro crece exactamente en la misma medida.
+Con $r=2$ y $D=2$, $r^{D}=4$. Las $r^{D-1}=2$ caras finas y los $r=2$ subciclos se dividen por ese 4 para quedar en la misma escala que un flujo grueso. Sin la división, $\delta F$ sale con el tamaño equivocado. Saldar el registro igual deja la masa descuadrada.
 
 ## Conteo de celdas y deriva de masa, medidos con código
 
@@ -187,6 +191,8 @@ La salida es esta.
 
 Al cambiar `N_BUF` a 0, 1, 2 y 4, el total se mueve de 9616 a 10 864, luego 11 776 y finalmente 14 224. El búfer de 2 celdas cuesta 2160 celdas, es decir 3.3 puntos porcentuales respecto de la malla uniforme.
 
+Las 2160 celdas añadidas entre búfer 0 y búfer 2 son cerca del 22 % de 9616. Con 4 celdas el total llega a 14 224, esto es 4608 celdas por encima del caso sin búfer. Por nivel, las 6976 más finas son el 59 % de las 11 776. Las 3280 del nivel 0 cubren la zona suave con un espaciamiento grueso. El 18 % es la suma de esas tres capas, no la interfaz sola.
+
 Ahora el reflujo. Se montan dos niveles sobre una advección escalar 2D, se agrega subciclado y se mide la masa total.
 
 ```python
@@ -268,7 +274,13 @@ for tag, on in (('reflux off', False), ('reflux on ', True)):
   reflux on :  mass = 0.025446894886   drift = +0.000e+00
 ```
 
-Un 1 % en 60 pasos. Y ese valor tampoco crece de forma monótona: a los 15 pasos era −1.3 %, a los 30 pasos −0.77 % y a los 60 pasos +1.0 %. El signo cambia cada vez que el blob entra o sale del parche. Ver una curva así durante un estudio de convergencia lleva a sospechar del esquema, cuando el culpable es una interfaz sin reflujo.
+Al bajar `pulse sigma`, la desviación roja crece y el $\delta F$ del registro crece en la misma medida.
+
+<FluxRegisterLedger />
+
+Cuando el pulso toca la cara rosada, solo la traza roja se separa de cero. La verde sigue pegada. La deriva +1.006e-02 sin reflujo es esa línea roja.
+
+Un 1 % en 60 pasos. La resta de las dos masas impresas da cerca de $2.56\times 10^{-4}$. Dividida por la masa con reflujo, coincide con la deriva +1.006e-02. Y ese valor tampoco crece de forma monótona: a los 15 pasos era −1.3 %, a los 30 pasos −0.77 % y a los 60 pasos +1.0 %. El signo cambia cada vez que el blob entra o sale del parche. Ver una curva así durante un estudio de convergencia lleva a sospechar del esquema, cuando el culpable es una interfaz sin reflujo.
 
 ## Balanceo de carga — una curva que pone los bloques en fila
 
@@ -276,10 +288,8 @@ Correr AMR en paralelo trae un problema nuevo: en cada regrid, el número de blo
 
 La receta estándar es la curva de llenado de espacio SFC (space-filling curve: una curva que recorre en una sola fila una malla multidimensional). Con una curva de Morton (orden Z) o de Hilbert se asigna un índice unidimensional a cada bloque hoja y esa fila se parte en tantos tramos iguales como rangos haya. Gracias a la localidad de la curva, los índices contiguos suelen ser también vecinos en el espacio, así que una partición equitativa resulta además una partición de poca comunicación. Así trabajan p4est y AMReX. Un particionador de grafos (ParMETIS, Zoltan, Scotch) da mejor calidad de partición, pero hay que volver a ejecutarlo en cada regrid, con un costo muy superior al de la SFC. Como en AMR la malla cambia seguido, la SFC suele ganar.
 
-## Tres decisiones antes de activar AMR
+## Sin reflujo, la curva de convergencia señala al esquema
 
-**Uno.** El criterio de marcado se construye adimensional. Con la diferencia segunda normalizada, un único umbral sirve para todos los campos y todos los niveles. Con el gradiente crudo, en cambio, hay que sintonizar nivel por nivel.
+El marcado se deja adimensional. Una diferencia segunda normalizada permite que un umbral cruce campos y niveles. El gradiente crudo hay que reajustarlo en cada nivel. El búfer se calcula como $\nu N_{\rm regrid}$. Con CFL 0.4 y 10 pasos son 4 celdas. Poner 1 celda a ojo y hacer regrid cada 20 pasos deja una parte grande del avance con el rasgo ya fuera del parche.
 
-**Dos.** El ancho del búfer se calcula como $\nu N_{\rm regrid}$ y se aplica. Poner 1 celda a ojo y hacer regrid cada 20 pasos deja la mitad del cálculo corriendo con el rasgo ya escapado fuera del parche.
-
-**Tres.** El reflujo no es opcional. Aunque el esquema sea conservativo, la interfaz coarse-fine rompe la conservación. En problemas donde la masa es la respuesta misma —combustión, flujo multifásico—, ninguna curva de convergencia obtenida sin registro de flujos es confiable.
+Tratar el reflujo como opcional hace que la cara coarse-fine fabrique masa. El +1 % del paso 60 ni siquiera es monótono. Una deriva que cambia de signo se le atribuye fácil al esquema de advección. El mismo tipo de error aparece cuando [correr el refine una línea más tarde infló el error de un ciclo temporal LBM](/es/posts/2026-09-25-lbm-amr-recursive-time-cycle/). Si el orden está mal, la respuesta en la interfaz sigue mal aunque las celdas sean pequeñas.

@@ -1,7 +1,9 @@
 ---
 title: "Celdas torcidas, gradientes desviados — Green–Gauss frente a Least-Squares"
 date: 2026-05-11
-description: "Dos caminos para calcular ∇p en mallas no estructuradas y la brecha de precisión"
+updated: 2026-10-19
+description: "Con skew 0,9 el error impreso de Green–Gauss es 31% y el de mínimos cuadrados es 9%. La razón se queda cerca de 3,4 desde el anillo simétrico."
+takeaway: "Cortar mínimos cuadrados en el esténcil de frontera baja el orden, y el error de un dígito del interior se va con él."
 tags: ["FVM", "Unstructured", "Gradient", "Least-Squares", "Green-Gauss"]
 locale: es
 slug: 2026-05-11-gradient-recon-green-gauss-vs-least-squares
@@ -10,51 +12,53 @@ draft: false
 
 import { UnstructuredGradientLab } from '@/components/post-viz/2026-05-11-gradient-recon-green-gauss-vs-least-squares/UnstructuredGradientLab'
 
-Las mismas seis celdas vecinas, los mismos valores de presión. Un algoritmo acierta ∇p casi exacto; el otro se desvía un 30%. La diferencia surge del grado de distorsión de la malla y de cómo cada método inventa el valor en la cara de la celda. Este artículo coloca sobre la misma malla los dos caminos para calcular el gradiente centrado ∇p|_C en volúmenes finitos no estructurados (unstructured FVM) — Green–Gauss (GG) y Least-Squares (LS) — y sigue dónde se separan. Al final hay 60 líneas de Python y un laboratorio interactivo.
+Los mismos seis vecinos, las mismas presiones. Una flecha se queda sobre $\nabla p$. La otra se inclina bastante. La diferencia está en cuánto se tuerce la celda y en cómo se fabricó la presión de la cara.
+
+Al llevar el deslizador de mesh skew de 0 a 0,9 la flecha naranja de Green–Gauss se aparta del valor verdadero, y la violeta de mínimos cuadrados se queda más corta.
+
+<UnstructuredGradientLab />
+
+Cerca de skew 0 ambas siguen en un dígito. Pasado 0,5 solo la naranja sube a dos dígitos. La tabla queda después del código.
 
 ## Cuando la presión divergió en el log de OpenFOAM
 
-Un solver basado en presión sobre malla no estructurada y no escalonada (non-staggered) llama al gradiente centrado ∇p al menos tres veces dentro de la interpolación ponderada por presión de Rhie–Chow (PWIM): en el término de presión del momento, en la fórmula de la velocidad intermedia en la cara y en el gradiente de la corrección de presión. Si alguna de esas evaluaciones se inclina hacia un lado, momento y continuidad se desacoplan y el residual queda atascado un orden de magnitud por encima del objetivo. El flujo bifásico empeora las cosas — la tasa de cambio de fase depende de la presión local, así que un 0.5% de sesgo en ∇p difumina la interfaz.
+Un solver de presión no escalonado y no estructurado llama al $\nabla p$ en el centro de la celda al menos tres veces dentro de la interpolación ponderada de Rhie–Chow. El término de presión de la cantidad de movimiento, la velocidad a mitad de cara y el gradiente de la corrección de presión. Si uno se inclina, la cantidad de movimiento y la continuidad se separan y el residual se detiene una década arriba. En bifásico la tasa de cambio de fase es función de la presión local, así que un sesgo de 0,5% en $\nabla p$ emborrona la interfaz.
 
-El problema vive en la cara de la celda. El gradiente centrado sale de una integral de superficie, y la receta para la presión de cara $p_f$ marca el rumbo del algoritmo.
+El problema está en la cara. El gradiente en el centro cae de una integral de superficie, y la receta de la presión de cara $p_f$ parte el camino.
 
 ## Green–Gauss — una integral de superficie
 
-Se parte del teorema de la divergencia. Para la celda $C$ con volumen $\Omega_C$, caras $f$, normales unitarias hacia el exterior $\hat{\mathbf{n}}_f$ y áreas $A_f$,
+Se parte del teorema de la divergencia. Celda $C$, volumen $\Omega_C$, caras $f$, normales unitarias hacia afuera $\hat{\mathbf{n}}_f$, áreas $A_f$.
 
 $$
 \nabla p \Big|_C \;\approx\; \frac{1}{\Omega_C} \sum_{f \in \partial C} p_f\, \hat{\mathbf{n}}_f\, A_f
 $$
 
-donde $p_f$ es la presión en la cara, $\hat{\mathbf{n}}_f$ apunta fuera de la celda y $A_f$ es el área.
+$p_f$ es la presión de la cara, $\hat{\mathbf{n}}_f$ la normal hacia afuera, $A_f$ el área.
 
-Distintas recetas para $p_f$ dan lugar a variantes de GG.
+La receta de $p_f$ es la variante de Green–Gauss.
 
-- **Promedio simple**: $p_f = \tfrac{1}{2}(p_C + p_N)$. Limpio en mallas ortogonales uniformes, pero en mallas no estructuradas el centroide de la cara casi nunca se encuentra sobre el segmento que une los dos centros de celda.
-- **Pesos inversos a la distancia (IDW)**: $p_f = (w_C p_C + w_N p_N)/(w_C + w_N)$ con $w = 1/d$. La celda más cercana a la cara recibe más peso.
-- **Procedimiento de Frink**: primero interpolar la presión nodal desde celdas vecinas con pesos pseudo-Laplacianos, luego promediar los dos nodos que definen la cara. Busca conservación y precisión de segundo orden a la vez.
+- **Promedio simple**: $p_f=\tfrac12(p_C+p_N)$. Limpio en una malla ortogonal uniforme. En una no estructurada el centroide de la cara no es el punto medio de los dos centros.
+- **Distancia inversa**: $p_f=(w_C p_C+w_N p_N)/(w_C+w_N)$, $w=1/d$. La celda más cercana a la cara recibe más peso.
+- **Frink**: las presiones nodales salen de las celdas vecinas con pesos de pseudo-Laplaciano, y después se promedian otra vez los dos nodos de la cara. Conservación y segundo orden, los dos como objetivo.
 
-El problema aparece cuando las celdas se tuercen. Si el centroide de la cara $\mathbf{x}_f$ se aparta del segmento que une los centros, ningún promedio escalar para $p_f$ recupera la distribución verdadera sobre la cara. Ni siquiera la precisión de primer orden queda garantizada.
+Cuando la celda se tuerce, el centroide $\mathbf{x}_f$ abandona la línea de centros. Ningún promedio de $p_f$ recupera la distribución sobre la cara. El primer orden a menudo ni se garantiza. Si el volumen $\Omega_C$ del denominador es un área falsa, la conservación es solo formal. [Cerrar el área de la celda con un producto cruzado de diagonales](/es/posts/2026-10-13-diagonal-cross-product-cell-area-green-gauss/) es donde esa área tiene que coincidir con $\partial x/\partial x=1$.
 
 ## Un mismo punto, dos algoritmos, flechas distintas
 
-Conviene tocar el simulador de abajo. La celda central es el objetivo y seis vecinas forman el anillo. Mover el slider mesh skew de 0 a 0.9 deforma los centros vecinos, y sobre la celda se superponen tres flechas: cian (∇p verdadero), naranja (Green–Gauss) y violeta (Least-Squares).
-
-<UnstructuredGradientLab />
-
-Cerca de skew = 0 ambos métodos se mantienen por debajo del 5%. Una vez pasado 0.5, GG salta a errores de dos cifras mientras LS resiste en una sola. Al subir el número de onda $k$, el gradiente real se vuelve más empinado relativo al tamaño de celda — la malla se vuelve gruesa para el campo — y ambos métodos pierden precisión. La ventaja de LS se reduce, pero no se invierte.
+El anillo de la figura es una celda central y seis vecinas. En skew 0 las dos flechas se pegan al cian verdadero. Pasado 0,5 la naranja se va primero. Al subir el número de onda $k$ el $\nabla p$ verdadero se empina respecto de la celda. Los dos métodos pierden precisión y la ventaja violeta se estrecha.
 
 ## Least-Squares — ajustar la nube de puntos directamente
 
-LS no pasa por la cara. Asume que los vecinos de $C$ obedecen un campo lineal y resuelve el sistema sobredeterminado
+Mínimos cuadrados no visita la cara. Se supone que los vecinos son lineales y se resuelve el sistema sobredeterminado.
 
 $$
 p_N - p_C \;=\; (\nabla p)_C \cdot (\mathbf{x}_N - \mathbf{x}_C) + \varepsilon_N, \quad N=1,\ldots,n_{NC}
 $$
 
-cada ecuación deja un residuo $\varepsilon_N$. Con pesos $w_N$ (típicamente $1/|\mathbf{x}_N - \mathbf{x}_C|^2$) para amortiguar las celdas lejanas, se minimiza $\sum_N w_N \varepsilon_N^2$ mediante las ecuaciones normales.
+Cada fila deja un residual $\varepsilon_N$. El peso $w_N$ suele ser $1/|\mathbf{x}_N-\mathbf{x}_C|^2$. El $\nabla p$ que minimiza $\sum w_N\varepsilon_N^2$ es la ecuación normal.
 
-En 2D, las ecuaciones normales son apenas un sistema 2×2.
+En 2D esa ecuación normal es 2×2.
 
 $$
 \begin{bmatrix}
@@ -69,14 +73,11 @@ $$
 \end{bmatrix}
 $$
 
-con $\Delta x_N = x_N - x_C$, $\Delta y_N$ y $\Delta p_N$ definidos análogamente.
+$\Delta x_N=x_N-x_C$, y $\Delta y_N$, $\Delta p_N$ son la misma clase de diferencia.
 
-LS brilla porque ignora la topología de malla. Caras torcidas, celdas no cuadriláteras: nada importa mientras los centros vecinos no sean colineales (lo que asegura una matriz normal no singular). Entrega precisión de primer orden de forma consistente.
+Si los centros vecinos no son colineales la matriz normal es no singular, y una cara torcida sigue en primer orden. Por eso el método es poco sensible a la topología.
 
-Tiene puntos débiles.
-
-- **Celdas de borde**: en una esquina con un solo vecino, la matriz normal se vuelve singular. Toca ampliar la plantilla a celdas que comparten nodos, lo cual engorda la conectividad no estructurada.
-- **Sin conservación**: GG sale de una suma de flujos en cara y respeta la conservación de manera natural. LS solo minimiza residuos y no la asegura.
+Las debilidades son reales. Una esquina de frontera con un solo vecino vuelve singular la matriz normal. El esténcil tiene que llegar a vecinos de vértice, y en una malla no estructurada ese índice pesa. Tampoco hay conservación. Green–Gauss es una suma de flujos de cara, así que las celdas telescopan hacia cero. Mínimos cuadrados solo minimiza un residual.
 
 ## Código — dos estimaciones de ∇p sobre la misma celda
 
@@ -136,7 +137,7 @@ for skew in [0.0, 0.3, 0.6, 0.9]:
     print(f"skew={skew:.1f}  GG err={eGG:6.2%}  LS err={eLS:6.2%}")
 ```
 
-Salida típica (varía según la geometría de las caras):
+La salida, con la salvedad de que cambia con la forma de la cara, queda así.
 
 ```text
 skew=0.0  GG err= 4.1%  LS err= 1.6%
@@ -145,24 +146,38 @@ skew=0.6  GG err=18.4%  LS err= 5.7%
 skew=0.9  GG err=31.2%  LS err= 9.1%
 ```
 
-El error de GG crece casi linealmente con el skew, mientras que el de LS lo hace mucho más despacio. Por eso LS se ha convertido en el estándar de facto sobre mallas no estructuradas.
+El 1,6% de mínimos cuadrados en skew 0 no es torcedura. El código fija $k=1{,}2$ y un radio de anillo $R=1{,}2$, así que $kR=1{,}44$ rad. El campo es $\sin(kx)\cos(ky)$, y en el origen el gradiente verdadero es $(k,0)=(1{,}2,0)$. Un ajuste lineal no sostiene esa curvatura. En skew 0 la matriz normal se queda solo con los ángulos. Con $w=1/|\mathbf{d}|^2$, la suma de $w\Delta x^2$ es la suma de $\cos^2$. Seis muestras a 60 grados suman 3, el término cruzado es 0 y $M=3I$. El número de condición es 1. El 1,6% no es una matriz enferma.
+
+Las razones de la tabla son 2,6, 3,4, 3,2, 3,4. Eso es $4{,}1/1{,}6$, $7{,}8/2{,}3$, $18{,}4/5{,}7$, $31{,}2/9{,}1$. De skew 0 a 0,9, Green–Gauss crece por $31{,}2/4{,}1\approx 7{,}6$ y mínimos cuadrados por $9{,}1/1{,}6\approx 5{,}7$. Los incrementos de Green–Gauss son $+3{,}7$, $+10{,}6$, $+12{,}8$. No es una recta. Los pasos posteriores son más empinados.
+
+En skew 0,9 el radio del código es $R(1\pm 0{,}36)$ y la sacudida angular tiene amplitud $0{,}54$ rad. Son $0{,}9\times 0{,}4$ y $0{,}9\times 0{,}6$. La longitud de cara $0{,}55$ está fija en el código. Cuando las seis caras comparten esa longitud, se cancela entre el numerador y el denominador. Cambiar $0{,}55$ por otra constante deja el 4,1% y el 31% impresos en su sitio. Esos porcentajes pertenecen a los ángulos del anillo y al campo seno.
+
+En skew 0 la distancia al vecino es $R=1{,}2$, así que el punto medio de la cara queda en la mitad, 0,6. Tras cancelar la longitud, cada cara aporta $0{,}5\times 0{,}6$ y seis caras suman 1,8. El volumen que acumula el código, 0,99, vuelve a multiplicar por 0,55 y no entra en el cociente. Un hexágono regular con separación de vecinos $R$ tiene área $(\sqrt{3}/2)R^2$. Con $R^2=1{,}44$ esa área vale cerca de 1,25. El denominador ya cancelado, 1,8, es un 44% mayor que esa área. Si el numerador fuera la integral de superficie verdadera, el gradiente caería a $1/1{,}44$ del valor real y el error relativo sería $1-1/1{,}44\approx 0{,}31$. El error impreso de Green–Gauss es 4,1%, muy por debajo de ese 0,31. La suma de presiones de cara es grande en la misma proporción que el denominador, así que los dos errores geométricos se cancelan en gran parte y queda el 4,1%. El 1,6% de mínimos cuadrados no usa esta área.
+
+La curvatura se lee en $k$ y $R$. $kR=1{,}44$, y el término cúbico de Taylor $(kR)^3/6$ vale cerca de 0,50, alrededor de un tercio del término lineal $kR$. Las muestras del anillo ya están dobladas en esa medida. Un error de gradiente residual de 1,6% significa que la mayor parte de esa curvatura sale del gradiente en un esténcil simétrico. Subir el skew rompe la cancelación. El factor 7,6 desde 4,1% hasta 31,2% no es curvatura nueva. Es el error geométrico que se estaba cancelando y que ahora aparece en la sacudida angular y en el vaivén del radio.
 
 ## Cómo elegir en la práctica
 
-- **Gradiente de presión**: casi siempre LS. Se necesita un espectro limpio alrededor del modo acústico en la interpolación de Rhie–Chow.
-- **Gradiente de velocidad (término viscoso)**: una variante de GG si hace falta conservación; LS si la precisión pesa más. ANSYS Fluent expone ambas opciones.
-- **Celdas de borde**: cuando LS por sí solo falla, se combina con GG o se añaden celdas fantasma. El `leastSquares` de OpenFOAM lleva fallbacks internos para celdas pobres en caras.
-- **2D vs 3D**: en 3D la matriz normal pasa a 3×3 y su número de condición se degrada rápido con celdas distorsionadas. Monitorear el número de condición funciona como red de seguridad.
+Los gradientes de presión son casi siempre mínimos cuadrados. Rhie–Chow tiene que dejar limpio el modo acústico.
+
+Los gradientes de velocidad, el término viscoso, se parten. Si hace falta conservación, una variante de Green–Gauss. Si la precisión va primero, mínimos cuadrados. Fluent trae los dos.
+
+Una celda de frontera que no puede resolver mínimos cuadrados sola recibe un parche de Green–Gauss o un ghost. `leastSquares` de OpenFOAM también cae a un respaldo cuando faltan vecinas de cara.
+
+En 3D la matriz normal es 3×3, y una celda áspera sube rápido el número de condición. Mirar ese número es el control de seguridad.
 
 ## Trampas comunes al codificarlo
 
-1. **Comprobar la matriz normal**: si $\det M \to 0$, LS pierde sentido. Usar SVD o pseudo-inversa como respaldo.
-2. **Escoger el peso con intención**: $1/d^2$ favorece a los vecinos cercanos y resiste skew. $1/d$ y los pesos uniformes suavizan más pero pierden precisión.
-3. **Frontera asimétrica**: mezclar GG en la frontera con LS en el interior baja el campo entero a primer orden. Hay que llevar LS hasta la pared o unificar todo con GG.
-4. **Auditoría de conservación**: cuando LS entrega ∇p al término de momento, la presión en la cara se interpola por separado — olvidarlo deja acumular un desbalance de masa.
+Si $\det M$ se pega a cero, mínimos cuadrados no significa nada. Se pasa a una SVD o a una pseudoinversa.
 
-## Lo que conviene llevarse
+El peso $1/d^2$ agranda las celdas cercanas y queda poco sensible a la torcedura. $1/d$ o un peso uniforme es más suave y menos preciso.
 
-- En mallas no estructuradas el ∇p centrado casi siempre lo gana Least-Squares — es insensible al skew.
-- A cambio, LS no es conservativo y el número de condición junto con las plantillas de borde son trampas reales.
-- Green–Gauss sigue siendo útil donde la conservación del flujo de cara manda — se trata de escoger la herramienta adecuada para el trabajo.
+Bajar solo la frontera a Green–Gauss y dejar mínimos cuadrados dentro hace caer todo el sistema a primer orden. Se empuja mínimos cuadrados hasta la frontera, o se usa Green–Gauss en todas partes.
+
+Mínimos cuadrados puede quedarse el gradiente de presión mientras la presión de cara se interpola aparte. Olvidar eso acumula desbalance de masa.
+
+## Cortar mínimos cuadrados en la frontera y el 9% cae con ello
+
+La fila de skew 0,9 vuelve la elección un número. Elegir conservación es comerse el 31% de Green–Gauss. Elegir precisión es quedarse el 9% de mínimos cuadrados. Cortar esos mínimos cuadrados en la frontera, en cambio, hace caer en orden el dígito que el interior estaba sosteniendo. El hexágono regular cuyo número de condición era 1 no existe en una esquina de frontera.
+
+Una flecha de gradiente correcta igual se pierde si la velocidad de cara recuerda el factor de subrelajación. Cuando un log diverge, la pregunta abierta es si la flecha estaba mal o si la cara recordó la relajación. [Donde Rhie–Chow recuerda la subrelajación](/es/posts/2026-10-14-rhie-chow-under-relaxation-memory/) es esa pregunta.

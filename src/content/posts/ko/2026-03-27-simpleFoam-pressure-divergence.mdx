@@ -1,7 +1,9 @@
 ---
 title: "[CFD Q&A] simpleFoam 압력 잔차가 수렴하지 않을 때"
 date: 2026-03-27
-description: "실무에서 만난 SIMPLE 알고리즘 발산 해결기 — relaxation factor 설정이 핵심이었다"
+updated: 2026-10-19
+description: "simpleFoam에서 p 초기 잔차가 0.412에서 0.891로 튀었다. p 이완을 0.7에서 0.3으로 내리니 200회에 1e-4."
+takeaway: "속도 잔차만 보고 이완을 올리면, 압력 보정은 내부 반복 8번에서 20번으로 불어난다."
 tags: ["CFD-Practice", "QA", "OpenFOAM", "SIMPLE", "Convergence"]
 draft: false
 noindex: true
@@ -9,16 +11,19 @@ noindex: true
 
 import { SimpleResidualHistory } from '@/components/post-viz/2026-03-27-simpleFoam-pressure-divergence/SimpleResidualHistory'
 
-지난주에 꽤 시간을 잡아먹은 문제가 있었다. simpleFoam을 돌리다가 pressure residual이 `1e-3` 아래로 떨어지지 않고 오히려 올라가기 시작했다. 처음엔 메시 문제인가 싶었는데, 결론은 relaxation factor였다.
+지난주 simpleFoam이 반나절을 먹었다. 압력 잔차가 `1e-3` 아래로 안 내려갔다. 올라갔다. 메시를 먼저 의심했는데, 손댄 자리는 relaxation factor였다.
+
+αp 슬라이더를 0.6 위로 밀면 압력 잔차 곡선이 30 iter 근처에서 다시 위로 꺾인다.
+
+<SimpleResidualHistory />
+
+0.3 근처에 두면 같은 곡선이 200 iter까지 내려앉는다. 아래 로그의 Time=80, 초기 잔차 0.891이 그 꺾임과 같은 구간이다.
 
 ## 문제 상황
 
-- **소프트웨어**: OpenFOAM v2312
-- **형상**: 2D 직사각형 채널, inlet–outlet 경계
-- **난류 모델**: k-ε (standard)
-- **솔버**: simpleFoam (정상 상태)
+OpenFOAM v2312. 2D 직사각형 채널, inlet에서 outlet. 난류 모델은 standard k-ε. 솔버는 정상 상태 simpleFoam.
 
-처음 20~30 iteration은 잘 내려가다가 갑자기 pressure residual이 튀기 시작했다.
+처음 20에서 30 iter까지는 잔차가 내려갔다. 그 다음부터 압력만 튀었다.
 
 ```text
 Time = 50
@@ -33,25 +38,25 @@ Time = 80
 GAMG:  Solving for p, Initial residual = 0.891, Final residual = 0.21, No Iterations 20
 ```
 
-velocity는 잘 수렴하는데 pressure만 계속 이상하다. 전형적인 압력-속도 커플링 불안정 패턴이다.
+속도는 자리를 잡는데 압력만 이상하다. 압력-속도 커플링이 흔들릴 때의 얼굴이다.
 
 ## 원인 분석 과정
 
 ### 1단계: 메시 품질 확인
 
-일단 `checkMesh`부터 돌렸다.
+`checkMesh`부터 돌렸다.
 
 ```bash
 checkMesh -case .
 ```
 
-최대 non-orthogonality 32도, max skewness 0.8 — 나쁘지 않다. 메시 문제는 아닌 것 같다.
+최대 non-orthogonality 32도, max skewness 0.8. 메시를 범인으로 부르기엔 조용한 숫자다.
 
 ### 2단계: 경계 조건 점검
 
-inlet에서 pressure를 `zeroGradient`, outlet을 `fixedValue 0`으로 설정했다. 이건 표준 설정이라 문제없다.
+inlet 압력은 `zeroGradient`, outlet은 `fixedValue 0`. 채널에서는 흔한 조합이다. 여기까지는 이상이 없었다.
 
-근데 초기 p 필드를 확인해보니 inlet 쪽에 이상하게 큰 값이 들어가 있었다. 처음에 `funkySetFields`로 뭔가 실험하다가 남은 흔적이었다.
+초기 p를 열어 보니 inlet 쪽에 큰 값이 남아 있었다. `funkySetFields`로 시험하다 지운 줄 알았던 필드다.
 
 ### 3단계: fvSolution 확인
 
@@ -72,11 +77,9 @@ relaxationFactors
 }
 ```
 
-U=0.9는 꽤 공격적인 값이다. SIMPLE에서 velocity relaxation을 높이면 수렴 속도는 빠르지만 pressure 업데이트가 따라가지 못하면 발산한다.
+U=0.9는 빠른 설정이다. 속도 이완을 올리면 겉보기 수렴은 빨라진다. 압력 갱신이 못 따라오면 루프가 흔들린다.
 
-원인 두 가지가 겹쳤다:
-1. relaxation factor가 과도하게 높음
-2. 초기 p 필드에 잘못된 값이 남아 있음
+겹친 원인은 두 개다. 이완이 높았다. 초기 p에 쓰레기가 남아 있었다. 압력 보정이 속도장과 어떻게 묶이는지는 [격자 무늬로 압력이 흔들릴 때의 SIMPLE](/ko/posts/2026-07-22-simple-pressure-velocity-coupling-rhie-chow/) 쪽에 풀어 적혀 있다.
 
 ## 해결책
 
@@ -99,7 +102,7 @@ relaxationFactors
 }
 ```
 
-처음 실행할 때는 보수적으로 시작하는 게 맞다. 수렴이 확인되면 조금씩 올린다.
+첫 런은 낮게 시작한다. 잔차가 내려앉는 걸 본 뒤에 올린다.
 
 ### 초기 p 필드 초기화
 
@@ -108,7 +111,7 @@ relaxationFactors
 cp 0.orig/p 0/p
 ```
 
-아니면 직접 `0/p` 파일 열어서 `internalField uniform 0;`으로 맞춰주면 된다.
+`0/p`를 직접 열어 `internalField uniform 0;`으로 맞춰도 된다.
 
 ```cpp
 // 0/p
@@ -135,7 +138,7 @@ boundaryField
 
 ## 검증
 
-수정 후 다시 돌리면 이렇게 나온다.
+같은 케이스를 다시 돌리면 로그가 이렇게 바뀐다.
 
 ```text
 Time = 50
@@ -149,27 +152,22 @@ Time = 200
 GAMG:  Solving for p, Initial residual = 3.2e-4, Final residual = 1.1e-5, No Iterations 3
 ```
 
-200 iteration 정도에서 pressure residual이 `1e-4` 수준으로 안정적으로 내려왔다.
+200 iter 부근에서 압력 잔차가 `1e-4` 수준까지 내려왔다. 내부 반복도 한 자릿수다.
 
-## 일반화된 교훈
+## 로그가 말하는 배율
 
-**simpleFoam 수렴 체크리스트** — 이 순서로 확인하면 대부분 잡힌다:
+고치기 전 Time=50에서 Ux는 0.0023에서 1.2e-5로 떨어졌다. 세 번의 내부 반복으로 약 192배다. Uy는 0.0019에서 9.8e-6으로, 약 194배다. 같은 시각의 압력은 0.412에서 0.038까지, 여덟 번에 약 11배뿐이다. 속도는 약 200배 가까이 내려갔는데 압력은 약 11배에 그친다.
 
-1. **초기 조건 먼저**: `0/` 디렉토리의 p, U 필드가 의도한 값인지 확인. 이전 실험 잔재가 남아 있으면 반드시 초기화.
+Time=80은 거기서 서른 스텝 뒤다. 압력의 초기 잔차는 0.412에서 0.891로 약 2.2배가 됐다. 내부 반복은 8에서 20으로 2.5배 늘었다. 그런데 감소 배율은 0.891 나누기 0.21, 약 4.2로 오히려 줄었다. 반복을 더 시키고 덜 내려간 기록이다.
 
-2. **relaxation factor 보수적으로**: 첫 실행은 `U=0.7, p=0.3` 기본값으로 시작. 수렴 확인 후 올리는 게 안전하다. `p` relaxation은 특히 낮게 잡아야 SIMPLE 루프가 안정된다.
+고친 뒤 Time=50의 압력은 0.089에서 0.0041로, 다섯 번에 약 22배 내려간다. Time=200에서는 3.2e-4에서 1.1e-5로, 세 번에 약 29배다. 누적 continuity는 3.4e-4에서 8.9e-6으로 약 38배 작아졌다. p 이완 0.3은 예전 0.7의 약 43%다. U는 0.9에서 0.7로, k와 epsilon은 0.7에서 0.5로 내려갔다. 압력 보정을 절반 아래로 줄인 대가로, 압력 내부 반복이 20에서 한 자릿수로 줄었다.
 
-3. **velocity 수렴 vs. pressure 수렴 분리해서 보기**: U residual은 낮은데 p만 발산하면 relaxation 문제일 가능성이 높다. 둘 다 발산하면 메시나 경계 조건을 먼저 본다.
+Time=200의 최종 잔차 1.1e-5를, 고치기 전 Time=80의 최종값 0.21과 나란히 놓는다. 0.21 나누기 1.1e-5는 약 19100이다. 같은 채널이고 같은 메시인데, 압력 이완과 초기장만 바꿨다. 메시를 다시 까기 전에 볼 숫자는 이 배율이다.
 
-4. **GAMG iteration 수 보기**: 같은 iteration에서 p를 풀 때 필요한 inner iteration이 갑자기 늘어난다면 수렴 방향이 잘못된 것.
+속도 내부 반복은 고치기 전이나 후나 3으로 그대로다. 바뀐 것은 압력 쪽 반복 수와 감소 배율뿐이다. Ux의 최종 잔차도 1.2e-5에서 8.3e-6으로, 같은 세 번의 반복 안에서 조금 더 내려갔을 뿐이다. 로그가 가리키는 고장은 속도 솔버가 아니다. continuity의 sum local도 4.2e-5에서 2.1e-6으로 줄었다. 4.2e-5 나누기 2.1e-6은 20이다. 누적값의 38배와 같은 방향, 다른 배율이다.
 
-SIMPLE 알고리즘은 pressure correction 루프의 특성상 relaxation에 매우 민감하다. 첫 실행은 항상 보수적으로 — 느려도 안정적으로 수렴하는 걸 확인한 뒤에 가속하는 게 결국 빠르다.
+## 메시를 열기 전에 내리는 값
 
----
+non-orthogonality 32도와 skewness 0.8은 메시 재생성부터 할 숫자가 아니다. 먼저 내릴 값은 p 이완이다. 0.7은 압력 보정이 속도 0.9를 못 따라간 설정이었다. 첫 런은 p 0.3, U 0.7에서 본다. Time=200의 잔차가 `1e-4` 근처에 앉은 뒤에야 올린다.
 
-*비슷한 문제를 겪고 있다면 댓글로 환경(버전, 형상, 난류 모델)을 알려주세요. 케이스별로 다를 수 있습니다.*
-
-
-αp를 위험 영역(>0.6)으로 밀어보면 30 iter 부근에서 잔차가 다시 튀는 모습을 직접 확인할 수 있다.
-
-<SimpleResidualHistory />
+초기 p에 남은 funkySetFields 값도 같은 런을 망가뜨렸다. `internalField uniform 0`으로 비우지 않으면, 이완을 내려도 입구의 쓰레기 구배가 남는다. 이완을 낮춘 해가 예전과 같은 물리인지는 따로 확인해야 한다. [이완 하나가 수렴해를 바꿔 버린 Rhie–Chow](/ko/posts/2026-10-14-rhie-chow-under-relaxation-memory/)를 보면, 0.7을 0.3으로 둔 선택이 잔차 곡선 밖에까지 남는지가 다음 질문이다.

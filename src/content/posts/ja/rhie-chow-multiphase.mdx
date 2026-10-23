@@ -1,19 +1,27 @@
 ---
 title: "圧縮性多相流のための Rhie-Chow 補間法まとめ"
 date: 2026-03-10
-description: "Collocated 格子のチェッカーボード問題から balanced-force 多相流まで、Rhie-Chow 補間の数学的本質と OpenFOAM での実装を体系的にまとめます。"
+updated: 2026-10-19
+description: "界面では水-空気、密度比 1000 で算術平均密度は 500.5、調和平均は 2.0。フィルタは駆動圧力だけにかける。"
 tags: ["Multiphase", "Rhie-Chow", "OpenFOAM", "Numerical-Methods"]
 series: "compressible-multiphase"
 seriesOrder: 5
+takeaway: "時間係数を MWI の分母に入れると、Δt が 0 に近づくときチェッカーボードが戻ります。"
 ---
 
 import { CheckerboardPressure } from '@/components/post-viz/rhie-chow-multiphase/CheckerboardPressure'
 
 # Rhie-Chow 補間：なぜ必要で、多相流ではなぜ難しいのか
 
-Rhie-Chow 補間（momentum-weighted interpolation, MWI）は、collocated 格子において**チェッカーボード状の圧力振動を抑制**するために面（face）流速を補正する核心的な手法です。単相流では比較的単純ですが、多相流へと拡張する場合、**圧力、重力、表面張力、非定常補正項の一貫した処理**が決定的に重要になります。
+Rhie-Chow 補間（momentum-weighted interpolation, MWI）は、collocated 格子の面流速を直して**チェッカーボード状の圧力振動を消します**。単相では項が一つです。多相になると圧力、重力、表面張力、非定常補正が同じ面に重なります。一つでもずれると、界面に偽の速度が残ります。
 
-この記事では、Rhie & Chow (1983) のオリジナルから Bartholomew et al. (2018) の統合フレームワーク、そして OpenFOAM の interFoam/compressibleInterFoam における実装までを詳しく解説します。
+出発点は Rhie & Chow (1983) の定常 SIMPLE で、Bartholomew et al. (2018) の統合式を経て、interFoam と compressibleInterFoam まで続きます。
+
+Rhie–Chow のチェックを入れると互い違いの圧力模様が消え、外すとすぐ戻ります。
+
+<CheckerboardPressure />
+
+補正がない側は $p_i$ を飛ばして $p_{i-1}$ と $p_{i+1}$ だけがつながります。補正を入れると、compact な勾配がそのマスを結び直します。
 
 ---
 
@@ -62,7 +70,7 @@ $$
 u_f = \hat{u}_f - d_f(p_E - p_P)
 $$
 
-$\hat{u} = u + d \cdot \Delta p$ は圧力勾配を除去した疑似速度、$d = V/a_P$ です。**圧力補正項のみ**が含まれており、非定常項や緩和（relaxation）項の処理はありませんでした。その後、Majumdar (1988) が収束解の緩和係数依存性を、Choi (1999) が非定常流における時間ステップ依存性を指摘しました。
+$\hat{u} = u + d \cdot \Delta p$ は圧力勾配を除去した疑似速度、$d = V/a_P$ です。**圧力補正項のみ**が含まれており、非定常項や緩和（relaxation）項の処理はありませんでした。その後、Majumdar (1988) が収束解の緩和係数依存性を、Choi (1999) が非定常流における時間ステップ依存性を指摘しました。[圧力が格子模様に揺れるとき SIMPLE が Rhie–Chow で結ぶ場所](/ja/posts/2026-07-22-simple-pressure-velocity-coupling-rhie-chow/)と同じ項が、多相では重力と表面張力まで分けて持ちます。
 
 ### Jasak (1996): OpenFOAM の基礎 - H/A アプローチ
 
@@ -207,6 +215,12 @@ $$
 
 算術補間を使用すると、圧力方程式のラプラス演算子の係数と MWI 補正の密度重み付けの間に**不一致**が生じ、spurious velocity が発生します。
 
+500.5 がどこから来るかだけ書きます。水の密度 1000、空気の密度 1 なら $(1000+1)/2 = 500.5$ です。調和平均は 2 を $(1/1000 + 1)$ で割った値です。分母は 1.001 で、$2/1.001 \approx 1.998$、本文の 2.0 と揃います。500.5 を 2.0 で割ると約 250 です。軽い相が平均をその倍数だけ引き上げています。
+
+$a_P$ が密度に比例するなら、$1/a_P$ も同じ比で開きます。空気側の $1/a_P$ は水側の 1000 倍です。算術平均はその大きい値の半分を面に置きます。水の慣性、つまり小さい $1/a_P$ はほとんど消えます。密度比 $10^6$ ではこの開きが百万倍です。調和平均が持つと書かれた範囲は $10^{24}$ までです。Denner の balanced-force は $10^6$ 以上で、静止液滴の力の釣り合いを solver tolerance まで合わせます。
+
+フィルタ自体は $\Delta x^2 \partial^3 p/\partial x^3$ の大きさのローパスです。界面のように圧力の 4 階微分が大きい場所では、その補正が質量誤差 $\Delta x^2 \partial^4 p/\partial x^4$ を大きくします。だから体積力はフィルタの外に置きます。時間係数 $\rho V/\Delta t$ を MWI の分母に入れると、$\Delta t$ が 0 に向かうときフィルタが弱くなり、のこぎり状の圧力振動が戻ります。分母に残すのは空間係数だけです。
+
 ---
 
 ## 6. OpenFOAM 実装の分析
@@ -299,27 +313,15 @@ $$
 
 ---
 
-## 結論：設計原則と実用的な推奨事項
+## 時間係数を分母に入れるとチェッカーボードが戻る
 
-圧縮性多相流の面流速設計における最も重要な原則：
-
-> **「駆動圧力勾配に対してのみ Rhie-Chow フィルタを適用せよ」**
-
-表面張力と重力は、面において圧力勾配と**同一の離散演算子**で評価して balanced-force を達成し、MWI 補正はこれらを除いた純粋な駆動圧力に対してのみ適用すべきです。
+フィルタは駆動圧力だけにかかります。重力と表面張力まで同じ式でもう一度濾すと、静止液滴で合わせた釣り合いが崩れ、parasitic current が出ます。
 
 $$
 \nabla P = \nabla p - \rho\mathbf{g} - \sigma\kappa\nabla\alpha
 $$
 
-### OpenFOAM ユーザーのための三つの改善点
-
-1. **`rAU` の面補間を調和平均に変更する** - `fvSchemes` で `interpolate(rAU) harmonic` と設定します。これにより、大きな密度比における安定性が大幅に向上します。
-
-2. **`ddtCorr` を CMI スタイルの非定常補正に置き換える** - 時間ステップ独立性を確保します。現在の OpenFOAM デフォルトの ddtCorr は近似的であり、 $\Delta t$ 依存性が残ります。
-
-3. **Height-function など高精度な曲率推定を導入する** - Spurious velocity の最終的な限界を決定するのは曲率の精度です。
-
-圧縮性への拡張では、状態方程式 (EOS) を通じた圧力と密度の結合が追加されますが、面流速の MWI 構造自体は非圧縮性の場合と同じです。 ACID (Denner & van Wachem, 2018) のような界面離散化手法が、音響波伝播の正確性を保証します。
+$\rho\mathbf{g}$ と $\sigma\kappa\nabla\alpha$ は面の snGrad で直接置き、MWI は $\nabla P$ だけを通します。rAU を算術のままにすると、密度比 1000 で面の係数が空気側へ傾きます。調和平均 $\rho_f^* \approx 2.0$ が水の慣性を残します。ddtCorr をそのまま置くと $\Delta t$ 依存が残ります。[simpleFoam で圧力残差が死なない場合](/ja/posts/2026-03-27-simpleFoam-pressure-divergence/)も、この補正がずれた場所と重なります。曲率を変えるまでは、spurious velocity の床は曲率の誤差です。
 
 ---
 
@@ -335,6 +337,4 @@ $$
 - Aguerre, H.J. et al. (2018). JCP 365
 - Komen, E.M.J. et al. (2020). Nuclear Engineering and Design 370
 
-下のチェックボックスで Rhie–Chow 補正を切り替え、圧力チェッカーが消える様子を確認。
 
-<CheckerboardPressure />

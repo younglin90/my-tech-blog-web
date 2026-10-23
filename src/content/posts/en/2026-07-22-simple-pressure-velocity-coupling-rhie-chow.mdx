@@ -1,19 +1,27 @@
 ---
 title: "When Pressure Rings in a Checkerboard — SIMPLE and Rhie-Chow Coupling"
 date: 2026-07-22
-description: "Why collocated pressure checkerboards, how Rhie-Chow fixes it, and the SIMPLE loop"
+updated: 2026-10-19
+description: "On a 48-cell periodic line the naive stencil keeps a checkerboard of 0.80, while Rhie-Chow drives the same sawtooth down to 3.1e-16."
 tags: ["SIMPLE", "Rhie-Chow", "Pressure-Velocity-Coupling", "Incompressible", "OpenFOAM"]
 locale: en
 slug: simple-pressure-velocity-coupling-rhie-chow
+takeaway: "Replace the full pressure every step, with alpha_p at 1, and the SIMPLE corrector overshoots until it blows up."
 draft: false
 ---
 
 import { CheckerboardRhieChow } from '@/components/post-viz/2026-07-22-simple-pressure-velocity-coupling-rhie-chow/CheckerboardRhieChow'
 import { PressureCorrectionRelaxLab } from '@/components/post-viz/2026-07-22-simple-pressure-velocity-coupling-rhie-chow/PressureCorrectionRelaxLab'
 
-The velocity field looked fine. Then I opened the pressure field and every cell jumped up and down against its neighbor. A checkerboard. The residuals kept falling, yet the pressure rang like a sawtooth. It was not a code bug. It was baked in the moment I stored pressure and velocity at the same grid points.
+The velocity field looked fine. The pressure field did not. Every cell jumped against its neighbor. A checkerboard. Residuals kept falling. The pressure still rang like a sawtooth. Not a bug. It was baked in the moment pressure and velocity shared a grid point.
 
-This post walks through why that sawtooth appears, how Rhie-Chow interpolation kills it, and how the continuity equation turns into a pressure equation. At the end we stretch the same solver all the way into compressible flow.
+Toggle Naive against Rhie-Chow and the seeded sawtooth either sits still or sinks onto a smooth curve.
+
+<CheckerboardRhieChow />
+
+On Naive the amplitude does not shrink. On Rhie-Chow the same checkerboard settles. `Reseed checkerboard` plants the sawtooth again.
+
+Why the tooth survives, and how continuity becomes a pressure equation, comes next. The compressible stretch of the same solver is later.
 
 ## Continuity cannot see the pressure next door
 
@@ -35,13 +43,9 @@ $$
 u_f = \overline{\left(\frac{\mathbf{H}(\mathbf{u})}{a_P}\right)}_f - \left(\frac{V}{a_P}\right)_f \frac{p_E - p_P}{\Delta x}
 $$
 
-The overbar is linear interpolation; the second term is the pressure gradient recomputed at the face. Now the face velocity is tied to $p_E - p_P$, the difference between adjacent cells. The sawtooth mode has nowhere left to hide.
+The overbar is linear interpolation. The second term is the pressure gradient recomputed at the face. Now the face velocity is tied to $p_E - p_P$, the difference between adjacent cells. The sawtooth mode has nowhere left to hide.
 
-Play with the simulation below. It relaxes the pressure two different ways and shows what happens to a field seeded as a checkerboard.
-
-<CheckerboardRhieChow />
-
-With naive interpolation the sawtooth amplitude stays put. Switch to Rhie-Chow and the same checkerboard settles onto the smooth curve. Hit `Reseed checkerboard` to watch it again.
+As long as the face jump $p_E-p_P$ is not zero, the tooth is caught by that term. Another way to remove pressure from the momentum equation is [Chorin's projection method](/en/posts/2026-07-03-chorin-projection-fractional-step/).
 
 ## SIMPLE: turn continuity into a pressure equation
 
@@ -88,7 +92,7 @@ This equation carries both convective and diffusive character. As $M\to 0$, $\ps
 
 ## Reviving and erasing the checkerboard in Python
 
-Claims are not enough. Let us run both stencils on a 1-D periodic grid and measure whether the checkerboard survives or vanishes.
+Both stencils run on a 1-D periodic grid. The question is whether the checkerboard survives.
 
 ```python
 import numpy as np
@@ -125,11 +129,14 @@ for naive in (True, False):
 # Rhie-Chow      checkerboard = 3.1e-16    <- gone to machine precision
 ```
 
-Same source, same initial guess, same iteration count. Only the stencil changed. Naive cannot remove the sawtooth; Rhie-Chow erases it completely — exactly what the viewer showed.
+Same source, same initial guess, same iteration count. Only the stencil changed. Naive cannot remove the sawtooth. Rhie-Chow erases it. Same place as the figure above.
 
-## How not to get burned at the pressure solver
+The initial pressure is $0.8\times(-1)^i$. The metric is the absolute inner product of $p$ with that sign pattern, divided by the cell count, so it starts at 0.8. After 4000 sweeps on 48 cells, naive is still $8.00\times 10^{-1}$. Not a single digit moved. Rhie-Chow is $3.1\times 10^{-16}$. Machine precision.
 
-- On a collocated grid, **never build the face velocity by simply averaging cell velocities.** Use Rhie-Chow (or a staggered grid) so the adjacent pressure difference is felt directly, and no sawtooth forms.
-- Continuity has no equation for pressure. SIMPLE **replaces it with a pressure Poisson equation** inside a predictor-corrector loop.
-- If it diverges, **lower $\alpha_p$ first.** Start near 0.3 and set $\alpha_u$ so the two sum to about one.
-- To span low Mach and supersonic with one code, tie density to pressure through $\psi=\partial\rho/\partial p$ from the EOS, which revives the time term in the pressure equation.
+The stencil is why naive keeps 0.8. On a sawtooth, index $i$ and $i\pm 2$ share a sign. $p_i=0.5(p_{i-2}+p_{i+2}+f_i)$ does not average that mode away. The cell-center gradient $(p_E-p_W)/2\Delta x$ does the same thing. $E$ and $W$ are both opposite $P$, so $p_E-p_W=0$. A tooth of amplitude 0.8 has zero gradient at the center. It never shows up in the residual. The face jump $p_E-p_P$ flips sign, so its size is 1.6. That is the term Rhie-Chow keeps. The smooth part of $f=\sin x+0.4\sin 2x$ gets solved by both stencils. The only leftover is the tooth.
+
+## Set alpha_p to 1 and the corrector blows first
+
+Replacing pressure in full, $p\leftarrow p^*$, over-corrects the coupling in one step. The update only lets a fraction $\alpha_p$ through. The usual pair $\alpha_p\approx 0.3$, $\alpha_u\approx 0.7$ sums to 1. On the lab curve, 0.3 crawls, near 1.5 is the fastest drop, and near 2 the residual jumps back up every sweep. SIMPLE keeps $\alpha_p$ between 0 and 1, on the slow side of that curve.
+
+Where changing the relaxation changes the converged field is [the face velocity that remembers under-relaxation](/en/posts/2026-10-14-rhie-chow-under-relaxation-memory/). On a collocated grid, averaging cell velocities onto the face drops the neighbor pressure jump, and the tooth lives outside the residual. Reviving the time term with $\psi=\partial\rho/\partial p$ comes after that. Add compressibility to a pressure equation that still carries the tooth, and only the sound speed gets faster. The checkerboard stays.

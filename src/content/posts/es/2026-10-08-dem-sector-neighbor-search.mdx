@@ -1,6 +1,7 @@
 ---
 title: "Reducir 574 veces los cálculos de distancia costó 104 contactos — un solo grano fija el sector en DEM"
 date: 2026-10-08
+updated: 2026-10-19
 description: "La poda por sectores en la búsqueda de vecinos de DEM solo es segura si shell·s supera d_max, medido sobre 2400 granos en aglomeración."
 tags: ["Neighbor-Search", "DEM", "Algorithms", "Combustion", "Paper-Review"]
 locale: es
@@ -22,7 +23,13 @@ Son 574 veces menos. Los contactos encontrados fueron 1435.
 
 104 pares desaparecieron en silencio. Sin error y sin aviso.
 Un aglomerado simplemente se partió en dos.
-Este artículo rastrea a dónde fueron esos 104 pares y hasta qué punto conviene afinar la malla de sectores.
+Si esos pares quedaron fuera del stencil, y dónde tiene que parar el tamaño de sector, se separa en el número de celdas.
+
+Al bajar `s / d_max` de 1,00 a 0,25, la caja azul se encoge junto con los cálculos de distancia y aparecen contactos perdidos en rojo.
+
+<SectorPruneSearchLab />
+
+Subir `shell` encuentra un ajuste en el que las líneas rojas desaparecen. Ese ajuste es la desigualdad posterior $k\,s \ge d_{\max}$. Si el deslizador se mueve y las líneas rojas siguen, ese ajuste no está contando contactos.
 
 ## El costo de DEM vive en un doble bucle, no en la comunicación
 
@@ -40,7 +47,7 @@ $$
 $N$ es el número de granos. Con 2400 granos salen 2,88 millones de pares; con 9310, 43,3 millones.
 El muro es este término cuadrático, no el tráfico MPI.
 Incluso con buena paralelización, cada proceso recorre localmente el mismo doble bucle.
-Huir hacia más núcleos lleva directo a [la trampa del weak scaling](/es/posts/2026-10-04-weak-scaling-krylov-grid-levels/).
+Sumar núcleos deja ese bucle en su sitio. Recortar una distancia global a las celdas vecinas es el mismo tipo de paso que [Fast Marching para la distancia a la pared vía Eikonal](/es/posts/2026-04-22-wall-distance-eikonal-fast-marching/).
 
 ## Lo que la malla de sectores recorta son evaluaciones de distancia
 
@@ -55,14 +62,6 @@ $$
 donde $k$ es el radio de shell, es decir cuántas capas se miran.
 El número esperado de granos allí dentro es $N V_k / L^3$, con $L$ la arista del dominio.
 Las evaluaciones de distancia bajan a un término lineal en $N$.
-
-En la simulación de abajo conviene mover el tamaño de sector y el shell directamente.
-
-<SectorPruneSearchLab />
-
-Bajar `s / d_max` de 1,00 hacia 0,25 encoge la caja azul y con ella la cuenta de distancias.
-Al mismo tiempo aparecen líneas rojas: son los contactos perdidos.
-Subir `shell` hasta que las líneas rojas desaparecen pone en pantalla la desigualdad de la sección siguiente.
 
 ## La condición de seguridad cabe en una desigualdad
 
@@ -132,14 +131,6 @@ La medición lo dice tal cual. $k=4$ con $s=d_{\max}/4$ bajó las distancias a 1
 pero las consultas de sector subieron a 1 749 600 y el tiempo de reloj quedó en 0,291 s.
 Es 3,5 veces más lento que los 0,082 s de $k=1$ con $s=d_{\max}$.
 Mirando solo las distancias hay una ganancia de 2,1 veces, y el total empeora.
-
-El dial de abajo sirve para encontrar dónde se cruzan los dos costos.
-
-<ShellCostCrossoverDial />
-
-Empujar `s/d` hacia la izquierda hunde la curva azul (distancias) hasta una meseta mientras la naranja (total) vuelve a subir.
-Al aumentar `lookup / check cost`, el mínimo se corre hacia la derecha.
-Activar `pin grain at cell corner` pega el grano al vértice del sector, el peor caso, y deja ver por qué aparecen las celdas rojas.
 
 ## Cinco configuraciones sobre el mismo cúmulo de 2400 granos
 
@@ -248,11 +239,19 @@ big-split shell=1    0.50    27     41229     64773     0     yes
 required shell = ceil(d_max/s) : [(1.0, 1), (0.5, 2), (0.25, 4)]
 ```
 
+<ShellCostCrossoverDial />
+
+Al empujar `s/d` a la izquierda, la curva azul (distancias) baja y luego se aplana, mientras la naranja (total) vuelve a subir. Subir `lookup / check cost` corre el mínimo a la derecha. Activar `pin grain at cell corner` pega el grano al vértice del sector, y por eso aparecen las celdas rojas.
+
+La columna dist lee 269450, 38914, 5015, 125548, 41229. 5015 es 574 veces menor que las 2878800 de la comparación exhaustiva, y los contactos bajan de 1539 a 1435, una pérdida de 104. Mismas 27 celdas y 64800 consultas: s/dmax=1.00 es miss 0 y safe yes, 0.50 es miss 0 y safe NO, 0.25 es miss 104 y safe NO. shell=4 abre 729 celdas, dist 125548, consultas 1749600, miss 0. El tiempo pasa de 0,082 s a 0,291 s, un factor 3,5. big-split queda en dist 41229, consultas 64773, miss 0. 41229 frente a 269450 es el factor 6,5 del texto, y 0,023 s es 1/29 de los 0,668 s exhaustivos.
+
+Diecinueve celdas, solo caras y aristas, pierden 1 par de 1539. Menos que 104, y suficiente para partir un aglomerado si ese par era el enlace. Los diámetros 0,060 y 0,030 son un factor dos en longitud, así que el volumen del sector salta por 8. 2399 granos quedan en 0,030 o menos, y las celdas siguen a 0,060. En $V_k$, $k=1$ es $27\,d_{\max}^3$ y un $k$ grande solo llega a $8\,d_{\max}^3$, de modo que las distancias bajan un factor 27/8, esto es 3,4. Comprar ese 3,4 con 729 celdas volvió como 0,291 s.
+
 Conviene mirar la tercera fila. `s/dmax=0.50` con `shell=1` no cumple la condición de seguridad y aun así no pierde nada.
 Es suerte. Solo un grano tiene diámetro 0,060, y ninguno de sus contactos cayó en dirección de vértice.
 Al reinicializar el cúmulo o avanzar un paso, el número cambia.
 "Lo corrí y salió bien" no es evidencia para una condición de este tipo.
-Es la misma trampa que [lo que un caso de verificación mide en realidad](/es/posts/2026-10-07-sod-vortex-order-verification/).
+Un conteo de pérdidas en 0 con la desigualdad todavía en NO no es un aprobado.
 
 ## Separar el grano grande da seguridad y velocidad a la vez
 
@@ -268,15 +267,14 @@ El tiempo de reloj es 0,023 s, una veintinovena parte de los 0,668 s de la compa
 
 La brecha se abre con el tamaño. Un aglomerado son unos pocos granos grandes con miles de pequeños pegados.
 Tratar aparte el puñado que vive en la cola de la distribución exige menos código que montar una malla de dos niveles.
-Igual que en [el punto donde se pliega una librería de flamelet](/es/posts/2026-10-06-flamelet-library-slf-fpv-progress-variable/),
-la idea es romper la estructura en la que una minoría diminuta dicta la resolución de toda la tabla.
+La idea es romper la estructura en la que una minoría fija el tamaño de celda de todos.
 
 ## Qué cambian esos 104 contactos perdidos
 
 Si se pierde un contacto, la repulsión de ese par queda en cero.
 Los dos granos se atraviesan, o siguen solapados y quedan fuera de la actualización de área superficial.
 En la combustión de partículas de aluminio, el área solapada de un aglomerado se traduce directamente en área de capa de óxido.
-La tasa de combustión sale sobreestimada. La conservación de masa no se rompe, así que ningún residuo lo delata.
+La tasa de combustión sale sobreestimada. La conservación de masa no se rompe, así que ningún residuo lo delata. Igual que [un WENO que emborrona un vórtice pequeño mientras el promedio sigue viéndose bien](/es/posts/2026-04-25-teno-low-dissipation-shock-capturing/).
 
 Así que al escribir un tamaño de sector en el código de búsqueda hay tres cosas que vale la pena revisar.
 Si se cumple $k\,s \ge d_{\max}$, si ese $d_{\max}$ se vuelve a medir en cada paso (la fusión y la ruptura lo cambian),

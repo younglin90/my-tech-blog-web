@@ -1,17 +1,25 @@
 ---
 title: "When Explicit Blows Up, Solve Implicit Without Inverting the Matrix — LU-SGS"
 date: 2026-06-22
-description: "Implicit time-stepping stability and the LU-SGS factorization, verified in code"
+updated: 2026-10-19
+description: "Explicit CFL at 0.3 stalls for days. Backward Euler and two LU-SGS sweeps carry a Burgers shock through CFL 5 in 49 steps, with no full-matrix inverse."
 tags: ["LU-SGS", "Implicit", "Time-Integration", "Compressible", "Linear-Solver"]
 draft: false
 locale: en
 slug: 2026-06-22-lu-sgs-implicit-time-integration
+takeaway: "The left half-plane stays stable at any time step, but a diffusion number of 40 flattens the inner sweep that drops ten orders near d=1."
 ---
 
 import { AbsoluteStabilityRegion } from '@/components/post-viz/2026-06-22-lu-sgs-implicit-time-integration/AbsoluteStabilityRegion'
 import { LuSgsSweepConvergence } from '@/components/post-viz/2026-06-22-lu-sgs-implicit-time-integration/LuSgsSweepConvergence'
 
-The run diverged at 3 a.m. The last line of the log was always the same: `pressure residual = NaN`. I dropped the CFL from 0.9 to 0.5, then to 0.3. Each step advanced so little time that reaching steady state would take days. That wall is familiar to anyone doing compressible steady-state work. This post shows the way over it — why **implicit time-stepping** permits a large time step — and then implements **LU-SGS**, a method that solves that system without ever inverting the full matrix. By the end you'll hold a Burgers solver that survives a CFL of 5.
+The run died at 3 a.m. Last log line: `pressure residual = NaN`. CFL went from 0.9 to 0.5, then 0.3. Each step was so short that steady state meant days. Familiar wall in compressible steady work. **Implicit time-stepping** breaks that wall on the step-size side. The version that never inverts the full matrix is **LU-SGS**. A Burgers shock still exists at CFL 5.
+
+Toggle the scheme between forward Euler and backward Euler, and drag $\mathrm{Re}(\lambda\Delta t)$ to $-2.5$. The stable set changes from a small disk to the left half-plane.
+
+<AbsoluteStabilityRegion />
+
+On forward Euler that point leaves the cyan disk and flips to UNSTABLE. Backward Euler fills the whole left half-plane with cyan, so the same coordinate is stable again.
 
 ## The stability region opens to infinity
 
@@ -39,11 +47,7 @@ $$
 
 For every physical decaying mode with $\mathrm{Re}(\lambda)<0$, $|G|<1$. It stays stable no matter how large $\Delta t$ grows. The stability constraint dissolves, and now the time step only has to be as small as **accuracy** demands.
 
-Play with the parameters in the simulation below.
-
-<AbsoluteStabilityRegion />
-
-Pick forward Euler and drag $\mathrm{Re}(\lambda\Delta t)$ to $-2.5$: the point leaves the cyan region and flips to UNSTABLE. Switch to backward Euler and the whole left half plane fills cyan, so the same point becomes stable again.
+The explicit disk ends at 0 and $-2$ on the real axis. Center $-1$, radius 1. $\mathrm{Re}(\lambda\Delta t)=-2.5$ sits 1.5 from the center, outside the disk, which is why the marker reads UNSTABLE. Backward Euler uses $G=1/(1-\lambda\Delta t)$. When $\mathrm{Re}(\lambda)<0$ the denominator exceeds 1, so $|G|$ stays under 1 as $\Delta t$ grows. The night log cut CFL through 0.9, 0.5, and 0.3 to trap $\lambda\Delta t$ inside that disk. On a viscous grid $\lambda$ grows first. The disk breaks before accuracy asks for a shorter step.
 
 ## Inverting the full matrix is a cost you can't pay
 
@@ -95,7 +99,9 @@ $$
 \Delta U_i = \Delta U_i^{*} - D_i^{-1}\,U_i\,\Delta U_{i+1}
 $$
 
-The key is what fills $D$, $L$, and $U$. Yoon and Jameson (1988) approximated the nonlinear flux Jacobian with its spectral radius $\rho$. Splitting first-order upwind as $A^{\pm} = \tfrac{1}{2}(a \pm |a|)$ leaves the diagonal $D_i = I/\Delta t + |a_i|/\Delta x$ and off-diagonals that carry only the split face Jacobians. You never build the whole matrix — a few scalars (or a small block) per cell are enough.
+What fills $D$, $L$, and $U$ decides how good the approximation is. Yoon and Jameson (1988) approximated the nonlinear flux Jacobian with its spectral radius $\rho$. Splitting first-order upwind as $A^{\pm} = \tfrac{1}{2}(a \pm |a|)$ leaves the diagonal $D_i = I/\Delta t + |a_i|/\Delta x$ and off-diagonals that carry only the split face Jacobians. You never build the whole matrix — a few scalars (or a small block) per cell are enough.
+
+The approximate product is $(D+L)\,D^{-1}\,(D+U)$. Expand it and $L D^{-1} U$ sits next to $A$; that term is dropped. Because $D_i = I/\Delta t + |a_i|/\Delta x$, a small $\Delta t$ inflates $I/\Delta t$ and the dropped term shrinks. Raise CFL to 5 and $\Delta t$ grows, so $I/\Delta t$ shrinks and the approximation error grows with it. Explicit stepping still hits NaN in two or three steps on that interval. The printed implicit run crosses it in 49 steps with $u$ closed in $[0.012, 0.988]$, on $n=200$ cells out to $t=0.22$ with $\Delta x=1/200$. A stored-matrix path such as the [Krylov convergence comparison](/en/posts/2026-04-22-cfd-linear-solvers-krylov/) keeps the matrix. Here a diagonal division and two sweeps take that seat.
 
 ## Python — advancing implicit Burgers with one factorization
 
@@ -156,20 +162,16 @@ Run the same problem with explicit forward Euler at CFL 5 and it produces NaN wi
 
 A single LU-SGS application gives an approximate solution. To solve more accurately, you repeat the sweep on the same system. The convergence rate then depends on the diagonal dominance of the matrix. In the viscous-dominated case — where the viscous Jacobian becomes a 1D Laplacian — the diagonal is $1+2d$ and the off-diagonals are $-d$. Here $d=\nu\Delta t/\Delta x^2$ is the diffusion number (the nondimensional time step of viscous diffusion).
 
-Watch the residual fall sweep by sweep below.
+At $d=\nu\Delta t/\Delta x^2=1$ the diagonal is $1+2d=3$ and each off-diagonal is $-d=-1$. The diagonal beats the sum of the two neighbors, and a few sweeps drop the residual ten orders. At $d=40$ the diagonal is 81 and the off-diagonals are $-40$ twice, so the row sum is $81-80=1$ and nearly cancels. That is why the curve lies down. The stability bought with a large $\Delta t$ and the sweep count the inner relaxation needs are written on the same ledger.
+
+Slide $d$ from near 1 up to 40 and the slope of the residual curve changes at the same sweep count.
 
 <LuSgsSweepConvergence />
 
 Keep $d$ near 1 and the residual drops ten orders in a handful of sweeps. Crank $d$ up to 40 (a huge implicit $\Delta t$) and the same curve flattens. You bought stability by enlarging the step, but the matrix got stiffer, so the inner relaxation needs more sweeps. Stability and inner convergence do not arrive free together.
 
-## Traps to avoid when you write the code
+## Drop the viscous radius from the diagonal and the sweep dies
 
-Three things catch people in practice.
+Leave $\nu/\Delta x^2$ out of the diagonal $D$ and $D$ shrinks in a viscous cell. The spectral radius is then only the convective $|a|/\Delta x$. The sweep diverges at once. If the viscous Jacobian is a 1D Laplacian, diagonal dominance is the balance of $1+2d$ against $-d$, and stripping the viscous term empties the left side of that balance. When the nonlinearity is strong, do not add the full $\Delta U$ at once. Use $U^{n+1}=U^n+\omega\,\Delta U$ with $\omega\in[0.5,0.8]$. Oscillations near shocks shrink.
 
-**Don't drop the viscous spectral radius from the diagonal.** When the viscous term is large you must add a $\nu/\Delta x^2$ contribution to the diagonal $D$. Omit it and $D$ shrinks, and the sweep diverges.
-
-**Keep underrelaxation in one hand.** When the nonlinearity is strong, don't add the full $\Delta U$ at once. Use $U^{n+1}=U^n+\omega\,\Delta U$ with $\omega\in[0.5,0.8]$. It kills oscillations near shocks.
-
-**Alternate the sweep direction.** Repeating only the forward sweep lets information flow one way. Alternating forward and backward keeps the symmetry alive and speeds convergence. Across an MPI partition boundary, insert one communication between sweeps so the neighbor block's update propagates.
-
-What I want to leave you with: implicit stepping opens the stability region across the whole left half plane and grants a large $\Delta t$. The giant matrix it costs is approximated by LU-SGS with a $D\!\cdot\!L\!\cdot\!U$ split and two sweeps — no storage, no multiplications. Stability is nearly free, but inner convergence is paid for in proportion to the stiffness of the matrix.
+Direction is a decision too. Repeating only the forward sweep sends information toward increasing indices. Alternating forward and backward keeps $L$ and $U$ symmetric. Across an MPI partition, one communication has to sit between the two sweeps or the neighbor $\Delta U$ never arrives. How the cells are numbered changes that sweep order. The [record of LU-SGS slowing after an RCM renumbering](/en/posts/2026-10-16-lu-sgs-cell-ordering-reverse-cuthill-mckee/) is the other side of the same choice.

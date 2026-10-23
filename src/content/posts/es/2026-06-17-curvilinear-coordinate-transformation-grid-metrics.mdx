@@ -1,7 +1,9 @@
 ---
 title: "Envolver un ala con una malla rectangular — transformación de coordenadas curvilíneas y métricas de malla"
 date: 2026-06-17
-description: "Mapeo físico-lógico, el jacobiano y la preservación del flujo libre en numpy"
+updated: 2026-10-19
+description: "En la malla ondulada el jacobiano va de 0.62 a 1.38 y sigue positivo. Escribir el flujo con y_η baja el residuo de flujo libre a cerca de 1e-16."
+takeaway: "Escribir Fhat con y_η y x_η deja que las derivadas mixtas se cancelen hasta el redondeo. Dividir por J y volver a multiplicar rompe esa cancelación."
 tags: ["Curvilinear", "Grid-Metrics", "Jacobian", "Mesh", "FVM"]
 locale: es
 slug: curvilinear-coordinate-transformation-grid-metrics
@@ -12,6 +14,12 @@ import { CurvilinearGridMapper } from '@/components/post-viz/2026-06-17-curvilin
 import { WallClusteringStretch1D } from '@/components/post-viz/2026-06-17-curvilinear-coordinate-transformation-grid-metrics/WallClusteringStretch1D'
 
 Un ingeniero quiere resolver el flujo alrededor de un ala. El solver que tiene a mano solo entiende mallas cartesianas. Pero el ala es curva. Por más fino que se piquen las celdas rectangulares, una superficie curva sigue saliendo en forma de escalera. La salida no es doblar la malla, sino **doblar el espacio mismo**. Se mapea la malla física deformada de vuelta a una malla lógica perfectamente recta, y allí se resuelven las ecuaciones. Este artículo recorre la transformación de coordenadas y las métricas de malla que hacen posible ese viaje de ida y vuelta. Al final quedará claro por qué el jacobiano detecta el plegado de la malla, y qué hace falta para que un flujo uniforme siga uniforme sobre una malla curva, verificado directamente en numpy.
+
+Al subir shear y amplitude en el mapeador, las celdas se tuercen. El mapa de calor del jacobiano pinta cada celda según $J/J_0$.
+
+<CurvilinearGridMapper />
+
+Con amplitude cerca de 0.3 y wave number en 4 o más aparecen celdas rojas. En esas celdas $J$ es negativo. Si el generador cruza esa línea, un denominador métrico pasa por cero.
 
 ## Dominio físico y dominio lógico
 
@@ -59,11 +67,7 @@ $$
 
 Aquí $J$ es la razón entre un área unitaria del dominio lógico y el área que ocupa en el dominio físico. Si $J > 0$ el mapeo conserva la orientación. Si $J = 0$ una celda colapsa a un punto o a una línea. Si $J < 0$ la celda se da vuelta. Eso es el **plegado de la malla** (grid folding). En una malla plegada los denominadores métricos cruzan el cero y divergen, y el solver arroja NaN.
 
-Conviene probar la simulación de abajo. Al subir shear y amplitude la malla se retuerce. Con el Jacobian heatmap activado, cada celda se colorea según su valor $J/J_0$.
-
-<CurvilinearGridMapper />
-
-Lleva amplitude hacia 0.3 y wave number a 4 o más. En cierto momento aparecen celdas rojas. En esas celdas $J$ se volvió negativo. Esta es justo la línea que un generador de malla nunca debe cruzar.
+$J = x_\xi y_\eta - x_\eta y_\xi$ es el producto cruzado de los dos lados de la celda. Es el mismo término que [el área de celda medida por un producto cruzado de diagonales](/es/posts/2026-10-13-diagonal-cross-product-cell-area-green-gauss/). La celda que se puso roja en el mapa de arriba es donde $J < 0$.
 
 ## La ley de conservación transformada
 
@@ -147,6 +151,12 @@ print(f"residuo de flujo libre max|R| (interior) = {np.abs(R[1:-1, 1:-1]).max():
 
 Un error frecuente es resolver en la forma no conservativa, dividiendo la métrica por $J$ y luego volviéndola a multiplicar sobre el flujo. En tres dimensiones ese desajuste crece y siembra una fuente espuria en un flujo uniforme. Las métricas conservativas simétricas de Thomas y Lombard (1979) lo evitan. En 2D basta con escribir $\hat F$ directamente en términos de $y_\eta, x_\eta$ como arriba.
 
+Los números salen del comentario del código. Con amp=0.15, shear=0.3, wavek=2 y N=41, $J$ va de 0.62 a 1.38. El máximo es $1.38/0.62$, cerca de 2.23 veces el mínimo. El área de celda oscila más del doble y todo $J$ sigue positivo. No hay celda plegada. En esa misma malla el residuo de flujo libre $\max|R|$ es del orden de 1e-16, con $F=1$ y $G=0.5$.
+
+El área se mueve y el residuo se queda en el redondeo. La fórmula dice por qué. $\hat F = F y_\eta - G x_\eta$ y $\hat G = -F y_\xi + G x_\xi$. Al sumar la diferencia en $\xi$ y la diferencia en $\eta$, si el operador centrado intercambia las derivadas mixtas, la derivada en $\xi$ de $y_\eta$ cancela la derivada en $\eta$ de $y_\xi$. $F$ y $G$ son constantes y salen fuera. Queda la diferencia de dos derivadas mixtas del mapeo. El mismo operador deja esa diferencia en cero. Dividir $\xi_x$ por $J$ y volver a multiplicar por $J$ regresa, en el papel, a $y_\eta$. En la malla la división y el producto pueden tocar $J$ en sitios distintos. Esa rendija es una fuente falsa en un flujo uniforme. En 2D, escribir $\hat F$ directo desde $y_\eta$ y $x_\eta$ no la abre. El 1e-16 del comentario es la cancelación que quedó.
+
+$\beta$ también da un número con la misma fórmula. En la pared, $\eta=0$, $dy/d\eta = \beta/(e^\beta-1)$. En $\eta=1$ es $\beta e^\beta/(e^\beta-1)$. El cociente de las dos pendientes es $e^\beta$. Con $\beta=4$ eso es cerca de 54.6. Las decenas de veces del tramo de pared son este cociente. El límite $\beta \to 0$ es una pendiente de 1, una malla uniforme.
+
 ## Agrupar celdas cerca de la pared
 
 Para resolver una capa límite hay que apretar las celdas cerca de la pared. Eso es la misma transformación de coordenadas en una dimensión. Se estira un $\eta$ uniforme con una exponencial para construir la coordenada física $y$.
@@ -163,6 +173,8 @@ Conviene jugar con $\beta$ en la simulación de abajo.
 
 Al subir $\beta$ de 0 a 4, el primer espaciado cerca de la pared ($y=0$) se encoge de golpe, abriendo la razón frente al último espaciado a decenas de veces. El mismo número de celdas resuelve la capa límite mucho mejor.
 
-## Para recordar mañana
+## Dividir por J y volver a multiplicar siembra una fuente en el flujo uniforme
 
-Una transformación curvilínea es el truco de resolver una malla deformada mapeándola de vuelta a una lógica recta. El jacobiano $J$ es a la vez una razón de área y una hoja clínica de la malla. Si $J \le 0$ la malla se ha plegado y el solver se detiene allí. Si el flujo transformado se escribe en la forma de conservación fuerte $J\xi_x = y_\eta$, un flujo uniforme sigue uniforme incluso sobre una malla curva. En el instante en que se divide una métrica y se vuelve a multiplicar, esa garantía desaparece.
+Una celda con $J$ negativo no recibe flujo. En la onda por defecto, amp=0.15, shear=0.3, wavek=2, N=41, $J$ queda entre 0.62 y 1.38. No hay plegado. Si el generador pinta aunque sea una celda roja, esa malla no entra al solver. El NaN sale de ese denominador.
+
+La forma que se queda es una. $\hat F$ se escribe con $y_\eta$ y $x_\eta$. Dividir por $J$ y volver a multiplicar abre una rendija incluso en 2D, y en 3D es la fuente espuria que Thomas–Lombard cerraba. Girar la rigidez misma con la misma métrica es otro caso, en [la transformación de coordenadas del tensor constitutivo](/es/posts/2026-08-17-curvilinear-constitutive-tensor-transform/).

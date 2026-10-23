@@ -1,17 +1,25 @@
 ---
 title: "CFL = 1 tarda diez mil pasos, CFL = 100 explota — Switched Evolution Relaxation"
 date: 2026-06-29
-description: "SER eleva el número de CFL desde el residual para acelerar la convergencia estacionaria"
+updated: 2026-10-19
+description: "Un CFL fijo de 3 pide 588 iteraciones en Burgers estacionario. SER con p=1 termina en 34, y el paso es de Newton solo mientras el tope de CFL sigue puesto."
 tags: ["CFD", "SER", "Pseudo-Transient", "Convergence-Acceleration", "Implicit"]
 locale: es
 slug: ser-cfl-ramping-pseudo-transient
+takeaway: "Sin tope de CFL, SER no entra en Newton. Una caída modesta del residual empuja el paso sin techo y las primeras iteraciones se disparan."
 draft: false
 ---
 
 import { SerConvergenceRaceLab } from '@/components/post-viz/2026-06-29-ser-cfl-ramping-pseudo-transient/SerConvergenceRaceLab'
 import { CflRampScheduleViz } from '@/components/post-viz/2026-06-29-ser-cfl-ramping-pseudo-transient/CflRampScheduleViz'
 
-Con el número de CFL en 1 en una corrida estacionaria, el residual no baja ni tras diez mil iteraciones. Subido a 100, la solución explota en el primer paso. Ambas escenas son habituales. Este artículo trata sobre SER (Switched Evolution Relaxation), un truco que camina entre esos dos extremos de forma automática. Hace crecer el CFL a medida que cae el residual —seguro al principio, tan rápido como Newton al final— y lo palparemos en un pequeño solver de Burgers estacionario.
+El residual estacionario es quisquilloso con el CFL. En 1, diez mil iteraciones siguen arriba. En 100, el primer paso revienta la solución. SER (Switched Evolution Relaxation) deja que el residual elija el paso entre esos dos extremos. Si baja, el paso crece. Si salta, el paso se encoge.
+
+Al mover el control de CFL fijo de 1 a 20, el residual ámbar salta a diverged, mientras SER solo expone el CFL inicial y el exponente.
+
+<SerConvergenceRaceLab />
+
+Con $\mathrm{CFL}_0=1$ y $p=1$ la curva cian se quiebra hacia abajo al final. Subir $p$ a 1.5 la hace más empinada, pero en cuanto el residual inicial oscila, la curva cian oscila con él.
 
 En un solver estacionario el número de CFL (el paso de tiempo adimensionalizado por el tamaño de malla y la velocidad de onda) ya no trata de precisión. Es una sola perilla que sostiene **a la vez la velocidad de convergencia y la estabilidad**.
 
@@ -59,15 +67,11 @@ $$
 
 El denominador suma la velocidad de onda convectiva $|u_i|$ y la difusiva $2\nu/\Delta x$. Puede diferir por celda, así que se combina de modo natural con el avance temporal local (local time-stepping).
 
-Manipula los parámetros en la simulación de abajo. Es el historial de residual de CFL fijo y de SER corriendo lado a lado sobre el mismo problema de Burgers estacionario.
-
-<SerConvergenceRaceLab />
-
-Baja el fixed CFL a 1 y la curva ámbar apenas toca el fondo. Súbelo a 20 y salta a "diverged". SER (cian), en cambio, arranca seguro en $\mathrm{CFL}_0=1$ y aun así se quiebra bruscamente hacia abajo al final. Subir el exponente $p$ de 1 a 1.5 lo vuelve más agresivo y rápido, pero si se sube demasiado hasta SER tiembla al principio.
+Con N=80 el espaciado es 1/81. Con $\nu=0.02$, $2\nu/\Delta x$ vale 3.24, más que $|u_i|$ en la estimación lineal. Un CFL fijo de 3 deja $\Delta\tau$ por debajo de 0.01. El tope 1e5 lleva $\Delta\tau$ a los cientos, así que $I/\Delta\tau$ casi desaparece. El código reparte el máximo de $|u|$ entre todas las celdas, también en el choque, donde la velocidad ronda 0. Es más estricto que el paso local de la fórmula.
 
 ## Python — resolver Burgers estacionario de dos maneras
 
-Resolvemos la ecuación de Burgers viscosa estacionaria $u u_x = \nu u_{xx}$. Las condiciones de borde $u(0)=1$, $u(1)=-1$ crean una capa de choque estacionaria en el centro. Un paso implícito de seudotiempo resuelve una matriz tridiagonal con el algoritmo de Thomas.
+Resolvemos la ecuación de Burgers viscosa estacionaria $u u_x = \nu u_{xx}$. Las condiciones de borde $u(0)=1$, $u(1)=-1$ crean una capa de choque estacionaria en el centro. Un paso implícito de seudotiempo resuelve una matriz tridiagonal con el [algoritmo de Thomas](/es/posts/2026-05-04-implicit-diffusion-thomas-algorithm/). La misma sustitución hacia atrás que vuelve incondicionalmente estable a la difusión 1D es donde este lado izquierdo suma el término temporal.
 
 ```python
 import numpy as np
@@ -137,28 +141,32 @@ fixed CFL=3    ->  588 iters
 SER  p=1.0     ->   34 iters
 ```
 
+Al bajar el control del tope, el cronograma muestra dónde las 34 iteraciones impresas vuelven a alargarse. Cian es el CFL, rosa es el residual.
+
+<CflRampScheduleViz />
+
+Mientras el residual está plano al inicio, el CFL se queda cerca de $\mathrm{CFL}_0$. En el instante en que el residual empieza a colapsar, el CFL se dispara casi en vertical. Esa es la esencia de SER: **cuanto mejor se vuelve la solución, mayor es el paso que permite.** Con el tope en 20 el CFL choca con el techo, pierde la aceleración tipo Newton del final y el conteo de iteraciones vuelve a subir.
+
 Para alcanzar una solución estacionaria de la misma precisión, el CFL fijo necesita cientos de iteraciones y SER apenas decenas. La brecha se abre en la fase final, porque SER lleva el CFL a los miles y de hecho se transforma en el método de Newton.
 
 ## CFL fijo y SER, lado a lado
 
-Veamos el cronograma mismo: cómo SER tira del CFL hacia arriba. Manipúlalo abajo. Cian es el cronograma de CFL, rosa es el residual.
+588 partido por 34 da cerca de 17. La tolerancia es una razón de residuales bajo 1e-9. Con $p=1$, CFL inicial 1 y tope 1e5, el techo llega cuando la razón alcanza 1e5, es decir 1e-5. Quedan cuatro décadas hasta 1e-9, todas con CFL 1e5, ya del lado de Newton. El CFL fijo de 3 gasta las 588 iteraciones sin ese tramo.
 
-<CflRampScheduleViz />
-
-Mientras el residual está plano al inicio, el CFL se queda cerca de $\mathrm{CFL}_0$. En el instante en que el residual empieza a colapsar, el CFL se dispara casi en vertical. Esa es la esencia de SER: **cuanto mejor se vuelve la solución, mayor es el paso que permite.** Baja el cap a 20 y el CFL choca con el techo, pierde la aceleración tipo Newton del final y el conteo de iteraciones vuelve a subir.
+El cronograma cabe en una línea. $\mathrm{CFL}_n = \min(\mathrm{CFL}_0 (\lVert R_0\rVert/\lVert R_n\rVert)^p,\ \mathrm{CFL}_{\max})$. Si el residual baja, el paso crece, y se detiene en el tope.
 
 ## Trampas al encender SER en producción
 
-Primero, fija siempre $\mathrm{CFL}_{\max}$. Si se deja en infinito, un solo pico del residual desboca el CFL y mata la solución.
+Conviene fijar siempre $\mathrm{CFL}_{\max}$. Si se deja en infinito, un solo pico del residual desboca el CFL y mata la solución.
 
-Segundo, cuando el residual oscila de forma no monótona (non-monotone), $R_0/R_n$ puede caer por debajo de 1 y encoger el CFL. No es un error: es una válvula de seguridad. Si el residual vuelve a empeorar, acortar el paso es lo correcto.
+Cuando el residual oscila de forma no monótona (non-monotone), $R_0/R_n$ puede caer por debajo de 1 y encoger el CFL. No es un error: es una válvula de seguridad. Si el residual vuelve a empeorar, acortar el paso es lo correcto.
 
-Tercero, $p$ no es aceleración gratis. Un $p>1$ agranda el CFL enormemente ante una caída pequeña del residual, elevando el riesgo. Un arranque robusto es $p=1$, $\mathrm{CFL}_0 \approx 1$.
+$p$ no es aceleración gratis. Un $p>1$ agranda el CFL enormemente ante una caída pequeña del residual, elevando el riesgo. Un arranque robusto es $p=1$, $\mathrm{CFL}_0 \approx 1$.
 
-Cuarto, si el Jacobiano es inexacto (Jacobiano aproximado o sin matriz), la convergencia cuadrática de Newton cae a primer orden con CFL grande. Entonces conviene bajar $\mathrm{CFL}_{\max}$ y comprar estabilidad.
+Si el Jacobiano es inexacto (Jacobiano aproximado o sin matriz), la convergencia cuadrática de Newton cae a primer orden con CFL grande. Entonces conviene bajar $\mathrm{CFL}_{\max}$ y comprar estabilidad.
 
-## Para recordar
+## Un tope vacío mata antes al Newton tardío
 
-- En un solver estacionario el CFL es una perilla de **velocidad de convergencia y estabilidad**, no de precisión. Pequeño es tortuga, grande es explosión.
-- SER es $\mathrm{CFL}_n = \min(\mathrm{CFL}_0 (\lVert R_0\rVert/\lVert R_n\rVert)^p,\ \mathrm{CFL}_{\max})$, que agranda el paso automáticamente a medida que cae el residual.
-- La iteración implícita de seudotiempo se vuelve el método de Newton cuando $\Delta\tau\to\infty$. SER es el cronograma que te lleva con suavidad a ese límite.
+Dejar $\mathrm{CFL}_{\max}$ vacío hace que un solo pico del residual empuje el CFL tras la razón de residuales sin techo. La iteración implícita de seudotiempo se vuelve el método de Newton cuando $\Delta\tau\to\infty$. Ese orden cuadrático aparece solo cerca de la solución. Saltar ahí al principio hace que la matriz empuje la solución al revés. El tope 1e5 del código es una puerta: el paso entra en esa zona solo después de que el residual haya caído cien mil veces.
+
+La misma puerta hace falta cuando el Jacobiano no se puede formar con exactitud en cada iteración. Si el orden cuadrático del CFL grande ya bajó a primer orden, la opción que queda es un tope más bajo. Aproximar esa matriz con barridos, sin ensamblarla, es el tema de [LU-SGS después de que un paso explícito revienta](/es/posts/2026-06-22-lu-sgs-implicit-time-integration/). El paso implícito se queda, y la matriz no tiene que almacenarse.

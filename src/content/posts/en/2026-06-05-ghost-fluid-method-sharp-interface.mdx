@@ -1,7 +1,9 @@
 ---
 title: "Filling an Interface with a Fluid That Isn't There — The Ghost Fluid Method"
 date: 2026-06-05
-description: "GFM for sharp interfaces in compressible multi-material flow"
+updated: 2026-10-19
+description: "Copy pressure across a sharp water-air interface, extrapolate density isentropically, and run a single-material solver twice. Stiffness makes it ring."
+takeaway: "On a stiff side the ghost pressure has to come from the interface Riemann state, not from a plain copy of the neighbor cell."
 tags: ["Ghost-Fluid-Method", "Multi-Material", "Compressible", "Sharp-Interface", "Stiffened-EOS"]
 draft: false
 locale: en
@@ -11,7 +13,13 @@ slug: 2026-06-05-ghost-fluid-method-sharp-interface
 import { GhostFluidInterface1D } from '@/components/post-viz/2026-06-05-ghost-fluid-method-sharp-interface/GhostFluidInterface1D'
 import { OriginalVsModifiedGFM1D } from '@/components/post-viz/2026-06-05-ghost-fluid-method-sharp-interface/OriginalVsModifiedGFM1D'
 
-Into the cell where water meets air, you pour fake air that isn't actually there. This ghost fluid (a fictitious fluid extrapolated across the interface) exists nowhere on the grid. Yet that very ghost is what keeps the solver stable when a shock crosses the interface. This post walks through the Ghost Fluid Method (GFM) for sharp interfaces in compressible multi-material flow — what gets copied, what gets extrapolated, why the original GFM rings, and how to fix it, all with code.
+Into the cell where water meets air, you pour fake air that isn't actually there. This ghost fluid (a fictitious fluid extrapolated across the interface) exists nowhere on the grid. Yet that very ghost is what keeps the solver stable when a shock crosses the interface. What gets copied and what gets extrapolated are different jobs. The original GFM rings where that split is wrong.
+
+Raise the density jump and the staircase gets steeper, while pressure still walks straight through the red dashed line. "show ghost" toggles the extension past the interface.
+
+<GhostFluidInterface1D />
+
+With the dashed lines on, each fluid carries its own entropy across the boundary. Slide the interface and the pressure curve stays one piece. Density is the quantity that breaks.
 
 ## When two materials collide in one cell
 
@@ -33,13 +41,9 @@ $$
 [\,p\,] = 0, \quad [\,u_n\,] = 0, \qquad [\,s\,] \neq 0, \quad [\,u_t\,] \neq 0
 $$
 
-The brackets $[\cdot]$ denote the jump across the interface. These four lines are the whole of GFM. Copy the continuous quantities, extrapolate the discontinuous ones.
+The brackets $[\cdot]$ denote the jump across the interface. These four lines are the whole of GFM. Copy the continuous quantities, extrapolate the discontinuous ones. The figure above is that split: pressure stays smooth, density is the step.
 
-Try the simulation below. Pressure and normal velocity pass smoothly through the interface (red dashed line), while density jumps like a staircase. Turn on "show ghost" and you can see each fluid extended past the boundary as a dashed line.
-
-<GhostFluidInterface1D />
-
-Increase the density jump or move the interface, and the pressure curve still never breaks. That is the visual meaning of "pressure continuous, entropy discontinuous."
+Averaging both phases inside one cell fails a different way. The [six-equation two-fluid model](/en/posts/2026-08-23-two-fluid-model-hyperbolicity-interfacial-pressure/) picks up complex eigenvalues once the density ratio is large, and refining the grid makes the blow-up arrive sooner. GFM refuses that average. A cell holds one material.
 
 ## Treating water like a gas — the stiffened EOS
 
@@ -71,6 +75,12 @@ $$
 $$
 
 $s_A$ is the real A fluid's entropy and $p_\text{copy}$ is the copied pressure. The extrapolation is usually carried out with a fast-marching method that propagates values quickly along the interface normal. Once a single sweep completes A's ghost field, you forget B exists and solve A's single-material Euler equations. Repeat the same for B.
+
+The initial data already fix the ghost densities. Left state: density 1, pressure 1, $\gamma = 1.4$, entropy 1. Copy the right-hand pressure 0.1 and the ghost density is $0.1^{1/1.4}$, about 0.193, not the real 0.125. The single-material solver sees a ratio near 5.2, not 8.
+
+The right gas has $\gamma = 1.67$. Its entropy is $0.1 / 0.125^{1.67}$, about 3.22. Copy pressure 1 onto that entropy and the ghost density is about 0.496, half the real left state. Pressure crosses. Entropy stays with the fluid that owns the ghost.
+
+With $p_\infty = 0$, sound speed is the square root of $\gamma p / \rho$. Left is about 1.183, right about 1.156, so the left state sets the CFL. Spacing on 400 points is $1/399$, about 0.00251. CFL 0.4 gives a step near 0.00085, and $0.14$ divided by that step is about 165 steps. A sound wave needs about 0.85 to cross the tube. The end time 0.14 is under a fifth of that. A density ratio of 8 is mild next to water-air at 1000, and 0.193 against 0.496 are already off the real states.
 
 ## Where the original GFM rings
 
@@ -175,10 +185,10 @@ The output shows the density jump surviving across the interface while the press
 
 ## Traps to avoid when you write the code
 
-Three things spare you the usual divergence in a GFM implementation. First, the extrapolation direction must be the interface normal. Extrapolating along grid axes pollutes the entropy at oblique interfaces. Second, a high stiffness ratio (water-air) almost always makes the original GFM ring; going straight to the Riemann-based modified GFM is safer. Third, reinitialize the level set periodically to keep its signed-distance property — otherwise the interface velocity becomes inaccurate.
+Extrapolate along the grid axes and entropy mixes on a slanted interface. The sweep direction is the interface normal, nothing else. A high stiffness ratio, water against air, makes the original copy-and-extrapolate step ring in the pressure. In that case the ghost is filled from the interface Riemann state from the start. Skip the level-set reinitialization and the zero contour can linger while the distance values drift, so the interface speed goes wrong.
 
-## A summary for those who won't read it twice
+## When a gas-gas extrapolation is dropped onto water
 
-- GFM does not mix the interface. It extends each fluid as a ghost and runs a single-material solver twice.
-- Copy pressure and normal velocity; extrapolate entropy and tangential velocity isentropically. Those four lines are everything.
-- At stiff interfaces the original GFM rings. The right answer is the modified GFM, which solves an interface Riemann problem to set $p^*, u^*$.
+Two ideal gases with $p_\infty = 0$ ($\gamma = 1.4$ and $1.67$) keep a density step at the contact under plain isentropic extrapolation. Water is $\gamma \approx 4.4$, $p_\infty \approx 6 \times 10^8\,\mathrm{Pa}$. Add that constant inside the sound-speed numerator at the same pressure, and the ripples seen when the demo stiffness ratio hits 9 are a smaller cousin of the same mismatch. Refining the grid leaves them in the boundary condition.
+
+Decide whether the ghost pressure and velocity are a copy, or the interface Riemann state $p^*, u^*$, before counting the density jump. A ghost density that falls through zero is a separate limiter problem. The [positivity-preserving flux limiter](/en/posts/2026-08-05-positivity-preserving-flux-limiter/) is the next place to look: mass can be right while density in a cell is not.

@@ -1,10 +1,12 @@
 ---
 title: "把压力从方程里抹掉的人 — Chorin 投影法与分步法"
 date: 2026-07-03
-description: "先预测不可压速度场，再投影回无散度状态"
+updated: 2026-10-19
+description: "预测刚结束时最大散度大约是1e-2，一次FFT投影便把它降到1e-13。压力Poisson仍吃掉每一步计算的大部分费用。"
 tags: ["Incompressible", "Projection-Method", "Fractional-Step", "Pressure-Poisson", "Navier-Stokes"]
 locale: zh
 slug: chorin-projection-fractional-step
+takeaway: "流入和流出只要差一点点，Neumann的Poisson就没有解。关掉投影，那点散度会一步一步留下来。"
 draft: false
 ---
 
@@ -12,6 +14,12 @@ import { HelmholtzHodgeSplit } from '@/components/post-viz/2026-07-03-chorin-pro
 import { ProjectionFluidCanvas } from '@/components/post-viz/2026-07-03-chorin-projection-fractional-step/ProjectionFluidCanvas'
 
 1967 年，Alexandre Chorin 把压力从方程里暂时抹掉了。求解不可压 Navier–Stokes 方程时，最棘手的一项正是压力。压力没有时间导数。密度是常数，也无法通过状态方程反推压力。Chorin 的答案很大胆：先忽略压力把速度往前推，再把结果强行拉回无散度（divergence-free）状态。本文将讲清这套分步法（fractional step，通常称为投影法 projection method）如何运作——从一行定理 Helmholtz–Hodge 分解出发，直到写出一个真正能跑的二维求解器。读到最后，你会明白为什么不可压代码的运行时间大多耗在压力 Poisson 方程上。
+
+把左面板的源强度从 0 推到 14，散度的颜色会亮起来，右边的投影只留下旋涡。
+
+<HelmholtzHodgeSplit />
+
+源为 0 时两边几乎一样。推到 14，只有左边染上红蓝，右边保持暗色。投影把可压分量整块剥掉了。
 
 ## 压力没有时间导数
 
@@ -45,11 +53,7 @@ $$
 \mathbf{u} = \mathbb{P}\mathbf{w} = \mathbf{w} - \nabla\phi
 $$
 
-在下面两幅面板里亲手操作一下。左边是旋涡叠加一个径向源的速度场，右边是它投影之后的结果。
 
-<HelmholtzHodgeSplit />
-
-把 source strength 从 0 提到 14，左面板会被染成红蓝两色（散度变大），右面板却始终保持暗色。这说明投影把可压分量整块剥掉，只留下了旋涡。
 
 ## 先预测，再投影 — 分步法
 
@@ -83,7 +87,7 @@ $$
 
 边界条件也满是陷阱。$\phi$ 在壁面上的边界条件是 Neumann（$\partial\phi/\partial n = 0$）。Neumann 问题的解含有一个任意常数，而且要有解就必须满足**相容性条件**——在整个区域上 $\int \nabla\cdot\mathbf{u}^*\,dV = 0$。如果进出口流量不匹配，Poisson 方程根本无解。看到 NaN 时，先怀疑边界流量。
 
-在同位（collocated，非交错）网格上，把压力和速度放在同一点会引发棋盘格振荡。要么用交错网格，要么用 Rhie–Chow 插值来抑制。顺带一提：SIMPLE 类方法每一步把同样的投影思想重复多次，逼向定常态；而这里的分步法每步只投影一次，以保持时间精度地追踪非定常流动。
+在同位（collocated，非交错）网格上，把压力和速度放在同一点会引发棋盘格振荡。要么用交错网格，要么用 [Rhie–Chow 插值](/zh/posts/2026-10-14-rhie-chow-under-relaxation-memory/)来抑制。面速度若记住松弛因子，收敛解本身会变。顺带一提：SIMPLE 类方法每一步把同样的投影思想重复多次，逼向定常态；而这里的分步法每步只投影一次，以保持时间精度地追踪非定常流动。
 
 ## Python：用 FFT 卷起双剪切层
 
@@ -149,6 +153,10 @@ for n in range(steps):
 
 看输出：每一步 $|\nabla\cdot\mathbf{u}^*|$ 都在 $10^{-2}$ 量级，但投影后 $|\nabla\cdot\mathbf{u}|$ 跌到 $10^{-13}$。FFT 投影把散度压到了机器精度。
 
+一边 128 个点，间距就是 1/128。运动粘度 5e-3，速度尺度 1，区域长度 1，则 Re 是 1 除以 5e-3，等于 200。和注释里 Re 约 200 一致。时间步 2e-3 叠 3000 次，积分时间是 6。剪切层厚度 1/30 约 0.033，间距 1/128 约 0.0078，差不多四格多一点。扰动振幅 0.05 是射流速度 1 的 5%，卷起就从这道小正弦开始。预测刚结束的散度 $10^{-2}$ 和投影后的 $10^{-13}$，相差十一个数量级。FFT 把平均模态钉在 0 的那一行，关上了 Neumann 问题的常数自由度。流入和流出对不上、相容条件破了，只改那个分母并不会生出解。费用占 70% 到 90% 说的也是同一块矩阵。一步里预测子拿走的，只是剩下的 10% 到 30%。
+
+时间步 2e-3 的修正，是从中间速度里减去这个步长乘上 $\phi$ 的梯度。要抹掉 $10^{-2}$ 的散度，$\phi$ 的拉普拉斯应是散度除以时间步，大约为 5。压力梯度在一步内把速度拉回这么多。关掉投影，这项修正进不了速度，散度就留下来。3000 步足够让这些残渣铺满网格。
+
 ## 关掉投影会发生什么
 
 没有修正子，速度场每一步都会累积一点散度。质量不再守恒，涡被抹糊，很快变成填满网格的噪声。在下面的模拟里亲自看看。
@@ -157,8 +165,8 @@ for n in range(steps):
 
 把 Projection 设为 ON，剪切层会卷成一对干净的涡。一旦切到 OFF，右上角的 max|∇·u| 读数飙升，涡的花纹随之崩塌。调大 dt 会让对流更激进，崩塌来得更快。这一次切换，就是"为什么需要投影"最简短的答案。
 
-## 给不会再读第二遍的人的小结
+## 流量差一滴，Poisson就没有答案
 
-- 在不可压流动里，压力不是拿来演化的变量，而是每步施加 $\nabla\cdot\mathbf{u}=0$ 的拉格朗日乘子。
-- 投影法分两步：丢掉压力做预测（$\mathbf{u}^*$），再解一个关于 $\phi$ 的 Poisson 方程并减去它的梯度。
-- 成本大多在压力 Poisson 求解上，Neumann 相容性条件和棋盘格是它的经典陷阱。
+在不可压流动里，压力不是拿来演化的变量，而是每步施加 $\nabla\cdot\mathbf{u}=0$ 的拉格朗日乘子。投影先丢掉压力做出 $\mathbf{u}^*$，再解 Poisson 求出 $\phi$ 并减去梯度。这个次序本身很短。坏掉的地方在边界。流入和流出对不上，就没有相容条件，矩阵只剩下常数自由度，给不出解。
+
+用每步一次投影保住时间精度，就不能在这一步里把对流再解一遍。只抬粘性的阶、把对流推到外面，这条选择的差别写在[Gear外插对流、把误差放大的地方](/zh/posts/2026-10-12-semi-implicit-gear-convection-extrapolation/)。把预测子的对流弄得看起来更准，投影刚配好的零散度会晃。

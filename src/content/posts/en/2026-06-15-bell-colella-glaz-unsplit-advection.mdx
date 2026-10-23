@@ -1,7 +1,9 @@
 ---
 title: "Advecting Without Splitting Directions — The Bell-Colella-Glaz Unsplit Upwind Scheme"
 date: 2026-06-15
-description: "An unsplit second-order Godunov predictor that smears a rotating scalar far less"
+updated: 2026-10-19
+description: "Directional splitting twists a diagonal scalar. Bell-Colella-Glaz keeps the rotating disk's peak with a (1-CFL) slope weight plus a transverse correction."
+takeaway: "After one turn the mass error is roundoff for both schemes, but the peaks are 0.349 and 0.806. Passing conservation does not mean the disk survived."
 tags: ["Advection", "Godunov", "Slope-Limiter", "Unsplit", "FVM"]
 locale: en
 slug: bell-colella-glaz-unsplit-advection
@@ -11,7 +13,13 @@ draft: false
 import { BcgEdgeStatePredictor1D } from '@/components/post-viz/2026-06-15-bell-colella-glaz-unsplit-advection/BcgEdgeStatePredictor1D'
 import { SolidBodyScalarAdvection2D } from '@/components/post-viz/2026-06-15-bell-colella-glaz-unsplit-advection/SolidBodyScalarAdvection2D'
 
-In the late 1980s, John Bell and Phillip Colella at Lawrence Berkeley spotted an odd scar in their explosion runs. A flame front set at an angle to the grid axes kept smearing and twisting along the diagonal as time went on. The culprit was not physics but discretization. Dimensional splitting — solving one direction at a time — was distorting diagonal advection. This post follows their fix, the Bell-Colella-Glaz (BCG) **unsplit second-order upwind scheme**, from the equations all the way to a numpy implementation. By the end you will feel, with your own hands, why splitting directions wrecks a rotating scalar and how one transverse-derivative term patches it.
+In the late 1980s, John Bell and Phillip Colella at Lawrence Berkeley spotted an odd scar in their explosion runs. A flame front set at an angle to the grid axes kept smearing and twisting along the diagonal as time went on. The culprit was not physics but discretization. Dimensional splitting — solving one direction at a time — was distorting diagonal advection. The fix is the Bell-Colella-Glaz (BCG) **unsplit second-order upwind scheme**. Split the directions and a rotating disk turns into a rhombus. One transverse derivative closes that hole.
+
+Push CFL from 0 to 0.9 and the amber dot slides back toward the cell average. Set the limiter to `none` and the line beside the jump runs past the neighbor values.
+
+<BcgEdgeStatePredictor1D />
+
+At 0.9 the slope weight nearly vanishes. Put minmod back and that overshoot gets clipped.
 
 The equation is the simplest conservative advection there is. A divergence-free velocity field $\mathbf{u}$ carries a scalar $s$.
 
@@ -73,11 +81,7 @@ s_{i+\frac12,\,R}, & u_{i+\frac12} < 0
 \end{cases}
 $$
 
-Play with the simulation below. From a 1D cell-average staircase, it shows the limited slope and the predicted left edge state (amber dot) sitting on top of it.
-
-<BcgEdgeStatePredictor1D />
-
-Push CFL up to 0.9 and the amber dots get pulled back toward the cell average — that is how much the time advance bites. Set the limiter to `none` near the jump and watch the PLM line shoot past the neighboring values.
+In the figure above, CFL 0.9 pulls the amber dot toward the average, and `none` lets the line overshoot the neighbors. That gap is the time-advance factor in the predictor just above.
 
 ## The transverse derivative stitches the corners
 
@@ -98,6 +102,8 @@ $$
 $$
 
 Superbee keeps the same monotonicity but squeezes the slope as steep as it can, pulling contact fronts sharper. In the 1D demo above, flip between `minmod` and `superbee` and you will see the superbee PLM line is steeper.
+
+Putting the same leash on the flux, in one dimension, is the [TVD flux limiter on Lax–Wendroff](/en/posts/2026-04-24-flux-limiter-tvd-advection/). BCG hangs the limiter on the cell slope, not on the flux.
 
 ## Spinning a disk in numpy
 
@@ -182,15 +188,21 @@ upwind1   peak=0.349  mass_err=3.1e-16
 bcg       peak=0.806  mass_err=2.8e-16
 ```
 
-Both schemes conserve mass to machine precision — that is guaranteed by the conservative flux differencing. What differs is the peak. First-order upwind crushes the disk to less than half its height in a single revolution, while BCG keeps 80% of the original height.
-
-## What is left after two turns
-
-Numbers alone do not land it. Spin it yourself in the canvas below. The scheme buttons switch between first-order upwind and BCG, and you can change the CFL to watch how the disk deforms.
+Flip the scheme toggle from `1st-order upwind` to `BCG unsplit` and the peak walks from 0.349 to 0.806 on the grid, the same numbers as the printout.
 
 <SolidBodyScalarAdvection2D />
 
-Leave it on `1st-order upwind` and the disk spreads into a ring before it even finishes one turn, with a blurred edge. Switch to `BCG unsplit` and the boundary survives far longer. Push CFL to 0.9 and BCG roughens a little, but the gap over first-order upwind stays. It drives home that numerical diffusion is set by the scheme's order, not by grid resolution.
+On `1st-order upwind` the disk spreads into a ring before it finishes one turn, edge blurred. `BCG unsplit` keeps the boundary much longer. At CFL 0.9, BCG roughens a little. The gap over first-order upwind stays.
+
+Both schemes conserve mass to machine precision. Conservative flux differencing does that. What differs is the peak. First-order upwind crushes the disk to less than half its height in one revolution, while BCG keeps 80% of the original height.
+
+## What is left after two turns
+
+The code already fixes one turn. N is 64, so the spacing is 1/64. Corner speed is 2π times 0.5 times the square root of 2, about 4.44. At CFL 0.6 the step is about 0.00211, and time 1 takes 474 steps. The disk center (0.5, 0.78) sits 0.28 off (0.5, 0.5) and moves at about 1.76. The step uses the corner speed 4.44, not 1.76.
+
+Diameter 0.26 is 16.6 cells, about 217 cells of scalar. At CFL 0.6 the left slope weight is 0.2 and the right is 0.8. At the cap 0.8 the left weight falls to 0.1. Peaks 0.349 and 0.806 are those weights plus the transverse term, stacked 474 times.
+
+Mass errors 3.1e-16 and 2.8e-16 are roundoff. Lost height is 0.651 against 0.194, about 3.4 times more for upwind than for BCG. The transverse term subtracts about 0.00106 times the transverse divergence, once a step, 474 times a turn. Smearing is how much slope one cell keeps, not the choice of 64 cells.
 
 ## Where it leaks when you port it
 
@@ -199,6 +211,8 @@ Leave it on `1st-order upwind` and the disk spreads into a ring before it even f
 - **Do not drop the transverse term.** Implement only the normal prediction and you have plain dimensionally split MUSCL. The code runs, but the rotational twist stays.
 - **The limiter goes to zero at extrema.** At the peak of a hump the slope gets clipped to zero, dropping to locally first order. That is why the peak slowly sags. To preserve it, look at extremum-preserving limiters.
 
-## What to keep in one line
+## The choice where mass is right and the disk still dies
 
-The essence of BCG is "predict-correct". Trade the time derivative for advection to predict the face value half a step ahead, reuse that prediction in the transverse correction, then choose the final value with a Godunov upwind. Because it does not split directions, rotation does not twist; because of the limiter, discontinuities do not oscillate. Next time you have to carry a scalar through a flow with rotation and shear, doubt the temptation of first-order upwind one more time.
+A peak of 0.349 is what first-order upwind has left after one turn. BCG sits at 0.806. The mass errors are 3.1e-16 and 2.8e-16, so a conservation log passes both. Look at the disk and only one of them is still a disk.
+
+Whether first-order upwind is acceptable on a diagonal scalar is that gap. If the contact height can be thrown away, the donor cell is enough. Keeping the height means the transverse term has to enter the same step. Move the mesh off Cartesian and minmod does not travel for free. The [Barth–Jespersen limiter](/en/posts/2026-07-06-unstructured-slope-limiter-barth-jespersen/) is the next decision: how a fake extremum gets cut by the neighbor minimum and maximum.

@@ -1,7 +1,9 @@
 ---
 title: "Where Jacobi Dies on a Boundary-Layer Mesh — the Linelet Line-Implicit Preconditioner"
 date: 2026-07-31
-description: "Why squashing cells toward the wall stalls point smoothers, and the fix"
+updated: 2026-10-19
+description: "On a 64 by 48 mesh, Jacobi climbs from 18 sweeps at aspect ratio 1 to 5471 at 1000, while a wall-normal linelet finishes in 2."
+takeaway: "Once a_N owns the diagonal, the point-smoother ceiling keeps only Ny. The linelet bound of 1/3 has no aspect ratio in it."
 tags: ["Linelet", "Preconditioning", "Anisotropic-Grid", "Krylov", "Boundary-Layer"]
 locale: en
 slug: linelet-preconditioner-stretched-grid
@@ -15,7 +17,7 @@ Same equation. Same cell count, same iteration, same convergence criterion. The 
 
 None of the physics changed. The only thing that changed is the cell aspect ratio. Yet the linear solver starts behaving as if it were handed a different problem. And you cannot dodge this: hitting $y^+ \approx 1$ in a turbulent run means the first cell off the wall has to be squashed.
 
-This post pins down where that factor of 300 lives inside the matrix. Then it shows why the linelet preconditioner — a chain of cells threaded along the strongly coupled direction, used in SU2 among others — hands the factor back, with an iteration counter you can run yourself.
+That factor of 300 has an address inside the matrix. The linelet preconditioner — a chain of cells threaded along the strongly coupled direction, the one SU2 uses — hands it back. The sweep counter is the check. Short rows are the table. Long rows are the coefficients.
 
 ## Squash a cell and the matrix becomes a different object
 
@@ -32,6 +34,12 @@ $$
 $$
 
 $\mathrm{AR}$ is the cell aspect ratio (streamwise over wall-normal). The coefficient ratio goes as the **square** of it. A first cell at $\mathrm{AR} = 1000$ has north-south coupling a million times stronger than east-west. Squash the mesh by ten and the matrix skews by a hundred.
+
+Drag the AR slider from 1 to 100 and the vertical stripes die first. Toggle linelet and the leftover horizontal smear loses its lifetime.
+
+<AnisotropicSmootherArena />
+
+When the measured readout under the map sticks near 0.997, the stall is on. At the same AR, linelet clears that smear in a sweep or two.
 
 Add an implicit time derivative and the diagonal becomes
 
@@ -65,11 +73,7 @@ where $N_y$ is the number of wall-normal layers. The absence of $\mathrm{AR}$ he
 
 What is happening is easy to picture. A point smoother wipes out wall-normal high-frequency error in a sweep or two. Then it is stuck. Killing error that varies **along** the wall requires information to travel sideways through $a_E$, and since the diagonal is pinned by $a_N$, each step shrinks by $\mathrm{AR}^2$.
 
-Squash the mesh yourself in the simulation below.
-
-<AnisotropicSmootherArena />
-
-Push $\mathrm{AR}$ from 1 to 100 and the vertical stripes vanish immediately while the long horizontal smears simply sit there. The moment the "measured" number under the map climbs toward 0.997, you are watching the stall begin. Hit the linelet button at the same $\mathrm{AR}$ and those smears are gone in a sweep or two.
+Where a diagonal-only iteration stalls, method by method, is in [a sweep-count comparison from Jacobi through BiCGSTAB](/en/posts/2026-04-22-cfd-linear-solvers-krylov/). That piece changes the solver. Here the cell aspect ratio betrays the same solver.
 
 ## Three remedies on one table
 
@@ -92,11 +96,7 @@ The linelet's bargain is explicit. It inverts exactly **one** direction — the 
 
 Renumber inside a chain and that submatrix becomes tridiagonal. Tridiagonal means the Thomas algorithm (forward elimination, then back substitution) inverts it exactly in $O(n)$. That sentence is the entire linelet preconditioner.
 
-Below, change the first-layer thickness and growth ratio and watch how far the chains reach.
-
-<LineletChainBuilder />
-
-Shrink $\Delta y_{\text{wall}}$ and the chains dig deeper into the layer; raise the growth ratio and the mesh returns to isotropy sooner, so the chains get shorter. The thing worth noticing is that the chains are **short**. They do not even cover half the layers. That is exactly why linelet is cheap.
+Where a chain stops sits next to the sweep table. The controls are first-layer thickness and growth ratio.
 
 ## Counting sweeps in Python
 
@@ -184,7 +184,19 @@ Here is what it prints.
   1000     5471   0.9978        2   0.0002
 ```
 
+<LineletChainBuilder />
+
+Shrink $\Delta y_{\text{wall}}$ and the chains dig deeper into the layer. Raise the growth ratio and the mesh returns to isotropy sooner, so the chains get shorter. The chains are **short**. They do not cover half the layers. That length is why linelet stays cheap.
+
 Squash by a factor of 1000 and Jacobi slows by 300× before hitting the ceiling near 6,000 that the previous section predicted. Linelet gets *faster*. The coupling between neighboring chains falls off as $a_E/a_N = \mathrm{AR}^{-2}$, so the chains become independent of one another. The worst-mode bound $2a_E/(V/\Delta t + 2a_E) = 1/3$ still holds; the measured decay is simply much better than it.
+
+Split the Jacobi column. 18, 514, 4879, 5471. The aspect ratios are 1, 10, 100, 1000.
+
+The first factor of ten in aspect ratio multiplies the work by 28.6. The next factor of ten multiplies it by 9.5. The last one multiplies it by 1.12, which is 5471 divided by 4879. The coefficient ratio keeps growing as $\mathrm{AR}^2$, and the sweep count stops following. At $N_y = 48$ the mode formula $1 - \frac{\pi^{2}}{2 N_y^{2}}$ is 0.99786. Solving $0.99786^{n} = 10^{-6}$ puts n near 6400. The printed 5471 sits just under that ceiling. Squash the mesh further and this column stays glued there.
+
+The linelet column runs the other way. 8, 7, 4, 2. The measured factors are 0.1839, 0.1699, 0.0194, 0.0002. The bound $2a_E/(V/\Delta t + 2a_E) = 1/3$ has no $\mathrm{AR}$ in it, and every measured value sits under it. At AR 1000, 0.0002 is about 0.06% of 1/3. Coupling between chains, $a_E/a_N = \mathrm{AR}^{-2}$, shuts off, so one Thomas pass leaves almost none of the wall-normal error. At AR 1 it is 8 sweeps against 18. A small gain. At AR 10 it is 514 against 7, about 73 times. That is where the choice splits.
+
+The point-smoother bound uses the same diagonal. With $V/\Delta t = 4a_E$ the denominator is $6a_E + 2a_N$. At AR 1 the bound is 0.5 and the table's rho_J is 0.4870. Nearly the same number. At AR 100 the bound is 0.9998 and the measured rho_J is 0.9975. Once the bound sticks to 1, the mode formula's 0.99786 is the honest one. The earlier estimate of roughly 6,000 sweeps and the printed 5471 are the same ceiling.
 
 ## Traps to stay out of when you code this
 
@@ -196,10 +208,8 @@ Squash by a factor of 1000 and Jacobi slows by 300× before hitting the ceiling 
 
 **Trying to paper over a nonlinear problem.** If it still diverges with linelet in place, the culprit is usually the outer loop rather than the linear solver. Lower the CFL first, pull the under-relaxation factor down toward 0.7 so the updates themselves shrink, and only then judge. A preconditioner solves the matrix you gave it faster; it does not repair a wrong one.
 
-## The short version, for anyone not reading twice
+## Thomas Is Wasted If the Lines Are Not Wall-Normal
 
-Squash a cell by $\mathrm{AR}$ and the coefficient ratio opens by $\mathrm{AR}^2$. A point smoother's step shrinks by the same amount.
+Chains follow the large coefficient, wall-normal only. Lay them streamwise and the eye has simply tracked the long edge. Thomas still costs something. The damping matches Jacobi.
 
-A linelet inverts exactly one strongly coupled direction with Thomas. The bound $2a_E/(V/\Delta t + 2a_E)$ has no $\mathrm{AR}$ in it.
-
-Chains only grow inside the boundary layer. Log the chain count and mean length. The moment that number reaches zero, your preconditioner is Jacobi.
+Log the chain count and the mean length. A printed zero means $\sigma_{\min}$ no longer matches the mesh. The preconditioner is already a diagonal smoother. Adding cores in that state only chops the fragments shorter. [Weak scaling that drops to 16.3% efficiency while the mesh is refined](/en/posts/2026-10-04-weak-scaling-krylov-grid-levels/) is the bill for that cut.

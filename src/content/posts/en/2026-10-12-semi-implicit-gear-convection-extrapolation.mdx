@@ -1,7 +1,8 @@
 ---
 title: "Upgrading Only the Viscous Term to Second Order Made the Error 1.82x Worse — Why the Semi-Implicit Gear Scheme Extrapolates Convection"
 date: 2026-10-12
-description: "Pair BDF2 with a convection term evaluated at N^n and the scheme drops to first order with a larger error. One line, 2N^n − N^(n−1), restores second order, verified in code."
+updated: 2026-10-19
+description: "Pairing BDF2 with convection at N^n drops the scheme to first order and inflates the error. The extrapolation 2N^n − N^(n−1) restores second order."
 tags: ["BDF2", "Projection-Method", "IMEX", "Incompressible", "Fractional-Step"]
 locale: en
 slug: 2026-10-12-semi-implicit-gear-convection-extrapolation
@@ -16,6 +17,12 @@ import { ViscousStiffnessDial } from '@/components/post-viz/2026-10-12-semi-impl
 I was upgrading the time stepping of an incompressible code from first to second order. I replaced the implicit Euler on the viscous term with BDF2. I left the convection term alone, still evaluated at $N^n$. Then I halved the time step repeatedly and measured the error. The error only halved each time. Worse, it was 1.82 times larger than the original first-order scheme.
 
 This post tracks down where that factor of 1.82 comes from. Chiu and Lin's 2011 conservative phase-field paper advances Navier–Stokes with a **semi-implicit Gear scheme** plus a projection method. In the convection slot of that scheme sits an extrapolation, $2N^n - N^{n-1}$. We will measure what breaks when that line is removed and what comes back when it is restored. By the end you will have one rule for keeping the order of an IMEX scheme, and a way to size up what an implicit viscous term buys you.
+
+Change the step count and the viscous rate $d$. The red spiral, BDF2 fed only $N^n$, peels away from the exact curve.
+
+<GearModeSpiralLab />
+
+Orange and red follow error slope 1. Only green (Gear extrapolation) follows slope 2. Raising $d$ does not reorder them.
 
 ## What each of the three terms does in one step
 
@@ -49,13 +56,7 @@ $$
 
 The extrapolation error is $\Delta t^2$, so it does not cost BDF2 any order. Using $\mathbf{N}^n$ alone gives $\mathbf{N}^{n+1} - \Delta t\,\partial_t\mathbf{N}$ instead. That is the value seen one full $\Delta t$ late. The lag survives as a first-order global error.
 
-Why does the first-order scheme suffer less? The implicit Euler left side $(\mathbf{u}^{n+1}-\mathbf{u}^n)/\Delta t$ is actually most accurate near $t^{n+1/2}$. Measured from there, $\mathbf{N}^n$ lags by only $\Delta t/2$. BDF2 moved the reference point to $t^{n+1}$. Now the same $\mathbf{N}^n$ carries the full $\Delta t$ lag. The 1.82 is that doubled lag, slightly offset by the viscous part.
-
-Try it yourself in the simulation below. It solves a single Fourier mode $dy/dt = -(d + ia)y$ with all three schemes, drawing the spiral in the complex plane next to the error-versus-time-step plot.
-
-<GearModeSpiralLab />
-
-Reduce the step count and the red track (BDF2 + $N^n$) drifts farthest from the white dashed exact spiral. On the right, orange and red follow slope 1, and only green (Gear) follows slope 2. Raising the viscous rate $d$ does not change that ordering.
+Why does the first-order scheme suffer less? The implicit Euler left side $(\mathbf{u}^{n+1}-\mathbf{u}^n)/\Delta t$ is actually most accurate near $t^{n+1/2}$. Measured from there, $\mathbf{N}^n$ lags by only $\Delta t/2$. BDF2 moved the reference point to $t^{n+1}$. Now the same $\mathbf{N}^n$ carries the full $\Delta t$ lag. The 1.82 is that doubled lag, slightly offset by the viscous part. The slope split is already on the spiral above: red peels off, green stays on the exact curve.
 
 ## Projection removes the divergence
 
@@ -186,25 +187,27 @@ dt=0.016  explicit   blow-up   gear     0.6173
 dt=0.032  explicit   blow-up   gear     0.6175
 ```
 
+Raise `nu` and `dt` and the high-wavenumber bars show where the factor crosses 1. Explicit and Gear split there.
+
+<ViscousStiffnessDial />
+
+In fully explicit mode, push $\Delta t$ above the diffusive limit $h^2/(2\nu)$ and the high-wavenumber bars turn red and cross 1. A grid-scale sawtooth grows on the left curve. Switch to semi-implicit Gear and, at the same $\Delta t$, the bars drop below 1. Shrink $\nu$ toward zero and Gear hits the convective CFL too.
+
 ## The one line between 1.00 and 2.00
 
 The order columns say it all. euler and lagged sit at 1.00, gear at 2.00. At $\Delta t = 0.003125$ the lagged error is $1.675\times10^{-3}$ and euler is $9.217\times10^{-4}$. That is a 1.82x gap. At the same point gear reaches $5.478\times10^{-6}$, 306 times smaller than lagged.
 
 The lagged column is the instructive one. The effort spent upgrading the left side bought nothing. The lowest-order term sets the order. And the error constant ended up worse than the first-order scheme. Whoever fixed the viscous term expected an improvement, so this result looks like a bug. It is not a bug. It is the arithmetic of lag.
 
-What a convergence-order measurement actually measures was covered in the [verification-case post](/en/posts/2026-10-07-sod-vortex-order-verification/). Here the solution is smooth and spatial error is absent. So the measured value is the scheme's temporal order and nothing else.
+Even at the coarsest $\Delta t=0.05$ the ratio is already close. Divide lagged $2.678\times10^{-2}$ by euler $1.491\times10^{-2}$ and the quotient is $1.80$. The finest bin gives $1.675\times10^{-3}/9.217\times10^{-4}=1.82$. Shrinking the step does not shrink that constant ratio. Gear falls across the same five bins as $1.386\times10^{-3}$, $3.490\times10^{-4}$, $8.764\times10^{-5}$, $2.195\times10^{-5}$, $5.478\times10^{-6}$. Neighboring ratios are $3.97$, $3.98$, $3.99$, $4.01$, matching the printed orders $1.99$–$2.00$. Cutting $\Delta t$ by $0.05/0.003125=16$ should cut a second-order error by $256$. The printed ratio $1.386\times10^{-3}/5.478\times10^{-6}\approx 253$ lands there.
+
+The leftover in the extrapolation is the same arithmetic. What remains of $2\mathbf{N}^n-\mathbf{N}^{n-1}$ is $\Delta t^2\partial_{tt}\mathbf{N}$. Using only $\mathbf{N}^n$ leaves $\Delta t\partial_t\mathbf{N}$, one order down. The $3/2$ on the BDF2 left side is paired with $3/(2\Delta t)$ in the pressure step. Where that pressure correction comes from in a fractional step is the same ledger as [Chorin's projection](/en/posts/2026-07-03-chorin-projection-fractional-step/). Here the solution is smooth and the spatial error is gone, so the measured value is the temporal order. In the $\nu=0.5$ block the explicit limit is $0.01$ and the first blow-up is $\Delta t=0.008$. At $0.004$, $\max|u|=0.6172$ matches the implicit run. Gear at $0.032$ prints $0.6175$, only $0.0003$ off the reference.
 
 ## What an implicit viscous term buys
 
 The last block shows why viscosity goes implicit. Fully explicit AB2 held at $\Delta t = 0.004$. From $0.008$ on, it diverged. Viscosity alone sets the limit at $\Delta t \le 1/(\nu k_{\max}^2) = 0.01$. The imaginary eigenvalues of convection eat part of that margin, so it fails earlier. Gear at $\Delta t = 0.032$ still gives 0.6175, right next to the reference 0.6172. That is an eight times larger step.
 
-This limit shrinks as $h^2$ when the grid is refined. Halve the grid spacing and the explicit scheme needs four times as many steps. An implicit viscous term trades that cost for one Helmholtz solve. Convection stays explicit, though, so the CFL condition $|u|\Delta t/h \lesssim O(1)$ still applies.
-
-Below, vary $\nu$ and $\Delta t$ and watch the amplification factor per wavenumber.
-
-<ViscousStiffnessDial />
-
-In fully explicit mode, push $\Delta t$ above the diffusive limit $h^2/(2\nu)$ and the high-wavenumber bars turn red first and cross 1. A grid-scale sawtooth grows on the left curve. Switch to semi-implicit Gear and, at the same $\Delta t$, the bars drop below 1. Shrink $\nu$ toward zero and enlarge $\Delta t$, and Gear also hits the convective CFL limit. It is the same family of limit as the reason [FTCS oscillated](/en/posts/2026-05-08-advection-ftcs-upwind-cfl/) in first-order advection.
+This limit shrinks as $h^2$ when the grid is refined. Halve the grid spacing and the explicit scheme needs four times as many steps. An implicit viscous term trades that cost for one Helmholtz solve. Convection stays explicit, though, so the CFL condition $|u|\Delta t/h \lesssim O(1)$ still applies. That split is already on the wavenumber bars right after the printed table: red above 1, and Gear held under it.
 
 ## Easy to miss: the startup step and variable Δt
 
@@ -214,10 +217,8 @@ Changing $\Delta t$ from step to step changes the coefficients. With ratio $\ome
 
 Restart files hide a trap too. Saving only $\mathbf{u}^n$ drops the first post-restart step to BDF1. Once is harmless. Restart at short intervals and the first-order steps pile up. Saving $\mathbf{u}^{n-1}$ and $\mathbf{N}^{n-1}$ as well is the safe choice.
 
-## Three questions when you doubt your code's time order
+## Drop the extrapolation and the order column sticks at 1.00
 
-- At what instant does the left-side difference approximate the derivative? For BDF2, $t^{n+1}$.
-- To what order are the explicit terms extrapolated to that instant? A lone $\mathbf{N}^n$ is first order.
-- Do the pressure coefficient and the variable-$\Delta t$ coefficients come from the same scheme as the left side?
+If the left side looks at $t^{n+1}$ and convection is a lone $\mathbf{N}^n$, that one-step lag stays in the global error as first order. That is why lagged prints order $1.00$ and an error $1.82$ times euler. On a variable $\Delta t$, leaving the fixed coefficients $3/2$, $2$, and $1/2$ in place drops the extrapolation $(1+\omega)\mathbf{N}^n-\omega\mathbf{N}^{n-1}$, and second order goes quiet.
 
-Get all three right and the table shows 2.00. Miss any one and it shows 1.00. That error constant may even be worse than the original first-order scheme.
+The pressure step's $3/(2\Delta t)$ has to come from the same scheme as the left side. A mismatched coefficient leaves grid-scale pressure chatter even when the velocity does not blow up. That coupling is what [SIMPLE and Rhie-Chow](/en/posts/2026-07-22-simple-pressure-velocity-coupling-rhie-chow/) watch on a different grid. A restart file without $\mathbf{u}^{n-1}$ and $\mathbf{N}^{n-1}$ stacks a first-order step on every short restart.

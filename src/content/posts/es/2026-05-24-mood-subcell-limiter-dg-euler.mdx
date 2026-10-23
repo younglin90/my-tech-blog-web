@@ -1,7 +1,9 @@
 ---
 title: "[Reseña] Sospechar de la celda después de resolverla — limitador MOOD subcell para DG"
 date: 2026-05-24
+updated: 2026-10-19
 description: "Primero resolver, luego dudar — reproducción del limitador MOOD de Ioriatti, Dumbser, Loubère (2020)"
+takeaway: "En el test 3 de Toro el MUSCL sin limitador da presión negativa hacia el paso 14; MOOD recalcula solo cuatro a seis celdas del choque en primer orden."
 tags: ["Paper-Review", "Discontinuous-Galerkin", "MOOD", "Subcell-Limiter", "Compressible-Euler", "All-Mach"]
 locale: es
 slug: mood-subcell-limiter-dg-euler
@@ -12,6 +14,12 @@ import { MOODTroubledCellMap1D } from '@/components/post-viz/2026-05-24-mood-sub
 import { DMPRelaxedNADDetector } from '@/components/post-viz/2026-05-24-mood-subcell-limiter-dg-euler/DMPRelaxedNADDetector'
 
 Al reimplementar este artículo, lo primero que descolocó fue el *orden*. Casi todo el mundo intercala el limitador (limiter, postproceso que reduce las oscilaciones) *antes* de que la celda se descontrole. Lo hizo Van Leer, lo hizo Sweby, lo hace toda la familia TVD. Ioriatti, Dumbser y Loubère (2020) invierten la línea de tiempo en su esquema DG semi-implícito sobre malla escalonada — primero se resuelve hasta el final y *luego* se sospecha. Solo después de que aparezca una densidad negativa la celda se aísla y se recalcula con un esquema de volúmenes finitos de primer orden. Este texto recorre ese algoritmo MOOD (Multi-dimensional Optimal Order Detection) y reproduce el mapa de troubled cells en el Toro Test 3, donde la presión salta de 1000 a 0.01.
+
+Al mover la relación de presiones y $\delta_0$ cambia el número de celdas rojas junto al choque. Con *overlay unlimited candidate* activo, el candidato sin limitador aparece en trazo discontinuo.
+
+<MOODTroubledCellMap1D />
+
+Con 1000:0.01 hay cuatro a seis celdas troubled. Con $\delta_0=10^{-6}$ también saltan las zonas suaves. Con $10^{-2}$ el choque se cuela. La banda útil va de $10^{-4}$ a $10^{-3}$.
 
 ## Datos del artículo
 
@@ -41,7 +49,7 @@ $$
 
 $\mathcal{P}$ es la proyección $L_2$ del polinomio sobre los promedios de subcelda. $\mathcal{W}$ es una recuperación por mínimos cuadrados con restricción (constrained least-squares, regresión que fija como restricción la conservación de la integral sobre la celda grande). Como $2P+1 > P+1$, la recuperación es sobre-determinada y la restricción es necesaria.
 
-Cuando una celda se marca como troubled, su representación pasa de polinomio a promedios de subcelda. En las interfaces entre una celda problemática y otra que no lo es aparece una *interfaz mixta*; los operadores $\mathcal{W}_L, \mathcal{W}_R$ recuperan el polinomio a partir de la mitad relevante de la celda y mantienen consistente la integral en la interfaz. Que las dos representaciones puedan compartir una misma celda es la piedra angular de toda esta familia.
+Cuando una celda se marca como troubled, su representación pasa de polinomio a promedios de subcelda. En las interfaces entre una celda problemática y otra que no lo es aparece una *interfaz mixta*; los operadores $\mathcal{W}_L, \mathcal{W}_R$ recuperan el polinomio a partir de la mitad relevante de la celda y mantienen consistente la integral en la interfaz. Que las dos representaciones puedan compartir una misma celda es el activo de esta familia. Al quitar un punto de cuadratura esa convivencia se rompe, la misma divergencia del [piso de cuadratura DG](/es/posts/2026-08-19-dg-taylor-basis-quadrature-order/).
 
 ## PAD y NAD — dos puestos de control
 
@@ -136,19 +144,21 @@ def mood_step(U, dx, dt, gamma=GAMMA, delta0=1e-4, eps=5e-4):
     return U_new, beta
 ```
 
-Aplica esto al Toro Test 3 ($\rho_L=1$, $p_L=1000$, $\rho_R=1$, $p_R=0.01$, $N=200$). El MUSCL sin limitador escupe una presión negativa hacia el paso 14 y diverge. Con MOOD encima, cuatro a seis celdas alrededor del choque se encienden como troubled y se recalculan con el flujo de primer orden, mientras las restantes ~194 celdas conservan la precisión P=1 del candidato.
+El fragmento, sobre el Toro Test 3 ($\rho_L=1$, $p_L=1000$, $\rho_R=1$, $p_R=0.01$, $N=200$). El MUSCL sin limitador escupe una presión negativa hacia el paso 14 y diverge. Con MOOD encima, cuatro a seis celdas alrededor del choque se encienden como troubled y se recalculan con el flujo de primer orden, mientras las restantes ~194 celdas conservan la precisión P=1 del candidato.
+
+A la izquierda $\rho=1$, $p=1000$. A la derecha $\rho=1$, $p=0.01$. $N=200$. El paso 14 es el momento en que el MUSCL sin limitador emite presión negativa. Solo 4–6 celdas vuelven al FV de primer orden, y unas 194 conservan P=1. Hay $2P+1$ subceldas y $P+1$ grados de libertad. Con P=1 son 3 subceldas y 2 coeficientes, así que la recuperación $\mathcal{W}$ queda sobredeterminada. Por eso la integral de la celda entra como restricción.
+
+La banda es $\delta=\max[\delta_0,\epsilon(q_{\max}-q_{\min})]$, con $\delta_0$ de $10^{-4}$ a $10^{-3}$ y $\epsilon=5\cdot 10^{-4}$. Con $\delta_0=10^{-6}$ también se marcan zonas suaves. Con $10^{-2}$ el choque se escapa. En 200 celdas y CFL $=0.4$, una o dos celdas del plateau parpadeaban en cada paso. La solución apenas se movió. El coste sí: cerca del 10% por detección en la reproducción, frente a cerca del 5% del artículo, porque $\mathcal{L},\mathcal{C},\mathcal{R}$ se rearman cada vez.
+
+De 200 celdas, 4–6 quedan troubled y unas 194 conservan P=1. PAD solo pregunta si la densidad y la presión siguen positivas. La presión negativa del paso 14 es un candidato que no cruza esa puerta. En la banda NAD, $\epsilon=5\cdot 10^{-4}$ es el ancho relativo y $\delta_0$ de $10^{-4}$ a $10^{-3}$ es el ancho absoluto. Cuando la presión cae de 1000 a 0.01, $q_{\max}-q_{\min}$ es grande y el término con $\epsilon$ puede superar a $\delta_0$. La densidad vale 1 a ambos lados, así que el mismo $\delta_0$ resulta más estricto ahí. El paso de cerca del 5% a cerca del 10% es el bloque 4×4 al cambiar de DG a FV: pocas celdas troubled, pero el patrón de la matriz igual se sustituye. $\beta_i$ se reinicia en cada paso. Un choque lento vuelve a hacer sospechosas las mismas 4–6 celdas.
 
 ## Visualización — dónde se encienden las troubled cells
 
-Prueba la simulación.
-
-<MOODTroubledCellMap1D />
-
-Sube el cociente de presiones a 1000:0.01 y verás cuatro a seis celdas troubled alrededor del choque. Baja $\delta_0$ a 1e-6 y las regiones suaves también disparan el detector — false positives por todas partes. Súbelo a 1e-2 y los choques reales se cuelan. La franja recomendada $[10^{-4}, 10^{-3}]$ es ese valle estrecho entre ambos extremos. Activa la casilla *overlay unlimited candidate* y observa cómo el MUSCL sin MOOD (curva roja a trazos) se desploma alrededor del choque.
+Al ensanchar la banda $\delta$ alrededor del mínimo y el máximo de las tres vecinas, se estrecha el rango en el que un candidato queda marcado.
 
 <DMPRelaxedNADDetector />
 
-Arrastra el candidato $q^*$ dentro de la banda relajada definida por las tres vecinas. Pon $\delta$ a cero y *cualquier* extremo local queda marcado. La relajación es la pizca de indulgencia que mantiene vivos los picos suaves.
+Esa banda es el intervalo admisible. Con $\delta$ en cero, *cualquier* extremo local queda troubled. La relajación es el margen que deja vivo un pico suave.
 
 ## Lo que asoma en la reproducción
 
@@ -162,4 +172,4 @@ Arrastra el candidato $q^*$ dentro de la banda relajada definida por las tres ve
 
 El algoritmo estandariza explícitamente el bucle *detección → recálculo*. Pero el indicador troubled $\beta_i$ se reinicia en cada paso. Un choque que se mueve despacio fuerza a marcar las mismas celdas una y otra vez. Un indicador persistente podría reducir el propio coste del limitador. La continuación del grupo de Dumbser (Boscheri 2024, ALE-DG semi-implícito) da el primer paso concreto en esa dirección.
 
-Hoy tocamos un punto muy concreto donde dos representaciones conviven dentro de la misma celda: polinomio donde todo es suave, promedios de subcelda donde no lo es. El esqueleto de los próximos resolutores all-Mach se sostiene exactamente sobre este pequeño conmutador.
+Hoy tocamos un punto muy concreto donde dos representaciones conviven dentro de la misma celda: polinomio donde todo es suave, promedios de subcelda donde no lo es. El esqueleto de los próximos resolutores all-Mach se sostiene exactamente sobre este pequeño conmutador. Cortar una densidad negativa dentro del propio flujo es el [limitador de positividad](/es/posts/2026-05-20-positivity-preserving-flux-limiter/). MOOD duda primero del candidato y devuelve a primer orden solo las celdas rotas.

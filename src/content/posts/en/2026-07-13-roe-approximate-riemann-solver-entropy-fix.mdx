@@ -1,11 +1,13 @@
 ---
 title: "What You Give Up the Exact Riemann Solution For — the Roe Solver and the Entropy Fix"
 date: 2026-07-13
-description: "From the sqrt(rho) average to the entropy glitch, implementing Roe, HLL, and HLLC by hand"
+updated: 2026-10-19
+description: "When an eigenvalue crosses zero, Roe locks an expansion shock. The sqrt(rho) average and Harten's floor decide whether that sonic kink stays."
 tags: ["Riemann", "Roe-Scheme", "Approximate-Riemann-Solver", "Entropy-Fix", "HLLC"]
 locale: en
 slug: roe-approximate-riemann-solver-entropy-fix
 draft: false
+takeaway: "On Shu–Osher at δ=0.1, CFL 0.4 and t=1.8, density stays near 0.81 to 4.08. At δ=0 the Burgers expansion keeps a kink at x=0."
 ---
 
 import { RoeWaveFanExplorer } from '@/components/post-viz/2026-07-13-roe-approximate-riemann-solver-entropy-fix/RoeWaveFanExplorer'
@@ -13,9 +15,13 @@ import { BurgersEntropyGlitch } from '@/components/post-viz/2026-07-13-roe-appro
 
 # What You Give Up the Exact Riemann Solution For — the Roe Solver and the Entropy Fix
 
-The 1-D Euler Riemann problem has an exact solution. Solve one nonlinear equation for the star pressure with a Newton iteration and you are done. Yet almost no production compressible code uses that exact solution at every face. Why hold the exact answer in your hand and throw it away?
+The 1-D Euler Riemann problem has an exact solution. One nonlinear equation for the star pressure, one Newton loop, done. Production compressible codes still skip that solve at every face. The answer is in hand. It gets thrown out. Cost. Past an ideal gas, the exact solution may not exist at all.
 
-The answer is cost and robustness. This post walks through the alternative — the Roe approximate Riemann solver — from the ground up. It shows where the sqrt(rho)-weighted average comes from and implements the Roe flux directly for the Euler equations. Then it catches the solver quietly breaking physics — an entropy violation — and confirms the cure with a live simulation.
+Move the left and right density and velocity sliders. The sqrt(rho) weights and the three wave speeds $\hat{u}-\hat{c}$, $\hat{u}$, $\hat{u}+\hat{c}$ recompute on the face.
+
+<RoeWaveFanExplorer />
+
+When $\hat{u}-\hat{c}<0<\hat{u}+\hat{c}$, the wave fan straddles the face. Subsonic. Push both velocities hard to one side and the three waves share a sign. The state goes supersonic.
 
 ## Why the Exact Solution Vanished From Practice
 
@@ -49,11 +55,7 @@ Here $u$ is velocity, $H$ is total specific enthalpy, and the carets mark face-a
 
 Why the square root of density? Write the state $q$ and flux $f$ in the components of the parameter vector $W=\sqrt{\rho}\,(H,u,1)^T$ and both become perfectly quadratic. Being quadratic, the derivatives of $q$ and $f$ with respect to $W$ are linear, and the path integral that builds $\hat{A}$ evaluates exactly. What falls out is precisely this sqrt(rho)-weighted average.
 
-Change the left and right states below. The sqrt(rho) weights and the three wave speeds $\hat{u}-\hat{c}$, $\hat{u}$, $\hat{u}+\hat{c}$ update in real time.
-
-<RoeWaveFanExplorer />
-
-When $\hat{u}-\hat{c}<0<\hat{u}+\hat{c}$, the wave fan straddles the face (subsonic). Push both velocities hard to one side and all three waves tilt the same way — the state goes supersonic.
+The weight denominator is $\sqrt{\rho_L}+\sqrt{\rho_R}$. If one density is four times the other, its square root is twice as large, so that side's velocity and enthalpy pull twice as hard on the average. An arithmetic mean does not satisfy $\hat{A}(q_R-q_L)=f(q_R)-f(q_L)$ on a finite jump. Without sqrt(rho) the wave speeds are already wrong in front of a pure shock. The sound speed is $\hat{c}=\sqrt{(\gamma-1)(\hat{H}-\hat{u}^2/2)}$. At $\gamma=1.4$, $\gamma-1=0.4$. What remains after subtracting the kinetic energy $\hat{u}^2/2$ from the total enthalpy is the square of the sound speed. The place where the three wave speeds change sign is the same three-wave split as the [Euler eigensystem on an arbitrary normal](/en/posts/2026-06-03-euler-eigensystem-general-normal/).
 
 ## Split Into Waves, Then Add Them Back
 
@@ -126,6 +128,8 @@ print(f"t=1.8  min rho={rho.min():.3f}  max rho={rho.max():.3f}")   # -> min~0.8
 
 Roughly forty lines make a complete compressible solver. No Newton iteration, no exact Riemann solve. `delta` is the entropy-fix parameter covered next.
 
+The Shu–Osher initial field is $\rho=3.857143$, $u=2.629369$, $p=10.33333$ for $x<1$, and $\rho=1+0.2\sin(5x)$, $u=0$, $p=1$ on the right. $N=400$ on $[0,10]$, CFL 0.4, $t=1.8$, $\delta=0.1$. The printout is a density minimum near 0.81 and a maximum near 4.08. The left density 3.857 rises a little toward 4.08, and a trough of the sine falls toward 0.8. That range, with no Newton loop, is what this run holds.
+
 ## Roe Breaks the Entropy Condition
 
 The Roe solver treats every wave as a jump. Even a rarefaction is approximated as a train of small shocks. Usually that is harmless. But when a rarefaction contains a sonic point, things change. At that point an eigenvalue $\hat{\lambda}_k$ changes sign, passing through $0$.
@@ -139,11 +143,13 @@ $$
 \qquad |\hat{\lambda}_k| < \delta
 $$
 
-Here $\delta$ is the width of the floor. The demo below reproduces the effect on the scalar Burgers equation $u_t+(u^2/2)_x=0$. The initial state is a transonic expansion, left $u_L=-0.5$, right $u_R=1.0$, with the sonic point dead center. Drag the $\delta$ slider yourself.
+At $|\hat{\lambda}_k|=0$ the fix formula equals $\delta/2$, because $(0+\delta^2)/(2\delta)=\delta/2$. If $\delta$ is 0 the floor is 0 and the upwind dissipation vanishes. The code's `delta=0.1` lays 0.05 on that floor. Five to ten percent of $(|\hat{u}|+\hat{c})$ is the width before a contact smears too far.
+
+Raise the $\delta$ slider from 0 on the Burgers expansion $u_t+(u^2/2)_x=0$ with $u_L=-0.5$ and $u_R=1.0$. Watch whether the blue kink at $x=0$ moves. The sonic point $u=0$ sits in the middle of the interval.
 
 <BurgersEntropyGlitch />
 
-At $\delta=0$ a blue kink — the stationary expansion shock — sits at $x=0$. Raise $\delta$ and the numerical curve slides down onto the amber exact rarefaction fan. Practical tip: setting $\delta$ to 5–10% of the local $(|\hat{u}|+\hat{c})$ is usually safe. Set it too large and contacts smear out.
+At $\delta=0$ a blue kink — the stationary expansion shock — sits at $x=0$. Raise $\delta$ and the numerical curve slides down onto the amber exact rarefaction fan. Five to ten percent of the local $(|\hat{u}|+\hat{c})$ is usually safe. Too large, and contacts smear out.
 
 ## Cheaper: HLL and HLLC
 
@@ -165,8 +171,8 @@ The C in HLLC stands for the central Contact wave. It restores the wave HLL disc
 
 The production default is usually HLLC. It keeps contacts alive while making density and pressure positivity easy to enforce. Roe has excellent resolution, but the entropy fix is mandatory, and you must watch for the carbuncle phenomenon on strong grid-aligned shocks.
 
-## What I Want to Leave You With
+## Leave δ at zero and the expansion shock stays on the face
 
-- The sqrt(rho) weighting in the Roe average is not arbitrary. It falls out of the unique parameterization that makes $q$ and $f$ quadratic.
-- The price of an approximate Riemann solver is an entropy violation. Unless Harten's fix stops $|\lambda|\to 0$ at the sonic point, an expansion shock freezes in place.
-- HLL, HLLC, and Roe form a spectrum of "how many waves to keep." Pick the balance of robustness, resolution, and cost to fit the problem.
+The sqrt(rho) weight comes from the parameterization $W=\sqrt{\rho}\,(H,u,1)^T$ that makes $q$ and $f$ quadratic. Without that path integral the jump condition on $\hat{A}$ breaks at finite amplitude. Leave $|\hat{\lambda}_k|\to 0$ untouched at a sonic point and Rankine–Hugoniot still holds while entropy does not. Roe without Harten's floor locks the expansion shock as a stationary solution.
+
+How many waves to keep is the next decision. HLL keeps two acoustic waves and smears the contact. HLLC restores the contact and four constant states. Roe goes to five waves in 3-D, but the entropy fix is mandatory, and a strong shock aligned with the grid still needs a carbuncle check. At low Mach the artificial-diffusion scales split on their own. The [Hope–Collins note that splits low-Mach Roe into three scalings](/en/posts/2026-05-17-hope-collins-2022-lowmach-artificial-diffusion/) is that split.

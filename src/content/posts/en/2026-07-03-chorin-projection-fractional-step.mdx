@@ -1,10 +1,12 @@
 ---
 title: "The Man Who Erased Pressure — Chorin's Projection Method and Fractional Step"
 date: 2026-07-03
-description: "Predict an incompressible velocity, then project it back to divergence-free"
+updated: 2026-10-19
+description: "After the predictor the divergence sits near 1e-2. One FFT projection drops it to 1e-13, and the pressure Poisson still takes most of the step."
 tags: ["Incompressible", "Projection-Method", "Fractional-Step", "Pressure-Poisson", "Navier-Stokes"]
 locale: en
 slug: chorin-projection-fractional-step
+takeaway: "A mismatch between inflow and outflow leaves the Neumann Poisson with no solution. Turn projection off and that divergence stays, step after step."
 draft: false
 ---
 
@@ -12,6 +14,12 @@ import { HelmholtzHodgeSplit } from '@/components/post-viz/2026-07-03-chorin-pro
 import { ProjectionFluidCanvas } from '@/components/post-viz/2026-07-03-chorin-projection-fractional-step/ProjectionFluidCanvas'
 
 In 1967, Alexandre Chorin erased pressure from the equations — at least for a moment. Pressure is the most awkward term when you solve the incompressible Navier–Stokes equations. It has no time derivative. Density is constant, so you cannot recover pressure from an equation of state either. Chorin's answer was bold: march the velocity forward while ignoring pressure, then force the result back to a divergence-free state. This post walks through that fractional step — usually called the projection method — starting from a one-line theorem, the Helmholtz–Hodge decomposition, and ending with a 2D solver that actually runs. By the end you will see why most of the runtime of an incompressible code is eaten by the pressure Poisson equation.
+
+Raise the source strength on the left panel from 0 to 14 and the divergence colors come alive, while the right-hand projection keeps only the swirl.
+
+<HelmholtzHodgeSplit />
+
+At a source of 0 the two panels nearly match. At 14 only the left one fills with red and blue, and the right one stays dark. Projection has stripped the compressible part.
 
 ## Pressure Has No Time Derivative
 
@@ -45,11 +53,7 @@ $$
 \mathbf{u} = \mathbb{P}\mathbf{w} = \mathbf{w} - \nabla\phi
 $$
 
-Play with the two panels below. The left one shows a swirl plus a radial source; the right one shows the same field after projection.
 
-<HelmholtzHodgeSplit />
-
-Raise the source strength from 0 to 14 and the left panel lights up red and blue (its divergence grows), while the right one stays dark. Projection has stripped away the whole compressible component and kept only the swirl.
 
 ## Predict, Then Project — the Fractional Step
 
@@ -83,7 +87,7 @@ This is where the practical pain begins. The predictor is cheap. The corrector, 
 
 Boundary conditions are full of traps too. The boundary condition on $\phi$ is Neumann at walls ($\partial\phi/\partial n = 0$). A Neumann problem is defined only up to a constant, and for a solution to exist it must satisfy a **compatibility condition** — $\int \nabla\cdot\mathbf{u}^*\,dV = 0$ over the whole domain. If your inflow and outflow fluxes do not match, the Poisson equation has no solution at all. When you see NaN, suspect the boundary flux first.
 
-On a collocated grid, placing pressure and velocity at the same point invites checkerboard oscillations. You either use a staggered grid or block them with Rhie–Chow interpolation. As a side note: SIMPLE-type methods repeat this same projection idea several times per step to drive toward steady state, whereas the fractional step here follows an unsteady flow with a single projection per step, keeping time accuracy.
+On a collocated grid, placing pressure and velocity at the same point invites checkerboard oscillations. Either a staggered grid or [Rhie–Chow interpolation](/en/posts/2026-10-14-rhie-chow-under-relaxation-memory/) blocks them. If that face velocity remembers the under-relaxation factor, the converged solution itself changes. As a side note: SIMPLE-type methods repeat this same projection idea several times per step to drive toward steady state, whereas the fractional step here follows an unsteady flow with a single projection per step, keeping time accuracy.
 
 ## Python: Rolling Up a Double Shear Layer with an FFT
 
@@ -149,6 +153,10 @@ for n in range(steps):
 
 Watch the output: each step $|\nabla\cdot\mathbf{u}^*|$ is of order $10^{-2}$, but after projection $|\nabla\cdot\mathbf{u}|$ drops to $10^{-13}$. The FFT projection has killed the divergence down to machine precision.
 
+A side of 128 means spacing 1/128. Viscosity 5e-3 and unit scales give Re = 200, as the comment says. Three thousand steps of 2e-3 integrate to time 6. Layer thickness 1/30 is about 0.033, a little over four cells. The perturbation 0.05 is 5 percent of the jet, so the roll-up starts there. Divergence $10^{-2}$ over $10^{-13}$ is eleven digits. Pinning the mean Fourier mode to 0 closes the Neumann constant. A broken inflow-outflow balance is not fixed by that denominator. The 70 to 90 percent cost is this matrix. The predictor keeps the other 10 to 30 percent.
+
+Clearing a divergence of $10^{-2}$ at a step of 2e-3 asks the Laplacian of $\phi$ for about 5. That is the pressure gradient's correction in one step. Without projection it stays as divergence, and 3000 steps are enough to fill the grid.
+
 ## What Happens When You Turn Projection Off
 
 Without the corrector, the velocity field piles up a little divergence every step. Mass is no longer conserved, the vortices smear, and the field soon becomes grid-filling noise. See it for yourself in the simulation below.
@@ -157,8 +165,8 @@ Without the corrector, the velocity field piles up a little divergence every ste
 
 With Projection ON, the shear layer rolls up into a clean pair of vortices. The moment you switch it OFF, the max|∇·u| readout in the top corner spikes and the vortex pattern collapses. Raising dt makes advection more aggressive and the collapse comes faster. That single toggle is the shortest possible answer to "why do we need projection?"
 
-## A Summary for Those Who Won't Read This Again
+## A one-drop flux mismatch leaves the Poisson with no answer
 
-- In incompressible flow, pressure is not a variable you evolve; it is a Lagrange multiplier that enforces $\nabla\cdot\mathbf{u}=0$ every step.
-- The projection method is two stages: predict with pressure dropped ($\mathbf{u}^*$), then solve a Poisson equation for $\phi$ and subtract its gradient.
-- Most of the cost lives in the pressure Poisson solve, and the Neumann compatibility condition and checkerboard are its classic traps.
+In incompressible flow, pressure is not a variable to evolve. It is a Lagrange multiplier that enforces $\nabla\cdot\mathbf{u}=0$ every step. Projection builds $\mathbf{u}^*$ with pressure dropped, then solves a Poisson equation for $\phi$ and subtracts the gradient. That order is short. The break is at the boundary. If inflow and outflow do not match, there is no compatibility condition, and the matrix keeps only a constant freedom and returns no solution.
+
+Keeping time accuracy with one projection per step means not resolving convection again inside that step. Raising only the viscous order and pushing convection outside is the split in [where Gear's extrapolation of convection grew the error](/en/posts/2026-10-12-semi-implicit-gear-convection-extrapolation/). Make the predictor's convection look more accurate and the divergence-free state the projection just set can drift.

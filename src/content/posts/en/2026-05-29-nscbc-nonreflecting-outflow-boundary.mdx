@@ -1,7 +1,9 @@
 ---
 title: "How to Make an Outflow Stop Reflecting Sound — Navier–Stokes Characteristic Boundary Conditions"
 date: 2026-05-29
-description: "The single most common cause of compressible-solver blow-ups, tamed by one parameter σ"
+updated: 2026-10-19
+description: "A six-hour LES drifted 0.3 bar because the outlet reflected sound. NSCBC sets the incoming wave with σ near 0.25 so acoustics leave and the mean holds."
+takeaway: "Zero incoming amplitude lets sound out and lets the mean wander. Relaxation near σ=0.25 pulls the mean back without turning the outlet into a wall."
 tags: ["Compressible", "Boundary-Conditions", "NSCBC", "LODI", "Aeroacoustics"]
 locale: en
 slug: nscbc-nonreflecting-outflow-boundary
@@ -13,9 +15,16 @@ import { LODICharacteristicWaves } from '@/components/post-viz/2026-05-29-nscbc-
 
 A compressible LES blew up after six hours. There was no NaN in the log, no shock anywhere. The mean pressure had drifted up by 0.3 bar, and acoustic waves were ricocheting back into the domain from the outlet. The culprit was a zero-gradient extrapolation at the outflow. Today we walk all the way through Poinsot–Lele's NSCBC (1992) using one single 1D acoustic pulse — the cleanest way to see why an outflow has to listen to incoming waves, not extrapolate them.
 
+
+The Mach slider runs from 0 to 1.6. Raising it drops the count of arrows that point back into the domain.
+
+<LODICharacteristicWaves />
+
+Below Mach 1 one bold red arrow still points inward. Past Mach 1 that arrow leaves with the flow. The number of signals the outlet must set is on that screen.
+
 ## The Domain Diverged After Six Hours
 
-External boundaries kill compressible solvers more often than shocks do. A zero-gradient outflow copies momentum and energy into the ghost cells, but that copy creates an acoustic impedance mismatch. Any acoustic wave that should leave the domain instead hits a jump in impedance, and part of it bounces back.
+External boundaries kill compressible solvers more often than shocks do. A zero-gradient outflow copies momentum and energy into the ghost cells, but that copy creates an acoustic impedance mismatch. Any acoustic wave that should leave the domain instead hits a jump in impedance, and part of it bounces back. How much of that jump is transmitted, and how much comes back, is written out on [the acoustic side of an interface](/en/posts/2026-06-14-acoustic-interface-transmission-snell/).
 
 In LES, DNS, or combustion runs this reflection accumulates in the mean field. Before Reynolds averaging even settles, the outlet starts acting like a resonator and the pressure drifts slowly upward. NSCBC fixes the whole class of problems with a single principle — specify the amplitude of incoming characteristic waves directly.
 
@@ -31,9 +40,7 @@ where $A = \partial F/\partial U$ is the flux Jacobian. Its right-eigendecomposi
 
 Each eigenvalue corresponds to one characteristic wave. $u-c$ is a left-going acoustic, $u$ carries entropy and transverse velocity (transported with the fluid), and $u+c$ is a right-going acoustic.
 
-<LODICharacteristicWaves />
-
-Slide the Mach number from 0 to 1.6 in the figure above. A subsonic outflow has only one incoming characteristic — $u-c$ in bold red. Exactly one BC is needed. Forgetting this and pinning velocity, pressure, and temperature simultaneously turns the boundary into an over-specified linear system, and the solver dies.
+The bold arrow on the Mach slider above is $u-c$. A subsonic outflow lets only that one wave back in. Exactly one boundary value is required. Pinning velocity, pressure, and temperature together over-specifies the row, and the solver dies.
 
 ## LODI — The Plane-Wave Approximation
 
@@ -82,9 +89,13 @@ $\sigma$ has two faces:
 
 The acoustic reflection coefficient scales as $|R| \approx \sigma L/(c\tau)$ to leading order, where $\tau$ is the wave transit time. In LES practice, once domain length and mean Mach are fixed, $\sigma$ is tuned in the range 0.1–0.5.
 
+Set the transit time to a domain crossing, $\tau=L/c$. Then $L/(c\tau)=1$ and the estimate collapses to $|R|\approx\sigma$. The usual $\sigma\approx 0.25$ is a 0.25 amplitude bounce under that reading. Moving $\sigma$ from 0.1 to 0.5 drags $|R|$ across the same interval. $K$ is linear in $\sigma$, so doubling 0.25 to 0.5 doubles $K$. The factor $(1-M_{\max}^{2})$ is the Mach correction. It is 1 at $M_{\max}=0$ and $1-0.25=0.75$ at $M_{\max}=0.5$, a 25% cut in $K$. As $M_{\max}$ approaches 1, $K$ shuts off, the same direction as an incoming arrow disappearing on the slider.
+
+Switch the mode between Zero-gradient and NSCBC. The $\sigma$ slider is the factor multiplying the incoming wave.
+
 <OutflowAcousticReflection1D />
 
-Play with the simulation. With "Zero-gradient", a Gaussian acoustic pulse bounces off the right boundary almost intact (reflection coefficient ≈ 1). Switch to "NSCBC" and the pulse leaves cleanly — until you raise $\sigma$ above 0.5, where reverberation reappears. The bottom panel shows the time history of $p'$ at the boundary.
+On Zero-gradient the Gaussian pulse bounces off the right edge almost intact. The reflection coefficient sits near 1. NSCBC lets the pulse leave, until $\sigma$ climbs past 0.5 and the echo piles up again. The lower curve is $p'$ at the boundary.
 
 ## Python — A Sound Pulse Meets an Outflow
 
@@ -137,6 +148,8 @@ print(f"max |p'| (nscbc):   {np.max(np.abs(p_nscbc)):.3e}")
 
 For the same pulse, zero-gradient keeps almost all of it (reflection), while NSCBC suppresses it by two orders of magnitude. Sweeping $\sigma$ traces an almost linear reflection coefficient.
 
+The comment records peaks of 0.998 and 0.025. Their ratio is about 40. The code multiplies the outgoing wave by $\sigma=0.05$, yet the peak ratio sits closer to 0.025 than to 0.05, because the pulse also leaves and spreads. Divide the logged 0.3 bar by six hours and the mean slope is 0.05 bar/h. With $\mathcal{L}_1=0$, $\partial p/\partial t=-\mathcal{L}_5/2$ sets the sign of that slope.
+
 ## Checklist Before You Ship It
 
 - **Count the boundary type first.** Subsonic outflow → 1 BC, supersonic outflow → 0 BCs, subsonic inflow → 4 BCs, supersonic inflow → 5 BCs. Use the figure above to double-check.
@@ -145,6 +158,9 @@ For the same pulse, zero-gradient keeps almost all of it (reflection), while NSC
 - **NSCBC alone is not enough when shocks hit the outlet.** Pair it with a buffer zone (sponge layer) to kill nonlinear reflection.
 - **Viscous fluxes need separate handling.** NSCBC does not address them on its own.
 
-## One-Line Takeaway
 
-An outflow boundary should specify the amplitude of incoming waves, not values. Inject $\mathcal{L}_1 = K(p - p_\infty)$ on the single incoming characteristic and acoustics leave, mean pressure stays. Tune $\sigma$ within an order of magnitude and your six-hour LES survives its outlet.
+## Pinning σ at Zero Lets the Mean Walk Off
+
+$\mathcal{L}_1=0$ sends acoustics out cleanly and leaves $\partial p/\partial t=-\mathcal{L}_5/2$. Any small positive bias in the time average of $\mathcal{L}_5$ means pressure has no ceiling. The 0.3 bar after six hours is that integral, sitting in the log. Putting $\sigma\approx 0.25$ into $K=\sigma(1-M_{\max}^{2})c/L$ pulls the drift back, and under $\tau=L/c$ it also returns about a quarter of the amplitude.
+
+Push $\sigma$ toward 5 and the boundary stiffens until the pulse bounces. Between 0 and 5, the code's 0.05 and the usual 0.25 are two points on the same line. This page stops at "one incoming wave." The tighter account of that single coefficient is [how σ at an outlet fixes the reflection](/en/posts/2026-08-04-nscbc-nonreflecting-outlet-sigma/).

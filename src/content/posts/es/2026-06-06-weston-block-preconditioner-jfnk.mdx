@@ -1,17 +1,25 @@
 ---
 title: "[Reseña de artículo] GMRES corrió 1000 veces y no se detenía — precondicionamiento por bloques físico para un melt pool a toda velocidad"
 date: 2026-06-06
+updated: 2026-10-19
 description: "Un precondicionador de complemento de Schur velocidad–presión mantiene plano el número de iteraciones cuando el Mach tiende a cero"
 tags: ["Block-Preconditioner", "Newton-Krylov", "All-Speed", "Schur-Complement", "JFNK", "Paper-Review"]
 locale: es
 slug: weston-block-preconditioner-jfnk
 draft: false
+takeaway: "Los autovalores valen 1 solo con el complemento de Schur exacto. Una resolución floja de S por AMG vuelve a abrir el conteo externo."
 ---
 
 import { AcousticConvectiveScales } from '@/components/post-viz/2026-06-06-weston-block-preconditioner-jfnk/AcousticConvectiveScales'
 import { GmresSchurConvergence } from '@/components/post-viz/2026-06-06-weston-block-preconditioner-jfnk/GmresSchurConvergence'
 
-Corrí una simulación implícita de un melt pool (charco fundido) por láser. En el primer paso de tiempo, GMRES dio 1000 vueltas y el residuo se quedó clavado en 1e-2. Al bajar el número de Mach a 1e-3, el síntoma empeoró — la velocidad del sonido era 1000 veces la del flujo, y el jacobiano estaba enfermo. Weston, Nourgaliev, Delplanque y Barker (2019) resolvieron justo esto. El truco es usar el complemento de Schur velocidad–presión como precondicionador. Hoy reproduzco su núcleo en un toy de 2 campos y observo cómo un solo precondicionador devuelve la convergencia independiente del Mach.
+Se corrió un melt pool láser en forma implícita. En el primer paso de tiempo, GMRES dio 1000 vueltas y el residuo se quedó en 1e-2. Al bajar el Mach a 1e-3, la velocidad del sonido pasa a ser 1000 veces la del flujo. El jacobiano enfermó en esa razón. Weston, Nourgaliev, Delplanque y Barker (2019) cortaron el estancamiento usando el complemento de Schur velocidad–presión como precondicionador. Estas notas pasan ese precondicionador a un toy de 2 campos y anotan dónde se pega el número de iteraciones al cambiar el Mach.
+
+Al bajar el control de Mach, solo la onda acústica de la pista superior se acelera, a $c=1/M$. El trazador convectivo de abajo se queda en $u=1$.
+
+<AcousticConvectiveScales />
+
+En $M=10^{-2}$ la onda acústica da 100 vueltas a la pista mientras el trazador avanza una muesca. En $M=10^{-3}$ la razón es 1000:1. La misma brecha de la noche en que el residuo se pegó en 1e-2.
 
 ## Dónde se sitúa este artículo
 
@@ -20,13 +28,17 @@ Corrí una simulación implícita de un melt pool (charco fundido) por láser. E
 - **Título**: *Preconditioning a Newton-Krylov solver for all-speed melt pool flow physics*
 - **En una línea**: resolver las Navier–Stokes compresibles a toda velocidad (all-speed) con cambio de fase mediante JFNK totalmente implícito, y domar la rigidez de bajo Mach con un **precondicionador de complemento de Schur por bloques en variables primitivas**.
 
-Los precondicionadores habituales — SOR por bloque de elemento, AMG monolítico, Gauss–Seidel por bloques — disparan todos el número de iteraciones cuando el paso de tiempo o el Mach llegan a un extremo. El aporte del artículo es el complemento de Schur `vP-vT`, un precondicionador que copia directamente la estructura del acoplamiento físico.
+Los precondicionadores habituales — SOR por bloque de elemento, AMG monolítico, Gauss–Seidel por bloques — disparan todos el número de iteraciones cuando el paso de tiempo o el Mach llegan a un extremo. Lo que entrega el artículo es el complemento de Schur `vP-vT`. La forma en bloques del acoplamiento físico se copia en la matriz del precondicionador.
 
 ## Por qué el jacobiano enferma cuando M tiende a cero
 
 "A toda velocidad" significa que un mismo código resuelve desde lo incompresible ($M\to 0$) hasta lo supersónico. El problema es el límite de bajo Mach. La razón entre la velocidad acústica $c$ y la del flujo $u$ se abre como $c/u = 1/M$. En $M=10^{-3}$, el sonido va 1000 veces más rápido que el fluido.
 
-Al ir totalmente implícito, esas dos escalas se mezclan dentro de un único jacobiano. El bloque de acoplamiento presión–velocidad crece como $1/M^2$ y el número de condición de la matriz se dispara. Un solver de Krylov se arrastra sobre una matriz cuyos autovalores están muy esparcidos. Por eso GMRES no se detenía.
+Al ir totalmente implícito, esas dos escalas se mezclan dentro de un único jacobiano. El bloque de acoplamiento presión–velocidad crece como $1/M^2$ y el número de condición de la matriz se dispara. Un solver de Krylov se arrastra sobre autovalores muy esparcidos.
+
+Al colocar $M$ en los cuatro puntos del código, $\beta=1/M^2$ sale directo. $M=1$ da $\beta=1$. $M=10^{-1}$ da $\beta=10^{2}$. $M=10^{-2}$ da $\beta=10^{4}$. $M=10^{-3}$ da $\beta=10^{6}$. Una entrada del bloque presión–velocidad crece un millón de veces. La malla es $n=64$ y el espaciado $dx=1/64$ en los cuatro casos. El tamaño de la matriz sigue en $2n=128$. Solo cambia el espectro escalado por $\beta$.
+
+Un CFL acústico aplasta el paso según $\Delta t \propto M\Delta x$. Bajar $M$ de 1 a $10^{-3}$ reduce el paso admisible a la milésima parte. Lo totalmente implícito suelta ese límite y entrega el número de condición a $\beta$. La misma rigidez, amplificada al revés por un precondicionador, está en [el precondicionador por bloques con CFL acústico 10](/es/posts/2026-08-29-block-preconditioner-acoustic-cfl-loop-gain/).
 
 JFNK (Jacobian-Free Newton–Krylov) nunca forma el jacobiano de forma explícita; solo aproxima el producto matriz–vector con una diferencia de Fréchet.
 
@@ -34,7 +46,7 @@ $$
 J\boldsymbol{\kappa} \approx \frac{F(x + h\boldsymbol{\kappa}) - F(x)}{h}
 $$
 
-$F$ es el residuo no lineal, $\boldsymbol{\kappa}$ un vector de Krylov y $h$ un número finito pequeño. No almacenar la matriz ahorra memoria, pero **sin precondicionador la convergencia muere a bajo Mach**. Precondicionar no es opcional aquí: es todo el juego.
+$F$ es el residuo no lineal, $\boldsymbol{\kappa}$ un vector de Krylov y $h$ un número finito pequeño. No guardar la matriz reduce memoria. Sin precondicionador, esa diferencia camina los autovalores esparcidos en bajo Mach.
 
 ## Soltar las variables conservativas por las primitivas $(P,v,T)$
 
@@ -50,11 +62,11 @@ $$
 M = \begin{bmatrix} M_{vv} & M_{vP} & M_{vT} \\ M_{Pv} & M_{PP} & M_{PT} \\ M_{Tv} & M_{TP} & M_{TT} \end{bmatrix}
 $$
 
-Cada bloque corresponde a un campo primitivo (velocidad, presión, temperatura). Esta estructura es el trampolín del siguiente paso.
+Cada bloque corresponde a un campo primitivo (velocidad, presión, temperatura). Ese orden es el trampolín de la factorización.
 
 ## LU por bloques y el complemento de Schur velocidad–presión
 
-El acoplamiento presión–temperatura ($M_{PT}, M_{TP}$) es débil. Al descartar ambos, la factorización LU por bloques sale limpia y el núcleo se condensa en el **complemento de Schur velocidad–presión**.
+El acoplamiento presión–temperatura ($M_{PT}, M_{TP}$) es débil. Al descartar ambos, la factorización LU por bloques sale limpia y lo que queda es el **complemento de Schur velocidad–presión**.
 
 $$
 S_{vP} = M_{PP} - M_{Pv}\,M_{vv}^{-1}\,M_{vP}
@@ -62,9 +74,11 @@ $$
 
 $S_{vP}$ es la ecuación efectiva para la presión tras eliminar la velocidad — el mismo esqueleto que la ecuación de corrección de presión de la familia SIMPLE. Toma el precondicionador $P$ con esta forma triangular superior por bloques y los autovalores de $P^{-1}A$ se agrupan cerca de 1. Con el $S$ exacto, el factor $U$ de $A=LU$ es literalmente $P$, de modo que $P^{-1}A$ es semejante a una triangular inferior unipotente: **todos los autovalores valen exactamente 1**. GMRES termina en dos o tres pasos.
 
+El código para en `rtol=1e-8`, con tope `maxiter=500` y reinicio `2n=128`. Autovalores en un punto cierran el subespacio de Krylov en dos pasos. Si no, la corrida toca 500 antes.
+
 ## Python — contar iteraciones de GMRES al bajar el Mach
 
-Deja fuera la temperatura y reproduce el corazón en un toy de 2 campos $(v,P)$. El sistema por bloques es $A=\begin{bmatrix} I & \beta G \\ D_v & I\end{bmatrix}$ con $\beta=1/M^2$. El precondicionador es el complemento de Schur exacto $S=I-\beta D_v G$.
+La temperatura queda fuera. El corazón se reproduce en un toy de 2 campos $(v,P)$. El sistema por bloques es $A=\begin{bmatrix} I & \beta G \\ D_v & I\end{bmatrix}$ con $\beta=1/M^2$. El precondicionador es el complemento de Schur exacto $S=I-\beta D_v G$.
 
 ```python
 import numpy as np
@@ -113,32 +127,30 @@ for M in [1.0, 1e-1, 1e-2, 1e-3]:
     print(f"{M:>8.0e}  {count_iters(M, False):>8d}  {count_iters(M, True):>6d}")
 ```
 
-El resultado es contundente. Sin precondicionador, el número de iteraciones trepa a decenas y cientos a medida que $M$ encoge, y en $M=10^{-3}$ ni siquiera converge dentro del tope. El precondicionador de Schur termina en dos o tres pasos sin importar $M$. La "convergencia independiente del Mach" que reporta el artículo nace de este precondicionador de una sola línea.
+Sin precondicionador, el número de iteraciones trepa a decenas y cientos a medida que $M$ encoge, y en $M=10^{-3}$ ni siquiera entra en el tope de 500. El lado de Schur factoriza $S=I-\beta D_v G$ una vez por LU, y GMRES baja el residuo a 1e-11 en dos o tres pasos. Conteos de Schur iguales en $M=1$ ($\beta=1$) y en $M=10^{-3}$ ($\beta=10^{6}$) son la cara numérica de autovalores apilados en 1.
 
 ## Interactivo — acústica y convección, dos velocidades que se separan
 
-Primero, mira de dónde sale la rigidez. Baja el número de Mach en la simulación de abajo. La onda acústica de la pista superior corre a $c=1/M$, y el trazador convectivo de abajo a $u=1$.
-
-<AcousticConvectiveScales />
-
-Bájalo a $M=10^{-2}$ y la onda acústica da 100 vueltas a la pista mientras el trazador convectivo avanza una sola muesca. Esa brecha de velocidad 100:1 se traslada directamente al número de condición del jacobiano. De forma explícita, el CFL acústico aplastaría el paso de tiempo hasta $\Delta t \propto M\Delta x$.
+La brecha 100:1 en $M=10^{-2}$ es $c/u=1/M$. El jacobiano recibe el cuadrado, $\beta=10^{4}$. En $M=10^{-3}$, $\beta=10^{6}$. En forma explícita, $\Delta t \propto M\Delta x$.
 
 ## Interactivo — dónde el precondicionador derrumba el residuo
 
-Ahora observa el residuo real de GMRES. Mueve el deslizador de Mach abajo y las dos curvas — con y sin precondicionamiento — se redibujan.
+Ahora el residuo real de GMRES. Al mover el control de Mach, las dos curvas — con y sin precondicionamiento — se redibujan.
 
 <GmresSchurConvergence />
 
-La curva naranja (sin precondicionador) se aplana y se estanca al bajar $M$. La curva cian (precondicionada con Schur) se desploma a 1e-11 en dos o tres pasos, esté donde esté $M$. La brecha entre ambas es más dramática en $M=10^{-3}$ — es el precondicionador, construido a partir del acoplamiento físico, absorbiendo la rigidez por completo.
+La curva naranja (sin precondicionador) se aplana y se estanca al bajar $M$. La curva cian (precondicionada con Schur) se desploma a 1e-11 en dos o tres pasos, esté donde esté $M$. La brecha es máxima en $M=10^{-3}$. El bloque escalado por $\beta=10^{6}$ queda absorbido entero por un precondicionador copiado del acoplamiento físico.
 
-## Tres cosas que me hicieron dudar al programarlo
+## Tres cosas que generaron dudas al programarlo
 
-**Primero, un $S$ exacto solo es gratis en un toy.** Aquí resolví $S=I-\beta D_v G$ de forma exacta por LU y convergí en dos pasos. En la práctica, el $M_{vv}^{-1}$ dentro de $S_{vP}=M_{PP}-M_{Pv}M_{vv}^{-1}M_{vP}$ es una inversa densa que no se puede formar. El artículo resuelve $S$ de forma aproximada (un V-cycle de AMG, por ejemplo), y la calidad de esa aproximación gobierna el número de iteraciones externas. El costo real de la "independencia del Mach" se esconde justo aquí.
+**Un $S$ exacto solo es gratis en un toy.** Aquí $S=I-\beta D_v G$ se factorizó por LU y la convergencia llegó en dos pasos. En la práctica, el $M_{vv}^{-1}$ dentro de $S_{vP}=M_{PP}-M_{Pv}M_{vv}^{-1}M_{vP}$ es una inversa densa que no se puede formar. El artículo resuelve $S$ de forma aproximada (un V-cycle de AMG, por ejemplo), y la calidad de esa aproximación gobierna el número de iteraciones externas. El costo de un conteo plano en Mach se esconde aquí.
 
-**Segundo, hasta dónde descartar el acoplamiento.** El artículo dice que descartar $M_{PT}, M_{TP}$ no cuesta robustez. Es un supuesto ajustado a la física del melt pool. Con un acoplamiento térmico compresible fuerte — deflagración, combustión — el mismo truncamiento puede matar la convergencia. Simplificar el precondicionador depende de la física.
+**Hasta dónde descartar el acoplamiento.** El artículo dice que descartar $M_{PT}, M_{TP}$ no cuesta robustez. Es un supuesto ajustado a la física del melt pool. Con un acoplamiento térmico compresible fuerte — deflagración, combustión — el mismo truncamiento puede frenar la convergencia. Si el precondicionador se simplifica, lo decide la física.
 
-**Tercero, la diferencia de Fréchet $h$ de JFNK.** Un $h$ demasiado pequeño deja entrar el redondeo; demasiado grande deja que el error de truncamiento contamine el producto matriz–vector. Aun con un buen precondicionador, un $h$ mal ajustado estanca a Newton. Es la primera trampa al pasar del enfoque segregado (SIMPLE) de OpenFOAM a uno totalmente acoplado e implícito.
+**La diferencia de Fréchet $h$ de JFNK.** Un $h$ demasiado pequeño deja entrar el redondeo; demasiado grande deja que el error de truncamiento contamine el producto matriz–vector. Aun con un buen precondicionador, un $h$ mal ajustado estanca a Newton. Es el primer tropiezo al pasar del enfoque segregado (SIMPLE) de OpenFOAM a uno totalmente acoplado e implícito.
 
 ## Cierre — un precondicionador no es gratis
 
-La lección de esa noche en que GMRES no se detenía fue simple. La rigidez de bajo Mach no se resuelve apretando más el jacobiano. Hace falta un precondicionador que copie la propia estructura del acoplamiento. El complemento de Schur es la ecuación efectiva para la presión, y resolverlo de forma exacta agrupa los autovalores en 1. Pero el $S$ del mundo real es una aproximación, y cuán barata y exactamente lo resuelves es la próxima batalla. La próxima vez agregaré una capa más a este mismo toy y observaré qué pasa con el número de iteraciones externas cuando $S$ se aproxima con AMG.
+La noche en que GMRES se detuvo en 1000 iteraciones y un residuo de 1e-2 no se cerró apretando más el jacobiano. Hacía falta un precondicionador que copiara el propio acoplamiento. El complemento de Schur es la ecuación de presión con la velocidad eliminada, y resolverlo de forma exacta agrupa los autovalores en 1. En un $S_{vP}$ real, $M_{vv}^{-1}$ es denso, así que el artículo lo aproxima con un V-cycle de AMG. Un ciclo áspero vuelve a abrir el conteo externo desde dos o tres pasos.
+
+No guardar el jacobiano y quedarse solo con el producto matriz–vector es la misma bifurcación que [la diferenciación automática por sobrecarga de operadores](/es/posts/2026-07-05-adoo-automatic-differentiation-jacobian/). JFNK sustituye ese producto por la diferencia de Fréchet $h$. Un $h$ desviado detiene a Newton aunque el precondicionador esté bien. La medición siguiente, en el mismo toy, es cuánto se aleja el conteo externo de dos o tres pasos cuando $S$ se resuelve de forma floja con AMG.

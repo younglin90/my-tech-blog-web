@@ -1,7 +1,9 @@
 ---
 title: "界面捕捉法の比較：VOF vs Level Set vs Diffuse Interface"
 date: 2026-03-06
-description: "圧縮性多相流における界面追跡の主要な3つの手法について、原理、長所・短所、および適用例を比較します。"
+updated: 2026-10-19
+description: "圧縮性の界面接触では、αを保存形に解くと圧力が揺れ出す。5方程式モデルはαの移流だけを非保存のまま一つ残し、平衡を守る。"
+takeaway: "PLIC は質量を閉じ込めて曲率が粗いです。Level Set は曲率がきれいで質量が漏れます。衝撃が界面に当たるときは非保存の α 移流が揺れにくいです。"
 tags: ["Multiphase", "VOF", "Level-Set", "Diffuse-Interface"]
 series: "compressible-multiphase"
 seriesOrder: 2
@@ -12,14 +14,19 @@ import { VOFvsLevelSet } from '@/components/post-viz/interface-capturing/VOFvsLe
 
 # 界面をどのように扱うか
 
-圧縮性多相流シミュレーションにおいて、最も根本的な問いの一つは
-「二つの流体間の**界面 (interface)** を数値的にどのように表現するか」です。
+圧縮性の二流体で止まる場所は、流束そのものではありません。二つの流体が接する面を、セルの中へどう書き残すかです。
 
-大きく分けて三つの系統の方法が存在します。
+分かれ道は三つです。
 
 1. **Volume of Fluid (VOF)**
 2. **Level Set**
 3. **Diffuse Interface (拡散界面)**
+
+モードのトグルを VOF、Level Set、Diffuse に切り替えると、同じ円の厚みと符号が変わります。
+
+<VOFvsLevelSet />
+
+VOF はセル内の直線片で色を閉じ込めます。Level Set はゼロ等高線が滑らかで、Diffuse は帯が数セルに広がります。
 
 ## 1. Volume of Fluid (VOF)
 
@@ -132,8 +139,7 @@ $$
 \frac{\partial \alpha_1}{\partial t} + \mathbf{u} \cdot \nabla \alpha_1 = 0
 $$
 
-最後の方程式が重要です。$\alpha_1$ の移流方程式が **非保存型 (non-conservative)** である点です。
-これがまさに界面における **圧力振動を防止する** 鍵となります。
+最後の行が分かれ目です。$\alpha_1$ の移流が **非保存型 (non-conservative)** です。界面の圧力を揺らさない場所がここです。
 
 ### なぜ非保存型が必要なのか？
 
@@ -143,13 +149,17 @@ $$
 \frac{\partial \alpha_1}{\partial t} + \nabla \cdot (\alpha_1 \mathbf{u}) = \alpha_1 \nabla \cdot \mathbf{u}
 $$
 
-右辺の $\alpha_1 \nabla \cdot \mathbf{u}$ 項が離散化の過程で適切に処理されないと、EOSの混合による非物理的な圧力振動が発生します。
+右辺の $\alpha_1 \nabla \cdot \mathbf{u}$ が離散発散で 0 にならないと、圧力が揺れます。
 
-非保存型の移流は、$\alpha_1$ を界面でシャープに維持しつつ、圧力と速度の平衡を満足させます。
+非保存の移流 $\partial\alpha/\partial t + \mathbf{u}\cdot\nabla\alpha = 0$ を展開すると $\partial\alpha/\partial t + \nabla\cdot(\alpha\mathbf{u}) - \alpha\nabla\cdot\mathbf{u} = 0$ です。最後の項を右へ移したのが上の式です。接触面で圧力と速度が一定なら $\nabla\cdot\mathbf{u}$ は 0 であるはずです。離散発散がその 0 を出せないと右辺が残ります。$\alpha=0.5$ の界面セルで残差発散を $\delta$ とすると、右辺は $0.5\delta$ です。$\alpha$ がその分動くと混合密度が変わり、状態方程式は同じ圧力へ戻れません。振動の種はこの項です。
+
+非保存形はその右辺を作りません。$\alpha$ は $\mathbf{u}$ に沿って動き、セル面の流束差分が $\alpha$ を直接増減させません。5方程式の最後の行が非保存である理由はここです。質量は上の二行、$\partial(\alpha_k\rho_k)/\partial t + \nabla\cdot(\alpha_k\rho_k\mathbf{u})=0$ が別に守ります。$\alpha$ を保存形で書かなくても、各相の質量はその行が受け持ちます。
+
+再初期化の数字も式の中にあります。$|\nabla\phi|=1$ が崩れると $\mathrm{sign}(\phi_0)(|\nabla\phi|-1)$ が仮想時間 $\tau$ で $\phi$ を押します。$|\nabla\phi|$ が 1 より大きいとその項が $\phi$ を削り、1 より小さいと逆へ押します。止まる場所は $|\nabla\phi|=1$ だけです。その過程でゼロ点 $\phi=0$ が 1 セルでも滑ると質量が漏れます。VOF の $\alpha$ 積分にはその滑りがありません。代わりに $\mathbf{n}=\nabla\alpha/|\nabla\alpha|$ で取る法線は、$\alpha$ が 0 と 1 の間に広がったセルでしか傾きを持ちません。曲率はそのセルのノイズに乗ります。$\kappa=-\nabla\cdot(\nabla\phi/|\nabla\phi|)$ は $\phi$ が距離関数のとき、同じ法線を滑らかに返します。だから CLSVOF が二つを結びます。質量は $\alpha$、曲率は $\phi$ です。
 
 ### 7-equation Model (Baer-Nunziato type)
 
-各相が **独立した圧力と速度** を持つことができる完全非平衡モデルです。
+各相に圧力と速度を別々に持たせられる完全非平衡モデルです。その道は [Baer–Nunziato の 7 方程式](/ja/posts/2026-06-27-baer-nunziato-seven-equation-two-phase/)がすでに開いています。
 
 $$
 \frac{\partial \alpha_k \rho_k}{\partial t} + \nabla \cdot (\alpha_k \rho_k \mathbf{u}_k) = 0, \quad k = 1, 2
@@ -168,13 +178,8 @@ $$
 | 5-eq Diffuse | O | 普通 | 自然 | 低い | **非常に良い** |
 | 7-eq Diffuse | O | 普通 | 自然 | 高い | **非常に良い** |
 
-## 結論
+## αを保存形で解くと接触面の圧力が揺れる
 
-圧縮性多相流においては、**Diffuse Interface (特に 5-equation model)** が最も自然で堅牢 (robust) な選択肢です。
-衝撃波と界面の相互作用、キャビテーション、水中爆発などの問題において卓越した性能を発揮します。
+圧縮性で表から残すのは下の二行です。5方程式は質量を $\partial(\alpha_k \rho_k)/\partial t + \nabla\cdot(\alpha_k \rho_k \mathbf{u})=0$ で守り、$\alpha$ の移流だけを非保存に残します。離散発散が $\alpha\nabla\cdot\mathbf{u}$ を 0 にできないと、$\alpha=0.5$ の界面セルが混合密度を押し、圧力が揺れます。
 
-次の記事では、これらの手法を実際にコードで実装する方法について解説します。
-
-VOF / Level Set / Diffuse を切り替えて同じ円形界面の表現の違いを比較。
-
-<VOFvsLevelSet />
+広がった帯を毎ステップ戻すかどうかは別の決定です。その操作は [反拡散で界面を立て直す実装](/ja/posts/2026-07-25-interface-sharpening-anti-diffusion/)へ続きます。

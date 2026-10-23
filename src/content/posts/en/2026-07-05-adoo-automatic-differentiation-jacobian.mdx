@@ -1,7 +1,9 @@
 ---
 title: "[Paper Review] Tired of Differentiating Jacobians by Hand? — Operator-Overloading Automatic Differentiation (ADOO)"
 date: 2026-07-05
-description: "Fraysse (2019): getting the exact flux Jacobian for implicit CFD with zero hand differentiation"
+updated: 2026-10-19
+description: "Fraysse (2019) seeds dual numbers through an unchanged flux routine and reads a machine-precision Jacobian, with no finite-difference step h to tune."
+takeaway: "A 20% Jacobian error flattens Newton from quadratic to linear; the exact matrix still hits 1e-6 inside 10 iterations at CFL 20."
 tags: ["Automatic-Differentiation", "Implicit-Solver", "Jacobian", "Newton-Krylov", "Compressible"]
 locale: en
 slug: adoo-automatic-differentiation-jacobian
@@ -11,7 +13,13 @@ draft: false
 import { DualNumberDerivativeLab } from '@/components/post-viz/2026-07-05-adoo-automatic-differentiation-jacobian/DualNumberDerivativeLab'
 import { NewtonJacobianConvergenceLab } from '@/components/post-viz/2026-07-05-adoo-automatic-differentiation-jacobian/NewtonJacobianConvergenceLab'
 
-I started differentiating the HLLC flux Jacobian by hand. Three sheets of paper in, I dropped one product-rule term, and the code diverged in silence. The flux wasn't wrong — its **derivative** was. Half of implicit CFD is getting that derivative — the Jacobian matrix of the spatial discretization — exactly right. This post walks through ADOO (operator-overloading automatic differentiation) from Fraysse et al. (2019), starting from a bare dual number. By the end you'll see how even a scheme with a root-finding loop inside it, like a Godunov exact Riemann solver, yields an exact Jacobian without a single hand-derived formula. And how much that exactness buys you in Newton convergence speed.
+I started the HLLC flux Jacobian by hand and threw out three sheets. One product-rule term dropped, and the code diverged in silence. The flux was fine. The **derivative** was not. Half of implicit CFD is filling that matrix — the Jacobian of the spatial discretization — without a sign error. ADOO, operator-overloading automatic differentiation from Fraysse et al. (2019), hands the derivative to the code. A scheme with a root finder inside, Godunov included, runs without a hand formula. How much Newton gains from that is written on the convergence curve.
+
+Shrink the finite-difference step `h` and the error curve dips once, then climbs again. Drag `x` and the dual path stays pinned to the floor.
+
+<DualNumberDerivativeLab />
+
+The bottom of the valley sits near $h\sim 10^{-8}$. Leave that pocket and only the amber curve climbs back up.
 
 ## Paper Information
 
@@ -35,7 +43,7 @@ Here $\mathbf{J}$ is the residual Jacobian (the matrix of partials with respect 
 
 There are three routes, and each has a catch. Hand differentiation (analytic) is exact but has to be re-derived whenever you touch the scheme. For a branch-heavy flux like AUSM+ or an iterative one like Godunov, the derivation is a nightmare. Finite differences reuse the code but leave you stuck choosing a step $h$ between round-off and truncation error.
 
-Newton-Krylov-matrix-free only finite-differences the Jacobian-vector product, so it never builds the matrix. But a good preconditioner still wants the actual matrix entries. ADOO cuts the knot by **computing the derivative instead of approximating it.**
+Newton-Krylov-matrix-free only finite-differences the Jacobian-vector product, so it never builds the matrix. Stopping [a Krylov run that otherwise keeps going for a thousand steps](/en/posts/2026-06-06-weston-block-preconditioner-jfnk/) still wants the actual matrix entries. ADOO cuts the knot by **computing the derivative instead of approximating it.**
 
 ## Dual Numbers: Carrying a Derivative Alongside the Value
 
@@ -87,11 +95,7 @@ print(math.cos(1.3**2) * 2 * 1.3 + 2 * 1.3)  # cross-check vs hand derivative
 
 The real value of ADOO shows up next to finite differences. The error of a central difference $[f(x+h)-f(x-h)]/2h$ is a tug of war. Large $h$ lets truncation error (the Taylor remainder) dominate; too-small $h$ makes round-off (loss of significant digits when subtracting two nearby numbers) explode. So the error traces a U shape in $h$. The sweet spot sits near $h \sim \sqrt{\epsilon} \approx 10^{-8}$, but even that shifts from problem to problem.
 
-Play with the simulation below.
-
-<DualNumberDerivativeLab />
-
-Watch the amber curve (FD) dip as you shrink $h$ and then shoot back up. The cyan dashed line (AD) stays pinned flat at machine precision no matter where you drag $x$. AD has no step at all, so there's simply no step to tune.
+The amber curve above is that U, and the cyan dashed line is the floor with no step on it. AD has no step, so there is nothing to tune.
 
 ## The Euler Flux Jacobian: By Hand vs AD
 
@@ -147,6 +151,8 @@ print("max error:", np.abs(J_ad - J_ref).max())   # ~1e-15
 
 `euler_flux_jacobian` follows the **same arithmetic** the Riemann solver's flux code actually uses. We never derived the Jacobian, yet its accuracy is machine precision. Swap the scheme for AUSM+? Replace only the flux function and the Jacobian follows for free.
 
+Plug the code's state into the hand formula and the matrix closes in numbers. With $Q=(1.2,\ 0.6,\ 3.0)$ and $\gamma=1.4$, $u=0.6/1.2=0.5$. The momentum row is $0.5(\gamma-3)u^2$, $(3-\gamma)u$, $\gamma-1$, which is $(-0.2,\ 0.8,\ 0.4)$. The energy row is longer. $(\gamma-1)u^3=0.05$ and $\gamma u E/\rho=1.75$, so the first entry is $0.05-1.75=-1.70$. From $\gamma E/\rho=3.5$, subtract $1.5(\gamma-1)u^2=0.15$ and the middle entry is $3.35$. The last entry is $\gamma u=0.7$. The mass row stays $(0,\ 1,\ 0)$. The code comment puts the max gap between this matrix and AD at $\sim 10^{-15}$. The scalar check sits in the same place. At $x=1.3$, $x^2=1.69$ and $2x=2.6$, so the hand derivative is $\cos(1.69)\cdot 2.6+2.6$, and `f.d` splits from that only inside round-off.
+
 ## Newton Convergence: What Exactness Buys
 
 Why the exact Jacobian matters is written in the convergence curve. An approximate Jacobian drops Newton from quadratic to linear convergence. Iteration counts climb, and at large CFL it just diverges. The paper reports that with an exact Jacobian it reaches a $10^{-6}$ residual in fewer than 10 iterations even at CFL 20 — the signature of quadratic convergence.
@@ -165,10 +171,8 @@ I hit a practical issue while reproducing this. When you differentiate a scheme 
 
 From an OpenFOAM standpoint this isn't alien. There have been experiments assembling `blockLduMatrix` with a dual scalar type, and SU2 already builds its adjoint with code-transformation AD. The message is the same — the era of humans deriving Jacobians is fading.
 
-## Reproducibility Score
+## Stopping the root finder on the value alone dirties the Jacobian
 
-The idea reproduces down to the scalar example with a sheet of paper and a 30-line `Dual` class (above). The Euler-Jacobian cross-check took half a day; a full implicit two-phase solver is a separate project. Low reproduction difficulty, high portability of the concept.
+A root finder inside the flux, Godunov being the usual case, does not converge the value and the derivative at the same rate. The derivative is slower. Stop on the value and the flux looks right while the matrix entries are already dirty. The paper's exact Jacobian still reaches a residual of $10^{-6}$ in under 10 iterations at CFL 20. Mix in a 20% error and quadratic convergence lies down into a straight line. Digits that were roughly doubling each iteration become a constant slope.
 
-- **When you need an exact Jacobian, seed dual numbers instead of hand-differentiating.** Same code, different type.
-- **The finite-difference step dilemma does not exist for AD.** The whole error U-curve disappears.
-- **Exact Jacobian = quadratic Newton convergence.** Approximate flattens to first order, and the cost grows at large CFL.
+Forward-mode cost scales with the number of independent variables. Large multiphase blocks make the dual arrays heavy, and source transformation can be the cheaper route. A branched flux, the kind used to [fill an interface with a ghost fluid](/en/posts/2026-06-05-ghost-fluid-method-sharp-interface/), is where hand differentiation dies first. Leave the stopping test on the value alone and that Jacobian walks into Newton already wrong.

@@ -1,14 +1,22 @@
 ---
 title: "Solving Wall Distance in O(N log N): Eikonal Equation and Fast Marching"
 date: 2026-04-22
-description: "An efficient algorithm for calculating wall distance, an essential input for RANS turbulence models."
+updated: 2026-10-19
+description: "Ten million cells and half a million walls mean five trillion distance checks. Fast Marching solves that wall distance as an Eikonal problem in O(N log N)."
 tags: ["Algorithms", "Eikonal", "Fast-Marching", "Mesh"]
 draft: false
+takeaway: "Wall distance is an arrival time, not an all-pairs query. March the whole mesh every step only when the mesh actually moved."
 ---
 
 import { EikonalFrontPropagation } from '@/components/post-viz/2026-04-22-wall-distance-eikonal-fast-marching/EikonalFrontPropagation'
 
-In 1996, James Sethian of UC Berkeley was refining algorithms to track vessel boundaries in medical imaging. The resulting Fast Marching Method is now used in unexpected places. Every time a RANS solver runs around an aircraft wing, this very algorithm generates the wall distance for each grid point. The Spalart-Allmaras and k-ω SST models require the value of "where is the nearest wall" as an input for every cell. This post summarizes the cost of calculating this value naively, the idea of transforming the problem into the Eikonal equation (a hyperbolic PDE of the form |∇d|=1/F), and how to obtain the solution in $O(N \log N)$ using Fast Marching, the continuous version of Dijkstra's algorithm.
+In 1996, James Sethian of UC Berkeley was refining algorithms to track vessel boundaries in medical imaging. The resulting Fast Marching Method is now used in unexpected places. Every time a RANS solver runs around an aircraft wing, this very algorithm generates the wall distance for each grid point. The Spalart-Allmaras and k-ω SST models require the value of "where is the nearest wall" as an input for every cell.
+
+Start on the single-cylinder pattern. Raising the speed $F$ sends the yellow band farther in the same instant. Switching the obstacle to a slit changes which wall the band leaves from.
+
+<EikonalFrontPropagation />
+
+The yellow band is the Considered set being updated, which is effectively the "wavefront" itself. Fronts start simultaneously from the wall and cylinder boundaries, and distances are finalized where they meet. In the two-cylinder pattern, the collision line of the two fronts forms near the medial axis of the cylinders. The slit wall pattern shows the wavefront rounding the gap to reach the back side. This "rounding" is where it diverges from naive Euclidean distance. In real aircraft or turbine geometries, turbulence model inputs for regions behind walls require this rounded distance.
 
 ## Why Turbulence Models Need Wall Distance
 
@@ -20,7 +28,7 @@ The problem is that $d_w$ is a geometric property of the mesh. If the mesh moves
 
 The most immediate method is to "calculate the distance between every wall face and every cell and pick the minimum." This is actually used in textbook examples.
 
-The cost is $O(N_{\text{cell}} \cdot N_{\text{wall}})$. Imagine solving for an entire aircraft. With 10M cells and 0.5M wall faces, that would be 5 trillion distance calculations. If this runs every time step, the simulation will never finish. While spatial data structures like KD-trees can lower this to $O(N_{\text{cell}} \log N_{\text{wall}})$, near-wall queries for complex geometries remain expensive.
+The cost is $O(N_{\text{cell}} \cdot N_{\text{wall}})$. Imagine solving for an entire aircraft. With 10M cells and 0.5M wall faces, that would be 5 trillion distance calculations. If this runs every time step, the simulation will never finish. While spatial data structures like KD-trees can lower this to $O(N_{\text{cell}} \log N_{\text{wall}})$, near-wall queries for complex geometries remain expensive. The same all-pairs habit shows up in particle contact. [A DEM sector sized from a single particle](/en/posts/2026-10-08-dem-sector-neighbor-search/) cuts that list. The objects differ. The reason to clip candidates by geometry does not.
 
 ## Changing Perspective: The Eikonal Equation
 
@@ -148,13 +156,13 @@ print(f"Max relative error = {np.max(np.abs(d[30, :] - 30)):.4f}")
 
 In a flat channel, the analytical solution $d=\min(y, H-y)$ emerges cleanly. The centerline output of the code above matches 30.0 almost exactly. While the 2D first-order upwind approximation has slight errors near corners, it is sufficient for practical applications.
 
-## Visualizing Wavefront Propagation
+## One accepted neighbor adds 1 at every cell
 
-Try interacting with the simulation below. Start by clicking "Single Cylinder" and try increasing the speed $F$ or changing the obstacles.
+The channel check uses a 61 by 121 grid, spacing $h=1$, speed $F=1$. The bottom wall is index 0, the top wall is 60, the centerline is 30. If only one neighbor is Accepted, the update collapses to $T = T_x + h/F$. With $h/F=1$, each cell away from the wall adds 1 to the arrival time. Thirty cells give 30. Coming down from the top wall also gives 30. The minimum of the two fronts is the centerline value 30.0. That is the exact number written next to the print. The corner residual is where the discriminant goes negative and the update falls back to the one-sided branch.
 
-<EikonalFrontPropagation />
+Ten million cells times half a million walls is five trillion. Fast Marching touches the heap at $O(\log N)$ per point and promotes each point to Accepted once. At $N=10^{7}$, $\log N$ is 7 in base 10 and about 24 in base 2. The operation count has a hard time clearing a few hundred million. That is four orders under five trillion. A KD-tree still multiplies the cell count by a log of $N_{\text{wall}}$. The wall query remains heavier than the march.
 
-The yellow band is the Considered set being updated, which is effectively the "wavefront" itself. Fronts start simultaneously from the wall and cylinder boundaries, and distances are finalized where they meet. In the two-cylinder pattern, the collision line of the two fronts forms near the medial axis of the cylinders. The slit wall pattern shows the wavefront rounding the gap to reach the back side. This "rounding" is where it diverges from naive Euclidean distance. In real aircraft or turbine geometries, turbulence model inputs for regions behind walls require this rounded distance.
+If the neighbor gap $b-a$ is large enough that $2(h/F)^2-(b-a)^2$ is negative, the root returns to the smaller neighbor plus $h/F$. In the channel one side is still Far, so that branch is chosen from the start. On a flat wall the distance field is the cell count itself.
 
 ## Extension to Unstructured Meshes
 
@@ -170,11 +178,11 @@ By solving the normal equations from a matrix $P$ of direction vectors $\mathbf{
 - **P-Poisson Alternative**: Solving $|\nabla d|^p = 1$ ($p=4 \sim 10$) implicitly is slower than Fast Marching but easier to parallelize. This is often preferred in large-scale parallel solvers.
 - **Local Negative Errors**: Depending on the numerical discretization, $d_w$ may result in negative values in extremely thin boundary layers. Always clamp to $\max(d_w, 0)$.
 
-## Key Takeaways
+## March the whole mesh every step, or hand it to P-Poisson
 
-- Wall distance can be viewed as the solution to the Eikonal equation $|\nabla d|=1/F$, opening the door to $O(N \log N)$ algorithms.
-- Fast Marching manages the Considered set using a min-heap and finalizes the wavefront by solving upwind quadratic equations point by point.
-- Choose between Fast Marching or P-Poisson relaxation based on moving mesh, periodic boundary, and parallelization requirements.
+On a moving rotor mesh, running Fast Marching over every cell at every step repeats the heap work for 10M cells on every time advance. Skip the narrow band of cells that actually moved and the $O(N \log N)$ saving gets multiplied by the step count again, the wrong way.
+
+If parallelism comes first, switch to $|\nabla d|^p = 1$, with $p$ between 4 and 10. How fast the iteration moves is set by [the linear solver, from Jacobi to BiCGSTAB](/en/posts/2026-04-22-cfd-linear-solvers-krylov/). Make that swap only if the march's causality can be given up.
 
 ## References
 

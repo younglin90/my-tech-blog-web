@@ -1,7 +1,9 @@
 ---
 title: "What Jacobi Cannot Kill in 10,000 Sweeps, a V-Cycle Kills in 10 — The Real Secret of Multigrid"
 date: 2026-05-06
-description: "Swap the grid, swap the frequency: how a hierarchy converts stubborn low modes into easy ones"
+updated: 2026-10-19
+description: "On a 64-cell Poisson problem, twenty V-cycles drive the residual below 1e-10 while Jacobi, at four sweeps a step, stalls near 1e-2."
+takeaway: "At a weight of 2/3 the fastest mode damps by 1/3, and the 1e-2 left after 80 Jacobi sweeps is the low mode that needs a coarser grid."
 tags: ["Multigrid", "Krylov", "Numerical-Analysis", "Poisson", "Iterative-Solver"]
 locale: en
 slug: 2026-05-06-multigrid-v-cycle-poisson-acceleration
@@ -12,27 +14,33 @@ import { MultigridVCycleConvergence } from '@/components/post-viz/2026-05-06-mul
 
 ## Why 10,000 Jacobi sweeps refuse to finish
 
-Engineer B was solving a pressure Poisson on a 1024×1024 grid with point Jacobi. Two hundred seconds in, the residual was still flickering at the same order of magnitude. The CFL was tiny. The grid was orthogonal. The code was correct. The problem is simpler and more annoying than any of those: some errors Jacobi can never kill.
+Engineer B was solving a pressure Poisson on a 1024×1024 grid with point Jacobi. Two hundred seconds in, the residual was still flickering at the same order of magnitude. The CFL was tiny. The grid was orthogonal. The code was correct. Some errors Jacobi never kills.
 
-This post unpacks the identity of those immortal errors. The whole story fits in one sentence — the same error has a different frequency on a different grid. The V-cycle is what you get when you take that sentence seriously. By the end you'll have a 50-line NumPy multigrid solver and a side-by-side picture of what a smoother fails to remove in 1000 sweeps but a V-cycle removes in 10.
+The same error changes frequency when the grid changes. The V-cycle is that sentence turned into an algorithm.
+
+Move Pre/Post between 1 and 5 and, on the same 64-cell grid with a zero right-hand side, only the V-cycle residual steepens, then the extra smoothing stops paying.
+
+<MultigridVCycleConvergence />
+
+The orange trace is Jacobi. The wiggles die and the broad hump stays. The cyan log-residual falls almost as a straight line, while orange flattens on the low-frequency shelf.
 
 ## Error frequencies — who dies fast and who lives forever
 
-Suppose we are solving the linear system $A u = f$. The error in our current iterate $u^{(k)}$ is
+Suppose the linear system is $A u = f$. The error in the current guess $u^{(k)}$ is
 
 $$
 e^{(k)} = u_{\text{exact}} - u^{(k)}
 $$
 
-a single vector. The residual is $r^{(k)} = f - A u^{(k)} = A e^{(k)}$.
+one vector. The residual is $r^{(k)} = f - A u^{(k)} = A e^{(k)}$.
 
-A spectral analysis of weighted Jacobi shows that a Fourier mode $\sin(j \pi x)$ in the error decays per sweep as
+A spectral look at weighted Jacobi says a Fourier mode $\sin(j \pi x)$ in the error decays per sweep as
 
 $$
 e^{(k+1)}_j = \left(1 - \omega + \omega \cos(j \pi h)\right) e^{(k)}_j
 $$
 
-where $\omega$ is the relaxation weight, $j$ is the mode number, and $h$ is the grid spacing. Look at the magnitude of the damping factor.
+where $\omega$ is the relaxation weight, $j$ the mode number, and $h$ the spacing. The absolute damping factors:
 
 | Mode | $j h$ | Damping factor ($\omega = 2/3$) |
 |---|---|---|
@@ -40,49 +48,49 @@ where $\omega$ is the relaxation weight, $j$ is the mode number, and $h$ is the 
 | Middle | 0.5 | $\approx 0.67$ |
 | Lowest | $1/N$ | $\approx 1.0 - O(h^2)$ |
 
-The shortest wavelengths shrink to a third every sweep. The longest wavelengths barely move. What Jacobi cannot kill is the smooth, low-frequency error that drapes itself across the whole grid.
+Short waves shrink to a third each sweep. Long waves barely move. What Jacobi cannot kill is the smooth hill spread over the whole grid.
 
 ## On a coarser grid that low frequency looks high
 
-Here is the decisive insight. The longest wavelength resolvable on $N$ cells is $\lambda \sim N h$. Move the same wavelength to a coarse grid with $N/2$ cells and it now occupies fewer cells — relative to the new grid spacing it has become a shorter wavelength. More precisely, the lowest mode on the fine grid is a middle mode on the coarse grid. And middle modes are exactly what Jacobi kills well.
+This is where multigrid splits from a plain smoother. The longest wave on $N$ cells is $\lambda \sim N h$. Move it to $N/2$ cells and the same wave occupies half as many cells. It looks shorter. More precisely, the lowest fine mode is a middle mode on the coarse grid, and Jacobi there kills middle modes.
 
-Coarsen one more level and the wavelength gets shorter again. After $\log_2 N$ levels every mode is a "high frequency" somewhere. A few Jacobi sweeps at every level wipes out everything — at least in theory.
+Coarsen again and the wave shortens again. After $\log_2 N$ levels every mode is high-frequency somewhere. A few Jacobi sweeps on every level, and in theory every error dies. Leaving the low modes to a Krylov comparison is the point of [convergence from Jacobi through BiCGSTAB](/en/posts/2026-04-22-cfd-linear-solvers-krylov/).
 
 ## V-cycle — the path that goes down and comes back up
 
-Turn that insight into an algorithm and you get the V-cycle. One V-cycle does the following.
+Turn the split into steps and the shape is a V.
 
 1. **Pre-smoothing** — $\nu_1$ Jacobi sweeps on the fine grid.
-2. **Compute residual** — $r_h = f_h - A_h u_h$.
-3. **Restriction** — $r_{2h} = R\, r_h$. Move the residual to the coarse grid.
-4. **Recursive call** — solve the correction equation $A_{2h} e_{2h} = r_{2h}$ on the coarse grid by another V-cycle (or directly if the grid is small enough).
-5. **Prolongation** — $e_h = P\, e_{2h}$. Lift the correction back to the fine grid.
-6. **Correction** — $u_h \leftarrow u_h + e_h$.
+2. **Residual** — $r_h = f_h - A_h u_h$.
+3. **Restriction** — $r_{2h} = R\, r_h$. Carry the residual down.
+4. **Recurse** — solve $A_{2h} e_{2h} = r_{2h}$ with another V-cycle, or directly if the grid is small enough.
+5. **Prolongation** — $e_h = P\, e_{2h}$. Lift the correction.
+6. **Correct** — $u_h \leftarrow u_h + e_h$.
 7. **Post-smoothing** — $\nu_2$ Jacobi sweeps on the fine grid.
 
-Going down you only carry the residual; coming back up you only carry the correction. The path traces a V — one descent, one ascent. The total cost of a single cycle is $O(N)$, since the cost adds a geometric series on top of one fine-level sweep. And one cycle drops the residual by an order of magnitude.
+Downward, only the residual moves. Upward, only the correction. One cycle costs $O(N)$: one fine sweep plus a geometric tail. One cycle drops about one digit of residual.
 
 ## Restriction and prolongation — the exchange rate between two grids
 
-The two operators that bridge the grids must be paired. On a 1D vertex-centered grid the cleanest pair is the following.
+The two transfer operators have to be a pair. On a 1D vertex-centered grid the plain pair is this.
 
-**Full-weighting restriction:** the residual at coarse point $i$ is the weighted average of fine points $2i-1, 2i, 2i+1$.
+**Full-weighting restriction:** coarse point $i$ is a weighted average of fine points $2i-1, 2i, 2i+1$.
 
 $$
 r_{2h, i} = \frac{1}{4} r_{h, 2i-1} + \frac{1}{2} r_{h, 2i} + \frac{1}{4} r_{h, 2i+1}
 $$
 
-**Linear prolongation:** values at coarse-aligned fine points are copied; in-between points get the average of the two neighbors.
+**Linear prolongation:** copy onto coarse-aligned nodes, average the two neighbors in between.
 
 $$
 e_{h, 2i} = e_{2h, i}, \qquad e_{h, 2i+1} = \frac{1}{2}\left(e_{2h, i} + e_{2h, i+1}\right)
 $$
 
-These two satisfy a transpose relation ($P = c R^T$ up to a grid-ratio constant), and that relation is what makes the V-cycle provably convergent. An asymmetric pair can diverge.
+They are transposes up to a grid-ratio constant ($P = c R^T$). That pair is part of the convergence argument. An asymmetric pair can diverge.
 
 ## A two-grid V-cycle in NumPy
 
-Solve the 1D Poisson problem $-u''(x) = f(x)$ with $u(0)=u(1)=0$. Start on a 64-cell grid.
+Solve $-u''(x) = f(x)$ on $[0,1]$ with $u(0)=u(1)=0$. Start at 64 cells.
 
 ```python
 import numpy as np
@@ -158,28 +166,30 @@ for k in range(20):
           f"v-cycle r={residual_norm(u_mg, f, h):.3e}")
 ```
 
-Each `step` does 4 Jacobi sweeps on the fine grid versus 4 fine-grid sweeps for the V-cycle (2 pre + 2 post). Roughly the same work per step. The residuals do not behave the same. After 20 steps the V-cycle residual is usually below $10^{-10}$ while Jacobi sits stuck near $10^{-2}$.
+One printed `step` spends 4 Jacobi sweeps, and the V-cycle spends 4 fine sweeps (2 pre + 2 post). Similar work, different residuals. After 20 steps the V-cycle residual is usually below $10^{-10}$ and Jacobi is stuck near $10^{-2}$.
 
-## 1000 Jacobi sweeps versus 10 V-cycles — see the gap yourself
+The table closes at $\omega = 2/3$. The fastest mode, $jh = 1$, has $\cos(\pi) = -1$, so the factor is $1 - 2\omega = -1/3$. The absolute value matches the table entry $1/3$. Ten sweeps on that mode alone leave $(1/3)^{10} \approx 1.7 \times 10^{-5}$. The middle entry is $\approx 0.67$, and $0.67^{20} \approx 3.3 \times 10^{-4}$. The slowest factor is $1 - O(h^2)$. At $N = 64$, $h = 1/64$, so $h^2 = 1/4096 \approx 2.4 \times 10^{-4}$. That is the size of one chop on the long wave.
 
-Try the simulation below. Both solvers attack the same homogeneous Poisson problem from the same random initial guess on the same 64-cell grid; the panels show the current solution profile (top) and the residual log-decay (bottom).
+The printout lines up with the table. Four Jacobi sweeps per step, twenty steps, eighty sweeps, and the residual is still near $10^{-2}$. The fast mode is already dead at a factor $1/3$. The leftover $10^{-2}$ is the low mode in the table. The same twenty V-cycles, 2 pre and 2 post on the fine grid, usually sit under $10^{-10}$. Eight orders separate $10^{-2}$ and $10^{-10}$.
 
-<MultigridVCycleConvergence />
+The coarsest level is 50 Jacobi sweeps once $n \le 4$. Sixty-four cells restrict as 64, 32, 16, 8, 4 — four transfers. Full weighting is $1/4$, $1/2$, $1/4$. The coarse work sums as $N/2 + N/4 + \cdots$, which does not exceed $N$. Ten V-cycles repeat that sum ten times. Ten thousand Jacobi sweeps are a different count before the constant even matters.
 
-Hit Run and wait thirty seconds. The orange curve (Jacobi) loses its high-frequency wiggle but the big rolling hump survives. The cyan curve (V-cycle) flattens to zero almost immediately. In the residual plot the cyan line drops nearly straight down on a log scale; the orange line gets pinned to a plateau — that plateau is exactly the low-frequency error Jacobi cannot eat. Slide the pre/post smoothing counts between 1 and 5 and you'll see V-cycle convergence accelerate, with diminishing returns past 3.
+Put the same factor on the slowest mode. At $N = 64$, $jh = 1/N$ and $\omega = 2/3$, the factor is about $0.9992$. The listing's eighty sweeps multiply to about $0.94$. One digit costs about $2900$ sweeps. At $N = 1024$ the factor is about $0.999997$, and one digit costs about $7.3 \times 10^{5}$ sweeps. Ten thousand sweeps still leave that mode near $0.97$. The 1024×1024 run that sat in one order of magnitude for 200 seconds is the same stall. The formula is one-dimensional weighted Jacobi. The engineer's grid was two-dimensional. A V-cycle that drops one digit per cycle does in about ten cycles what those sweeps do not do to the slow mode.
+
+The factor $0.9992$ is not a measured residual. It is the table formula on the slowest mode. Eighty sweeps move it by about six percent. The printed Jacobi residual, near $10^{-2}$ after twenty steps, is what a factor that close to 1 looks like once the fast mode — damped by $1/3$ — is already gone.
 
 ## Why the V-cycle is not always faster — two traps
 
-Multigrid is not magic. Two places it routinely breaks in production.
+A V-cycle is not magic. Two places break it in practice.
 
-**Trap 1 — rough coefficients.** A Poisson with anisotropic or jumping coefficients makes Jacobi a poor smoother. For $-\nabla \cdot (k(x) \nabla u) = f$ with $k$ jumping by orders of magnitude, a standard V-cycle stalls at some residual floor. Fixes are line-Jacobi, aligned grids, or Algebraic Multigrid (AMG), which builds the hierarchy from the matrix instead of the mesh.
+**Rough coefficients.** On anisotropic or jumping-coefficient Poisson, Jacobi is a poor smoother. In $-\nabla \cdot (k(x) \nabla u) = f$, if $k$ jumps by orders of magnitude the standard V-cycle parks the residual at some digit. The fix is line-Jacobi, a line-aligned grid, or algebraic multigrid, which builds the hierarchy from the matrix.
 
-**Trap 2 — non-conforming grids.** On unstructured or AMR grids the fine-to-coarse mapping is no longer obvious. Agglomeration multigrid groups fine cells into coarse cells; restriction is a volume-weighted average, prolongation is cell-centered interpolation. The implementation is heavier, but OpenFOAM's GAMG works exactly this way.
+**Non-nested grids.** On unstructured meshes or AMR the fine-to-coarse map is not an index halving. Agglomeration multigrid bundles fine cells into coarse cells, restricts by volume weights, and prolongs with a cell-centered interpolant. OpenFOAM's GAMG is that pattern.
 
-A third caveat: V-cycle convergence is grid-independent ($O(N)$ to a fixed tolerance) only when the smoother, the operator, and the grid hierarchy are all properly matched. When one of them is off, the iteration count creeps up with grid size — that's when you reach for W-cycles or F-cycles instead.
+The rate is mesh-independent only when the smoother, the operator, and the coarsening ratio all match. Miss one and the iteration count creeps up with $N$. That is when a W-cycle or an F-cycle is the next try.
 
-## Three takeaways for tomorrow
+## Where to put the standard V-cycle down
 
-- Jacobi and Gauss–Seidel only kill **high-frequency** error. The low frequencies need a different grid.
-- One V-cycle = $O(N)$ work, one order of magnitude off the residual. Cost-per-digit beats any simple iteration.
-- On rough coefficients, anisotropic operators, or unstructured meshes, the textbook V-cycle stalls — that is the point where you reach for AMG or change the smoother.
+If $k$ jumps by orders of magnitude, plain Jacobi is not a smoother and the residual sticks at some digit. Switch to line-Jacobi or AMG. The stretched-grid version of that switch is [a linelet preconditioner](/en/posts/2026-07-31-linelet-preconditioner-stretched-grid/).
+
+Unstructured meshes and AMR do not build a coarse level by halving an index. OpenFOAM GAMG agglomerates cells. If the iteration count starts tracking $N$, try a W-cycle or an F-cycle. The 64-cell run, 50 Jacobi sweeps at $n \le 4$, and the 20-step gap of $10^{-10}$ versus $10^{-2}$ were read on aligned 1D Poisson only.

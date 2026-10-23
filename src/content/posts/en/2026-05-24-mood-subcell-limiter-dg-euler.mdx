@@ -1,7 +1,9 @@
 ---
 title: "[Paper Review] Suspect the Cell After Solving It — A Posteriori MOOD Subcell Limiter for DG"
 date: 2026-05-24
+updated: 2026-10-19
 description: "Solve first, doubt later — reproducing the MOOD limiter of Ioriatti, Dumbser, Loubère (2020)"
+takeaway: "On Toro test 3 the unlimited MUSCL goes negative by step 14; MOOD recomputes only the four to six shocked cells at first order."
 tags: ["Paper-Review", "Discontinuous-Galerkin", "MOOD", "Subcell-Limiter", "Compressible-Euler", "All-Mach"]
 locale: en
 slug: mood-subcell-limiter-dg-euler
@@ -12,6 +14,12 @@ import { MOODTroubledCellMap1D } from '@/components/post-viz/2026-05-24-mood-sub
 import { DMPRelaxedNADDetector } from '@/components/post-viz/2026-05-24-mood-subcell-limiter-dg-euler/DMPRelaxedNADDetector'
 
 The first thing that tripped me up while re-implementing this paper was the *order of operations*. Most of us slip the limiter in *before* the cell can blow up — Van Leer did, Sweby did, the whole TVD lineage does. Ioriatti, Dumbser, and Loubère (2020) flip the timeline on the staggered semi-implicit DG scheme. Solve the cell first, then doubt it. Only after a negative density appears do they single that cell out and recompute it with a first-order finite volume scheme. This post walks through their MOOD (Multi-dimensional Optimal Order Detection) algorithm and reproduces the troubled-cell map on Toro Test 3, where the pressure jumps from 1000 to 0.01.
+
+Move the pressure-ratio and $\delta_0$ sliders and the red cell count next to the shock changes. Turn on *overlay unlimited candidate* and the unlimited candidate shows up as a dashed curve.
+
+<MOODTroubledCellMap1D />
+
+At 1000:0.01, four to six cells go troubled. At $\delta_0=10^{-6}$ smooth regions trip the detector. At $10^{-2}$ the shock slips through. The working band is $10^{-4}$ to $10^{-3}$.
 
 ## Paper details
 
@@ -41,7 +49,7 @@ $$
 
 $\mathcal{P}$ is the $L_2$ projection of the polynomial onto subcell averages. $\mathcal{W}$ is a constrained least-squares recovery — the constraint pins down the cell integral, since $2P+1 > P+1$ makes the recovery overdetermined.
 
-When a cell is flagged as troubled, its representation flips from polynomial to subcell averages. At interfaces between troubled and untroubled cells, a *mixed* configuration appears, and the operators $\mathcal{W}_L, \mathcal{W}_R$ recover a polynomial from the relevant half of the cell. The fact that the two representations can share a single cell is the cornerstone of this entire family.
+When a cell is flagged as troubled, its representation flips from polynomial to subcell averages. At interfaces between troubled and untroubled cells, a *mixed* configuration appears, and the operators $\mathcal{W}_L, \mathcal{W}_R$ recover a polynomial from the relevant half of the cell. The fact that the two representations can share a single cell is the asset of this family. Drop one quadrature point and that coexistence breaks, the same divergence seen at the [DG quadrature floor](/en/posts/2026-08-19-dg-taylor-basis-quadrature-order/).
 
 ## PAD and NAD — twin checkpoints
 
@@ -55,7 +63,7 @@ $$
 
 Negative density or pressure breaks the equation of state. Fail here and the cell is troubled immediately.
 
-**NAD (Numerical Admissibility Detector)** — is the new value too far from the neighbours? A relaxed discrete maximum principle does the work.
+**NAD (Numerical Admissibility Detector)** — is the new value too far from the neighbors? A relaxed discrete maximum principle does the work.
 
 $$
 \min_{T_j \in \mathcal{V}_i} \hat{q}_{j,l}^n - \delta \le \hat{q}_{i,l}^{\circ,n+1} \le \max_{T_j \in \mathcal{V}_i} \hat{q}_{j,l}^n + \delta
@@ -138,17 +146,19 @@ def mood_step(U, dx, dt, gamma=GAMMA, delta0=1e-4, eps=5e-4):
 
 Run that on Toro Test 3 ($\rho_L=1$, $p_L=1000$, $\rho_R=1$, $p_R=0.01$, $N=200$). The unlimited MUSCL chokes out a negative pressure after roughly 14 steps and diverges. With MOOD wrapped around it, four to six cells around the shock light up troubled and get redone with the first-order flux, while the remaining ~194 cells keep their P=1 accuracy.
 
+Left state $\rho=1$, $p=1000$. Right state $\rho=1$, $p=0.01$. $N=200$. Step 14 is where unlimited MUSCL emits a negative pressure. Only 4–6 cells fall back to first-order FV, and about 194 keep P=1. Subcells number $2P+1$ and degrees of freedom $P+1$. At P=1 that is 3 subcells and 2 coefficients, so the recovery $\mathcal{W}$ is overdetermined. That is why the cell integral is a constraint.
+
+The band is $\delta=\max[\delta_0,\epsilon(q_{\max}-q_{\min})]$, with $\delta_0$ from $10^{-4}$ to $10^{-3}$ and $\epsilon=5\cdot 10^{-4}$. At $\delta_0=10^{-6}$ smooth regions get flagged. At $10^{-2}$ the shock is missed. On 200 cells at CFL $=0.4$, one or two plateau cells blinked every step. The solution barely moved. The cost did: about 10% per detection in the reproduction, against about 5% in the paper, because $\mathcal{L},\mathcal{C},\mathcal{R}$ are rebuilt each time.
+
+Out of 200 cells, 4–6 are troubled and about 194 keep P=1. PAD only asks that density and pressure stay positive. The negative pressure at step 14 is a candidate that misses that gate. In the NAD band, $\epsilon=5\cdot 10^{-4}$ is the relative width and $\delta_0$ from $10^{-4}$ to $10^{-3}$ is the absolute width. When pressure falls from 1000 to 0.01, $q_{\max}-q_{\min}$ is large enough that the $\epsilon$ term can exceed $\delta_0$. Density is 1 on both sides, so the same $\delta_0$ is stricter there. The jump from about 5% to about 10% is the 4×4 block changing from DG to FV: few troubled cells, but the matrix pattern still gets swapped. $\beta_i$ resets every step. A slow shock makes those same 4–6 cells suspicious again and again.
+
 ## Visualization — where the troubled cells light up
 
-Try the simulation below.
-
-<MOODTroubledCellMap1D />
-
-Push the pressure ratio up to 1000:0.01 and four to six cells around the shock turn red. Drop $\delta_0$ to 1e-6 and the smooth regions start tripping the detector, swamping the limiter with false positives. Raise it to 1e-2 and real shocks slip past. The recommended band $[10^{-4}, 10^{-3}]$ is the narrow valley in between. Tick the *overlay unlimited candidate* checkbox and watch the red dashed curve — the same MUSCL candidate without MOOD — fall apart at the shock.
+Widen the $\delta$ band around the min and max of the three neighbors and fewer candidate values get flagged.
 
 <DMPRelaxedNADDetector />
 
-Drag the candidate $q^*$ around the relaxed band defined by the three neighbours. Set $\delta$ to zero and *every* local extremum gets flagged. The relaxation is the bit of forgiveness that lets smooth peaks survive.
+That band is the admissible interval. With $\delta$ at zero, *every* local extremum is troubled. The relaxation is the slack that lets a smooth peak survive.
 
 ## What the reproduction surfaced
 
@@ -162,4 +172,4 @@ Drag the candidate $q^*$ around the relaxed band defined by the three neighbours
 
 The algorithm standardized a *detect → recompute* loop. But the troubled indicator $\beta_i$ resets every step. A slow-moving shock keeps re-flagging the same cells over and over. A persistent indicator could cut the limiter cost itself. The Dumbser group's follow-up (Boscheri 2024, semi-implicit ALE-DG) is the first concrete step in that direction.
 
-Today we touched a single point where two representations coexist inside one cell — polynomial where things are smooth, subcell averages where they are not. The skeleton of the next generation of all-Mach solvers stands on exactly this small switch.
+Today we touched a single point where two representations coexist inside one cell — polynomial where things are smooth, subcell averages where they are not. The skeleton of the next generation of all-Mach solvers stands on exactly this small switch. Cutting off a negative density inside the flux itself is the [positivity-preserving limiter](/en/posts/2026-05-20-positivity-preserving-flux-limiter/). MOOD doubts the candidate first and sends only the broken cells back to first order.

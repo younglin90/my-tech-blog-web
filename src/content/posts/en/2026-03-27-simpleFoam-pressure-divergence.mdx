@@ -1,7 +1,9 @@
 ---
 title: "[CFD Q&A] When simpleFoam Pressure Residual Fails to Converge"
 date: 2026-03-27
-description: "A troubleshooting guide for SIMPLE algorithm divergence in practice — relaxation factor settings were the key."
+updated: 2026-10-19
+description: "In simpleFoam the pressure residual jumped from 0.412 to 0.891. Dropping the p relaxation from 0.7 to 0.3 brought it near 1e-4 by iteration 200."
+takeaway: "Raising relaxation because the velocity residual looks fine is how the pressure correction went from 8 inner iterations to 20."
 tags: ["CFD-Practice", "QA", "OpenFOAM", "SIMPLE", "Convergence"]
 draft: false
 noindex: true
@@ -9,16 +11,19 @@ noindex: true
 
 import { SimpleResidualHistory } from '@/components/post-viz/2026-03-27-simpleFoam-pressure-divergence/SimpleResidualHistory'
 
-I encountered a problem last week that took up quite a bit of time. While running simpleFoam, the pressure residual failed to drop below `1e-3` and, in fact, started to rise. Initially, I thought it might be a mesh issue, but the conclusion turned out to be the relaxation factor.
+simpleFoam ate half a day last week. The pressure residual would not go under `1e-3`. It climbed. The mesh was the first suspect. The knob that mattered was the relaxation factor.
+
+Push the αp slider past 0.6 and the pressure-residual curve bends upward again near iteration 30.
+
+<SimpleResidualHistory />
+
+Park it near 0.3 and the same curve keeps falling out to iteration 200. Time=80 in the log below, initial residual 0.891, sits in that same bend.
 
 ## Problem Situation
 
-- **Software**: OpenFOAM v2312
-- **Geometry**: 2D rectangular channel, inlet–outlet boundaries
-- **Turbulence Model**: k-ε (standard)
-- **Solver**: simpleFoam (steady-state)
+OpenFOAM v2312. A 2D rectangular channel, inlet to outlet. Turbulence model, standard k-ε. Solver, steady simpleFoam.
 
-For the first 20–30 iterations, it seemed to be converging well, but then the pressure residual suddenly began to spike.
+The residual fell for the first 20 to 30 iterations. Then only the pressure jumped.
 
 ```text
 Time = 50
@@ -33,25 +38,25 @@ Time = 80
 GAMG:  Solving for p, Initial residual = 0.891, Final residual = 0.21, No Iterations 20
 ```
 
-While the velocity was converging smoothly, the pressure remained unstable. This is a typical pattern of pressure-velocity coupling instability.
+Velocity settled. Pressure did not. That is the face of a pressure-velocity coupling that is rocking.
 
 ## Root Cause Analysis Process
 
 ### Step 1: Check Mesh Quality
 
-First, I ran `checkMesh`.
+`checkMesh` came first.
 
 ```bash
 checkMesh -case .
 ```
 
-Maximum non-orthogonality was 32 degrees, and max skewness was 0.8 — not bad at all. It didn't seem like a mesh problem.
+Max non-orthogonality 32 degrees, max skewness 0.8. Too quiet a pair of numbers to blame the mesh.
 
 ### Step 2: Review Boundary Conditions
 
-I set the pressure at the inlet to `zeroGradient` and the outlet to `fixedValue 0`. These are standard settings, so no issues there.
+Inlet pressure was `zeroGradient`, outlet `fixedValue 0`. A common pair for a channel. Nothing wrong there.
 
-However, checking the initial p field revealed unusually large values near the inlet. These were remnants from a previous experiment I had conducted using `funkySetFields`.
+The initial p field still held a large value near the inlet. Leftovers from a `funkySetFields` trial that was supposed to be gone.
 
 ### Step 3: Check fvSolution
 
@@ -72,11 +77,9 @@ relaxationFactors
 }
 ```
 
-U=0.9 is a fairly aggressive value. In SIMPLE, increasing velocity relaxation speeds up convergence, but if the pressure updates cannot keep up, the solution will diverge.
+U=0.9 is a fast setting. Raise the velocity relaxation and the residual looks quicker. If the pressure update cannot keep up, the loop rocks.
 
-Two causes overlapped:
-1. The relaxation factors were excessively high.
-2. Incorrect values remained in the initial p field.
+Two causes stacked. The relaxation was high. Garbage remained in the initial p. How the pressure correction stays tied to the velocity field is written out in [SIMPLE when pressure starts to checkerboard](/en/posts/2026-07-22-simple-pressure-velocity-coupling-rhie-chow/).
 
 ## Solution
 
@@ -99,7 +102,7 @@ relaxationFactors
 }
 ```
 
-It is best to start conservatively when running a case for the first time. Once convergence is confirmed, you can gradually increase the values.
+The first run starts low. The factors go up only after the residual has actually sat down.
 
 ### Initializing the p Field
 
@@ -108,7 +111,7 @@ It is best to start conservatively when running a case for the first time. Once 
 cp 0.orig/p 0/p
 ```
 
-Alternatively, you can open the `0/p` file directly and set it to `internalField uniform 0;`.
+Opening `0/p` and setting `internalField uniform 0;` does the same job.
 
 ```cpp
 // 0/p
@@ -135,7 +138,7 @@ boundaryField
 
 ## Verification
 
-After the modifications, rerunning the simulation produced the following results:
+The same case, run again, changes the log to this.
 
 ```text
 Time = 50
@@ -149,27 +152,20 @@ Time = 200
 GAMG:  Solving for p, Initial residual = 3.2e-4, Final residual = 1.1e-5, No Iterations 3
 ```
 
-By around iteration 200, the pressure residual had stably decreased to the `1e-4` level.
+Near iteration 200 the pressure residual had come down to about `1e-4`. Inner iterations were back in single digits.
 
-## Generalized Lessons
+## The Ratios Sitting in the Log
 
-**simpleFoam Convergence Checklist** — Use this order to catch most issues:
+Before the fix, Time=50 dropped Ux from 0.0023 to 1.2e-5 in three inner iterations, about 192 times. Uy went from 0.0019 to 9.8e-6, about 194 times. Pressure only went from 0.412 to 0.038, about 11 times in eight iterations. Velocity fell nearly 200-fold. Pressure managed about 11.
 
-1. **Initial Conditions First**: Verify that the p and U fields in the `0/` directory have the intended values. If remnants of previous experiments exist, be sure to initialize them.
+Time=80 is thirty steps on. The initial pressure residual rose from 0.412 to 0.891, about 2.2 times. Inner iterations grew from 8 to 20, a factor of 2.5. The cut, 0.891 divided by 0.21, shrank to about 4.2. More iterations, a smaller drop.
 
-2. **Conservative Relaxation Factors**: Start with defaults like `U=0.7, p=0.3`. It's safer to confirm convergence before ramping them up. `p` relaxation especially should be kept low to stabilize the SIMPLE loop.
+After the fix, Time=50 pressure falls from 0.089 to 0.0041, about 22 times in five iterations. Time=200 goes from 3.2e-4 to 1.1e-5, about 29 times in three. Cumulative continuity shrank from 3.4e-4 to 8.9e-6, about 38 times. p at 0.3 is about 43% of the old 0.7. U moved from 0.9 to 0.7, and k and epsilon from 0.7 to 0.5. Cutting the pressure correction below half brought the inner count down from 20 into single digits.
 
-3. **Separate Velocity vs. Pressure Convergence**: If U residuals are low but p diverges, it's likely a relaxation issue. If both diverge, check the mesh or boundary conditions first.
+Set the final residual at Time=200, 1.1e-5, next to the old Time=80 final of 0.21. Divide 0.21 by 1.1e-5 and the ratio is about 19100. Same channel, same mesh. Only the pressure relaxation and the initial field changed. That ratio is the number to read before regenerating a mesh.
 
-4. **Monitor GAMG Iterations**: If the number of inner iterations required to solve p suddenly increases within the same outer iteration, the convergence direction is likely wrong.
+## The Knob to Turn Before Opening the Mesh
 
-Due to the nature of the pressure correction loop, the SIMPLE algorithm is highly sensitive to relaxation. Always start conservatively — even if it seems slow, ensuring stable convergence before acceleration is ultimately the faster path.
+Non-orthogonality of 32 degrees and skewness of 0.8 are not a reason to rebuild the mesh first. The value to lower is the p relaxation. At 0.7 the pressure correction could not keep up with velocity at 0.9. The first run uses p 0.3 and U 0.7. The factors go up only after the Time=200 residual has sat near `1e-4`.
 
----
-
-*If you are facing similar issues, please share your environment (version, geometry, turbulence model) in the comments. Solutions can vary by case.*
-
-
-Push αp above 0.6 and watch residuals bounce back near iter 30.
-
-<SimpleResidualHistory />
+The funkySetFields leftover in the initial p wrecked the same run. Leave it, and a lower relaxation still carries a junk gradient in from the inlet. A lower relaxation is not automatically the same physics. [The Rhie–Chow case where one relaxation change moved the converged solution](/en/posts/2026-10-14-rhie-chow-under-relaxation-memory/) is where to check whether 0.7 down to 0.3 stays in the residual curve or leaks into the final field.

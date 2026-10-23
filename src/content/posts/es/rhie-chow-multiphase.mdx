@@ -1,19 +1,27 @@
 ---
 title: "Interpolación de Rhie-Chow para flujos multifásicos compresibles"
 date: 2026-03-10
-description: "Desde el problema del tablero de ajedrez en mallas colocalizadas hasta los flujos multifásicos de fuerza equilibrada, resumimos sistemáticamente la esencia matemática y la implementación en OpenFOAM de la interpolación de Rhie-Chow."
+updated: 2026-10-19
+description: "Con una relación de densidades agua-aire de 1000, la media aritmética vale 500.5 y la armónica cae a 2.0. El filtro va solo sobre la presión motriz."
 tags: ["Multiphase", "Rhie-Chow", "OpenFOAM", "Numerical-Methods"]
 series: "compressible-multiphase"
 seriesOrder: 5
+takeaway: "Si el coeficiente temporal entra en el denominador de la MWI, el tablero vuelve cuando el paso de tiempo tiende a cero."
 ---
 
 import { CheckerboardPressure } from '@/components/post-viz/rhie-chow-multiphase/CheckerboardPressure'
 
 # Interpolación de Rhie-Chow: ¿Por qué es necesaria y por qué es complicada en flujos multifásicos?
 
-La interpolación de Rhie-Chow (interpolación ponderada por el momento, MWI) es una técnica clave para corregir las velocidades en las caras (faces) con el fin de **suprimir las oscilaciones de presión tipo tablero de ajedrez** en mallas colocalizadas (collocated). Aunque es relativamente sencilla en flujos monofásicos, el tratamiento consistente de la **presión, la gravedad, la tensión superficial y los términos de corrección transitorios** se vuelve decisivo al extenderla a flujos multifásicos.
+La interpolación de Rhie-Chow (interpolación ponderada por el momento, MWI) corrige la velocidad en la cara de una malla colocalizada y **apaga las oscilaciones de presión en tablero de ajedrez**. En monofásico hay un solo término. En multifásico, presión, gravedad, tensión superficial y la corrección transitoria se apilan en la misma cara. Si uno se desalinea, queda una velocidad falsa en la interfase.
 
-Este artículo abarca desde el trabajo original de Rhie & Chow (1983) hasta el marco unificado de Bartholomew et al. (2018), así como la implementación en interFoam/compressibleInterFoam de OpenFOAM.
+El recorrido sale del SIMPLE estacionario de Rhie & Chow (1983), pasa por la forma unificada de Bartholomew et al. (2018) y llega a interFoam y compressibleInterFoam.
+
+La casilla de Rhie–Chow apaga el patrón de presión alternado; al desmarcarla, el patrón vuelve.
+
+<CheckerboardPressure />
+
+Sin la corrección, el esténcil se salta $p_i$ y solo quedan acopladas $p_{i-1}$ y $p_{i+1}$. Con la corrección, el gradiente compacto vuelve a atar esa celda.
 
 ---
 
@@ -62,7 +70,7 @@ $$
 u_f = \hat{u}_f - d_f(p_E - p_P)
 $$
 
-$\hat{u} = u + d \cdot \Delta p$ es la pseudovelocidad sin el gradiente de presión, y $d = V/a_P$. Incluía **solo el término de corrección de presión**, sin tratamiento para términos transitorios o de relajación. Posteriormente, Majumdar (1988) señaló la dependencia de la solución convergente de los factores de relajación, y Choi (1999) señaló la dependencia del paso de tiempo en flujos transitorios.
+$\hat{u} = u + d \cdot \Delta p$ es la pseudovelocidad sin el gradiente de presión, y $d = V/a_P$. Incluía **solo el término de corrección de presión**, sin tratamiento para términos transitorios o de relajación. Posteriormente, Majumdar (1988) señaló la dependencia de la solución convergente de los factores de relajación, y Choi (1999) señaló la dependencia del paso de tiempo en flujos transitorios. El mismo término aparece donde [SIMPLE usa Rhie–Chow para frenar un tablero](/es/posts/2026-07-22-simple-pressure-velocity-coupling-rhie-chow/), solo que aquí la gravedad y la tensión superficial se reparten una parte.
 
 ### Jasak (1996): La base de OpenFOAM - Enfoque H/A
 
@@ -207,6 +215,12 @@ Para el agua-aire, $\rho_f^* \approx 2.0$, lo que difiere enormemente de los $\a
 
 Si se utiliza la interpolación aritmética, se produce una **inconsistencia** entre el coeficiente Laplaciano de la ecuación de presión y la ponderación de densidad de la corrección MWI, lo que genera velocidades espurias.
 
+El 500.5 sale solo del promedio de las dos densidades. Agua a 1000 y aire a 1 dan $(1000+1)/2 = 500.5$. La media armónica divide 2 entre $(1/1000 + 1)$. Ese denominador es 1.001, y $2/1.001 \approx 1.998$, el 2.0 del texto. Al dividir 500.5 entre 2.0, la fase ligera ha subido el promedio cerca de 250 veces.
+
+Si $a_P$ escala con la densidad, $1/a_P$ escala al revés. El $1/a_P$ del aire es 1000 veces el del agua. Una media aritmética planta en la cara la mitad de ese número grande. La inercia del agua, el $1/a_P$ pequeño, casi desaparece. Con una relación de densidades de $10^6$ la brecha es de un millón. El rango en el que se dice que aguanta la media armónica llega a $10^{24}$. La fuerza equilibrada de Denner mantiene una gota estática en balance hasta la tolerancia del solver por encima de $10^6$.
+
+El filtro en sí es un paso bajo de tamaño $\Delta x^2 \partial^3 p/\partial x^3$. Donde la derivada cuarta de la presión es grande, como en una interfase, esa corrección agranda el error de masa $\Delta x^2 \partial^4 p/\partial x^4$. Por eso las fuerzas de volumen se quedan fuera del filtro. Si el coeficiente temporal $\rho V/\Delta t$ entra en el denominador de la MWI, el filtro se debilita cuando $\Delta t$ tiende a 0. Vuelve la presión en diente de sierra. En el denominador queda solo el coeficiente espacial.
+
 ---
 
 ## 6. Análisis de la implementación en OpenFOAM
@@ -299,27 +313,15 @@ Los enfoques consistentes (CMI, MWI unificada) tienen una **difusión numérica 
 
 ---
 
-## Conclusión: Principios de diseño y recomendaciones prácticas
+## Un coeficiente temporal en el denominador devuelve el tablero
 
-El principio más importante en el diseño de velocidades en la cara para flujos multifásicos compresibles:
-
-> **"Aplica el filtro de Rhie-Chow únicamente al gradiente de presión impulsor."**
-
-La tensión superficial y la gravedad deben evaluarse con el **mismo operador discreto** que el gradiente de presión en la cara para lograr la fuerza equilibrada, y la corrección MWI debe aplicarse solo a la presión impulsora pura, excluyéndolas:
+El filtro va solo sobre la presión motriz. Si la gravedad y la tensión superficial pasan otra vez por la misma expresión, el equilibrio armado en una gota estática se rompe y aparece una corriente parásita.
 
 $$
 \nabla P = \nabla p - \rho\mathbf{g} - \sigma\kappa\nabla\alpha
 $$
 
-### Tres mejoras para los usuarios de OpenFOAM
-
-1. **Cambiar la interpolación en la cara de `rAU` a media armónica**: Configurar `interpolate(rAU) harmonic` en `fvSchemes`. Esto mejora significativamente la estabilidad en grandes relaciones de densidad.
-
-2. **Sustituir `ddtCorr` por la corrección transitoria estilo CMI**: Garantiza la independencia del paso de tiempo. El ddtCorr por defecto actual en OpenFOAM es aproximado y mantiene la dependencia de $\Delta t$.
-
-3. **Introducir estimación de curvatura de alta precisión como height-function**: La precisión de la curvatura es lo que determina el límite final de las velocidades espurias.
-
-En las extensiones compresibles, se añade el acoplamiento presión-densidad a través de la ecuación de estado (EOS), pero la estructura MWI de la velocidad en la cara en sí sigue siendo la misma que en los flujos incompresibles. Técnicas de discretización de interfaz como ACID (Denner & van Wachem, 2018) garantizan la precisión de la propagación de ondas acústicas.
+$\rho\mathbf{g}$ y $\sigma\kappa\nabla\alpha$ se quedan en el snGrad de la cara. La MWI deja pasar solo $\nabla P$. Con un `rAU` aritmético y una relación de densidades de 1000, el coeficiente de la cara se inclina hacia el aire. La media armónica $\rho_f^* \approx 2.0$ conserva la inercia del agua. Si `ddtCorr` se deja como está, la dependencia de $\Delta t$ permanece. Es el mismo barrio que un [residual de presión de simpleFoam que no se apaga](/es/posts/2026-03-27-simpleFoam-pressure-divergence/). Hasta que cambie la curvatura, el suelo de la velocidad espuria es el error de curvatura.
 
 ---
 
@@ -335,6 +337,4 @@ En las extensiones compresibles, se añade el acoplamiento presión-densidad a t
 - Aguerre, H.J. et al. (2018). JCP 365
 - Komen, E.M.J. et al. (2020). Nuclear Engineering and Design 370
 
-Activa la corrección Rhie–Chow para ver desaparecer el patrón de tablero de ajedrez.
 
-<CheckerboardPressure />

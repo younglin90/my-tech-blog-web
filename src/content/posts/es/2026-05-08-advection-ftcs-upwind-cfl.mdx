@@ -1,7 +1,9 @@
 ---
 title: "Cuando FTCS tiembla, el upwind se entumece — esquema advectivo de primer orden, viscosidad artificial y el trueque de CFL"
 date: 2026-05-08
-description: "Por qué la diferencia centrada explota, por qué el upwind sobrevive y qué paga por hacerlo"
+updated: 2026-10-19
+description: "Con c=0.8 el peor modo FTCS crece cerca de 1.28 por paso. La viscosidad artificial del upwind cae a cero solo cuando c vale 1."
+takeaway: "Con 200 celdas y c=0.8, una vuelta son 250 pasos. El bucle de 400 pasos recorre 1.6 vueltas, así que el pulso ya no está sobre q0."
 tags: ["CFD", "Advection", "Upwind", "CFL", "Numerical-Diffusion"]
 locale: es
 slug: 2026-05-08-advection-ftcs-upwind-cfl
@@ -10,86 +12,100 @@ draft: false
 
 import { AdvectionSchemeRace1D } from '@/components/post-viz/2026-05-08-advection-ftcs-upwind-cfl/AdvectionSchemeRace1D'
 
-A comienzos de los años sesenta, un colega de John von Neumann conectó la PDE más sencilla imaginable — advección lineal unidimensional — con la diferencia centrada más natural. El resultado fue una explosión: un pulso cuadrado que debería haber derivado tranquilamente comenzó a generar oscilaciones en su borde de salida y disparó fuera de la malla en pocos pasos. Este artículo sigue la pista de ese descontrol, explora por qué una diferencia upwind de una sola celda lo domina pero solo difuminando la imagen, y desentraña qué dice realmente la línea invisible trazada entre el paso espacial y el temporal (la condición CFL). Al final, cincuenta líneas de Python y una demostración interactiva ponen tres esquemas a competir en la misma malla.
+A comienzos de los años sesenta, gente junto a von Neumann metió diferencias centradas en la advección lineal unidimensional. El pulso cuadrado debía derivar en calma. El borde de salida creció en oscilaciones y salió de la malla en pocos pasos.
+
+La causa no es el orden. Traer el valor de aguas abajo con el mismo peso rompe la causalidad. Un upwind de una celda frena esa huida y mata las esquinas. El límite de ese trueque es el número CFL.
+
+Al mover la marca CFL de 0.05 a 1.5, sobre el mismo pulso cuadrado, FTCS sigue temblando y el upwind cae sobre la línea de trazos solo cerca de 1.
+
+<AdvectionSchemeRace1D />
+
+Con la marca en 0.5 el pulso upwind se abre más. Pasado 1.05, el upwind y Lax–Wendroff se van juntos del marco. El stencil quedó más corto que la característica.
 
 ## La diferencia más natural cae primero
 
-La ecuación de advección lineal en 1D es una sola línea.
+La advección lineal en una dimensión es una sola línea.
 
 $$
 \partial_t q + u\,\partial_x q = 0
 $$
 
-Aquí $q$ es la cantidad transportada y $u>0$ es una velocidad constante. La solución es trivial — la forma inicial se traslada con velocidad $u$.
+$q$ es la cantidad transportada y $u>0$ una velocidad constante. La solución es la forma inicial trasladada a velocidad $u$.
 
-Si se toma Euler hacia adelante en el tiempo y diferencia centrada (segundo orden) en el espacio, la regla de actualización sale limpia.
+Euler hacia adelante en el tiempo y una diferencia centrada de segundo orden en el espacio dan esta actualización.
 
 $$
 q_i^{n+1} = q_i^{n} - \tfrac{c}{2}\,\big(q_{i+1}^{n} - q_{i-1}^{n}\big)
 $$
 
-El número de Courant $c \equiv u\,\Delta t / \Delta x$ mide cuántas celdas avanza la onda en un paso temporal. Segundo orden en espacio, primer orden en tiempo, así que el LTE (error de truncamiento local) es $\mathcal{O}(\Delta t,\Delta x^2)$. Y aun así el esquema explota por pequeño que sea $c$.
+$c \equiv u\,\Delta t / \Delta x$ es el número de Courant, las celdas que la onda cruza en un paso. El esquema es de segundo orden en espacio y de primer orden en tiempo, así que el LTE (error local de truncamiento) es $\mathcal{O}(\Delta t,\Delta x^2)$. Por más que se reduzca $c$, el esquema se dispara.
 
-La razón cabe en una línea de análisis de von Neumann. Sustituyendo $q^n_i = g^n e^{i k x_i}$ se obtiene el factor de amplificación
+Al sustituir $q^n_i = g^n e^{i k x_i}$, el factor de amplificación es
 
 $$
 g = 1 - i\,c\,\sin(k\Delta x)
 $$
 
-de modo que $|g|^2 = 1 + c^2 \sin^2(k\Delta x) > 1$. Cada modo de Fourier crece en cada paso. Basta con un modo con $|g|>1$ para arruinarlo todo.
+y $|g|^2 = 1 + c^2 \sin^2(k\Delta x) > 1$. Todo modo crece en cada paso. Basta un modo con $|g|$ mayor que 1 para romper el campo.
+
+Con el $c=0.8$ del código, el modo con $\sin=1$ mide $\sqrt{1+c^2}=\sqrt{1.64}\approx 1.28$. Es 1.28 por paso, y 400 pasos son esa potencia. El $1.78^{400}$ aproximado de más abajo no es este modo. La fórmula da 1.28.
 
 ## La información solo fluye desde un lado
 
-El problema de fondo es la causalidad, no el álgebra. Cuando $u>0$, el valor de $q_i$ en $t_{n+1}$ debería depender únicamente de información aguas arriba ($x<x_i$). Pero la diferencia centrada arrastra $q_{i+1}^n$ del lado aguas abajo con peso igual. El algoritmo extrae información de un futuro que el flujo aún desconoce.
+Si $u>0$, $q_i$ en $t_{n+1}$ solo puede mirar aguas arriba, en $x<x_i$. La diferencia centrada toma el valor de aguas abajo $q_{i+1}^n$ con el mismo peso. Lee un lado al que el flujo no ha llegado.
 
-La diferencia upwind impone causalidad.
+El upwind fija esa dirección.
 
 $$
 q_i^{n+1} = q_i^{n} - c\,\big(q_i^{n} - q_{i-1}^{n}\big), \quad u>0
 $$
 
-Ahora von Neumann nos dice que
+El factor de amplificación es
 
 $$
 g = 1 - c + c\,e^{-i k \Delta x}
 $$
 
-y $|g|^2 = 1 - c(1-c)\cdot 4\sin^2(k\Delta x/2)$. Para $0 \le c \le 1$ resulta $|g|\le 1$. Cada modo decae o se queda quieto.
+y $|g|^2 = 1 - c(1-c)\cdot 4\sin^2(k\Delta x/2)$. Para $0 \le c \le 1$, $|g|\le 1$.
+
+El coeficiente $c(1-c)$ llega a 0.25 en $c=0.5$. En $c=0.8$ vale 0.16. En la onda más corta, $|g|^2 = 1 - 4\cdot 0.16 = 0.36$, o sea $|g|=0.6$. En $c=0.5$ el $|g|$ de ese modo cae a 0. En $c=1$ la resta desaparece y todo modo tiene $|g|=1$. El emborronado máximo está en 0.5, no en el borde del intervalo estable.
 
 ## Upwind = centrada + una viscosidad oculta
 
-Hay una forma más directa de ver por qué el upwind es estable. Descompongamos la derivada upwind de primer orden mediante una identidad algebraica.
+Al partir la pendiente upwind de primer orden sale la identidad
 
 $$
 \frac{q_i - q_{i-1}}{\Delta x}
 = \frac{q_{i+1} - q_{i-1}}{2\Delta x} - \frac{\Delta x}{2}\,\frac{q_{i+1} - 2q_i + q_{i-1}}{\Delta x^2}
 $$
 
-El primer término de la derecha es la diferencia centrada; el segundo es exactamente una segunda derivada discreta. Por lo tanto el upwind de primer orden está resolviendo la ecuación modificada
+El término de delante es la diferencia centrada. El de detrás es una segunda derivada discreta. Así, el upwind integra en realidad
 
 $$
 \partial_t q + u\,\partial_x q = \frac{u\,\Delta x}{2}\,\partial_x^2 q
 $$
 
-Queríamos resolver advección. El algoritmo nos entregó silenciosamente una difusión de intensidad $\nu_{\text{num}} = u\Delta x/2$ como bonificación. Esto es la viscosidad artificial (artificial viscosity, también llamada numerical diffusion).
+El objetivo era la advección. El algoritmo metió una viscosidad $\nu_{\text{num}} = u\Delta x/2$. Viscosidad artificial, también llamada difusión numérica.
 
-Esa viscosidad mata el descontrol. Pero no es gratis. Las esquinas del pulso cuadrado se gausianizan en cada paso, con anchura $\sqrt{4\nu_{\text{num}} t}$. Refinar la malla (menor $\Delta x$) reduce la viscosidad, pero hay que dar más pasos para llegar al mismo tiempo final. Ambos efectos se equilibran exactamente, así que la difuminación nunca desaparece del todo.
+Esa viscosidad mata la huida. Las esquinas del pulso cuadrado se abren hasta un espesor $\sqrt{4\nu_{\text{num}} t}$. Un $\Delta x$ menor recorta la viscosidad, pero llegar al mismo tiempo pide más pasos, y el emborronado se queda.
+
+El coeficiente posterior $u\Delta x(1-c)/2$ no coincide con esta fórmula por culpa de $c$. El $u\Delta x/2$ de arriba es el extremo $c\to 0$. Con $c=0.8$, $(1-c)=0.2$, así que el coeficiente que queda es la quinta parte, $u\Delta x/10$. Solo la forma con $(1-c)$ se anula en $c=1$.
 
 ## CFL — cuando la malla no alcanza la característica
 
-Hay una razón geométrica para que el upwind solo sea estable con $0\le c \le 1$. El valor de $q_i$ en $t_{n+1}$ proviene de donde estaba el fluido en $t_n$, es decir $x_i - u\Delta t$. Si ese punto cae entre $x_{i-1}$ y $x_i$, los dos valores de la malla pueden interpolarlo. En cuanto $u\Delta t > \Delta x$, el punto pie queda más allá de $x_{i-2}$ — y la plantilla del algoritmo no llega tan lejos.
+El valor de $q_i$ en $t_{n+1}$ es el que estaba en $x_i - u\Delta t$ en el tiempo $t_n$. Si ese pie cae entre $x_{i-1}$ y $x_i$, dos valores de malla lo interpolan. En cuanto $u\Delta t > \Delta x$, el pie queda más allá de $x_{i-2}$. El stencil no mira hasta ahí.
 
-Ése es el corazón de la condición de Courant–Friedrichs–Lewy.
+Esa geometría es la condición de Courant–Friedrichs–Lewy.
 
 $$
 \Delta t \le \frac{\Delta x}{|u|}
 $$
 
-El dominio numérico de dependencia (la plantilla) debe contener al dominio físico de dependencia (la característica). CFL es *necesaria* para todo esquema explícito pero nunca *suficiente*. FTCS cumple CFL y aun así detona — su problema es la causalidad, no el alcance de la plantilla.
+El dominio numérico de dependencia (el stencil) tiene que contener al físico (la característica). CFL es necesaria para todo esquema explícito y nunca suficiente. FTCS puede cumplir CFL y aun así detonar. La explosión es causalidad rota, no un stencil corto.
 
 ## Tres esquemas en cincuenta líneas de NumPy
 
-Misma malla, misma condición inicial, mismo CFL. Que corran y a mirar.
+La misma malla, el mismo pulso cuadrado, el mismo CFL.
 
 ```python
 import numpy as np
@@ -128,33 +144,27 @@ print("Upwind L1 err:", np.abs(q_up - q_exact).sum() * dx)
 print("LW    L1 err:", np.abs(q_lw - q_exact).sum() * dx)
 ```
 
-Con `cfl=0.8` y 400 pasos (una revolución completa), la respuesta exacta es la forma original. Resultados típicos:
+Con `cfl=0.8` y 400 pasos, las cifras aproximadas que deja este texto son:
 
-- FTCS: la amplitud crece aproximadamente $1.78^{400}$ veces y revienta en NaN o `inf`.
-- Upwind: el pulso se ensancha como un manchón gaussiano, el error L1 se asienta cerca de 0.04.
-- Lax–Wendroff: la amplitud se conserva, pero las esquinas dejan rizos (Gibbs) detrás.
+- FTCS: la amplitud crece cerca de $1.78^{400}$ y pasa a NaN o `inf`.
+- Upwind: el cuadrado se engorda hacia una forma gaussiana y el error L1 queda cerca de 0.04.
+- Lax–Wendroff: la amplitud se conserva, pero quedan rizos (Gibbs) tras las esquinas.
 
-Un guion de juguete reproduce todas las afirmaciones del artículo: explosión, difuminación, oscilación.
+## c=0.5 es el que más abre el upwind
 
-## Tócalo tú mismo
-
-Prueba la simulación de abajo. Al deslizar CFL de 0.05 a 1.5, los tres esquemas siguen destinos muy distintos sobre la misma malla.
-
-<AdvectionSchemeRace1D />
-
-Pon CFL exactamente en 1.0 y la curva upwind (cian) queda casi exactamente sobre el desplazamiento analítico (línea discontinua). El upwind de primer orden es *exacto* en $c=1$ — el coeficiente de viscosidad artificial $u\Delta x(1-c)/2$ se anula ahí. Baja CFL a 0.5 y la difuminación del upwind alcanza su pico mientras FTCS sigue divergiendo. Sube CFL a 1.05 y tanto upwind como Lax–Wendroff explotan — la plantilla no alcanza a seguir la característica.
+El máximo de $c(1-c)$ en 0.5 es el emborronado de la figura. En $c=1$, $(1-c)$ vale cero y el upwind de primer orden desplaza el cuadrado una celda, intacto. $c=0.8$ queda en medio, en 0.16. Estable no quiere decir menos romo. 0.8 solo es menos viscoso que 0.5.
 
 ## El primer orden es muy romo, pero el segundo trae nuevos dolores de cabeza
 
-La viscosidad artificial del upwind es bienvenida cerca de choques — aplana las oscilaciones no físicas. Pero actúa igual en regiones suaves, así que la precisión queda atascada en errores de segundo orden. Los códigos CFD de producción eligen una de dos rutas.
+La viscosidad upwind viene bien junto a un choque. Aplana oscilaciones no físicas. El mismo término sigue encendido en zonas suaves, así que el error queda atado al tamaño de una segunda derivada. Los códigos de producción eligen una de dos salidas.
 
-- Usar un esquema de orden superior (Lax–Wendroff, MUSCL, WENO) y atornillar un *limitador de flujo* o *limitador de pendiente* que reduce el orden cerca de los choques.
-- Resolver la estructura causal con exactitud mediante un *solver de Riemann* (Godunov, HLLC, Roe) en cada cara de celda.
+- Usar un esquema de orden mayor (Lax–Wendroff, MUSCL, WENO) y añadir un limitador de flujo o de pendiente que baje el orden solo cerca de los choques. [El cálculo que sujeta con un limitador el temblor de Lax–Wendroff en un escalón](/es/posts/2026-04-24-flux-limiter-tvd-advection/) es esa elección.
+- Llamar un solucionador de Riemann (Godunov, HLLC, Roe) en cada cara e integrar la causalidad de forma directa.
 
-Ambas rutas son mecanismos para decidir dónde se acepta y dónde se rechaza la viscosidad artificial. El upwind de primer orden la acepta en todas partes — el más simple, el más seguro, el más difusivo.
+Los dos son mecanismos para decidir dónde se acepta la viscosidad y dónde se rechaza. El upwind de primer orden la acepta en todas las celdas. Simple, seguro y el más difusivo.
 
-## Tres líneas para recordar
+## Llamar una vuelta a 400 pasos es un fallo
 
-- **FTCS centrado diverge sin importar CFL.** El descontrol es causal, no de plantilla.
-- **El upwind de primer orden compra estabilidad con viscosidad artificial $u\Delta x/2$.** Estable para $0\le c \le 1$; *exacto* en $c=1$.
-- **CFL es necesaria para todo esquema explícito pero nunca suficiente.** La estabilidad requiere causalidad y alcance de plantilla a la vez.
+Con $N=200$, $u=1$ y $c=0.8$, $\Delta t = c/N = 0.004$. Una vuelta de un dominio de longitud 1 pide $1/\Delta t = 250$ pasos, es decir $N/c$. Cuatrocientos pasos recorren $400\times 0.004 = 1.6$. Un pulso de ancho 0.2, desplazado 0.6, pasa de $[0.2,0.4]$ a $[0.8,1.0]$. Esos dos cuadrados no se solapan. La L1 del par nítido es 0.4.
+
+La L1 upwind de 0.04 citada arriba no puede ser esa comparación. Leer 0.04 como el emborronado de una vuelta limpia exige 250 pasos. El upwind de primer orden en una dimensión aguanta hasta $c=1$. Cuando lo que se transporta es una interfaz, ¿por qué el límite cae tanto? [Donde la advección de interfaz se queda con un CFL de 0.05](/es/posts/2026-08-16-vof-interface-advection-cfl-limit/) muestra dónde se separan la longitud del stencil y la restricción de la interfaz.

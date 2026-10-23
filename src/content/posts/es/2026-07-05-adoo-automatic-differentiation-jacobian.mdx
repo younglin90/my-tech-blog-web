@@ -1,7 +1,9 @@
 ---
 title: "[Reseña] ¿Cansado de derivar jacobianos a mano? — Diferenciación automática por sobrecarga de operadores (ADOO)"
 date: 2026-07-05
-description: "Fraysse (2019): obtener el jacobiano de flujo exacto para CFD implícito sin una sola derivación manual"
+updated: 2026-10-19
+description: "Fraysse (2019) siembra números duales en el código de flujo y lee un jacobiano con precisión de máquina, sin elegir un paso h de diferencias finitas."
+takeaway: "Un 20% de error en el jacobiano tumba a Newton de cuadrático a lineal; la matriz exacta aún llega a 1e-6 en menos de 10 iteraciones con CFL 20."
 tags: ["Automatic-Differentiation", "Implicit-Solver", "Jacobian", "Newton-Krylov", "Compressible"]
 locale: es
 slug: adoo-automatic-differentiation-jacobian
@@ -11,7 +13,13 @@ draft: false
 import { DualNumberDerivativeLab } from '@/components/post-viz/2026-07-05-adoo-automatic-differentiation-jacobian/DualNumberDerivativeLab'
 import { NewtonJacobianConvergenceLab } from '@/components/post-viz/2026-07-05-adoo-automatic-differentiation-jacobian/NewtonJacobianConvergenceLab'
 
-Empezó la derivación a mano del jacobiano del flujo HLLC. Tres hojas de papel después, se cayó un término de la regla del producto, y el código divergió en silencio. Lo que estaba mal no era el flujo, sino su **derivada**. La mitad del CFD implícito consiste en construir esa derivada —la matriz jacobiana de la discretización espacial— con exactitud. Este artículo recorre ADOO (diferenciación automática por sobrecarga de operadores) de Fraysse et al. (2019), partiendo del número dual más simple. Al final se verá cómo hasta un esquema con un bucle de búsqueda de raíces en su interior, como un solucionador de Riemann exacto de Godunov, produce un jacobiano exacto sin una sola fórmula derivada a mano. Y cuánto ahorra esa exactitud en velocidad de convergencia de Newton.
+La derivación a mano del jacobiano del flujo HLLC acabó en tres hojas tiradas. Cayó un término de la regla del producto y el código divergió en silencio. El flujo estaba bien. La **derivada** no. La mitad del CFD implícito consiste en llenar esa matriz —el jacobiano de la discretización espacial— sin un signo erróneo. ADOO, la diferenciación automática por sobrecarga de operadores de Fraysse et al. (2019), deja la derivada en el código. Un esquema con una búsqueda de raíces adentro, Godunov incluido, corre sin fórmula manual. Cuánto gana Newton con eso lo escribe la curva de convergencia.
+
+Al reducir el paso `h` de las diferencias finitas, la curva de error baja una vez y vuelve a subir. Al mover `x`, la ruta dual sigue pegada al piso.
+
+<DualNumberDerivativeLab />
+
+El fondo del valle queda cerca de $h\sim 10^{-8}$. Fuera de ese bolsillo, solo la curva ámbar vuelve a trepar.
 
 ## Información del artículo
 
@@ -35,7 +43,7 @@ Aquí $\mathbf{J}$ es el jacobiano del residuo (la matriz de derivadas parciales
 
 Hay tres caminos, y cada uno tiene su trampa. La derivación a mano (analítica) es exacta, pero hay que rederivarla cada vez que se toca el esquema. Para un flujo lleno de bifurcaciones como AUSM+ o uno iterativo como Godunov, la derivación misma es una pesadilla. Las diferencias finitas reutilizan el código, pero obligan a elegir un paso $h$ entre el error de redondeo y el de truncamiento.
 
-Newton-Krylov-matrix-free solo aproxima por diferencias finitas el producto jacobiano-vector, así que nunca arma la matriz. Pero un buen precondicionador todavía necesita las entradas reales de la matriz. ADOO corta el nudo **calculando la derivada en lugar de aproximarla.**
+Newton-Krylov-matrix-free solo aproxima por diferencias finitas el producto jacobiano-vector, así que nunca arma la matriz. Para detener [un Krylov que, sin matriz de precondicionamiento, sigue mil pasos](/es/posts/2026-06-06-weston-block-preconditioner-jfnk/) siguen haciendo falta las entradas reales. ADOO corta el nudo **calculando la derivada en lugar de aproximarla.**
 
 ## Números duales: llevar la derivada junto al valor
 
@@ -87,11 +95,7 @@ El `f.d` de la salida coincide con la derivada a mano hasta el nivel del redonde
 
 El verdadero valor de ADOO aparece junto a las diferencias finitas. El error de una diferencia central $[f(x+h)-f(x-h)]/2h$ es un tira y afloja. Un $h$ grande deja que domine el error de truncamiento (el resto de Taylor); un $h$ demasiado pequeño hace estallar el redondeo (pérdida de dígitos significativos al restar dos números cercanos). Así, el error dibuja una U en $h$. El punto óptimo está cerca de $h \sim \sqrt{\epsilon} \approx 10^{-8}$, pero hasta eso se corre según el problema.
 
-Experimenta con la simulación de abajo.
-
-<DualNumberDerivativeLab />
-
-Observa cómo la curva ámbar (FD) baja al reducir $h$ y luego se dispara de nuevo. La línea punteada cian (AD) permanece plana en la precisión de máquina sin importar a dónde se arrastre $x$. AD no tiene paso alguno, así que no hay ningún paso que ajustar.
+La curva ámbar de arriba es esa U, y la línea punteada cian es el piso sin paso. AD no tiene paso, así que no hay nada que ajustar.
 
 ## El jacobiano del flujo de Euler: a mano vs AD
 
@@ -145,13 +149,15 @@ J_ref = np.array([
 print("error máximo:", np.abs(J_ad - J_ref).max())   # ~1e-15
 ```
 
-`euler_flux_jacobian` sigue la **misma aritmética** que el código de flujo que el solucionador de Riemann usa de verdad. Nunca derivamos el jacobiano, y aun así su exactitud es de precisión de máquina. ¿Cambiar el esquema por AUSM+? Basta reemplazar la función de flujo y el jacobiano viene solo.
+`euler_flux_jacobian` sigue la **misma aritmética** que el código de flujo que el solucionador de Riemann usa de verdad. Nunca se derivó el jacobiano, y aun así su exactitud es de precisión de máquina. ¿Cambiar el esquema por AUSM+? Basta reemplazar la función de flujo y el jacobiano viene solo.
+
+Al meter el estado del código en la fórmula manual, la matriz se cierra en números. Con $Q=(1.2,\ 0.6,\ 3.0)$ y $\gamma=1.4$, $u=0.6/1.2=0.5$. La fila de cantidad de movimiento es $0.5(\gamma-3)u^2$, $(3-\gamma)u$, $\gamma-1$, es decir $(-0.2,\ 0.8,\ 0.4)$. La fila de energía es más larga. $(\gamma-1)u^3=0.05$ y $\gamma u E/\rho=1.75$, así que la primera entrada vale $0.05-1.75=-1.70$. Desde $\gamma E/\rho=3.5$, al restar $1.5(\gamma-1)u^2=0.15$ la entrada central queda en $3.35$. La última es $\gamma u=0.7$. La fila de masa sigue en $(0,\ 1,\ 0)$. El comentario del código sitúa la diferencia máxima entre esta matriz y AD en $\sim 10^{-15}$. La comprobación escalar ocupa el mismo sitio. En $x=1.3$, $x^2=1.69$ y $2x=2.6$, de modo que la derivada manual es $\cos(1.69)\cdot 2.6+2.6$, y `f.d` solo se separa de ese valor dentro del redondeo.
 
 ## Convergencia de Newton: lo que compra la exactitud
 
 Por qué importa el jacobiano exacto lo dice la curva de convergencia. Un jacobiano aproximado baja Newton de convergencia cuadrática a lineal. El número de iteraciones sube, y con CFL grande simplemente diverge. El artículo reporta que, gracias al jacobiano exacto, alcanza un residuo de $10^{-6}$ en menos de 10 iteraciones incluso a CFL 20: la firma de la convergencia cuadrática.
 
-Abajo, sube el deslizador de error del jacobiano desde cero.
+Al subir desde cero el control de error del jacobiano, cambia el orden de la curva.
 
 <NewtonJacobianConvergenceLab />
 
@@ -165,10 +171,8 @@ Al reproducirlo surgió un problema práctico. Al diferenciar un esquema con un 
 
 Desde la óptica de OpenFOAM esto no es ajeno. Hubo experimentos ensamblando `blockLduMatrix` con un tipo escalar dual, y SU2 ya construye su adjunto con AD por transformación de código. El mensaje es el mismo: la era de los jacobianos derivados por humanos se apaga.
 
-## Puntaje de reproducibilidad
+## Parar la búsqueda de raíces solo con el valor ensucia el jacobiano
 
-La idea se reproduce hasta el ejemplo escalar con una hoja de papel y una clase `Dual` de 30 líneas (arriba). El contraste del jacobiano de Euler tomó media jornada; un solucionador implícito bifásico completo es otro proyecto. Baja dificultad de reproducción, alta portabilidad del concepto.
+Una búsqueda de raíces dentro del flujo, el caso habitual de Godunov, no converge el valor y la derivada al mismo ritmo. La derivada va más lenta. Si el corte mira solo el valor, el flujo parece correcto y las entradas de la matriz ya están sucias. El jacobiano exacto del artículo todavía llega a un residuo de $10^{-6}$ en menos de 10 iteraciones con CFL 20. Mezclar un 20% de error tumba la convergencia cuadrática en una recta. Los dígitos que casi se duplicaban por iteración pasan a una pendiente casi constante.
 
-- **Cuando se necesita un jacobiano exacto, sembrar números duales en vez de derivar a mano.** Mismo código, otro tipo.
-- **El dilema del paso de las diferencias finitas no existe para AD.** La curva U del error desaparece por completo.
-- **Jacobiano exacto = convergencia cuadrática de Newton.** El aproximado se acuesta en primer orden, y el costo crece con CFL grande.
+El costo del modo directo crece con el número de variables independientes. Los bloques multifásicos grandes vuelven pesados los arreglos duales, y la transformación de código puede salir más barata. Un flujo con muchas ramas, del tipo que [rellena una interfaz con un fluido fantasma](/es/posts/2026-06-05-ghost-fluid-method-sharp-interface/), es donde la derivación manual muere primero. Si el criterio de paro no llega hasta la componente de la derivada, ese jacobiano entra en Newton ya equivocado.

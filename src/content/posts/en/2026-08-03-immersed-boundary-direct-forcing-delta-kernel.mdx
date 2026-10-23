@@ -1,7 +1,9 @@
 ---
 title: "A Wall the Grid Never Sees — IBM Delta Kernels and Multi-Direct Forcing"
 date: 2026-08-03
-description: "The two places no-slip leaks out of a forcing-term wall"
+updated: 2026-10-19
+description: "One forcing pass leaves 64% of free-stream slip on a cylinder. At Δs/h = 3 the gap slip hits 0.287, and at 0.25 the condition number reaches 1e11."
+takeaway: "Slip on the markers alone invites a wider spacing. At Δs/h = 3 the gap leak is 0.287, while 0.25 drives the condition number to 1e11."
 tags: ["IBM", "Direct-Forcing", "Delta-Kernel", "Lagrangian-Marker", "Incompressible"]
 locale: en
 slug: 2026-08-03-immersed-boundary-direct-forcing-delta-kernel
@@ -11,7 +13,13 @@ draft: false
 import { KernelWobbleLab } from '@/components/post-viz/2026-08-03-immersed-boundary-direct-forcing-delta-kernel/KernelWobbleLab'
 import { MarkerSpacingLeakLab } from '@/components/post-viz/2026-08-03-immersed-boundary-direct-forcing-delta-kernel/MarkerSpacingLeakLab'
 
-The wall is not on the grid. The flow feels it anyway. The immersed boundary method (IBM — representing a body through a forcing term instead of fitting the grid to it) resolves that contradiction with a single source term in the momentum equation. The grid stays Cartesian, and the body exists only as a set of markers floating above it. This post works out how that forcing term is actually computed, why one evaluation of it fails to enforce no-slip, and which way things collapse when the marker spacing is chosen badly.
+The wall is not on the grid. The flow feels it anyway. The immersed boundary method (IBM — representing a body through a forcing term instead of fitting the grid to it) resolves that contradiction with a single source term in the momentum equation. The grid stays Cartesian, and the body exists only as a set of markers floating above it. What follows is how that forcing term is actually computed, why one evaluation fails to enforce no-slip, and which way things collapse when the marker spacing is chosen badly.
+
+Switch kernels with `slide` running, and $\sum\varphi^2$ either wobbles or locks to one value.
+
+<KernelWobbleLab />
+
+The 2-point hat swings between 0.5 and 1.0, Roma's 3-point kernel sits at 0.5, and Peskin's 4-point kernel sits at 0.375. All three still meet the two moment conditions.
 
 ## Standing a wall up with one source term
 
@@ -53,7 +61,7 @@ Continuous forcing uses the delta function. That smears the interface, pins accu
 
 Discrete forcing avoids the delta function entirely. Ghost-cell IBM fills solid-side cells with fictitious values and imposes the boundary condition by interpolating at an image point along the surface normal. With no delta function in the way, second order and beyond become reachable. The price is cell classification (fluid / solid / ghost) plus fresh-point handling: when the body moves, a cell that was solid yesterday is fluid today, and nothing in the solution knows its value.
 
-Direct forcing, today's subject, belongs to the first family. It is short to implement and robust for moving bodies, which is why IB-LBM leans on it so heavily.
+Direct forcing, today's subject, belongs to the first family. It is short to implement and robust for moving bodies, which is why IB-LBM leans on it so heavily. The starting point is [Peskin's construction that never meshes the valve](/en/posts/2026-05-15-peskin-ibm-direct-forcing-discrete-delta/).
 
 ## The third condition a delta kernel has to satisfy
 
@@ -73,11 +81,7 @@ $$
 
 This quantity is the diagonal of $\mathcal{I}\mathcal{S}$ — how much of its own force a marker gets back. If it varies with $r$, then the same velocity correction produces a different force magnitude as the body slides across the grid. The force oscillates at the grid frequency. That is where the sawtooth in a drag curve comes from when you tow a cylinder at constant speed.
 
-Try it directly in the simulation below.
-
-<KernelWobbleLab />
-
-Leave `slide` running and switch kernels while watching the lower curve. With the 2-point hat kernel, $\sum\varphi^2$ swings by a factor of two — 0.5 to 1.0 — as the marker crosses a single cell. Roma's 3-point kernel is nailed at 0.5, Peskin's 4-point at 0.375. Notice that all three satisfy the two moment conditions above identically. The third condition is the only thing separating them.
+All three kernels can meet the two moment conditions and still split on the third. The lower curve in the panel above is that split.
 
 Peskin's 4-point kernel has this form.
 
@@ -219,7 +223,17 @@ The output:
  3.00       24       0.0041    0.2865    1.1e+00    0.434
 ```
 
+Push `ds/h` above 2.5 and white tracers turn red as they slip through the marker gaps; drop it below 0.4 and `cos θ` pins at 1.
+
+<MarkerSpacingLeakLab />
+
+A red dot is inside the body. `MDF passes` cuts the slip hard from 0 to 3, then barely moves.
+
 Read only the `slip@marker` column and sparser markers look better and better — 0.004 at $\Delta s/h = 3$, the smallest in the table. That is the trap.
+
+The circumference is $2\pi R = 2\pi\times 0.18 \approx 1.131$ and $h=1/64=0.015625$. At $\Delta s/h=1$ the marker count is $1.131/0.015625\approx 72.4$, which rounds to 72, the table entry. $\Delta s/h=0.25$ has 290 markers and 3.0 has 24. One correction leaves 64% of the free stream, 0.64. After 10 MDF passes at $\Delta s/h=1$, slip on the marker is 0.0425, about a fifteenth of 0.64. An eigenvalue of 0.374 contracts once by $1-0.374=0.626$, in line with the 0.64 quoted above. $0.64^5\approx 0.107$, so five passes leave the dominant mode near 11% of its start. Modes near zero do not move, and the floor after 10 passes sits around 0.04.
+
+At $\Delta s/h=3$ the gap slip 0.2865 is about 70 times the on-marker value 0.0041. At $\Delta s/h=1$ the two are 0.0455 and 0.0425, almost the same. The condition number is $1.3\times 10^{11}$ at 0.25, $6.8\times 10^{2}$ at 1.0, and 1.1 at 3.0. $\lambda_{\max}$ stays near 0.376 through $\Delta s/h=2.0$ and jumps to 0.434 at 3.0. Sparse markers move the diagonal with them.
 
 ## The two cliffs on either side of Δs/h
 
@@ -227,16 +241,10 @@ Look at `slip@gap` in the same table. At $\Delta s/h = 3$ it is 0.287. No-slip i
 
 The opposite cliff is in the `cond(A)` column. At $\Delta s/h = 0.25$ the condition number is $10^{11}$. Pack the markers too tightly and neighboring markers see almost identical grid nodes, so the rows of $\mathbf{A}$ turn parallel. Explicit MDF still runs. The implicit solve dies right here.
 
-Move between the two cliffs yourself in the simulation below.
-
-<MarkerSpacingLeakLab />
-
-Push the `ds/h` slider above 2.5 and gaps open in the ring of markers; tracers (white dots) pass through the body via those gaps and turn red once inside. Drop it below 0.4 and the leak disappears, but the `cos θ` gauge on the right pins to 1 — the signal that neighboring rows have gone parallel. Also watch the slip fall sharply as `MDF passes` goes from 0 to 3, then barely move afterward.
-
 The gap between those two columns is why practice says $\Delta s \approx h$. Keeping the surface discretization slightly finer than the fluid grid, around $\Delta s \approx 0.7h$ to $1.0h$, is the safe band.
 
-## Before you stand up the next wall
+## Quiet markers are not a wall
 
-- Do not judge a kernel by the two moment conditions alone. A kernel whose $\sum\varphi^2$ varies with marker position leaves grid-frequency sawtooth in the force signal of a moving body. For the 2-point hat, that value swings by a factor of two.
-- One direct forcing pass does not enforce no-slip; over 60% of the free-stream slip survives. Make 3 to 5 MDF passes the default, and do not expect more from 20. Components near the null space of $\mathcal{I}\mathcal{S}$ are not erased by iteration.
-- When drag looks wrong, plot slip **between** the markers, not on them. The on-marker number keeps improving as $\Delta s$ grows. The flux leaking through the gaps does not.
+`slip@marker` can fall to 0.004 while the gap slip at $\Delta s/h=3$ is still 0.2865. Only the forced points are quiet. The other cliff, $\Delta s/h=0.25$, leaks only 0.0442, but the condition number is $1.3\times10^{11}$ and the implicit inverse dies there. In the table the band where both columns stay small runs from $\Delta s/h$ of 0.5 to 1.5.
+
+Pick a kernel on the two moment conditions alone and the 2-point hat lets $\sum\varphi^2$ swing between 0.5 and 1.0, leaving grid-frequency sawteeth in the drag. One direct-forcing pass leaves 64% of the slip. Three to five passes shrink the dominant mode and leave the near-null part behind. The step that advances velocity first is the same slot as the [projection step in Chorin](/en/posts/2026-07-03-chorin-projection-fractional-step/).

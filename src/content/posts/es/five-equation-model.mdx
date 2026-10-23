@@ -1,48 +1,59 @@
 ---
 title: "Guía de implementación del modelo de 5 ecuaciones: Solucionador de flujo multifásico con Python"
 date: 2026-03-07
-description: "Implementación directa del modelo de interfaz difusa de 5 ecuaciones en Python, simulando el problema de interacción de una onda de choque con una burbuja en 1D."
+updated: 2026-10-19
+description: "Con fracción de volumen 0.5 la velocidad del sonido de la mezcla ronda 24 m/s. El aire inicial queda cerca de 374 m/s y el agua cerca de 1625 m/s."
 tags: ["Multiphase", "Diffuse-Interface", "Python", "Implementation"]
 series: "compressible-multiphase"
 seriesOrder: 4
 noindex: true
+takeaway: "El paso de tiempo no lo fija esos 24 m/s. Lo aprieta el agua detrás del choque, cerca de 2530 m/s."
 ---
 
 import { VolumeFractionAdvect } from '@/components/post-viz/five-equation-model/VolumeFractionAdvect'
 
 # Implementación directa del modelo de 5 ecuaciones
 
-La teoría por sí sola no es suficiente para comprenderlo completamente.
-En este artículo, implementaremos directamente el **modelo de interfaz difusa de 5 ecuaciones** en 1D utilizando Python y simularemos el problema de una onda de choque que atraviesa una burbuja de gas.
+El agua detrás del choque está a presión $10^{9}$. El agua por delante está a $10^{5}$. En medio hay una burbuja de aire, y la fracción de volumen $\alpha_1$ salta entre casi 0 y casi 1. El **modelo de interfaz difusa de 5 ecuaciones** en 1D transporta ese salto con cinco ecuaciones. Los dos fluidos comparten una velocidad y una presión. Solo la fracción de volumen viaja aparte.
+
+Al bajar a 0 el control de difusión artificial, el frente de fracción de volumen se corta en una sola celda.
+
+<VolumeFractionAdvect />
+
+Al subir el control, el frente se reparte en varias celdas. El $\alpha$ de esas celdas entra directo en el denominador de la presión de mezcla.
 
 ## Resumen de las ecuaciones de gobierno
 
-Variables conservadas y flujos del modelo de 5 ecuaciones en 1D:
+En 1D las variables conservadas y el flujo son estos.
 
 $$
 \mathbf{U} = \begin{bmatrix} \alpha_1 \rho_1 \\ \alpha_2 \rho_2 \\ \rho u \\ E \\ \alpha_1 \end{bmatrix}, \quad
 \mathbf{F} = \begin{bmatrix} \alpha_1 \rho_1 u \\ \alpha_2 \rho_2 u \\ \rho u^2 + p \\ (E+p)u \\ 0 \end{bmatrix}
 $$
 
-La quinta ecuación ($\alpha_1$) es de tipo no conservativo, por lo que se trata por separado:
+La quinta componente del flujo es 0. $\alpha_1$ es no conservativa, así que se actualiza aparte.
 
 $$
 \frac{\partial \alpha_1}{\partial t} + u \frac{\partial \alpha_1}{\partial x} = 0
 $$
 
+Cinco ecuaciones es lo que queda al reducir ambas fases a una velocidad y una presión. Devolver un sistema a cada fase es el [modelo de siete ecuaciones de Baer–Nunziato](/es/posts/2026-06-27-baer-nunziato-seven-equation-two-phase/).
+
 ## Ecuación de estado: Stiffened Gas EOS
 
-Se utiliza la EOS de gas endurecido (stiffened gas) para ambos fluidos:
+Los dos fluidos usan un gas endurecido (stiffened gas).
 
 $$
 p_k = (\gamma_k - 1)\rho_k e_k - \gamma_k p_{\infty,k}
 $$
 
-La presión total se obtiene mediante la regla de mezcla (mixture rule):
+La presión de mezcla sale de esta regla.
 
 $$
 p = \frac{\rho e - \sum_k \alpha_k \frac{\gamma_k p_{\infty,k}}{\gamma_k - 1}}{\sum_k \frac{\alpha_k}{\gamma_k - 1}}
 $$
+
+$p_k$ es la presión del fluido $k$, $e_k$ su energía interna, y $\gamma_k$, $p_{\infty,k}$ las constantes de la EOS. El denominador es $\sum \alpha_k/(\gamma_k-1)$.
 
 ## Implementación en Python
 
@@ -89,7 +100,11 @@ def sound_speed(alpha1, arho1, arho2, p):
     return np.sqrt(1.0 / (rho * inv_rhoc2))
 ```
 
+`pressure` es la regla de mezcla reescrita sobre variables conservadas. En `sound_speed`, $c_k^2=\gamma_k(p+p_{\infty,k})/\rho_k$ es la velocidad del sonido del fluido puro.
+
 ### Cálculo del flujo HLLC
+
+HLLC cubre las cuatro leyes de conservación. La velocidad de contacto $S^\star$ vuelve junto al flujo y luego transporta $\alpha$.
 
 ```python
 def hllc_flux(UL, UR, alpha1L, alpha1R):
@@ -141,6 +156,8 @@ def hllc_flux(UL, UR, alpha1L, alpha1R):
 
 ### Integración temporal (1er orden)
 
+El avance temporal es Euler hacia adelante. El paso es $\mathrm{CFL}\,\Delta x/\max(|u|+c)$, con CFL 0.5.
+
 ```python
 def solve(U, alpha1, dx, t_end, cfl=0.5):
     """Integración temporal de Euler hacia adelante."""
@@ -185,7 +202,11 @@ def solve(U, alpha1, dx, t_end, cfl=0.5):
     return U, alpha1
 ```
 
+La actualización de $\alpha_1$ no es un flujo conservativo. El signo de la velocidad de cara `uface` elige el lado upwind.
+
 ### Condiciones iniciales: Onda de choque - Burbuja de gas
+
+Antes de la posición 0.25 el agua ya cruzó el choque: $\rho=1100$, $u=50$, $p=10^{9}$. Entre 0.4 y 0.6 está la burbuja de aire, $\rho=1$, $u=0$, $p=10^{5}$. El resto es agua ambiente, $\rho=1000$, $u=0$, $p=10^{5}$.
 
 ```python
 # Condición inicial: choque golpeando una burbuja de aire en agua
@@ -221,47 +242,40 @@ for i in range(N):
     U[3, i] = E
 ```
 
+`compute_total_energy` no está en este fragmento. La EOS ya dice cómo volver de la presión a la energía: $\rho e=(p+\gamma p_\infty)/(\gamma-1)$.
+
 ## Consideraciones importantes
 
 ### 1. Limitación del rango de $\alpha$
 
-Si $\alpha_1$ llega a ser exactamente 0 o 1, se producirá una división por cero en los cálculos de la EOS.
-Siempre se debe realizar un clipping a $\epsilon < \alpha_1 < 1 - \epsilon$ ($\epsilon \sim 10^{-8}$).
+Si $\alpha_1$ vale exactamente 0 o 1, el producto conservado $\alpha_1\rho_1$ no se puede dividir entre $\alpha_1$. El código recorta $\alpha_1$ entre $10^{-8}$ y $1-10^{-8}$.
 
 ### 2. Velocidad del sonido de la mezcla: Fórmula de Wood
 
-La velocidad del sonido en la región de mezcla puede ser mucho menor de lo que dicta la intuición.
-Este es un fenómeno físicamente correcto y afecta la condición CFL.
+Una celda mezclada puede ser más lenta que cualquiera de los dos fluidos puros. La fórmula lo dice, y el CFL lee esa misma velocidad.
 
 $$
 \frac{1}{\rho c^2} = \frac{\alpha_1}{\rho_1 c_1^2} + \frac{\alpha_2}{\rho_2 c_2^2}
 $$
 
-Cerca de $\alpha_1 = 0.5$, $c_{mix}$ se vuelve **mucho menor** que la velocidad del sonido de ambos fluidos.
+Los estados puros de la condición inicial ya fijan el número. El aire de la burbuja tiene $\rho=1$, $p=10^{5}$, $\gamma=1.4$, $p_\infty=0$. Entonces $c=\sqrt{1.4\times 10^{5}}\approx 374\,\mathrm{m/s}$. El agua ambiente tiene $\rho=1000$, $p=10^{5}$, $\gamma=4.4$, $p_\infty=6\times 10^{8}$, así que $c\approx 1625\,\mathrm{m/s}$. El agua detrás del choque tiene $\rho=1100$, $p=10^{9}$, así que $c\approx 2530\,\mathrm{m/s}$. El grupo $p+p_\infty$ es cerca de 2.67 veces el del agua ambiente, mientras la densidad solo es $1100/1000=1.10$ veces mayor. La energía cinética a $u=50$ es $0.5\times 1100\times 50^{2}=1.375\times 10^{6}$. Eso es cerca del 0.13% de la densidad de energía interna $\rho e\approx 1.07\times 10^{9}$ en la misma celda. La energía de este choque está en $p_\infty$, no en los 50 m/s.
+
+Al mezclar aire de la burbuja y agua ambiente con $\alpha_1=0.5$ y una presión común $10^{5}$, en la fórmula de Wood $1/(\rho c^2)$ es casi por completo el término del aire. $\rho_1 c_1^2=1.4\times 10^{5}$, mientras $\rho_2 c_2^2\approx 2.64\times 10^{9}$. La densidad de mezcla es $0.5\times 1+0.5\times 1000=500.5$, y $c_\mathrm{mix}\approx 24\,\mathrm{m/s}$. Ni 374 ni 1625.
+
+El denominador de la presión es sensible en el mismo sitio. El agua pura tiene $\sum\alpha/(\gamma-1)=1/3.4\approx 0.294$. Si se filtra $\alpha_1=0.01$ en esa agua, el denominador pasa a $0.01/0.4+0.99/3.4\approx 0.316$, cerca de un 7.5% más. La presión se divide por ese denominador, así que un error de $\alpha$ en una interfaz emborronada aparece como error de presión.
+
+El paso CFL es $\Delta t=0.5\,\Delta x/\max(|u|+c)$, y $\Delta x$ es el espaciado de `linspace(0, 1, 1000)`, o sea $1/999$. No lo fija la celda mezclada. Detrás del choque, $|u|+c\approx 50+2530=2580$, de modo que $\Delta t\approx 1.9\times 10^{-7}$. Una celda a 24 m/s permitiría un paso cerca de 110 veces mayor. Una velocidad de mezcla baja no aprieta el paso de tiempo. Lo que hace es dejar la acústica de la interfaz casi quieta dentro de ese mismo $\Delta t$.
 
 ### 3. Extensión a alta precisión
 
-El código anterior es de primer orden. En investigaciones reales:
-
-- **Reconstrucción MUSCL** + slope limiter para 2do orden.
-- Reconstrucción **WENO** para 5to orden o superior.
-- Integración temporal de **Runge-Kutta** para mejorar la precisión en el tiempo.
+El integrador de arriba es de primer orden, y la actualización espacial usa el valor de la celda tal cual. El segundo orden pide MUSCL más un slope limiter. Por encima, WENO. La precisión temporal sube con Runge–Kutta. Nada de eso quita la actualización no conservativa de $\alpha$ ni la velocidad de Wood.
 
 ## Interpretación de resultados
 
-Al ejecutar la simulación, mientras la onda de choque comprime la burbuja de gas:
+Cuando el choque entra en la burbuja, un choque transmitido sale por el lado de aguas abajo y una rarefacción reflejada vuelve a la izquierda. La burbuja se aplasta y sube su presión interna. Un chorro en la pared de aguas abajo pide 2D o 3D. Las explosiones submarinas y la litotricia por ondas de choque se apoyan en esta figura.
 
-1. Una **onda de choque transmitida (transmitted shock)** avanza hacia la parte posterior de la burbuja.
-2. Una **onda de rarefacción reflejada (reflected rarefaction)** se mueve hacia la izquierda.
-3. La burbuja se **comprime** rápidamente, aumentando su presión interna.
-4. Se forma un **chorro (jet)** en la pared posterior (en 2D/3D).
+## Un α solo upwind deja que la presión de contacto se mueva primero
 
-Este fenómeno es una física clave en explosiones submarinas, litotricia por ondas de choque, etc.
+El quinto flujo es 0, y $\alpha$ se pone upwind según el signo de la velocidad de cara. El salto del 7.5% en el denominador de la presión cuando $\alpha_1=0.01$ se filtra en el agua significa que una celda mala de interfaz puede mover la presión de equilibrio. Esta actualización de primer orden no impone ese equilibrio por su cuenta. La discretización del término no conservativo es lo que decide si la presión se queda quieta.
 
-## Siguientes pasos
-
-En el próximo artículo, he preparado contenido interactivo para aprender los conceptos básicos del análisis numérico **como si fuera un juego**. Podrás experimentar directamente la estabilidad numérica, la condición CFL, entre otros.
-
-Pon la difusión artificial en 0 y observa la interfaz volverse no-física — por eso usamos THINC.
-
-<VolumeFractionAdvect />
+La comprobación de ese equilibrio es un contacto donde no debería pasar nada más. Dónde se escapa la presión en ese contacto es la pregunta del [criterio de Abgrall y el término no conservativo](/es/posts/2026-09-06-abgrall-criterion-nonconservative-term/).

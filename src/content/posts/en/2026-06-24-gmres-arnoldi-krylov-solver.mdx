@@ -1,7 +1,9 @@
 ---
 title: "Solving Without Inverting the Matrix — GMRES and the Arnoldi Subspace"
 date: 2026-06-24
-description: "Building GMRES from scratch to solve sparse linear systems via Krylov and Arnoldi"
+updated: 2026-10-19
+description: "On a 40 by 40 Poisson problem, 1600 unknowns reach a residual of 8.74e-11 in 78 matrix-vector products, and the true residual is 9.02e-11."
+takeaway: "The Givens residual 8.74e-11 matches the true residual 9.02e-11. When the curve goes flat, look at the preconditioner before the restart length."
 tags: ["Krylov", "GMRES", "Arnoldi", "Linear-Solver", "Preconditioning"]
 locale: en
 slug: gmres-arnoldi-krylov-solver
@@ -12,6 +14,12 @@ import { GmresConvergenceLab } from '@/components/post-viz/2026-06-24-gmres-arno
 import { ArnoldiHessenbergViz } from '@/components/post-viz/2026-06-24-gmres-arnoldi-krylov-solver/ArnoldiHessenbergViz'
 
 A colleague's implicit solver died from running out of memory. It tried to LU-factorize the Jacobian of a five-million-cell mesh, and 64 GB vanished in seconds. The matrix is enormous, and almost all of it is zero. Yet a direct method fills those zeros back in (fill-in). This post follows GMRES from the ground up — a method that never inverts the matrix and instead narrows in on the solution using only matrix-vector products. We stack an orthonormal basis with the Arnoldi iteration, shrink the residual through a tiny least-squares problem, and read off convergence for free with Givens rotations, all verified in a Python 2D Poisson solver.
+
+Raising the column count keeps the left Hessenberg at zero below the first subdiagonal, while the off-diagonal of the Gram matrix $Q^{\top}Q$ stays near zero.
+
+<ArnoldiHessenbergViz />
+
+As you raise the dimension $n$, the Hessenberg stays zero (faint gray) below the first subdiagonal. The Gram matrix on the right is cyan only on the diagonal, while the off-diagonal (orange) stays near zero — proof that orthogonality survives.
 
 ## Direct methods collapse in front of a large sparse matrix
 
@@ -53,12 +61,6 @@ $$
 
 where $Q_m$ is the $n\times m$ matrix whose columns are the basis vectors. The action of the giant $A$ has been compressed into the small Hessenberg matrix $\bar{H}_m$.
 
-Play with the simulation below. On the left is the Hessenberg matrix filling in; on the right is the Gram matrix $Q^{\top}Q$ that reveals the basis orthogonality.
-
-<ArnoldiHessenbergViz />
-
-As you raise the dimension $n$, the Hessenberg stays zero (faint gray) below the first subdiagonal. The Gram matrix on the right is cyan only on the diagonal, while the off-diagonal (orange) stays near zero — proof that orthogonality survives.
-
 ## Minimal residual — shrinking it through a tiny Hessenberg least squares
 
 Write the solution as $x = x_0 + Q_m y$, where $y$ is an $m$-dimensional vector. Substituting the identity $AQ_m = Q_{m+1}\bar{H}_m$ shrinks the residual dramatically.
@@ -88,12 +90,6 @@ GMRES gets more expensive the longer it runs. At step $j$, you must orthogonaliz
 
 The fix is restarting. After $m$ iterations, take the current solution $x_m$ as a new initial guess, discard the subspace, and start over. This is GMRES(m). Memory is bounded by $m$. The cost is slower convergence. The moment you discard the subspace, accumulated information is lost, and the method sometimes stalls (stagnation).
 
-Play with the simulation below. Cyan is full GMRES without restart; orange is GMRES(m).
-
-<GmresConvergenceLab />
-
-Drop the restart length $m$ from 60 to 10 and the orange curve bends into steps and slows down. Push the condition number κ up to $10^6$ and both curves flatten. But turn on "clustered eigenvalues" and the eigenvalues bunch up near 1, so convergence accelerates sharply at the same κ. That is the core intuition behind preconditioning.
-
 ## Preconditioning: cluster the eigenvalues and it speeds up
 
 GMRES's convergence rate is governed by the eigenvalue distribution of $A$. Eigenvalues scattered widely across the complex plane are slow; eigenvalues bunched near a single point are fast. Preconditioning multiplies by a matrix $M^{-1}$ to cluster the eigenvalues of $M^{-1}A$.
@@ -102,7 +98,7 @@ $$
 M^{-1} A x = M^{-1} b
 $$
 
-Here $M$ is a matrix that resembles $A$ but whose inverse is cheap to apply. The simplest choice is diagonal preconditioning ($M = \mathrm{diag}(A)$, Jacobi). In practice, incomplete LU (ILU) is the standard. It approximates $A \approx \tilde{L}\tilde{U}$ with limited fill-in. When the preconditioner fits well, iteration counts drop from hundreds to tens.
+Here $M$ is a matrix that resembles $A$ but whose inverse is cheap to apply. The simplest choice is diagonal preconditioning ($M = \mathrm{diag}(A)$, Jacobi). In practice, incomplete LU (ILU) is the standard. On a boundary-layer grid stretched in one direction, a [linelet preconditioner](/en/posts/2026-07-31-linelet-preconditioner-stretched-grid/) folds that line first. It approximates $A \approx \tilde{L}\tilde{U}$ with limited fill-in. When the preconditioner fits well, iteration counts drop from hundreds to tens.
 
 ## Python — solving a 2D Poisson from scratch with GMRES
 
@@ -203,12 +199,20 @@ final residual: 8.74e-11
 true residual : 9.02e-11
 ```
 
+<GmresConvergenceLab />
+
+Cyan is full GMRES without restart; orange is GMRES(m).
+
+Drop the restart length $m$ from 60 to 10 and the orange curve bends into steps and slows down. Push the condition number κ up to $10^6$ and both curves flatten. But turn on "clustered eigenvalues" and the eigenvalues bunch up near 1, so convergence accelerates sharply at the same κ. That is the core intuition behind preconditioning.
+
 We solved 1600 unknowns in just 78 matrix-vector products. The residual estimated by Givens (`hist[-1]`) matches the true residual — the rotations did not lie. Enlarge the grid to 80×80 and the iteration count grows. Attach a preconditioner and it shrinks again.
 
-## When you reach for GMRES in the field
+The printout already shows the budget. The requested cap was 120 iterations and the run stopped at 78. It crossed a residual under 1e-10 with 42 iterations still unused. The unknown count is 40 by 40, 1600. Seventy-eight matrix-vector products is about one product per 20.5 unknowns. The gap between the Givens value 8.74e-11 and the true 9.02e-11 is 2.8e-12. The true value is about 3.2 percent larger. The rotation, which never solves for $y$ on every pass, still matched the norm to that place.
 
-The part that most often breaks when you wire GMRES into your code is orthogonalization. Classical Gram-Schmidt loses orthogonality over long runs. Use modified Gram-Schmidt or reorthogonalization to stay safe. The code above is the modified GS form that subtracts on every iteration.
+The squared spacing is the code formula itself, $1/(41 \times 41) = 1/1681$. The point source sits at index $20 \times 40 + 20 = 820$ with value 1.0. The five-point stencil divides the four neighbors of that cell by this squared spacing. Full GMRES finished this 1600-unknown matrix in 78 passes. That does not mean a shorter restart reaches the same residual. Forty-two iterations were still left inside the cap of 120.
 
-- **If you see residual stagnation, suspect the restart length first.** When $m$ is too small, GMRES(m) flattens out. Raise $m$ as far as memory allows, or strengthen the preconditioner.
-- **GMRES without a preconditioner is a gamble.** Real problems with large condition numbers (low Mach, stiff chemistry) won't even converge without one. Just attaching ILU(0) changes the game.
-- **The residual norm is free.** Givens hands you the residual every iteration, so don't compute $\lVert b-Ax\rVert$ separately. That wastes one more matrix-vector product.
+## When the curve goes flat, suspect the preconditioner before m
+
+40 by 40, 1600 unknowns, 78 iterations, residual 8.74e-11. Full GMRES with a cap of 120 was enough for this Poisson problem. Cut the restart from 60 to 10 and the orange curve turns into steps. First separate that staircase from a condition number of $10^6$.
+
+Jacobi, which only rescales the diagonal, does a poor job of clustering eigenvalues on a grid that is long in one direction. To push the same Poisson down a coarser hierarchy, the comparison is a [V-cycle](/en/posts/2026-05-06-multigrid-v-cycle-poisson-acceleration/). Givens already hands over the residual, so there is no point in recomputing $\lVert b-Ax\rVert$ on the side.

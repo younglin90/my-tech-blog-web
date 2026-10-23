@@ -1,19 +1,27 @@
 ---
 title: "当压力振荡成棋盘格 — SIMPLE 与 Rhie-Chow 压力-速度耦合"
 date: 2026-07-22
-description: "棋盘格压力的成因、Rhie-Chow 插值、SIMPLE 压力方程与欠松弛"
+updated: 2026-10-19
+description: "在共48个一维周期网格上，naive 棋盘格幅度仍停在0.80，而 Rhie-Chow 把同一条锯齿抹到3.1e-16。"
 tags: ["SIMPLE", "Rhie-Chow", "Pressure-Velocity-Coupling", "Incompressible", "OpenFOAM"]
 locale: zh
 slug: simple-pressure-velocity-coupling-rhie-chow
+takeaway: "把 α_p 设成 1、每步整格换掉压力，校正循环会过校正然后炸掉。"
 draft: false
 ---
 
 import { CheckerboardRhieChow } from '@/components/post-viz/2026-07-22-simple-pressure-velocity-coupling-rhie-chow/CheckerboardRhieChow'
 import { PressureCorrectionRelaxLab } from '@/components/post-viz/2026-07-22-simple-pressure-velocity-coupling-rhie-chow/PressureCorrectionRelaxLab'
 
-速度场看起来没问题。可是打开压力场，每个网格的值都在上下跳动。这是棋盘格（checkerboard）。残差在下降，唯独压力像锯齿一样振荡。这不是代码错误。从把压力和速度放在同一网格点的那一刻起，结果就已注定。
+速度场看起来没问题。压力场一打开，每个网格都在上下跳。棋盘格（checkerboard）。残差在降。只有压力是锯齿。不是代码错误。压力和速度放在同一网格点的那一刻，结果就已经定了。
 
-本文讲清这个锯齿为何出现、Rhie-Chow 插值如何消除它，以及连续方程如何变成压力方程。最后把同一个求解器一路延伸到可压缩流动。
+在 Naive 和 Rhie-Chow 之间切换，种下的锯齿幅度要么停着，要么沉到光滑曲线上。
+
+<CheckerboardRhieChow />
+
+Naive 下幅度不缩。换成 Rhie-Chow，同一块棋盘格就沉下去。`Reseed checkerboard` 把锯齿重新种上。
+
+锯齿为什么还在、连续方程怎样变成压力方程，在后面。同一个求解器延伸到可压缩，也在后面。
 
 ## 连续方程看不到邻格的压力
 
@@ -35,13 +43,9 @@ $$
 u_f = \overline{\left(\frac{\mathbf{H}(\mathbf{u})}{a_P}\right)}_f - \left(\frac{V}{a_P}\right)_f \frac{p_E - p_P}{\Delta x}
 $$
 
-上划线表示线性插值，第二项是在面上重新计算的压力梯度。现在面速度直接系于 $p_E - p_P$，即相邻两格的压力差。锯齿模态再也无处可藏。
+上划线是线性插值。后面那一项是在面上重算的压力梯度。现在面速度直接系于 $p_E - p_P$，也就是相邻两格的压力差。锯齿模态再也无处可藏。
 
-请直接操作下面的仿真。它用两种方式松弛压力，展示以棋盘格初始化的压力会如何演变。
-
-<CheckerboardRhieChow />
-
-在 naive 插值下，锯齿幅值原封不动。切换到 Rhie-Chow，同样的棋盘格便沉降到光滑曲线上。点击 `Reseed checkerboard` 再看一次。
+只要面上的 $p_E-p_P$ 不是零，锯齿就被这一项抓住。从动量里把压力拿掉的另一条路，是 [Chorin的投影法](/zh/posts/2026-07-03-chorin-projection-fractional-step/)。
 
 ## SIMPLE：把连续方程变成压力方程
 
@@ -88,7 +92,7 @@ $$
 
 ## 用 Python 复活并抹去棋盘格
 
-光有论断还不够。让我们在一维周期网格上运行两种模板，测量棋盘格是残留还是消失。
+两种模板放到一维周期网格上跑。要看的是棋盘格留下还是消失。
 
 ```python
 import numpy as np
@@ -125,11 +129,14 @@ for naive in (True, False):
 # Rhie-Chow      checkerboard = 3.1e-16    <- 消至机器精度
 ```
 
-同样的源项、同样的初值、同样的迭代次数。只改了模板。naive 消不掉锯齿，Rhie-Chow 则彻底抹去——与查看器里看到的完全一致。
+同样的源项、同样的初值、同样的迭代次数。只改了模板。naive 消不掉锯齿，Rhie-Chow 则抹掉。和前面的画面是同一个位置。
 
-## 在压力求解器面前别栽跟头
+初始压力是 $0.8\times(-1)^i$。指标若是 $p$ 与同一符号列的内积绝对值除以网格数，一开始就是 0.8。48 个网格、4000 次扫描之后，naive 仍是 $8.00\times 10^{-1}$。一位都没削掉。Rhie-Chow 是 $3.1\times 10^{-16}$。机器精度。
 
-- 在同位网格上，**绝不要用网格速度的简单平均来构造面速度**。用 Rhie-Chow（或交错网格）让相邻压力差直接起作用，锯齿就不会出现。
-- 连续方程没有求解压力的方程。SIMPLE 把它**替换为一个压力 Poisson 方程**，置于预测-校正循环中。
-- 一旦发散，**先降低 $\alpha_p$**。从 0.3 附近起步，并调 $\alpha_u$ 使两者之和约为 1。
-- 若要一份代码兼顾低马赫与超音速，就用 EOS 的 $\psi=\partial\rho/\partial p$ 把密度系于压力，复活压力方程中的时间项。
+naive 守住 0.8，是因为模板。锯齿上，$i$ 与 $i\pm 2$ 同号。$p_i=0.5(p_{i-2}+p_{i+2}+f_i)$ 用平均消不掉这个模态。网格中心的梯度 $(p_E-p_W)/2\Delta x$ 也一样。$E$ 和 $W$ 都与 $P$ 反号，所以 $p_E-p_W=0$。幅度 0.8 的锯齿，在中心处梯度是 0。残差里看不见。面上的 $p_E-p_P$ 反号，跳跃大小是 1.6。这就是 Rhie-Chow 抓住的地方。源项 $f=\sin x+0.4\sin 2x$ 的光滑部分，两种模板都解掉了。剩下的差别只有锯齿。
+
+## 把 α_p 设成 1，校正先炸掉
+
+像 $p\leftarrow p^*$ 那样一步把压力整格换掉，耦合就会过校正。式子只放行 $\alpha_p$ 那一份。经验上 $\alpha_p\approx 0.3$、$\alpha_u\approx 0.7$，加起来是 1。实验曲线里，0.3 在爬，1.5 附近最快，贴近 2 时每次扫描残差又跳回去。SIMPLE 的 $\alpha_p$ 放在 0 和 1 之间，坐在那条曲线偏慢的一侧。
+
+松弛一改、收敛解也跟着变的地方，是 [记住欠松弛的面速度](/zh/posts/2026-10-14-rhie-chow-under-relaxation-memory/)。同位网格上若用网格速度的平均来做面速度，相邻压力差就掉了，锯齿留在残差外面。用 $\psi=\partial\rho/\partial p$ 把时间项救回来，是这之后的事。锯齿还活着的压力方程上再加可压缩，只是声速变快，棋盘格还在。

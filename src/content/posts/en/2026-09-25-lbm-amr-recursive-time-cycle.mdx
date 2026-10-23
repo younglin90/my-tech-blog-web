@@ -1,7 +1,8 @@
 ---
 title: "Moving refine one line below stream cost a 7.2x error — the recursive time cycle of LBM AMR"
 date: 2026-09-25
-description: "Three orderings of collision, refine, stream and unrefine on the same refined LBM grid. The error spread over a factor of 7.2, and all of it sat on the level seam."
+updated: 2026-10-19
+description: "Moving refine below stream on the same LBM grid raises the L2 error from 0.657% to 4.704%, a factor of 7.2, and the excess sits on the seam."
 tags: ["AMR", "LBM", "Mesh-Refinement", "Time-Stepping", "Algorithms"]
 locale: en
 slug: 2026-09-25-lbm-amr-recursive-time-cycle
@@ -87,7 +88,7 @@ Three levels give 23 operations. Level $\ell$ runs $2^{\ell-1}$ times per root s
 
 ## Following the ladder the recursion builds
 
-Try the simulation below.
+Raise the deepest-level slider from 2 to 4 and each lower lane doubles. Turn sub-cycling off and the ladder flattens.
 
 <RefineCycleLadder />
 
@@ -143,20 +144,26 @@ magnitude quadruples.** For $\tau < 1$ — over-relaxation — collision reverse
 non-equilibrium part. Move the line without knowing that and the values still look plausible while
 the stress rides in backwards.
 
-So the factor for handing over a post-collision state is not $R$:
+The factor for handing over a post-collision state is not $R$:
 
 $$
 S = R\,\frac{1 - 1/\tau_f}{1 - 1/\tau_c} = 0.2857
 $$
+
+At $\tau_c = 0.65$, $1/\tau_c \approx 1.5385$ and $1 - 1/\tau_c \approx -0.5385$. At $\tau_f = 0.8$,
+$1 - 1/\tau_f = -0.25$. The ratio of those two is $(-0.25)/(-0.5385) \approx 0.4643$. Multiply by
+$R = 0.6154$ and $0.6154 \times 0.4643 = 0.2857$, which is $S$. Hand pre-collision data across
+with $R$ and the non-equilibrium part arrives at $-4$ times the right size. Hand post-collision
+data across with $S$ and that sign flip is cancelled. $1/R \approx 1.625$, so the factor that
+sends the fine level back to the coarse level at unrefine is the same number.
 
 ## A ghost is never relaxed twice
 
 The original schedule carries two side conditions. Collision skips ghost cells; streaming covers
 ghosts and their parents as well. The previous section is the reason for both. A ghost already holds
 a post-collision state handed down by its parent. Collide it again on the fine level and the same
-distribution relaxes twice. Where that kind of double count leaks when each field has its own $\tau$
-is the same class of problem as in
-[the post on per-species relaxation times](/en/posts/2026-09-23-multicomponent-lbm-correction-velocity/).
+distribution relaxes twice. With $\tau_f = 0.8$ and $\tau_c = 0.65$, that second relaxation pulls
+the non-equilibrium part, already matched by $S$, back toward a factor of $-0.25$.
 
 Unrefine runs the other way and hits a narrower target: only the parent cells along the seam get
 overwritten by the child average. Its timing is fixed too — after the child has completed both of
@@ -255,6 +262,12 @@ frozen-ghost             1.159    1.25e-03    1.13e-03
 refine-after-stream      4.704    4.40e-03    4.36e-03
 ```
 
+Raise the tau_c slider off 0.65 and the gap between the three schedules widens. Only the red curve spikes at the left dotted seam.
+
+<GhostScheduleErrorTrack />
+
+The ordered seam maximum is $3.49\times10^{-4}$; refine-after-stream reaches $4.36\times10^{-3}$. Green stays flat on the seam and only red jumps when the two table columns nearly match.
+
 ## Where the error sits is what gives the ordering away
 
 The L2 column is not the only thing to read. Compare the last two columns. With the correct order the
@@ -267,14 +280,15 @@ equal. The global worst point sits exactly on the seam. That is not a bad soluti
 that **the seam is the source**. The distinction is useful in practice: error spread evenly means a
 resolution problem, error piled on the seam means a schedule problem.
 
-Try the simulation below.
-
-<GhostScheduleErrorTrack />
-
-All three schedules run simultaneously on the same grid. Watch the lower panel as the pulse reaches
-the left dotted seam: the green curve stays flat there while only the red one spikes. Raise tau_c and
-the gap widens, because a larger $\tau$ leaves a larger share of the distribution in the
-non-equilibrium part.
+4.704 / 0.657 = 7.16, the factor of 7.2 in the title. On the seam alone,
+$4.36\times10^{-3} / 3.49\times10^{-4}$ is 12.5. The global maximum,
+$4.40\times10^{-3} / 8.84\times10^{-4}$, is about 5.0. For the ordered run the seam maximum is
+$3.49/8.84$, about 39% of the global maximum. For refine-after-stream, 4.36 and 4.40 nearly match,
+so the worst point sits inside the six seam cells. frozen-ghost gives 1.159 / 0.657 = 1.76, the
+factor of 1.8 already quoted. At four levels the deepest level collides 8 times per root step,
+that is $2^{4-1}$, and dropping the time interpolation lets it lag by up to $7/8$ of a step. A
+larger $\tau$ leaves more of the distribution in the non-equilibrium part, and the three curves
+spread with it.
 
 ## Drop the time interpolation and every level slips half a step
 
@@ -293,12 +307,13 @@ appearing in the streaming target of the original schedule.
 
 ## Where this order belongs in the code
 
-Write the level traversal as a hand-unrolled loop and the order drifts quietly the moment another
-level is added. Better to keep one function like `walk_level` as the single source of truth and let
-the executor consume the list it emits. Order checking then becomes a unit test: is the collision
-count on level $\ell$ equal to $2^{\ell-1}$, does every refine have a same-level collision in front of
-it, does unrefine only ever follow the child's last stream. Three lines each.
+Unroll the level walk by hand and the collision count slips off $2^{\ell-1}$ the moment another
+level is added. Keep `walk_level` as the only source and let the executor consume that list. Three
+checks: collision count on level $\ell$ equals $2^{\ell-1}$, every refine has a same-level collision
+in front of it, and unrefine follows only the child's last stream.
 
-The number worth keeping is the ratio of 4.704 to 0.657, a factor of 7.2 — and the fact that all of
-it sat on the seam. Next time an AMR solution looks wrong only near a refinement boundary, reading
-four lines of the recursion beats suspecting the grid or the interpolation order.
+The ratio of 4.704 to 0.657 is 7.2. If that gap sits in the six seam cells, the problem is the
+schedule, not the resolution or the interpolation order. Writing values back across a coarse-fine
+boundary is the same spot as
+[reflux that matches the answer on 18% of the cells](/en/posts/2026-08-10-amr-tagging-and-refluxing/).
+When the solution looks wrong only at a boundary, read the four lines of the recursion first.

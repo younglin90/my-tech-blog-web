@@ -1,7 +1,9 @@
 ---
 title: "刚体动力学中的有限元法：基于四元数的旋转处理与惯性张量"
 date: 2026-04-20
-description: "在有限元刚体模拟中利用四元数表示旋转并处理惯性张量的方法"
+updated: 2026-10-19
+description: "四元数每步拉回单位长度。惯性只在物体系存一次I0，乘角速度之前用R转到世界系，否则角加速度会沿错轴。漏了归一化，旋转矩阵不再正交。"
+takeaway: "线性四面体的12个节点自由度经刚体约束收成6个。时间步须小于2/ω_max，中间姿态靠SLERP才留在球面上。"
 tags: ["FEM", "Rigid-Body-Dynamics", "Quaternion"]
 draft: false
 series: "fem-dg"
@@ -12,13 +14,19 @@ import { QuaternionRotationDemo } from '@/components/post-viz/2026-04-20-fem-rig
 
 ## 刚体动力学的基本方程
 
-在流固耦合 (FSI) 分析或离散元 (DEM) 模拟中，准确描述刚体的运动至关重要。刚体是一种不发生变形的物体，其内部任意两点之间的距离始终保持不变。
+在 FSI 或 DEM 里，刚体只要守住任意两点的距离。没有变形。数值上先垮掉的，通常是旋转的写法。
 
-刚体内任意粒子 $i$ 的速度可以分解如下：
+粒子 $i$ 的速度是质心平动加上转动。
 
 $$\mathbf{v}_i = \mathbf{v}_{cm} + \boldsymbol{\omega} \times \mathbf{r}_i$$
 
-其中 $\mathbf{v}_{cm}$ 是质心的速度，$\boldsymbol{\omega}$ 是角速度，$\mathbf{r}_i$ 是从质心到粒子 $i$ 的位移矢量。
+$\mathbf{v}_{cm}$ 是质心速度，$\boldsymbol{\omega}$ 是角速度，$\mathbf{r}_i$ 是从质心到粒子的位移。
+
+轴滑块和 ω 一动，角速度大小可以不变，转轴和转完一圈的时间会变。
+
+<QuaternionRotationDemo />
+
+把 ω 调大，姿态转得更快。把轴扳到体对角，看角度会不会锁死在某一根坐标轴上。
 
 ## 线动量与角动量
 
@@ -83,6 +91,10 @@ $$
 四元数的时间导数与角速度 $\boldsymbol{\omega}$ 相关联。
 
 $$\dot{\mathbf{q}} = \frac{1}{2} \begin{pmatrix} 0 \\ \boldsymbol{\omega} \end{pmatrix} \otimes \mathbf{q}$$
+
+$I_{jk}$ 的对角是 $m(|\mathbf{r}|^2-r_j^2)$，非对角是 $-m r_j r_k$。质量只在 $x$ 轴上时 $r_y=r_z=0$，于是 $I_{xx}=0$，而 $I_{yy}=I_{zz}=m x^2$。绕这根轴没有力臂。$\mathbf{I}_0$ 就是这个和，在物体系里只存一次。世界系里只要重做 $\mathbf{R}\mathbf{I}_0\mathbf{R}^T$。拿物体系张量直接去乘世界系角速度，力矩的轴就偏了。换坐标时的合同变换，在 [本构张量的坐标变换](/zh/posts/2026-08-17-curvilinear-constitutive-tensor-transform/) 里，单元刚度也是同一个样子。
+
+$\theta=0$ 时 $\cos(\theta/2)=1$、$\sin(\theta/2)=0$，所以 $\mathbf{q}=(1,0,0,0)$。这就是代码放进去的初值。$\theta=\pi$ 时 $\cos(\pi/2)=0$、$\sin(\pi/2)=1$，标量消失，矢量部分只剩轴 $\hat{\mathbf{n}}$。$\theta=2\pi$ 时 $\cos\pi=-1$，于是 $\mathbf{q}=(-1,0,0,0)$。旋转和单位旋转相同，只是符号相反。四元数把一整圈盖了两遍。$\mathbf{R}$ 的 $(1,1)$ 元是 $1-2(q_2^2+q_3^2)$，在这个单位值上等于 1，非对角为 0。$\dot{\mathbf{q}}$ 前面的 $1/2$ 和转角公式里的 $\theta/2$ 是同一个因子。照原样累加，$|\mathbf{q}|$ 就会偏离 1。线性四面体 4 个节点，每点 3 个位移，共 12 个自由度。刚体约束收成平动 3 加转动 3，一共 6 个。$\sum_i L_i=1$ 只是坐标还闭合，它自己变不出这 6 个。
 
 ## 有限元离散化与四面体形函数
 
@@ -152,25 +164,12 @@ def quaternion_multiply(q1, q2):
     ])
 ```
 
-## 实践注意事项
+## 省掉归一化，R就不再是旋转
 
-**1. 遗忘四元数归一化**
-随着数值积分的进行，会出现 $|\mathbf{q}| \neq 1$ 的情况，导致旋转矩阵变为非正交矩阵。必须在每个时间步执行 `q /= norm(q)`。
+每一步不把 $|\mathbf{q}|$ 拉回 1，$\mathbf{R}$ 的列就失去单位长度。代码里的 `q /= norm(q)` 就是这次除法。力矩在世界系里算完，又直接去乘 $\mathbf{I}_0$，$\boldsymbol{\alpha}$ 会指向另一根轴。世界系张量要先写成 $\mathbf{I}_{world} = \mathbf{R} \mathbf{I}_0 \mathbf{R}^T$，才和 $\mathbf{L}=\mathbf{I}\boldsymbol{\omega}$ 对齐。显式步长的上限是 $\Delta t < 2 / \omega_{max}$。$\omega_{max}$ 一大，步长先缩短。
 
-**2. 惯性张量的坐标系混淆**
-$\mathbf{I}_0$ 是在物体固定坐标系 (body frame) 下定义的。如果在世界坐标系 (world frame) 下计算出力矩，则必须先转换为 $\mathbf{I}_{world} = \mathbf{R} \mathbf{I}_0 \mathbf{R}^T$ 后再应用。
-
-**3. 时间步选择**
-为了保证数值稳定性，对于刚体的最高固有频率 $\omega_{max}$，需要满足条件 $\Delta t < 2 / \omega_{max}$（类似于 CFL 条件）。高速旋转的物体需要更小的时间步 $\Delta t$。
-
-**4. 四元数插值 (SLERP)**
-在两个方位之间进行插值时，应使用球面线性插值 (SLERP) 而非线性插值 (LERP)，以确保等速旋转。
+两个姿态之间拉直线，路径会沉进单位球里面。$t=0$ 落到 $\mathbf{q}_0$、$t=1$ 落到 $\mathbf{q}_1$ 的才是 SLERP。
 
 $$\mathbf{q}(t) = \mathbf{q}_0 \left(\mathbf{q}_0^{-1} \mathbf{q}_1\right)^t$$
 
-刚体动力学与有限元法 (FEM) 的结合是 FSI、DEM 及多体动力学模拟的基础。正确实现基于四元数的旋转表示，可以在无万向节死锁的情况下稳定地模拟任意三维旋转。
-
-
-调节旋转轴和 ω，验证四元数旋转无万向锁。
-
-<QuaternionRotationDemo />
+线性插值守不住这个球面。把转动自由度和单元变形混在一起数，约束会吃掉运动，和 [薄壳的剪切锁定](/zh/posts/2026-08-12-mitc-shell-shear-locking/) 里板越薄越僵是同一类账。刚体的自由度是 6，不是 12。

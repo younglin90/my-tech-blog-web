@@ -1,17 +1,25 @@
 ---
 title: "[论文评述] GMRES 跑了 1000 次还停不下来 — 全速度 melt pool 的物理型块预条件"
 date: 2026-06-06
-description: "用速度–压力 Schur 补预条件，让 Mach 趋于零时迭代次数不再增长"
+updated: 2026-10-19
+description: "全速度熔池在M=1e-3时，GMRES转了1000次，残差停在1e-2。速度–压力Schur补把迭代次数压回到了两三步。"
 tags: ["Block-Preconditioner", "Newton-Krylov", "All-Speed", "Schur-Complement", "JFNK", "Paper-Review"]
 locale: zh
 slug: weston-block-preconditioner-jfnk
 draft: false
+takeaway: "特征值聚到1，只在Schur补精确时成立。用AMG把S解松，外层迭代会再次拉开。"
 ---
 
 import { AcousticConvectiveScales } from '@/components/post-viz/2026-06-06-weston-block-preconditioner-jfnk/AcousticConvectiveScales'
 import { GmresSchurConvergence } from '@/components/post-viz/2026-06-06-weston-block-preconditioner-jfnk/GmresSchurConvergence'
 
-我用隐式方法跑了一个激光熔池（melt pool）的仿真。第一个时间步里，GMRES 转了 1000 次，残差还卡在 1e-2 不动。把 Mach 数降到 1e-3，症状更严重 — 声速是流速的 1000 倍，雅可比矩阵病了。Weston、Nourgaliev、Delplanque 与 Barker（2019）正是解决了这个问题。诀窍是把速度–压力 Schur 补当作预条件。今天我用一个 2 场 toy 重现其核心，看看仅靠一个预条件，如何让与 Mach 无关的收敛起死回生。
+用隐式方法跑了一个激光熔池。第一个时间步里，GMRES 转了 1000 次，残差还粘在 1e-2。把 Mach 降到 1e-3，声速变成流速的 1000 倍。雅可比就在这个比值上病了。Weston、Nourgaliev、Delplanque 与 Barker（2019）用速度–压力 Schur 补做预条件，把这次停顿解开。今天把那个预条件挪进 2 场 toy，记下 Mach 变了之后迭代次数粘在哪里。
+
+把 Mach 滑块往下拉，上方轨道的声波单独加快，速度是 $c=1/M$，下方对流示踪停在 $u=1$。
+
+<AcousticConvectiveScales />
+
+$M=10^{-2}$ 时，声波绕轨道 100 圈，示踪只挪一格。$M=10^{-3}$ 时比值变成 1000:1。和残差粘在 1e-2 的那个夜晚是同一道缝。
 
 ## 这篇论文所处的位置
 
@@ -20,7 +28,7 @@ import { GmresSchurConvergence } from '@/components/post-viz/2026-06-06-weston-b
 - **标题**: *Preconditioning a Newton-Krylov solver for all-speed melt pool flow physics*
 - **一句话**: 用完全隐式 JFNK 求解含相变的全速度（all-speed）可压缩 Navier–Stokes，并以**原始变量块 Schur 补预条件**压住低 Mach 刚性。
 
-常见的预条件 — element-block SOR、monolithic AMG、block Gauss–Seidel — 在时间步或 Mach 走向极端时，迭代次数都会爆炸。论文的贡献是 `vP-vT` Schur 补：一个直接照搬物理耦合结构的预条件。
+常见的预条件 — element-block SOR、monolithic AMG、block Gauss–Seidel — 在时间步或 Mach 走向极端时，迭代次数都会爆炸。论文交出来的是 `vP-vT` Schur 补。物理耦合的块形状被原样抄进预条件矩阵。
 
 ## 为何 M 趋零时雅可比矩阵会生病
 
@@ -28,13 +36,17 @@ import { GmresSchurConvergence } from '@/components/post-viz/2026-06-06-weston-b
 
 走完全隐式，这两个尺度便混进同一个雅可比矩阵。压力–速度耦合块按 $1/M^2$ 增大，矩阵的条件数随之爆炸。Krylov 求解器在特征值散得很开的矩阵上爬行。这就是 GMRES 停不下来的原因。
 
+把 $M$ 按代码里的四个点放下，$\beta=1/M^2$ 立刻出来。$M=1$ 时 $\beta=1$。$M=10^{-1}$ 时 $\beta=10^{2}$。$M=10^{-2}$ 时 $\beta=10^{4}$。$M=10^{-3}$ 时 $\beta=10^{6}$。压力–速度块里的一格放大一百万倍。格点数是 $n=64$，间距 $dx=1/64$，四种情况都一样。矩阵规模也停在 $2n=128$。变的只是乘上 $\beta$ 之后的谱。
+
+用声学 CFL 去卡时间步，就是 $\Delta t \propto M\Delta x$。$M$ 从 1 降到 $10^{-3}$，允许的步长缩成千分之一。完全隐式解开这个限制，把条件数交给 $\beta$。同一份刚性被预条件反向放大的地方，写在[声速 CFL 为 10 的块预条件](/zh/posts/2026-08-29-block-preconditioner-acoustic-cfl-loop-gain/)里。
+
 JFNK（Jacobian-Free Newton–Krylov）从不显式构造雅可比矩阵，只用 Fréchet 差分近似矩阵–向量积。
 
 $$
 J\boldsymbol{\kappa} \approx \frac{F(x + h\boldsymbol{\kappa}) - F(x)}{h}
 $$
 
-$F$ 是非线性残差，$\boldsymbol{\kappa}$ 是 Krylov 向量，$h$ 是一个小的有限数。不存矩阵省了内存，但**没有预条件，低 Mach 下收敛就会死掉**。预条件不是选项，而是全部关键。
+$F$ 是非线性残差，$\boldsymbol{\kappa}$ 是 Krylov 向量，$h$ 是一个小的有限数。不存矩阵，内存就少一块。没有预条件时，低 Mach 下这个差分就在散开的特征值上往前爬。
 
 ## 弃保守变量，转向原始变量 $(P,v,T)$
 
@@ -50,17 +62,19 @@ $$
 M = \begin{bmatrix} M_{vv} & M_{vP} & M_{vT} \\ M_{Pv} & M_{PP} & M_{PT} \\ M_{Tv} & M_{TP} & M_{TT} \end{bmatrix}
 $$
 
-每个块对应一个原始场（速度、压力、温度）。这一结构是下一步的跳板。
+每个块对应一个原始场（速度、压力、温度）。这个排列是下一步分解的踏板。
 
 ## 块 LU 与速度–压力 Schur 补
 
-压力–温度耦合（$M_{PT}, M_{TP}$）很弱。把两者丢掉，块 LU 分解就变得干净，核心凝缩为**速度–压力 Schur 补**。
+压力–温度耦合（$M_{PT}, M_{TP}$）很弱。把两者丢掉，块 LU 分解就变得干净，剩下的核是**速度–压力 Schur 补**。
 
 $$
 S_{vP} = M_{PP} - M_{Pv}\,M_{vv}^{-1}\,M_{vP}
 $$
 
-$S_{vP}$ 是消去速度之后只剩压力的有效方程 — 与 SIMPLE 家族的压力修正方程同一骨架。把预条件 $P$ 取成这种块上三角形式，$P^{-1}A$ 的特征值便聚到 1 附近。用精确的 $S$ 时，$A=LU$ 的 $U$ 恰好等于 $P$，于是 $P^{-1}A$ 与一个幂零（unipotent）下三角相似，**所有特征值都精确为 1**。GMRES 两三步就结束。
+$S_{vP}$ 是消去速度之后只剩压力的有效方程，与 SIMPLE 家族的压力修正方程同一骨架。把预条件 $P$ 取成这种块上三角形式，$P^{-1}A$ 的特征值便聚到 1 附近。用精确的 $S$ 时，$A=LU$ 的 $U$ 恰好等于 $P$，于是 $P^{-1}A$ 与一个幂零（unipotent）下三角相似，**所有特征值都精确为 1**。GMRES 两三步就结束。
+
+这两三步和停机条件扣在一起。下面代码的容差是 `rtol=1e-8`，迭代上限是 `maxiter=500`，restart 长度是 `2n=128`。特征值聚到一点，Krylov 子空间两步就关上。聚不拢，就会先撞上 500 次的上限。
 
 ## Python — 随 Mach 下降数 GMRES 迭代次数
 
@@ -113,32 +127,30 @@ for M in [1.0, 1e-1, 1e-2, 1e-3]:
     print(f"{M:>8.0e}  {count_iters(M, False):>8d}  {count_iters(M, True):>6d}")
 ```
 
-结果一目了然。没有预条件时，$M$ 越小迭代次数越攀升到几十、几百，到 $M=10^{-3}$ 时甚至在上限内都收敛不了。Schur 预条件则无论 $M$ 为何，两三步就结束。论文展示的"与 Mach 无关的收敛"，正出自这一行预条件。
+没有预条件时，$M$ 越小，迭代次数越爬到几十、几百，到 $M=10^{-3}$ 时连 500 次的上限都进不去。Schur 这边把 $S=I-\beta D_v G$ 用 LU 解一次，GMRES 两三步就把残差降到 1e-11。$M=1$（$\beta=1$）和 $M=10^{-3}$（$\beta=10^{6}$）的 Schur 迭代次数相同，这就是特征值聚在 1 的数字。
 
 ## 交互 — 声波与对流，渐渐拉开的两个速度
 
-先看看刚性从何而来。在下面的模拟里亲手降低 Mach。上方轨道的声波以 $c=1/M$ 奔跑，下方对流示踪以 $u=1$ 移动。
-
-<AcousticConvectiveScales />
-
-把 $M$ 降到 $10^{-2}$，声波绕轨道跑 100 圈，对流示踪才挪一格。这 100:1 的速度差，原封不动地搬进雅可比矩阵的条件数。若用显式，声学 CFL 会把时间步踩到 $\Delta t \propto M\Delta x$。
+轨道已经在上面跑过。$M=10^{-2}$ 的 100:1 就是 $c/u=1/M$。显式 CFL 把步长踩成 $\Delta t \propto M\Delta x$，也是画面上那道速度差。雅可比拿到的是这个比的平方 $\beta$。$M=10^{-2}$ 时 $\beta=10^{4}$，$M=10^{-3}$ 时 $\beta=10^{6}$。
 
 ## 交互 — 预条件把残差压垮的地方
 
-再看真实的 GMRES 残差。在下面移动 Mach 滑块，有无预条件的两条曲线会重绘。
+下面是真实的 GMRES 残差。移动 Mach 滑块，有无预条件的两条曲线会重画。
 
 <GmresSchurConvergence />
 
-橙色（无预条件）随 $M$ 下降而趋平、停滞。青色（Schur 预条件）无论 $M$ 在哪里，都在两三步内跌到 1e-11。两条曲线的差距在 $M=10^{-3}$ 时最为戏剧 — 那是照搬物理耦合的预条件，把刚性整体吸收的结果。
+橙色（无预条件）随 $M$ 下降而趋平、停滞。青色（Schur 预条件）无论 $M$ 在哪里，都在两三步内跌到 1e-11。两条曲线的差距在 $M=10^{-3}$ 最大。$\beta=10^{6}$ 的那一格，被照搬物理耦合的预条件整个吞掉了。
 
 ## 亲手编写时存疑的三件事
 
-**其一，精确的 $S$ 只在 toy 里免费。** 这里我用 LU 精确求解 $S=I-\beta D_v G$，两步收敛。实战中 $S_{vP}=M_{PP}-M_{Pv}M_{vv}^{-1}M_{vP}$ 里的 $M_{vv}^{-1}$ 是稠密逆，根本无法构造。论文用近似求解 $S$（例如一次 AMG V-cycle），而该近似的质量决定了外层迭代次数。"与 Mach 无关"的真实代价就藏在这里。
+**精确的 $S$ 只在 toy 里免费。** 这里用 LU 精确求解 $S=I-\beta D_v G$，两步收敛。实战中 $S_{vP}=M_{PP}-M_{Pv}M_{vv}^{-1}M_{vP}$ 里的 $M_{vv}^{-1}$ 是稠密逆，根本无法构造。论文用近似求解 $S$（例如一次 AMG V-cycle），而该近似的质量决定了外层迭代次数。迭代次数不随 Mach 粘住的代价，就藏在这里。
 
-**其二，耦合丢到何处为止。** 论文称丢掉 $M_{PT}, M_{TP}$ 不损鲁棒性。这是针对熔池物性的特定假设。在强可压缩热耦合（爆燃、燃烧）中，同样的截断可能杀死收敛。预条件的简化依赖于物理。
+**耦合丢到何处为止。** 论文称丢掉 $M_{PT}, M_{TP}$ 不损鲁棒性。这是对着熔池物性做的假设。在强可压缩热耦合（爆燃、燃烧）里，同样的截断可能让收敛停住。预条件要不要简化，由物理决定。
 
-**其三，JFNK 的 Fréchet 差分 $h$。** $h$ 太小让舍入误差进来，太大让截断误差污染矩阵–向量积。即便预条件再好，$h$ 调不准，Newton 也会停滞。这是从 OpenFOAM 的分离式（SIMPLE）转向完全耦合隐式时，最先遇到的陷阱。
+**JFNK 的 Fréchet 差分 $h$。** $h$ 太小，舍入误差进来；$h$ 太大，截断误差污染矩阵–向量积。预条件再好，$h$ 调偏，Newton 也会停滞。从 OpenFOAM 的分离式（SIMPLE）转向完全耦合隐式时，最先碰到的就是这里。
 
 ## 收束 — 预条件并非免费
 
-那个 GMRES 停不下来的夜晚，教训很简单。低 Mach 刚性不靠更用力地解雅可比就能化解。你需要一个照搬耦合结构本身的预条件。Schur 补是压力的有效方程，精确求解它便把特征值聚到 1。但实战中的 $S$ 是近似，如何又便宜又准确地解它，是下一场战斗。下次我会在同一个 toy 上再叠一层，看看用 AMG 近似 $S$ 时外层迭代次数如何变化。
+GMRES 在 1000 次、残差 1e-2 停下的那个夜晚，并没有因为更用力地解雅可比而结束。预条件得照搬耦合结构本身。Schur 补是消去速度之后的压力方程，精确求解就把特征值聚到 1。实战里 $S_{vP}$ 中的 $M_{vv}^{-1}$ 是稠密的，论文用一次 AMG V-cycle 做近似。近似一粗，外层迭代就从两三步重新拉开。
+
+不存雅可比、只留矩阵–向量积的岔路，和[运算符重载自动微分](/zh/posts/2026-07-05-adoo-automatic-differentiation-jacobian/)接在一起。JFNK 用 Fréchet 差分 $h$ 替换那个乘积。$h$ 一偏，预条件再好，Newton 也停在原地。下一步在同一个 toy 上用 AMG 把 $S$ 解松，看外层迭代离开两三步有多远。

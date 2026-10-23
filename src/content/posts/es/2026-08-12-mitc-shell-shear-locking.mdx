@@ -1,7 +1,8 @@
 ---
 title: "Más delgado y más rígido — bloqueo por cortante en elementos lámina y el amarre MITC"
 date: 2026-08-12
-description: "Un elemento lámina lineal se vuelve más rígido, no más flexible, al adelgazarse. La causa es una sola: la deformación cortante sale de derivar el desplazamiento."
+updated: 2026-10-19
+description: "Un elemento lámina lineal se vuelve más rígido, no más flexible, al adelgazarse. La causa: la deformación cortante sale de derivar el desplazamiento."
 tags: ["MITC", "Shell-Element", "FEM", "Structural-Analysis", "FSI"]
 locale: es
 slug: 2026-08-12-mitc-shell-shear-locking
@@ -12,11 +13,11 @@ draft: false
 import { ShearLockingBeamBench } from '@/components/post-viz/2026-08-12-mitc-shell-shear-locking/ShearLockingBeamBench'
 import { MitcTyingBoard } from '@/components/post-viz/2026-08-12-mitc-shell-shear-locking/MitcTyingBoard'
 
-Escribí un solver de láminas para un estudio de acoplamiento fluido-estructura y lo verifiqué con una viga en voladizo. Con un espesor de 0,2 m la flecha coincidía con la teoría hasta la tercera cifra decimal. Al bajar el espesor a 2 mm, la flecha resultó ser el 0,5% del valor teórico. La carga, la malla y las propiedades del material seguían siendo las mismas. Este artículo trata de dónde sale ese factor 200 y qué línea del código cambia MITC (Mixed Interpolation of Tensorial Components, interpolación mixta de componentes tensoriales) para eliminarlo.
+Escribí un solver de láminas para un estudio de acoplamiento fluido-estructura y lo verifiqué con una viga en voladizo. Con un espesor de 0,2 m la flecha coincidía con la teoría hasta la tercera cifra decimal. Al bajar el espesor a 2 mm, la flecha resultó ser el 0,5% del valor teórico. La carga, la malla y las propiedades del material seguían siendo las mismas. Queda anotado de dónde sale ese factor 200 y qué línea cambia MITC (Mixed Interpolation of Tensorial Components, interpolación mixta de componentes tensoriales) para borrarlo.
 
 ## El elemento se hizo delgado y la respuesta se congeló
 
-Primero el síntoma. En la simulación de abajo conviene mover el deslizador de esbeltez y observar.
+Al empujar el deslizador de esbeltez hacia la derecha, la viga roja de integración completa pierde la flecha y la viga azul con amarre la conserva.
 
 <ShearLockingBeamBench />
 
@@ -42,6 +43,8 @@ Con $\nu = 0,3$ y $k = 5/6$ el coeficiente es $3.5/t^{2}$. Adimensionalizado con
 
 En la teoría continua eso no molesta. Cuando el espesor baja, $\gamma$ tiende a cero a la misma velocidad y el producto queda finito. Ese es el límite de Kirchhoff. La cuestión es si un elemento discreto puede representar $\gamma = 0$.
 
+El barrido fija $L = 1$ y mete $t = 1/(L/t)$. Con $L/t = 100$, $t = 0.01$, y con $\nu = 0.3$, $k = 5/6$ sale $k G t / D = 3.5/t^2 = 35000$. Con $L/t = 500$, $t = 0.002$, así que $t^2$ cae por 25 y la penalización sube a 875000. Con $L/t = 2000$, $t = 5\times 10^{-4}$ y la penalización llega a $1.4\times 10^{7}$. En el continuo, $\gamma$ se encoge con el espesor y $\gamma^2$ cancela ese $1/t^2$. Si $\gamma_h = -\kappa r$ no es cero, la cancelación se corta. El cortante falso queda multiplicado por ese coeficiente.
+
 ## Un elemento lineal no puede producir deformación cortante nula
 
 Reducido a una dimensión, la causa cabe en una línea. Tomemos un elemento de dos nodos que interpola la flecha $w$ y el giro de la sección $\phi$ con las mismas funciones de forma lineales. La deformación cortante transversal se define así:
@@ -58,7 +61,7 @@ $$
 
 El giro es lineal y se reproduce de forma exacta; la flecha es cuadrática y no. Todo ese desajuste desemboca en $\gamma_h$. La $\gamma$ real vale cero, el elemento carga con $-\kappa r$, y ese valor queda multiplicado por una penalización de $3.5/t^2$. En un [elemento finito de celosía](/es/posts/2026-07-10-direct-stiffness-method-truss-fem/) solo hay deformación axial, de modo que no existe tal emparejamiento. El bloqueo aparece cuando conviven varias deformaciones y una de ellas debe anularse.
 
-Hay una observación importante aquí. $\gamma_h = -\kappa r$ es exactamente cero en $r = 0$. El valor equivocado no está repartido de manera uniforme por el elemento: hay un punto donde sí es correcto.
+Dentro del elemento hay un punto que decide el resto. $\gamma_h = -\kappa r$ es exactamente cero en $r = 0$. El valor equivocado no está repartido de manera uniforme: hay un punto donde sí es correcto. En los dos puntos de Gauss $\pm 1/\sqrt{3}$ el cortante falso vale $\mp \kappa/\sqrt{3}$, y el par `GAUSS` del código es exactamente esos puntos. La integración completa arma la rigidez ahí. El amarre se queda con $r = 0$ porque esa expresión solo se anula ahí.
 
 ## Una lámina tiene tres sistemas de coordenadas — dónde intervenir
 
@@ -82,11 +85,7 @@ $$
 \gamma_r^{\text{MITC}}(r,s) = \frac{1-s}{2}\,\gamma_r(0,-1) + \frac{1+s}{2}\,\gamma_r(0,+1)
 $$
 
-Lo esencial es que $r$ no aparece en el lado derecho. El $-\kappa r$ de antes era lineal en $r$, y esta interpolación no tiene sitio donde alojar un término así. Conviene cambiar de modo abajo y comprobarlo directamente.
-
-<MitcTyingBoard />
-
-En `pure bending` la superficie media queda plana mientras los directores se abren como un abanico. El ángulo de cada cuña roja entre ambos es deformación cortante que el elemento se inventó, y la cuña solo se cierra en $r = 0$. Al pasar a `true shear`, la curva azul de MITC cae exactamente sobre la roja. El amarre borra la deformación falsa y deja intacta la real.
+$r$ no aparece en el lado derecho. El $-\kappa r$ de antes era lineal en $r$, y esta interpolación no tiene sitio donde alojar un término así.
 
 Es fácil confundirlo con la integración reducida, pero ambos coinciden solo en el caso particular unidimensional. La integración reducida quita puntos de integración para ablandar la matriz de rigidez, lo que invita a modos de energía nula (hourglass). MITC deja la integración como está y cambia el propio espacio de interpolación de deformaciones. La rigidez se sigue integrando de forma exacta y no aparece deficiencia de rango.
 
@@ -179,9 +178,17 @@ nel = 32    w_fem / w_exact          shear energy fraction
  2000      0.00080      0.99976        0.9992   0.0000
 ```
 
-Se leen tres cosas. Primero, la columna de integración completa cae aproximadamente a la centésima parte cada vez que $L/t$ se multiplica por diez: la penalización $(L/t)^2$ a la vista. Segundo, la columna con amarre queda fijada en 0,98438 con independencia del espesor. El 1,5% restante no es bloqueo, sino el error de discretización de una malla de cuatro elementos; con 32 pasa a 0,99976. Tercero, la fracción de energía de cortante cierra el diagnóstico. En $L/t = 2000$ el elemento con integración completa gasta el 100% de su energía en cortante. Un problema de flexión sostenido enteramente por cortante.
+Al pasar el modo de `pure bending` a `true shear`, las cuñas rojas desaparecen y la curva azul se pega al cortante real.
 
-Vale la pena mirar también la tabla de 32 elementos. Con una malla ocho veces más fina, en $L/t = 500$ queda todavía un 1,3% de la respuesta correcta. El bloqueo no es un error que se gane refinando.
+<MitcTyingBoard />
+
+En `pure bending` la superficie media queda plana mientras los directores se abren como un abanico. El ángulo de cada cuña roja entre ambos es deformación cortante que el elemento se inventó, y la cuña solo se cierra en $r = 0$. Al pasar a `true shear`, la curva azul de MITC cae exactamente sobre la roja. El amarre borra la deformación falsa y deja intacta la real.
+
+Leída en horizontal, la tabla de nel = 4 muestra cómo se hunde el cociente de integración completa. El valor 0,66631 en $L/t = 5$ pasa a 0,11095, 0,00497, 0,00020 y 0,00001. De 20 a 100 el cociente cae unas 22 veces, y de 100 a 500 unas 25, el mismo factor con el que crece la penalización $(L/t)^2$ cuando la esbeltez se multiplica por cinco. Solo el salto de 5 a 20 se queda en unas 6 veces. El término de cortante de la flecha teórica, $P L^3/(3 E I) + P L/G A$, sigue vivo ahí, así que la ley cuadrada del bloqueo todavía no queda a la vista.
+
+La fracción de energía de cortante en esas filas sube 0,3639, 0,8910, 0,9951, 0,9998, 1,0000. En $L/t = 100$ ya es 0,9951. En $L/t = 2000$ es 1,0000. Un problema de flexión sostenido enteramente por cortante. La columna con amarre arranca en 0,98485 y se queda en 0,98438. Ese 1,5% no se abre aunque el espesor llegue a 2000. Es el error de discretización de cuatro elementos.
+
+Con 32 elementos la columna con amarre vale 0,99976. La integración completa sigue en 0,24213 para $L/t = 100$, 0,01262 para $L/t = 500$ y 0,00080 para $L/t = 2000$. Una malla ocho veces más fina deja todavía un 1,3% de la respuesta correcta en esbeltez 500. El bloqueo no es un error que desaparezca al refinar.
 
 ## Antes de montar una lámina sobre un solver acoplado
 

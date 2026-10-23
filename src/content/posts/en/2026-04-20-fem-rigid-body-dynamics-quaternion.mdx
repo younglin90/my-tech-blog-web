@@ -1,7 +1,9 @@
 ---
 title: "FEM for Rigid Body Dynamics: Quaternion-based Rotation Handling and Inertia Tensors"
 date: 2026-04-20
-description: "Methods for representing rotations with quaternions and handling inertia tensors in FEM rigid body simulations."
+updated: 2026-10-19
+description: "Store inertia once in the body frame and rotate it by R(q). If |q| leaves 1, R stops being orthogonal and angular acceleration picks up the wrong axis."
+takeaway: "A linear tet has 12 nodal dofs; the rigid constraint leaves 6. The explicit ceiling is dt under 2/omega_max, and in-between poses stay on the sphere only with SLERP."
 tags: ["FEM", "Rigid-Body-Dynamics", "Quaternion"]
 draft: false
 series: "fem-dg"
@@ -12,13 +14,19 @@ import { QuaternionRotationDemo } from '@/components/post-viz/2026-04-20-fem-rig
 
 ## Basic Equations of Rigid Body Dynamics
 
-Accurately describing the motion of rigid bodies is essential in Fluid-Structure Interaction (FSI) analysis or Discrete Element Method (DEM) simulations. A rigid body is an object without deformation, where the distance between any two points always remains constant.
+In an FSI run or a DEM pile, a rigid body only has to keep distances fixed. No strain. The rotation model is what usually breaks that promise first.
 
-The velocity of an arbitrary particle $i$ within a rigid body is decomposed as follows:
+Particle $i$ moves as translation of the center of mass plus a rotation.
 
 $$\mathbf{v}_i = \mathbf{v}_{cm} + \boldsymbol{\omega} \times \mathbf{r}_i$$
 
-Where $\mathbf{v}_{cm}$ is the velocity of the center of mass, $\boldsymbol{\omega}$ is the angular velocity, and $\mathbf{r}_i$ is the displacement vector from the center of mass to particle $i$.
+$\mathbf{v}_{cm}$ is the center-of-mass velocity, $\boldsymbol{\omega}$ the angular velocity, and $\mathbf{r}_i$ the offset from the center of mass.
+
+The axis slider and ω change which axis spins and how long one turn takes, even at the same angular-speed magnitude.
+
+<QuaternionRotationDemo />
+
+Raise ω and the body completes a turn sooner. Tilt the axis onto a body diagonal and check that no angle locks onto a single coordinate axis.
 
 ## Linear Momentum and Angular Momentum
 
@@ -83,6 +91,10 @@ $$
 The time derivative of a quaternion is linked to the angular velocity $\boldsymbol{\omega}$.
 
 $$\dot{\mathbf{q}} = \frac{1}{2} \begin{pmatrix} 0 \\ \boldsymbol{\omega} \end{pmatrix} \otimes \mathbf{q}$$
+
+The diagonal of $I_{jk}$ is $m(|\mathbf{r}|^2-r_j^2)$. The off-diagonal is $-m r_j r_k$. Put all the mass on the $x$ axis, so $r_y=r_z=0$, and $I_{xx}=0$ while $I_{yy}=I_{zz}=m x^2$. There is no lever arm about that axis. $\mathbf{I}_0$ is that sum, stored once in the body frame. In the world frame only $\mathbf{R}\mathbf{I}_0\mathbf{R}^T$ has to be rebuilt. Multiply a body-frame tensor by a world-frame angular velocity and the torque axis tilts off. The same congruence shows up when a stiffness tensor changes coordinates, which is what the [constitutive-tensor transformation](/en/posts/2026-08-17-curvilinear-constitutive-tensor-transform/) tracks inside an element.
+
+At $\theta=0$, $\cos(\theta/2)=1$ and $\sin(\theta/2)=0$, so $\mathbf{q}=(1,0,0,0)$. That is the quaternion the code starts with. At $\theta=\pi$, $\cos(\pi/2)=0$ and $\sin(\pi/2)=1$, the scalar dies, and the vector part is just the axis $\hat{\mathbf{n}}$. At $\theta=2\pi$, $\cos\pi=-1$, so $\mathbf{q}=(-1,0,0,0)$. The rotation matches the identity. Only the sign flipped. A quaternion covers one full turn twice. The $(1,1)$ entry of $\mathbf{R}$ is $1-2(q_2^2+q_3^2)$, which is 1 for this identity value, and the off-diagonal entries are 0. The $1/2$ in front of $\dot{\mathbf{q}}$ is the same factor as $\theta/2$ in the angle formula. Integrate it raw and $|\mathbf{q}|$ walks away from 1. A linear tet has 4 nodes and 3 displacements each, 12 degrees of freedom. The rigid constraint cuts that to 3 translations plus 3 rotations, 6 in all. $\sum_i L_i=1$ only keeps the coordinates consistent. It does not create those 6 by itself.
 
 ## FEM Discretization and Tetrahedral Shape Functions
 
@@ -152,25 +164,12 @@ def quaternion_multiply(q1, q2):
     ])
 ```
 
-## Practical Considerations
+## Skip the renormalization and R stops being a rotation
 
-**1. Forgetting Quaternion Normalization**
-As numerical integration repeats, $|\mathbf{q}| \neq 1$ can occur, causing the rotation matrix to become non-orthogonal. `q /= norm(q)` must be performed at every time step.
+Leave $|\mathbf{q}|$ unscaled and the columns of $\mathbf{R}$ lose unit length. The line `q /= norm(q)` is that scaling. Torque computed in the world frame, then multiplied by the stored $\mathbf{I}_0$, points $\boldsymbol{\alpha}$ along the wrong axis. The world tensor is $\mathbf{I}_{world} = \mathbf{R} \mathbf{I}_0 \mathbf{R}^T$ before $\mathbf{L}=\mathbf{I}\boldsymbol{\omega}$ is consistent. The explicit ceiling is $\Delta t < 2 / \omega_{max}$. A high $\omega_{max}$ means the step shrinks first.
 
-**2. Inertia Tensor Coordinate System Confusion**
-$\mathbf{I}_0$ is defined in the body-fixed coordinate system (body frame). If torque was calculated in the world frame, it must be applied after conversion to $\mathbf{I}_{world} = \mathbf{R} \mathbf{I}_0 \mathbf{R}^T$.
-
-**3. Time Step Selection**
-Numerical stability is guaranteed only when the condition $\Delta t < 2 / \omega_{max}$ (similar to the CFL condition) is satisfied for the maximum natural frequency $\omega_{max}$ of the rigid body. Higher speed rotating objects require smaller $\Delta t$.
-
-**4. Quaternion Interpolation (SLERP)**
-When interpolating between two orientations, Spherical Linear Interpolation (SLERP) should be used instead of Linear Interpolation (LERP) to ensure constant velocity rotation.
+A straight blend between two poses sinks inside the unit sphere. SLERP is the curve that hits $\mathbf{q}_0$ at $t=0$ and $\mathbf{q}_1$ at $t=1$.
 
 $$\mathbf{q}(t) = \mathbf{q}_0 \left(\mathbf{q}_0^{-1} \mathbf{q}_1\right)^t$$
 
-Combining rigid body dynamics and FEM is the basis for FSI, DEM, and multi-body dynamics simulations. Proper implementation of quaternion-based rotation representation allows stable simulation of arbitrary 3D rotations without gimbal lock.
-
-
-Tweak the axis and ω to verify quaternion rotation has no gimbal lock.
-
-<QuaternionRotationDemo />
+LERP does not stay on that sphere. Count rotational freedom together with element strain and the constraint eats the motion, the same way [shear locking in a thin shell](/en/posts/2026-08-12-mitc-shell-shear-locking/) stiffens a plate that should bend. A rigid body is 6 degrees of freedom, not 12.

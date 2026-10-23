@@ -1,7 +1,9 @@
 ---
 title: "Wrapping a Rectangular Grid Around a Wing — Curvilinear Coordinate Transforms and Grid Metrics"
 date: 2026-06-17
-description: "Mapping physical to logical space, the Jacobian, and freestream preservation in numpy"
+updated: 2026-10-19
+description: "On a wavy mesh the Jacobian runs from 0.62 to 1.38 and stays positive. Write the flux as y_η and the freestream residual falls to about 1e-16."
+takeaway: "Writing Fhat from y_η and x_η lets the mixed differences cancel, down to roundoff. Divide by J and multiply back, and that cancel breaks."
 tags: ["Curvilinear", "Grid-Metrics", "Jacobian", "Mesh", "FVM"]
 locale: en
 slug: curvilinear-coordinate-transformation-grid-metrics
@@ -12,6 +14,12 @@ import { CurvilinearGridMapper } from '@/components/post-viz/2026-06-17-curvilin
 import { WallClusteringStretch1D } from '@/components/post-viz/2026-06-17-curvilinear-coordinate-transformation-grid-metrics/WallClusteringStretch1D'
 
 An engineer wants to solve the flow around a wing. The solver in hand only understands Cartesian grids. But the wing is curved. No matter how finely you chop the rectangular cells, a curved surface still comes out looking like a staircase. The fix is not to bend the grid but to **bend space itself**. You map the warped physical grid back onto a perfectly straight logical grid, then solve the equations there. This post walks through the coordinate transform and grid metrics that make that round trip possible. By the end, you will see why the Jacobian flags grid folding, and what it takes for a uniform flow to stay uniform on a curved grid — verified directly in numpy.
+
+Raise shear and amplitude on the grid mapper and the cells twist. The Jacobian heatmap paints each cell by $J/J_0$.
+
+<CurvilinearGridMapper />
+
+Push amplitude near 0.3 and wave number to 4 or higher and red cells show up. $J$ in those cells is negative. Cross that line and a metric denominator passes through zero.
 
 ## Physical and Logical Domains
 
@@ -59,11 +67,7 @@ $$
 
 Here $J$ is the ratio between a unit area in the logical domain and the area it occupies in the physical domain. If $J > 0$ the mapping preserves orientation. If $J = 0$ a cell collapses to a point or a line. If $J < 0$ the cell flips over. That is **grid folding**. On a folded grid the metric denominators cross zero and blow up, and the solver spits out NaN.
 
-Try the simulation below. Raise shear and amplitude and the grid twists. Turn on the Jacobian heatmap and each cell is colored by its $J/J_0$ value.
-
-<CurvilinearGridMapper />
-
-Push amplitude toward 0.3 and wave number to 4 or more. At some point red cells appear. In those cells $J$ has gone negative. This is exactly the line a grid generator must never cross.
+$J = x_\xi y_\eta - x_\eta y_\xi$ is the cross product of the two cell edges. Same term as [the cell area measured by a diagonal cross product](/en/posts/2026-10-13-diagonal-cross-product-cell-area-green-gauss/). A cell that went red on the heatmap above is where $J < 0$.
 
 ## The Transformed Conservation Law
 
@@ -147,6 +151,12 @@ print(f"freestream residual max|R| (interior) = {np.abs(R[1:-1, 1:-1]).max():.2e
 
 A common mistake is solving in the non-conservative form, dividing the metric by $J$ and then multiplying it back onto the flux. In three dimensions that mismatch grows and seeds a spurious source in a uniform flow. The symmetric conservative metrics of Thomas and Lombard (1979) prevent it. In 2D, writing $\hat F$ directly in terms of $y_\eta, x_\eta$ as above is enough.
 
+Start from the numbers in the code comment. With amp=0.15, shear=0.3, wavek=2, and N=41, $J$ runs from 0.62 to 1.38. The max is $1.38/0.62$, about 2.23 times the min. Cell area wobbles by more than a factor of two and every $J$ stays positive. Nothing has folded. On that same mesh the freestream residual $\max|R|$ is about 1e-16, for $F=1$ and $G=0.5$.
+
+Follow the residual through the formula. $\hat F = F y_\eta - G x_\eta$ and $\hat G = -F y_\xi + G x_\xi$. Add the $\xi$ difference to the $\eta$ difference. As long as the central operator swaps mixed derivatives, the $\xi$ derivative of $y_\eta$ cancels the $\eta$ derivative of $y_\xi$. $F$ and $G$ are constant, so they factor out. What is left is the difference of two mixed derivatives of the map. The same operator makes that difference zero. Divide $\xi_x$ by $J$ and multiply by $J$ again and, on paper, you are back at $y_\eta$. On a mesh the division and the product can touch $J$ at different places. That gap is a fake source in a uniform stream. In 2D, writing $\hat F$ straight from $y_\eta$ and $x_\eta$ never opens it. The 1e-16 in the comment is the cancellation that survived.
+
+$\beta$ produces a number from the same formula. At the wall, $\eta=0$, $dy/d\eta = \beta/(e^\beta-1)$. At $\eta=1$ it is $\beta e^\beta/(e^\beta-1)$. The ratio of the two slopes is $e^\beta$. At $\beta=4$ that is about 54.6. The "tens of times" in the wall section is this ratio. The limit $\beta \to 0$ is a slope of 1, a uniform mesh.
+
 ## Clustering Cells Near the Wall
 
 To resolve a boundary layer you have to pack cells near the wall. That is the same coordinate transform in one dimension. Stretch a uniform $\eta$ with an exponential to build the physical coordinate $y$.
@@ -163,6 +173,8 @@ Play with $\beta$ in the simulation below.
 
 Raise $\beta$ from 0 to 4 and the first spacing near the wall ($y=0$) shrinks sharply, opening the ratio against the last spacing to tens of times. The same cell count resolves the boundary layer far better.
 
-## Worth Remembering Tomorrow
+## Divide by J and multiply back, and a uniform flow grows a source
 
-A curvilinear transform is the trick of solving a warped grid by mapping it back to a straight logical one. The Jacobian $J$ is both an area ratio and a health chart for the grid. If $J \le 0$ the grid has folded and the solver stops there. Write the transformed flux in the strong conservation form $J\xi_x = y_\eta$ and a uniform flow stays uniform even on a curved grid. The moment you divide a metric out and multiply it back, that guarantee is gone.
+A cell with negative $J$ does not get a flux. On the default wave, amp=0.15, shear=0.3, wavek=2, N=41, $J$ sits between 0.62 and 1.38. Nothing is folded. If the generator paints even one red cell, that mesh does not go into the solver. NaN comes out of that denominator.
+
+One form stays. Write $\hat F$ from $y_\eta$ and $x_\eta$. Dividing by $J$ and multiplying back opens a gap even in 2D, and in 3D it is the spurious source Thomas–Lombard blocked. Turning the stiffness itself with the same metric is a separate case, in [the coordinate transform of the constitutive tensor](/en/posts/2026-08-17-curvilinear-constitutive-tensor-transform/).

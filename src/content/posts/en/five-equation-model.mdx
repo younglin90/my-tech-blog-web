@@ -1,47 +1,59 @@
 ---
 title: "5-Equation Model Implementation Guide: Building a Multiphase Flow Solver in Python"
 date: 2026-03-07
-description: "Directly implement a 5-equation diffuse interface model in Python and simulate a 1D shock-bubble interaction problem."
+updated: 2026-10-19
+description: "At volume fraction 0.5 the mixture sound speed is about 24 m/s. The same initial air is near 374 m/s and the water near 1625 m/s."
 tags: ["Multiphase", "Diffuse-Interface", "Python", "Implementation"]
 series: "compressible-multiphase"
 seriesOrder: 4
 noindex: true
+takeaway: "The step size is not set by that 24 m/s mixture. Post-shock water at about 2530 m/s is what tightens the CFL."
 ---
 
 import { VolumeFractionAdvect } from '@/components/post-viz/five-equation-model/VolumeFractionAdvect'
 
 # Implementing the 5-Equation Model
 
-Theory alone is often not enough to fully grasp a concept. In this post, we will directly implement a 1D **5-equation diffuse interface model** in Python and simulate a problem where a shock wave passes through a gas bubble.
+Post-shock water sits at pressure $10^{9}$. The water ahead of it sits at $10^{5}$. An air bubble lies between them, and the volume fraction $\alpha_1$ jumps from nearly 0 to nearly 1. A 1D **5-equation diffuse interface model** carries that jump with five equations. The two fluids share one velocity and one pressure. Only the volume fraction has its own transport.
+
+Drop the artificial-diffusion slider to 0 and the volume-fraction front breaks across a single cell.
+
+<VolumeFractionAdvect />
+
+Raise the slider and the front spreads over several cells. The $\alpha$ in those cells goes straight into the denominator of the mixture pressure.
 
 ## Summary of Governing Equations
 
-The conserved variables and fluxes for the 1D 5-equation model are as follows:
+In 1D the conserved variables and the flux are these.
 
 $$
 \mathbf{U} = \begin{bmatrix} \alpha_1 \rho_1 \\ \alpha_2 \rho_2 \\ \rho u \\ E \\ \alpha_1 \end{bmatrix}, \quad
 \mathbf{F} = \begin{bmatrix} \alpha_1 \rho_1 u \\ \alpha_2 \rho_2 u \\ \rho u^2 + p \\ (E+p)u \\ 0 \end{bmatrix}
 $$
 
-The 5th equation ($\alpha_1$) is non-conservative and is handled separately:
+The fifth flux component is 0. $\alpha_1$ is non-conservative, so it is updated on its own.
 
 $$
 \frac{\partial \alpha_1}{\partial t} + u \frac{\partial \alpha_1}{\partial x} = 0
 $$
 
+Five equations is the model after both phases have been reduced to one velocity and one pressure. Putting an equation set back on each phase is the [Baer–Nunziato seven-equation model](/en/posts/2026-06-27-baer-nunziato-seven-equation-two-phase/).
+
 ## Equation of State: Stiffened Gas EOS
 
-Both fluids use the stiffened gas EOS:
+Both fluids use a stiffened gas.
 
 $$
 p_k = (\gamma_k - 1)\rho_k e_k - \gamma_k p_{\infty,k}
 $$
 
-The mixture pressure is calculated using a mixture rule:
+Mixture pressure comes from this rule.
 
 $$
 p = \frac{\rho e - \sum_k \alpha_k \frac{\gamma_k p_{\infty,k}}{\gamma_k - 1}}{\sum_k \frac{\alpha_k}{\gamma_k - 1}}
 $$
+
+$p_k$ is the pressure of fluid $k$, $e_k$ its internal energy, and $\gamma_k$, $p_{\infty,k}$ the EOS constants. The denominator is $\sum \alpha_k/(\gamma_k-1)$.
 
 ## Python Implementation
 
@@ -88,7 +100,11 @@ def sound_speed(alpha1, arho1, arho2, p):
     return np.sqrt(1.0 / (rho * inv_rhoc2))
 ```
 
+`pressure` is the mixture rule rewritten on conserved variables. Inside `sound_speed`, $c_k^2=\gamma_k(p+p_{\infty,k})/\rho_k$ is the pure-fluid sound speed.
+
 ### HLLC Flux Calculation
+
+HLLC covers the four conservation laws. The contact speed $S^\star$ is returned with the flux and later advects $\alpha$.
 
 ```python
 def hllc_flux(UL, UR, alpha1L, alpha1R):
@@ -140,6 +156,8 @@ def hllc_flux(UL, UR, alpha1L, alpha1R):
 
 ### Time Integration (1st order)
 
+Time stepping is forward Euler. The step is $\mathrm{CFL}\,\Delta x/\max(|u|+c)$, with CFL 0.5.
+
 ```python
 def solve(U, alpha1, dx, t_end, cfl=0.5):
     """Forward Euler time integration."""
@@ -184,7 +202,11 @@ def solve(U, alpha1, dx, t_end, cfl=0.5):
     return U, alpha1
 ```
 
+The $\alpha_1$ update is not a conservative flux. The sign of the face speed `uface` picks the upwind side.
+
 ### Initial Conditions: Shock-Gas Bubble Interaction
+
+Ahead of position 0.25 the water has already passed through the shock: $\rho=1100$, $u=50$, $p=10^{9}$. Between 0.4 and 0.6 is the air bubble, $\rho=1$, $u=0$, $p=10^{5}$. Everywhere else is ambient water, $\rho=1000$, $u=0$, $p=10^{5}$.
 
 ```python
 # Initial condition: shock hitting an air bubble in water
@@ -220,45 +242,40 @@ for i in range(N):
     U[3, i] = E
 ```
 
+`compute_total_energy` is not in this listing. The EOS already says how to recover energy from pressure: $\rho e=(p+\gamma p_\infty)/(\gamma-1)$.
+
 ## Considerations
 
 ### 1. Limiting the Range of $\alpha$
 
-If $\alpha_1$ becomes exactly 0 or 1, division by zero may occur in the EOS calculations. Always clip $\alpha_1$ to the range $\epsilon < \alpha_1 < 1 - \epsilon$ (where $\epsilon \sim 10^{-8}$).
+If $\alpha_1$ is exactly 0 or 1, the conserved product $\alpha_1\rho_1$ cannot be divided by $\alpha_1$. The code clips $\alpha_1$ between $10^{-8}$ and $1-10^{-8}$.
 
 ### 2. Mixture Sound Speed: Wood's Formula
 
-The sound speed in a mixture can be surprisingly low, which is physically correct and affects the CFL condition.
+A mixed cell can be slower than either pure fluid. That is what the formula says, and the CFL reads the same speed.
 
 $$
 \frac{1}{\rho c^2} = \frac{\alpha_1}{\rho_1 c_1^2} + \frac{\alpha_2}{\rho_2 c_2^2}
 $$
 
-Near $\alpha_1 = 0.5$, $c_{mix}$ can be **much smaller** than the sound speed of either individual fluid.
+The pure states in the initial condition already fix the number. Bubble air has $\rho=1$, $p=10^{5}$, $\gamma=1.4$, $p_\infty=0$. Then $c=\sqrt{1.4\times 10^{5}}\approx 374\,\mathrm{m/s}$. Ambient water has $\rho=1000$, $p=10^{5}$, $\gamma=4.4$, $p_\infty=6\times 10^{8}$, so $c\approx 1625\,\mathrm{m/s}$. Post-shock water has $\rho=1100$, $p=10^{9}$, so $c\approx 2530\,\mathrm{m/s}$. The group $p+p_\infty$ is about 2.67 times the ambient water value, while density is only $1100/1000=1.10$ times larger. Kinetic energy at $u=50$ is $0.5\times 1100\times 50^{2}=1.375\times 10^{6}$. That is about 0.13% of the internal-energy density $\rho e\approx 1.07\times 10^{9}$ in the same cell. The shock's energy sits in $p_\infty$, not in the 50 m/s.
+
+Mix bubble air and ambient water at $\alpha_1=0.5$ and a common pressure $10^{5}$. In Wood's formula, $1/(\rho c^2)$ is almost entirely the air term. $\rho_1 c_1^2=1.4\times 10^{5}$, while $\rho_2 c_2^2\approx 2.64\times 10^{9}$. Mixture density is $0.5\times 1+0.5\times 1000=500.5$, and $c_\mathrm{mix}\approx 24\,\mathrm{m/s}$. Not 374, and not 1625.
+
+The pressure denominator is sensitive in the same place. Pure water has $\sum\alpha/(\gamma-1)=1/3.4\approx 0.294$. Leak $\alpha_1=0.01$ into that water and the denominator becomes $0.01/0.4+0.99/3.4\approx 0.316$, about 7.5% larger. Pressure is divided by that denominator, so an $\alpha$ error in a smeared interface shows up as a pressure error.
+
+The CFL step is $\Delta t=0.5\,\Delta x/\max(|u|+c)$, and $\Delta x$ is the spacing of `linspace(0, 1, 1000)`, which is $1/999$. The mixture cell does not set it. Behind the shock, $|u|+c\approx 50+2530=2580$, so $\Delta t\approx 1.9\times 10^{-7}$. A cell at 24 m/s would allow a step about 110 times larger. A low mixture speed does not tighten the time step. What it does is leave interface acoustics almost frozen inside that same $\Delta t$.
 
 ### 3. Extension to Higher-Order Accuracy
 
-The code provided above is first-order accurate. In actual research:
-
-- Achieve 2nd-order accuracy with **MUSCL reconstruction** + slope limiter.
-- Use **WENO** reconstruction for 5th-order or higher.
-- Improve temporal accuracy with **Runge-Kutta** time integration.
+The time integrator above is first order, and the spatial update uses the cell value as it stands. Second order wants MUSCL plus a slope limiter. Above that, WENO. Time accuracy goes up with Runge–Kutta. None of that removes the non-conservative $\alpha$ update or Wood's speed.
 
 ## Interpreting the Results
 
-Running the simulation shows the shock wave compressing the gas bubble, resulting in:
+Once the shock enters the bubble, a transmitted shock leaves through the downstream side and a reflected rarefaction runs back to the left. The bubble collapses and its internal pressure rises. A jet on the downstream wall needs 2D or 3D. Underwater blasts and shock-wave lithotripsy are built on this picture.
 
-1. A **transmitted shock** proceeding past the bubble.
-2. A **reflected rarefaction wave** moving to the left.
-3. Rapid **compression** of the bubble, causing internal pressure to rise.
-4. Formation of a **jet** at the rear wall (in 2D/3D).
+## Upwinding α alone lets contact pressure drift first
 
-This phenomenon is key in fields such as underwater explosions and shock wave lithotripsy.
+The fifth flux is 0, and $\alpha$ is upwinded by the sign of the face speed. The 7.5% swing in the pressure denominator from an $\alpha_1=0.01$ leak into water means one bad interface cell can move the equilibrium pressure. This first-order update does not enforce that equilibrium on its own. The discretization of the non-conservative term is what decides whether pressure stays put.
 
-## Next Steps
-
-In the next post, I have prepared interactive content where you can learn basic numerical analysis concepts **like a game**. You will be able to experience numerical stability, the CFL condition, and more directly.
-
-Set artificial diffusion to 0 and watch the interface go unphysically sharp — exactly why we need THINC-like sharpeners.
-
-<VolumeFractionAdvect />
+The test for that equilibrium is a contact where nothing else should happen. Where the pressure leaks on that contact is the question in [the Abgrall criterion and the non-conservative term](/en/posts/2026-09-06-abgrall-criterion-nonconservative-term/).

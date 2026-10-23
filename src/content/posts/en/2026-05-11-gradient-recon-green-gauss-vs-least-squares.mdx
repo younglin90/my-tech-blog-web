@@ -1,7 +1,9 @@
 ---
 title: "Skewed Cells Bend Gradients — Green–Gauss vs Least-Squares Reconstruction"
 date: 2026-05-11
-description: "Two ways to compute ∇p on unstructured meshes, and how their accuracy diverges"
+updated: 2026-10-19
+description: "At skew 0.9 the printed Green–Gauss error is 31% and least squares is 9%. Their ratio stays near 3.4 from the symmetric ring onward."
+takeaway: "Cutting least squares off at the boundary stencil drops the order, and the interior single-digit error goes with it."
 tags: ["FVM", "Unstructured", "Gradient", "Least-Squares", "Green-Gauss"]
 locale: en
 slug: 2026-05-11-gradient-recon-green-gauss-vs-least-squares
@@ -10,51 +12,53 @@ draft: false
 
 import { UnstructuredGradientLab } from '@/components/post-viz/2026-05-11-gradient-recon-green-gauss-vs-least-squares/UnstructuredGradientLab'
 
-Same six neighbor cells, same pressure values. One algorithm nails ∇p almost exactly; the other misses by 30%. The gap comes from how skewed the mesh is — and from how each method invents a value on each cell face. This post puts the two roads to a cell-centered gradient ∇p|_C in unstructured FVM, Green–Gauss (GG) and Least-Squares (LS), on the same mesh and follows where they part ways. Sixty lines of Python and an interactive lab wait at the end.
+Same six neighbors, same pressures. One arrow sits on $\nabla p$. The other leans well off it. The gap is how skewed the cell is, and how the face pressure was built.
+
+Push the mesh-skew slider from 0 to 0.9 and the orange Green–Gauss arrow leaves the true value, while the purple least-squares arrow stays shorter.
+
+<UnstructuredGradientLab />
+
+Near skew 0 both stay in single digits. Past 0.5 only the orange one climbs into double digits. The table sits after the code.
 
 ## The day pressure blew up in the OpenFOAM log
 
-A non-staggered unstructured pressure-based solver calls the cell-centered ∇p at least three times in the Rhie–Chow pressure-weighted interpolation (PWIM): in the momentum pressure term, in the face mid-velocity formula, and as the gradient of the pressure correction. If any of them leans, momentum and continuity drift apart and the residual stalls a decade above target. Two-phase flow makes it worse — the phase-change rate is a function of local pressure, so a 0.5% bias in ∇p smears the interface.
+A non-staggered unstructured pressure-based solver calls the cell-centered $\nabla p$ at least three times inside Rhie–Chow pressure-weighted interpolation. The momentum pressure term, the face mid-velocity, and the gradient of the pressure correction. If one of them leans, momentum and continuity part and the residual stalls a decade up. In two-phase flow the phase-change rate is a function of local pressure, so a 0.5% bias in $\nabla p$ smears the interface.
 
-The trouble lives on the cell face. The cell-centered gradient drops out of a surface integral, and how you pick the face pressure $p_f$ separates the algorithms.
+The trouble is the face. The cell gradient falls out of a surface integral, and the recipe for the face pressure $p_f$ splits the road.
 
 ## Green–Gauss — a single surface integral
 
-Start from the divergence theorem. For cell $C$ with volume $\Omega_C$, faces $f$, outward unit normals $\hat{\mathbf{n}}_f$, and face areas $A_f$,
+Start from the divergence theorem. Cell $C$, volume $\Omega_C$, faces $f$, outward unit normals $\hat{\mathbf{n}}_f$, areas $A_f$.
 
 $$
 \nabla p \Big|_C \;\approx\; \frac{1}{\Omega_C} \sum_{f \in \partial C} p_f\, \hat{\mathbf{n}}_f\, A_f
 $$
 
-where $p_f$ is the face pressure, $\hat{\mathbf{n}}_f$ points out of the cell, and $A_f$ is the face area.
+$p_f$ is the face pressure, $\hat{\mathbf{n}}_f$ the outward normal, $A_f$ the area.
 
-Different recipes for $p_f$ spawn GG variants.
+The recipe for $p_f$ is the Green–Gauss variant.
 
-- **Simple average**: $p_f = \tfrac{1}{2}(p_C + p_N)$. Clean on orthogonal uniform grids, but the face centroid does not generally sit on the segment joining the two cell centers.
-- **Inverse distance weighting (IDW)**: $p_f = (w_C p_C + w_N p_N)/(w_C + w_N)$ with $w = 1/d$. The cell closer to the face wins.
-- **Frink procedure**: interpolate node pressures from neighboring cells with pseudo-Laplacian weights, then average the two nodes that define the face. Aims for both conservation and second-order accuracy.
+- **Simple average**: $p_f=\tfrac12(p_C+p_N)$. Clean on an orthogonal uniform mesh. On an unstructured one the face centroid is not the midpoint of the two cell centers.
+- **Inverse distance**: $p_f=(w_C p_C+w_N p_N)/(w_C+w_N)$, $w=1/d$. The cell closer to the face gets the larger weight.
+- **Frink**: node pressures come from neighboring cells with pseudo-Laplacian weights, then the two nodes of the face are averaged again. Conservation and second order, both aimed at.
 
-Trouble surfaces when cells skew. Once the face centroid drifts off the cell-to-cell segment, no scalar average for $p_f$ can recover the true face distribution. First-order accuracy is not even guaranteed.
+When the cell skews, the face centroid $\mathbf{x}_f$ leaves the line of centers. No average for $p_f$ recovers the distribution on the face. First order is often not even guaranteed. If the volume $\Omega_C$ in the denominator is a fake area, conservation is only formal. [Closing the cell area with a diagonal cross product](/en/posts/2026-10-13-diagonal-cross-product-cell-area-green-gauss/) is where that area has to agree with $\partial x/\partial x=1$.
 
 ## Same point, two algorithms, different arrows
 
-Try the simulation below. The center cell is the target; six neighbor cells ring it. Crank the mesh-skew slider from 0 to 0.9 and the neighbors warp. Three arrows overlay the cell: cyan (true ∇p), orange (Green–Gauss), purple (Least-Squares).
-
-<UnstructuredGradientLab />
-
-Near skew = 0, both methods stay within 5%. Past 0.5, GG breaks into double-digit error while LS hangs in the single digits. Push the wavenumber $k$ up and the true gradient grows steeper per cell — the grid effectively becomes coarse for the field — and both methods bleed accuracy. LS still wins, but the margin shrinks.
+The ring in the figure is one center cell and six neighbors. At skew 0 both arrows sit on the cyan truth. Past 0.5 the orange one leaves first. Raise the wavenumber $k$ and the true $\nabla p$ gets steep relative to the cell. Both methods lose accuracy, and the purple lead narrows.
 
 ## Least-Squares — fit the point cloud directly
 
-LS skips the face. Assume the neighbors of cell $C$ obey a linear field and solve the over-determined system
+Least squares never visits the face. The neighbors are assumed linear, and the over-determined system is solved.
 
 $$
 p_N - p_C \;=\; (\nabla p)_C \cdot (\mathbf{x}_N - \mathbf{x}_C) + \varepsilon_N, \quad N=1,\ldots,n_{NC}
 $$
 
-with one residual $\varepsilon_N$ per equation. Pick weights $w_N$ (often $1/|\mathbf{x}_N - \mathbf{x}_C|^2$) to discount distant cells, then minimize $\sum_N w_N \varepsilon_N^2$ via the normal equations.
+Each row leaves a residual $\varepsilon_N$. The weight $w_N$ is usually $1/|\mathbf{x}_N-\mathbf{x}_C|^2$. The $\nabla p$ that minimizes $\sum w_N\varepsilon_N^2$ is the normal equation.
 
-In 2D the normal equation is a 2×2 system.
+In 2D that normal equation is 2×2.
 
 $$
 \begin{bmatrix}
@@ -69,14 +73,11 @@ $$
 \end{bmatrix}
 $$
 
-with $\Delta x_N = x_N - x_C$, $\Delta y_N$, $\Delta p_N$ analogous.
+$\Delta x_N=x_N-x_C$, and $\Delta y_N$, $\Delta p_N$ are the same kind of difference.
 
-LS shines because it ignores mesh topology. Skewed faces, non-quad cells — none matter, as long as the neighbor centers are not collinear (which keeps the normal matrix non-singular). You get consistent first-order accuracy almost for free.
+If the neighbor centers are not collinear the normal matrix is nonsingular, and a skewed face still keeps first order. That is why the method is dull to topology.
 
-It does have weak spots.
-
-- **Boundary cells**: with one neighbor at a corner, the normal matrix turns singular. You extend the stencil to node-sharing cells, which inflates the unstructured connectivity.
-- **No conservation**: GG falls out of a flux sum, so cells naturally sum to zero. LS is just residual minimization; conservation is not guaranteed.
+The weaknesses are real. A boundary corner with a single neighbor makes the normal matrix singular. The stencil has to reach vertex neighbors, and on an unstructured mesh that index is heavy. There is also no conservation. Green–Gauss is a sum of face fluxes, so cells telescope toward zero. Least squares only minimizes a residual.
 
 ## Code — two ∇p estimates on the same cell
 
@@ -136,7 +137,7 @@ for skew in [0.0, 0.3, 0.6, 0.9]:
     print(f"skew={skew:.1f}  GG err={eGG:6.2%}  LS err={eLS:6.2%}")
 ```
 
-Typical output (depends on face geometry):
+The print, with the caveat that it moves with the face shape, is this.
 
 ```text
 skew=0.0  GG err= 4.1%  LS err= 1.6%
@@ -145,24 +146,38 @@ skew=0.6  GG err=18.4%  LS err= 5.7%
 skew=0.9  GG err=31.2%  LS err= 9.1%
 ```
 
-GG error grows almost linearly with skew; LS error grows much slower. That is why LS has become the default on unstructured grids.
+The 1.6% least-squares error at skew 0 is not skew. The code sets $k=1.2$ and a ring radius $R=1.2$, so $kR=1.44$ rad. The field is $\sin(kx)\cos(ky)$, and at the origin the true gradient is $(k,0)=(1.2,0)$. A linear fit cannot hold that curvature. At skew 0 the normal matrix keeps only the angles. With $w=1/|\mathbf{d}|^2$, the sum of $w\Delta x^2$ is the sum of $\cos^2$. Six samples at 60 degrees sum to 3, the cross term is 0, and $M=3I$. The condition number is 1. The 1.6% is not a sick matrix.
+
+The ratios in the table are 2.6, 3.4, 3.2, 3.4. That is $4.1/1.6$, $7.8/2.3$, $18.4/5.7$, $31.2/9.1$. From skew 0 to 0.9, Green–Gauss grows by $31.2/4.1\approx 7.6$ and least squares by $9.1/1.6\approx 5.7$. The Green–Gauss increments are $+3.7$, $+10.6$, $+12.8$. Not a straight line. The later steps are steeper.
+
+At skew 0.9 the code's radius is $R(1\pm 0.36)$ and the angular kick has amplitude $0.54$ rad. Those are $0.9\times 0.4$ and $0.9\times 0.6$. The face length $0.55$ is hard-coded. When all six faces share that length it cancels between the numerator and the denominator. Replacing 0.55 with another constant leaves the printed 4.1% and 31% where they are. Those percentages belong to the ring angles and to the sine field.
+
+At skew 0 the neighbor distance is $R=1.2$, so the face midpoint sits at half of that, 0.6. After the length drops out, each face contributes $0.5\times 0.6$ and six faces sum to 1.8. The volume the code accumulates, 0.99, multiplies by 0.55 again and never enters the quotient. A regular hexagon with neighbor spacing $R$ has area $(\sqrt{3}/2)R^2$. With $R^2=1.44$ that area is about 1.25. The canceled denominator 1.8 is 44% larger than that area. If the numerator matched the true surface integral, the gradient would fall to $1/1.44$ of the truth and the relative error would be $1-1/1.44\approx 0.31$. The printed Green–Gauss error is 4.1%, far below that 0.31. The face-pressure sum is large in the same proportion as the denominator, so the two geometry errors cancel most of the way and 4.1% is what remains. The least-squares 1.6% does not use this area.
+
+The bend is readable from $k$ and $R$. $kR=1.44$, and the Taylor cubic $(kR)^3/6$ is about 0.50, roughly a third of the linear term $kR$. Samples on the ring are already bent by that much. A leftover gradient error of 1.6% means most of that bend leaves the gradient on a symmetric stencil. Raising skew breaks the cancellation. The factor 7.6 from 4.1% to 31.2% is not new curvature. It is the geometry error that had been canceling, now showing through the angle kick and the radius wobble.
 
 ## Picking one in practice
 
-- **Pressure gradient**: nearly always LS. You want a clean spectrum around the acoustic mode in Rhie–Chow interpolation.
-- **Velocity gradient (viscous term)**: GG variant when you need conservation; LS when accuracy matters more. ANSYS Fluent exposes both.
-- **Boundary cells**: when LS alone fails, blend with GG or add ghost cells. OpenFOAM's `leastSquares` carries internal fallbacks for face-poor cells.
-- **2D vs 3D**: in 3D the normal matrix is 3×3 and its condition number degrades fast on rough cells. Monitor the condition number as a safety net.
+Pressure gradients are almost always least squares. Rhie–Chow has to keep the acoustic mode clean.
+
+Velocity gradients, the viscous term, split. If conservation is required, a Green–Gauss variant. If accuracy comes first, least squares. Fluent ships both.
+
+A boundary cell that cannot solve least squares alone gets a Green–Gauss patch or a ghost. OpenFOAM `leastSquares` also falls back when face neighbors run out.
+
+In 3D the normal matrix is 3×3, and a rough cell drives the condition number up fast. Watching that number is the safety check.
 
 ## Pitfalls when coding it up
 
-1. **Check the normal matrix**: if $\det M \to 0$, LS is meaningless. Fall back to SVD or a pseudo-inverse.
-2. **Pick the weight on purpose**: $1/d^2$ emphasizes nearby cells and is robust to skew. $1/d$ or uniform weights smooth more but lose accuracy.
-3. **Asymmetric boundary**: mixing GG at the boundary with LS in the interior drops the whole field to first order. Push LS to the wall or unify on GG.
-4. **Conservation audit**: when LS gives you ∇p in the momentum equation, remember the face pressure is interpolated separately — a forgotten mass imbalance accumulates.
+If $\det M$ sits on zero, least squares means nothing. Switch to an SVD or a pseudoinverse.
 
-## What to take home
+The weight $1/d^2$ boosts the near cells and stays dull to skew. $1/d$ or a uniform weight is smoother and less accurate.
 
-- On unstructured grids, Least-Squares almost always wins the cell-centered ∇p contest — it is insensitive to skew.
-- The cost: LS is not conservative, and condition number plus boundary stencils are real traps.
-- Green–Gauss earns its keep wherever face-flux conservation matters — pick the tool that fits the job.
+Drop only the boundary to Green–Gauss and keep least squares inside, and the whole system falls to first order. Push least squares through the boundary, or use Green–Gauss everywhere.
+
+Least squares can own the pressure gradient while the face pressure is still interpolated on its own. Forget that and mass imbalance stacks up.
+
+## Cut least squares at the boundary and the 9% falls with it
+
+The skew 0.9 row makes the choice a number. Pick conservation and eat the 31% of Green–Gauss. Pick accuracy and keep the 9% of least squares. Cut that least squares off at the boundary, though, and the single digit the interior was holding drops in order with it. The regular hexagon whose condition number was 1 does not exist at a boundary corner.
+
+A correct gradient arrow still loses if the face velocity remembers the under-relaxation factor. When a log diverges, the open question is whether the arrow was wrong or the face remembered the relaxation. [Where Rhie–Chow remembers under-relaxation](/en/posts/2026-10-14-rhie-chow-under-relaxation-memory/) is that question.

@@ -1,17 +1,25 @@
 ---
 title: "显式炸开时,不求逆矩阵也能解隐式 — LU-SGS"
 date: 2026-06-22
-description: "用代码验证隐式时间推进的稳定性与LU-SGS近似分解"
+updated: 2026-10-19
+description: "显式CFL被压到0.3时,定常要跑好几天。后向Euler加LU-SGS两次扫掠,用CFL 5、49步把Burgers激波带过,且不求全矩阵逆。"
 tags: ["LU-SGS", "Implicit", "Time-Integration", "Compressible", "Linear-Solver"]
 draft: false
 locale: zh
 slug: 2026-06-22-lu-sgs-implicit-time-integration
+takeaway: "左半平面在任意时间步长下保持稳定,但扩散数从1升到40时,内层扫掠的残差曲线会躺平。"
 ---
 
 import { AbsoluteStabilityRegion } from '@/components/post-viz/2026-06-22-lu-sgs-implicit-time-integration/AbsoluteStabilityRegion'
 import { LuSgsSweepConvergence } from '@/components/post-viz/2026-06-22-lu-sgs-implicit-time-integration/LuSgsSweepConvergence'
 
-计算在凌晨3点发散了。日志最后一行总是同一句:`pressure residual = NaN`。我把CFL从0.9降到0.5,再降到0.3。每一步推进的时间太小,到达定常状态要好几天。这是可压缩定常计算中谁都会撞上的墙。本文展示翻越这堵墙的路,即**隐式时间推进**为何允许大时间步长,然后实现**LU-SGS**——一种不求全矩阵逆就能解这套系统的方法,并用代码验证。读到最后,你手里会留下一个CFL等于5也不会死的Burgers求解器。
+计算在凌晨3点发散了。日志末行总是 `pressure residual = NaN`。CFL从0.9降到0.5,再降到0.3。一步太短,定常要好几天。可压缩定常计算里常见的墙。**隐式时间推进**从时间步长这一侧把墙拆开。不求全矩阵逆的那条路是 **LU-SGS**。CFL等于5时Burgers激波还在。
+
+把格式开关在前向Euler和后向Euler之间拨动,并把 $\mathrm{Re}(\lambda\Delta t)$ 拖到 $-2.5$。稳定区域会从小圆盘变成左半平面。
+
+<AbsoluteStabilityRegion />
+
+前向Euler下该点离开青色圆盘,变成UNSTABLE。后向Euler把整个左半平面填成青色,同一坐标重新稳定。
 
 ## 稳定域无限敞开
 
@@ -39,11 +47,7 @@ $$
 
 对所有 $\mathrm{Re}(\lambda)<0$ 的物理衰减模态,$|G|<1$。无论 $\Delta t$ 多大都稳定。稳定性约束消失,时间步长只需小到**精度**所要求的程度即可。
 
-在下面的仿真里亲手调一调参数。
-
-<AbsoluteStabilityRegion />
-
-选前向Euler,把 $\mathrm{Re}(\lambda\Delta t)$ 拖到 $-2.5$,点会离开青色区域,变为UNSTABLE。切到后向Euler,整个左半平面被青色填满,同一个点又变稳定。
+显式稳定圆盘在实轴上以0和 $-2$ 为两端。圆心 $-1$,半径1。$\mathrm{Re}(\lambda\Delta t)=-2.5$ 离圆心1.5,落在圆外,所以标记变成UNSTABLE。后向Euler的放大因子是 $G=1/(1-\lambda\Delta t)$。$\mathrm{Re}(\lambda)<0$ 时分母大于1,$|G|$ 在 $\Delta t$ 增大后仍不超过1。凌晨日志把CFL从0.9、0.5降到0.3,是想把 $\lambda\Delta t$ 关进这个圆盘。黏性网格上 $\lambda$ 先变大。圆盘在精度要求更小步长之前就会破。
 
 ## 求全矩阵逆的代价付不起
 
@@ -95,7 +99,9 @@ $$
 \Delta U_i = \Delta U_i^{*} - D_i^{-1}\,U_i\,\Delta U_{i+1}
 $$
 
-关键在于用什么填 $D$、$L$、$U$。Yoon与Jameson(1988)用谱半径 $\rho$ 近似非线性通量雅可比。把一阶迎风拆成 $A^{\pm} = \tfrac{1}{2}(a \pm |a|)$,对角就是 $D_i = I/\Delta t + |a_i|/\Delta x$,非对角只剩拆分后的面雅可比。无需构建整个矩阵,每个单元几个标量(或一个小块)就够了。
+用什么填 $D$、$L$、$U$,决定近似好不好。Yoon与Jameson(1988)用谱半径 $\rho$ 近似非线性通量雅可比。把一阶迎风拆成 $A^{\pm} = \tfrac{1}{2}(a \pm |a|)$,对角就是 $D_i = I/\Delta t + |a_i|/\Delta x$,非对角只剩拆分后的面雅可比。无需构建整个矩阵,每个单元几个标量(或一个小块)就够了。
+
+近似乘积是 $(D+L)\,D^{-1}\,(D+U)$。展开后 $A$ 旁边多出 $L D^{-1} U$,这一项被丢掉。因为 $D_i = I/\Delta t + |a_i|/\Delta x$,$\Delta t$ 小时 $I/\Delta t$ 把对角撑大,丢掉的项相对变小。CFL升到5,$\Delta t$ 变大,$I/\Delta t$ 变小,近似误差跟着变大。显式在两三步里就出现NaN的那段,输出仍用49步走完,$u$ 落在0.012到0.988之间。格子是 $n=200$,算到 $t=0.22$,$\Delta x=1/200$。与存矩阵的 [Krylov求解器收敛比较](/zh/posts/2026-04-22-cfd-linear-solvers-krylov/) 不同,这里用一次对角除法和两次扫掠占住那个位置。
 
 ## Python —— 用一次分解推进隐式Burgers
 
@@ -156,20 +162,16 @@ print(f"CFL=5 -> {steps} steps,  u in [{u.min():.3f}, {u.max():.3f}]")
 
 LU-SGS应用一次得到近似解。要解得更准,就在同一系统上重复扫掠。此时收敛速度取决于矩阵的对角占优程度。在黏性主导的情形——黏性雅可比变成1D拉普拉斯算子——对角为 $1+2d$,非对角为 $-d$。其中 $d=\nu\Delta t/\Delta x^2$ 是扩散数(黏性扩散的无量纲时间步长)。
 
-在下面看残差随扫掠一步步下落。
+$d=\nu\Delta t/\Delta x^2$ 等于1时,对角是 $1+2d=3$,非对角是 $-d=-1$,左右各一个。对角大于两个非对角之和,几次扫掠残差就掉十个数量级。$d=40$ 时对角是81,非对角是两个 $-40$,行和变成 $81-80=1$,几乎抵消。曲线因此躺平。用大 $\Delta t$ 买来的稳定,和内层松弛需要的扫掠次数,记在同一本账上。
+
+把 $d$ 滑条从1附近拉到40,同样的扫掠次数下残差曲线的斜率会变。
 
 <LuSgsSweepConvergence />
 
 把 $d$ 放在1附近,残差几次扫掠就掉十个数量级。把 $d$ 加到40(巨大的隐式 $\Delta t$),同一条曲线就躺平了。你靠加大步长买到了稳定,但矩阵更硬,内层松弛需要更多扫掠。稳定性与内层收敛不会免费同时到来。
 
-## 写代码时别踩的坑
+## 对角里漏掉黏性半径,扫掠就死
 
-现场里抓人的有三件事。
+对角 $D$ 不加 $\nu/\Delta x^2$,黏性大的单元里 $D$ 会变小。谱半径只剩对流的 $|a|/\Delta x$。扫掠马上发散。黏性雅可比若是一维拉氏算子,对角占优是 $1+2d$ 和 $-d$ 的平衡,抽掉黏性项,平衡的左边就空了。非线性强时不要一次加上整个 $\Delta U$,用 $U^{n+1}=U^n+\omega\,\Delta U$,$\omega\in[0.5,0.8]$。激波附近的振荡会减小。
 
-**别把黏性谱半径从对角里漏掉。** 黏性项大时,必须给对角 $D$ 加上 $\nu/\Delta x^2$ 的贡献。漏了 $D$ 会变小,扫掠发散。
-
-**把欠松弛握在手里。** 非线性强时别一次性加上整个 $\Delta U$,用 $U^{n+1}=U^n+\omega\,\Delta U$,取 $\omega\in[0.5,0.8]$。它能压住激波附近的振荡。
-
-**让扫掠方向交替。** 只重复前向扫掠会让信息只往一个方向流。前后交替能保住对称性,加快收敛。在MPI分区边界,要在两次扫掠之间插一次通信,让邻块的更新传播过去。
-
-最后想留给你的:隐式把稳定域敞向整个左半平面,允许大 $\Delta t$。它代价高昂的巨大矩阵,被LU-SGS用 $D\!\cdot\!L\!\cdot\!U$ 分解和两次扫掠近似——不存储、不乘法。稳定性几乎免费,而内层收敛要按矩阵的硬度付账。
+方向也是一个决定。只重复前向扫掠,信息只往编号增大的方向流。前后交替,$L$ 和 $U$ 才保持对称。MPI分区面上,两次扫掠之间必须插一次通信,邻块的 $\Delta U$ 才会过来。单元编号怎么排,改的就是这次扫的顺序。[用RCM打乱编号后同一套LU-SGS变慢的记录](/zh/posts/2026-10-16-lu-sgs-cell-ordering-reverse-cuthill-mckee/)是这个决定的另一面。

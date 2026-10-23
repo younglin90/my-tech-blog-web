@@ -1,7 +1,9 @@
 ---
 title: "Devolver la nitidez a la interfaz en cada paso — Implementando el afilado anti-difusión (IST)"
 date: 2026-07-25
-description: "Una técnica de posprocesado que fija a un grosor constante una interfaz emborronada por difusión numérica"
+updated: 2026-10-19
+description: "Tras 200 pasos, el borde de la burbuja de helio pasa de 6 a 20 celdas. El posprocesado IST vuelve a fijar ese grosor con el cociente ε/a."
+takeaway: "Adelgazar la banda no fija el número de celdas. Conviene bloquear ε/a tras cada paso; si no, el grosor vuelve a vagar junto al choque."
 tags: ["Paper-Review", "Interface-Sharpening", "Diffuse-Interface", "Anti-Diffusion", "Compressible", "Multiphase"]
 locale: es
 slug: interface-sharpening-anti-diffusion
@@ -12,6 +14,12 @@ import { InterfaceSharpeningLab1D } from '@/components/post-viz/2026-07-25-inter
 import { ShockBubbleSharpenGrid } from '@/components/post-viz/2026-07-25-interface-sharpening-anti-diffusion/ShockBubbleSharpenGrid'
 
 Ejecuté un caso de choque–burbuja con un modelo de cinco ecuaciones. Tras 200 pasos, el borde de la burbuja de helio se había hinchado de 6 celdas a 20. Las cantidades físicas eran correctas, pero la interfaz quedó hecha una papilla. Ese es el destino del método de interfaz difusa (un enfoque que deja a propósito que la interfaz se extienda sobre un ancho finito). Nguyen et al. (2021) deshacen ese emborronamiento con una sola pasada de posprocesado después de cada paso temporal. Hoy construimos esa técnica anti-difusión desde cero y comprobamos, con nuestros propios ojos, por qué el grosor de la interfaz se bloquea en una constante.
+
+Con `numerical diffusion` activo, el borde de 6 celdas se come celdas; con `sharpening (IST)` activo, esa extensión se detiene cerca de ε/a.
+
+<InterfaceSharpeningLab1D />
+
+La banda amarilla es el grosor objetivo. Subir `compression a` la adelgaza, subir `regularization ε` la engrosa otra vez, y el recuento de celdas sigue ese cociente.
 
 ## Información del artículo
 
@@ -55,17 +63,11 @@ $$
 \alpha(x) = \tfrac{1}{2}\!\left[1 + \tanh\!\left(\frac{a}{2\varepsilon}\,x\right)\right]
 $$
 
-La interfaz converge a una forma de tangente hiperbólica, y su grosor escala como $\varepsilon/a$. En otras palabras, **el grosor lo eliges tú**. Esta es la propiedad de "grosor constante" que los autores subrayan. Cuando la interfaz mantiene siempre el mismo número de celdas, los choques y las discontinuidades de contacto pueden capturarse de forma estable.
+La interfaz converge a una forma de tangente hiperbólica, y su grosor escala como $\varepsilon/a$. En otras palabras, **el grosor queda fijado de antemano**. Esta es la propiedad de "grosor constante" que los autores subrayan. Cuando la interfaz mantiene siempre el mismo número de celdas, los choques y las discontinuidades de contacto pueden capturarse de forma estable.
 
 ## En 1D: el tira y afloja entre emborronado y afilado
 
-El ojo es más rápido que las palabras. Juega directamente con la simulación de abajo. Activa `numerical diffusion` y la interfaz empieza a extenderse sola. Desde ese estado, activa `sharpening (IST)` y la extensión se detiene mientras el grosor se bloquea cerca del objetivo.
-
-<InterfaceSharpeningLab1D />
-
-Subir `compression a` adelgaza la interfaz; subir `regularization ε` la engrosa. Puedes confirmar que el cociente $\varepsilon/a$ de los dos deslizadores fija el grosor objetivo (la banda amarilla) observando cómo el número de celdas de la banda medida sigue ese valor.
-
-Trasladada a numpy, la misma lógica se lee así. Primero imita la difusión del esquema de transporte, luego ejecuta la ecuación de afilado unas cuantas veces.
+El mismo tira y afloja, escrito, es el script de abajo. Imita el emborronado que deja el transporte y luego corre la ecuación de afilado en pseudo-tiempo.
 
 ```python
 import numpy as np
@@ -104,7 +106,11 @@ a = sharpen_sweep(a, comp_a=1.0, eps=0.004)
 print("banda tras afilar:", band_width(a), "celdas")         # -> se encoge al objetivo
 ```
 
-La salida muestra una banda ancha tras el emborronado y, tras el afilado, cae a las pocas celdas que dicta $\varepsilon/a$. El punto clave es que nunca tocamos el esquema. `sharpen_sweep` solo recibe el arreglo resultante y lo limpia; no tiene ni idea de qué solver de Riemann lo produjo.
+Tras el emborronado la banda queda ancha y, tras el afilado, cae a las pocas celdas que fija $\varepsilon/a$. El esquema no se toca. `sharpen_sweep` solo recibe el arreglo. No sabe qué solver de Riemann lo llenó.
+
+Los valores por defecto son comp_a=1.0 y eps=0.004, así que la escala de grosor $\varepsilon/a$ vale 0.004. El factor de pendiente del perfil estacionario es $a/(2\varepsilon)=125$. La tanh con la que arranca el código tiene denominador 0.012, de modo que el objetivo es más empinado que el escalón inicial. $dx=1/200=0.005$. El tope del pseudo-tiempo es el menor entre $dx^2/(2\varepsilon)=0.000025/0.008=0.003125$ y $dx/a=0.005$. Gana el límite difusivo. Multiplicado por 0.9, $d\tau$ vale 0.0028125. Por encima de ese tope la anti-difusión cambia de signo y la interfaz oscila.
+
+La pieza de compresión del flujo en la cara escala con $\alpha(1-\alpha)$. Ese producto llega a 0.25 en $\alpha=0.5$ y es cero en un fluido puro, así que allí la compresión se apaga. El contador de banda solo suma celdas entre 0.05 y 0.95. Doblar solo $\varepsilon$ dobla el grosor objetivo; doblar solo $a$ lo parte por dos. Los 200 pasos del arranque son tiempo físico. Pasar de 6 celdas a 20 es un factor de unos 3.3. D=0.16 dentro de smear_once e iters=200 dentro del afilado son capas distintas. Las 1 a 3 pasadas por paso del artículo suponen que el paso físico apenas difunde. El término de Kapila $\alpha_1 K\nabla\cdot\mathbf{u}$ empuja la fracción de volumen cuando un choque dispara la divergencia. Esa fuente no es difusión numérica, y el IST no la borra. A diferencia de la relajación de presión separada en el [procedimiento de Saurel (2009)](/es/posts/2026-05-09-saurel-2009-pressure-relaxation-multiphase/), esta pasada solo devuelve el número de celdas.
 
 ## Qué significa mantener el grosor constante
 
@@ -114,20 +120,20 @@ En flujo compresible hay una capa más. Si arreglas $\alpha$, la densidad y la e
 
 ## En 2D: mantener redonda la interfaz de la burbuja
 
-Funcionó en 1D, así que pasamos a una burbuja en 2D. Reproduzcamos lo que mostraban las figuras de choque–burbuja del artículo: la interfaz sosteniendo hasta el final un círculo nítido de pocas celdas de grosor. Abajo, activa `numerical diffusion` y el borde de la burbuja redonda se vuelve borroso. Activa `sharpening` y sube `compression a`, y el borde se aprieta de nuevo en un anillo definido.
+Funcionó en 1D, así que sigue una burbuja en 2D. Las figuras de choque–burbuja del artículo sostienen un círculo de pocas celdas de grosor. Con `numerical diffusion` activo el borde se vuelve borroso; con `sharpening` activo y `compression a` más alto, el borde vuelve a un anillo nítido.
 
 <ShockBubbleSharpenGrid />
 
-Observa dos cosas. Primera, el afilado aprieta la interfaz pero **no la mueve**: la burbuja ni crece ni encoge. Segunda, el número de celdas del anillo turquesa (la banda de interfaz) baja al subir la compresión. Como la compresión actúa a lo largo de la normal $\hat{\mathbf{n}}$, la curvatura del círculo se conserva en vez de arrugarse.
+El anillo turquesa se aprieta y el centro de la burbuja se queda. Ni crece ni encoge. Lo que baja es solo el número de celdas del anillo. La compresión sigue $\hat{\mathbf{n}}$, así que la curvatura no se arruga.
 
 ## Con qué me topé al reproducirlo
 
-Tres cosas me trabaron. Primera, $\hat{\mathbf{n}} = \nabla\alpha/|\nabla\alpha|$ divide por cero en el fluido puro, donde $|\nabla\alpha|\to 0$. El artículo lo despacha porque el factor $a\,\alpha(1-\alpha)$ es cero allí, pero en código hay que añadir un valor pequeño al denominador para evitar NaN. Segunda, si el paso de pseudo-tiempo $d\tau$ es demasiado grande, la anti-difusión hace oscilar la interfaz; se necesita un límite tipo CFL para la estabilidad. Tercera, hay un compromiso en el número de iteraciones. El artículo dice que bastan 1–3 pasadas por paso, pero eso descansa en que la difusión por paso físico sea pequeña. Mallas gruesas o choques fuertes pueden requerir más.
+En el fluido puro $|\nabla\alpha|\to 0$ y la normal divide por cero. El artículo lo deja pasar porque $a\,\alpha(1-\alpha)$ es cero allí, pero sin un número pequeño en el denominador el código escribe NaN. Un $d\tau$ grande hace oscilar la interfaz. Hace falta un tope tipo CFL. Las 1 a 3 pasadas por paso del artículo suponen que el paso físico apenas difunde. Una malla gruesa o un choque fuerte puede necesitar más.
 
 Una cosa más. La elegancia del "posprocesado" tiene un precio. El afilado cambia $\alpha$ independientemente de las ecuaciones de gobierno, así que en ese instante la advección no es una solución de la EDP original. A cambio de grosor constante, la conservación local cerca de la interfaz puede desviarse un poco. Los autores lo minimizan con la redistribución consistente con la mezcla, pero no es exactamente cero. El `interfoam` de OpenFOAM usa un término de compresión de la misma familia ($\nabla\cdot(\alpha(1-\alpha)\mathbf{u}_r)$), lo que sirve de vara de medir útil al portar esta técnica a un solver compresible.
 
-## Qué cambió este artículo
+## Sin bloquear ε/a el número de celdas vuelve a flotar
 
-- **Separación entre esquema y limpieza de interfaz.** Deja en paz al solver de Riemann y controla solo el grosor de la interfaz como posprocesado. Muy portable.
-- **Grosor = $\varepsilon/a$.** Mantén la interfaz no solo delgada sino **constante**, dejándote fijar la propiedad necesaria para capturar choques y discontinuidades de contacto.
-- **Consistencia termodinámica en flujo compresible.** Redistribuye no solo $\alpha$ sino todo el vector de variables conservativas según las reglas de mezcla, preservando el equilibrio de velocidad, presión y temperatura en la interfaz.
+Un afilado en el término fuente reduce el error de difusión y aun así deja que el grosor vague en el espacio y el tiempo. Fijar $\varepsilon/a$ después del paso es lo que mantiene el mismo número de celdas junto al choque. Corregir solo $\alpha$, sin repartir de nuevo las variables conservativas por las reglas de mezcla, rompe primero el equilibrio de presión y temperatura en esa celda.
+
+Si $d\tau$ supera $dx^2/(2\varepsilon)$, la anti-difusión hace oscilar la interfaz en vez de apretarla. El precio de un grosor constante es que, en ese instante, la advección no es solución de la EDP original. La deriva local de conservación es del mismo tipo que los términos no conservativos que atrapa el [criterio de Abgrall](/es/posts/2026-09-06-abgrall-criterion-nonconservative-term/).

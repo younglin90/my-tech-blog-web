@@ -1,17 +1,25 @@
 ---
 title: "CFL = 1 takes ten thousand steps, CFL = 100 explodes — Switched Evolution Relaxation"
 date: 2026-06-29
-description: "SER ramps the CFL number from the residual to accelerate steady-state convergence"
+updated: 2026-10-19
+description: "Fixed CFL of 3 needs 588 iterations on steady Burgers. SER with p=1 finishes in 34, then the step is Newton only while a finite CFL cap is still in place."
 tags: ["CFD", "SER", "Pseudo-Transient", "Convergence-Acceleration", "Implicit"]
 locale: en
 slug: ser-cfl-ramping-pseudo-transient
+takeaway: "Drop the CFL cap and SER does not settle into Newton. A modest residual drop pushes the step without a ceiling, and the early iterations blow up."
 draft: false
 ---
 
 import { SerConvergenceRaceLab } from '@/components/post-viz/2026-06-29-ser-cfl-ramping-pseudo-transient/SerConvergenceRaceLab'
 import { CflRampScheduleViz } from '@/components/post-viz/2026-06-29-ser-cfl-ramping-pseudo-transient/CflRampScheduleViz'
 
-Set the CFL number to 1 in a steady-state run and the residual won't drop even after ten thousand iterations. Push it to 100 and the solution blows up on the very first step. Both are everyday sights. This post is about SER (Switched Evolution Relaxation), a trick that walks between those two extremes automatically. It grows the CFL as the residual falls — safe early, then as fast as Newton near the end — and we'll feel it on a small steady Burgers solver.
+A steady residual is touchy about CFL. Leave it at 1 and ten thousand iterations still sit high. Push it to 100 and the first step blows the solution apart. SER (Switched Evolution Relaxation) lets the residual pick the step between those two. Down means a larger step. A spike means a smaller one.
+
+Drag the fixed-CFL slider from 1 to 20 and the amber residual jumps to diverged, while SER only exposes the starting CFL and the exponent.
+
+<SerConvergenceRaceLab />
+
+At $\mathrm{CFL}_0=1$ and $p=1$ the cyan curve bends down late. Raising $p$ to 1.5 steepens that drop, but the moment the early residual wobbles, cyan wobbles with it.
 
 In a steady solver the CFL number (the time step made dimensionless by grid size and wave speed) is no longer about accuracy. It's a single knob that holds **both convergence speed and stability** at once.
 
@@ -59,15 +67,11 @@ $$
 
 The denominator sums the convective wave speed $|u_i|$ and the diffusive wave speed $2\nu/\Delta x$. It can differ per cell, so it pairs naturally with local time-stepping.
 
-Play with the parameters in the simulation below. It's the residual history of fixed CFL and SER run side by side on the same steady Burgers problem.
-
-<SerConvergenceRaceLab />
-
-Drop fixed CFL to 1 and the amber curve barely reaches the floor. Push it to 20 and it jumps to "diverged." SER (cyan), by contrast, starts safely at $\mathrm{CFL}_0=1$ yet bends sharply downward late in the run. Raising the exponent $p$ from 1 to 1.5 makes it more aggressive, but push it too far and even SER wobbles early.
+With N=80 the spacing is 1/81. At $\nu=0.02$, $2\nu/\Delta x$ is 3.24, larger than $|u_i|$ on the linear guess. Fixed CFL 3 then keeps $\Delta\tau$ under 0.01. The cap 1e5 pushes $\Delta\tau$ into the hundreds, so $I/\Delta\tau$ nearly vanishes. The code shares the maximum of $|u|$ across every cell, even in the shock where the speed is near 0. That is stricter than the local step in the formula.
 
 ## Python — solving steady Burgers two ways
 
-We solve the steady viscous Burgers equation $u u_x = \nu u_{xx}$. The boundary conditions $u(0)=1$, $u(1)=-1$ create a stationary shock layer in the middle. One implicit pseudo-time step solves a tridiagonal matrix with the Thomas algorithm.
+We solve the steady viscous Burgers equation $u u_x = \nu u_{xx}$. The boundary conditions $u(0)=1$, $u(1)=-1$ create a stationary shock layer in the middle. One implicit pseudo-time step solves a tridiagonal matrix with the [Thomas algorithm](/en/posts/2026-05-04-implicit-diffusion-thomas-algorithm/). The same back-substitution that makes 1D diffusion unconditionally stable is where this left-hand side picks up its time term.
 
 ```python
 import numpy as np
@@ -137,28 +141,32 @@ fixed CFL=3    ->  588 iters
 SER  p=1.0     ->   34 iters
 ```
 
-To reach a steady solution of the same accuracy, fixed CFL needs hundreds of iterations, SER just dozens. The gap opens up in the late phase, because SER drives the CFL into the thousands and effectively turns into Newton's method.
-
-## Fixed CFL and SER, side by side
-
-Let's watch the schedule itself — how SER pulls the CFL up. Play with it below. Cyan is the CFL schedule, pink is the residual.
+Drop the cap slider and the schedule shows where the printed 34 iterations start getting long again. Cyan is CFL, pink is the residual.
 
 <CflRampScheduleViz />
 
 While the residual is flat early on, the CFL stays near $\mathrm{CFL}_0$. The instant the residual starts collapsing, the CFL shoots up almost vertically. That is the essence of SER: **the better the solution gets, the larger the step it allows.** Lower the cap to 20 and the CFL hits the ceiling, loses the late Newton acceleration, and the iteration count climbs back up.
 
+To reach a steady solution of the same accuracy, fixed CFL needs hundreds of iterations, SER just dozens. The gap opens up in the late phase, because SER drives the CFL into the thousands and effectively turns into Newton's method.
+
+## Fixed CFL and SER, side by side
+
+588 divided by 34 is about 17. The tolerance is a residual ratio below 1e-9. With $p=1$, a starting CFL of 1, and a cap of 1e5, the ceiling hits once the residual ratio reaches 1e5, that is 1e-5. Four decades remain until 1e-9, all at CFL 1e5, already on the Newton side. Fixed CFL 3 spends the whole 588 steps without that stretch.
+
+The schedule is one line. $\mathrm{CFL}_n = \min(\mathrm{CFL}_0 (\lVert R_0\rVert/\lVert R_n\rVert)^p,\ \mathrm{CFL}_{\max})$. As the residual falls the step grows, then it stops at the cap.
+
 ## Pitfalls when you switch SER on
 
-First, always set $\mathrm{CFL}_{\max}$. Leave it at infinity and a single residual spike sends the CFL runaway, killing the solution.
+Always set $\mathrm{CFL}_{\max}$. Leave it at infinity and a single residual spike sends the CFL runaway, killing the solution.
 
-Second, when the residual wobbles non-monotonically, $R_0/R_n$ can drop below 1 and shrink the CFL. That's not a bug — it's a safety valve. If the residual gets worse again, shortening the step is the right move.
+When the residual wobbles non-monotonically, $R_0/R_n$ can drop below 1 and shrink the CFL. That's not a bug — it's a safety valve. If the residual gets worse again, shortening the step is the right move.
 
-Third, $p$ is not free acceleration. A $p>1$ grows the CFL hugely for even a small residual drop, raising the risk. A robust start is $p=1$, $\mathrm{CFL}_0 \approx 1$.
+$p$ is not free acceleration. A $p>1$ grows the CFL hugely for even a small residual drop, raising the risk. A robust start is $p=1$, $\mathrm{CFL}_0 \approx 1$.
 
-Fourth, if the Jacobian is inexact (approximate Jacobian, or matrix-free), Newton's quadratic convergence drops to first order at large CFL. Then it's better to lower $\mathrm{CFL}_{\max}$ and buy stability.
+If the Jacobian is inexact (approximate Jacobian, or matrix-free), Newton's quadratic convergence drops to first order at large CFL. Then it's better to lower $\mathrm{CFL}_{\max}$ and buy stability.
 
-## What to remember
+## An open cap kills the late Newton first
 
-- In a steady solver the CFL is a knob for **convergence speed and stability**, not accuracy. Small means turtle, large means explosion.
-- SER is $\mathrm{CFL}_n = \min(\mathrm{CFL}_0 (\lVert R_0\rVert/\lVert R_n\rVert)^p,\ \mathrm{CFL}_{\max})$, growing the step automatically as the residual drops.
-- The implicit pseudo-time iteration becomes Newton's method as $\Delta\tau\to\infty$. SER is the schedule that carries you smoothly to that limit.
+Leave $\mathrm{CFL}_{\max}$ unset and one residual spike lets the CFL chase the residual ratio without a ceiling. The implicit pseudo-time iteration becomes Newton's method as $\Delta\tau\to\infty$. That quadratic rate shows up only near the solution. Jump there early and the matrix shoves the solution the wrong way. The cap of 1e5 in the code is a door: the run may enter that region only after the residual has fallen by a hundred thousand.
+
+The same door matters when the Jacobian cannot be formed exactly every iteration. Once the large-CFL quadratic rate has already fallen to first order, the remaining choice is a lower cap. Approximating that matrix with sweeps, without assembling it, is the point of [LU-SGS after an explicit step blows up](/en/posts/2026-06-22-lu-sgs-implicit-time-integration/). The implicit step stays, and the matrix does not have to be stored.

@@ -1,17 +1,25 @@
 ---
 title: "[Paper Review] GMRES Ran 1000 Times and Still Wouldn't Stop — Physics-Based Block Preconditioning for an All-Speed Melt Pool"
 date: 2026-06-06
-description: "A velocity–pressure Schur complement preconditioner keeps the iteration count flat as the Mach number goes to zero"
+updated: 2026-10-19
+description: "At Mach 1e-3, GMRES spun 1000 times and the residual sat at 1e-2. A velocity–pressure Schur complement returns that count to two or three steps."
 tags: ["Block-Preconditioner", "Newton-Krylov", "All-Speed", "Schur-Complement", "JFNK", "Paper-Review"]
 locale: en
 slug: weston-block-preconditioner-jfnk
 draft: false
+takeaway: "Eigenvalues sit at 1 only when the Schur complement is exact. A loose AMG solve of S opens the outer iteration count again."
 ---
 
 import { AcousticConvectiveScales } from '@/components/post-viz/2026-06-06-weston-block-preconditioner-jfnk/AcousticConvectiveScales'
 import { GmresSchurConvergence } from '@/components/post-viz/2026-06-06-weston-block-preconditioner-jfnk/GmresSchurConvergence'
 
-I ran a laser melt pool simulation implicitly. On the very first time step, GMRES spun 1000 times and the residual just sat at 1e-2. Drop the Mach number to 1e-3 and it got worse — the sound speed was 1000 times the flow speed, and the Jacobian was sick. Weston, Nourgaliev, Delplanque, and Barker (2019) solved exactly this. The trick is to use the velocity–pressure Schur complement as a preconditioner. Today I reproduce its core in a 2-field toy and watch a single preconditioner bring back Mach-independent convergence.
+I ran a laser melt pool implicitly. On the first time step GMRES spun 1000 times and the residual sat at 1e-2. Drop Mach to 1e-3 and the sound speed is 1000 times the flow. The Jacobian got sick on that ratio. Weston, Nourgaliev, Delplanque, and Barker (2019) broke the stall with a velocity–pressure Schur complement as the preconditioner. These notes move that preconditioner into a 2-field toy and record where the iteration count sticks as Mach changes.
+
+Drop the Mach slider and only the acoustic wave on the top track speeds up, at $c=1/M$. The convective tracer below stays at $u=1$.
+
+<AcousticConvectiveScales />
+
+At $M=10^{-2}$ the acoustic wave laps the track 100 times while the tracer moves one notch. At $M=10^{-3}$ the ratio is 1000:1. Same gap as the night the residual stuck at 1e-2.
 
 ## Where This Paper Stands
 
@@ -20,7 +28,7 @@ I ran a laser melt pool simulation implicitly. On the very first time step, GMRE
 - **Title**: *Preconditioning a Newton-Krylov solver for all-speed melt pool flow physics*
 - **One line**: Solve all-speed compressible Navier–Stokes with phase change by fully implicit JFNK, and tame the low-Mach stiffness with a **primitive-variable block Schur complement preconditioner**.
 
-The usual preconditioners — element-block SOR, monolithic AMG, block Gauss–Seidel — all blow up in iteration count when the time step or Mach number goes to an extreme. The paper's contribution is the `vP-vT` Schur complement, a preconditioner that copies the physical coupling structure directly.
+The usual preconditioners — element-block SOR, monolithic AMG, block Gauss–Seidel — all blow up in iteration count when the time step or Mach number goes to an extreme. What the paper actually ships is the `vP-vT` Schur complement. The block shape of the physical coupling is copied into the preconditioner.
 
 ## Why the Jacobian Gets Sick as M Goes to Zero
 
@@ -28,13 +36,17 @@ The usual preconditioners — element-block SOR, monolithic AMG, block Gauss–S
 
 Go fully implicit and these two scales mix inside one Jacobian. The pressure–velocity coupling block grows like $1/M^2$ and the matrix's condition number explodes. A Krylov solver crawls on a matrix whose eigenvalues are smeared wide. That's why GMRES wouldn't stop.
 
+Stamp $M$ at the four values in the code and $\beta=1/M^2$ falls out. $M=1$ gives $\beta=1$. $M=10^{-1}$ gives $\beta=10^{2}$. $M=10^{-2}$ gives $\beta=10^{4}$. $M=10^{-3}$ gives $\beta=10^{6}$. One entry in the pressure–velocity block grows by a million. The grid is $n=64$ and the spacing is $dx=1/64$ in every case. The matrix size stays $2n=128$. Only the spectrum scaled by $\beta$ changes.
+
+An acoustic CFL crushes the step as $\Delta t \propto M\Delta x$. Drop $M$ from 1 to $10^{-3}$ and the allowed step shrinks by 1000. Fully implicit lifts that limit and hands the condition number to $\beta$. The same stiffness, amplified the other way by a preconditioner, is written up in [block preconditioning at acoustic CFL 10](/en/posts/2026-08-29-block-preconditioner-acoustic-cfl-loop-gain/).
+
 JFNK (Jacobian-Free Newton–Krylov) never forms the Jacobian explicitly; it approximates only the matrix–vector product with a Fréchet difference.
 
 $$
 J\boldsymbol{\kappa} \approx \frac{F(x + h\boldsymbol{\kappa}) - F(x)}{h}
 $$
 
-$F$ is the nonlinear residual, $\boldsymbol{\kappa}$ a Krylov vector, $h$ a small finite number. Not storing the matrix saves memory, but **without a preconditioner the convergence dies at low Mach**. Preconditioning is not optional here — it is the whole game.
+$F$ is the nonlinear residual, $\boldsymbol{\kappa}$ a Krylov vector, $h$ a small finite number. Skipping the stored matrix cuts memory. Without a preconditioner, that difference just walks the smeared eigenvalues at low Mach.
 
 ## Dropping Conservative Variables for the Primitives $(P,v,T)$
 
@@ -50,17 +62,19 @@ $$
 M = \begin{bmatrix} M_{vv} & M_{vP} & M_{vT} \\ M_{Pv} & M_{PP} & M_{PT} \\ M_{Tv} & M_{TP} & M_{TT} \end{bmatrix}
 $$
 
-Each block corresponds to one primitive field (velocity, pressure, temperature). This structure is the springboard for the next move.
+Each block corresponds to one primitive field (velocity, pressure, temperature). That ordering is the springboard for the factorization.
 
 ## Block LU and the Velocity–Pressure Schur Complement
 
-The pressure–temperature coupling ($M_{PT}, M_{TP}$) is weak. Drop both and the block LU factorization comes out clean, condensing the core into the **velocity–pressure Schur complement**.
+The pressure–temperature coupling ($M_{PT}, M_{TP}$) is weak. Drop both and the block LU factorization comes out clean. What remains is the **velocity–pressure Schur complement**.
 
 $$
 S_{vP} = M_{PP} - M_{Pv}\,M_{vv}^{-1}\,M_{vP}
 $$
 
 $S_{vP}$ is the effective equation for pressure after eliminating velocity — the same skeleton as the pressure-correction equation in the SIMPLE family. Take the preconditioner $P$ as this block-upper-triangular form and the eigenvalues of $P^{-1}A$ cluster near 1. With the exact $S$, the $U$ factor of $A=LU$ literally equals $P$, so $P^{-1}A$ is similar to a unipotent lower triangular matrix — **every eigenvalue is exactly 1**. GMRES finishes in two or three steps.
+
+The code stops at `rtol=1e-8`, with `maxiter=500` and restart `2n=128`. Eigenvalues on one point close the Krylov space in two steps. Otherwise the run hits 500 first.
 
 ## Python — Counting GMRES Iterations as Mach Drops
 
@@ -113,32 +127,30 @@ for M in [1.0, 1e-1, 1e-2, 1e-3]:
     print(f"{M:>8.0e}  {count_iters(M, False):>8d}  {count_iters(M, True):>6d}")
 ```
 
-The result is stark. Without a preconditioner the iteration count climbs into the tens and hundreds as $M$ shrinks, and at $M=10^{-3}$ it fails to converge within the cap. The Schur preconditioner finishes in two or three steps regardless of $M$. The "Mach-independent convergence" the paper reports comes from this one-line preconditioner.
+Without a preconditioner the iteration count climbs into the tens and hundreds as $M$ shrinks, and at $M=10^{-3}$ it never gets inside the cap of 500. The Schur side factors $S=I-\beta D_v G$ once by LU, and GMRES drops the residual to 1e-11 in two or three steps. Equal Schur counts at $M=1$ ($\beta=1$) and $M=10^{-3}$ ($\beta=10^{6}$) are the numerical face of eigenvalues piled at 1.
 
 ## Interactive — Acoustic and Convective, Two Speeds Pulling Apart
 
-First, see where the stiffness comes from. Drop the Mach number in the simulation below. The acoustic wave on the top track runs at $c=1/M$, the convective tracer below at $u=1$.
-
-<AcousticConvectiveScales />
-
-Lower it to $M=10^{-2}$ and the acoustic wave laps the track 100 times while the convective tracer moves a single notch. That 100:1 speed gap transfers straight into the Jacobian's condition number. Explicitly, the acoustic CFL would crush the time step down to $\Delta t \propto M\Delta x$.
+The 100:1 gap at $M=10^{-2}$ is $c/u=1/M$. The Jacobian receives the square, $\beta=10^{4}$. At $M=10^{-3}$, $\beta=10^{6}$. Explicitly, $\Delta t \propto M\Delta x$.
 
 ## Interactive — Where the Preconditioner Collapses the Residual
 
-Now watch the actual GMRES residual. Move the Mach slider below and the two curves — with and without preconditioning — redraw.
+Now the actual GMRES residual. Move the Mach slider and the two curves — with and without preconditioning — redraw.
 
 <GmresSchurConvergence />
 
-The orange curve (no preconditioner) flattens and stalls as $M$ drops. The cyan curve (Schur preconditioned) plunges to 1e-11 in two or three steps no matter where $M$ is. The gap between the two is most dramatic at $M=10^{-3}$ — that's the preconditioner, built from the physical coupling, absorbing the stiffness whole.
+The orange curve (no preconditioner) flattens and stalls as $M$ drops. The cyan curve (Schur preconditioned) plunges to 1e-11 in two or three steps no matter where $M$ is. The gap is widest at $M=10^{-3}$. The block scaled by $\beta=10^{6}$ is absorbed whole by a preconditioner copied from the physical coupling.
 
 ## Three Things I Doubted While Coding It
 
-**First, an exact $S$ is only free in a toy.** Here I solved $S=I-\beta D_v G$ exactly by LU and converged in two steps. In practice, the $M_{vv}^{-1}$ inside $S_{vP}=M_{PP}-M_{Pv}M_{vv}^{-1}M_{vP}$ is a dense inverse you cannot form. The paper solves $S$ approximately (one AMG V-cycle, say), and the quality of that approximation drives the outer iteration count. The real cost of "Mach independence" hides right here.
+**An exact $S$ is only free in a toy.** Here $S=I-\beta D_v G$ was factored by LU and the solve converged in two steps. In practice, the $M_{vv}^{-1}$ inside $S_{vP}=M_{PP}-M_{Pv}M_{vv}^{-1}M_{vP}$ is a dense inverse you cannot form. The paper solves $S$ approximately (one AMG V-cycle, say), and the quality of that approximation drives the outer iteration count. The cost of a Mach-flat iteration count hides here.
 
-**Second, how far to drop the coupling.** The paper says dropping $M_{PT}, M_{TP}$ costs no robustness. That is an assumption tuned to melt pool physics. With strong compressible thermal coupling — deflagration, combustion — the same truncation can kill convergence. Simplifying the preconditioner is physics-dependent.
+**How far to drop the coupling.** The paper says dropping $M_{PT}, M_{TP}$ costs no robustness. That assumption is tuned to melt pool physics. With strong compressible thermal coupling — deflagration, combustion — the same truncation can stall convergence. Whether the preconditioner gets simplified is a physics call.
 
-**Third, the JFNK Fréchet difference $h$.** Too small an $h$ lets round-off in, too large lets truncation error pollute the matrix–vector product. Even with a great preconditioner, a mistuned $h$ stalls Newton. It's the first trap you meet when you switch from OpenFOAM's segregated (SIMPLE) approach to a fully coupled implicit one.
+**The JFNK Fréchet difference $h$.** Too small an $h$ lets round-off in, too large lets truncation error pollute the matrix–vector product. Even with a strong preconditioner, a mistuned $h$ stalls Newton. It is the first snag when you leave OpenFOAM's segregated (SIMPLE) approach for a fully coupled implicit one.
 
 ## Closing — A Preconditioner Is Not Free
 
-The lesson of that night GMRES wouldn't stop was simple. Low-Mach stiffness is not solved by pushing the Jacobian harder. You need a preconditioner that copies the coupling structure itself. The Schur complement is the effective equation for pressure, and solving it exactly clusters the eigenvalues at 1. But the real-world $S$ is an approximation, and how cheaply and accurately you solve it is the next fight. Next time I'll add one more layer to this same toy and watch what happens to the outer iteration count when $S$ is approximated by AMG.
+The night GMRES stopped at 1000 iterations and a residual of 1e-2 did not end by pushing the Jacobian harder. The preconditioner had to copy the coupling itself. The Schur complement is the pressure equation with velocity eliminated, and an exact solve piles the eigenvalues at 1. In a real $S_{vP}$, $M_{vv}^{-1}$ is dense, so the paper approximates it with one AMG V-cycle. A rough cycle opens the outer count back up from two or three steps.
+
+Skipping the stored Jacobian and keeping only the matrix–vector product is the same fork as [operator-overloading automatic differentiation](/en/posts/2026-07-05-adoo-automatic-differentiation-jacobian/). JFNK replaces that product with the Fréchet difference $h$. A bad $h$ stops Newton even when the preconditioner is right. Next measurement on this toy: how far the outer count moves off two or three steps when $S$ is solved loosely by AMG.

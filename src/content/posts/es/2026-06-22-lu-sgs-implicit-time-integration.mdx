@@ -1,17 +1,25 @@
 ---
 title: "Cuando el método explícito revienta, resolver implícito sin invertir la matriz — LU-SGS"
 date: 2026-06-22
-description: "Estabilidad del avance temporal implícito y la factorización LU-SGS, verificadas con código"
+updated: 2026-10-19
+description: "Con CFL explícito en 0.3, Euler hacia atrás y dos barridos LU-SGS llevan un choque de Burgers a CFL 5 en 49 pasos, sin invertir la matriz completa."
 tags: ["LU-SGS", "Implicit", "Time-Integration", "Compressible", "Linear-Solver"]
 draft: false
 locale: es
 slug: 2026-06-22-lu-sgs-implicit-time-integration
+takeaway: "El semiplano izquierdo sigue estable con cualquier paso, pero un número de difusión de 40 aplana el barrido interno que cae diez órdenes cerca de d=1."
 ---
 
 import { AbsoluteStabilityRegion } from '@/components/post-viz/2026-06-22-lu-sgs-implicit-time-integration/AbsoluteStabilityRegion'
 import { LuSgsSweepConvergence } from '@/components/post-viz/2026-06-22-lu-sgs-implicit-time-integration/LuSgsSweepConvergence'
 
-La simulación divergió a las 3 de la madrugada. La última línea del registro siempre decía lo mismo: `pressure residual = NaN`. Bajé el CFL de 0.9 a 0.5, y luego a 0.3. Cada paso avanzaba tan poco tiempo que llegar al estado estacionario tomaría días. Ese muro le resulta familiar a cualquiera que haga cálculo estacionario compresible. Este artículo muestra el camino para superarlo —por qué el **avance temporal implícito** permite un paso de tiempo grande— y luego implementa **LU-SGS**, un método que resuelve ese sistema sin invertir nunca la matriz completa. Al final tendrás en la mano un solver de Burgers que sobrevive a un CFL de 5.
+La corrida divergió a las 3 de la madrugada. La última línea del registro: `pressure residual = NaN`. El CFL bajó de 0.9 a 0.5 y luego a 0.3. Cada paso era tan corto que el estado estacionario pedía días. Muro habitual del cálculo estacionario compresible. El **avance temporal implícito** rompe ese muro por el lado del paso. El cálculo que no invierte la matriz completa es **LU-SGS**. El choque de Burgers sigue ahí con CFL 5.
+
+El interruptor de esquema pasa de Euler hacia adelante a Euler hacia atrás, y $\mathrm{Re}(\lambda\Delta t)$ se arrastra hasta $-2.5$. La región estable cambia de un disco pequeño al semiplano izquierdo.
+
+<AbsoluteStabilityRegion />
+
+Con Euler hacia adelante el punto sale del disco cian y pasa a UNSTABLE. Con Euler hacia atrás todo el semiplano izquierdo queda cian, y la misma coordenada vuelve a ser estable.
 
 ## La región de estabilidad se abre al infinito
 
@@ -39,11 +47,7 @@ $$
 
 Para todo modo físico amortiguado con $\mathrm{Re}(\lambda)<0$, $|G|<1$. Permanece estable por grande que sea $\Delta t$. La restricción de estabilidad se disuelve y el paso de tiempo solo necesita ser tan pequeño como exija la **precisión**.
 
-Juega con los parámetros en la simulación de abajo.
-
-<AbsoluteStabilityRegion />
-
-Elige Euler hacia adelante y arrastra $\mathrm{Re}(\lambda\Delta t)$ hasta $-2.5$: el punto sale de la región cian y cambia a UNSTABLE. Cambia a Euler hacia atrás y todo el semiplano izquierdo se llena de cian, así que el mismo punto vuelve a ser estable.
+El disco explícito termina en 0 y en $-2$ sobre el eje real. Centro $-1$, radio 1. $\mathrm{Re}(\lambda\Delta t)=-2.5$ queda a 1.5 del centro, fuera del disco, y por eso el marcador lee UNSTABLE. Euler hacia atrás usa $G=1/(1-\lambda\Delta t)$. Si $\mathrm{Re}(\lambda)<0$, el denominador supera 1 y $|G|$ se mantiene por debajo de 1 aunque $\Delta t$ crezca. El registro de madrugada recortó el CFL por 0.9, 0.5 y 0.3 para encerrar $\lambda\Delta t$ en ese disco. En una malla viscosa $\lambda$ crece primero. El disco se rompe antes de que la precisión pida un paso más corto.
 
 ## Invertir la matriz completa es un costo impagable
 
@@ -95,7 +99,9 @@ $$
 \Delta U_i = \Delta U_i^{*} - D_i^{-1}\,U_i\,\Delta U_{i+1}
 $$
 
-La clave es con qué se llenan $D$, $L$ y $U$. Yoon y Jameson (1988) aproximaron el jacobiano no lineal del flujo con su radio espectral $\rho$. Al separar el upwind de primer orden como $A^{\pm} = \tfrac{1}{2}(a \pm |a|)$, la diagonal queda $D_i = I/\Delta t + |a_i|/\Delta x$ y las no diagonales solo cargan los jacobianos de cara separados. Nunca construyes la matriz entera: bastan unos pocos escalares (o un bloque pequeño) por celda.
+Con qué se llenan $D$, $L$ y $U$ decide la calidad de la aproximación. Yoon y Jameson (1988) aproximaron el jacobiano no lineal del flujo con su radio espectral $\rho$. Al separar el upwind de primer orden como $A^{\pm} = \tfrac{1}{2}(a \pm |a|)$, la diagonal queda $D_i = I/\Delta t + |a_i|/\Delta x$ y las no diagonales solo cargan los jacobianos de cara separados. Nunca se construye la matriz entera: bastan unos pocos escalares (o un bloque pequeño) por celda.
+
+El producto aproximado es $(D+L)\,D^{-1}\,(D+U)$. Al desarrollarlo aparece $L D^{-1} U$ junto a $A$, y ese término se descarta. Como $D_i = I/\Delta t + |a_i|/\Delta x$, un $\Delta t$ pequeño infla $I/\Delta t$ y el término descartado se encoge. Subir el CFL a 5 agranda $\Delta t$ y encoge $I/\Delta t$: crece el error de la aproximación. El avance explícito sigue dando NaN en dos o tres pasos en ese tramo. La salida implícita lo cruza en 49 pasos con $u$ cerrado en $[0.012, 0.988]$, en $n=200$ celdas hasta $t=0.22$ y $\Delta x=1/200$. A diferencia de una [comparación de convergencia Krylov](/es/posts/2026-04-22-cfd-linear-solvers-krylov/) que guarda la matriz, aquí una división diagonal y dos barridos ocupan ese lugar.
 
 ## Python — avanzar Burgers implícito con una sola factorización
 
@@ -150,26 +156,22 @@ print(f"CFL=5 -> {steps} steps,  u in [{u.min():.3f}, {u.max():.3f}]")
 # CFL=5 -> 49 steps,  u in [0.012, 0.988]
 ```
 
-Corre el mismo problema con Euler explícito hacia adelante a CFL 5 y produce NaN en dos o tres pasos. La versión implícita alcanza el choque en 49 pasos estables. Sin un solver de Riemann pesado por cara: una división diagonal y dos barridos hicieron todo el trabajo.
+El mismo problema con Euler explícito hacia adelante a CFL 5 produce NaN en dos o tres pasos. La versión implícita alcanza el choque en 49 pasos estables. Sin un solver de Riemann pesado por cara: una división diagonal y dos barridos hicieron todo el trabajo.
 
 ## Barrido tras barrido, el residuo se desploma
 
 Una sola aplicación de LU-SGS da una solución aproximada. Para resolver con más exactitud, repites el barrido sobre el mismo sistema. La velocidad de convergencia depende entonces de la dominancia diagonal de la matriz. En el caso dominado por la viscosidad —donde el jacobiano viscoso se vuelve un laplaciano 1D— la diagonal es $1+2d$ y las no diagonales son $-d$. Aquí $d=\nu\Delta t/\Delta x^2$ es el número de difusión (el paso de tiempo adimensional de la difusión viscosa).
 
-Mira abajo cómo cae el residuo barrido a barrido.
+Con $d=\nu\Delta t/\Delta x^2=1$ la diagonal vale $1+2d=3$ y cada no diagonal vale $-d=-1$. La diagonal supera la suma de los dos vecinos, y unos pocos barridos bajan el residuo diez órdenes. Con $d=40$ la diagonal es 81 y las no diagonales son $-40$ dos veces, así que la suma de la fila es $81-80=1$ y casi se cancela. Por eso la curva se acuesta. La estabilidad comprada con un $\Delta t$ grande y el número de barridos que pide la relajación interna van en el mismo libro.
+
+Al mover el control de $d$ desde cerca de 1 hasta 40, cambia la pendiente de la curva de residuo con el mismo número de barridos.
 
 <LuSgsSweepConvergence />
 
-Mantén $d$ cerca de 1 y el residuo cae diez órdenes en un puñado de barridos. Sube $d$ hasta 40 (un $\Delta t$ implícito enorme) y la misma curva se aplana. Compraste estabilidad agrandando el paso, pero la matriz se volvió más rígida, así que la relajación interna necesita más barridos. Estabilidad y convergencia interna no llegan gratis a la vez.
+Con $d$ cerca de 1 el residuo cae diez órdenes en un puñado de barridos. Al llevar $d$ hasta 40 (un $\Delta t$ implícito enorme) la misma curva se aplana. La estabilidad se compró agrandando el paso, pero la matriz se volvió más rígida, así que la relajación interna necesita más barridos. Estabilidad y convergencia interna no llegan juntas sin costo.
 
-## Trampas que evitar al escribir el código
+## Si el radio viscoso sale de la diagonal, el barrido muere
 
-Tres cosas atrapan a la gente en la práctica.
+Sin $\nu/\Delta x^2$ en la diagonal $D$, $D$ se encoge en una celda viscosa. El radio espectral queda solo en el $|a|/\Delta x$ convectivo. El barrido diverge enseguida. Si el jacobiano viscoso es un laplaciano 1D, el dominio diagonal es el balance entre $1+2d$ y $-d$, y quitar el término viscoso vacía el lado izquierdo de ese balance. Cuando la no linealidad es fuerte, no se suma todo el $\Delta U$ de una vez. Se usa $U^{n+1}=U^n+\omega\,\Delta U$ con $\omega\in[0.5,0.8]$. Las oscilaciones cerca de los choques bajan.
 
-**No olvides el radio espectral viscoso en la diagonal.** Cuando el término viscoso es grande, debes sumar una contribución $\nu/\Delta x^2$ a la diagonal $D$. Si la omites, $D$ se encoge y el barrido diverge.
-
-**Ten la subrrelajación a mano.** Cuando la no linealidad es fuerte, no sumes todo el $\Delta U$ de golpe. Usa $U^{n+1}=U^n+\omega\,\Delta U$ con $\omega\in[0.5,0.8]$. Apaga las oscilaciones cerca de los choques.
-
-**Alterna la dirección del barrido.** Repetir solo el barrido hacia adelante deja que la información fluya en un solo sentido. Alternar adelante y atrás mantiene viva la simetría y acelera la convergencia. Cruzando una frontera de partición MPI, inserta una comunicación entre barridos para que la actualización del bloque vecino se propague.
-
-Lo que quiero dejarte: el método implícito abre la región de estabilidad a todo el semiplano izquierdo y concede un $\Delta t$ grande. La matriz gigante que cuesta la aproxima LU-SGS con una separación $D\!\cdot\!L\!\cdot\!U$ y dos barridos, sin almacenamiento ni multiplicaciones. La estabilidad es casi gratis, pero la convergencia interna se paga en proporción a la rigidez de la matriz.
+La dirección también es una decisión. Repetir solo el barrido hacia adelante manda la información hacia índices crecientes. Alternar adelante y atrás deja simétricos a $L$ y $U$. En una cara de partición MPI tiene que entrar una comunicación entre los dos barridos, o el $\Delta U$ del bloque vecino no llega. Cómo se numeran las celdas cambia ese orden de barrido. El [registro en que LU-SGS se vuelve lento tras renumerar con RCM](/es/posts/2026-10-16-lu-sgs-cell-ordering-reverse-cuthill-mckee/) es el otro lado de la misma decisión.

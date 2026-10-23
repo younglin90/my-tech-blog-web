@@ -22,6 +22,7 @@ import { ReadingFocusMode } from '@/components/ReadingFocusMode'
 import { Giscus } from '@/components/Giscus'
 import { AuthorBio } from '@/components/AuthorBio'
 import { SeriesNav } from '@/components/SeriesNav'
+import { JumpToSim } from '@/components/JumpToSim'
 import { getSeriesContext } from '@/lib/series'
 import { PrintButton } from '@/components/PrintButton'
 import { BookmarkButton } from '@/components/BookmarkButton'
@@ -403,6 +404,7 @@ export default async function PostPage({ params }: PostProps) {
         )
       })()}
 
+      <JumpToSim label={t(loc, 'post.jumpToSim')} />
       <SeriesNav locale={loc} ctx={seriesCtx} />
 
       <TableOfContents />

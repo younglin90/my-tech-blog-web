@@ -1,6 +1,7 @@
 ---
 title: "At acoustic CFL 10 the preconditioner multiplied the error by 100 every sweep — the one arrow a block preconditioner throws away"
 date: 2026-08-29
+updated: 2026-10-19
 description: "Block Gauss-Seidel discards a pressure-velocity feedback whose gain is exactly the acoustic CFL squared. A 1D acoustic model measures the cost."
 tags: ["Schur-Complement", "Preconditioning", "Newton-Krylov", "Low-Mach", "Paper-Review"]
 locale: en
@@ -28,7 +29,11 @@ Only the Schur complement preconditioner and a direct LU held their iteration co
 A preconditioner is usually a constant-factor question. Here it was a threshold question.
 Where that threshold comes from, and why it lands on the acoustic CFL specifically, is what this post is about.
 The construction of the preconditioner itself is written up in [an earlier post on the same paper](/en/posts/2026-06-06-weston-block-preconditioner-jfnk/);
-here we look at **the single block that gets thrown away**.
+here the subject is **the single block that gets thrown away**. Raise `CFL_a` past 1 and the block Gauss-Seidel residual slope flips from decay to growth.
+
+<BlockCouplingLoopGainScope />
+
+The red broken arrow is the $A$ the lower triangle dropped. Cycle the three preconditioners and, on the same slider, one residual shrinks while another blows up.
 
 ## There are two arrows between pressure and velocity
 
@@ -59,15 +64,7 @@ AB \sim c^{2}\Delta t^{2}\, \partial_{xx}
 $$
 
 which is the acoustic operator. Discretize with grid spacing $\Delta x$ and its magnitude is $(c\Delta t/\Delta x)^2$ — the acoustic CFL squared.
-That single number governs everything below.
-
-Try it directly in the simulation below.
-
-<BlockCouplingLoopGainScope />
-
-Drag the `CFL_a` slider while cycling through the three preconditioners.
-The red broken arrow under block Gauss-Seidel is the subject of this post,
-and the price of breaking it shows up as the sign of the slope in the residual curve on the right.
+That single number governs everything below. The residual slope flipped above exactly at $\mathrm{CFL}_a = 1$.
 
 ## Keep only the lower triangle and the return arrow disappears
 
@@ -101,7 +98,7 @@ Element-block SOR fares somewhat better. Central differencing has a zero diagona
 and with a relaxation factor $\omega$ the gain becomes $\sqrt{(1-\omega)^2 + \omega^2\,\mathrm{CFL}_a^2}$.
 At $\omega = 0.4$ the threshold is pushed out to $\mathrm{CFL}_a = 2$.
 Because the CFL enters linearly rather than squared, it survives much longer.
-That is the source of the ordering in the paper, where SOR was more robust than Gauss-Seidel.
+That is the source of the ordering in the paper, where SOR was more robust than Gauss-Seidel. Splitting acoustics from transport so the acoustic CFL does not eat the time step is what [Peluchon's acoustic-transport IMEX](/en/posts/2026-05-30-peluchon-acoustic-transport-imex/) does.
 
 ## Measuring the gain of all three preconditioners in Python
 
@@ -223,6 +220,12 @@ Mach     CFL_a    rho(GS)    rho(SOR)   CG on S
 1e-06    5e+05    2.5e+11    2.006e+05  17
 ```
 
+Drop the `Mach` slider from $10^{-2}$ to $10^{-6}$ and the blue particle still walks 0.5 cells while the orange acoustic front laps the domain.
+
+<AcousticStrideMachTrack />
+
+The laps the orange front makes in one step are the $\mathrm{CFL}_a$ on the bars below. As Mach falls, the Gauss-Seidel bar is the first to cross the red line.
+
 The measurements match the hand-derived formulas down to the digits.
 The Gauss-Seidel gains are 0.01, 0.25, 1, 4, 100, 10,000 — exactly $\mathrm{CFL}_a^2$.
 SOR gives 0.601, 0.632, 0.721, 1.0, 4.045, 40 — exactly $\sqrt{0.36 + 0.16\,\mathrm{CFL}_a^2}$.
@@ -231,6 +234,8 @@ At acoustic CFL 10, Gauss-Seidel multiplies the error by 100 on every sweep.
 Because this is a toy model, the thresholds land cleanly on 1 and 2.
 A production code runs ten sweeps at a time and damps with $\omega = 0.4$, which pushes the failure point out toward CFL 100.
 The location moves; what moves it does not.
+
+At CFL_a of 0.1, $\mathrm{CFL}_a^2 = 0.01$, so the GS gain is 0.01 and the sweep count is 3. At 0.5 the gain is 0.25 with 10 sweeps. At 1.0 the gain is 1 and the run prints diverge. The code calls anything with r at or above 0.999 a diverge, so a gain of 1 is not a reduction. At CFL 2, GS is 4 and SOR is 1, and both diverge. At CFL 10, GS is 100 and SOR is 4.045. At CFL 100, GS is 1e+04 and SOR is 40. With $\omega = 0.4$, $(1-\omega)^2 = 0.36$ and $\omega^2 = 0.16$, so the SOR gain is $\sqrt{0.36 + 0.16\,\mathrm{CFL}_a^2}$. At CFL 0.1 the radicand is 0.36 plus 0.0016, which is 0.3616, matching the printed 0.601. At CFL 10 the radicand is 0.36 plus 16, which is 16.36, matching the printed 4.045. Holding the material CFL at 0.5 gives $\mathrm{CFL}_a = 0.5/M$. At $M = 10^{-2}$, CFL_a is 50, the GS gain is 2500, and CG takes 9 iterations. At $M = 10^{-3}$, CFL_a is 500, GS is 2.5e+05, SOR is 200.3, and CG is still 9. At $M = 10^{-4}$ CG rises to 12, then stalls at 17 for both $10^{-5}$ and $10^{-6}$. The GS gain goes to 2.5e+09 and then 2.5e+11. CG on the Schur complement moving from 4 to 9 and then 17 is the mild CPU growth the paper reported.
 
 ## Lowering the Mach number is the same as raising the time step
 
@@ -243,12 +248,7 @@ $$
 
 $M$ is the Mach number. Keep the material CFL at a modest 0.5 and at $M = 10^{-6}$ the linear solver still receives an acoustic CFL of 500,000.
 The difficulty of low-Mach analysis lives in that number, not in the physics.
-The same reason drove the development of [approaches that split acoustics from convection](/en/posts/2026-07-11-acoustic-convective-splitting-lagrange-projection/) so acoustic waves need not be resolved explicitly.
-
-<AcousticStrideMachTrack />
-
-Step the `Mach` slider down one notch at a time and count how many laps the orange acoustic front makes around the domain in a single time step.
-The blue material particle keeps walking its 0.5 cells, while the three bars below cross the red line one after another from the left.
+The same reason drove approaches that split acoustics from convection, so the waves need not be resolved explicitly. The laps the orange front made above are exactly this $\mathrm{CFL}_a = \mathrm{CFL}_u/M$.
 
 The Mach sweep in the output above reproduces the same ordering as Fig. 4 of the paper.
 Block Gauss-Seidel failed to converge below $M = 10^{-3}$, element-block SOR below $10^{-4}$.
@@ -279,16 +279,15 @@ That rise is what the paper means when it notes that "the Schur preconditioner s
 
 What matters is that the remaining problem is symmetric positive definite.
 AMG, which was helpless on the nonsymmetric coupled system, finds its home here.
-Recall [how GMRES builds up its subspace](/en/posts/2026-06-24-gmres-arnoldi-krylov-solver/):
-the structure plugs a well-matched inner solver underneath so the outer FGMRES finishes quickly.
+The structure plugs a well-matched inner solver underneath so the outer FGMRES finishes quickly. The outer iteration shortens once the inner operator is symmetric positive definite.
 
 ## What the paper actually paid — three approximation layers and a lagged Jacobian
 
 A production implementation has more layers than the derivation above.
-The paper splits preconditioning into three stages.
-First, which preconditioner rides on top of the approximate Jacobian (AMG, element-block SOR, block Gauss-Seidel, vP-vT Schur complement, LU).
-Second, how the Schur complement itself is approximated (three strategies).
-Third, which smoother solves each block (five options).
+The paper splits preconditioning into three layers.
+Which preconditioner rides on top of the approximate Jacobian (AMG, element-block SOR, block Gauss-Seidel, vP-vT Schur complement, LU).
+How the Schur complement itself is approximated.
+Which smoother solves each block (five options).
 Labels like "AMG (#1)" and "AMG-FGMRES (#3)" refer to these combinations.
 
 Assembling the Jacobian costs too. It is built by finite differences with perturbation sizes $\varepsilon_{rel} = 10^{-8}$ and $x_{min} = 10^{-7}$.
@@ -303,15 +302,8 @@ The trade works because the approximate Jacobian is only for preconditioning, wh
 One caveat comes attached. The Schur complement preconditioner works at moderate to high Mach as well,
 but the paper states plainly that it pays for itself only in the low-Mach regime.
 
-## What "the preconditioner must know the physics" actually means
+## Once the gain exceeds 1, that preconditioner is not merely slow
 
-The phrase "physics-based preconditioner" usually gets used vaguely.
-In this paper the meaning is narrow and clear.
-Know which block coupling grows with the time step or the Mach number, and refuse to approximate that one coupling.
+The phrase "physics-based preconditioner" usually gets used vaguely. In this paper the meaning is narrow. Know which block coupling grows with the time step or the Mach number, and refuse to approximate that one coupling. For acoustics the gain is $\mathrm{CFL}_a^2$. In the table that square is 100 at CFL 10, 1e+04 at CFL 100, and 2.5e+11 at $M = 10^{-6}$. Past 1, the error grows on every sweep. Adding iterations does not bring back a gain whose sign has flipped.
 
-So when an implicit solver suddenly stops converging as you raise the time step,
-there is one question to ask before touching iteration counts or tolerances.
-Which block is the preconditioner discarding right now, and what is that block's gain proportional to?
-For acoustic coupling it is $\mathrm{CFL}_a^2$;
-[for stretched boundary-layer meshes it is the aspect ratio](/en/posts/2026-07-31-linelet-preconditioner-stretched-grid/) that takes that slot.
-The moment the answer exceeds one, that preconditioner is no longer slow — it is wrong.
+CG on the Schur side stalls at 4, then 9, then 17 in the same table. That is where the outer iteration lengthens. SOR at $\omega = 0.4$ hits gain 1 at CFL 2 and 4.045 at CFL 10. Same threshold. Use that preconditioner only below it. Another route that keeps the time step alive as the sound speed grows is [the AP-IMEX scheme of Orlando and Bonaventura](/en/posts/2026-05-03-orlando-bonaventura-ap-imex-nonideal-gas/).

@@ -1,7 +1,9 @@
 ---
 title: "[CFD Q&A] Cuando el residual de presión de simpleFoam no converge"
 date: 2026-03-27
-description: "Guía para resolver la divergencia del algoritmo SIMPLE en la práctica: el factor de relajación fue la clave."
+updated: 2026-10-19
+description: "En simpleFoam el residual inicial de presión saltó de 0.412 a 0.891. Bajar la relajación de p de 0.7 a 0.3 lo dejó cerca de 1e-4 hacia la iteración 200."
+takeaway: "Subir la relajación porque el residual de velocidad se ve bien es como la corrección de presión pasó de 8 a 20 iteraciones internas."
 tags: ["CFD-Practice", "QA", "OpenFOAM", "SIMPLE", "Convergence"]
 draft: false
 noindex: true
@@ -9,16 +11,19 @@ noindex: true
 
 import { SimpleResidualHistory } from '@/components/post-viz/2026-03-27-simpleFoam-pressure-divergence/SimpleResidualHistory'
 
-La semana pasada se presentó un problema que consumió bastante tiempo. Al ejecutar simpleFoam, el residual de presión no bajaba de `1e-3` y, de hecho, comenzaba a subir. Inicialmente se pensó que podría ser un problema de malla, pero la conclusión fue que el factor de relajación era el origen del problema.
+simpleFoam se llevó media jornada la semana pasada. El residual de presión no bajaba de `1e-3`. Subía. La malla fue el primer sospechoso. El mando que importaba era el factor de relajación.
+
+Al empujar el control de αp por encima de 0.6, la curva del residual de presión se dobla otra vez hacia arriba cerca de la iteración 30.
+
+<SimpleResidualHistory />
+
+Cerca de 0.3, la misma curva sigue bajando hasta la iteración 200. Time=80 del registro de abajo, residual inicial 0.891, cae en ese mismo tramo.
 
 ## Situación del problema
 
-- **Software**: OpenFOAM v2312
-- **Geometría**: Canal rectangular 2D, condiciones de contorno inlet–outlet
-- **Modelo de turbulencia**: k-ε (estándar)
-- **Solver**: simpleFoam (estado estacionario)
+OpenFOAM v2312. Canal rectangular 2D, de inlet a outlet. Modelo de turbulencia, k-ε estándar. Solver, simpleFoam estacionario.
 
-Durante las primeras 20 a 30 iteraciones, la convergencia parecía ir bien, pero de repente el residual de presión comenzó a dispararse.
+El residual bajó durante las primeras 20 a 30 iteraciones. Después saltó solo la presión.
 
 ```text
 Time = 50
@@ -33,25 +38,25 @@ Time = 80
 GAMG:  Solving for p, Initial residual = 0.891, Final residual = 0.21, No Iterations 20
 ```
 
-Mientras que la velocidad convergía adecuadamente, la presión se mantenía inestable. Este es un patrón típico de inestabilidad en el acoplamiento presión-velocidad.
+La velocidad se asentó. La presión no. Esa es la cara de un acoplamiento presión-velocidad que se balancea.
 
 ## Proceso de análisis de causa raíz
 
 ### Paso 1: Verificación de la calidad de la malla
 
-En primer lugar, se ejecutó `checkMesh`.
+Lo primero fue `checkMesh`.
 
 ```bash
 checkMesh -case .
 ```
 
-La no-ortogonalidad máxima fue de 32 grados y la asimetría (skewness) máxima de 0.8; valores aceptables. No parecía ser un problema de malla.
+No-ortogonalidad máxima de 32 grados, skewness máxima de 0.8. Números demasiado quietos para culpar a la malla.
 
 ### Paso 2: Revisión de las condiciones de contorno
 
-Se estableció la presión en la entrada (inlet) como `zeroGradient` y en la salida (outlet) como `fixedValue 0`. Estas son configuraciones estándar, por lo que no presentaban inconvenientes.
+La presión en inlet quedó en `zeroGradient` y la de outlet en `fixedValue 0`. Pareja habitual en un canal. Hasta ahí no había fallo.
 
-Sin embargo, al revisar el campo inicial de p, se detectaron valores inusualmente altos cerca de la entrada. Eran restos de un experimento previo realizado con `funkySetFields`.
+El campo inicial de p todavía guardaba un valor grande cerca de la entrada. Restos de una prueba con `funkySetFields` que se daba por borrada.
 
 ### Paso 3: Verificación de fvSolution
 
@@ -72,11 +77,9 @@ relaxationFactors
 }
 ```
 
-U=0.9 es un valor bastante agresivo. En el algoritmo SIMPLE, aumentar la relajación de la velocidad acelera la convergencia, pero si las actualizaciones de presión no pueden seguir el ritmo, la solución diverge.
+U=0.9 es un ajuste rápido. Sube la relajación de la velocidad y el residual parece más ágil. Si la actualización de presión no sigue, el bucle se balancea.
 
-Se solaparon dos causas:
-1. Factores de relajación excesivamente altos.
-2. Valores incorrectos remanentes en el campo inicial de p.
+Se apilaron dos causas. La relajación estaba alta. Quedaba basura en el p inicial. Cómo la corrección de presión queda atada al campo de velocidad está escrito en [SIMPLE cuando la presión se pone a cuadros](/es/posts/2026-07-22-simple-pressure-velocity-coupling-rhie-chow/).
 
 ## Solución
 
@@ -99,7 +102,7 @@ relaxationFactors
 }
 ```
 
-Se recomienda comenzar de forma conservadora al ejecutar un caso por primera vez. Una vez confirmada la convergencia, los valores se pueden aumentar gradualmente.
+La primera corrida arranca baja. Los factores suben solo después de que el residual se haya sentado.
 
 ### Inicialización del campo p
 
@@ -108,7 +111,7 @@ Se recomienda comenzar de forma conservadora al ejecutar un caso por primera vez
 cp 0.orig/p 0/p
 ```
 
-Alternativamente, se puede abrir el archivo `0/p` directamente y establecer `internalField uniform 0;`.
+Abrir `0/p` y dejar `internalField uniform 0;` hace el mismo trabajo.
 
 ```cpp
 // 0/p
@@ -135,7 +138,7 @@ boundaryField
 
 ## Verificación
 
-Tras las modificaciones, al volver a ejecutar la simulación se obtuvieron los siguientes resultados:
+El mismo caso, corrido de nuevo, cambia el registro a esto.
 
 ```text
 Time = 50
@@ -149,27 +152,20 @@ Time = 200
 GAMG:  Solving for p, Initial residual = 3.2e-4, Final residual = 1.1e-5, No Iterations 3
 ```
 
-Alrededor de la iteración 200, el residual de presión se estabilizó y descendió al nivel de `1e-4`.
+Cerca de la iteración 200 el residual de presión había bajado a un nivel de `1e-4`. Las iteraciones internas volvieron a un dígito.
 
-## Lecciones aprendidas
+## Las razones que deja el registro
 
-**Lista de verificación para la convergencia en simpleFoam**: se sugiere este orden para detectar la mayoría de los problemas:
+Antes del arreglo, en Time=50, Ux bajó de 0.0023 a 1.2e-5 en tres iteraciones internas, unas 192 veces. Uy pasó de 0.0019 a 9.8e-6, unas 194 veces. La presión solo fue de 0.412 a 0.038, unas 11 veces en ocho iteraciones. La velocidad cayó cerca de 200 veces. La presión alcanzó unas 11.
 
-1. **Condiciones iniciales primero**: Verificar que los campos p y U en el directorio `0/` tengan los valores previstos. Si existen residuos de experimentos anteriores, es imperativo inicializarlos.
+Time=80 queda treinta pasos después. El residual inicial de presión subió de 0.412 a 0.891, unas 2.2 veces. Las iteraciones internas crecieron de 8 a 20, un factor de 2.5. El corte, 0.891 dividido entre 0.21, se encogió a unas 4.2. Más iteraciones, menos descenso.
 
-2. **Factores de relajación conservadores**: Iniciar con valores por defecto como `U=0.7, p=0.3`. Es más seguro confirmar la convergencia antes de incrementarlos. La relajación de `p` debe mantenerse baja para estabilizar el bucle SIMPLE.
+Después del arreglo, en Time=50 la presión baja de 0.089 a 0.0041, unas 22 veces en cinco iteraciones. Time=200 va de 3.2e-4 a 1.1e-5, unas 29 veces en tres. La continuity acumulada pasó de 3.4e-4 a 8.9e-6, unas 38 veces más chica. p en 0.3 es cerca del 43% del antiguo 0.7. U pasó de 0.9 a 0.7, y k y epsilon de 0.7 a 0.5. Recortar la corrección de presión por debajo de la mitad bajó el conteo interno de 20 a un dígito.
 
-3. **Diferenciar convergencia de velocidad vs. presión**: Si los residuales de U son bajos pero p diverge, es probable que sea un problema de relajación. Si ambos divergen, se debe revisar la malla o las condiciones de contorno primero.
+El residual final de Time=200, 1.1e-5, se pone al lado del final viejo de Time=80, 0.21. Dividir 0.21 entre 1.1e-5 da cerca de 19100. Mismo canal, misma malla. Solo cambiaron la relajación de presión y el campo inicial. Esa razón es el número que conviene leer antes de regenerar una malla.
 
-4. **Monitorear iteraciones de GAMG**: Si el número de iteraciones internas necesarias para resolver p aumenta repentinamente dentro de la misma iteración externa, es probable que la dirección de convergencia sea incorrecta.
+## El valor que se baja antes de abrir la malla
 
-Dada la naturaleza del bucle de corrección de presión, el algoritmo SIMPLE es altamente sensible a la relajación. Siempre se debe comenzar de forma conservadora; aunque parezca más lento, asegurar una convergencia estable antes de acelerar es, en última instancia, el camino más rápido.
+Una no-ortogonalidad de 32 grados y una skewness de 0.8 no son motivo para reconstruir la malla primero. El valor que se baja es la relajación de p. En 0.7 la corrección de presión no seguía a la velocidad en 0.9. La primera corrida usa p 0.3 y U 0.7. Los factores suben solo después de que el residual de Time=200 se siente cerca de `1e-4`.
 
----
-
-*Si presenta problemas similares, por favor comparta su entorno (versión, geometría, modelo de turbulencia) en los comentarios. Las soluciones pueden variar según el caso.*
-
-
-Sube αp por encima de 0.6 y observa cómo el residuo rebota hacia la iteración 30.
-
-<SimpleResidualHistory />
+El resto de funkySetFields en el p inicial arruinó la misma corrida. Si no se vacía con `internalField uniform 0`, una relajación más baja sigue arrastrando un gradiente basura desde la entrada. Bajar la relajación no garantiza la misma física. [El caso Rhie–Chow en el que un solo cambio de relajación movió la solución convergida](/es/posts/2026-10-14-rhie-chow-under-relaxation-memory/) sirve para ver si el paso de 0.7 a 0.3 se queda en la curva del residual o se cuela en el campo final.

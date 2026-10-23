@@ -1,7 +1,9 @@
 ---
 title: "Comparación de técnicas de captura de interfaz: VOF vs Level Set vs Diffuse Interface"
 date: 2026-03-06
-description: "Comparación de los principios, ventajas/desventajas y casos de aplicación de las tres técnicas principales para el seguimiento de interfaces en flujos multifásicos compresibles."
+updated: 2026-10-19
+description: "Una actualización conservativa de alfa hace oscilar la presión en un contacto. El modelo de cinco ecuaciones deja esa advección en forma no conservativa."
+takeaway: "PLIC encierra la masa y deja una curvatura áspera. Level set deja la curvatura limpia y pierde masa. Un choque sobre un contacto pide la advección no conservativa de alfa."
 tags: ["Multiphase", "VOF", "Level-Set", "Diffuse-Interface"]
 series: "compressible-multiphase"
 seriesOrder: 2
@@ -12,14 +14,19 @@ import { VOFvsLevelSet } from '@/components/post-viz/interface-capturing/VOFvsLe
 
 # ¿Cómo manejar la interfaz?
 
-Una de las preguntas más fundamentales en la simulación de flujos multifásicos compresibles es
-"¿cómo representar numéricamente la **interfaz** entre dos fluidos?".
+En un cálculo compresible de dos fluidos, lo que suele atascar no es el flujo numérico. Es cómo una celda anota la superficie donde los dos fluidos se tocan.
 
-Existen principalmente tres tipos de métodos:
+Hay tres ramas.
 
 1. **Volume of Fluid (VOF)**
 2. **Level Set**
 3. **Diffuse Interface (Interfaz difusa)**
+
+Al cambiar el modo entre VOF, Level Set y Diffuse, el mismo círculo cambia de espesor y de signo.
+
+<VOFvsLevelSet />
+
+VOF encierra el color en un corte recto de la celda. Level set dibuja un contorno cero liso. Diffuse abre una banda de unas pocas celdas.
 
 ## 1. Volume of Fluid (VOF)
 
@@ -131,7 +138,7 @@ $$
 \frac{\partial \alpha_1}{\partial t} + \mathbf{u} \cdot \nabla \alpha_1 = 0
 $$
 
-La última ecuación es clave. El hecho de que la ecuación de advección de $\alpha_1$ sea **no conservativa** es el secreto para **evitar oscilaciones de presión** en la interfaz.
+La última línea es la que separa. La advección de $\alpha_1$ es **no conservativa**. Ahí es donde la presión de la interfaz deja de oscilar.
 
 ### ¿Por qué es necesaria la forma no conservativa?
 
@@ -141,13 +148,17 @@ $$
 \frac{\partial \alpha_1}{\partial t} + \nabla \cdot (\alpha_1 \mathbf{u}) = \alpha_1 \nabla \cdot \mathbf{u}
 $$
 
-Si el término $\alpha_1 \nabla \cdot \mathbf{u}$ de la derecha no se trata adecuadamente durante la discretización, se producen oscilaciones de presión no físicas debido a la mezcla de la EOS.
+Si $\alpha_1 \nabla \cdot \mathbf{u}$ a la derecha no es cero en la divergencia discreta, la presión oscila.
 
-La advección no conservativa mantiene $\alpha_1$ afilado en la interfaz mientras satisface el equilibrio de presión/velocidad.
+Al desarrollar la advección no conservativa $\partial\alpha/\partial t + \mathbf{u}\cdot\nabla\alpha = 0$ queda $\partial\alpha/\partial t + \nabla\cdot(\alpha\mathbf{u}) - \alpha\nabla\cdot\mathbf{u} = 0$. Pasar el último término al otro lado da la ecuación de arriba. En un contacto, presión y velocidad son uniformes, así que $\nabla\cdot\mathbf{u}$ debería ser cero. Si la divergencia discreta no entrega ese cero, el lado derecho sobrevive. En una celda de interfaz con $\alpha=0.5$, si la divergencia residual es $\delta$, la fuente es $0.5\delta$. Alfa se mueve en esa cantidad, la densidad de mezcla cambia y la ecuación de estado no regresa a la misma presión. La semilla de la oscilación es ese término.
+
+La forma no conservativa no construye ese lado derecho. Alfa sigue a $\mathbf{u}$, y la diferencia de flujos en las caras no incrementa alfa por sí sola. Por eso la última línea del modelo de cinco ecuaciones es no conservativa. La masa la guardan las dos líneas de arriba, $\partial(\alpha_k\rho_k)/\partial t + \nabla\cdot(\alpha_k\rho_k\mathbf{u})=0$. No hace falta escribir alfa en forma conservativa para que la masa de cada fase siga en su sitio.
+
+La reinicialización ya trae su número en la fórmula. Cuando $|\nabla\phi|=1$ se rompe, $\mathrm{sign}(\phi_0)(|\nabla\phi|-1)$ empuja $\phi$ en el tiempo ficticio $\tau$. Si $|\nabla\phi|$ supera 1, el término recorta $\phi$. Si queda por debajo de 1, empuja al revés. El único alto es $|\nabla\phi|=1$. Si el cero $\phi=0$ resbala aunque sea una celda, la masa se escapa. La integral de alfa en VOF no tiene ese resbalón. A cambio, la normal $\mathbf{n}=\nabla\alpha/|\nabla\alpha|$ solo tiene pendiente en las celdas donde alfa está entre 0 y 1, así que la curvatura monta el ruido de esas celdas. $\kappa=-\nabla\cdot(\nabla\phi/|\nabla\phi|)$ devuelve la misma normal de forma lisa cuando $\phi$ es una distancia. CLSVOF pega las dos. Masa desde $\alpha$, curvatura desde $\phi$.
 
 ### 7-equation Model (tipo Baer-Nunziato)
 
-Es un modelo de no equilibrio completo donde cada fase puede tener **presión y velocidad independientes**:
+Cada fase puede llevar su propia presión y su propia velocidad. Ese camino ya está abierto en el [modelo de siete ecuaciones de Baer–Nunziato](/es/posts/2026-06-27-baer-nunziato-seven-equation-two-phase/).
 
 $$
 \frac{\partial \alpha_k \rho_k}{\partial t} + \nabla \cdot (\alpha_k \rho_k \mathbf{u}_k) = 0, \quad k = 1, 2
@@ -166,12 +177,8 @@ Matemáticamente es el más completo, pero el coste computacional es elevado.
 | 5-eq Diffuse | O | Media | Natural | Baja | **Muy buena** |
 | 7-eq Diffuse | O | Media | Natural | Alta | **Muy buena** |
 
-## Conclusión
+## Una alfa conservativa hace oscilar la presión en el contacto
 
-En flujos multifásicos compresibles, la **interfaz difusa (especialmente el modelo de 5 ecuaciones)** es la opción más natural y robusta. Muestra un rendimiento excelente en problemas de interacción choque-interfaz, cavitación y explosiones submarinas.
+En compresible, las filas que se quedan son las dos de abajo. El modelo de cinco ecuaciones guarda la masa en $\partial(\alpha_k \rho_k)/\partial t + \nabla\cdot(\alpha_k \rho_k \mathbf{u})=0$ y deja solo la advección de alfa en forma no conservativa. Si la divergencia discreta no anula $\alpha\nabla\cdot\mathbf{u}$, una celda de interfaz con $\alpha=0.5$ empuja la densidad de mezcla y la presión se mueve.
 
-En el próximo artículo, trataremos cómo implementar estas técnicas realmente en código.
-
-Alterna VOF / Level Set / Diffuse para comparar cómo cada uno representa el mismo círculo.
-
-<VOFvsLevelSet />
+Volver a afilar la banda en cada paso es otra decisión. Esa operación sigue en [el afilado de interfaz por antidifusión](/es/posts/2026-07-25-interface-sharpening-anti-diffusion/).

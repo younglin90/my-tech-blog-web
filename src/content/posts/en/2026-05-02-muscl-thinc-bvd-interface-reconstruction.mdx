@@ -1,7 +1,9 @@
 ---
 title: "[Paper Review] Pick the Reconstruction with Smaller Jumps — Deng (2018) MUSCL-THINC-BVD"
 date: 2026-05-02
-description: "Choosing between two candidate reconstructions by minimizing total boundary variation"
+updated: 2026-10-19
+description: "Deng (2018) builds MUSCL and THINC in every cell, then keeps the one with the smaller jump on the two faces. The rule is called BVD."
+takeaway: "A pure one-cell step zeros one difference, so THINC drops out before any boundary-variation test."
 tags: ["Paper-Review", "Compressible-Multiphase", "MUSCL", "THINC", "BVD", "Interface-Capturing"]
 draft: false
 series: "numerical-methods"
@@ -9,64 +11,74 @@ series: "numerical-methods"
 
 import { MUSCLTHINCBVDPicker } from '@/components/post-viz/2026-05-02-muscl-thinc-bvd-interface-reconstruction/MUSCLTHINCBVDPicker'
 
-In 2018 the Xiao group at Tokyo Tech ran a measurement nobody likes to publish. They simulated a compressible two-phase flow for 1000 steps and measured the interface thickness afterward. The jump that started one cell wide had spread across eight cells. WENO did not help much either. Even schemes whose dissipation looks small per step accumulate into a smeared interface over long simulations. This post unpacks their answer to that problem — the **MUSCL-THINC-BVD** reconstruction. The idea is simple. For every cell, build **two candidate reconstructions** at once, then keep the one whose **jumps at cell boundaries are smaller**.
+In 2018 the Xiao group at Tokyo Tech measured a thickness nobody likes to publish. Compressible two-phase flow, 1000 steps. A jump that started one cell wide had spread across eight. WENO did not stop it. Dissipation can look small on a single step. Time still ruins the interface.
+
+Their reconstruction is MUSCL-THINC-BVD. Every cell carries two candidates. The one with the smaller face jump stays.
+
+Moving the β slider from 1.4 to 2.2 tightens the tanh inside a jump cell, and the Gaussian shoulders answer with teeth.
+
+<MUSCLTHINCBVDPicker />
+
+Watch whether cyan bars light only at the edges of the square wave. Also watch whether those bars stop multiplying near 1.6.
 
 ## One-Page Summary
 
-- **Authors / Journal**: Deng, Inaba, Xie, Shyue, Xiao. *Journal of Computational Physics* 371 (2018) 945–966.
-- **Target problem**: Material interfaces in the five-equation model for compressible two-phase flow get progressively smeared over time.
-- **Proposal**: At every cell, build a MUSCL reconstruction (for smooth regions) and a THINC reconstruction (for jumps). Compare the jump of each candidate at the cell boundaries and keep the smaller one. This is the **BVD (Boundary Variation Diminishing)** rule.
-- **What's different**: No post-processing anti-diffusion or artificial compression. The same BVD rule is applied to volume fraction and to every other conservative variable, so consistency between variables is automatic.
+- **Authors / journal**: Deng, Inaba, Xie, Shyue, Xiao. *Journal of Computational Physics* 371 (2018) 945–966.
+- **Problem**: In the five-equation model for compressible two-phase flow, material interfaces smear as time runs.
+- **Proposal**: Build MUSCL (smooth stretches) and THINC (jumps) in every cell, then keep the smaller face jump. That rule is BVD, boundary variation diminishing.
+- **What changes**: No post-processed anti-diffusion and no artificial compression. The same rule hits volume fraction and the other conserved variables, so they stay consistent with each other.
 
 ## Two Demands That Conflict
 
-Compressible two-phase numerics asks for two things at once. Smooth regions need accuracy and low dissipation. Jumps (interfaces, shocks) need monotonicity and a thin profile. One function rarely does both jobs well.
+Compressible two-phase numerics wants two things at once. Smooth regions need accuracy and little dissipation. Jumps, meaning interfaces and shocks, need monotonicity and a thin profile. One function rarely does both.
 
-MUSCL is a piecewise-linear reconstruction. It guarantees monotonicity but is only first-order accurate in derivative. Every time it crosses an interface it shaves a little off, and over many steps that erodes the jump. THINC fits a tanh inside each cell and keeps a step within one or two cells, but applied to a smooth region it manufactures fake staircases.
+MUSCL is a straight line inside each cell. Monotonicity holds. The slope is only first-order. Each crossing of an interface shaves a little off. Over 1000 steps, one cell becomes eight. THINC fits a tanh inside the cell and holds a step in one or two cells. Drop that fit on a smooth region and fake stairs appear.
 
-The paper's starting point is a decision: do not blend the two into a single function. For each cell, just choose one.
+The paper starts with a decision. Do not blend the two into one function. Pick one per cell.
 
 ## MUSCL — The Reliable Diffuser
 
-The baseline candidate is MUSCL with the minmod slope limiter.
+The baseline candidate is MUSCL with a minmod slope limiter.
 
 $$
 \tilde{q}_i^{\,\text{MUSCL}}(x) = \bar{q}_i + \sigma_i (x - x_i), \quad
 \sigma_i = \text{minmod}(\bar{q}_i - \bar{q}_{i-1},\; \bar{q}_{i+1} - \bar{q}_i)
 $$
 
-Here $\bar{q}_i$ is the cell average, $\sigma_i$ is the slope at the cell center, and minmod returns the smaller magnitude when the two differences have the same sign and zero otherwise.
+$\bar q_i$ is the cell average. $\sigma_i$ is the slope at the center. minmod returns the smaller magnitude when the two differences share a sign, and zero when they do not.
 
-The boundary values produced by this candidate:
+Face values read like this.
 
 $$
 q^{L,\text{MUSCL}}_{i+1/2} = \bar{q}_i + \tfrac{1}{2}\sigma_i, \quad
 q^{R,\text{MUSCL}}_{i-1/2} = \bar{q}_i - \tfrac{1}{2}\sigma_i
 $$
 
-Safe everywhere. No oscillations, but the jump thickness slowly grows.
+No oscillations. In a jump, only the thickness grows, and it grows slowly.
 
 ## THINC — A Monotone Function That Mimics Jumps
 
-THINC (Tangent of Hyperbola for INterface Capturing) fits a hyperbolic tangent jump inside the cell.
+THINC, tangent of hyperbola for interface capturing, fits a hyperbolic tangent inside the cell.
 
 $$
 \tilde{q}_i^{\,\text{THINC}}(x) = \bar{q}_{\min} + \tfrac{\bar{q}_{\max}}{2}\left[1 + \theta \tanh\!\left(\beta\!\left(\tfrac{x - x_{i-1/2}}{\Delta x} - \tilde{x}_i\right)\right)\right]
 $$
 
-$\bar{q}_{\min}, \bar{q}_{\max}$ are the local min and amplitude taken from the neighbor cells, $\theta = \mathrm{sgn}(\bar{q}_{i+1}-\bar{q}_{i-1})$ encodes the jump direction, $\beta$ controls the jump thickness, and $\tilde{x}_i$ is the jump center solved so that the cell average is preserved.
+$\bar q_{\min}$ and $\bar q_{\max}$ are the minimum and the amplitude taken from the neighbors. $\theta$ is the jump direction. $\beta$ is the thickness. $\tilde x_i$ is the jump center, solved so the cell average stays put.
 
-A $\beta$ between 1.4 and 2.0 is stable; 1.6 is the standard value. Larger $\beta$ confines the jump to a single cell — great where there is one, awful where there is not.
+$\beta$ from 1.4 to 2.0 is the stable band. 1.6 is the usual pick. Larger values trap the jump in one cell, which looks clean, and they cut teeth into smooth regions. A record that bolts tanh onto a shock stencil, instead of picking a candidate, sits in [the reconstruction that stacks TENO on THINC](/en/posts/2026-06-13-teno-thinc-shock-resolving-reconstruction/). There the two are blended by weights.
 
 ## BVD — Measuring the Variation Between Two Candidates
 
-Now the core idea. With two candidates available, ask which one produces smaller jumps when it meets the neighbor reconstructions at the cell boundaries. The **Total Boundary Variation (TBV)** for cell $i$ is defined as
+With two candidates, measure which face jump is smaller when they meet the neighbor reconstructions. Total boundary variation of cell $i$ is defined as follows.
 
 $$
 \text{TBV}_i^{P} = |q^{L,\text{MUSCL}}_{i-1/2} - q^{R,P}_{i-1/2}| + |q^{L,P}_{i+1/2} - q^{R,\text{MUSCL}}_{i+1/2}|
 $$
 
-where $P$ is the candidate (MUSCL or THINC). Both neighbors are held fixed at MUSCL, and only the middle cell switches. The selection rule:
+$P$ is either MUSCL or THINC. Both neighbors stay on MUSCL. Only the middle cell switches.
+
+The selection rule is this.
 
 $$
 \tilde{q}_i^{\,\text{BVD}}(x) =
@@ -76,13 +88,19 @@ $$
 \end{cases}
 $$
 
-$C_i = (\bar{q}_i - \bar{q}_{\min})/\bar{q}_{\max}$ measures where the jump sits, $\delta \approx 10^{-4}$. The first two conditions check whether a jump is plausible at all; the third is the actual decision.
+$C_i$ says where the jump sits inside the cell. $\delta$ is about $10^{-4}$.
+
+
+The first gate multiplies the two one-sided differences and demands a strictly positive product. A zero factor fails it. A pure 0-to-1 step, one cell wide, is that shape: the cell before the jump has a right-hand difference and no left-hand one. MUSCL is returned before any boundary variation is built.
+
+The second gate is location. $\delta$ sits near $10^{-4}$. A cell average inside that fraction of the neighbor amplitude is not eligible for THINC. Flat crests drop out.
+
 
 ## Consistency on the Five-Equation Model
 
-This is where the paper goes beyond a reconstruction comparison. The five-equation model carries the volume fraction $\alpha_1$, phasic densities $\alpha_1\rho_1, \alpha_2\rho_2$, momentum $\rho u$, and total energy $E$. The same BVD rule is applied to every one of those variables.
+The paper does not stop at a reconstruction contest. The five-equation model carries volume fraction $\alpha_1$, phasic densities $\alpha_1\rho_1$ and $\alpha_2\rho_2$, momentum $\rho u$, and total energy $E$. The same BVD rule is applied to all five.
 
-Earlier methods sharpened the volume fraction and then patched the other variables to suppress pressure oscillations at the interface. BVD instead forces all five variables to share the same decision per cell. If a cell is judged "interface", every variable uses THINC there; if "smooth", every variable uses MUSCL. Consistency between variables falls out automatically and no separate anti-diffusion step is needed.
+Earlier methods sharpened only the volume fraction, then patched the rest so pressure would not ring at the interface. BVD forces the five variables to share one decision in each cell. A jump cell uses THINC for all five. A smooth cell uses MUSCL for all five. Consistency comes along. A separate anti-diffusion stage is not required.
 
 ## The BVD Decision Tree in NumPy
 
@@ -158,25 +176,30 @@ print(f"THINC pick rate: {picks}/{N-4}")
 # Expected: a few cells around the jump only
 ```
 
-In the smooth Gaussian region, minmod captures the curvature and BVD prefers MUSCL. Only two or three cells on each side of the square jump pick THINC. More than 95% of cells stick with MUSCL — BVD does not deform the underlying profile.
+
+The snippet comment says 4 of 76 cells adopt THINC. The gate above it does not describe that profile. The coded square wave is 0 or 1, so one difference is zero and the product test fails. Those four cells need a same-sign ramp across two or three cells. The eight-cell smear after 1000 steps is already such a ramp. At one-cell thickness this branch never calls THINC.
+
+On a straight line the neighbor differences match, so the minmod slope equals them and MUSCL boundary variation is zero. THINC's tanh opens a face gap, and the inequality keeps MUSCL. A Gaussian wider than a cell is locally that line, which is why smooth stretches refuse the swap.
+
+
+A smooth Gaussian is locally close to a line, so the swap is refused. A square wave that is still one cell thick never opens the gate either.
 
 ## Who Wins Each Cell — See It Directly
 
-The simulation below lets you run a 1D scalar advection with three reconstructions in parallel. Each step, the strip below the canvas highlights the cells in which BVD picked THINC.
-
-<MUSCLTHINCBVDPicker />
-
-Sweeping $\beta$ from 1.4 to 2.2 shows the THINC cells get sharper at the cost of saw-tooth artifacts on the smooth Gaussian. Somewhere around 1.6 sits the sweet spot — that is why the paper chose it. Watch the strip too: only a few cells around the square jump light up cyan, while the smooth bump never triggers THINC. That is BVD's self-localization in action.
+The advection above pushes three reconstructions together and paints a bar on every cell where BVD picks THINC. Raising $\beta$ from 1.4 to 2.2 narrows only those cells. Too large, and teeth show up on the Gaussian shoulders. The bar count stops growing near 1.6, which is why that value stuck. Cyan appears at the edges only after the square wave has smeared a little. While the thickness is one cell, the bars stay empty.
 
 ## How Far You Can Trust It
 
-- **Convergence rate is below second order**. MUSCL caps the smooth-region accuracy. Swapping the candidate for WENO recovers fifth-order, but this paper sells **simplicity**.
-- **The TBV definition assumes the neighbors are MUSCL**. The case where two adjacent cells both want THINC is folded away. Single-sweep decision works well in the paper's tests but later work generalizes it.
-- **In multi-D, $\beta$ depends on the face-normal direction**. The interface normal is estimated by a Young's algorithm. At kinks and corners the normal estimate degrades, so the jump can lean.
-- **Interaction with high-order time integration**. The paper uses SSPRK3 and re-evaluates the BVD decision at every RK stage. If the decision flickers between stages, the interface can wobble — a known follow-up topic.
+The observed order stays below two. One candidate is MUSCL, so smooth accuracy stops where MUSCL stops. Swapping in a high-order candidate such as WENO can reach fifth order. This paper chose the plain version.
 
-## Three-Line Takeaway
+TBV assumes the neighbors are MUSCL. A case where both sides want THINC together is ignored inside one sweep. Section 4 of the paper still looks acceptable under that shortcut. A more general form was left for later work.
 
-- For every cell, build two candidates — MUSCL for smooth, THINC for jumps — and keep the one whose total boundary jump is smaller.
-- Apply the same BVD rule to every conservative variable. Variable consistency (no spurious pressure oscillations) follows automatically.
-- No anti-diffusion or artificial compression is needed, yet interfaces stay one cell thin. Simplicity is the strength.
+In multiple dimensions, $\beta$ splits by face normal. The interface normal is estimated with Young's algorithm. At corners and kinks the normal is wrong, and the jump leans to one side.
+
+Time integration is separate. The paper uses SSPRK3. The BVD decision has to be rebuilt at every Runge–Kutta stage. If the decision flickers between stages, the interface jitters. Later work went back to that jitter.
+
+## Where the picker refuses a one-cell jump
+
+While the interface is still one cell thick, this branch never calls THINC. The product of differences turns positive only after the thickness has spread over two or three cells. Keeping a one-cell interface and being allowed to choose only after it has already spread are two jobs that miss each other.
+
+Whether that miss leaks into the time-step limit is the next question. A thin interface still has an advection ceiling. [The interface advection that stayed at CFL 0.05 after the capillary term was removed](/en/posts/2026-08-16-vof-interface-advection-cfl-limit/) asks where that ceiling sits. If BVD really holds the jump in one cell, how large a step can move that cell?

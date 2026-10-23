@@ -1,48 +1,59 @@
 ---
 title: "5-Equation Model 実装ガイド：Python で作る多相流ソルバー"
 date: 2026-03-07
-description: "5-equation diffuse interface model を Python で直接実装し、1D 衝撃波と気泡の相互作用問題をシミュレーションします。"
+updated: 2026-10-19
+description: "体積分率0.5の混合音速は約24 m/sまで落ちます。同じ初期状態なら空気は約374 m/s、水は約1625 m/sです。"
 tags: ["Multiphase", "Diffuse-Interface", "Python", "Implementation"]
 series: "compressible-multiphase"
 seriesOrder: 4
 noindex: true
+takeaway: "時間刻みを決めるのはその24 m/sではなく、衝撃波背後の水の約2530 m/sです。"
 ---
 
 import { VolumeFractionAdvect } from '@/components/post-viz/five-equation-model/VolumeFractionAdvect'
 
 # 5-Equation Model を直接実装する
 
-理論だけではなかなか実感が湧かないものです。
-この記事では、1D **5-equation diffuse interface model** を Python で直接実装し、衝撃波が気体（ガス）の気泡を貫通する問題をシミュレーションします。
+衝撃波の背後の水は圧力 $10^{9}$、その手前の水は $10^{5}$ です。あいだに空気の気泡があり、体積分率 $\alpha_1$ はほぼ 0 とほぼ 1 を行き来します。1D の **5-equation diffuse interface model** は、この跳びを式五つで運びます。二つの流体は速度を一つ、圧力を一つ分け合い、体積分率だけが別に流れます。
+
+人工拡散のスライダーを 0 まで下げると、体積分率の界面は一セルで切れます。
+
+<VolumeFractionAdvect />
+
+スライダーを上げると界面は数セルに広がります。そのセルの $\alpha$ が、混合圧力の分母にそのまま入ります。
 
 ## 支配方程式の整理
 
-1D 5-equation model の保存変数とフラックスは以下の通りです。
+1D の保存変数とフラックスは次のとおりです。
 
 $$
 \mathbf{U} = \begin{bmatrix} \alpha_1 \rho_1 \\ \alpha_2 \rho_2 \\ \rho u \\ E \\ \alpha_1 \end{bmatrix}, \quad
 \mathbf{F} = \begin{bmatrix} \alpha_1 \rho_1 u \\ \alpha_2 \rho_2 u \\ \rho u^2 + p \\ (E+p)u \\ 0 \end{bmatrix}
 $$
 
-5番目の方程式（$\alpha_1$）は非保存型であるため、別に処理します。
+五行目のフラックスは 0 です。$\alpha_1$ は非保存型なので、別に進めます。
 
 $$
 \frac{\partial \alpha_1}{\partial t} + u \frac{\partial \alpha_1}{\partial x} = 0
 $$
 
+速度一つ、圧力一つへ縮めたのがこの五つの式です。各相に方程式を戻す側は [Baer–Nunziato の 7 方程式](/ja/posts/2026-06-27-baer-nunziato-seven-equation-two-phase/)です。
+
 ## 状態方程式：Stiffened Gas EOS
 
-両方の流体で stiffened gas EOS を使用します。
+両方の流体が stiffened gas です。
 
 $$
 p_k = (\gamma_k - 1)\rho_k e_k - \gamma_k p_{\infty,k}
 $$
 
-混合則（mixture rule）を用いて全体の圧力を求めます。
+混合圧力はこの規則で求めます。
 
 $$
 p = \frac{\rho e - \sum_k \alpha_k \frac{\gamma_k p_{\infty,k}}{\gamma_k - 1}}{\sum_k \frac{\alpha_k}{\gamma_k - 1}}
 $$
+
+$p_k$ は流体 $k$ の圧力、$e_k$ はその内部エネルギー、$\gamma_k$ と $p_{\infty,k}$ は EOS の定数です。分母は $\sum \alpha_k/(\gamma_k-1)$ です。
 
 ## Python による実装
 
@@ -89,7 +100,11 @@ def sound_speed(alpha1, arho1, arho2, p):
     return np.sqrt(1.0 / (rho * inv_rhoc2))
 ```
 
+`pressure` は上の混合則を保存変数で書き直したものです。`sound_speed` の $c_k^2=\gamma_k(p+p_{\infty,k})/\rho_k$ が、純粋流体の音速です。
+
 ### HLLC フラックスの計算
+
+保存式四つだけが HLLC です。$\alpha$ を運ぶ接触速度 $S^\star$ も一緒に返します。
 
 ```python
 def hllc_flux(UL, UR, alpha1L, alpha1R):
@@ -141,6 +156,8 @@ def hllc_flux(UL, UR, alpha1L, alpha1R):
 
 ### 時間積分（1次精度）
 
+時間前進は前進オイラーです。$\Delta t$ は $\mathrm{CFL}\,\Delta x/\max(|u|+c)$ で、CFL の既定値は 0.5 です。
+
 ```python
 def solve(U, alpha1, dx, t_end, cfl=0.5):
     """前進オイラー法による時間積分を行います。"""
@@ -185,7 +202,11 @@ def solve(U, alpha1, dx, t_end, cfl=0.5):
     return U, alpha1
 ```
 
+$\alpha_1$ の更新は保存フラックスではありません。面速度 `uface` の符号で風上を選びます。
+
 ### 初期条件：衝撃波と気泡
+
+位置 0.25 より手前は、衝撃波を通過した水です。$\rho=1100$、$u=50$、$p=10^{9}$。0.4 と 0.6 のあいだは空気の気泡で、$\rho=1$、$u=0$、$p=10^{5}$。残りは周囲の水、$\rho=1000$、$u=0$、$p=10^{5}$ です。
 
 ```python
 # 初期条件：水中の空気の気泡に衝撃波が当たる問題
@@ -221,47 +242,40 @@ for i in range(N):
     U[3, i] = E
 ```
 
+`compute_total_energy` はこの断片にありません。圧力からエネルギーへ戻す式は EOS 側にあります。$\rho e=(p+\gamma p_\infty)/(\gamma-1)$ です。
+
 ## 注意事項
 
 ### 1. $\alpha$ の範囲制限
 
-$\alpha_1$ が正確に 0 や 1 になると、EOS の計算でゼロ除算（division by zero）が発生します。
-常に $\epsilon < \alpha_1 < 1 - \epsilon$ ($\epsilon \sim 10^{-8}$) でクリッピング（clipping）を行ってください。
+$\alpha_1$ がちょうど 0 または 1 だと、保存量 $\alpha_1\rho_1$ を $\alpha_1$ で割れません。コードは $\alpha_1$ を $10^{-8}$ と $1-10^{-8}$ のあいだに切ります。
 
 ### 2. 混合音速：Wood の公式
 
-混合領域における音速は、直感に反して非常に低くなることがあります。
-これは物理的に正しい現象であり、CFL 条件に影響を与えます。
+混合セルの音速は、どちらの純粋流体よりも低くなり得ます。直感とは逆ですが、式はそう言っています。CFL もこの音速を見ます。
 
 $$
 \frac{1}{\rho c^2} = \frac{\alpha_1}{\rho_1 c_1^2} + \frac{\alpha_2}{\rho_2 c_2^2}
 $$
 
-$\alpha_1 = 0.5$ 付近では、$c_{mix}$ は両方の流体の音速よりも **遥かに小さく** なります。
+初期条件の純粋状態をこの式に入れると、数が出ます。気泡の空気は $\rho=1$、$p=10^{5}$、$\gamma=1.4$、$p_\infty=0$ です。$c^2=\gamma(p+p_\infty)/\rho$ なら $c=\sqrt{1.4\times 10^{5}}\approx 374\,\mathrm{m/s}$ です。周囲の水は $\rho=1000$、$p=10^{5}$、$\gamma=4.4$、$p_\infty=6\times 10^{8}$ なので $c\approx 1625\,\mathrm{m/s}$ です。衝撃波背後の水は $\rho=1100$、$p=10^{9}$ で $c\approx 2530\,\mathrm{m/s}$ です。$p+p_\infty$ は周囲の水の約 2.67 倍なのに、密度は $1100/1000=1.10$ 倍だけです。$u=50$ の運動エネルギーは $0.5\times 1100\times 50^{2}=1.375\times 10^{6}$ です。同じセルの内部エネルギー密度 $\rho e\approx 1.07\times 10^{9}$ の約 0.13% です。この衝撃のエネルギーは速度より $p_\infty$ 側にあります。
+
+$\alpha_1=0.5$ で気泡の空気と周囲の水を、圧力 $10^{5}$ のまま混ぜると、Wood の式の $1/(\rho c^2)$ はほとんど空気の項です。$\rho_1 c_1^2=1.4\times 10^{5}$、$\rho_2 c_2^2\approx 2.64\times 10^{9}$ です。混合密度は $0.5\times 1+0.5\times 1000=500.5$ で、$c_\mathrm{mix}\approx 24\,\mathrm{m/s}$ です。374 でも 1625 でもありません。
+
+圧力の分母も同じ場所で敏感です。純粋な水の $\sum \alpha/(\gamma-1)$ は $1/3.4\approx 0.294$ です。水に $\alpha_1=0.01$ だけ漏れても、分母は $0.01/0.4+0.99/3.4\approx 0.316$ となり、約 7.5% 増えます。圧力はこの分母で割るので、広がった界面の $\alpha$ の誤差は圧力の誤差になります。
+
+CFL の $\Delta t=0.5\,\Delta x/\max(|u|+c)$ で、$\Delta x$ は `linspace(0, 1, 1000)` の間隔 $1/999$ です。制限するのは混合セルではありません。衝撃波の背後は $|u|+c\approx 50+2530=2580$ なので $\Delta t\approx 1.9\times 10^{-7}$ です。音速 24 m/s のセルだけを見ると、間隔は約 110 倍大きくなります。混合音速が低くても、時間刻みはそのセルが締めません。同じ $\Delta t$ のあいだ、界面の音響がほとんど止まって見える方が影響です。
 
 ### 3. 高次精度への拡張
 
-上記のコードは 1次精度です。実際の研究では以下が用いられます。
-
-- **MUSCL 再構築** ＋ 勾配制限関数（slope limiter）で 2次精度
-- **WENO** 再構築で 5次精度以上
-- **ルンゲ・クッタ法** による時間積分で時間精度の向上
+上の時間積分は 1 次です。空間もセル値をそのまま使います。2 次が要るなら MUSCL と slope limiter、その上は WENO です。時間は Runge–Kutta で上げます。次数を上げても、$\alpha$ の非保存更新と Wood の音速は残ります。
 
 ## 結果の解釈
 
-シミュレーションを実行すると、衝撃波が気泡を圧縮しながら以下の現象が起こります。
+衝撃が気泡に入ると、下流側へ透過衝撃波（transmitted shock）が出て、左へ反射膨張波（reflected rarefaction）が戻ります。気泡は急に押しつぶされ、内部の圧力が上がります。ジェット（jet）は 2D か 3D で、下流側の壁にできます。水中爆発と衝撃波結石破砕は、この絵を使います。
 
-1. **透過衝撃波（transmitted shock）** が気泡の後方へ進行
-2. **反射膨張波（reflected rarefaction）** が左側へ移動
-3. 気泡が急激に **圧縮** され、内部圧力が上昇
-4. 後方の壁面で **ジェット（jet）** が形成される（2D/3D の場合）
+## 風上の α だけでは接触面の圧力が先に揺れます
 
-この現象は、水中爆발や衝撃波結石破砕術（SWL）などにおいて極めて重要な物理です。
+五番目のフラックスは 0 で、$\alpha$ は面速度の符号で風上になります。水に $\alpha_1=0.01$ が漏れただけで圧力の分母が 7.5% 動くという計算は、界面一セルの誤差が平衡圧力に触れるという意味です。この 1 次の更新は、その平衡を別に強制しません。非保存項の離散化が圧力を保つかどうかが、先に分かれます。
 
-## 次のステップ
-
-次の記事では、数値解析の基本概念を **ゲームのように** 学べるインタラク티브なコンテンツを用意しました。数値的な安定性や CFL 条件などを直接体験することができます。
-
-人工拡散を 0 にすると界面が非物理的に sharp になる — THINC 補正が必要な理由が体感できる。
-
-<VolumeFractionAdvect />
+平衡を測る問題は、何も起きてはいけない接触です。そこで圧力がどこへ漏れるかは、[Abgrall 基準と非保存項](/ja/posts/2026-09-06-abgrall-criterion-nonconservative-term/)が問います。

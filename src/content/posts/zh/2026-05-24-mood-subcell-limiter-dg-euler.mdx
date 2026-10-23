@@ -1,7 +1,9 @@
 ---
 title: "[论文评述] 先解后疑——DG 的 a posteriori MOOD 子单元限制器"
 date: 2026-05-24
+updated: 2026-10-19
 description: "先解算，再怀疑——重现 Ioriatti·Dumbser·Loubère(2020) 的 MOOD 限制器"
+takeaway: "Toro 测试 3 里无限制 MUSCL 在约 14 步出现负压,MOOD 只把激波旁 4 到 6 个单元降成一阶。"
 tags: ["Paper-Review", "Discontinuous-Galerkin", "MOOD", "Subcell-Limiter", "Compressible-Euler", "All-Mach"]
 locale: zh
 slug: mood-subcell-limiter-dg-euler
@@ -12,6 +14,12 @@ import { MOODTroubledCellMap1D } from '@/components/post-viz/2026-05-24-mood-sub
 import { DMPRelaxedNADDetector } from '@/components/post-viz/2026-05-24-mood-subcell-limiter-dg-euler/DMPRelaxedNADDetector'
 
 复现这篇论文时最先卡住的，是 *顺序*。多数情况下我们会在单元失控 *之前* 就插入限制器(limiter，用于抑制振荡的后处理)。Van Leer 这样做，Sweby 也这样做。Ioriatti·Dumbser·Loubère(2020) 的交错半隐式 DG 把时间线翻了过来——先把这一步解完，然后再怀疑它。只有出现负密度之后，才单独把那个单元挑出来，用一阶有限体积重新求解。本文沿着这条 MOOD(Multi-dimensional Optimal Order Detection) 算法走一遍，在 Toro Test 3 的极端压力比下重现 troubled cell 亮起的位置。
+
+拨动压力比和 $\delta_0$,激波旁的红格数量会变。打开 *overlay unlimited candidate*,无限制候选解以虚线叠上来。
+
+<MOODTroubledCellMap1D />
+
+压力比 1000:0.01 时 troubled cell 是 4 到 6 个。$\delta_0$ 降到 $10^{-6}$,光滑区也会被抓住。升到 $10^{-2}$,激波会漏过去。可用区间是 $10^{-4}$ 到 $10^{-3}$。
 
 ## 论文信息
 
@@ -41,7 +49,7 @@ $$
 
 $\mathcal{P}$ 是把多项式投影到子单元平均上的 $L_2$ 投影。$\mathcal{W}$ 是从子单元平均恢复多项式的约束最小二乘(constrained least-squares，以大单元的积分守恒为约束的回归)。由于 $2P+1 > P+1$，恢复是过定方程组，必须加约束。
 
-一旦一个单元被标记为 troubled，其表示就从多项式 *切换* 到子单元平均。在与未标记单元相邻的界面上，会出现一侧是多项式、另一侧是子单元平均的 *混合界面*。此时 $\mathcal{W}_L, \mathcal{W}_R$ 从半个单元恢复多项式，使界面积分保持一致。两种表示能在同一单元里共存，是整个家族的核心资产。
+一旦一个单元被标记为 troubled，其表示就从多项式 *切换* 到子单元平均。在与未标记单元相邻的界面上，会出现一侧是多项式、另一侧是子单元平均的 *混合界面*。此时 $\mathcal{W}_L, \mathcal{W}_R$ 从半个单元恢复多项式，使界面积分保持一致。两种表示能在同一单元里共存,是这个家族的资产。少一个积分点,这种共存立刻垮掉。这和[DG 求积下限](/zh/posts/2026-08-19-dg-taylor-basis-quadrature-order/)里看到的发散是同一处。
 
 ## PAD 与 NAD——双重关卡
 
@@ -138,17 +146,19 @@ def mood_step(U, dx, dt, gamma=GAMMA, delta0=1e-4, eps=5e-4):
 
 把上面这段代码放到 Toro Test 3 ($\rho_L=1$, $p_L=1000$, $\rho_R=1$, $p_R=0.01$, $N=200$) 上跑。无限制器的 MUSCL 约 14 步就吐出负压并发散。套上 MOOD 后，激波附近 4 到 6 个单元被点亮为 troubled，仅这些单元用一阶 FV 重新求解，其余约 194 个单元保持候选的 P=1 精度。
 
+左侧 $\rho=1$,$p=1000$。右侧 $\rho=1$,$p=0.01$。$N=200$。第 14 步是无限制 MUSCL 吐出负压的时刻。只有 4 到 6 个单元退回一阶 FV,约 194 个留下 P=1。子单元数是 $2P+1$,自由度是 $P+1$。P=1 时是 3 个子单元、2 个系数,所以 $\mathcal{W}$ 的恢复是超定的。把单元积分当成约束,原因在这里。
+
+带子是 $\delta=\max[\delta_0,\epsilon(q_{\max}-q_{\min})]$。$\delta_0$ 从 $10^{-4}$ 到 $10^{-3}$,$\epsilon=5\cdot 10^{-4}$。$\delta_0=10^{-6}$ 时光滑区也会被抓住,$10^{-2}$ 时激波会漏掉。200 个网格、CFL $=0.4$ 时,plateau 上 1 到 2 个单元每步闪烁。解几乎不动。开销不是论文里的约 5%,复现里大约 10%。每次检出都要重装 $\mathcal{L},\mathcal{C},\mathcal{R}$。
+
+200 个格子里 troubled 是 4 到 6 个。其余约 194 个守住 P=1。PAD 只看密度和压力是否为正。第 14 步的负压,是没通过这道关的候选解。NAD 里 $\epsilon=5\cdot 10^{-4}$ 是相对宽度,$\delta_0$ 从 $10^{-4}$ 到 $10^{-3}$ 是绝对宽度。压力从 1000 掉到 0.01 时,$q_{\max}-q_{\min}$ 很大,$\epsilon$ 项可以超过 $\delta_0$。密度两侧都是 1,差值小,同一个 $\delta_0$ 对密度更严。大约 5% 变成大约 10%,是 4×4 块从 DG 换成 FV 的开销。troubled 格子不多,矩阵样式照样要换。$\beta_i$ 每步清零。激波走得慢,同样的 4 到 6 个格子会一次次被重新怀疑。
+
 ## 可视化——troubled cell 亮起的位置
 
-下面的模拟可以直接操控。
-
-<MOODTroubledCellMap1D />
-
-把压力比拉到 1000:0.01，激波附近的 troubled cell 会增至 4–6 个。$\delta_0$ 设到 1e-6 时，连光滑区域也会触发探测器，误报泛滥；推到 1e-2 时，真正的激波又会溜过去。论文推荐的 $[10^{-4}, 10^{-3}]$ 正是中间那条狭窄的山谷。勾选 *overlay unlimited candidate*，可以看到无限制器的 MUSCL 候选解(红色虚线)如何在同一网格上崩溃。
+把三个邻居 min/max 外面的 $\delta$ 带拉宽,候选值被标成 troubled 的范围就变窄。
 
 <DMPRelaxedNADDetector />
 
-把候选值 $q^*$ 在由三个邻居围出的松弛带内拖动。把 $\delta$ 设为 0，*所有局部极值* 都会被打上 troubled。这个松弛量是让光滑峰存活的 *一撮宽容*。
+这条带就是允许区间。$\delta$ 设为 0 时,*所有局部极值* 都会变成 troubled。松弛量是留给光滑峰的一点余地。
 
 ## 复现中浮现的限制
 
@@ -162,4 +172,4 @@ def mood_step(U, dx, dt, gamma=GAMMA, delta0=1e-4, eps=5e-4):
 
 这个算法把 *检测 → 重算* 这个循环明文标准化了。但 troubled 指示器 $\beta_i$ 每步都重置。慢速移动的激波会让同一些单元一次次重新被怀疑——若能追踪时间一致性，限制器调用本身就能减少。Dumbser 团队的后续工作(Boscheri 2024, semi-implicit ALE-DG)在这个方向上迈出了第一步。
 
-今天我们触到了一个非常具体的支点——*高次表示与一阶表示在同一单元内共存*。光滑处用多项式，粗糙处用平均值——下一代 all-Mach 求解器的骨架就立在这个小开关之上。
+今天我们触到了一个非常具体的支点——*高次表示与一阶表示在同一单元内共存*。光滑处用多项式，粗糙处用平均值——下一代 all-Mach 求解器的骨架就立在这个小开关之上。在通量里直接切掉负密度,是[正性保持限制器](/zh/posts/2026-05-20-positivity-preserving-flux-limiter/)的路。MOOD 先怀疑候选解,只把坏掉的单元退回一阶。

@@ -1,7 +1,9 @@
 ---
 title: "The Star That Started Moving — Well-Balanced FVM and Angular Momentum in Polar Coordinates"
 date: 2026-05-22
+updated: 2026-10-19
 description: "Mis-discretize 2P/r and a quiet star will leak gas out of its center."
+takeaway: "A quiet polar star stays quiet only when the pressure source is the face-area jump, not the textbook 2P/r times V."
 tags: ["CFD", "FVM", "Curvilinear", "Well-Balanced", "Angular-Momentum", "Polar-Coordinates"]
 locale: en
 slug: polar-fvm-wellbalanced-angular-momentum
@@ -11,9 +13,15 @@ draft: false
 import { PolarStaticDrift1D } from '@/components/post-viz/2026-05-22-polar-fvm-wellbalanced-angular-momentum/PolarStaticDrift1D'
 import { PolarSourceTermBalance } from '@/components/post-viz/2026-05-22-polar-fvm-wellbalanced-angular-momentum/PolarSourceTermBalance'
 
-Same equations, same slope limiter, same Riemann solver. Only the grid changed from Cartesian to polar. And gas began bleeding out of the center of a quiescent star. The pressure was uniform. Every velocity was zero. What came to life?
+Same equations, same slope limiter, same Riemann solver. Only the grid changed from Cartesian to polar. Gas began bleeding out of the center of a quiescent star. Pressure was uniform. Every velocity was zero.
 
-The culprit is the grid itself. Curvilinear coordinates add geometric terms to the momentum equations, and discretizing one of those terms slightly wrong destroys static equilibrium. This post hunts down that one line. As a bonus we visit the trick of replacing φ-momentum with angular momentum.
+Drag $\Delta r$ up and the textbook source $2P/r \cdot V$ pulls away from the face-area jump $P(S_{\text{out}} - S_{\text{in}})$.
+
+<PolarSourceTermBalance />
+
+The gap shrinks as $O(\Delta r^{3})$ and still is not zero. A coarser mesh opens it first.
+
+The grid is the culprit. Curvilinear coordinates add geometric terms to the momentum equations, and one bad line in that discretization kills a static equilibrium. The swap from φ-momentum to angular momentum sits next to that line.
 
 ## What polar coordinates add to the momentum equation
 
@@ -53,9 +61,11 @@ $$
 
 That looks innocent. Now drop in a static solution — pressure constant, velocities zero — and check the books. The flux side gives $\Delta_{r}(F_{rr} S_{r}) = P (S_{i+1/2} - S_{i-1/2})$, which is **not zero** because the inner and outer face areas of a polar cell differ. The source side, the Taylor-derived $2P/r \cdot V$, only matches that difference approximately. The mismatch leaks into the cell as a spurious acceleration every step.
 
-<PolarSourceTermBalance />
+Back to the printed numbers. $N=40$, radius from 1 to 4, 200 steps. Naive $\max|u|$ is $1.834\times 10^{-3}$. Balanced prints $0.000\times 10^{0}$. The initial state is $P=1$, $\rho=1$, $u=0$, $\gamma=1.4$. $\Delta r=(4-1)/40=0.075$. The code steps with $\Delta t=0.4\,\Delta r/c_0$ and $c_0=\sqrt{\gamma P/\rho}$. Two hundred of those steps pile a spurious velocity up to $1.834\times 10^{-3}$. The balanced form does not move inside the same loop.
 
-Slide $\Delta r$ in the figure. The gap between $2P/r \cdot V$ and $P(S_{\text{out}} - S_{\text{in}})$ widens. The residual is $O(\Delta r^{3})$ small, but it is not zero.
+Refining to 200 cells cuts the velocity residual as $(\Delta r)^{2}$, not to zero. The figure quotes an $O(\Delta r^{3})$ gap. One order apart. The cell source error is the Taylor remainder of the area mismatch, so it is smaller relative to the volume. Divide by $\rho V$ and it is an acceleration. Repeat $\Delta t$ and it becomes a velocity. That is why the velocity residual looks one order softer. Swap in $P(S_{i+1/2}-S_{i-1/2})$ and the order talk ends, because the flux difference and the source are the same expression.
+
+Volume is $V=(r_R^{3}-r_L^{3})/3$ and area is $S=r^{2}$. The factor $\sin\theta\,\Delta\theta\,\Delta\varphi$ is omitted on both sides, as the code comment says. Equal factors keep the cancellation. Change only the area definition and $P\cdot\Delta S$ no longer matches the flux difference. The same hole shows up when a [curved-cell area](/en/posts/2026-10-13-diagonal-cross-product-cell-area-green-gauss/) comes from a diagonal cross product: $\partial x/\partial x$ leaves 1. Discrete divergence and face area have to be a pair, or a static solution will not hold.
 
 ## One-line fix that restores equilibrium
 
@@ -143,11 +153,9 @@ naive    : max |u| = 1.834e-03
 balanced : max |u| = 0.000e+00
 ```
 
-That is a percent-of-soundspeed spurious acceleration. Refining to 200 cells shrinks the residual by $(\Delta r)^{2}$ but never to zero. The balanced form starts at zero and stays.
-
 <PolarStaticDrift1D />
 
-Set the toggle to *naive* and watch the curve crawl off the axis as steps accumulate. Switch to *well-balanced* and the line stays glued to zero. Drop the cell count and the naive scheme gets noticeably worse.
+Leave the toggle on *naive* and the curve walks off zero as steps accumulate. Switch to *well-balanced* and it stays on the axis. Drop *cells* and only the naive residual grows. On 40 cells and 200 steps that walk is $\max|u|=1.834\times 10^{-3}$; balanced prints $0.000\times 10^{0}$.
 
 ## Replace φ-momentum with angular momentum
 
@@ -186,8 +194,8 @@ $$
 
 One line, one commit. The star is quiet again.
 
-### Notes for the lab notebook
+### Keep 2P/r, or replace it with ΔS?
 
-- If a static solution wobbles, suspect the source-term discretization first — usually it is the face-area mismatch.
-- "Well-balanced" is mostly about preserving equilibria to machine precision, not about shock-tube performance.
-- For strongly rotating problems (stars, accretion disks, tornadoes), solve for *angular momentum*, not φ-momentum.
+If only the pressure balance wobbles, replace $2P/r\,V$ with $P(S_{i+1/2}-S_{i-1/2})$. That is the edit that turns $\max|u|=1.834\times 10^{-3}$ on 40 cells into 0. The $\theta$ source $\cos\theta\,P/(r\sin\theta)$ takes the same swap, $P\cdot\Delta S_{\theta}$. The $\varphi$ direction does not need it: the two azimuthal faces share one area.
+
+Strong rotation is a different decision. $\rho u w/r + \cos\theta\,\rho v w/r$ still sits on the $\varphi$-momentum equation. Defining $l = w r \sin\theta$ removes that source from the equation. That is the form in Kley 1998 (A&A 338, L37). A radially varying rotation still wants FARGO on top. A static interface that starts to flow on its own is the same disease as [parasitic currents](/en/posts/2026-07-19-parasitic-currents-surface-tension/). Unless the fake force from the discrete divergence is subtracted with the same discrete expression, the equilibrium does not come back.

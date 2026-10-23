@@ -1,10 +1,12 @@
 ---
 title: "When Gradients Go Wrong on Skewed Meshes — Green–Gauss vs. Weighted Least-Squares Reconstruction"
 date: 2026-07-17
-description: "Two ways to build cell gradients on unstructured meshes, and which one survives distortion"
+updated: 2026-10-19
+description: "On a flat cell, Green–Gauss can swing the gradient nearly sideways. Distance-weighted least squares cuts the curved-field error from 0.0293 to 0.0222."
 tags: ["FVM", "Gradient-Reconstruction", "Least-Squares", "Unstructured", "OpenFOAM"]
 locale: en
 slug: least-squares-gradient-reconstruction-unstructured
+takeaway: "A linear field stays exact to six decimals on a messy stencil. A curved field still needs n=1, or one far neighbor drags the fitted plane."
 draft: false
 ---
 
@@ -13,7 +15,13 @@ import { StencilConditioningExplorer } from '@/components/post-viz/2026-07-17-le
 
 The residuals leaned over in a strange way, then blew up. Digging through the logs, I found one cell near the wall where the temperature gradient pointed almost perpendicular to the real one. I looked at the mesh: that one cell was oddly flat. The values were fine. The method that builds the gradient had tripped over the shape of the mesh.
 
-In the finite volume method (FVM), the cell gradient feeds the diffusion flux, second-order reconstruction, and the limiter. Cell-center values alone are not enough. You have to gather neighbor information to estimate $\nabla\phi_C$. This post compares two ways to make that estimate — Green–Gauss and least-squares. We look at why one of them collapses on distorted meshes, and what distance weighting fixes, with code.
+In the finite volume method (FVM), the cell gradient feeds the diffusion flux, second-order reconstruction, and the limiter. Cell-center values alone are not enough. You have to gather neighbor information to estimate $\nabla\phi_C$. Two estimates sit on the table: Green–Gauss and least-squares. The run below shows where distortion swings one of them, and what the distance weight pulls back.
+
+Drop anisotropy to about 0.2 and the stencil flattens. Raise the weight exponent from 0 to 1 and the orange arrow swings back toward the green truth.
+
+<LeastSquaresGradientLab />
+
+Raise curvature κ at the same time and the gap between the arrows opens. On a flat stencil, watch whether the weight restores the direction.
 
 ## Green–Gauss: wrap the cell in faces and average
 
@@ -68,6 +76,8 @@ $$
 
 $\Delta\phi = \phi_k - \phi_C$. The left-hand matrix depends only on neighbor placement. You can compute it once per cell and store it. The upside is large. There is no face-interpolation assumption. It is insensitive to distortion. With three or more neighbors it always has a solution.
 
+The face interpolation breaks in the same place as [Green–Gauss versus least squares on a skewed cell](/en/posts/2026-05-11-gradient-recon-green-gauss-vs-least-squares/). Three neighbors are enough to solve the normal equations, but if those three sit on a line the transverse answer is empty.
+
 ## Weight by distance
 
 The weight $w_k$ decides the accuracy. A common choice is the inverse distance.
@@ -76,13 +86,7 @@ $$
 w_k = \frac{1}{\lvert \mathbf{d}_k \rvert^{\,n}}
 $$
 
-With $n=0$, every neighbor counts equally. A far neighbor has a large value difference, and with it a large curvature error. That neighbor pulls the plane fit. Raise $n$ to 1 and the far neighbor loses its voice. Weight shifts to nearby neighbors, where the local linear assumption holds well. For inviscid problems, $n=1$ is the usual choice.
-
-Try adjusting the parameters yourself in the simulation below.
-
-<LeastSquaresGradientLab />
-
-Lower the anisotropy to around 0.2 to make the stencil flat, then raise the curvature κ, and the orange reconstructed gradient drifts away from the green true value. Now raise the weight exponent n from 0 to 1. The orange arrow swings back toward the true value. That is the result of pressing down the far neighbor to cut the curvature error.
+With $n=0$, every neighbor counts equally. A far neighbor has a large value difference, and with it a large curvature error. That neighbor pulls the plane fit. Raise $n$ to 1 and the far neighbor loses its voice. Weight shifts to nearby neighbors, where the local linear assumption holds well. For inviscid problems, $n=1$ is the usual choice. It cuts the far neighbor's vote and trims the curvature error.
 
 ## Python — exact on linear fields, weighted on curved ones
 
@@ -132,18 +136,18 @@ curved field   n=1  LSQ = (+0.891, +0.205)   |error| = 0.0222
 curved field   true = (+0.911, +0.213)
 ```
 
-On the linear field, no matter how twisted the stencil is, it is accurate to six decimal places. This is the core property of least-squares. On the curved surface, one far-away neighbor inflates the error. The $n=1$ distance weighting presses that neighbor down and cuts the error by about a quarter.
+On a linear field the stencil can be as twisted as you like and the gradient is still good to six decimals. The printout (+1.300000, -0.700000) is that value. A linear function matches the dot product of offset and gradient at every neighbor, so the irregular point (0.90, 0.15) adds nothing to the error. Distortion does not shove the answer on this field.
 
-## Pitfalls to avoid when you code this
+A curved field does. The true gradient is (+0.911, +0.213). At n=0 the reconstruction (+0.885, +0.200) is short by 0.026 in x and 0.013 in y. At n=1, (+0.891, +0.205) is short by 0.020 and 0.008. The norm drops from 0.0293 to 0.0222. The gap, 0.0071, is about 24 percent, the one-quarter cut. The far neighbor (0.90, 0.70) has components much larger than the 0.1 scale of the five near points. At n=0 that point votes with the same weight as the rest. At n=1 distance cuts its vote.
+
+## When the neighbors line up, do not trust the inverse
 
 Least-squares being robust to distortion does not make it a cure-all. The left-hand matrix $M = \sum w_k \mathbf{d}_k \mathbf{d}_k^{\mathsf T}$ can become ill-conditioned. When the neighbors line up along a single straight line, $M$ approaches singular. The gradient is well determined along the stencil direction, but almost free in the transverse direction. The condition number explodes.
 
-Try it yourself in the simulation below.
+Push Collinearity toward 0.9 and the neighbors bunch into one line. cond(M) jumps from the tens to infinity.
 
 <StencilConditioningExplorer />
 
-Raise the collinearity toward 0.9 and the neighbors bunch into one line, sending cond(M) shooting from tens to infinity. The direction in which the ellipse stretches long and thin is exactly the direction in which the gradient becomes inaccurate. This is a common situation in boundary-layer cells pressed right against the wall.
+The long thin axis of the ellipse is the axis the gradient cannot pin down. Boundary-layer cells pressed to the wall look like that. The diagonal entries are sums of squared offsets, so a stencil stretched one way leaves the other diagonal empty. On a boundary cell the neighbors sit on the fluid side. Adding the neighbor across the wall, or a face center, fills a little of that empty axis and the condition number drops. If the mesh is fixed, $M$ does not care that the velocity field changed. Store the inverse, or the QR factorization, instead of rebuilding it every step. The exponent $n$ is a problem choice. When the viscous term is large, $n=2$ is sometimes the better one.
 
-Three things to keep in mind on the job. First, in boundary cells the neighbors skew to one side. Add the neighbor on the far side of the wall or the face center to the stencil to lower the condition number. Second, do not rebuild $M$ every step — if the mesh is fixed, precompute and store the inverse (or the QR factorization). Third, tune the distance weighting $n$ to the problem. When the viscous term dominates, $n=2$ can sometimes be better.
-
-To leave it in one line: Green–Gauss is cheap but weak to distortion, and weighted least-squares is strong against distortion but sickens when the stencil lines up in a row — look at your mesh first, then pick the method.
+[Moving least squares rebuilds that weight neighbor by neighbor](/en/posts/2026-06-01-mls-meshless-gradient-reconstruction/). Green–Gauss is cheap and weak to skew. Weighted least squares handles skew, until the stencil collapses onto a line and the matrix goes bad first. Before picking a method, check whether that cell's neighbors actually span the plane.

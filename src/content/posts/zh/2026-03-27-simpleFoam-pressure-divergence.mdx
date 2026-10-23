@@ -1,7 +1,9 @@
 ---
 title: "[CFD Q&A] 当 simpleFoam 压力残差无法收敛时"
 date: 2026-03-27
-description: "解决 SIMPLE 算法发散的实战记录 —— 关键在于松弛因子的设置"
+updated: 2026-10-19
+description: "simpleFoam里压力的初始残差从0.412跳到0.891。把p松弛从0.7降到0.3后，约200步降到1e-4附近。"
+takeaway: "只看速度残差就去加松弛，压力修正的内迭代会从8次涨到20次。"
 tags: ["CFD-Practice", "QA", "OpenFOAM", "SIMPLE", "Convergence"]
 draft: false
 noindex: true
@@ -9,16 +11,19 @@ noindex: true
 
 import { SimpleResidualHistory } from '@/components/post-viz/2026-03-27-simpleFoam-pressure-divergence/SimpleResidualHistory'
 
-上周遇到了一个非常耗时的问题。在运行 simpleFoam 时，压力残差（pressure residual）始终无法降至 `1e-3` 以下，反而开始上升。起初我以为是网格问题，但最终发现症结在于松弛因子（relaxation factor）。
+上周 simpleFoam 吃掉了半天。压力残差下不到 `1e-3`。它往上走。先怀疑的是网格。真正动手的地方是 relaxation factor。
+
+把 αp 滑条推过 0.6，压力残差曲线会在 30 iter 附近重新向上折。
+
+<SimpleResidualHistory />
+
+停在 0.3 附近，同一条曲线会一直降到 200 iter。下面日志里 Time=80、初始残差 0.891，就落在这段折返里。
 
 ## 问题现象
 
-- **软件**: OpenFOAM v2312
-- **几何**: 2D 矩形通道，inlet–outlet 边界
-- **湍流模型**: k-ε (standard)
-- **求解器**: simpleFoam (稳态)
+OpenFOAM v2312。二维矩形通道，从 inlet 到 outlet。湍流模型是 standard k-ε。求解器是稳态 simpleFoam。
 
-在前 20~30 次迭代（iteration）中，收敛情况良好，但随后压力残差突然开始跳动。
+前 20 到 30 iter 残差在降。随后只有压力在跳。
 
 ```text
 Time = 50
@@ -33,25 +38,25 @@ Time = 80
 GAMG:  Solving for p, Initial residual = 0.891, Final residual = 0.21, No Iterations 20
 ```
 
-速度（velocity）收敛良好，但压力（pressure）始终不稳定。这是典型的压力-速度耦合不稳定性表现。
+速度稳住了，压力不稳。这是压力-速度耦合在晃的样子。
 
 ## 原因分析过程
 
 ### 第一步：检查网格质量
 
-首先运行 `checkMesh`。
+先跑了 `checkMesh`。
 
 ```bash
 checkMesh -case .
 ```
 
-最大非正交性（non-orthogonality）为 32 度，最大扭曲度（max skewness）为 0.8 —— 表现尚可。看来网格不是主要问题。
+最大 non-orthogonality 32 度，max skewness 0.8。要把网格当成原因，这两个数太安静。
 
 ### 第二步：检查边界条件
 
-入口（inlet）压力设为 `zeroGradient`，出口（outlet）设为 `fixedValue 0`。这是标准设置，没有问题。
+inlet 压力是 `zeroGradient`，outlet 是 `fixedValue 0`。通道里常见的一对。到这里没有异常。
 
-但在检查初始 p 场时，发现入口处存在异常大的数值。这是之前使用 `funkySetFields` 进行实验后留下的残留值。
+打开初始 p，inlet 一侧还留着一个大数。那是用 `funkySetFields` 试过、以为已经清掉的场。
 
 ### 第三步：检查 fvSolution
 
@@ -72,11 +77,9 @@ relaxationFactors
 }
 ```
 
-U=0.9 是一个相当激进的数值。在 SIMPLE 算法中，提高速度松弛可以加快收敛，但如果压力更新跟不上，就会导致发散。
+U=0.9 是偏快的设置。速度松弛一抬，表面收敛会变快。压力更新跟不上，循环就晃。
 
-两个原因叠加导致了发散：
-1. 松弛因子设置过高
-2. 初始 p 场中存在错误的残留值
+叠在一起的原因有两个。松弛太高。初始 p 里留着垃圾。压力修正怎么和速度场绑在一起，写在 [压力出现棋盘振荡时的SIMPLE](/zh/posts/2026-07-22-simple-pressure-velocity-coupling-rhie-chow/) 里。
 
 ## 解决方案
 
@@ -99,7 +102,7 @@ relaxationFactors
 }
 ```
 
-初次运行算例时，建议从保守的数值开始。确认收敛后，再逐渐提高。
+第一次计算从低值开始。残差坐住以后再抬。
 
 ### 初始化 p 场
 
@@ -108,7 +111,7 @@ relaxationFactors
 cp 0.orig/p 0/p
 ```
 
-或者直接打开 `0/p` 文件，将 `internalField` 设置为 `uniform 0;`。
+直接打开 `0/p`，改成 `internalField uniform 0;`，效果一样。
 
 ```cpp
 // 0/p
@@ -135,7 +138,7 @@ boundaryField
 
 ## 验证
 
-修改后重新运行，结果如下：
+同一个算例再跑，日志变成这样。
 
 ```text
 Time = 50
@@ -149,27 +152,22 @@ Time = 200
 GAMG:  Solving for p, Initial residual = 3.2e-4, Final residual = 1.1e-5, No Iterations 3
 ```
 
-在迭代 200 次左右时，压力残差稳定降至 `1e-4` 水平。
+大约 200 iter 时，压力残差降到 `1e-4` 这一档。内迭代也回到个位数。
 
-## 经验总结
+## 日志里的倍率
 
-**simpleFoam 收敛检查清单** —— 按此顺序检查可解决大部分问题：
+改之前的 Time=50，Ux 从 0.0023 降到 1.2e-5。三次内迭代，大约 192 倍。Uy 从 0.0019 到 9.8e-6，大约 194 倍。同一时刻的压力只从 0.412 到 0.038，八次大约 11 倍。速度将近降了 200 倍，压力只走了大约 11 倍。
 
-1. **首查初始条件**：确认 `0/` 目录下的 p、U 场是否符合预期。如果存在旧实验残留，务必初始化。
+Time=80 是三十步之后。压力初始残差从 0.412 升到 0.891，大约 2.2 倍。内迭代从 8 增到 20，是 2.5 倍。可下降倍率是 0.891 除以 0.21，大约 4.2，反而变小。迭代加了，降下的却更少。
 
-2. **松弛因子要保守**：首次运行建议使用 `U=0.7, p=0.3` 的默认值。安全确认收敛后再提速。尤其是 `p` 的松弛因子应保持较低，以稳定 SIMPLE 循环。
+改完以后，Time=50 的压力从 0.089 到 0.0041，五次大约 22 倍。Time=200 从 3.2e-4 到 1.1e-5，三次大约 29 倍。累积 continuity 从 3.4e-4 到 8.9e-6，大约小了 38 倍。p 松弛 0.3 是原先 0.7 的大约 43%。U 从 0.9 到 0.7，k 和 epsilon 从 0.7 到 0.5。压力修正砍到一半以下，换来压力内迭代从 20 降到个位数。
 
-3. **区分速度与压力收敛**：如果 U 残差低而 p 发散，通常是松弛因子的问题。如果两者都发散，应先检查网格或边界条件。
+把 Time=200 的最终残差 1.1e-5，和改之前 Time=80 的最终值 0.21 放在一起。0.21 除以 1.1e-5 大约是 19100。同一个通道，同一套网格，变的只有压力松弛和初始场。重新拆网格之前要看的，就是这个倍率。
 
-4. **观察 GAMG 迭代次数**：如果在同一次外迭代中，求解 p 所需的内迭代次数突然增加，说明收敛方向可能出现了偏差。
+速度的内迭代，改前改后都停在 3。变的只是压力一侧的迭代次数和下降倍率。Ux 的最终残差也从 1.2e-5 到 8.3e-6，同是三次迭代，只是多降了一点。日志指向的故障不是速度求解器。continuity 的 sum local 也从 4.2e-5 降到 2.1e-6。4.2e-5 除以 2.1e-6 正好是 20。这和累积值的 38 倍同一方向，倍率却不同。所以先动压力，网格先放着。
 
-由于压力修正循环的特性，SIMPLE 算法对松弛因子非常敏感。初次运行应始终保持保守 —— 虽然起步慢，但确保稳定收敛后再加速，最终效率反而更高。
+## 打开网格之前先降的那个数
 
----
+non-orthogonality 32 度和 skewness 0.8，不是先重建网格的理由。先降的是 p 松弛。0.7 是压力修正赶不上速度 0.9 的设置。第一次用 p 0.3、U 0.7。Time=200 的残差坐到 `1e-4` 附近，再往上抬。
 
-*如果你也遇到了类似的问题，欢迎在评论区分享你的环境（版本、几何、湍流模型）。具体案例可能需要不同的处理方式。*
-
-
-把 αp 推过 0.6，看 30 次迭代附近残差反弹。
-
-<SimpleResidualHistory />
+初始 p 里留下的 funkySetFields 数值也毁了同一次计算。不把 `internalField uniform 0` 清掉，松弛降了，入口的垃圾梯度还在。松弛变低，不自动等于同一份物理。[只改一个松弛、收敛解就变了的Rhie–Chow](/zh/posts/2026-10-14-rhie-chow-under-relaxation-memory/) 用来看，0.7 改成 0.3 究竟只留在残差曲线上，还是会漏进最终的场。

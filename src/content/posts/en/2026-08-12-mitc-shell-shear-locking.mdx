@@ -1,6 +1,7 @@
 ---
 title: "Thinner Means Stiffer — Shear Locking in Shell Elements and the MITC Tying Fix"
 date: 2026-08-12
+updated: 2026-10-19
 description: "A linear shell element gets stiffer, not weaker, as it thins out. The cause is one line: shear strain obtained by differentiating displacements."
 tags: ["MITC", "Shell-Element", "FEM", "Structural-Analysis", "FSI"]
 locale: en
@@ -12,11 +13,11 @@ draft: false
 import { ShearLockingBeamBench } from '@/components/post-viz/2026-08-12-mitc-shell-shear-locking/ShearLockingBeamBench'
 import { MitcTyingBoard } from '@/components/post-viz/2026-08-12-mitc-shell-shear-locking/MitcTyingBoard'
 
-I wrote a shell solver for a fluid-structure coupling study and checked it against a cantilever. At a thickness of 0.2 m the tip deflection matched theory to three decimals. At 2 mm it came out as 0.5% of the theoretical value. Same load, same mesh, same material. This post is about where that factor of 200 comes from, and which single line MITC (Mixed Interpolation of Tensorial Components) changes to make it disappear.
+I wrote a shell solver for a fluid-structure coupling study and checked it against a cantilever. At a thickness of 0.2 m the tip deflection matched theory to three decimals. At 2 mm it came out as 0.5% of the theoretical value. Same load, same mesh, same material. The note is where that factor of 200 comes from, and which single line MITC (Mixed Interpolation of Tensorial Components) changes to erase it.
 
 ## The Element Got Thin and the Answer Froze
 
-Start with the symptom. Push the slenderness slider in the simulation below and watch what happens.
+Push the slenderness slider to the right and the red full-integration beam loses its deflection, while the blue tied beam keeps bending.
 
 <ShearLockingBeamBench />
 
@@ -42,6 +43,8 @@ With $\nu = 0.3$ and $k = 5/6$ the coefficient is $3.5/t^{2}$. Nondimensionalize
 
 That is harmless in the continuous theory. As the thickness drops, $\gamma$ goes to zero just as fast, and the product stays finite. That is the Kirchhoff limit. The question is whether a discrete element can represent $\gamma = 0$ at all.
 
+The sweep fixes $L = 1$ and sets $t = 1/(L/t)$. At $L/t = 100$, $t = 0.01$, and with $\nu = 0.3$, $k = 5/6$ the ratio $k G t / D = 3.5/t^2 = 35000$. At $L/t = 500$, $t = 0.002$, so $t^2$ drops by 25 and the penalty rises to 875000. At $L/t = 2000$, $t = 5\times 10^{-4}$ and the penalty reaches $1.4\times 10^{7}$. In the continuum, $\gamma$ shrinks with thickness and $\gamma^2$ cancels that $1/t^2$. If $\gamma_h = -\kappa r$ is not zero, the cancellation stops. The fake shear is multiplied by that coefficient as written.
+
 ## A Linear Element Cannot Produce Zero Shear Strain
 
 Reduce the problem to one dimension and the cause fits on one line. Take a two-node element that interpolates deflection $w$ and section rotation $\phi$ with the same linear shape functions. The transverse shear strain is defined as
@@ -58,7 +61,7 @@ $$
 
 The rotation is linear, so it is reproduced exactly. The deflection is quadratic, so it is not. The entire mismatch drains into $\gamma_h$. The true $\gamma$ is zero, the element carries $-\kappa r$, and that value gets multiplied by a penalty of $3.5/t^2$. In a [truss finite element](/en/posts/2026-07-10-direct-stiffness-method-truss-fem/) there is only axial strain, so no such pairing exists. Locking shows up when several strain measures coexist and one of them has to vanish.
 
-One observation matters here. $\gamma_h = -\kappa r$ is exactly zero at $r = 0$. The wrong value is not spread uniformly over the element — there is one point where it is right.
+One spot in the element is the whole story. $\gamma_h = -\kappa r$ is exactly zero at $r = 0$. The wrong value is not spread uniformly — there is one point where it is right. At the two Gauss points $\pm 1/\sqrt{3}$ the fake shear is $\mp \kappa/\sqrt{3}$, and the code's `GAUSS` pair is exactly those points. Full integration builds stiffness there. Tying keeps only $r = 0$ because that is the only root of this expression.
 
 ## A Shell Has Three Coordinate Systems, and Only One Is the Right Place to Intervene
 
@@ -82,11 +85,7 @@ $$
 \gamma_r^{\text{MITC}}(r,s) = \frac{1-s}{2}\,\gamma_r(0,-1) + \frac{1+s}{2}\,\gamma_r(0,+1)
 $$
 
-The key detail is that $r$ does not appear on the right-hand side at all. The spurious $-\kappa r$ was linear in $r$, and this interpolation has nowhere to put such a term. Switch between modes below and check it directly.
-
-<MitcTyingBoard />
-
-In `pure bending` the mid-surface stays flat while the directors fan out. The angle of each red wedge between them is shear strain the element invented, and the wedge closes only at $r = 0$. Switch to `true shear` and the blue MITC curve lands exactly on the red one. Tying erases the fake strain and leaves the real one alone.
+$r$ does not appear on the right-hand side at all. The spurious $-\kappa r$ was linear in $r$, and this interpolation has nowhere to put such a term.
 
 It is easy to confuse this with reduced integration, but the two agree only in the special one-dimensional case. Reduced integration drops integration points to soften the stiffness matrix, which invites zero-energy (hourglass) modes. MITC leaves the integration alone and changes the strain interpolation space itself. The stiffness is still integrated exactly, and no rank deficiency appears.
 
@@ -179,9 +178,17 @@ nel = 32    w_fem / w_exact          shear energy fraction
  2000      0.00080      0.99976        0.9992   0.0000
 ```
 
-Three things stand out. First, the full-integration column drops by roughly a factor of 100 every time $L/t$ grows tenfold — the $(L/t)^2$ penalty, visible directly. Second, the tied column is pinned at 0.98438 regardless of thickness. The remaining 1.5% is not locking but the discretization error of a four-element mesh; with 32 elements it becomes 0.99976. Third, the shear energy fraction settles the diagnosis. At $L/t = 2000$ the fully integrated element spends 100% of its energy on shear. A bending problem is being carried entirely by shear.
+Flip the mode from `pure bending` to `true shear` and the red wedges vanish, while the blue curve sits on the real shear.
 
-Look at the 32-element table too. Even with an eightfold finer mesh, $L/t = 500$ leaves you at 1.3% of the right answer. Locking is not an error you can out-refine.
+<MitcTyingBoard />
+
+In `pure bending` the mid-surface stays flat while the directors fan out. The angle of each red wedge between them is shear strain the element invented, and the wedge closes only at $r = 0$. Switch to `true shear` and the blue MITC curve lands exactly on the red one. Tying erases the fake strain and leaves the real one alone.
+
+Read the nel = 4 table across a row. The full-integration tip ratio falls from 0.66631 at $L/t = 5$ to 0.11095, 0.00497, 0.00020, and 0.00001. From 20 to 100 the ratio drops by about 22, and from 100 to 500 by about 25, the same factor by which the $(L/t)^2$ penalty grows on a fivefold jump in slenderness. Only the step from 5 to 20 is about 6. The shear piece of the exact tip, $P L^3/(3 E I) + P L/G A$, is still alive there, so the pure locking square law is not yet naked.
+
+Shear energy fraction on those same rows climbs 0.3639, 0.8910, 0.9951, 0.9998, 1.0000. At $L/t = 100$ the fraction is already 0.9951. At $L/t = 2000$ it is 1.0000. A bending problem is being carried entirely by shear. The tied column starts at 0.98485 and sticks at 0.98438. That 1.5% shortfall does not grow when thickness is pushed to 2000. It is the discretization error of four elements.
+
+With 32 elements the tied column is 0.99976. Full integration is still 0.24213 at $L/t = 100$, 0.01262 at $L/t = 500$, and 0.00080 at $L/t = 2000$. An eightfold finer mesh still leaves 1.3% of the right answer at slenderness 500. Locking is not an error a finer mesh deletes.
 
 ## Before Bolting a Shell Onto a Coupled Solver
 

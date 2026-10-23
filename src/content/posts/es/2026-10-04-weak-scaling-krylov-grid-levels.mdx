@@ -1,6 +1,7 @@
 ---
 title: "Multipliqué los núcleos por 64 y la eficiencia cayó a 16.3% — la trampa de medir weak scaling refinando la malla"
 date: 2026-10-04
+updated: 2026-10-19
 description: "Por qué las iteraciones de Krylov crecieron 6.1 veces en un estudio de weak scaling que refina la malla, y cómo un nivel más de multigrid devuelve la curva a plana."
 tags: ["Weak-Scaling", "Newton-Krylov", "Preconditioning", "Krylov", "Paper-Review"]
 locale: es
@@ -16,7 +17,7 @@ import { LevelLadderEfficiencyDial } from '@/components/post-viz/2026-10-04-weak
 
 Una solicitud de horas de supercómputo exige adjuntar una gráfica de scaling. Se fija el número de celdas por núcleo, se sube el número de núcleos de 1 a 4, a 16 y a 64, y se mide el tiempo de cada corrida. Lo ideal es que la línea salga plana. La mía no salió plana. La eficiencia cayó de 1.000 a 0.163. Ni el tráfico MPI ni el desbalance de carga eran los culpables. El culpable estaba escondido en la propia forma de medir. Este artículo recorre el punto que señalaron Hammond, Lichtner y Mills (2014) en su artículo de rendimiento de PFLOTRAN, reproduce el mismo comportamiento en unas cien líneas de Python y lo revierte con un nivel más.
 
-Al terminar quedan dos cosas. Primero, un criterio para decidir si una curva de weak scaling inclinada acusa al código o al precondicionador. Segundo, en qué condiciones se sostiene la frase "multigrid es bueno para weak scaling" y en qué condiciones se derrumba.
+Al terminar quedan dos juicios. Si una curva de weak scaling inclinada señala al código o al precondicionador. Y que la frase "multigrid es bueno para weak scaling" se sostiene solo cuando los niveles crecen con la malla, y se cae cuando el número de niveles queda congelado.
 
 ## Elegir el refinamiento de malla cambia el problema mismo
 
@@ -170,29 +171,31 @@ weak_scaling_table()
     64     512x256   131072 |    1285  0.163 |      47  0.213 |      10  0.900
 ```
 
+El deslizador de niveles y el de malla, movidos por separado, cambian cuál curva de eficiencia de la derecha queda resaltada.
+
+<LevelLadderEfficiencyDial />
+
+Con el nivel en $1$ queda una sola barra de amortiguación. Al mover la malla a la derecha, la malla más gruesa crece y la eficiencia de Jacobi se inclina hacia $0.163$. Si los niveles crecen con la malla, la curva se queda cerca de $0.900$.
+
 La columna de Jacobi puntual marca 210, 407, 754 y 1285. Mientras la malla se apretaba ocho veces, el conteo creció 6.1 veces. Las razones por etapa son 1.94, 1.85 y 1.70, acordes con la estimación $\mathcal{O}(h^{-1})$ de la sección anterior. Las celdas por núcleo están fijas, así que el costo por núcleo de cada iteración también lo está, y la eficiencia cae a 0.163 como el inverso exacto del crecimiento de iteraciones. No es un número que se recupere ajustando la comunicación o el uso de caché.
+
+Al dividir los conteos de Jacobi puntual $210$, $407$, $754$, $1285$ salen $407/210=1.938$, $754/407=1.853$, $1285/754=1.704$. Coinciden con los $1.94$, $1.85$, $1.70$ impresos. El producto es $6.10$, y $1285/210=6.12$. La eficiencia es el recíproco: $210/1285=0.1634$, el $0.163$ de la tabla. MG-3lv marca $10$, $16$, $28$, $47$. Entonces $47/10=4.7$, menor que el $6.1$ de Jacobi, pero la eficiencia es $10/47=0.213$. La columna que hace crecer los niveles marca $9$, $9$, $10$, $10$. En $64$ núcleos, $10/9=1.11$, y la eficiencia $0.900$ es $9/10$. Sobre los mismos $131072$ grados de libertad, Jacobi en $1285$ frente al conteo de $10$ con niveles crecientes es un factor de $128.5$. Las celdas por núcleo se mantienen en $2048$ en cada fila. $64\times32=2048$, y $131072/64=2048$. Reducir $h$ a la mitad una vez multiplica las celdas por $4$, $\kappa$ por $4$ y la cota de iteraciones por $\sqrt{\kappa}$, cerca de $2$. Tres mitades son el refinamiento de $8\times$, y el $6.1\times$ medido es ese $2$ un poco corto, como $1.94\times1.85\times1.70$.
 
 ## Un nivel convirtió 47 otra vez en 10
 
 La tercera columna tiene la respuesta. Si el V-cycle se **congela** en tres niveles, las iteraciones crecen de 10 a 47. Si los niveles crecen junto con la malla, de modo que la malla más gruesa se mantenga siempre en 8 por 4 celdas, el conteo va de 9 a 10. Eficiencia 0.900. Plana, para fines prácticos.
 
-La razón cabe en una frase. Un solver de Krylov se comporta como un suavizador sobre una sola malla: borra rápido el error de alta frecuencia y deja atrás el de baja frecuencia. En cambio, un [V-cycle de multigrid](/es/posts/2026-05-06-multigrid-v-cycle-poisson-acceleration/) relaja sobre toda la jerarquía de mallas, así que toca todas las longitudes de onda en un solo ciclo. La condición es que esa jerarquía alcance la longitud de onda más larga. Con tres niveles fijos, la malla más gruesa bajo un problema de 512 por 256 es de 128 por 64. Una onda de error de 128 celdas de ancho sigue siendo de baja frecuencia allí. Nadie la borra.
+La razón cabe en una frase. Un solver de Krylov se comporta como un suavizador sobre una sola malla: borra rápido el error de alta frecuencia y deja atrás el de baja frecuencia. Si los niveles llegan tan hondo como la malla, un ciclo alcanza las ondas largas. Si el precondicionador se salta ese extremo, las iteraciones se quedan, igual que cuando [un precondicionador por bloques multiplicó el error por 100 en cada barrido a CFL acústico 10](/es/posts/2026-08-29-block-preconditioner-acoustic-cfl-loop-gain/). Con tres niveles fijos, la malla más gruesa bajo un problema de 512 por 256 es de 128 por 64. Una onda de error de 128 celdas de ancho sigue siendo de baja frecuencia allí. Nadie la borra.
 
-Conviene mover el número de niveles y la malla por separado para ver qué combinación aplana la curva.
 
-<LevelLadderEfficiencyDial />
-
-Cada escalón de la escalera de la izquierda es un nivel, y la barra de al lado es la banda de longitudes de onda que ese nivel amortigua. Con el deslizador de niveles en 1 queda una sola barra. Al mover el deslizador de malla a la derecha se puede observar cómo cambia el tamaño de la malla más gruesa y cuál de las tres curvas de eficiencia de la derecha queda resaltada.
 
 ## Dónde multigrid no sale gratis
 
 Detenerse aquí se leería como "usar siempre multigrid". El artículo también anota el otro lado.
 
-Primero, agregar niveles cuesta. Cada vez que el problema crece hay que apilar un escalón más para preservar la convergencia óptima, y ese costo de preparación crece con el número de núcleos. En multigrid algebraico como hypre o GAMG, el propio coarsening es intensivo en comunicación. En los resultados de Kollet et al. (2010), la eficiencia del solver setup baja a casi cero cerca de los 16,384 núcleos. El conteo de iteraciones queda plano mientras el tiempo de preparación se come la corrida.
+Agregar niveles cuesta. Cada vez que el problema crece hay que apilar un escalón más para preservar la convergencia óptima, y ese costo de preparación crece con el número de núcleos. En multigrid algebraico como hypre o GAMG, el propio coarsening es intensivo en comunicación. En los resultados de Kollet et al. (2010), la eficiencia del solver setup baja a casi cero cerca de los 16,384 núcleos. El conteo de iteraciones queda plano mientras el tiempo de preparación se come la corrida. Tampoco toda EDP quiere esa jerarquía. Multigrid rinde en problemas elípticos y parabólicos como el flujo subterráneo, donde la estimación inicial está lejos de la solución. El transporte geoquímico dominado por advección es lo contrario: los pasos de tiempo pequeños vuelven la matriz fuertemente dominante en la diagonal, y Jacobi puntual o ILU(0) ya alcanzan. No hay motivo para apilar niveles. Aplicar multigrid a sistemas que describen flujo multifásico sigue siendo tema de investigación.
 
-Segundo, no toda EDP le queda bien a multigrid. Multigrid brilla en problemas elípticos y parabólicos como el flujo subterráneo, donde la estimación inicial está lejos de la solución. El transporte geoquímico dominado por advección es lo contrario: los pasos de tiempo pequeños vuelven la matriz fuertemente dominante en la diagonal, y sobre esas matrices precondicionadores corrientes como Jacobi puntual e ILU(0) ya resultan suficientes. No hay motivo para apilar niveles. Aplicar multigrid a sistemas que describen flujo multifásico sigue siendo tema de investigación.
-
-Tercero, el costo razonable del precondicionador depende del carácter de la malla. En mallas estiradas las intensidades de acoplamiento por dirección difieren mucho, y algo como un [precondicionador linelet](/es/posts/2026-07-31-linelet-preconditioner-stretched-grid/), que resuelve una sola dirección de forma exacta, logra el mismo efecto por menos.
+El costo del precondicionador también cuelga de la forma de la malla. En mallas estiradas las intensidades de acoplamiento por dirección difieren mucho, y un [precondicionador linelet](/es/posts/2026-07-31-linelet-preconditioner-stretched-grid/) que resuelve una sola dirección de forma exacta sale más barato.
 
 ## Por qué los autores de PFLOTRAN piden ver primero el strong scaling
 
@@ -200,8 +203,8 @@ La postura del artículo es clara. En la práctica se recibe un dominio fijo y s
 
 El propio strong scaling de PFLOTRAN es casi ideal hasta 4096 núcleos en el escenario de lixiviación de cobre, y después se dobla. En el codo, cada núcleo tenía 768 grados de libertad. Tanto el caso de 3.1 M como el de 49 K se doblaron en la misma razón. Ese único número resulta más útil en la práctica que toda la curva de eficiencia: no bajar de unos 1000 grados de libertad por núcleo.
 
-## El número que conviene revisar primero en una gráfica de scaling
+## Cuando el conteo llega a 1285, MPI no devuelve el 0.163
 
-Antes del tiempo de reloj hay que mirar el **conteo de iteraciones**. Al tabular las iteraciones no lineales y lineales contra el número de núcleos, una línea inclinada se separa limpiamente en un problema de paralelización o un problema de solver. Iteraciones planas con tiempo creciente apunta a comunicación o memoria. Iteraciones que crecen junto con el tiempo es un problema algorítmico, y ningún ajuste de MPI lo recupera.
+En la fila de 64 núcleos, Jacobi puntual toma 1285 iteraciones y la eficiencia es 0.163. El paso de 210 a 1285 es un factor de 6.12, y la eficiencia es el recíproco, $210/1285=0.1634$. Las celdas por núcleo se mantienen en 2048 en cada fila. Si una iteración cuesta lo mismo, el tiempo de reloj sigue al conteo. Recortar mensajes no devuelve ese factor de 6.12.
 
-Y al graficar weak scaling, conviene anotar en el pie de figura hacia dónde se hizo crecer el caso: el dominio o la malla. La misma forma de curva carga un significado completamente distinto.
+La bifurcación está en el número de niveles. Con tres niveles fijos el conteo va de 10 a 47, razón 4.7, eficiencia 0.213. Si los niveles crecen con la malla, va de 9 a 10, razón 1.11, eficiencia 0.900. Sobre los mismos 131072 grados de libertad, 1285 frente a 10 es un factor de 128.5. Una curva inclinada pide decir en el pie si creció el dominio o se apretó la malla. Si la columna de iteraciones creció por 6.12, el sitio donde trabajar es el [solver lineal de Krylov](/es/posts/2026-04-22-cfd-linear-solvers-krylov/). Iteraciones planas con un reloj que sube: ese es el caso de la comunicación.

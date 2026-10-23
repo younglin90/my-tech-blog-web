@@ -1,49 +1,59 @@
 ---
 title: "5-Equation Model 구현 가이드: Python으로 만드는 다상유동 솔버"
 date: 2026-03-07
-description: "5-equation diffuse interface model을 Python으로 직접 구현하며, 1D 충격파-버블 상호작용 문제를 시뮬레이션합니다."
+updated: 2026-10-19
+description: "α=0.5에서 혼합 음속은 약 24 m/s다. 같은 초기 상태의 공기는 약 374, 물은 약 1625 m/s다."
 tags: ["Multiphase", "Diffuse-Interface", "Python", "Implementation"]
 series: "compressible-multiphase"
 seriesOrder: 4
 noindex: true
+takeaway: "시간간격을 조이는 음속은 그 24 m/s가 아니라, 충격파 뒤 물의 약 2530 m/s다."
 ---
 
 import { VolumeFractionAdvect } from '@/components/post-viz/five-equation-model/VolumeFractionAdvect'
 
 # 5-Equation Model 직접 구현하기
 
-이론만으로는 감이 오지 않는 법입니다.
-이 글에서는 1D **5-equation diffuse interface model**을 Python으로 직접 구현하고,
-충격파가 기체 버블을 관통하는 문제를 시뮬레이션합니다.
+충격파 뒤 물의 압력은 $10^{9}$, 앞의 물은 $10^{5}$다. 그 사이에 공기 버블이 있고, 체적분율 $\alpha_1$은 거의 0과 거의 1을 오간다. 1D **5-equation diffuse interface model**은 이 점프를 식 다섯 개로 민다. 두 유체는 속도 하나, 압력 하나를 나눠 갖고, 체적분율만 따로 흐른다.
+
+인공 확산 슬라이더를 0으로 내리면 체적분율 경계가 한 칸에서 끊긴다.
+
+<VolumeFractionAdvect />
+
+슬라이더를 올리면 경계가 여러 칸으로 퍼진다. 그 칸의 $\alpha$가 혼합 압력의 분모에 그대로 들어간다.
 
 ## 지배 방정식 정리
 
-1D 5-equation model의 보존 변수와 플럭스:
+1D에서 보존 변수와 플럭스는 이렇다.
 
 $$
 \mathbf{U} = \begin{bmatrix} \alpha_1 \rho_1 \\ \alpha_2 \rho_2 \\ \rho u \\ E \\ \alpha_1 \end{bmatrix}, \quad
 \mathbf{F} = \begin{bmatrix} \alpha_1 \rho_1 u \\ \alpha_2 \rho_2 u \\ \rho u^2 + p \\ (E+p)u \\ 0 \end{bmatrix}
 $$
 
-5번째 방정식 ($\alpha_1$)은 비보존형이므로 별도 처리합니다:
+다섯 번째 줄의 플럭스는 0이다. $\alpha_1$은 비보존형이라 따로 민다.
 
 $$
 \frac{\partial \alpha_1}{\partial t} + u \frac{\partial \alpha_1}{\partial x} = 0
 $$
 
+한 속도와 한 압력으로 줄인 모델이 이 다섯 식이다. 각 상에 방정식을 되돌리는 쪽은 [Baer–Nunziato 7-방정식](/ko/posts/2026-06-27-baer-nunziato-seven-equation-two-phase/)이다.
+
 ## 상태방정식: Stiffened Gas EOS
 
-두 유체 모두 stiffened gas EOS를 사용합니다:
+두 유체 모두 stiffened gas다.
 
 $$
 p_k = (\gamma_k - 1)\rho_k e_k - \gamma_k p_{\infty,k}
 $$
 
-혼합 규칙(mixture rule)으로 전체 압력을 구합니다:
+혼합 압력은 이 규칙으로 구한다.
 
 $$
 p = \frac{\rho e - \sum_k \alpha_k \frac{\gamma_k p_{\infty,k}}{\gamma_k - 1}}{\sum_k \frac{\alpha_k}{\gamma_k - 1}}
 $$
+
+$p_k$는 $k$ 유체의 압력, $e_k$는 그 내부에너지, $\gamma_k$와 $p_{\infty,k}$는 EOS 상수다. 분모는 $\sum \alpha_k/(\gamma_k-1)$이다.
 
 ## Python 구현
 
@@ -90,7 +100,11 @@ def sound_speed(alpha1, arho1, arho2, p):
     return np.sqrt(1.0 / (rho * inv_rhoc2))
 ```
 
+`pressure`는 위 혼합 규칙을 보존 변수로 다시 쓴 것이다. `sound_speed`의 $c_k^2=\gamma_k(p+p_{\infty,k})/\rho_k$가 순수 유체 음속이다.
+
 ### HLLC Flux 계산
+
+보존 식 네 개의 수치 플럭스만 HLLC다. $\alpha$의 이류 속도 $S^\star$는 같이 돌려준다.
 
 ```python
 def hllc_flux(UL, UR, alpha1L, alpha1R):
@@ -142,6 +156,8 @@ def hllc_flux(UL, UR, alpha1L, alpha1R):
 
 ### 시간 적분 (1st order)
 
+시간 전진은 전방 오일러다. $\Delta t$는 $\mathrm{CFL}\,\Delta x/\max(|u|+c)$이고, 기본 CFL은 0.5다.
+
 ```python
 def solve(U, alpha1, dx, t_end, cfl=0.5):
     """Forward Euler time integration."""
@@ -186,7 +202,11 @@ def solve(U, alpha1, dx, t_end, cfl=0.5):
     return U, alpha1
 ```
 
+$\alpha_1$ 갱신은 보존 플럭스가 아니다. 면 속도 `uface`의 부호로 풍상을 고른다.
+
 ### 초기 조건: 충격파-기체 버블
+
+위치 0.25보다 앞은 충격파를 지난 물이다. $\rho=1100$, $u=50$, $p=10^{9}$. 0.4와 0.6 사이는 공기 버블, $\rho=1$, $u=0$, $p=10^{5}$. 나머지는 주변 물, $\rho=1000$, $u=0$, $p=10^{5}$다.
 
 ```python
 # Initial condition: shock hitting an air bubble in water
@@ -222,49 +242,40 @@ for i in range(N):
     U[3, i] = E
 ```
 
+`compute_total_energy`는 이 조각 안에 없다. 압력에서 에너지를 되돌리는 식은 EOS 쪽에 있다. $\rho e=(p+\gamma p_\infty)/(\gamma-1)$이다.
+
 ## 주의사항
 
 ### 1. $\alpha$의 범위 제한
 
-$\alpha_1$이 정확히 0이나 1이 되면 EOS 계산에서 division by zero가 발생합니다.
-항상 $\epsilon < \alpha_1 < 1 - \epsilon$ ($\epsilon \sim 10^{-8}$)으로 clipping합니다.
+$\alpha_1$이 정확히 0이나 1이면 보존량 $\alpha_1\rho_1$을 $\alpha_1$로 나누지 못한다. 코드는 $\alpha_1$을 $10^{-8}$과 $1-10^{-8}$ 사이에 자른다.
 
 ### 2. 혼합 음속: Wood의 공식
 
-혼합 영역에서의 음속은 직관과 다르게 매우 낮아질 수 있습니다.
-이는 물리적으로 올바른 현상이며, CFL 조건에 영향을 줍니다.
+혼합 칸의 음속은 두 유체보다 낮아질 수 있다. 직관과 반대지만, 식은 그렇게 말한다. CFL도 이 음속을 본다.
 
 $$
 \frac{1}{\rho c^2} = \frac{\alpha_1}{\rho_1 c_1^2} + \frac{\alpha_2}{\rho_2 c_2^2}
 $$
 
-$\alpha_1 = 0.5$ 근처에서 $c_{mix}$는 두 유체의 음속보다 **훨씬 작아**집니다.
+초기 조건의 순수 상태를 이 식에 넣으면 숫자가 나온다. 버블 공기는 $\rho=1$, $p=10^{5}$, $\gamma=1.4$, $p_\infty=0$이다. $c^2=\gamma(p+p_\infty)/\rho$이면 $c=\sqrt{1.4\times 10^{5}}\approx 374\,\mathrm{m/s}$다. 주변 물은 $\rho=1000$, $p=10^{5}$, $\gamma=4.4$, $p_\infty=6\times 10^{8}$이라 $c\approx 1625\,\mathrm{m/s}$다. 충격파 뒤 물은 $\rho=1100$, $p=10^{9}$라 $c\approx 2530\,\mathrm{m/s}$다. $p+p_\infty$는 주변 물 대비 약 2.67배인데, 밀도는 $1100/1000=1.10$배뿐이다. $u=50$의 운동에너지는 $0.5\times 1100\times 50^{2}=1.375\times 10^{6}$이다. 같은 칸의 내부에너지 밀도 $\rho e\approx 1.07\times 10^{9}$의 약 0.13%다. 이 충격의 에너지는 속도보다 $p_\infty$ 쪽에 있다.
+
+$\alpha_1=0.5$로 버블 공기와 주변 물을 한 압력 $10^{5}$에서 섞으면, Wood 식의 $1/(\rho c^2)$은 거의 공기 항이다. $\rho_1 c_1^2=1.4\times 10^{5}$이고 $\rho_2 c_2^2\approx 2.64\times 10^{9}$다. 혼합 밀도는 $0.5\times 1+0.5\times 1000=500.5$이고, $c_\mathrm{mix}\approx 24\,\mathrm{m/s}$다. 374도 아니고 1625도 아니다.
+
+압력 분모도 같은 자리에서 민감하다. 순수 물의 $\sum \alpha/(\gamma-1)$은 $1/3.4\approx 0.294$다. 물에 $\alpha_1=0.01$만 새어도 분모는 $0.01/0.4+0.99/3.4\approx 0.316$으로 약 7.5% 커진다. 압력이 이 분모로 나뉘므로, 퍼진 계면의 $\alpha$ 오차는 압력 오차로 들어온다.
+
+CFL의 $\Delta t=0.5\,\Delta x/\max(|u|+c)$이고, $\Delta x$는 `linspace(0, 1, 1000)`의 간격 $1/999$다. 제한은 혼합 칸이 아니다. 충격파 뒤는 $|u|+c\approx 50+2530=2580$이라 $\Delta t\approx 1.9\times 10^{-7}$이다. 음속 24 m/s인 칸만 보면 간격이 약 110배 크다. 혼합 음속이 낮아져도 시간간격은 그 칸이 조이지 않는다. 같은 $\Delta t$ 동안 계면의 음향이 거의 멈춰 보이는 쪽이 영향이다.
 
 ### 3. 고차 정확도로의 확장
 
-위 코드는 1차 정확도입니다. 실제 연구에서는:
-
-- **MUSCL 재구성** + slope limiter로 2차
-- **WENO** 재구성으로 5차 이상
-- **Runge-Kutta** 시간 적분으로 시간 정확도 향상
+위 시간 적분은 1차다. 공간도 칸 값을 그대로 쓴다. 2차가 필요하면 MUSCL과 slope limiter, 그 위는 WENO다. 시간은 Runge–Kutta로 올린다. 차수를 올려도 $\alpha$의 비보존 갱신과 Wood 음속은 그대로 남는다.
 
 ## 결과 해석
 
-시뮬레이션을 실행하면 충격파가 기체 버블을 압축하면서:
+충격이 버블에 들어가면 뒤쪽으로 투과 충격파(transmitted shock)가 나가고, 왼쪽으로 반사 팽창파(reflected rarefaction)가 돌아온다. 버블은 급히 눌리며 안쪽 압력이 오른다. 제트(jet)는 2D나 3D에서 뒤쪽 벽에 생긴다. 수중 폭발과 충격파 쇄석술이 이 그림을 쓴다.
 
-1. **투과 충격파(transmitted shock)**가 버블 뒤쪽으로 진행
-2. **반사 팽창파(reflected rarefaction)**가 좌측으로 이동
-3. 버블이 급격히 **압축**되며 내부 압력 상승
-4. 후방 벽에서 **제트(jet)** 형성 (2D/3D에서)
+## 풍상 α만 밀면 접촉 압력이 먼저 흔들린다
 
-이 현상은 수중 폭발, 충격파 쇄석술 등에서 핵심적인 물리입니다.
+다섯 번째 플럭스는 0이고, $\alpha$는 면 속도의 부호로 풍상한다. 물에 $\alpha_1=0.01$만 새어도 압력 분모가 7.5% 움직이는 계산은, 계면 한 칸의 오차가 평형 압력을 건드린다는 뜻이다. 이 1차 갱신은 그 평형을 따로 강제하지 않는다. 비보존 항의 이산화가 압력을 그대로 두는지가 먼저 갈린다.
 
-## 다음 단계
-
-다음 글에서는 수치해석의 기본 개념들을 **게임처럼** 배워보는
-인터랙티브 콘텐츠를 준비했습니다. 수치 안정성, CFL 조건 등을
-직접 체험해볼 수 있습니다.
-
-인공 확산을 0으로 두면 계면이 비물리적으로 sharp 해진다 — THINC 같은 보정이 왜 필요한지 직접 본다.
-
-<VolumeFractionAdvect />
+평형을 재는 문제는 아무 일도 없어야 하는 접촉이다. 거기서 압력이 어디로 새는지는 [Abgrall 기준과 비보존 항](/ko/posts/2026-09-06-abgrall-criterion-nonconservative-term/)이 묻는다.

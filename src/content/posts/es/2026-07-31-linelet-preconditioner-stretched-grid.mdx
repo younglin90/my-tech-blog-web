@@ -1,7 +1,9 @@
 ---
 title: "Donde Jacobi se muere en una malla de capa límite — el precondicionador linelet"
 date: 2026-07-31
-description: "Por qué aplastar celdas contra la pared estanca los suavizadores puntuales"
+updated: 2026-10-19
+description: "En una malla de 64 por 48, Jacobi pasa de 18 barridos con AR 1 a 5471 con AR 1000, y el linelet normal a la pared termina en 2."
+takeaway: "Cuando a_N se queda con la diagonal, el techo del suavizador puntual conserva solo Ny. La cota 1/3 del linelet no lleva AR."
 tags: ["Linelet", "Preconditioning", "Anisotropic-Grid", "Krylov", "Boundary-Layer"]
 locale: es
 slug: linelet-preconditioner-stretched-grid
@@ -15,7 +17,7 @@ La misma ecuación. El mismo número de celdas, la misma iteración, el mismo cr
 
 La física no cambió en nada. Lo único que cambió es la relación de aspecto de la celda. Y aun así el solver lineal empieza a comportarse como si le hubieran entregado otro problema. Tampoco hay forma de esquivarlo: alcanzar $y^+ \approx 1$ en un cálculo turbulento obliga a aplastar la primera celda junto a la pared.
 
-Este artículo localiza dónde vive ese factor 300 dentro de la matriz. Después muestra por qué el precondicionador linelet — una cadena de celdas enhebrada a lo largo de la dirección fuertemente acoplada, usado en SU2 entre otros — devuelve ese factor, con un contador de iteraciones que cualquiera puede ejecutar.
+Ese factor 300 tiene una dirección dentro de la matriz. El precondicionador linelet — una cadena de celdas enhebrada a lo largo de la dirección fuertemente acoplada, el que usa SU2 — lo devuelve. El contador de barridos es la comprobación. Las filas cortas son la tabla. Las filas largas son los coeficientes.
 
 ## Aplastar una celda convierte la matriz en otra cosa
 
@@ -32,6 +34,12 @@ $$
 $$
 
 $\mathrm{AR}$ es la relación de aspecto de la celda (longitudinal sobre normal a la pared). El cociente de coeficientes va con el **cuadrado**. Una primera celda con $\mathrm{AR} = 1000$ tiene un acoplamiento norte-sur un millón de veces mayor que el este-oeste. Aplastar la malla diez veces sesga la matriz cien veces.
+
+Al llevar el deslizador AR de 1 a 100, las franjas verticales desaparecen primero. Al activar linelet, la mancha horizontal que queda pierde vida.
+
+<AnisotropicSmootherArena />
+
+Cuando el valor measured bajo el mapa se pega cerca de 0,997, el estancamiento ya está. Con el mismo AR, linelet se lleva esa mancha en uno o dos barridos.
 
 Con la derivada temporal implícita, la diagonal queda
 
@@ -65,11 +73,7 @@ donde $N_y$ es el número de capas normales a la pared. Que aquí no aparezca $\
 
 Lo que ocurre se visualiza fácil. Un suavizador puntual borra el error de alta frecuencia normal a la pared en uno o dos barridos. Ahí se atasca. Eliminar el error que varía **a lo largo** de la pared exige que la información viaje de lado por $a_E$, y como la diagonal está sujeta por $a_N$, cada paso se encoge en $\mathrm{AR}^2$.
 
-Conviene aplastar la malla en la simulación de abajo.
-
-<AnisotropicSmootherArena />
-
-Al llevar $\mathrm{AR}$ de 1 a 100 las franjas verticales desaparecen enseguida, mientras que las manchas horizontales alargadas se quedan quietas. El instante en que el valor "measured" bajo el mapa sube hacia 0,997 marca el comienzo del estancamiento. Con el mismo $\mathrm{AR}$, al pulsar el botón linelet esas manchas se van en uno o dos barridos.
+Dónde se detiene una iteración que solo mira la diagonal, método por método, está en [una comparación de barridos desde Jacobi hasta BiCGSTAB](/es/posts/2026-04-22-cfd-linear-solvers-krylov/). Allí cambia el solver. Aquí la relación de aspecto de la celda traiciona al mismo solver.
 
 ## Tres remedios en una sola tabla
 
@@ -92,11 +96,7 @@ El trato del linelet es explícito: invierte de forma exacta **una sola** direcc
 
 Al renumerar dentro de una cadena, esa submatriz queda tridiagonal. Y tridiagonal significa que el algoritmo de Thomas (eliminación hacia adelante y luego sustitución hacia atrás) la invierte de forma exacta en $O(n)$. Esa frase es todo el precondicionador linelet.
 
-Abajo se pueden cambiar el espesor de la primera capa y la razón de crecimiento para ver hasta dónde llegan las cadenas.
-
-<LineletChainBuilder />
-
-Al reducir $\Delta y_{\text{wall}}$ las cadenas se hunden más en la capa; al subir la razón de crecimiento la malla vuelve antes a ser isótropa y las cadenas se acortan. Lo llamativo es que las cadenas son **cortas**: no llegan a cubrir ni la mitad de las capas. Por eso el linelet sale barato.
+Dónde se corta una cadena queda junto a la tabla de barridos. Los controles son el espesor de la primera capa y la razón de crecimiento.
 
 ## Contando barridos en Python
 
@@ -184,7 +184,19 @@ Esto es lo que imprime.
   1000     5471   0.9978        2   0.0002
 ```
 
+<LineletChainBuilder />
+
+Al reducir $\Delta y_{\text{wall}}$ las cadenas se hunden más en la capa. Al subir la razón de crecimiento la malla vuelve antes a ser isótropa y las cadenas se acortan. Las cadenas son **cortas**. No cubren ni la mitad de las capas. El linelet sale barato por esa longitud.
+
 Al aplastar mil veces, Jacobi se vuelve 300 veces más lento y choca contra el techo cercano a 6.000 que predijo la sección anterior. El linelet, en cambio, se acelera. El acoplamiento entre cadenas vecinas decae como $a_E/a_N = \mathrm{AR}^{-2}$, de modo que las cadenas se independizan entre sí. La cota del peor modo, $2a_E/(V/\Delta t + 2a_E) = 1/3$, sigue cumpliéndose; el decaimiento medido simplemente es mucho mejor.
+
+Conviene partir solo la columna de Jacobi. 18, 514, 4879, 5471. Las relaciones de aspecto son 1, 10, 100 y 1000.
+
+El primer factor diez en la relación multiplica el trabajo por 28,6. El siguiente factor diez lo multiplica por 9,5. El último lo multiplica por 1,12, que es 5471 dividido entre 4879. El cociente de coeficientes sigue creciendo como $\mathrm{AR}^2$ y el número de barridos deja de seguirlo. Con $N_y = 48$ la fórmula modal $1 - \frac{\pi^{2}}{2 N_y^{2}}$ vale 0,99786. Al resolver $0{,}99786^{n} = 10^{-6}$, n queda cerca de 6400. El 5471 impreso está justo debajo de ese techo. Aunque la malla se aplaste más, esta columna se queda pegada ahí.
+
+La columna del linelet va al revés. 8, 7, 4, 2. Los factores medidos son 0,1839, 0,1699, 0,0194 y 0,0002. La cota $2a_E/(V/\Delta t + 2a_E) = 1/3$ no contiene $\mathrm{AR}$, y todo valor medido queda por debajo. En AR 1000, 0,0002 es cerca del 0,06% de 1/3. El acoplamiento entre cadenas, $a_E/a_N = \mathrm{AR}^{-2}$, se apaga, así que un paso de Thomas deja casi nada del error normal a la pared. En AR 1 son 8 barridos contra 18. La ganancia es pequeña. En AR 10 son 514 contra 7, unas 73 veces. Ahí se parte la elección.
+
+La cota del suavizador puntual usa la misma diagonal. Con $V/\Delta t = 4a_E$ el denominador es $6a_E + 2a_N$. En AR 1 la cota vale 0,5 y el rho_J de la tabla es 0,4870. Casi el mismo número. En AR 100 la cota es 0,9998 y el rho_J medido es 0,9975. Cuando la cota se pega a 1, el 0,99786 de la fórmula modal es el número honesto. La estimación anterior de unos 6.000 barridos y el 5471 impreso son el mismo techo.
 
 ## Trampas que conviene evitar al programarlo
 
@@ -196,10 +208,8 @@ Al aplastar mil veces, Jacobi se vuelve 300 veces más lento y choca contra el t
 
 **Tapar un problema no lineal con el precondicionador.** Si con linelet la simulación sigue divergiendo, el culpable suele ser el bucle externo y no el solver lineal. Primero hay que bajar el CFL y llevar el factor de subrelajación hacia 0,7 para reducir las propias actualizaciones; después se juzga. Un precondicionador resuelve más rápido la matriz que se le entrega, pero no arregla una matriz equivocada.
 
-## La versión corta, para quien no vaya a releer
+## Thomas se desperdicia si las líneas no son normales a la pared
 
-Aplastar una celda un factor $\mathrm{AR}$ abre el cociente de coeficientes un factor $\mathrm{AR}^2$. El paso de un suavizador puntual se encoge en la misma proporción.
+Las cadenas siguen el coeficiente grande, solo en la normal a la pared. Tenderlas en la dirección del flujo es seguir con la vista el lado largo. Thomas sigue costando. El amortiguamiento coincide con Jacobi.
 
-Un linelet invierte con Thomas exactamente una dirección fuertemente acoplada. La cota $2a_E/(V/\Delta t + 2a_E)$ no contiene $\mathrm{AR}$.
-
-Las cadenas solo crecen dentro de la capa límite. Conviene registrar su número y su longitud media: en cuanto ese número llega a cero, el precondicionador es Jacobi.
+Conviene dejar en el registro el número de cadenas y la longitud media. Un cero impreso significa que $\sigma_{\min}$ ya no cuadra con la malla. El precondicionador ya es un suavizador diagonal. Sumar núcleos en ese estado solo parte más los fragmentos. [El weak scaling que cae a un 16,3% de eficiencia mientras se refina la malla](/es/posts/2026-10-04-weak-scaling-krylov-grid-levels/) es la factura de ese corte.

@@ -1,7 +1,9 @@
 ---
 title: "[Reseña] Elegir la reconstrucción con menor salto — Deng (2018) MUSCL-THINC-BVD"
 date: 2026-05-02
-description: "Elegir entre dos reconstrucciones candidatas minimizando la variación total en las fronteras"
+updated: 2026-10-19
+description: "Deng (2018) construye MUSCL y THINC en cada celda y conserva la candidata con menor salto en las dos caras. Esa regla es BVD."
+takeaway: "Un salto puro de una celda anula una diferencia, así que THINC queda fuera antes de la comparación de saltos."
 tags: ["Paper-Review", "Compressible-Multiphase", "MUSCL", "THINC", "BVD", "Interface-Capturing"]
 draft: false
 series: "numerical-methods"
@@ -9,64 +11,74 @@ series: "numerical-methods"
 
 import { MUSCLTHINCBVDPicker } from '@/components/post-viz/2026-05-02-muscl-thinc-bvd-interface-reconstruction/MUSCLTHINCBVDPicker'
 
-En 2018 el grupo de Xiao en Tokyo Tech hizo una medición que pocos quieren publicar. Tras correr una simulación de flujo bifásico compresible durante 1000 pasos, midieron el grosor de la interfaz: el salto que arrancó con un solo nodo se había extendido a ocho. Ni siquiera WENO ayudaba demasiado. Aun los esquemas con disipación aparentemente baja por paso terminan por difuminar la interfaz tras suficientes pasos. Este artículo presenta su respuesta: la reconstrucción **MUSCL-THINC-BVD**. La idea es simple. Para cada celda, construir **dos reconstrucciones candidatas** a la vez y conservar aquella cuyos **saltos en las fronteras de celda sean menores**.
+En 2018 el grupo de Xiao en Tokyo Tech midió un espesor que pocos quieren publicar. Flujo bifásico compresible, 1000 pasos. El salto que empezó con una celda se había extendido a ocho. WENO tampoco lo detuvo. La disipación de un solo paso puede parecer pequeña. El tiempo igual arruina la interfaz.
+
+La reconstrucción que trajeron es MUSCL-THINC-BVD. Cada celda carga dos candidatas. Se queda la de menor salto en las caras.
+
+Al mover el deslizador de β de 1.4 a 2.2, la tanh dentro de una celda de salto se estrecha, y los hombros de la gaussiana responden con dientes.
+
+<MUSCLTHINCBVDPicker />
+
+Conviene mirar si las barras cian se encienden solo en los bordes de la onda cuadrada. También si esas barras dejan de multiplicarse cerca de 1.6.
 
 ## Resumen en una página
 
-- **Autores / Revista**: Deng, Inaba, Xie, Shyue, Xiao. *Journal of Computational Physics* 371 (2018) 945–966.
-- **Problema**: En el modelo de cinco ecuaciones para flujo bifásico compresible, las interfaces materiales se difuminan progresivamente con el tiempo.
-- **Propuesta**: En cada celda construir una reconstrucción MUSCL (zona suave) y una THINC (saltos). Comparar el salto de cada candidata en las fronteras y conservar la más pequeña. Este es el algoritmo **BVD (Boundary Variation Diminishing)**.
-- **Lo nuevo**: Sin anti-difusión de postprocesamiento ni compresión artificial. La misma regla BVD se aplica a la fracción de volumen y al resto de variables conservativas, así la consistencia entre variables sale automática.
+- **Autores / revista**: Deng, Inaba, Xie, Shyue, Xiao. *Journal of Computational Physics* 371 (2018) 945–966.
+- **Problema**: En el modelo de cinco ecuaciones para flujo bifásico compresible, las interfaces materiales se extienden con el tiempo.
+- **Propuesta**: Construir MUSCL (tramos suaves) y THINC (saltos) en cada celda, y conservar el salto de cara más pequeño. Esa regla es BVD, boundary variation diminishing.
+- **Qué cambia**: Sin antidifusión de posproceso y sin compresión artificial. La misma regla cae sobre la fracción de volumen y el resto de variables conservadas, así que la coherencia entre ellas viene sola.
 
 ## Dos exigencias en conflicto
 
-La numérica del flujo bifásico compresible pide dos cosas a la vez. En zonas suaves se necesita precisión y baja disipación. En saltos (interfaces, choques) se exige monotonía y un perfil delgado. Una sola función rara vez hace bien las dos tareas.
+La numérica bifásica compresible quiere dos cosas a la vez. Las zonas suaves piden exactitud y poca disipación. Los saltos, o sea interfaces y choques, piden monotonía y un perfil delgado. Una sola función rara vez hace las dos.
 
-MUSCL es lineal por trozos. Garantiza monotonía pero tiene exactitud de primer orden en la derivada. Cada vez que cruza una interfaz le quita un poco, y a lo largo de muchos pasos el salto se erosiona. THINC ajusta una tanh dentro de la celda y mantiene el escalón en una o dos celdas, pero aplicada a una zona suave fabrica escalones falsos.
+MUSCL es una recta dentro de cada celda. La monotonía se sostiene. La pendiente llega solo a primer orden. Cada cruce de la interfaz recorta un poco. En 1000 pasos, una celda pasa a ocho. THINC ajusta una tanh dentro de la celda y encierra el escalón en una o dos celdas. Poner ese ajuste sobre una zona suave fabrica escalones falsos.
 
-El punto de partida del paper es una decisión: no mezclar las dos en una sola función. Para cada celda, simplemente elegir una.
+El artículo arranca con una decisión. No mezclar las dos en una función. Elegir una por celda.
 
 ## MUSCL — el difusor confiable
 
-La candidata base es MUSCL con limitador minmod.
+La candidata de base es MUSCL con limitador de pendiente minmod.
 
 $$
 \tilde{q}_i^{\,\text{MUSCL}}(x) = \bar{q}_i + \sigma_i (x - x_i), \quad
 \sigma_i = \text{minmod}(\bar{q}_i - \bar{q}_{i-1},\; \bar{q}_{i+1} - \bar{q}_i)
 $$
 
-$\bar{q}_i$ es el promedio de celda, $\sigma_i$ la pendiente en el centro de celda y minmod devuelve la diferencia de menor magnitud cuando ambas tienen el mismo signo, cero en caso contrario.
+$\bar q_i$ es el promedio de celda. $\sigma_i$ es la pendiente en el centro. minmod devuelve la magnitud menor cuando las dos diferencias comparten signo, y cero cuando no.
 
-Los valores en las fronteras producidos por esta candidata:
+Los valores de cara se leen así.
 
 $$
 q^{L,\text{MUSCL}}_{i+1/2} = \bar{q}_i + \tfrac{1}{2}\sigma_i, \quad
 q^{R,\text{MUSCL}}_{i-1/2} = \bar{q}_i - \tfrac{1}{2}\sigma_i
 $$
 
-Funciona seguro en todas partes. Sin oscilaciones, pero el espesor del salto crece poco a poco.
+No hay oscilaciones. En un salto, solo crece el espesor, y lo hace despacio.
 
 ## THINC — una función monótona que imita saltos
 
-THINC (Tangent of Hyperbola for INterface Capturing) ajusta un salto tipo tangente hiperbólica dentro de la celda.
+THINC, tangente de hipérbola para capturar interfaces, ajusta una tangente hiperbólica dentro de la celda.
 
 $$
 \tilde{q}_i^{\,\text{THINC}}(x) = \bar{q}_{\min} + \tfrac{\bar{q}_{\max}}{2}\left[1 + \theta \tanh\!\left(\beta\!\left(\tfrac{x - x_{i-1/2}}{\Delta x} - \tilde{x}_i\right)\right)\right]
 $$
 
-$\bar{q}_{\min}, \bar{q}_{\max}$ son el mínimo y la amplitud locales tomados de las celdas vecinas, $\theta = \mathrm{sgn}(\bar{q}_{i+1}-\bar{q}_{i-1})$ codifica la dirección del salto, $\beta$ controla el espesor del salto y $\tilde{x}_i$ es el centro del salto, calculado de modo que el promedio de celda se conserve.
+$\bar q_{\min}$ y $\bar q_{\max}$ son el mínimo y la amplitud tomados de las vecinas. $\theta$ es la dirección del salto. $\beta$ es el espesor. $\tilde x_i$ es el centro del salto, resuelto para que el promedio de celda no se mueva.
 
-Un $\beta$ entre 1.4 y 2.0 es estable; 1.6 es el valor estándar. Un $\beta$ más grande confina el salto a una sola celda — perfecto donde existe un salto, terrible donde no lo hay.
+$\beta$ entre 1.4 y 2.0 es la banda estable. 1.6 es el valor de costumbre. Valores mayores encierran el salto en una celda, lo cual se ve limpio, y cortan dientes en las zonas suaves. Un registro que fija la tanh del lado del choque, en lugar de elegir candidata, está en [la reconstrucción que apila TENO sobre THINC](/es/posts/2026-06-13-teno-thinc-shock-resolving-reconstruction/). Allí las dos se mezclan por pesos.
 
 ## BVD — medir la variación entre dos candidatas
 
-Aquí llega la idea central. Con dos candidatas disponibles, se pregunta cuál produce saltos más pequeños cuando se encuentra con las reconstrucciones vecinas en las fronteras de celda. La **Variación Total en Fronteras (Total Boundary Variation, TBV)** para la celda $i$ se define como
+Con dos candidatas, se mide cuál salto de cara es menor cuando se encuentran con las reconstrucciones vecinas. La variación total de frontera de la celda $i$ se define así.
 
 $$
 \text{TBV}_i^{P} = |q^{L,\text{MUSCL}}_{i-1/2} - q^{R,P}_{i-1/2}| + |q^{L,P}_{i+1/2} - q^{R,\text{MUSCL}}_{i+1/2}|
 $$
 
-donde $P$ es la candidata (MUSCL o THINC). Las dos vecinas se mantienen fijas en MUSCL y solo la celda central cambia. La regla de selección:
+$P$ es MUSCL o THINC. Las dos vecinas se quedan en MUSCL. Solo cambia la celda central.
+
+La regla de selección es esta.
 
 $$
 \tilde{q}_i^{\,\text{BVD}}(x) =
@@ -76,13 +88,19 @@ $$
 \end{cases}
 $$
 
-$C_i = (\bar{q}_i - \bar{q}_{\min})/\bar{q}_{\max}$ mide dónde se sitúa el salto y $\delta \approx 10^{-4}$. Las dos primeras condiciones comprueban si un salto es plausible; la tercera es la decisión real.
+$C_i$ dice dónde se sienta el salto dentro de la celda. $\delta$ vale cerca de $10^{-4}$.
+
+
+La primera compuerta multiplica las dos diferencias de un lado y exige un producto estrictamente positivo. Un factor nulo la anula. Un escalón puro de 0 a 1, de una celda, tiene esa forma. La celda anterior al salto tiene diferencia a la derecha y ninguna a la izquierda. Se vuelve a MUSCL antes de armar la variación de frontera.
+
+La segunda compuerta es la posición. $\delta$ queda cerca de $10^{-4}$. Un promedio dentro de esa fracción de la amplitud vecina no es elegible para THINC. Las crestas planas salen.
+
 
 ## Consistencia sobre el modelo de cinco ecuaciones
 
-Aquí el paper va más allá de una simple comparación de reconstrucciones. El modelo de cinco ecuaciones lleva la fracción de volumen $\alpha_1$, las densidades fásicas $\alpha_1\rho_1, \alpha_2\rho_2$, el momento $\rho u$ y la energía total $E$. La misma regla BVD se aplica a cada una de esas variables.
+El artículo no se detiene en un concurso de reconstrucciones. El modelo de cinco ecuaciones lleva la fracción de volumen $\alpha_1$, las densidades de fase $\alpha_1\rho_1$ y $\alpha_2\rho_2$, el momento $\rho u$ y la energía total $E$. La misma regla BVD se aplica a las cinco.
 
-Los métodos previos afilaban la fracción de volumen y luego parchaban las otras variables para evitar oscilaciones de presión en la interfaz. BVD obliga, en cambio, a que las cinco variables compartan la misma decisión por celda. Si una celda se juzga "interfaz", todas usan THINC; si "suave", todas usan MUSCL. La consistencia entre variables emerge sola y no hace falta un paso separado de anti-difusión.
+Los métodos anteriores afilaban solo la fracción de volumen y luego parcheaban el resto para que la presión no sonara en la interfaz. BVD obliga a las cinco variables a compartir una decisión en cada celda. Una celda de salto usa THINC en las cinco. Una celda suave usa MUSCL en las cinco. La coherencia viene sola. No hace falta una etapa aparte de antidifusión.
 
 ## El árbol de decisión BVD en NumPy
 
@@ -158,25 +176,30 @@ print(f"Tasa de elección de THINC: {picks}/{N-4}")
 # Esperado: solo unas pocas celdas alrededor del salto
 ```
 
-En la región gaussiana suave, minmod captura la curvatura y BVD prefiere MUSCL. THINC solo gana en dos o tres celdas a cada lado del salto cuadrado. Más del 95 % de las celdas se queda con MUSCL — BVD no deforma el perfil subyacente.
+
+El comentario del fragmento cita 4 de 76 celdas con THINC. La onda del código es 0 o 1, así que una diferencia es cero y el producto falla. Esas cuatro celdas piden una rampa del mismo signo en dos o tres celdas. Tras 1000 pasos, ocho celdas ya son esa rampa. Con una celda de espesor, esta rama no llama a THINC.
+
+En una recta las diferencias vecinas coinciden, la pendiente minmod las iguala y la variación de frontera de MUSCL es cero. La tanh de THINC abre una holgura en la cara y la desigualdad se queda con MUSCL. Una gaussiana más ancha que la celda es esa recta en lo local. Por eso los tramos suaves rechazan el cambio.
+
+
+Una gaussiana suave está localmente cerca de una recta, así que el cambio se rechaza. Una onda cuadrada que sigue teniendo una celda de espesor tampoco abre la compuerta.
 
 ## Quién gana en cada celda — verlo en directo
 
-La simulación inferior permite probarlo en vivo. Una advección escalar 1D se resuelve en paralelo con tres reconstrucciones; en cada paso, la franja debajo del lienzo resalta en cian las celdas donde BVD eligió THINC.
-
-<MUSCLTHINCBVDPicker />
-
-Mover $\beta$ de 1.4 a 2.2 hace que las celdas elegidas por THINC se vuelvan más nítidas, a costa de dientes de sierra en los extremos de la gaussiana. El punto dulce está cerca de 1.6 — por eso lo usa el paper. La franja también revela algo: solo unas pocas celdas alrededor del salto cuadrado se vuelven cian, mientras que la joroba suave no dispara THINC. Esa es la auto-localización de BVD.
+La advección de arriba empuja tres reconstrucciones a la vez y pinta una barra en cada celda donde BVD elige THINC. Subir $\beta$ de 1.4 a 2.2 estrecha solo esas celdas. Demasiado grande, y aparecen dientes en los hombros de la gaussiana. El número de barras deja de crecer cerca de 1.6, y por eso ese valor se quedó. El cian aparece en los bordes solo después de que la onda cuadrada se ha emborronado un poco. Mientras el espesor es de una celda, las barras siguen vacías.
 
 ## Hasta dónde se le puede creer
 
-- **La tasa de convergencia queda por debajo del segundo orden**. MUSCL limita la precisión en zonas suaves. Cambiar la candidata por WENO recupera el quinto orden, pero el paper vende **simplicidad**.
-- **La definición de TBV asume que las vecinas son MUSCL**. El caso en que dos celdas adyacentes quieran ambas THINC se simplifica. La decisión en una sola pasada funciona bien en los ejemplos del paper, pero trabajos posteriores la generalizan.
-- **En multi-D, $\beta$ depende de la dirección normal a la cara**. La normal se estima mediante un algoritmo de Young; en esquinas y vértices la normal se degrada y el salto puede inclinarse.
-- **Interacción con integración temporal de alto orden**. El paper usa SSPRK3 y la decisión BVD se reevalúa en cada etapa RK. Si la decisión oscila entre etapas, la interfaz puede temblar — un punto que retoma la literatura posterior.
+El orden observado se queda por debajo de dos. Una candidata es MUSCL, así que la exactitud suave se detiene donde se detiene MUSCL. Cambiar a una candidata de orden alto, como WENO, puede llegar a quinto orden. Este artículo eligió la versión simple.
 
-## Tres líneas para llevar
+TBV supone que las vecinas son MUSCL. Un caso en el que ambos lados quieren THINC a la vez se ignora dentro de un solo barrido. La sección 4 del artículo sigue viéndose aceptable bajo ese atajo. Una forma más general quedó para después.
 
-- Para cada celda, dos candidatas — MUSCL para zonas suaves, THINC para saltos — y se conserva la de menor variación total en frontera.
-- La misma regla BVD se aplica a todas las variables conservativas, así la consistencia entre variables (sin oscilaciones espurias de presión) sale automática.
-- Sin anti-difusión ni compresión artificial, la interfaz mantiene un grosor de una celda — la simplicidad es la fortaleza.
+En varias dimensiones, $\beta$ se parte según la normal de la cara. La normal de la interfaz se estima con el algoritmo de Young. En esquinas y quiebres la normal falla, y el salto se inclina hacia un lado.
+
+La integración en el tiempo va aparte. El artículo usa SSPRK3. La decisión BVD tiene que rehacerse en cada etapa de Runge–Kutta. Si la decisión parpadea entre etapas, la interfaz tiembla. Un trabajo posterior volvió a ese temblor.
+
+## Donde la elección se detiene en un salto de una celda
+
+Mientras la interfaz sigue teniendo una celda de espesor, esta rama nunca llama a THINC. El producto de diferencias se vuelve positivo solo después de que el espesor se ha extendido sobre dos o tres celdas. Retener una interfaz de una celda y poder elegir solo después de que ya se extendió son dos tareas que se desencuentran.
+
+Si ese desencuentro se filtra al límite del paso de tiempo es la pregunta siguiente. Una interfaz delgada sigue teniendo un techo de advección. [La advección de interfaz que se quedó en CFL 0.05 después de retirar el término capilar](/es/posts/2026-08-16-vof-interface-advection-cfl-limit/) pregunta dónde se sienta ese techo. Si BVD de verdad encierra el salto en una celda, ¿hasta dónde puede crecer el paso que mueve esa celda?

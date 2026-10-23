@@ -1,10 +1,12 @@
 ---
 title: "El hombre que borró la presión — el método de proyección de Chorin y el paso fraccionado"
 date: 2026-07-03
-description: "Predecir un campo de velocidad incompresible y proyectarlo a divergencia nula"
+updated: 2026-10-19
+description: "Tras el predictor la divergencia ronda 1e-2. Una proyección FFT la baja a 1e-13, y la Poisson de presión se lleva la mayor parte del paso."
 tags: ["Incompressible", "Projection-Method", "Fractional-Step", "Pressure-Poisson", "Navier-Stokes"]
 locale: es
 slug: chorin-projection-fractional-step
+takeaway: "Un desajuste entre el flujo que entra y el que sale deja la Poisson de Neumann sin solución. Sin proyección, esa divergencia se queda en cada paso."
 draft: false
 ---
 
@@ -12,6 +14,12 @@ import { HelmholtzHodgeSplit } from '@/components/post-viz/2026-07-03-chorin-pro
 import { ProjectionFluidCanvas } from '@/components/post-viz/2026-07-03-chorin-projection-fractional-step/ProjectionFluidCanvas'
 
 En 1967, Alexandre Chorin borró la presión de las ecuaciones, al menos por un instante. La presión es el término más incómodo al resolver las ecuaciones de Navier–Stokes incompresibles. No tiene derivada temporal. Como la densidad es constante, tampoco se puede recuperar la presión con una ecuación de estado. La respuesta de Chorin fue audaz: avanzar la velocidad ignorando la presión y luego forzar el resultado de vuelta a un estado de divergencia nula (divergence-free). Este artículo recorre ese paso fraccionado —conocido normalmente como método de proyección— partiendo de un teorema de una sola línea, la descomposición de Helmholtz–Hodge, hasta llegar a un solver 2D que de verdad corre. Al final quedará claro por qué la mayor parte del tiempo de ejecución de un código incompresible se lo come la ecuación de Poisson de presión.
+
+Al subir la intensidad de la fuente en el panel izquierdo de 0 a 14, los colores de la divergencia se encienden, y la proyección de la derecha conserva solo el remolino.
+
+<HelmholtzHodgeSplit />
+
+Con la fuente en 0 los dos paneles casi coinciden. En 14 solo el izquierdo se llena de rojo y azul, y el derecho sigue oscuro. La proyección ha quitado la parte compresible.
 
 ## La presión no tiene derivada temporal
 
@@ -45,11 +53,7 @@ $$
 \mathbf{u} = \mathbb{P}\mathbf{w} = \mathbf{w} - \nabla\phi
 $$
 
-Conviene experimentar con los dos paneles de abajo. El de la izquierda muestra un remolino más una fuente radial; el de la derecha muestra el mismo campo tras la proyección.
 
-<HelmholtzHodgeSplit />
-
-Al subir el source strength de 0 a 14, el panel izquierdo se tiñe de rojo y azul (su divergencia crece), mientras el derecho permanece oscuro. La proyección ha eliminado toda la componente compresible y ha conservado solo el remolino.
 
 ## Predecir y luego proyectar — el paso fraccionado
 
@@ -83,7 +87,7 @@ Aquí empieza el dolor práctico. El predictor es barato. El corrector, en cambi
 
 Las condiciones de contorno también están llenas de trampas. La condición sobre $\phi$ es de Neumann en las paredes ($\partial\phi/\partial n = 0$). Un problema de Neumann queda definido salvo una constante, y para que exista solución debe cumplir una **condición de compatibilidad**: $\int \nabla\cdot\mathbf{u}^*\,dV = 0$ en todo el dominio. Si los caudales de entrada y salida no coinciden, la ecuación de Poisson simplemente no tiene solución. Cuando aparezca un NaN, conviene sospechar primero del caudal de contorno.
 
-En una malla colocalizada (collocated, no escalonada), poner presión y velocidad en el mismo punto provoca oscilaciones de tablero de ajedrez. Hay que usar una malla escalonada o frenarlas con la interpolación de Rhie–Chow. Como nota al margen: los métodos tipo SIMPLE repiten esta misma idea de proyección varias veces por paso para converger al estado estacionario, mientras que el paso fraccionado de aquí sigue un flujo no estacionario con una sola proyección por paso, conservando precisión temporal.
+En una malla colocalizada (collocated, no escalonada), poner presión y velocidad en el mismo punto provoca oscilaciones de tablero de ajedrez. Hace falta una malla escalonada, o frenarlas con la [interpolación de Rhie–Chow](/es/posts/2026-10-14-rhie-chow-under-relaxation-memory/). Si esa velocidad de cara recuerda el factor de subrelajación, la solución convergida misma cambia. Como nota al margen: los métodos tipo SIMPLE repiten esta misma idea de proyección varias veces por paso para converger al estado estacionario, mientras que el paso fraccionado de aquí sigue un flujo no estacionario con una sola proyección por paso, conservando precisión temporal.
 
 ## Python: enrollando una capa de cizalla doble con una FFT
 
@@ -149,6 +153,10 @@ for n in range(steps):
 
 Al mirar la salida: en cada paso $|\nabla\cdot\mathbf{u}^*|$ es del orden de $10^{-2}$, pero tras la proyección $|\nabla\cdot\mathbf{u}|$ cae hasta $10^{-13}$. La proyección por FFT ha aniquilado la divergencia hasta la precisión de máquina.
 
+Un lado de 128 deja un espaciado de 1/128. Viscosidad 5e-3 y escalas unidad dan Re = 200, como dice el comentario. Tres mil pasos de 2e-3 integran un tiempo 6. El espesor 1/30 ronda 0.033, poco más de cuatro celdas. La perturbación 0.05 es el 5 por ciento del chorro, y el enrollamiento arranca ahí. La divergencia $10^{-2}$ frente a $10^{-13}$ son once cifras. Fijar el modo medio de Fourier en 0 cierra la constante de Neumann. Un desbalance entre entrada y salida no se arregla con ese denominador. El 70 al 90 por ciento del coste es esta matriz. Al predictor le queda el otro 10 al 30 por ciento.
+
+Borrar una divergencia de $10^{-2}$ con paso 2e-3 pide al laplaciano de $\phi$ un valor cercano a 5. Esa es la corrección del gradiente de presión en un paso. Sin proyección se queda como divergencia, y 3000 pasos bastan para llenar la malla.
+
 ## Qué pasa cuando se apaga la proyección
 
 Sin el corrector, el campo de velocidad acumula un poco de divergencia en cada paso. La masa deja de conservarse, los vórtices se emborronan y el campo pronto se convierte en ruido que llena la malla. Conviene verlo en la simulación de abajo.
@@ -157,8 +165,8 @@ Sin el corrector, el campo de velocidad acumula un poco de divergencia en cada p
 
 Con Projection en ON, la capa de cizalla se enrolla en un par limpio de vórtices. En el instante en que se cambia a OFF, la lectura max|∇·u| de la esquina superior se dispara y el patrón de vórtices se derrumba. Al subir dt, la advección se vuelve más agresiva y el colapso llega antes. Ese único interruptor es la respuesta más corta a "¿por qué necesitamos la proyección?".
 
-## Un resumen para quien no volverá a leer esto
+## Si el caudal se desfasa una gota, la Poisson no tiene respuesta
 
-- En flujo incompresible, la presión no es una variable que se evoluciona, sino un multiplicador de Lagrange que impone $\nabla\cdot\mathbf{u}=0$ en cada paso.
-- El método de proyección tiene dos etapas: predecir sin presión ($\mathbf{u}^*$) y luego resolver una ecuación de Poisson para $\phi$ y restar su gradiente.
-- La mayor parte del coste vive en el solver de Poisson de presión, y la condición de compatibilidad de Neumann y el tablero de ajedrez son sus trampas clásicas.
+En flujo incompresible, la presión no es una variable que se evoluciona. Es un multiplicador de Lagrange que impone $\nabla\cdot\mathbf{u}=0$ en cada paso. La proyección construye $\mathbf{u}^*$ sin presión, resuelve una Poisson para $\phi$ y resta el gradiente. Ese orden es corto. La rotura está en el contorno. Si la entrada y la salida no coinciden, no hay condición de compatibilidad, y la matriz se queda con la libertad de una constante y no devuelve solución.
+
+Conservar la precisión temporal con una proyección por paso significa no volver a resolver la convección dentro de ese paso. Subir solo el orden viscoso y empujar la convección afuera es la bifurcación de [dónde la extrapolación de la convección en Gear agrandó el error](/es/posts/2026-10-12-semi-implicit-gear-convection-extrapolation/). Hacer que la convección del predictor parezca más exacta puede mover la divergencia nula que la proyección acaba de fijar.

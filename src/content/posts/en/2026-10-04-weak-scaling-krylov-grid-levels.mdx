@@ -1,6 +1,7 @@
 ---
 title: "I Added 64x the Cores and Weak-Scaling Efficiency Fell to 16.3% — The Trap of Measuring It by Refining the Grid"
 date: 2026-10-04
+updated: 2026-10-19
 description: "Why Krylov iterations grew 6.1x in a weak-scaling study that refined the grid, and how adding one multigrid level put the efficiency curve back to flat."
 tags: ["Weak-Scaling", "Newton-Krylov", "Preconditioning", "Krylov", "Paper-Review"]
 locale: en
@@ -16,7 +17,7 @@ import { LevelLadderEfficiencyDial } from '@/components/post-viz/2026-10-04-weak
 
 A supercomputer allocation request wants a scaling plot attached. You fix the cell count per core, push the core count from 1 to 4 to 16 to 64, and time each run. Ideally the line comes out flat. Mine did not. Efficiency dropped from 1.000 to 0.163. Neither MPI traffic nor load imbalance was the culprit. The culprit was hiding in the measurement itself. This post follows the spot that Hammond, Lichtner and Mills (2014) identified in their PFLOTRAN performance paper, then reproduces the same behavior in about a hundred lines of Python and undoes it with one extra level.
 
-You walk away with two things. First, a criterion for deciding whether a tilted weak-scaling curve indicts your code or your preconditioner. Second, the conditions under which "multigrid is good for weak scaling" holds, and the conditions under which it collapses.
+Two judgments are left at the end. Whether a tilted weak-scaling curve points at the code or at the preconditioner. And that "multigrid is good for weak scaling" holds only when the levels grow with the grid, and falls apart when the level count is frozen.
 
 ## Refining the Grid Changes the Problem Itself
 
@@ -170,29 +171,31 @@ weak_scaling_table()
     64     512x256   131072 |    1285  0.163 |      47  0.213 |      10  0.900
 ```
 
+The level slider and the grid slider, moved separately, change which efficiency curve on the right is highlighted.
+
+<LevelLadderEfficiencyDial />
+
+Set the level to $1$ and a single damping bar remains. Push the grid right and the coarsest grid grows while the Jacobi efficiency leans toward $0.163$. Grow the levels with the grid and the curve stays near $0.900$.
+
 The point-Jacobi column reads 210, 407, 754, 1285. While the grid tightened eightfold the count grew 6.1 times. The step ratios are 1.94, 1.85 and 1.70, matching the $\mathcal{O}(h^{-1})$ estimate from the previous section. Cells per core are fixed, so per-core cost per iteration is fixed too, and efficiency falls to 0.163 as the exact inverse of the iteration growth. That is not a number you win back by tuning communication or cache behavior.
+
+Divide the point-Jacobi counts $210$, $407$, $754$, $1285$ and the ratios are $407/210=1.938$, $754/407=1.853$, $1285/754=1.704$. Those match the printed $1.94$, $1.85$, $1.70$. The product is $6.10$, and $1285/210=6.12$. Efficiency is the reciprocal: $210/1285=0.1634$, the table's $0.163$. MG-3lv reads $10$, $16$, $28$, $47$. Then $47/10=4.7$, smaller than Jacobi's $6.1$, but the efficiency is $10/47=0.213$. The column that grows the levels reads $9$, $9$, $10$, $10$. At $64$ cores, $10/9=1.11$, and the efficiency $0.900$ is $9/10$. On the same $131072$ degrees of freedom, Jacobi at $1285$ over the grown-level count of $10$ is a factor of $128.5$. Cells per core stay $2048$ on every row. $64\times32=2048$, and $131072/64=2048$. Halve $h$ once and the cell count goes up by $4$, $\kappa$ by $4$, and the iteration bound by $\sqrt{\kappa}$, about $2$. Three halvings are the $8\times$ refinement, and the measured $6.1\times$ is that $2$ coming up a little short, as $1.94\times1.85\times1.70$.
 
 ## One Level Turned 47 Back Into 10
 
 The third column holds the answer. **Freeze** the V-cycle at three levels and iterations grow from 10 to 47. Grow the levels along with the grid, so the coarsest grid always stays 8 by 4 cells, and the count goes from 9 to 10. Efficiency 0.900. Flat, for practical purposes.
 
-The reason fits in one sentence. A Krylov solver behaves like a smoother on a single grid: it erases high-frequency error fast and leaves low-frequency error behind. A [multigrid V-cycle](/en/posts/2026-05-06-multigrid-v-cycle-poisson-acceleration/) relaxes on the whole hierarchy of grids, so it touches every wavelength within one cycle. The catch is that the hierarchy has to reach the longest wavelength. Pin it at three levels and the coarsest grid under a 512 by 256 problem is 128 by 64. An error wave 128 cells wide is still low-frequency there. Nobody erases it.
+The reason fits in one sentence. A Krylov solver behaves like a smoother on a single grid: it erases high-frequency error fast and leaves low-frequency error behind. Stack the levels with the grid and one cycle reaches the long waves. Miss that end of the spectrum and the iteration count stays, the same way [a block preconditioner grew the error 100× per sweep at acoustic CFL 10](/en/posts/2026-08-29-block-preconditioner-acoustic-cfl-loop-gain/). Pin the hierarchy at three levels and the coarsest grid under a 512 by 256 problem is 128 by 64. An error wave 128 cells wide is still low-frequency there. Nobody erases it.
 
-Move the level count and the grid independently and see which combination flattens the curve.
 
-<LevelLadderEfficiencyDial />
-
-Each rung of the ladder on the left is one level, and the bar beside it is the band of wavelengths that level damps. Set the level slider to 1 and a single bar remains. Push the grid slider right and watch how the coarsest grid size changes, and which of the three efficiency curves on the right gets highlighted.
 
 ## Where Multigrid Is Not Free
 
 Stopping here would read as "always use multigrid." The paper writes down the other side too.
 
-First, adding levels costs something. Every time the problem grows you stack another rung to preserve optimal convergence, and that setup cost grows with the core count. In algebraic multigrid such as hypre or GAMG, the coarsening itself is communication heavy. In the results of Kollet et al. (2010) the solver-setup efficiency drops to nearly zero near 16,384 cores. The iteration count stays flat while setup time eats the run.
+Adding levels costs something. Every time the problem grows, another rung has to go on the hierarchy or the optimal rate slips, and that setup cost grows with the core count. In algebraic multigrid such as hypre or GAMG, the coarsening itself is communication heavy. In the results of Kollet et al. (2010) the solver-setup efficiency drops to nearly zero near 16,384 cores. The iteration count stays flat while setup time eats the run. Not every PDE wants that hierarchy either. Multigrid pays off on elliptic and parabolic problems such as groundwater flow, where the initial guess is far from the solution. Advection-dominated geochemical transport is the opposite: small time steps make the matrix strongly diagonally dominant, and point Jacobi or ILU(0) is already enough. There is no reason to stack levels. Multigrid for systems that describe multiphase flow is still a research topic.
 
-Second, not every PDE suits multigrid. Multigrid shines on elliptic and parabolic problems such as groundwater flow, where the initial guess is far from the solution. Advection-dominated geochemical transport is the opposite: small time steps make the matrix strongly diagonally dominant, and on such matrices plain preconditioners like point Jacobi and ILU(0) are already good enough. There is no reason to stack levels. Multigrid for systems describing multiphase flow remains an open research topic.
-
-Third, the right preconditioner cost depends on the character of the grid. On stretched grids the directional coupling strengths differ sharply, and something like a [linelet preconditioner](/en/posts/2026-07-31-linelet-preconditioner-stretched-grid/), solving one direction exactly, buys the same effect for less.
+Preconditioner cost also hangs on the shape of the grid. On stretched grids the directional coupling strengths differ sharply, and a [linelet preconditioner](/en/posts/2026-07-31-linelet-preconditioner-stretched-grid/) that solves one direction exactly is the cheaper buy.
 
 ## Why the PFLOTRAN Authors Ask for Strong Scaling First
 
@@ -200,8 +203,8 @@ The paper's position is clear. In practice you are handed a fixed domain and you
 
 PFLOTRAN's own strong scaling is near ideal out to 4096 cores on the copper-leaching scenario, then rolls off. At the knee each core held 768 degrees of freedom. The 3.1 M case and the 49 K case both turned over at the same ratio. That single number is more useful in practice than the whole efficiency curve: do not go below roughly 1000 degrees of freedom per core.
 
-## The Number to Check First on a Scaling Plot
+## Once the count hits 1285, MPI cannot hand back 0.163
 
-Before wall-clock time, look at **iteration counts**. Tabulate nonlinear and linear iterations against core count and a tilted line separates cleanly into a parallel problem or a solver problem. Flat iterations with growing time means communication or memory. Iterations that grow along with time is an algorithmic problem, and no amount of MPI tuning wins it back.
+On the 64-core row, point Jacobi takes 1285 iterations and the efficiency is 0.163. The trip from 210 to 1285 is a factor of 6.12, and the efficiency is the reciprocal, $210/1285=0.1634$. Cells per core stay at 2048 on every row. If one iteration costs the same, wall-clock time tracks the iteration count. Cutting messages does not put that 6.12 back.
 
-And when you plot weak scaling, say in the caption which way you grew it: the domain, or the grid. The same curve shape carries an entirely different meaning.
+The split is the level count. Freeze three levels and the count goes from 10 to 47, a ratio of 4.7, efficiency 0.213. Grow the levels with the grid and it goes from 9 to 10, a ratio of 1.11, efficiency 0.900. On the same 131072 degrees of freedom, 1285 against 10 is a factor of 128.5. A tilted curve means the caption has to say whether the domain grew or the grid tightened. If the iteration column grew by 6.12, the place to work is the [Krylov linear solver](/en/posts/2026-04-22-cfd-linear-solvers-krylov/). Flat iterations with a rising clock is the communication case.

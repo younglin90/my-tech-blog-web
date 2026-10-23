@@ -1,7 +1,9 @@
 ---
 title: "Same Answer From 18% of the Cells — AMR Tagging Criteria and Coarse-Fine Refluxing"
 date: 2026-08-10
-description: "The Löhner sensor, buffer width, and the interface mass leak a flux register stops"
+updated: 2026-10-19
+description: "Wrapping a 256^2 shear layer in 3-level AMR leaves 11,776 cells, 18% of 65,536. Reflux off drifts mass by about 1% in 60 steps."
+takeaway: "A buffer narrower than CFL times the regrid interval lets the interface leave the patch, and skipping reflux flips the sign of the mass drift."
 tags: ["AMR", "Mesh-Refinement", "Flux-Register", "Conservation", "OpenFOAM"]
 locale: en
 slug: amr-tagging-and-refluxing
@@ -11,7 +13,15 @@ draft: false
 import { LohnerTagBufferQuadtree } from '@/components/post-viz/2026-08-10-amr-tagging-and-refluxing/LohnerTagBufferQuadtree'
 import { FluxRegisterLedger } from '@/components/post-viz/2026-08-10-amr-tagging-and-refluxing/FluxRegisterLedger'
 
-In a 50-million-cell run, how many cells actually decide the answer? One shock, one shear layer, one flame front. Count them and it's usually a few percent of the total. The rest are cells spending their time computing smooth regions smoothly. Adaptive mesh refinement (AMR — putting grid only where the solution asks for it) attacks that ratio directly, and today we go after its two practical sore spots. The sensor that decides where to split, and the interface mass leak that always follows once you have split.
+In a 50-million-cell run, how many cells actually decide the answer? One shock, one shear layer, one flame front. Usually a few percent of the total. The rest spend their time computing smooth regions smoothly.
+
+Drop `n_buf` to 0 and push `regrid every` out to 30, and red cells grow along the interface. The sensor is ahead of the grid.
+
+<LohnerTagBufferQuadtree />
+
+Raise `n_buf` to 2 and the red disappears while the leaf count climbs. That climb is what a wider buffer costs.
+
+Adaptive mesh refinement (AMR — putting grid only where the solution asks for it) attacks that ratio directly. The sensor that decides where to split, and the mass that leaks at the interface after the split. Both show up as numbers.
 
 ## 11,000 Cells Out of 65,000
 
@@ -23,7 +33,9 @@ $$
 N_{\rm AMR} \sim \left(\frac{L}{h}\right)^{D-1} = N_{\rm uni}^{(D-1)/D}
 $$
 
-where $L$ is the domain size and $h$ the finest spacing. The exponent is 1/2 in 2D, 2/3 in 3D. So doubling the resolution multiplies uniform cells by 8 but AMR cells by only 4. The gain grows the finer you go, and that is the one and only reason to use AMR.
+where $L$ is the domain size and $h$ the finest spacing. The exponent is 1/2 in 2D, 2/3 in 3D. So doubling the resolution multiplies uniform cells by 8 but AMR cells by only 4. The gain grows the finer you go, and that is why AMR gets used.
+
+Plug this mesh into the estimate. Uniform $256^2$ is 65,536. The leaf sum counted later is 11,776, and $11776/65536=0.180$. A flat interface in 2D is only $(L/h)^{1}=256$ cells, 0.39% of the uniform grid. The rolled-up shear layer, plus the buffer and the coarse leaves, is what lands at 18%. Halve the spacing in 3D and the uniform count grows by $2^3=8$, while the interface AMR grows by $2^{2}=4$. The exponent $(D-1)/D$ is 2/3 in 3D, so the uniform fraction keeps falling as the grid gets finer.
 
 ## Gradients Don't Decide Where to Split
 
@@ -51,11 +63,7 @@ $$
 
 $\nu$ is the CFL number at that level. At CFL 0.4 with a regrid every 10 steps you need at least 4 cells. The relation is level-independent — with subcycling, $\Delta t_\ell$ and $h_\ell$ shrink by the same factor.
 
-Try it hands-on in the simulation below.
-
-<LohnerTagBufferQuadtree />
-
-Drop `n_buf` to 0 and push `regrid every` out to 30, and red cells grow along the interface. Those are cells where the sensor says "refine here" but the grid hasn't caught up. Raise `n_buf` to 2 and the red disappears while the leaf cell count climbs. That number is exactly what a wider buffer costs.
+Written out, the floor is $n_{\rm buf}\ge 0.4\times 10=4$. The buffer of 2 in the code is narrower than that floor. Narrower than the floor, and the interface walks out of the tagged region before the next regrid. Those red cells are what the dial at the top shows when `n_buf` is set to 0.
 
 ## Blocks, Cells, Patches — What the Unit of Cutting Decides
 
@@ -67,7 +75,7 @@ Given identical tags, the unit you refine in decides both the cell count and the
 | Cell-based | A single cell | Per-cell tree | None | OpenFOAM `hexRef8`, RAGE |
 | Patch-based | Arbitrary rectangular patch | Box list | Small | Chombo, BoxLib/AMReX |
 
-Block-based has the simplest data structure and the best cache locality. The price is that one tagged cell splits the entire block. Cell-based has zero over-refinement, but every neighbor lookup is a tree traversal. OpenFOAM lives here — `dynamicRefineFvMesh` is the engine, `hexRef8` is the cutter (one hexahedron into eight), and `refinementHistory` is the ledger for unrefining. Patch-based sits in between, and inside a rectangle you can run plain structured-grid loops, which helps vectorization.
+Block-based has the simplest data structure and the best cache locality. The price is that one tagged cell splits the entire block. Cell-based has zero over-refinement, but every neighbor lookup is a tree traversal. OpenFOAM lives here — `dynamicRefineFvMesh` is the engine, `hexRef8` is the cutter (one hexahedron into eight), and `refinementHistory` is the ledger for unrefining. A [quadtree that grows only the cells that need it](/en/posts/2026-04-27-amr-quadtree-cell-refinement/) uses that same unit. It does not split a whole block for one tagged cell. Patch-based sits in between, and inside a rectangle you can run plain structured-grid loops, which helps vectorization.
 
 ## One Interface Face, Two Answers
 
@@ -95,11 +103,7 @@ $$
 
 The sign follows from which side of the face that cell sits on. Cells inside the patch are left alone — they were already overwritten with the averaged fine values. This one line restores domain-wide mass to machine precision.
 
-Below, run the refluxing-on and refluxing-off cases side by side.
-
-<FluxRegisterLedger />
-
-From the moment the pulse touches the pink face, the red trace peels away from zero and never comes back. The green one stays pinned at zero. Shrink `pulse sigma` to sharpen the pulse and the red excursion grows — and the $\delta F$ written into the ledger grows by exactly the same amount.
+With $r=2$ and $D=2$, $r^{D}=4$. Two fine faces, $r^{D-1}=2$, and $r=2$ subcycles get divided by that 4 so they sit on the same scale as one coarse flux. Drop the division and $\delta F$ is the wrong size. Paying the ledger then still leaves the mass short.
 
 ## Counting Cells and Mass Drift in Code
 
@@ -187,6 +191,8 @@ The output:
 
 Change `N_BUF` to 0, 1, 2, 4 and the total moves 9,616 → 10,864 → 11,776 → 14,224. A 2-cell buffer costs 2,160 cells, or 3.3 percentage points against the uniform grid.
 
+The 2,160 added between buffer 0 and buffer 2 is about 22% of 9,616. At 4 cells the total is 14,224, which is 4,608 cells above the unbuffered count. By level, the finest 6,976 cells are 59% of the 11,776 total. The 3,280 cells at level 0 are the smooth region covered on a coarse spacing. The 18% is the sum of those three layers, not the interface alone.
+
 Now refluxing. Put two levels on 2D scalar advection, add subcycling, and measure total mass.
 
 ```python
@@ -268,7 +274,13 @@ for tag, on in (('reflux off', False), ('reflux on ', True)):
   reflux on :  mass = 0.025446894886   drift = +0.000e+00
 ```
 
-One percent in 60 steps. And the value doesn't even grow monotonically. It was −1.3% at step 15, −0.77% at step 30, +1.0% at step 60. The sign flips every time the blob moves in or out of the patch. See a plot like that during a convergence study and you start doubting the scheme — but the culprit is the interface you never refluxed.
+Shrink `pulse sigma` and the red excursion grows, with the ledger's $\delta F$ growing by the same amount.
+
+<FluxRegisterLedger />
+
+Once the pulse hits the pink face, only the red trace leaves zero. Green stays pinned. The drift of +1.006e-02 with reflux off is that red line.
+
+One percent in 60 steps. Subtract the two printed masses and the gap is about $2.56\times 10^{-4}$. Divided by the reflux-on mass, that is the same 1% as the drift of +1.006e-02. And the value doesn't even grow monotonically. It was −1.3% at step 15, −0.77% at step 30, +1.0% at step 60. The sign flips every time the blob moves in or out of the patch. See a plot like that during a convergence study and you start doubting the scheme — but the culprit is the interface you never refluxed.
 
 ## Load Balancing — One Curve Lines the Blocks Up
 
@@ -276,10 +288,8 @@ Run AMR in parallel and a new problem shows up. Every regrid leaves a different 
 
 The standard prescription is a space-filling curve (SFC — a curve that threads a multidimensional grid into a single line). Give every leaf block a 1D index along a Morton (Z-order) or Hilbert curve, then split that line into equal pieces, one per rank. Thanks to the curve's locality, neighboring indices are mostly neighbors in space too, so an equal split is also a low-communication split. p4est and AMReX work this way. Graph partitioners (ParMETIS, Zoltan, Scotch) give better partition quality, but they have to rerun on every regrid, which costs far more than an SFC. AMR is the regime where the grid changes often, so the SFC usually wins.
 
-## Three Things to Settle Before Turning AMR On
+## Skip the reflux and the convergence curve blames the scheme
 
-**One.** Make the tagging criterion dimensionless. With a normalized second difference, one threshold covers every field and every level. Use raw gradients and you'll be tuning per level.
+Keep the tag dimensionless. A normalized second difference lets one threshold cross fields and levels. A raw gradient has to be retuned on every level. Size the buffer as $\nu N_{\rm regrid}$. At CFL 0.4 and 10 steps that is 4 cells. Guess 1 cell and regrid every 20 steps, and a large part of the run proceeds with the feature already outside the patch.
 
-**Two.** Compute the buffer width as $\nu N_{\rm regrid}$ and put it in. Guess 1 cell and regrid every 20 steps, and half your run happens with the feature already leaked outside the patch.
-
-**Three.** Refluxing is not optional. Even with a conservative scheme, coarse-fine interfaces break conservation. In problems where mass is the answer — combustion, multiphase flow — you cannot trust a convergence plot produced without a flux register.
+Treat reflux as optional and the coarse-fine face manufactures mass. The +1% at step 60 is not even monotone. A drift that changes sign is easy to blame on the advection scheme. The same class of mistake shows up when [moving the refine call by one line blew up an LBM time cycle](/en/posts/2026-09-25-lbm-amr-recursive-time-cycle/). A wrong order leaves the interface answer wrong even after the cells are small.

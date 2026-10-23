@@ -1,17 +1,25 @@
 ---
 title: "CFL取1要一万步，取100会爆炸 — Switched Evolution Relaxation"
 date: 2026-06-29
-description: "用从残差提升CFL数的SER加速定常解的收敛"
+updated: 2026-10-19
+description: "固定CFL取3需要588步，SER只用34步就能着地。残差降到十万分之一时CFL便撞上上限，其后的步子才真正像Newton。"
 tags: ["CFD", "SER", "Pseudo-Transient", "Convergence-Acceleration", "Implicit"]
 locale: zh
 slug: ser-cfl-ramping-pseudo-transient
+takeaway: "拿掉CFL上限之后，残差稍一下降步长就没有天花板，后段的Newton还没开始，前段就已经吹飞。"
 draft: false
 ---
 
 import { SerConvergenceRaceLab } from '@/components/post-viz/2026-06-29-ser-cfl-ramping-pseudo-transient/SerConvergenceRaceLab'
 import { CflRampScheduleViz } from '@/components/post-viz/2026-06-29-ser-cfl-ramping-pseudo-transient/CflRampScheduleViz'
 
-在定常计算中把CFL数设为1，残差转上一万次也降不下来。提到100，解在第一步就炸了。这两种都是常见的画面。本文要讲的是在这两个极端之间自动游走的方法——SER(Switched Evolution Relaxation)。它随着残差下降自己把CFL调大，前期稳妥、末期像Newton一样快速着陆。我们用一个小小的定常Burgers求解器亲手感受一下。
+定常残差对CFL很娇气。放在1，转上一万步也还悬在上面。拉到100，第一步就把解吹飞。SER(Switched Evolution Relaxation)让残差在这两头之间自己挑步长。降了就放大，跳了就收回。
+
+把固定CFL滑条从1推到20，琥珀色残差会跳成diverged，SER这边只留起始CFL和指数。
+
+<SerConvergenceRaceLab />
+
+$\mathrm{CFL}_0=1$、$p=1$ 时青色曲线在后段折下去。把 $p$ 抬到1.5会更陡，可前期残差一晃，青色也跟着晃。
 
 这里讲的CFL数(用网格尺度和波速把时间步长无量纲化后的量),在定常求解器里已经不再关乎精度,而是同时握着**收敛速度与稳定性的一个旋钮**。
 
@@ -59,15 +67,11 @@ $$
 
 分母是对流波速 $|u_i|$ 与扩散波速 $2\nu/\Delta x$ 之和。每个单元可以不同,因此与局部时间推进(local time-stepping)自然结合。
 
-在下面的模拟里动手调一调参数。这是把固定CFL和SER在同一个定常Burgers问题上并排运行的残差历史。
-
-<SerConvergenceRaceLab />
-
-把fixed CFL降到1,琥珀色曲线很难触底。提到20就跳成发散(diverged)。相比之下SER(青色)从 $\mathrm{CFL}_0=1$ 稳妥起步,却在后期急转直下。把指数 $p$ 从1提到1.5会更激进更快,但提得太高连SER也会在前期晃动。
+格点数 N=80 时,间距是 1/81。$\nu=0.02$ 时扩散波速 $2\nu/\Delta x$ 算出来是 3.24。初始猜测的最大值超不过 1,分母里扩散压过对流 $|u_i|$。CFL 固定在 3,则 $\Delta\tau$ 是把 1/81 除以略大于 4 的数再乘 3,不到 0.01。同一个分母放进上限 1e5,$\Delta\tau$ 就到了几百。左端的 $I/\Delta\tau$ 几乎消失。代码并不按单元使用 $|u_i|$。所有单元共用 $|u|$ 的最大值。激波层正中、速度接近 0 的单元,也借最快单元的波速。比正文里的局部时间推进保守一拍。
 
 ## Python — 用两种策略解定常Burgers
 
-求解粘性Burgers的定常解 $u u_x = \nu u_{xx}$。边界条件 $u(0)=1$、$u(1)=-1$ 在中间形成一道静止激波层。一步伪时间隐式推进用Thomas算法解三对角矩阵。
+求解粘性Burgers的定常解 $u u_x = \nu u_{xx}$。边界条件 $u(0)=1$、$u(1)=-1$ 在中间形成一道静止激波层。一步伪时间隐式推进用[Thomas算法](/zh/posts/2026-05-04-implicit-diffusion-thomas-algorithm/)解三对角矩阵。一维扩散里那段回代保住无条件稳定的位置,和这里在左端加上时间项的位置是同一处。
 
 ```python
 import numpy as np
@@ -137,28 +141,32 @@ fixed CFL=3    ->  588 iters
 SER  p=1.0     ->   34 iters
 ```
 
-要达到同样精度的定常解,固定CFL需要几百次,SER只要几十次。差距在末期拉开。因为SER把CFL拉到上千,实际上变成了Newton迭代。
-
-## 把固定CFL和SER并排放
-
-来看看调度本身——SER是怎么把CFL拉上去的。在下面动手调一调。青色是CFL调度,粉色是残差。
+把cap滑条往下拉,输出里的34步会在哪里重新变长,青色CFL和粉色残差一起动。
 
 <CflRampScheduleViz />
 
 前期残差平坦的区间里,CFL也几乎停在 $\mathrm{CFL}_0$。残差一开始崩塌的瞬间,CFL几乎垂直地窜上去。这就是SER的本质:**解越好,允许的步子越大。** 把cap降到20,CFL撞到天花板,失去末期的Newton加速,迭代次数又涨回去。
 
+要达到同样精度的定常解,固定CFL需要几百次,SER只要几十次。差距在末期拉开。因为SER把CFL拉到上千,实际上变成了Newton迭代。
+
+## 把固定CFL和SER并排放
+
+588除以34大约是17倍。容差是当前残差除以初始残差,小于1e-9的那一点。$p=1$、起始CFL为1、上限为1e5时,残差比达到1e5的瞬间CFL就贴到天花板。那时残差比是1e-5。到容差1e-9还剩四个数量级。那段的CFL钉在1e5,矩阵已经靠在Newton一侧。固定CFL 3没有这段,所以588步全得自己走完。
+
+调度写成一行。$\mathrm{CFL}_n = \min(\mathrm{CFL}_0 (\lVert R_0\rVert/\lVert R_n\rVert)^p,\ \mathrm{CFL}_{\max})$。残差下降,步子变大,到上限停住。
+
 ## 现场打开SER时的陷阱
 
-第一,$\mathrm{CFL}_{\max}$ 一定要设。留成无穷大,残差一瞬跳动就让CFL失控,把解吹飞。
+$\mathrm{CFL}_{\max}$ 一定要设。留成无穷大,残差一瞬跳动就让CFL失控,把解吹飞。
 
-第二,当残差非单调(non-monotone)地晃动时,$R_0/R_n$ 会小于1,使CFL反而下降。这不是bug,而是安全阀。残差再度变差时,缩小步子才是对的。
+当残差非单调(non-monotone)地晃动时,$R_0/R_n$ 会小于1,使CFL反而下降。这不是bug,而是安全阀。残差再度变差时,缩小步子才是对的。
 
-第三,$p$ 不是免费的加速。$p>1$ 会在残差只降一点时就把CFL放大很多,放大风险。稳妥的起步是 $p=1$、$\mathrm{CFL}_0 \approx 1$。
+$p$ 不是免费的加速。$p>1$ 会在残差只降一点时就把CFL放大很多,放大风险。稳妥的起步是 $p=1$、$\mathrm{CFL}_0 \approx 1$。
 
-第四,如果Jacobian不精确(近似Jacobian,或无矩阵),大CFL下Newton的二阶收敛会掉到一阶。这时降低 $\mathrm{CFL}_{\max}$ 换取稳定性更划算。
+如果Jacobian不精确(近似Jacobian,或无矩阵),大CFL下Newton的二阶收敛会掉到一阶。这时降低 $\mathrm{CFL}_{\max}$ 换取稳定性更划算。
 
-## 要记住的
+## 上限空着,后段的Newton先死
 
-- 在定常求解器里CFL是**收敛速度与稳定性的旋钮**,不是精度。小则乌龟,大则爆炸。
-- SER是 $\mathrm{CFL}_n = \min(\mathrm{CFL}_0 (\lVert R_0\rVert/\lVert R_n\rVert)^p,\ \mathrm{CFL}_{\max})$,残差下降就自动放大步子。
-- 伪时间隐式迭代在 $\Delta\tau\to\infty$ 时变成Newton法。SER就是把你平滑带到那个极限的调度。
+$\mathrm{CFL}_{\max}$ 一旦空着,残差跳一下,CFL就顺着残差比没有尽头地涨。伪时间隐式迭代在 $\Delta\tau\to\infty$ 时变成Newton法。那二阶只在解附近出现。前期就跳进这个极限,矩阵会把解往反方向推。代码里的上限1e5是一扇门。残差降到十万分之一以前,不让步子进那一块。
+
+每次都凑不出精确Jacobian时,同一扇门还在。大CFL的二阶已经掉成一阶,剩下的选择就是把上限再压低。用扫描近似那块矩阵、却不把它组装出来,是[显式一步炸掉之后的LU-SGS](/zh/posts/2026-06-22-lu-sgs-implicit-time-integration/)另写的事。隐式步还在,矩阵不必存下来。

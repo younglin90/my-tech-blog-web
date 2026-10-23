@@ -1,7 +1,9 @@
 ---
 title: "[Paper Review] Drawing Shocks with tanh — Implementing TENO-THINC Reconstruction"
 date: 2026-06-13
-description: "How THINC keeps a sub-cell jump alive when polynomials smear the contact"
+updated: 2026-10-19
+description: "With beta = 1.8, THINC-BVD holds a top-hat peak of 1.00 and a 30-cell width after five revolutions, while minmod TVD falls to 0.84 and 23 cells."
+takeaway: "Unless tanh is swapped in only on discontinuous cells, raising the order still lets a contact bleed across dozens of cells."
 tags: ["THINC", "TENO", "Shock-Capturing", "Compressible", "Paper-Review"]
 locale: en
 slug: teno-thinc-shock-resolving-reconstruction
@@ -11,7 +13,13 @@ draft: false
 import { ThincReconstructionLab } from '@/components/post-viz/2026-06-13-teno-thinc-shock-resolving-reconstruction/ThincReconstructionLab'
 import { ContactAdvectionDecay } from '@/components/post-viz/2026-06-13-teno-thinc-shock-resolving-reconstruction/ContactAdvectionDecay'
 
-Push the formal order to fifth, sixth, eighth — the contact discontinuity still smears as time marches on. WENO or TENO, it makes no difference. As long as you draw a jump with a polynomial, that fate is sealed. The 2023 paper by Takagi and colleagues sidesteps it. High-order TENO handles the smooth regions; only the discontinuous cells get swapped for a tanh curve (THINC). This post implements that core idea at the single-cell level and spins a top-hat once around the grid to compare the fate of polynomials and tanh directly.
+Push the formal order to fifth, sixth, eighth — the contact still smears as time marches on. WENO or TENO, same fate. A polynomial drawing a jump does that. The 2023 paper by Takagi and colleagues steps off that path. High-order TENO keeps the smooth regions. Only discontinuous cells swap in a tanh (THINC).
+
+Flip the reconstruction among Polynomial, THINC, and Hybrid and the same cell averages split into an S-curve, a vertical jump, or a mix.
+
+<ThincReconstructionLab />
+
+Polynomial overshoots a little above and below the jump. THINC stands nearly vertical inside one cell. Hybrid keeps tanh only in the jump cell.
 
 ## The paper on one page
 
@@ -20,7 +28,7 @@ Push the formal order to fifth, sixth, eighth — the contact discontinuity stil
 - **Venue**: Communications in Computational Physics, 2023
 - **One line**: Couple even-point TENO (six- and eight-point) with THINC reconstruction to get low dissipation in smooth regions and sub-cell resolution at discontinuities at the same time.
 
-The trick lies in deciding *when* to swap, for free. TENO already tags each candidate stencil as smooth or not via $\delta_k \in \{0,1\}$. Reusing those flags tells you whether a cell hides a discontinuity, and THINC fires only there. The only new parameter is THINC's slope $\beta$.
+What comes free is the decision of when to swap. TENO already tags each candidate stencil as smooth or not via $\delta_k \in \{0,1\}$. Reusing those flags tells you whether a cell hides a discontinuity, and THINC fires only there. The only new parameter is THINC's slope $\beta$.
 
 ## Why even high-order polynomials smear the contact
 
@@ -28,11 +36,7 @@ Polynomial reconstruction draws a smooth curve by nature. When a curve must pass
 
 TENO and WENO choose to suppress oscillation. They discard stencils that cross the discontinuity, enforcing the ENO property. That buys stability, but a little numerical dissipation accumulates every step. A contact discontinuity (a surface where velocity and pressure match but density jumps) does not self-steepen through a pressure mechanism. So after long advection its width bleeds across dozens of cells. Raising the order barely reduces this smearing.
 
-See it for yourself below. Same cell averages, only the reconstruction changes.
-
-<ThincReconstructionLab />
-
-`Polynomial` resolves the jump as a smooth S-curve and slightly overshoots above and below. Switch to `THINC` and the same data stands nearly vertical inside a single cell. `Hybrid (BVD)` uses tanh only in the jump cell and keeps polynomials elsewhere.
+The three reconstructions above are that choice. Same cell averages, different curves. Where TENO kills small eddies less is the subject of [low-dissipation TENO](/en/posts/2026-04-25-teno-low-dissipation-shock-capturing/). A contact bleeding across dozens of cells does not stop just because dissipation dropped.
 
 ## THINC — tanh draws a sub-cell jump
 
@@ -44,7 +48,7 @@ $$
 
 where $f_a = (f_{i+1}+f_{i-1})/2$ is the neighbor mean, $f_d = (f_{i+1}-f_{i-1})/2$ is half the jump, $\beta$ is the tanh slope, and $d_i$ is the jump-center location.
 
-The key is that $d_i$ is not free. The cell-average conservation constraint (the reconstruction must integrate back to $f_i$) pins it down. The solution is analytic:
+$d_i$ is not a free variable. The cell-average conservation constraint (the reconstruction must integrate back to $f_i$) pins it down. The solution is analytic:
 
 $$
 d_i = \frac{1}{2\beta} \ln \frac{1 - T_2/T_1}{1 + T_2/T_1}
@@ -60,7 +64,13 @@ A single $\beta$ sets THINC's character: small is gentle, large is steep. The pa
 - $\beta \approx 1.3$ : Superbee level (over-compressive tendency)
 - $\beta = 1.6 \sim 2.0$ : sharp shock-capturing regime
 
-The paper adopts $\beta = 1.8$. Push it too high and even smooth curves get squared into steps, producing artificial flattening. In the simulation above, slide $\beta$ from 1.0 up to 2.4 and watch how the jump stands up and how the overshoot readout changes — the balance becomes tangible.
+The paper adopts $\beta = 1.8$. Push it too high and even smooth curves get squared into steps, producing artificial flattening. On the figure above, slide $\beta$ from 1.0 to 2.4 and the jump stands up while the overshoot readout moves with it.
+
+At $\beta = 1.8$, $\beta/2 = 0.9$. A jump centered in the cell has $\alpha = 0$, so $d_i = 0$. At the right edge $X = 0.5$, $\tanh(\beta(X - d_i)) = \tanh(0.9) \approx 0.716$. Only about 72% of the neighbor jump is recovered inside one cell. At $\beta = 1.1$, $\tanh(0.55) \approx 0.50$, as gentle as van Leer. At $\beta = 2.4$, $\tanh(1.2) \approx 0.83$. The value 1.8 sits between a vertical wall and squaring.
+
+$\alpha = (f_i - f_a)/f_d$. If the cell mean sits midway between the neighbors, $\alpha = 0$ and the jump center is 0. If the mean sticks to the right neighbor, $\alpha$ approaches 1, $(1 - T_2/T_1)$ inside the log shrinks, and $d_i$ shifts positive. If $|\alpha| \ge 1$ or $(f_{i+1} - f_i)(f_i - f_{i-1}) \le 0$, the code drops tanh and falls back to $\hat f = f_i$. Peak cells stay with the polynomial.
+
+The initial top-hat lies between $0.35$ and $0.65$. Width $0.30$ on $N = 100$ is 30 cells. $dx = 0.01$ and $\Delta t = 0.45 \times dx = 0.0045$. Five revolutions are $5 / 0.0045 \approx 1111$ steps, at CFL 0.45. After that, minmod width is 23 cells and the peak is 0.84. Seven cells fall through 0.5 and the height loses 0.16. THINC-BVD keeps peak 1.00 and width 30. The two comment lines in the code are that arithmetic.
 
 ## TENO finds it, THINC fills it — the BVD hybrid
 
@@ -140,7 +150,7 @@ After five revolutions, minmod TVD sags to a peak of 0.84 and narrows. THINC-BVD
 
 ## Reconstruction and long-time advection, hands-on
 
-Play with the simulation below. It shows in real time how the two methods diverge as the same top-hat circles the grid.
+Push `revolutions` and the red minmod curve and the cyan THINC curve run apart for the same time.
 
 <ContactAdvectionDecay />
 
@@ -150,12 +160,14 @@ As `revolutions` grows, the red minmod curve collapses at both ends and spreads 
 
 The promise is clean, but three things tripped me up while coding it.
 
-First, the BVD decision is sensitive to detector quality. Mistake a smooth extremum for a discontinuity and that peak flattens unnaturally. The simple BVD above guards against it with the monotonicity check, but multidimensional systems need characteristic decomposition.
+The BVD decision is sensitive to detector quality. Mistake a smooth extremum for a discontinuity and that peak flattens unnaturally. The simple BVD above guards against it with the monotonicity check, but multidimensional systems need characteristic decomposition.
 
-Second, $\beta$ is problem-dependent. The value $\beta = 1.8$ is tuned to 1D benchmarks. In strong compressible turbulence over-compression can create artificial steps, so an adaptive $\beta$ is worth considering.
+$\beta$ moves with the problem. The value $\beta = 1.8$ is tuned to 1D benchmarks. In strong compressible turbulence over-compression can create artificial steps, so an adaptive $\beta$ is worth considering.
 
-Third, the cost claim depends on context. "THINC is nearly free because discontinuous cells are few" is true when you look only at reconstruction. But a branch-heavy BVD test can trigger warp divergence on GPUs. Porting it to an unstructured FV code like OpenFOAM means folding per-cell detection into the face-flux loop, which is not as clean as a 1D structured grid.
+The cost claim depends on context. "THINC is nearly free because discontinuous cells are few" is true when you look only at reconstruction. But a branch-heavy BVD test can trigger warp divergence on GPUs. Porting it to an unstructured FV code like OpenFOAM means folding per-cell detection into the face-flux loop, which is not as clean as a 1D structured grid.
 
-## What to read next
+## Freeze beta at 1.8?
 
-If you want THINC's roots, read Xiao's original VOF THINC; for the BVD principle itself, Deng's P$n$T$m$-BVD. Adaptive $\beta$ and multiphase extensions are carried on by the THINC-with-PE line of Shyue & Xiao. Today's one line: **do not draw a jump with a polynomial — draw it with a jump.**
+After five revolutions THINC-BVD shows peak 1.00 and width 30 cells. Minmod under the same conditions shows 0.84 and 23 cells. If smooth extrema get pressed into steps, that fixed value is too much. The choice that doubts one knob per wave is [splitting THINC from MP5](/en/posts/2026-05-23-chamarthi-2025-wave-appropriate-thinc-mp5/).
+
+Drawing the jump with tanh, or sweeping up a smear afterward, is a different decision. If the reconstruction already holds the contact, a later sharpener is idle. If it does not, look at the detector before raising $\beta$ again.

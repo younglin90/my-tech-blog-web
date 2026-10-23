@@ -1,7 +1,9 @@
 ---
 title: "选择 CFD 线性求解器：从 Jacobi 到 BiCGSTAB 的收敛速度对比"
 date: 2026-04-22
-description: "通过代码和模拟对比 Krylov 子空间四大求解器的特性和收敛速度"
+updated: 2026-10-19
+description: "在 N=60 的一维泊松上，Jacobi 做完 2000 次残差仍是 2.11e-2，CG 用 60 次降到 1.87e-13。"
+takeaway: "矩阵保持 SPD 时，CG 会在 N 次内做完。对流一旦破坏对称，这个位置就不再属于 CG。"
 tags: ["Algorithms", "Linear-Solver", "Krylov", "Numerical-Analysis"]
 draft: false
 series: "numerical-methods"
@@ -9,25 +11,31 @@ series: "numerical-methods"
 
 import { KrylovConvergence } from '@/components/post-viz/2026-04-22-cfd-linear-solvers-krylov/KrylovConvergence'
 
-1952 年，Cornelius Lanczos、Magnus Hestenes 和 Eduard Stiefel 在一次学术会议上，偶然且独立地提出了同样的结果。那是一个仅需 $N$ 次迭代即可求解对称正定 (SPD) 矩阵的算法。这就是我们今天所称的**共轭梯度法 (Conjugate Gradient, CG)**。有趣的是，70 年后的今天，CFD 求解器的核心依然鲜活地保留着这个想法——**在 Krylov 子空间中寻找解**。本文将通过 Python 和交互式模拟，对比 CFD 中最常用的四种求解器（Jacobi、Gauss-Seidel、CG 和 BiCGSTAB）的收敛速度。读完本文，你将能直接判断在实际工作中“针对该问题应选择哪种求解器”。
+1952 年的会场上，Lanczos、Hestenes 和 Stiefel 各自带着一份稿子碰了面。那是把对称正定（SPD）矩阵在 $N$ 次迭代里做完的算法。名字后来才叫做共轭梯度法（CG）。七十年过去，压力方程仍在那个子空间里找解。
+
+把网格 N 从 20 推到 80，四条残差曲线会整幅重画。把最大迭代上限抬高，谁先贴到地板的次序会变。
+
+<KrylovConvergenceRace />
+
+N 在 40 附近时，CG 折向下，Jacobi 几乎躺在对数轴上。把 N 推到 80，间距拉得更大。BiCGSTAB 的锯齿表示残差不会光滑地死去。
 
 ## 为什么 CFD 采用迭代法求解线性系统
 
-对纳维-斯托克斯 (Navier–Stokes) 方程进行离散化后，每一步都会产生 $A\mathbf{x}=\mathbf{b}$ 形式的大型线性系统。其中 $A$ 是系数矩阵，$\mathbf{x}$ 是单元中心变量矢量，$\mathbf{b}$ 是右侧源项。对于 100 万个单元的 3D 网格，$A$ 将成为 $10^6 \times 10^6$ 大小的稀疏矩阵。在这种规模下，LU 分解（将矩阵分解为下三角和上三角乘积的直接法）会同时耗尽内存和 CPU。这就是 OpenFOAM、SU2、Gerris 等开源 CFD 代码无一例外使用**迭代法 (iterative method)** 的原因。
+把 Navier–Stokes 离散以后，每一步都会掉下一个 $A\mathbf{x}=\mathbf{b}$。$A$ 是系数矩阵，$\mathbf{x}$ 是单元中心未知量，$\mathbf{b}$ 是右端项。一百万个单元时，$A$ 是 $10^6 \times 10^6$ 的稀疏矩阵。LU 分解（拆成下三角与上三角之积的直接法）在这个尺寸上同时烧掉内存和时间。OpenFOAM、SU2、Gerris 走迭代法，原因在这里。
 
-迭代法的基本思想很简单：从初始猜测值 $\mathbf{x}_0$ 出发，逐渐修正 $\mathbf{x}$，直到残差 $\mathbf{r} = \mathbf{b} - A\mathbf{x}$ 降至容差以下。问题在于如何定义“逐渐”。正是这个定义区分了不同求解器的名称。
+从初始猜测 $\mathbf{x}_0$ 出发，一直改 $\mathbf{x}$，直到残差 $\mathbf{r} = \mathbf{b} - A\mathbf{x}$ 落到容差以下。“一点一点”怎么定义，就是求解器的名字。
 
 ## Krylov 子空间的概念
 
-初始残差 $\mathbf{r}_0$ 与矩阵 $A$ 反复相乘后得到的矢量所构成的空间如下：
+用初始残差 $\mathbf{r}_0$ 反复去乘 $A$，这些向量张成一个空间。
 
 $$
 \mathcal{K}_m(A, \mathbf{r}_0) = \text{span}\{\mathbf{r}_0,\, A\mathbf{r}_0,\, A^2 \mathbf{r}_0,\, \dots,\, A^{m-1} \mathbf{r}_0\}
 $$
 
-$\mathcal{K}_m$ 即为 **Krylov 子空间**，$m$ 为维数，$\text{span}$ 为通过线性组合填充的空间。Krylov 系列求解器在 $\mathbf{x}_m \in \mathbf{x}_0 + \mathcal{K}_m$ 中寻找解，并使余下的残差 $\mathbf{r}_m$ 满足某种最优性条件。
+$\mathcal{K}_m$ 是 Krylov 子空间，$m$ 是维数，$\text{span}$ 是线性组合填满的集合。更新限制在 $\mathbf{x}_m \in \mathbf{x}_0 + \mathcal{K}_m$ 里，剩下的残差 $\mathbf{r}_m$ 要满足某个最优条件。
 
-将解限定在子空间内有两个优点：第一，除了矩阵-矢量乘法外没有其他运算，从而完整保留了稀疏结构；第二，理论上可以在该子空间内提取出**最优**解。CG 在 Krylov 空间内精确地使 A-范数误差最小化，而 GMRES 则使 2-范数残差最小化。
+运算到矩阵-向量乘法就结束。稀疏图案不会被拆开。CG 在这个空间里最小化 A-范数误差，GMRES 最小化 2-范数残差。后者发生在 [Arnoldi 把向量接起来的子空间](/zh/posts/2026-06-24-gmres-arnoldi-krylov-solver/) 里面。
 
 ## 四种求解器的特性对比
 
@@ -38,11 +46,11 @@ $\mathcal{K}_m$ 即为 **Krylov 子空间**，$m$ 为维数，$\text{span}$ 为�
 | CG | **必须为 SPD** | 4 个矢量 | 对 SPD 最优，三项递推，轻量级 | 不支持非对称矩阵 |
 | BiCGSTAB | 任意 | 7 个矢量 | 支持非对称，无需转置 | 收敛过程有波动，可能出现停滞 (break-down) |
 
-对于压力泊松方程 $-\nabla^2 p = f$，由于其具有 SPD 特性，CG 是标准选择。而包含平流-扩散的动量方程是非对称的，因此通常选择 BiCGSTAB 或 GMRES。OpenFOAM 中的 `PCG`/`PBiCGStab` 以及 SU2 中的 `BCGSTAB` 正是这种分工。
+压力泊松方程 $-\nabla^2 p = f$ 是 SPD，CG 对得上。掺了对流的动量方程不对称，就落到 BiCGSTAB 或 GMRES。OpenFOAM 的 `PCG`/`PBiCGStab` 和 SU2 的 `BCGSTAB` 就是这个分工。
 
 ## Python 演示收敛速度
 
-以 1D 泊松问题为例：将 $-u'' = 1$ 且边界条件为 $u(0)=u(1)=0$ 进行有限差分离散，会得到一个三对角矩阵。让我们直接对比 Jacobi 和 CG。
+一维泊松 $-u'' = 1$，边界 $u(0)=u(1)=0$，有限差分之后是三对角阵。在 $N=60$ 上，Jacobi 和 CG 用同一个容差 $10^{-10}$。
 
 ```python
 import numpy as np
@@ -96,42 +104,45 @@ print(f"Jacobi: {len(hist_j):4d} 次, 最终残差 {hist_j[-1]:.2e}")
 print(f"CG:     {len(hist_cg):4d} 次, 最终残差 {hist_cg[-1]:.2e}")
 ```
 
-结果非常悬殊：
+输出是这样印出来的。
 
 ```text
 Jacobi: 2000 次, 最终残差 2.11e-02
 CG:       60 次, 最终残差 1.87e-13
 ```
 
-当 Jacobi 运行 2000 次仍无法突破 $10^{-2}$ 时，CG 仅在 $N=60$ 次后就达到了机器精度。理论上，CG 在**最多 $N$ 次**迭代内即可达到精确解（忽略浮点误差）。面对 SPD，CG 简直像拥有超能力。
+把对数条件数滑条往上推，同样的迭代预算里四条曲线停在不同的地方。迭代上限决定曲线在哪里被切断。
 
-## 观察收敛竞赛
+<KrylovConvergence />
 
-在下面的模拟中亲自尝试一下。通过滑块更改网格大小 $N$ 和最大迭代次数，四种求解器的残差曲线将以对数刻度重新绘制。
+默认 $\kappa=10^3$、大约 80 次迭代时，Jacobi（红）几乎水平，CG（青）更陡。把 $\kappa$ 推向 $10^6$，Jacobi 即使给到 200 次也看不见地板。上面 $N=60$ 的输出是这张图上的一个点。Jacobi 用 2000 次停在 2.11e-2，CG 用 60 次到 1.87e-13。
 
-<KrylovConvergenceRace />
+把打印出来的残差折回每一步，数量级就出来了。初始残差取 1，2000 次之后的 2.11e-2 相当于平均衰减 0.998，也就是 0.0211 的 2000 次方根。这和表里的谱半径 $1-O(1/N^2)$ 是同一个量级。$N=60$ 时 $1/N^2$ 是 1/3600，大约 0.00028。0.998 读成这个量级前面再乘上几倍常数，就对上了。
 
-当 $N$ 增大到 80 时，Jacobi 和 Gauss-Seidel 的曲线几乎变为水平。而 CG 则呈阶梯状下降，并在 $N$ 附近迅速收敛。BiCGSTAB 在波动中下降，这种“锯齿状”收敛是潜在停滞（break-down，分子或分母爆炸为 0 导致数值崩溃）风险的可视化信号。在实战中，如果 BiCGSTAB 突然发散，通常的做法是强化预条件子或切换到 GMRES。
+这个衰减若保持下去，降到 $10^{-10}$ 大约要 1.2 万次。已经到了 2.11e-2 之后，仍还要大约 1 万次。$N$ 加倍，$1/N^2$ 变成四分之一，同样残差所需的次数也变成四倍。格子还要加密的计算里，若把 Jacobi 留作正式迭代，预算就跟着单元数的平方走。
+
+CG 的 60 次和 $N$ 严格相等。它把“最多 $N$ 次”的上限用完了，不是大约。1.87e-13 比 2.11e-2 小约 $1.1\times 10^{11}$ 倍。双精度里，能加到 1 附近的最小数在 $10^{-16}$ 上下，60 次正交化磨掉了两三位数。次数本身停在 $N$。
+
+一百万个单元乘 8 字节，一条向量是 8 MB。CG 的 4 条向量是 32 MB，BiCGSTAB 的 7 条是 56 MB。放在稀疏矩阵旁边，存残差是便宜的一侧。贵的是那一万次的尾巴。
+
+## 关掉预条件之后的曲线
+
+前面的曲线是预条件关掉的裸迭代。预条件矩阵一旦进去，横轴上一格的含义就变了。BiCGSTAB 垂直跳起的位置，是分母里的内积贴到了 0，也就是 break-down。只加迭代次数回不来。要么换预条件，要么改走 GMRES。重启周期 $m$ 的习惯值 30，是在内存和这次跳跃之间取的折中。
 
 ## 实际应用选择指南
 
-**压力泊松方程、仅含扩散的热传递**：CG + ILU(0) 预条件子。如果能保证对称性，选择其他方案都是浪费。
+压力泊松，以及只有扩散的传热，用 CG 加 ILU(0)。对称性还在的时候另选求解器，只是多存几条向量。
 
-**非对称动量方程、平流-扩散混合**：首选 BiCGSTAB。如果收敛波动大或停滞，切换到 GMRES($m$)。$m$ 是重启周期，决定了内存与速度的权衡。行业惯例通常在 $m=30$ 左右。
+不对称的动量方程以 BiCGSTAB 为底。残差晃动就换成 GMRES($m$)。$m$ 是重启周期。
 
-**并行 CFD**：由于其串行特性，Gauss-Seidel 在 GPU 上表现不佳。过去十年的标准做法是基于 Jacobi 的平滑器 (smoother) 与代数多网格 (AMG) 的组合。
+并行时 Gauss-Seidel 是串行的，到了 GPU 上就使不上力。近十年更接近标准的是 Jacobi 光滑子加上代数多重网格（AMG）。
 
-**SU2 中的 LU-SGS**：除 Krylov 外，SU2 还搭载了 LU-SGS (Lower-Upper Symmetric Gauss-Seidel) 这种固定迭代法。在压缩流动中结合隐式时间推进时，它的内存占用要小得多，但其稳健性不如 Krylov。
+SU2 的 LU-SGS（Lower-Upper Symmetric Gauss-Seidel）是 Krylov 旁边的定常迭代。接到可压缩流动的隐式时间推进上，内存脚印更小。它没有 Krylov 那么稳。
 
-**提示**：在实际应用中，“预条件子的选择”对收敛速度的影响远大于“求解器的选择”。PCG (Preconditioned CG) + AMG 的组合往往比单纯使用 CG 快 100 倍。
+改预条件比改求解器名字更能拉开迭代次数。PCG 加上 AMG，常常比裸的 CG 快 100 倍。差的就是上面那一万次的尾巴切不切得掉。
 
-## 核心总结
+## 把残差 2.11e-2 当成收敛交出去的失误
 
-- Jacobi 和 Gauss-Seidel 虽然简单，但在实际 CFD 问题中收敛率仅为 $1-O(1/N^2)$，表现堪忧。问题规模越大，迭代次数呈平方级增长。
-- Krylov 系列（CG、BiCGSTAB、GMRES）仅需矩阵-矢量乘法即可在 $N$ 次内达到机器精度。**SPD 选 CG，非对称选 BiCGSTAB 或 GMRES** 是实际应用中的默认选择。
-- 预条件子比求解器更重要。ILU(0)、AMG、Jacobi 平滑器——这三者的组合决定了 10 倍到 100 倍的速度差异。
+2000 次之后仍把 2.11e-2 交给下一个时间步，这个压力误差会走进下一轮非线性迭代。SPD 还在，这个位置属于 CG。对流把矩阵扭成不对称，CG 就当场失去资格，交给 BiCGSTAB。先挑名字、后量条件数，这个次序就是失误。
 
-
-下方调节 κ，立刻看到各求解器的极限。
-
-<KrylovConvergence />
+还没回答的问题是，要不要再堆一万次迭代。在粗网格上扫误差的 [V 循环](/zh/posts/2026-05-06-multigrid-v-cycle-poisson-acceleration/) 能不能切断这条 $1-O(1/N^2)$ 的尾巴，还是会在细网格上再次调用 Jacobi。下一次选择看的是这一下。

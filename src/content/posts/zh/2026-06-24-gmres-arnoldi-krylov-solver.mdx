@@ -1,7 +1,9 @@
 ---
 title: "不求逆也能解 — GMRES 与 Arnoldi 子空间"
 date: 2026-06-24
-description: "用 Krylov 子空间和 Arnoldi 从零实现求解稀疏线性系统的 GMRES"
+updated: 2026-10-19
+description: "这次计算里，40×40 的 Poisson 问题上，1600 个未知数用 78 次矩阵向量积把残差降到 8.74e-11。"
+takeaway: "Givens 残差 8.74e-11 与真实残差 9.02e-11 对得上。曲线一旦走平，先看预处理，而不是重启长度。"
 tags: ["Krylov", "GMRES", "Arnoldi", "Linear-Solver", "Preconditioning"]
 locale: zh
 slug: gmres-arnoldi-krylov-solver
@@ -12,6 +14,12 @@ import { GmresConvergenceLab } from '@/components/post-viz/2026-06-24-gmres-arno
 import { ArnoldiHessenbergViz } from '@/components/post-viz/2026-06-24-gmres-arnoldi-krylov-solver/ArnoldiHessenbergViz'
 
 一位同事的隐式求解器因内存耗尽而崩溃了。他想对五百万网格的雅可比矩阵做 LU 分解，64GB 瞬间被填满。矩阵巨大，而其中绝大部分是零。可直接法却会把那些零重新填满（fill-in）。本文从头追踪 GMRES——一种从不对矩阵求逆、只用矩阵向量乘积逼近解的方法。我们用 Arnoldi 迭代堆叠正交基，用一个很小的最小二乘问题压缩残差，再用 Givens 旋转免费读出收敛，并在 Python 的 2D Poisson 求解器中逐一验证。
+
+把列数调高后，左侧 Hessenberg 在第一条次对角线以下保持为 0，右侧 Gram 矩阵 $Q^{\top}Q$ 的非对角也停在 0 附近。
+
+<ArnoldiHessenbergViz />
+
+把维数 $n$ 调大，可以看到 Hessenberg 在第一条次对角线以下始终为零（浅灰）。右侧的 Gram 矩阵只有对角线是青色，非对角（橙色）几乎为零。这正是正交性仍然成立的证据。
 
 ## 面对大型稀疏矩阵，直接法会崩溃
 
@@ -53,12 +61,6 @@ $$
 
 其中 $Q_m$ 是以基向量为列的 $n\times m$ 矩阵。巨大 $A$ 的作用，被压缩进了小小的 Hessenberg 矩阵 $\bar{H}_m$。
 
-下面的模拟里亲手操作一下。左侧是逐步填充的 Hessenberg 矩阵，右侧是查看基正交性的 Gram 矩阵 $Q^{\top}Q$。
-
-<ArnoldiHessenbergViz />
-
-把维数 $n$ 调大，可以看到 Hessenberg 在第一条次对角线以下始终为零（浅灰）。右侧的 Gram 矩阵只有对角线是青色，非对角（橙色）几乎为零。这正是正交性仍然成立的证据。
-
 ## 最小残差 — 用很小的 Hessenberg 最小二乘来压缩
 
 把解写成 $x = x_0 + Q_m y$，其中 $y$ 是 $m$ 维向量。代入恒等式 $AQ_m = Q_{m+1}\bar{H}_m$，残差缩小得惊人。
@@ -88,12 +90,6 @@ GMRES 越迭代越贵。第 $j$ 步要把新向量与已有的 $j$ 个全部正�
 
 办法是重启。迭代 $m$ 次后，把当前解 $x_m$ 作为新初值，丢弃子空间，从头再来。这就是 GMRES(m)。内存被 $m$ 限定住。代价是收敛变慢。丢弃子空间的那一刻，累积的信息消失，有时会陷入停滞（stagnation）。
 
-下面的模拟里亲手操作一下。青色是不重启的 full GMRES，橙色是 GMRES(m)。
-
-<GmresConvergenceLab />
-
-把重启长度 $m$ 从 60 降到 10，橙色曲线会折成台阶并变慢。把条件数 κ 升到 $10^6$，两条曲线都变平。但打开 "clustered eigenvalues"，特征值聚拢到 1 附近，同样的 κ 下收敛骤然加速。这就是预处理的核心直觉。
-
 ## 预处理：把特征值聚拢就更快
 
 GMRES 的收敛速度由 $A$ 的特征值分布主导。特征值在复平面上散得越开越慢，聚到一点附近就快。预处理（preconditioning）乘上一个矩阵 $M^{-1}$，使 $M^{-1}A$ 的特征值聚拢。
@@ -102,7 +98,7 @@ $$
 M^{-1} A x = M^{-1} b
 $$
 
-其中 $M$ 是一个既像 $A$、其逆又便宜的矩阵。最简单的选择是对角预处理（$M = \mathrm{diag}(A)$，Jacobi）。实务中不完全 LU 分解（ILU）是标准做法。它在限制 fill-in 的前提下近似 $A \approx \tilde{L}\tilde{U}$。预处理选得好，迭代次数能从几百降到几十。
+其中 $M$ 是一个既像 $A$、其逆又便宜的矩阵。最简单的选择是对角预处理（$M = \mathrm{diag}(A)$，Jacobi）。实务中不完全 LU 分解（ILU）是标准做法。边界层那种单方向拉得很长的网格上，[linelet 预处理](/zh/posts/2026-07-31-linelet-preconditioner-stretched-grid/)会先把那一条折进来。它在限制 fill-in 的前提下近似 $A \approx \tilde{L}\tilde{U}$。预处理选得好，迭代次数能从几百降到几十。
 
 ## Python — 从零用 GMRES 求解 2D Poisson
 
@@ -203,12 +199,20 @@ print(f"真实残差     : {np.linalg.norm(f - matvec(x)):.2e}")
 真实残差     : 9.02e-11
 ```
 
+<GmresConvergenceLab />
+
+青色是不重启的 full GMRES，橙色是 GMRES(m)。
+
+把重启长度 $m$ 从 60 降到 10，橙色曲线会折成台阶并变慢。把条件数 κ 升到 $10^6$，两条曲线都变平。但打开 "clustered eigenvalues"，特征值聚拢到 1 附近，同样的 κ 下收敛骤然加速。这就是预处理的核心直觉。
+
 我们只用 78 次矩阵向量乘积，就解出了 1600 个未知数。Givens 估计的残差（`hist[-1]`）与真实残差一致——旋转没有撒谎。把网格扩大到 80×80，迭代次数会增加。这时加上预处理，又会减少。
 
-## 在工程现场动 GMRES 时
+只把输出再读一遍，预算就在那里。请求的迭代上限是 120，停在 78。 残差降到允许值 1e-10 以下时，前面还剩 42 次。 未知数是 40×40，共 1600 个。78 次矩阵向量积，大约每 20.5 个未知数一次乘法。 Givens 给出的 8.74e-11 和真实的 9.02e-11 相差 2.8e-12。真实值大约大 3.2%。 并不在每一步都去解 $y$ 的旋转，把范数对到了这个位置。
 
-把 GMRES 接入代码时，最常出问题的地方是正交化。经典 Gram-Schmidt 在迭代变长后会丢失正交性。用修正 Gram-Schmidt（modified GS）或再正交化（reorthogonalization）才安全。上面的代码就是每步即时减去的 modified GS 形式。
+网格间距的平方就是代码里的式子，$1/(41 \times 41) = 1/1681$。 点源在索引 $20 \times 40 + 20 = 820$，值为 1.0。 五点模板用这个间距平方去除那一格的四个邻居。 full GMRES 在这个 1600 阶矩阵上 78 次结束，并不表示把重启长度缩短后还会得到同一个残差。 上限 120 里面还留着 42 次。
 
-- **看到残差停滞，先怀疑重启长度。** $m$ 太小时，GMRES(m) 会平掉。在内存允许的范围内调大 $m$，或加强预处理。
-- **没有预处理的 GMRES 是赌博。** 条件数大的真实问题（低马赫、刚性化学）不加预处理甚至无法收敛。仅加一个 ILU(0) 就能改变局面。
-- **残差范数是免费的。** Givens 每一步都给你残差，所以别再单独计算 $\lVert b-Ax\rVert$。那只是又浪费一次矩阵向量乘积。
+## 曲线走平的时候，先怀疑预处理而不是 m
+
+40×40，1600 个未知数，78 次，残差 8.74e-11。这道 Poisson 用上限 120 的 full GMRES 就够了。 把重启从 60 降到 10，橙色曲线会变成台阶。 先分开那是台阶，还是条件数 $10^6$。
+
+只缩放对角的 Jacobi，在一个方向拉得很长的网格上不太能把特征值聚拢。 想把同一道 Poisson 放到更粗的网格层次上，对照的是 [V 循环](/zh/posts/2026-05-06-multigrid-v-cycle-poisson-acceleration/)。 残差 Givens 已经给了，不必再另外去算 $\lVert b-Ax\rVert$。

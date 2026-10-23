@@ -1,19 +1,27 @@
 ---
 title: "压缩性多相流 Rhie-Chow 插值法详解"
 date: 2026-03-10
-description: "从同置网格的棋盘格问题到平衡力多相流，系统总结 Rhie-Chow 插值的数学本质及 OpenFOAM 实现。"
+updated: 2026-10-19
+description: "在水-气界面上，密度比取 1000 时，算术平均密度大约为 500.5，调和平均则降到 2.0。滤波只作用在驱动压力上。"
 tags: ["Multiphase", "Rhie-Chow", "OpenFOAM", "Numerical-Methods"]
 series: "compressible-multiphase"
 seriesOrder: 5
+takeaway: "把时间系数放进 MWI 分母，时间步趋近于 0 时棋盘格会回来。"
 ---
 
 import { CheckerboardPressure } from '@/components/post-viz/rhie-chow-multiphase/CheckerboardPressure'
 
 # Rhie-Chow 插值：为什么需要它，以及在多相流中为什么棘手
 
-Rhie-Chow 插值（动量加权插值，MWI）是在同置网格（collocated grid）上为了**抑制棋盘格压力振荡**而修正面（face）速度的核心技术。在单相流中这相对简单，但扩展到多相流时，**压力、重力、表面张力以及非定常修正项的一致性处理**变得至关重要。
+Rhie-Chow 插值（动量加权插值，MWI）改的是同置网格上的面速度，用来**压掉棋盘格压力振荡**。单相只有一项。到了多相，压力、重力、表面张力、非定常修正在同一个面上叠在一起。错一项，界面上就留下假速度。
 
-本文涵盖了从 Rhie & Chow (1983) 的原型到 Bartholomew 等人 (2018) 的统一框架，以及 OpenFOAM 中 interFoam/compressibleInterFoam 的实现细节。
+从 Rhie & Chow (1983) 的稳态 SIMPLE 出发，经过 Bartholomew 等人 (2018) 的统一式，再到 interFoam 和 compressibleInterFoam。
+
+勾上 Rhie–Chow，交错的压力花纹熄掉；取消勾选，花纹马上回来。
+
+<CheckerboardPressure />
+
+不修正时，模板跳过 $p_i$，只剩 $p_{i-1}$ 和 $p_{i+1}$。修正打开后，紧致梯度把被跳过的那一格重新接上。
 
 ---
 
@@ -62,7 +70,7 @@ $$
 u_f = \hat{u}_f - d_f(p_E - p_P)
 $$
 
-$\hat{u} = u + d \cdot \Delta p$ 是去掉压力梯度的伪速度，$d = V/a_P$。它**仅包含压力修正项**，没有处理非定常项或松弛（relaxation）项。后来 Majumdar (1988) 指出了收敛解对松弛因子的依赖性，Choi (1999) 指出了非定常流中对时间步长的依赖性。
+$\hat{u} = u + d \cdot \Delta p$ 是去掉压力梯度的伪速度，$d = V/a_P$。它**仅包含压力修正项**，没有处理非定常项或松弛（relaxation）项。后来 Majumdar (1988) 指出了收敛解对松弛因子的依赖性，Choi (1999) 指出了非定常流中对时间步长的依赖性。[压力打成格子纹时 SIMPLE 用 Rhie–Chow 接上的那一项](/zh/posts/2026-07-22-simple-pressure-velocity-coupling-rhie-chow/)，到了多相还要再分给重力和表面张力。
 
 ### Jasak (1996)：OpenFOAM 的基石 - H/A 方法
 
@@ -207,6 +215,12 @@ $$
 
 如果使用算术插值，压力方程的拉普拉斯系数与 MWI 修正的密度加权之间会出现**不匹配**，从而产生寄生速度。
 
+500.5 从哪来，写清楚就行。水的密度 1000，空气的密度 1，$(1000+1)/2 = 500.5$。调和平均是 2 除以 $(1/1000 + 1)$。分母是 1.001，$2/1.001 \approx 1.998$，就是文中的 2.0。500.5 除以 2.0，大约 250。轻相把平均拉高了这么多倍。
+
+$a_P$ 与密度成正比，$1/a_P$ 就按同样的比例拉开。空气侧的 $1/a_P$ 是水侧的 1000 倍。算术平均把那个大数的一半安到面上。水的惯性，也就是小的 $1/a_P$，几乎被抹掉。密度比 $10^6$ 时，这个差距是一百万倍。调和平均被写成能撑到 $10^{24}$。Denner 的平衡力在 $10^6$ 以上把静止液滴的力平衡收到求解器容差。
+
+滤波本身是量级为 $\Delta x^2 \partial^3 p/\partial x^3$ 的低通。界面那种压力四阶导数很大的地方，这项修正会把质量误差 $\Delta x^2 \partial^4 p/\partial x^4$ 放大。所以体积力留在滤波外面。把时间系数 $\rho V/\Delta t$ 放进 MWI 分母，$\Delta t$ 走向 0 时滤波变弱，锯齿状的压力振荡会回来。分母里只留空间系数。
+
 ---
 
 ## 6. OpenFOAM 实现分析
@@ -299,27 +313,15 @@ $$
 
 ---
 
-## 结论：设计原则与实用建议
+## 时间系数进了分母，棋盘格就回来
 
-在设计压缩性多相流的面速度时，最重要的原则是：
-
-> **“仅对驱动压力梯度应用 Rhie-Chow 滤波器。”**
-
-表面张力和重力应在面上使用与压力梯度**相同的离散算子**进行评估以实现平衡力，而 MWI 修正应仅作用于排除这些力后的纯驱动压力：
+滤波只加在驱动压力上。重力和表面张力再被同一套式子滤一遍，静止液滴上对好的平衡就破了，寄生电流跟着出现。
 
 $$
 \nabla P = \nabla p - \rho\mathbf{g} - \sigma\kappa\nabla\alpha
 $$
 
-### 给 OpenFOAM 用户的三点改进建议
-
-1. **将 `rAU` 的面插值改为调和平均** —— 在 `fvSchemes` 中设置 `interpolate(rAU) harmonic`。这将大幅提高在大密度比下的稳定性。
-
-2. **用 CMI 风格的非定常修正替换 `ddtCorr`** —— 确保时间步长独立性。目前 OpenFOAM 默认的 ddtCorr 是近似的，仍存在 $\Delta t$ 依赖性。
-
-3. **引入高度函数法等高精度曲率估计** —— 曲率准确度决定了寄生速度的终极极限。
-
-在压缩性扩展中，虽然通过状态方程 (EOS) 加入了压力-密度耦合，但面速度的 MWI 结构本身与不压缩流动相同。像 ACID (Denner & van Wachem, 2018) 这样的界面离散技术可以保证声波传播的准确性。
+$\rho\mathbf{g}$ 和 $\sigma\kappa\nabla\alpha$ 留在面的 snGrad 上，MWI 只放行 $\nabla P$。rAU 仍用算术平均时，密度比 1000 的面系数会倒向空气。调和平均 $\rho_f^* \approx 2.0$ 把水的惯性留下来。ddtCorr 不动，$\Delta t$ 依赖就还在。[simpleFoam 里压力残差死不掉的情形](/zh/posts/2026-03-27-simpleFoam-pressure-divergence/)和这个修正错位的地方叠在一起。曲率不换之前，寄生速度的地板就是曲率误差。
 
 ---
 
@@ -335,6 +337,4 @@ $$
 - Aguerre, H.J. et al. (2018). JCP 365
 - Komen, E.M.J. et al. (2020). Nuclear Engineering and Design 370
 
-下方勾选 Rhie–Chow 补偿，立刻看到压力棋盘消失。
 
-<CheckerboardPressure />

@@ -1,6 +1,7 @@
 ---
 title: "Cutting Distance Checks 574x Lost 104 Contacts — One Grain Sets the DEM Sector Size"
 date: 2026-10-08
+updated: 2026-10-19
 description: "Sector pruning in DEM neighbor search is only safe when shell·s exceeds d_max, and 2400 agglomerating grains show exactly what a shorter reach costs."
 tags: ["Neighbor-Search", "DEM", "Algorithms", "Combustion", "Paper-Review"]
 locale: en
@@ -22,7 +23,13 @@ That is 574x fewer. The search found 1435 contacts.
 
 104 pairs disappeared quietly. No error, no warning.
 One agglomerate simply split into two.
-This post traces where those 104 pairs went and how finely a sector grid can actually be cut.
+Whether those pairs sat outside the stencil, and where the sector size has to stop, shows up in the cell count.
+
+Drop `s / d_max` from 1.00 to 0.25 and the blue box shrinks with the distance checks, while red missed contacts appear.
+
+<SectorPruneSearchLab />
+
+Raising `shell` finds a setting where the red lines vanish. That setting is the later inequality $k\,s \ge d_{\max}$. If the slider moves and the red lines stay, that setting is not counting contacts.
 
 ## The Cost of DEM Lives in a Double Loop, Not in Communication
 
@@ -40,7 +47,7 @@ $$
 $N$ is the grain count. 2400 grains give 2.88 million pairs; 9310 grains give 43.3 million.
 The wall is this quadratic term, not MPI traffic.
 Even with good parallelization, each rank runs the same double loop locally.
-Escaping into more cores leads straight into the [weak scaling trap](/en/posts/2026-10-04-weak-scaling-krylov-grid-levels/).
+Adding cores leaves that loop in place. Cutting a global distance down to nearby cells is the same family of move as [Fast Marching for the Eikonal wall distance](/en/posts/2026-04-22-wall-distance-eikonal-fast-marching/).
 
 ## What a Sector Grid Removes Is Distance Evaluations
 
@@ -55,14 +62,6 @@ $$
 where $k$ is the shell radius, the number of layers you look through.
 The expected number of grains inside is $N V_k / L^3$, with $L$ the domain edge.
 Distance evaluations drop to a term linear in $N$.
-
-Move the sector size and the shell radius yourself in the simulation below.
-
-<SectorPruneSearchLab />
-
-Dropping `s / d_max` from 1.00 toward 0.25 shrinks the blue box and the check count with it.
-Red lines appear at the same time. Those are missed contacts.
-Raising `shell` until the red lines vanish makes the inequality below visible on screen.
 
 ## There Is Exactly One Safety Condition
 
@@ -132,14 +131,6 @@ The measurement says exactly that. $k=4$ with $s=d_{\max}/4$ cut distance checks
 but sector lookups rose to 1,749,600 and the wall clock came out at 0.291 s.
 That is 3.5x slower than 0.082 s for $k=1$ with $s=d_{\max}$.
 Distance checks improved 2.1x while the total got worse.
-
-Find where the two costs cross in the dial below.
-
-<ShellCostCrossoverDial />
-
-Pushing `s/d` to the left sends the blue curve (distance checks) down into a plateau while the orange curve (total) turns back up.
-Raising `lookup / check cost` slides the minimum to the right.
-Turning on `pin grain at cell corner` parks the grain at a sector corner, the worst case, and the red cells show why they exist.
 
 ## Five Settings on the Same Cloud of 2400 Grains
 
@@ -248,11 +239,19 @@ big-split shell=1    0.50    27     41229     64773     0     yes
 required shell = ceil(d_max/s) : [(1.0, 1), (0.5, 2), (0.25, 4)]
 ```
 
+<ShellCostCrossoverDial />
+
+Push `s/d` left and the blue curve (distance checks) falls, then flattens, while the orange curve (total) turns back up. Raising `lookup / check cost` slides the minimum to the right. Turn on `pin grain at cell corner` and the grain sits on a sector corner, which is why the red cells exist.
+
+The dist column reads 269450, 38914, 5015, 125548, 41229. 5015 is 574 times smaller than the brute-force 2878800, and the contact count drops from 1539 to 1435, a loss of 104. Same 27 cells and 64800 lookups: s/dmax=1.00 is miss 0 and safe yes, 0.50 is miss 0 and safe NO, 0.25 is miss 104 and safe NO. shell=4 opens 729 cells, dist 125548, lookups 1749600, miss 0. Wall time goes from 0.082 s to 0.291 s, a factor of 3.5. big-split is dist 41229, lookups 64773, miss 0. 41229 against 269450 is the 6.5x in the text, and 0.023 s is 1/29 of the brute-force 0.668 s.
+
+Nineteen cells, faces and edges only, drop 1 pair out of 1539. Smaller than 104, and still enough to split an agglomerate if that pair was the link. Diameters 0.060 and 0.030 are a factor of two in length, so sector volume jumps by 8. 2399 grains sit at or below 0.030, yet the cells follow 0.060. In $V_k$, $k=1$ is $27\,d_{\max}^3$ and a large $k$ only reaches $8\,d_{\max}^3$, so distance checks fall by 27/8, that is 3.4x. Buying that 3.4x with 729 cells came back as 0.291 s.
+
 Look at the third row. `s/dmax=0.50` with `shell=1` violates the safety condition yet misses nothing.
 That is luck. Only one grain has diameter 0.060, and none of its contact partners happened to sit in a corner direction.
 Reseed the cloud or advance one step and the number changes.
 "I ran it and it was fine" is not evidence for a condition of this kind.
-It is the same trap as [what a verification case actually measures](/en/posts/2026-10-07-sod-vortex-order-verification/).
+A miss count of 0 with the inequality still NO is not a pass.
 
 ## Splitting Off the Big Grain Buys Safety and Speed Together
 
@@ -268,15 +267,14 @@ Wall clock is 0.023 s, one twenty-ninth of the 0.668 s brute force.
 
 The gap widens with scale. An agglomerate is a few large grains with thousands of small ones attached.
 Treating the handful in the tail of the size distribution separately needs less code than building a two-level grid.
-Much like [where a flamelet library folds](/en/posts/2026-10-06-flamelet-library-slf-fpv-progress-variable/),
-the point is to break the structure in which a tiny minority dictates the resolution of the whole table.
+The point is to break the pattern where a few outliers set the cell size for everyone else.
 
 ## What Those 104 Missing Contacts Change
 
 Miss one contact and the repulsion for that pair becomes zero.
 The two grains pass through each other, or stay overlapped and drop out of the surface-area update.
 In aluminum particle combustion the overlapped area of an agglomerate maps directly onto oxide-layer area.
-Burn rate comes out too high. Mass conservation never breaks, so no residual flags it.
+Burn rate comes out too high. Mass conservation never breaks, so no residual flags it. Same quiet failure as [WENO smearing a small vortex while the average still looks fine](/en/posts/2026-04-25-teno-low-dissipation-shock-capturing/).
 
 So when you write a sector size into search code, three things are worth checking.
 Whether $k\,s \ge d_{\max}$ holds, whether that $d_{\max}$ is remeasured every step (merging and breakup change it),

@@ -1,7 +1,9 @@
 ---
 title: "Where Negative Density Leaks In — A Positivity-Preserving Flux Limiter for Blast Waves"
 date: 2026-05-20
-description: "The one-line θ-blend that keeps ρ above zero in a Le Blanc shock tube."
+updated: 2026-10-19
+description: "A Le Blanc rarefaction can drive density negative. Per-face θ blends the high-order flux back toward Lax–Friedrichs only as far as the floor requires."
+takeaway: "Keep the largest θ that still leaves every updated density above the floor; anything past that is the leak."
 tags: ["CFD", "Positivity-Preserving", "Flux-Limiter", "Shock-Capturing", "Compressible-Euler"]
 locale: en
 slug: 2026-05-20-positivity-preserving-flux-limiter
@@ -11,71 +13,83 @@ draft: false
 import { BlastDensityFloor1D } from '@/components/post-viz/2026-05-20-positivity-preserving-flux-limiter/BlastDensityFloor1D'
 import { ThetaPerFaceSelector } from '@/components/post-viz/2026-05-20-positivity-preserving-flux-limiter/ThetaPerFaceSelector'
 
-2:27 AM. A Le Blanc shock tube verification spat out NaN after 0.003 s. Lowering CFL to 0.1, doubling the grid — both curves collapsed together. The debugger showed something simple: at the head of a strong rarefaction (a region where pressure drops rapidly), one cell's density crossed below zero. Two steps later the sound speed became NaN, and the next step took the whole domain with it. Today we walk through where that negative density leaks in, and how Hu, Adams, and Shu's (2013) "back off one notch at a time" θ-blend flux limiter stops it. We close with 50 lines of NumPy that lets you toggle the trick on and off.
+2:27 AM. A Le Blanc shock tube spat out NaN after 0.003 s. CFL at 0.1, grid doubled — both curves still collapsed. The cause was small. At the head of a strong rarefaction, one cell's density crossed below zero. Two steps later the sound speed was NaN. The step after that killed the domain. The θ-blend of Hu, Adams, and Shu (2013) backs the high-order flux off by one notch, and only there.
+
+Drop the right-state density ρ_R below 10⁻³ and the allowed curve enters the red region, while θ on that face falls under 0.2.
+
+<ThetaPerFaceSelector />
+
+The red region is where the next density breaks the floor. If θ stops on that boundary, the face is effectively first-order Lax–Friedrichs.
 
 ## Where negative density leaks in
 
-A high-order scheme always balances stability against accuracy. First-order upwind smears a shock across five cells. Second-order central difference plants sawtooth oscillations on both sides of a shock. Light oscillations only ripple the pressure. When the density ratio between adjacent cells exceeds 100:1 — Le Blanc shock tube, Sedov blast, supersonic nozzle wake — the story changes.
+A high-order scheme wobbles between stability and accuracy. First-order upwind smears a shock across about five cells. Second-order central difference plants a sawtooth on both sides. Light ringing only shakes the pressure. Once the density ratio of neighboring cells passes 100:1 — Le Blanc, a Sedov blast, a supersonic nozzle wake — the failure changes character.
 
-Write the density conservation law for cell $i$:
+Density conservation on cell $i$ is
 
 $$
 \rho_i^{n+1} = \rho_i^n - \frac{\Delta t}{\Delta x}\bigl( F_{i+1/2}^\rho - F_{i-1/2}^\rho \bigr)
 $$
 
-where $F^\rho = \rho u$ is the density flux. In a cell where $F_{i+1/2}^\rho \gg F_{i-1/2}^\rho$ (mass leaving on one side faster than it arrives on the other), $\rho_i^{n+1}$ can fall below zero. The first cell after a strong shock in a 1D Euler simulation sits exactly in that spot.
+$F^\rho = \rho u$ is the density flux. In a cell with $F_{i+1/2}^\rho \gg F_{i-1/2}^\rho$, mass leaving faster than it arrives, $\rho_i^{n+1}$ can go negative. In 1D Euler that cell is the first one in the expansion just behind a strong shock.
 
-What happens when ρ goes negative? The sound speed $a = \sqrt{\gamma p / \rho}$ has $a^2 < 0$ for $\rho \to 0^-$. The next flux evaluation hands back NaN from $\sqrt{\cdot}$. One cell's NaN spreads to its two neighbors, and two steps later the whole domain is dead.
+Negative density kills the sound speed first. With $a = \sqrt{\gamma p / \rho}$, $\rho \to 0^-$ makes $a^2 < 0$. The next flux evaluation returns NaN from $\sqrt{\cdot}$. One cell's NaN reaches both neighbors. Two steps later the domain is gone.
 
 ## Lax–Friedrichs — blurry but never broken
 
-The LF flux Lax proposed in 1954 is safe from this trap:
+The LF flux Lax wrote down in 1954 is outside this trap.
 
 $$
 F_{i+1/2}^{LF} = \tfrac{1}{2}\bigl(F_L + F_R\bigr) - \tfrac{1}{2}\alpha\bigl(U_R - U_L\bigr)
 $$
 
-with $\alpha$ the maximum signal speed across the two cells and $U = (\rho, \rho u, E)^T$ the conservative state. The second term is artificial viscosity — it averages neighbors and kills the sawtooth. Lax proved that under CFL$\leq$1 we get $\rho^{n+1} \geq 0$ (a simplified version of Hu et al.'s Theorem 1). Whether the shock is fast or weak, LF does not blow up.
+$\alpha$ is the largest signal speed of the two cells, and $U = (\rho, \rho u, E)^T$ is the conservative state. The subtracted term is artificial viscosity. It averages the neighbors and kills the sawtooth. Same move as [the viscosity von Neumann deliberately smeared across a shock in 1950](/en/posts/2026-05-13-von-neumann-artificial-viscosity-1950/). Under CFL$\leq$1, Lax showed $\rho^{n+1} \geq 0$, a stripped-down form of Hu et al., Theorem 1. Fast shock or weak shock, LF stays up.
 
-The price is accuracy. A two-cell shock becomes a five-cell shock; a contact discontinuity smears by one cell per timestep. Nobody ships production LF alone. But its safety margin is the foothold for the limiter.
+Accuracy is the cost. A two-cell shock becomes five cells. A contact smears by another cell every step. Nobody ships LF alone. The safety margin is still where the limiter starts.
 
 ## The θ-blend — back off one notch at a time
 
-Suppose a high-order flux $F_{i+1/2}^{HO}$ (WENO, MUSCL, central) is more accurate than LF but can produce negative density. Hu, Adams, and Shu's idea is one line:
+A high-order flux $F_{i+1/2}^{HO}$ (WENO, MUSCL, central) is sharper than LF and can still make negative density. Hu, Adams, and Shu tie the two fluxes in one line.
 
 $$
 F_{i+1/2} = F_{i+1/2}^{LF} + \theta_{i+1/2}\bigl( F_{i+1/2}^{HO} - F_{i+1/2}^{LF} \bigr)
 $$
 
-$\theta \in [0, 1]$ is a per-face blending weight. $\theta=1$ is pure high-order; $\theta=0$ is pure LF. The limiter's only job is to pick the largest $\theta$ that keeps every cell's next-step density positive. Don't drift far — back off one notch at a time.
+$\theta \in [0, 1]$ is a weight per face. $\theta=1$ is pure high order. $\theta=0$ is pure LF. The limiter does one thing: pick the largest $\theta$ that leaves every next density positive. It does not retreat across the domain. One notch.
 
-Because the LF pass guarantees $\rho^{LF}_i \geq \rho_{\min}$, we can solve face-by-face for the largest $\theta$ such that adding the correction flux $\Delta F = F^{HO} - F^{LF}$ does not undo that margin. A face touches two cells; both must stay above the floor, so the smaller of the two bounds wins.
+The LF state already has $\rho^{LF}_i \geq \rho_{\min}$, so each face solves for the largest $\theta$ that keeps the update positive after adding $\Delta F = F^{HO} - F^{LF}$. A face touches two cells. Both must clear the floor, so the smaller bound wins.
 
-Play with the simulation below.
-
-<ThetaPerFaceSelector />
-
-Drop ρ_R below 10⁻³ and the curve plunges into the red zone; the θ the limiter picks collapses below 0.2. At that face the scheme is effectively first-order LF.
+That is the cap that dropped θ under 0.2 when ρ_R came down. The face is then solved as first-order LF.
 
 ## Two-step limiting — density first, pressure next
 
-Positive density alone is not enough. If pressure goes negative the solver dies the same way (sound speed becomes imaginary). So Hu et al. split the limiter into two passes.
+Positive density is not enough. Negative pressure kills the solver the same way, because the sound speed goes imaginary. Hu et al. split the limiter into two passes.
 
-**Pass 1 (density).** Use the formula above to pick $\theta^\rho$ per face so that every cell's next-step density stays above $\rho_{\min}$.
+**Density pass.** The formula above sets $\theta^\rho$ on each face so every next density stays at or above $\rho_{\min}$.
 
-**Pass 2 (pressure).** With density-flux fixed by $\theta^\rho$, work out $\theta^p \leq \theta^\rho$ for the momentum and energy fluxes. The pressure positivity constraint
+**Pressure pass.** With the density flux frozen by $\theta^\rho$, the momentum and energy fluxes get a $\theta^p \leq \theta^\rho$. The pressure constraint
 
 $$
 p = (\gamma - 1)\bigl(E - \tfrac{1}{2}\rho u^2\bigr) \geq p_{\min}
 $$
 
-is nonlinear (a quadratic in general), but a conservative approximation (take $\theta^p$ to the smaller root) fits in one line.
+is nonlinear, a quadratic in general. A conservative choice, taking the smaller root for $\theta^p$, fits on one line.
 
-**Final.** Use $\theta = \min(\theta^\rho, \theta^p)$ to blend every conservative flux at the same weight. One face, one $\theta$, consistency across all conserved variables.
+**One weight.** $\theta = \min(\theta^\rho, \theta^p)$ blends every conservative flux. One face, one $\theta$, so the conserved variables stay consistent with each other.
 
 ## 50 lines of NumPy — auto-θ on a Le Blanc tube
 
-The Le Blanc problem is a strong shock tube with $\rho_L=1, p_L=100$ versus $\rho_R=0.02, p_R=0.05$. A strong rarefaction propagates left and the first cell's density dips below zero in any unprotected high-order scheme.
+Le Blanc here is a strong tube, $\rho_L=1$, $p_L=100$ against $\rho_R=0.02$, $p_R=0.05$. A strong rarefaction runs left and the first cell's density goes negative if nothing guards it.
+
+Divide the two states. The density ratio is $1/0.02 = 50$. The pressure ratio is $100/0.05 = 2000$. The 100:1 line above was a rule of thumb, and this pair's density jump sits under it. The violence is in the pressure. With $\gamma = 1.4$, $a = \sqrt{\gamma p / \rho}$ gives $\sqrt{140} \approx 11.83$ on the left and $\sqrt{3.5} \approx 1.871$ on the right. The ratio is exactly $\sqrt{40} \approx 6.32$.
+
+The grid numbers say the timestep was not the killer. $N = 200$ so $\Delta x = 1/200 = 0.005$, and $\Delta t = 9.0 \times 10^{-5}$. Then $\Delta t/\Delta x = 0.018$. An acoustic Courant number on the left state alone is $a_L \Delta t/\Delta x \approx 0.213$. That matches a run that already died at CFL 0.1. From $\rho^{n+1} = \rho^n - (\Delta t/\Delta x)\Delta F$, once the flux difference exceeds the density slack, a smaller step still punches through the floor.
+
+At the right state $\rho = 0.02$, the slack down to the floor $10^{-3}$ is $0.019$. For $\theta$ to stay at 1, the density correction $|d|$ cannot exceed $0.019/0.018 \approx 1.06$. At $|d| = 2$ the cap is $0.019/(0.018 \times 2) \approx 0.53$. If the slack shrinks to $5 \times 10^{-4}$, the same $|d| = 1$ drops the cap to $0.0005/0.018 \approx 0.028$. That face is almost pure LF.
+
+By weight the blend is $F = (1-\theta)F^{LF} + \theta F^{HO}$. At $\theta = 0.53$ the high-order share is 53%. At $\theta = 0.028$ it is 2.8% and the rest is LF. The cap is the update bound itself: the correction moves density by $(\Delta t/\Delta x)\,\theta\,|d|$, which must stay inside the slack $0.019$, so $\theta \le 0.019/(0.018\,|d|)$. Equality at $\theta = 1$ sits near $|d| \approx 1.06$.
+
+The pressure formula reads the same way. $p = (\gamma - 1)(E - \tfrac{1}{2}\rho u^2)$ and $\gamma - 1 = 0.4$. Hold $E$ and $\rho$ fixed and one unit of kinetic energy cuts pressure by 0.4. The right state $p = 0.05$ hits zero at a kinetic energy of $0.05/0.4 = 0.125$. The left state $p = 100$ survives up to $250$. Guard only the density floor and the leak moves to a positive density with an imaginary sound speed.
 
 ```python
 import numpy as np
@@ -115,24 +129,24 @@ def density_theta(U, dF, dt_dx):
     return theta
 ```
 
-(The full driver makes one LF pass, one anti-diffusion pass, one θ pass. 220 steps, 200 cells. With the limiter off, NaN around step 30; with it on, the solver survives to the end.)
+The driver is one first-order LF pass, one central anti-diffusion pass, one pass for θ. 220 steps, 200 cells. Limiter off: NaN near step 30. Limiter on: the run finishes.
 
-Now scrub the solver across time.
+Switch the limiter off and the red curve drags density below zero near step 30.
 
 <BlastDensityFloor1D />
 
-The red curve (limiter OFF) drags ρ below zero around step 30 — that is the breakdown moment. The cyan curve flattens out near ρ ≈ 0.02 at the same instant. The accuracy gap is under 5%, yet one solver lives and the other dies.
+That crossing is the collapse. Cyan flattens near $\rho \approx 0.02$ at the same time. The accuracy gap is under 5%. One run lives. The other dies.
 
 ## What the limiter costs
 
-Faces where θ collapses to 0 are solved by first-order LF. The front of a shock or the head of a strong rarefaction lose accuracy there. Fortunately that region is under 5% of the domain, so global accuracy is barely affected. On average θ hovers between 0.95 and 1.0.
+A face with $\theta = 0$ is solved by first-order LF. Shock fronts and rarefaction heads go blunt there. That region is under 5% of the domain, so the global error barely moves. Mean θ sits between 0.95 and 1.0.
 
-Two traps. First, pick $\rho_{\min}$ too small (say $10^{-12}$) and the limiter fires too late — NaN returns. The working rule of thumb is $10^{-4}$ of the simulation's mean density. Second, multi-stage RK schemes need the limiter on every stage — protect only stage 1 and stage 2 will still diverge.
+Set $\rho_{\min}$ to something like $10^{-12}$ and the limiter wakes up late. The same NaN comes back. In practice the floor is near $10^{-4}$ of the mean density. Multi-stage Runge–Kutta has to rerun the limiter on every stage. Pass only the first stage and the next stage diverges anyway.
 
-## What I want to remember tomorrow
+## A floor of 1e-12 wakes the limiter after the NaN
 
-- **Negative density can leak from anywhere** — strong shocks, rarefactions, contact discontinuities.
-- **LF is not the answer, but it is the safety margin** — measure your high-order correction against that margin and only allow what fits.
-- **Density first, pressure next** — two passes finish the job. Fancier limiters only add more knobs.
+$\rho_{\min} = 10^{-12}$ is decoration, not a floor. Against a right-state density of 0.02 almost the whole slack is still unused, and the cap above stays near 1. The bound tightens only after density has already fallen below $10^{-8}$. By then $\gamma p / \rho$ has changed sign. The limiter retreats to LF after the cell is dead.
+
+Face θ guards the cell average. If that average stays positive while a reconstructed point inside the cell crosses zero, this one line never sees the point. Whether [a reconstruction that stays positive in the mean and goes negative at a point](/en/posts/2026-08-05-positivity-preserving-flux-limiter/) still needs its own fix is the next cut.
 
 > Reference: X. Y. Hu, N. A. Adams, C.-W. Shu. *Positivity-preserving method for high-order conservative schemes solving compressible Euler equations.* J. Comput. Phys. 242 (2013) 169–180.

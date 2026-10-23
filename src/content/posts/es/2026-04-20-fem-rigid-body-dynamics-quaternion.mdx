@@ -1,7 +1,9 @@
 ---
 title: "FEM para la dinámica de cuerpos rígidos: Manejo de rotaciones basado en cuaterniones y tensores de inercia"
 date: 2026-04-20
-description: "Métodos para representar rotaciones con cuaterniones y manejar tensores de inercia en simulaciones de cuerpos rígidos mediante FEM."
+updated: 2026-10-19
+description: "La inercia se guarda una vez en el marco del cuerpo y se gira con R(q). Si |q| se aleja de 1, R deja de ser ortogonal y la aceleración angular gira de eje."
+takeaway: "El tetraedro lineal tiene 12 grados nodales y la restricción rígida los deja en 6. El paso estable cumple dt por debajo de 2/omega_max, y la pose intermedia se queda en la esfera con SLERP."
 tags: ["FEM", "Rigid-Body-Dynamics", "Quaternion"]
 draft: false
 series: "fem-dg"
@@ -12,13 +14,19 @@ import { QuaternionRotationDemo } from '@/components/post-viz/2026-04-20-fem-rig
 
 ## Ecuaciones Básicas de la Dinámica de Cuerpos Rígidos
 
-En el análisis de interacción fluido-estructura (FSI) o en las simulaciones del Método de Elementos Discretos (DEM), es esencial describir con precisión el movimiento de los cuerpos rígidos. Un cuerpo rígido es un objeto sin deformación, donde la distancia entre cualquier par de puntos se mantiene siempre constante.
+En un cálculo de FSI o en un montón de DEM, un cuerpo rígido solo tiene que mantener fijas las distancias entre puntos. No hay deformación. Lo que suele romperse primero es la representación de la rotación.
 
-La velocidad de una partícula arbitraria $i$ dentro de un cuerpo rígido se descompone de la siguiente manera:
+La velocidad de la partícula $i$ es traslación del centro de masa más una rotación.
 
 $$\mathbf{v}_i = \mathbf{v}_{cm} + \boldsymbol{\omega} \times \mathbf{r}_i$$
 
-Donde $\mathbf{v}_{cm}$ es la velocidad del centro de masa, $\boldsymbol{\omega}$ es la velocidad angular y $\mathbf{r}_i$ es el vector de desplazamiento desde el centro de masa hasta la partícula $i$.
+$\mathbf{v}_{cm}$ es la velocidad del centro de masa, $\boldsymbol{\omega}$ la velocidad angular y $\mathbf{r}_i$ el desplazamiento desde el centro de masa.
+
+El control de eje y el de ω cambian el eje de giro y el tiempo de una vuelta, aunque la magnitud de la velocidad angular se quede igual.
+
+<QuaternionRotationDemo />
+
+Al subir ω el cuerpo cierra la vuelta antes. Con el eje sobre una diagonal del cuerpo, se observa si algún ángulo queda trabado en un solo eje de coordenadas.
 
 ## Momento Lineal y Momento Angular
 
@@ -83,6 +91,10 @@ $$
 La derivada temporal de un cuaternión está vinculada a la velocidad angular $\boldsymbol{\omega}$.
 
 $$\dot{\mathbf{q}} = \frac{1}{2} \begin{pmatrix} 0 \\ \boldsymbol{\omega} \end{pmatrix} \otimes \mathbf{q}$$
+
+La diagonal de $I_{jk}$ es $m(|\mathbf{r}|^2-r_j^2)$. Fuera de la diagonal queda $-m r_j r_k$. Si toda la masa está sobre el eje $x$, entonces $r_y=r_z=0$, $I_{xx}=0$ y $I_{yy}=I_{zz}=m x^2$. Alrededor de ese eje no hay brazo de palanca. $\mathbf{I}_0$ es esa suma, guardada una vez en el marco del cuerpo. En el marco del mundo solo hay que rehacer $\mathbf{R}\mathbf{I}_0\mathbf{R}^T$. Multiplicar un tensor del cuerpo por una velocidad angular del mundo inclina el eje del torque. La misma congruencia aparece al cambiar de coordenadas un tensor de rigidez, que es lo que sigue la [transformación del tensor constitutivo](/es/posts/2026-08-17-curvilinear-constitutive-tensor-transform/) dentro del elemento.
+
+En $\theta=0$, $\cos(\theta/2)=1$ y $\sin(\theta/2)=0$, así que $\mathbf{q}=(1,0,0,0)$. Es el cuaternión con el que arranca el código. En $\theta=\pi$, $\cos(\pi/2)=0$ y $\sin(\pi/2)=1$: el escalar se apaga y la parte vectorial es solo el eje $\hat{\mathbf{n}}$. En $\theta=2\pi$, $\cos\pi=-1$ y $\mathbf{q}=(-1,0,0,0)$. La rotación coincide con la identidad. Solo cambió el signo. Un cuaternión cubre una vuelta completa dos veces. La entrada $(1,1)$ de $\mathbf{R}$ es $1-2(q_2^2+q_3^2)$, que vale 1 para esa identidad, y las entradas fuera de la diagonal valen 0. El $1/2$ delante de $\dot{\mathbf{q}}$ es el mismo factor que $\theta/2$ en la fórmula del ángulo. Integrarlo tal cual aleja $|\mathbf{q}|$ de 1. Un tetraedro lineal tiene 4 nodos y 3 desplazamientos por nodo, 12 grados de libertad. La restricción rígida los deja en 3 traslaciones más 3 rotaciones, 6 en total. $\sum_i L_i=1$ solo mantiene cerradas las coordenadas. No fabrica esos 6 por su cuenta.
 
 ## Discretización FEM y Funciones de Forma Tetraédricas
 
@@ -152,25 +164,12 @@ def quaternion_multiply(q1, q2):
     ])
 ```
 
-## Advertencias Prácticas
+## Sin la normalización, R deja de ser una rotación
 
-**1. Olvidar la normalización del cuaternión**
-A medida que se repite la integración numérica, puede ocurrir que $|\mathbf{q}| \neq 1$, haciendo que la matriz de rotación sea no ortogonal. Se debe realizar obligatoriamente `q /= norm(q)` en cada paso de tiempo.
+Si $|\mathbf{q}|$ no vuelve a 1 en cada paso, las columnas de $\mathbf{R}$ pierden longitud unidad. La línea `q /= norm(q)` es esa división. Un torque calculado en el marco del mundo y multiplicado por $\mathbf{I}_0$ tal cual manda $\boldsymbol{\alpha}$ por otro eje. El tensor del mundo es $\mathbf{I}_{world} = \mathbf{R} \mathbf{I}_0 \mathbf{R}^T$ antes de que $\mathbf{L}=\mathbf{I}\boldsymbol{\omega}$ cuadre. El techo explícito es $\Delta t < 2 / \omega_{max}$. Si $\omega_{max}$ crece, el paso se acorta primero.
 
-**2. Confusión del sistema de coordenadas del tensor de inercia**
-$\mathbf{I}_0$ se define en el sistema de coordenadas fijo al cuerpo (body frame). Si el torque se calculó en el sistema de coordenadas del mundo (world frame), se debe aplicar tras convertirlo a $\mathbf{I}_{world} = \mathbf{R} \mathbf{I}_0 \mathbf{R}^T$.
-
-**3. Selección del paso de tiempo**
-Para garantizar la estabilidad numérica, se debe cumplir la condición $\Delta t < 2 / \omega_{max}$ (similar a la condición CFL) para la frecuencia natural máxima $\omega_{max}$ del cuerpo rígido. Cuanto más rápido gire el objeto, menor será el $\Delta t$ necesario.
-
-**4. Interpolación de cuaterniones (SLERP)**
-Al interpolar entre dos orientaciones, se debe utilizar la interpolación lineal esférica (SLERP) en lugar de la interpolación lineal (LERP) para asegurar una rotación de velocidad constante.
+Una mezcla recta entre dos orientaciones se hunde dentro de la esfera unidad. SLERP es la curva que vale $\mathbf{q}_0$ en $t=0$ y $\mathbf{q}_1$ en $t=1$.
 
 $$\mathbf{q}(t) = \mathbf{q}_0 \left(\mathbf{q}_0^{-1} \mathbf{q}_1\right)^t$$
 
-La combinación de la dinámica de cuerpos rígidos y FEM es la base para las simulaciones de FSI, DEM y dinámica multicuerpo. Una implementación correcta de la representación de rotación basada en cuaterniones permite simular de forma estable cualquier rotación tridimensional sin el bloqueo del cardán.
-
-
-Cambia eje y ω para confirmar que la rotación cuaterniónica no sufre gimbal lock.
-
-<QuaternionRotationDemo />
+La interpolación lineal no se queda en esa esfera. Contar la libertad de rotación junto con la deformación del elemento hace que la restricción se coma el movimiento, del mismo modo que el [bloqueo por cortante en una cáscara delgada](/es/posts/2026-08-12-mitc-shell-shear-locking/) endurece una placa que debería flexionarse. Un cuerpo rígido tiene 6 grados de libertad, no 12.

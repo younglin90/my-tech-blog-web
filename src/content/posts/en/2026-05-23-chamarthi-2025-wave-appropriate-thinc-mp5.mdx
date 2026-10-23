@@ -1,7 +1,9 @@
 ---
 title: "[Paper Review] One Scheme Can't Handle Every Wave — Chamarthi (2025)"
 date: 2026-05-23
+updated: 2026-10-19
 description: "Wave-appropriate reconstruction for compressible multicomponent flows — THINC at contacts, MP5 at shocks, central at viscous tangentials"
+takeaway: "Contacts with psi under 0.35 go to THINC, shocks stay on MP5, and viscous tangential velocity stays central unless Ducros trips."
 tags: ["Paper-Review", "Interface-Capturing", "THINC", "Multicomponent", "Compressible", "Shock-Capturing"]
 locale: en
 slug: chamarthi-2025-wave-appropriate-thinc-mp5
@@ -12,6 +14,12 @@ import { MultiSpeciesContactSensor1D } from '@/components/post-viz/2026-05-23-ch
 import { ThincSharpInterface1D } from '@/components/post-viz/2026-05-23-chamarthi-2025-wave-appropriate-thinc-mp5/ThincSharpInterface1D'
 
 The first time I ran HLLC, the shock came out clean — two cells wide. On the same grid, the contact discontinuity (a wave where only density jumps; pressure and normal velocity stay continuous) smeared across ten cells. Same scheme, same grid, same time step — yet two waves came out looking nothing alike. Chamarthi (2025) gives a short answer to that asymmetry: *one scheme cannot handle every wave.* This post walks through the new contact sensor and the THINC sigmoid the paper proposes, and re-implements the algorithm from scratch.
+
+Move the density-ratio and pressure-ratio sliders and $\psi$ drops under 0.35 at the interface. Matching the pressures does not stop it.
+
+<MultiSpeciesContactSensor1D />
+
+A $\gamma$ jump alone makes $s$ jump. At a pressure ratio of 10:1 the marker still sits on the contact.
 
 ## Paper info
 
@@ -40,7 +48,7 @@ $$
 
 Here $p$ is pressure, $\rho$ is mixture density, and $\gamma$ is the mixture specific-heat ratio. Across a contact wave, $p$ and the normal velocity are continuous but $\rho$ and $\gamma$ both jump, so $s$ jumps. Across a shock, $s$ jumps too — but with a different signature in WENO smoothness indicators.
 
-The sensor reuses the WENO $\beta_0$ and $\beta_2$ indicators, dropping the squares in favour of absolute values:
+The sensor reuses the WENO $\beta_0$ and $\beta_2$ indicators, dropping the squares in favor of absolute values:
 
 $$
 \psi_i = \frac{2 a b + \varepsilon}{a^2 + b^2 + \varepsilon}
@@ -56,11 +64,7 @@ $$
 
 $\psi_i$ measures the *coherence* between the left and right roughness estimates. Smooth regions push it to $1$, asymmetric jumps push it toward $0$. Cells with $\psi_i < \psi_c = 0.35$ become *today's THINC candidates*.
 
-Play with the simulation below.
-
-<MultiSpeciesContactSensor1D />
-
-Change the density ratio between gas 1 and gas 2, or match the two pressures — the sensor still fires at the interface. The reason is that the $\gamma$ change alone makes $s$ jump. The interesting bit: even when you push the pressure ratio to a Sod-tube setup of 10:1, the sensor stays focused on the *contact*. The shock-side $s$ jump develops gradually, while the contact-side $s$ jump is baked into the initial condition.
+The figure above already shows it. Change the density ratio between gas 1 and gas 2, or match the two pressures — the sensor still fires at the interface. The reason is that the $\gamma$ change alone makes $s$ jump. The interesting bit: even when you push the pressure ratio to a Sod-tube setup of 10:1, the sensor stays focused on the *contact*. The shock-side $s$ jump develops gradually, while the contact-side $s$ jump is baked into the initial condition.
 
 ## THINC sigmoid — a step inside a cell
 
@@ -81,7 +85,7 @@ $$
 
 with $u_a = (q_{i+1} + q_{i-1})/2$, $u_d = (q_{i+1} - q_{i-1})/2$, $\alpha_i = (q_i - u_a)/u_d$, $K_1 = \tanh(\beta/2)$, $K_2 = \tanh(\alpha_i \beta / 2)$. When the monotonicity check $(q_{i+1} - q_i)(q_i - q_{i-1}) > 0$ fails, the formula degrades to first-order upwind $q_i$.
 
-Put THINC head-to-head against MUSCL+minmod on the same grid. Both are stable and bounded. The difference is interface thickness.
+Put THINC head-to-head against MUSCL+minmod on the same grid. Both are stable and bounded. The difference is interface thickness. Picking the candidate with the smaller jump is the move in [MUSCL-THINC-BVD](/en/posts/2026-05-02-muscl-thinc-bvd-interface-reconstruction/).
 
 <ThincSharpInterface1D />
 
@@ -182,6 +186,10 @@ print(f"trigger cells: {(contact_sensor_psi(s) < PSI_C).sum()} / {N}")
 
 On a 200-cell grid, only three cells fall below the threshold. The other 197 stay on MP5. *Local switching* is the right phrase for that ratio.
 
+Those counts are already in the code and the text. $N=200$, $\gamma=1.4$, $\psi_c=0.35$, $\xi=10^{-2}$. Left state $\rho=1$, $p=1$. Right state $\rho=0.125$, $p=0.1$. With $s=p/\rho^{\gamma}$ the contact jumps in $s$, three cells fall under the cutoff, and 197 stay on MP5. EPS is the code expression $0.9\,\psi_c/(1-0.9\,\psi_c)\cdot\xi$. Nothing new was measured.
+
+THINC at $\beta=1.8$ packs the jump into about four cells. $\beta=2.0$ is steeper. After one period at CFL $=0.4$, MUSCL+minmod smears a corner across 6 cells and THINC holds 2–3. Below $\beta=1.5$ THINC smears toward those 6 cells. Past 2.2 the leading edge overshoots. The paper's window is $1.8$–$1.9$. The $13/12$ and $1/4$ in the sensor are the WENO smoothness weights, with absolute values instead of squares. At a pressure ratio of 10:1 the marker stays on the contact because the shock's $s$ jump spreads in time, while the interface jump is the initial condition itself.
+
 ## Three traps the paper does not mention
 
 Three notes from re-implementing.
@@ -198,6 +206,8 @@ OpenFOAM's `interFoam` and the Fluent VOF model take a different route — they 
 
 Chamarthi's headline claim is that *second-order plus the right physics beats fifth-order with the wrong physics*. The periodic double-shear layer test backs the claim. The follow-up question writes itself: how do we make *physics appropriateness* a more formal criterion? Does the same wave-by-wave logic carry over to unstructured grids, non-Newtonian fluids, magnetohydrodynamics? The natural next paper to read is the same author's *Wave-appropriate multidimensional upwinding* (JCP 2025) — the multi-dimensional extension.
 
-### A line for the notebook
+### Park β at 1.8, or change HLLC?
 
-> Applying the same scheme to every grid cell is like prescribing the same medicine to every patient.
+For interface thickness alone, $\beta$ belongs in $1.8$–$1.9$. Under 1.5 the corner falls back toward the 6-cell MUSCL smear. Past 2.2 the leading edge overshoots. On 200 cells only 3 switch to THINC. The other 197 stay on MP5. That ratio is the local switch.
+
+At low Mach with a strong contact, HLLC smears those 3 cells again. Then the choice is HLLC-LM. A shock that only needs to stay sharp is fine on MP5 plus HLLC. Keeping small vortices is the neighboring question in [TENO](/en/posts/2026-04-25-teno-low-dissipation-shock-capturing/), asked with a different indicator. Without a per-wave function, the contact spreads back across ten cells.

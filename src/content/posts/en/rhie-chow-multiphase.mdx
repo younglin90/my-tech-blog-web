@@ -1,19 +1,27 @@
 ---
 title: "Rhie-Chow Interpolation for Compressible Multiphase Flows"
 date: 2026-03-10
-description: "From the checkerboard problem on collocated grids to balanced-force multiphase flows, we systematically summarize the mathematical essence and OpenFOAM implementation of Rhie-Chow interpolation."
+updated: 2026-10-19
+description: "At a water-air density ratio of 1000, the arithmetic mean density is 500.5 and the harmonic mean is 2.0. Filter only the driving pressure."
 tags: ["Multiphase", "Rhie-Chow", "OpenFOAM", "Numerical-Methods"]
 series: "compressible-multiphase"
 seriesOrder: 5
+takeaway: "Put the time coefficient in the MWI denominator and the checkerboard comes back as the time step goes to zero."
 ---
 
 import { CheckerboardPressure } from '@/components/post-viz/rhie-chow-multiphase/CheckerboardPressure'
 
 # Rhie-Chow Interpolation: Why is it necessary, and why is it tricky in multiphase flows?
 
-Rhie-Chow interpolation (momentum-weighted interpolation, MWI) is a key technique for correcting face velocities to **suppress checkerboard pressure oscillations** on collocated grids. While relatively straightforward in single-phase flows, consistent treatment of **pressure, gravity, surface tension, and unsteady correction terms** becomes critically important when extending it to multiphase flows.
+Rhie-Chow interpolation (momentum-weighted interpolation, MWI) corrects the face velocity on a collocated grid and **kills checkerboard pressure oscillations**. Single-phase flow has one term. Multiphase stacks pressure, gravity, surface tension, and the unsteady correction on the same face. Miss one and a fake velocity sits on the interface.
 
-This article covers everything from the original Rhie & Chow (1983) to the unified framework of Bartholomew et al. (2018), and the interFoam/compressibleInterFoam implementation in OpenFOAM.
+The path runs from the steady SIMPLE of Rhie & Chow (1983) through the unified form of Bartholomew et al. (2018), then into interFoam and compressibleInterFoam.
+
+The Rhie–Chow checkbox kills the staggered pressure pattern, and clearing it brings the pattern straight back.
+
+<CheckerboardPressure />
+
+Unchecked, the stencil skips the center cell and only neighbors two steps away stay coupled. Checked, the compact gradient ties that skipped cell back in.
 
 ---
 
@@ -62,7 +70,7 @@ $$
 u_f = \hat{u}_f - d_f(p_E - p_P)
 $$
 
-Where $\hat{u} = u + d \cdot \Delta p$ is the pseudo-velocity with the pressure gradient removed, and $d = V/a_P$. It included **only the pressure correction term**, without treatment for unsteady or relaxation terms. Later, Majumdar (1988) pointed out the dependence on relaxation factors, and Choi (1999) noted the time-step dependence in unsteady flows.
+Where $\hat{u} = u + d \cdot \Delta p$ is the pseudo-velocity with the pressure gradient removed, and $d = V/a_P$. It included **only the pressure correction term**, without treatment for unsteady or relaxation terms. Later, Majumdar (1988) pointed out the dependence on relaxation factors, and Choi (1999) noted the time-step dependence in unsteady flows. The same term shows up where [SIMPLE uses Rhie–Chow to stop a checkerboard](/en/posts/2026-07-22-simple-pressure-velocity-coupling-rhie-chow/), except here gravity and surface tension each take a share.
 
 ### Jasak (1996): The Foundation of OpenFOAM - H/A Approach
 
@@ -207,6 +215,12 @@ For water-air, $\rho_f^* \approx 2.0$, which is significantly different from $\a
 
 Using arithmetic interpolation causes an **inconsistency** between the Laplacian coefficient of the pressure equation and the density weighting of the MWI correction, leading to spurious velocities.
 
+The 500.5 is just the average of the two densities. Water at 1000 and air at 1 give $(1000+1)/2 = 500.5$. The harmonic mean divides 2 by $(1/1000 + 1)$. That denominator is 1.001, and $2/1.001 \approx 1.998$, the 2.0 in the text. Divide 500.5 by 2.0 and the light phase has pulled the average up by about 250.
+
+If $a_P$ scales with density, $1/a_P$ scales the other way. The air-side $1/a_P$ is 1000 times the water-side value. An arithmetic mean plants half of that large number on the face. Water's inertia, the small $1/a_P$, nearly disappears. At a density ratio of $10^6$ the gap is a million. The range the harmonic mean is said to hold reaches $10^{24}$. Denner's balanced-force keeps a static drop in balance down to solver tolerance above $10^6$.
+
+The filter itself is a low-pass of size $\Delta x^2 \partial^3 p/\partial x^3$. Where the fourth derivative of pressure is large, as at an interface, that correction grows the mass error $\Delta x^2 \partial^4 p/\partial x^4$. Body forces stay outside the filter for that reason. Put the time coefficient $\rho V/\Delta t$ in the MWI denominator and the filter weakens as $\Delta t$ goes to 0. The sawtooth pressure comes back. Only the spatial coefficient stays in the denominator.
+
 ---
 
 ## 6. Analysis of OpenFOAM Implementation
@@ -299,27 +313,15 @@ Consistent approaches (CMI, unified MWI) have **more numerical diffusion** than 
 
 ---
 
-## Conclusion: Design Principles and Practical Recommendations
+## A time coefficient in the denominator brings the checkerboard back
 
-The most important principle in designing face velocities for compressible multiphase flows:
-
-> **"Apply the Rhie-Chow filter only to the driving pressure gradient."**
-
-Surface tension and gravity should be evaluated with the **same discrete operator** as the pressure gradient at the face to achieve balanced-force, and MWI correction should be applied only to the pure driving pressure excluding them:
+The filter belongs on the driving pressure only. Run gravity and surface tension through the same extra pass and the balance set up on a static drop breaks. Parasitic current shows up.
 
 $$
 \nabla P = \nabla p - \rho\mathbf{g} - \sigma\kappa\nabla\alpha
 $$
 
-### Three Improvements for OpenFOAM Users
-
-1. **Change face interpolation of `rAU` to harmonic averaging** - Set `interpolate(rAU) harmonic` in `fvSchemes`. This significantly improves stability for large density ratios.
-
-2. **Replace `ddtCorr` with CMI-style unsteady correction** - Ensures time-step independence. The current default ddtCorr in OpenFOAM is approximate and leaves $\Delta t$ dependence.
-
-3. **Introduce high-precision curvature estimation like height-function** - Curvature accuracy is what determines the ultimate limit of spurious velocities.
-
-In compressible extensions, pressure-density coupling via the equation of state (EOS) is added, but the MWI structure of the face velocity itself remains the same as in incompressible flows. Interface discretization techniques like ACID (Denner & van Wachem, 2018) ensure the accuracy of acoustic wave propagation.
+$\rho\mathbf{g}$ and $\sigma\kappa\nabla\alpha$ stay on the face snGrad. MWI passes only $\nabla P$. An arithmetic `rAU` at a density ratio of 1000 leans the face coefficient toward the air. The harmonic mean $\rho_f^* \approx 2.0$ keeps the water's inertia. Leave `ddtCorr` as it is and the $\Delta t$ dependence stays. That is the same neighborhood as a [simpleFoam pressure residual that will not die](/en/posts/2026-03-27-simpleFoam-pressure-divergence/). Until the curvature changes, the floor on spurious velocity is the curvature error.
 
 ---
 
@@ -335,6 +337,4 @@ In compressible extensions, pressure-density coupling via the equation of state 
 - Aguerre, H.J. et al. (2018). JCP 365
 - Komen, E.M.J. et al. (2020). Nuclear Engineering and Design 370
 
-Toggle the Rhie–Chow checkbox below to watch the pressure checkerboard vanish.
 
-<CheckerboardPressure />

@@ -1,49 +1,59 @@
 ---
 title: "5-Equation Model 实现指南：用 Python 编写多相流求解器"
 date: 2026-03-07
-description: "使用 Python 手动实现 5-equation diffuse interface model，并模拟一维冲击波-气泡相互作用问题。"
+updated: 2026-10-19
+description: "体积分数取 0.5 时，混合声速大约只有 24 m/s。同一初始状态下，空气约 374 m/s，水约 1625 m/s。"
 tags: ["Multiphase", "Diffuse-Interface", "Python", "Implementation"]
 series: "compressible-multiphase"
 seriesOrder: 4
 noindex: true
+takeaway: "收紧时间步的不是这 24 m/s，而是激波后水里大约 2530 m/s 的声速。"
 ---
 
 import { VolumeFractionAdvect } from '@/components/post-viz/five-equation-model/VolumeFractionAdvect'
 
 # 手动实现 5-Equation Model
 
-仅仅靠理论是不够的。
-在本文中，我们将使用 Python 手动实现一维 **5-equation diffuse interface model**，
-并模拟冲击波穿透气泡的问题。
+激波后的水压是 $10^{9}$，波前的水是 $10^{5}$。中间夹着一个气泡，体积分数 $\alpha_1$ 在接近 0 和接近 1 之间跳。一维 **5-equation diffuse interface model** 用五个方程搬运这个跳跃。两种流体共用一个速度、一个压力，只有体积分数单独走。
+
+把人工扩散滑块拨到 0，体积分数的界面会在一个单元里断开。
+
+<VolumeFractionAdvect />
+
+把滑块抬高，界面会铺开好几个单元。那些单元里的 $\alpha$ 直接进入混合压力的分母。
 
 ## 控制方程整理
 
-一维 5-equation model 的守恒变量和通量：
+一维的守恒变量和通量是这样。
 
 $$
 \mathbf{U} = \begin{bmatrix} \alpha_1 \rho_1 \\ \alpha_2 \rho_2 \\ \rho u \\ E \\ \alpha_1 \end{bmatrix}, \quad
 \mathbf{F} = \begin{bmatrix} \alpha_1 \rho_1 u \\ \alpha_2 \rho_2 u \\ \rho u^2 + p \\ (E+p)u \\ 0 \end{bmatrix}
 $$
 
-第 5 个方程 ($\alpha_1$) 是非守恒型的，因此需要单独处理：
+第五个通量分量是 0。$\alpha_1$ 是非守恒型，要单独推进。
 
 $$
 \frac{\partial \alpha_1}{\partial t} + u \frac{\partial \alpha_1}{\partial x} = 0
 $$
 
+收成一个速度、一个压力之后，就是这五个方程。把方程交还给每一相，是 [Baer–Nunziato 七方程](/zh/posts/2026-06-27-baer-nunziato-seven-equation-two-phase/)。
+
 ## 状态方程：Stiffened Gas EOS
 
-两种流体都使用 stiffened gas EOS：
+两种流体都用 stiffened gas。
 
 $$
 p_k = (\gamma_k - 1)\rho_k e_k - \gamma_k p_{\infty,k}
 $$
 
-使用混合规则 (mixture rule) 计算总压：
+混合压力用这条规则。
 
 $$
 p = \frac{\rho e - \sum_k \alpha_k \frac{\gamma_k p_{\infty,k}}{\gamma_k - 1}}{\sum_k \frac{\alpha_k}{\gamma_k - 1}}
 $$
+
+$p_k$ 是流体 $k$ 的压力，$e_k$ 是它的内能，$\gamma_k$ 和 $p_{\infty,k}$ 是状态方程常数。分母是 $\sum \alpha_k/(\gamma_k-1)$。
 
 ## Python 实现
 
@@ -90,7 +100,11 @@ def sound_speed(alpha1, arho1, arho2, p):
     return np.sqrt(1.0 / (rho * inv_rhoc2))
 ```
 
+`pressure` 是把上面的混合规则改写到守恒变量上。`sound_speed` 里的 $c_k^2=\gamma_k(p+p_{\infty,k})/\rho_k$ 是纯流体声速。
+
 ### HLLC 通量计算
+
+HLLC 只覆盖四条守恒律。运送 $\alpha$ 的接触速度 $S^\star$ 和通量一起返回。
 
 ```python
 def hllc_flux(UL, UR, alpha1L, alpha1R):
@@ -142,6 +156,8 @@ def hllc_flux(UL, UR, alpha1L, alpha1R):
 
 ### 时间积分 (一阶)
 
+时间推进是前向欧拉。步长是 $\mathrm{CFL}\,\Delta x/\max(|u|+c)$，默认 CFL 为 0.5。
+
 ```python
 def solve(U, alpha1, dx, t_end, cfl=0.5):
     """前向欧拉时间积分。"""
@@ -186,7 +202,11 @@ def solve(U, alpha1, dx, t_end, cfl=0.5):
     return U, alpha1
 ```
 
+$\alpha_1$ 的更新不是守恒通量。界面速度 `uface` 的符号决定迎风方向。
+
 ### 初始条件：冲击波-气泡
+
+位置 0.25 之前是已经过激波的水：$\rho=1100$，$u=50$，$p=10^{9}$。0.4 和 0.6 之间是气泡，$\rho=1$，$u=0$，$p=10^{5}$。其余是环境水，$\rho=1000$，$u=0$，$p=10^{5}$。
 
 ```python
 # 初始条件：冲击波撞击水中的气泡
@@ -222,48 +242,40 @@ for i in range(N):
     U[3, i] = E
 ```
 
+`compute_total_energy` 不在这段代码里。由压力回到能量的式子在状态方程这边：$\rho e=(p+\gamma p_\infty)/(\gamma-1)$。
+
 ## 注意事项
 
 ### 1. $\alpha$ 的范围限制
 
-如果 $\alpha_1$ 正好为 0 或 1，EOS 计算中会出现除以零的错误。
-始终使用 $\epsilon < \alpha_1 < 1 - \epsilon$ ($\epsilon \sim 10^{-8}$) 进行 clipping。
+$\alpha_1$ 正好是 0 或 1 时，守恒量 $\alpha_1\rho_1$ 没法再除以 $\alpha_1$。代码把 $\alpha_1$ 夹在 $10^{-8}$ 和 $1-10^{-8}$ 之间。
 
 ### 2. 混合声速：Wood 公式
 
-混合区域的声速可能比直觉上的要低得多。
-这是正常的物理现象，并且会影响 CFL 条件。
+混合单元的声速可以比两种纯流体都低。这和直觉相反，但公式就是这样写的。CFL 也读这个声速。
 
 $$
 \frac{1}{\rho c^2} = \frac{\alpha_1}{\rho_1 c_1^2} + \frac{\alpha_2}{\rho_2 c_2^2}
 $$
 
-在 $\alpha_1 = 0.5$ 附近，$c_{mix}$ 会比两种流体的声速都 **小得多**。
+把初始条件里的纯状态代进公式，数就出来了。气泡里的空气是 $\rho=1$、$p=10^{5}$、$\gamma=1.4$、$p_\infty=0$。按 $c^2=\gamma(p+p_\infty)/\rho$，得到 $c=\sqrt{1.4\times 10^{5}}\approx 374\,\mathrm{m/s}$。环境水是 $\rho=1000$、$p=10^{5}$、$\gamma=4.4$、$p_\infty=6\times 10^{8}$，所以 $c\approx 1625\,\mathrm{m/s}$。激波后的水是 $\rho=1100$、$p=10^{9}$，$c\approx 2530\,\mathrm{m/s}$。$p+p_\infty$ 大约是环境水的 2.67 倍，密度却只是 $1100/1000=1.10$ 倍。$u=50$ 的动能是 $0.5\times 1100\times 50^{2}=1.375\times 10^{6}$。同一单元的内能密度 $\rho e\approx 1.07\times 10^{9}$，动能大约只占 0.13%。这次冲击的能量在 $p_\infty$ 里，不在这 50 m/s 里。
+
+用 $\alpha_1=0.5$、共同压力 $10^{5}$ 把气泡空气和环境水掺在一起，Wood 公式里的 $1/(\rho c^2)$ 几乎全是空气那一项。$\rho_1 c_1^2=1.4\times 10^{5}$，而 $\rho_2 c_2^2\approx 2.64\times 10^{9}$。混合密度是 $0.5\times 1+0.5\times 1000=500.5$，$c_\mathrm{mix}\approx 24\,\mathrm{m/s}$。既不是 374，也不是 1625。
+
+压力分母在同一个地方很敏感。纯水的 $\sum\alpha/(\gamma-1)$ 是 $1/3.4\approx 0.294$。水里只要漏进 $\alpha_1=0.01$，分母就变成 $0.01/0.4+0.99/3.4\approx 0.316$，大约大 7.5%。压力要除以这个分母，所以抹开的界面上 $\alpha$ 的误差会变成压力误差。
+
+CFL 的 $\Delta t=0.5\,\Delta x/\max(|u|+c)$，$\Delta x$ 是 `linspace(0, 1, 1000)` 的间距 $1/999$。限制步长的不是混合单元。激波后面 $|u|+c\approx 50+2530=2580$，所以 $\Delta t\approx 1.9\times 10^{-7}$。只看声速 24 m/s 的那个单元，步长大约会大 110 倍。混合声速变低，并不会由那个单元把时间步收紧。它的影响是：在同一个 $\Delta t$ 里，界面上的声波几乎是停着的。
 
 ### 3. 向高阶精确度扩展
 
-上述代码是 1 阶精确度的。在实际研究中：
-
-- **MUSCL 重构** + slope limiter 实现 2 阶
-- **WENO** 重构实现 5 阶以上
-- **Runge-Kutta** 时间积分提高时间精确度
+上面的时间积分是一阶，空间也直接用单元值。要二阶，就用 MUSCL 加 slope limiter；再往上是 WENO。时间用 Runge–Kutta 抬阶。阶数上去之后，$\alpha$ 的非守恒更新和 Wood 声速还在。
 
 ## 结果解释
 
-运行模拟后，冲击波在压缩气泡的同时：
+激波进入气泡之后，下游走出透射激波（transmitted shock），左侧返回反射稀疏波（reflected rarefaction）。气泡被迅速压扁，内部压力上升。射流（jet）要到二维或三维才会出现在下游壁上。水下爆炸和冲击波碎石用的就是这张图。
 
-1. **透射冲击波 (transmitted shock)** 向气泡后方推进
-2. **反射稀疏波 (reflected rarefaction)** 向左移动
-3. 气泡迅速 **压缩**，内部压力上升
-4. 在后壁形成 **射流 (jet)** (在 2D/3D 中)
+## 只迎风推进 α，接触面上的压力会先晃
 
-这种现象是水下爆炸、冲击波碎石术等领域的关键物理过程。
+第五个通量是 0，$\alpha$ 按界面速度的符号做迎风。水里漏进 $\alpha_1=0.01$，压力分母就动 7.5%。这个账的意思是，界面上一个单元的误差就会碰到平衡压力。这一阶更新并不另行强制那个平衡。非守恒项的离散是否把压力留住，是先要分开的地方。
 
-## 下一步
-
-在下一篇文章中，我准备了一些 **像游戏一样** 学习数值分析基础概念的互动内容。
-您可以亲自体验数值稳定性、CFL 条件等。
-
-将人工扩散设为 0，界面会变得不物理地尖锐 — THINC 等修正的必要性立刻显现。
-
-<VolumeFractionAdvect />
+检验平衡的题目，是一个什么都不该发生的接触。压力从那里漏到哪里，是 [Abgrall 准则与非守恒项](/zh/posts/2026-09-06-abgrall-criterion-nonconservative-term/) 要问的。

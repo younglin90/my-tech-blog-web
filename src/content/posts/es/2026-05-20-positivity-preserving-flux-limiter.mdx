@@ -1,7 +1,9 @@
 ---
 title: "Por dónde se filtra la densidad negativa — un limitador de flujo que preserva la positividad para ondas de explosión"
 date: 2026-05-20
-description: "El truco de una línea — mezcla θ que mantiene ρ > 0 en un tubo de choque Le Blanc."
+updated: 2026-10-19
+description: "En un tubo Le Blanc el flujo de alto orden puede volver negativa la densidad. Una θ por cara lo devuelve hacia Lax–Friedrichs solo hasta el piso."
+takeaway: "Se conserva la θ más grande que deja la densidad del paso siguiente sobre el piso; por encima de eso está la fuga."
 tags: ["CFD", "Positivity-Preserving", "Flux-Limiter", "Shock-Capturing", "Compressible-Euler"]
 locale: es
 slug: 2026-05-20-positivity-preserving-flux-limiter
@@ -11,71 +13,83 @@ draft: false
 import { BlastDensityFloor1D } from '@/components/post-viz/2026-05-20-positivity-preserving-flux-limiter/BlastDensityFloor1D'
 import { ThetaPerFaceSelector } from '@/components/post-viz/2026-05-20-positivity-preserving-flux-limiter/ThetaPerFaceSelector'
 
-Las 2:27 de la madrugada. La verificación del tubo de choque Le Blanc escupió NaN tras 0.003 s. Bajar el CFL a 0.1 y duplicar la malla — las dos curvas se derrumbaron juntas. El depurador mostró algo sencillo: en la cabeza de una fuerte onda de rarefacción (rarefaction, región donde la presión cae rápidamente) la densidad de una celda cayó por debajo de cero. Dos pasos después la velocidad del sonido pasó a NaN, y el siguiente paso se llevó todo el dominio. Hoy seguimos por dónde se filtra esa densidad negativa, y cómo el limitador de flujo "retroceder una muesca cada vez" de tipo θ-blend que propusieron Hu, Adams y Shu (2013) lo detiene. Cerramos con 50 líneas de NumPy donde se puede encender y apagar el truco.
+Las 2:27 de la madrugada. Un tubo de choque Le Blanc escupió NaN a los 0.003 s. Con el CFL en 0.1 y la malla duplicada, las dos curvas se cayeron juntas. La causa era pequeña. En la cabeza de una rarefacción fuerte, la densidad de una celda cruzó por debajo de cero. Dos pasos después la velocidad del sonido era NaN. El paso siguiente se llevó el dominio. La mezcla θ de Hu, Adams y Shu (2013) hace retroceder el flujo de alto orden un solo escalón, y solo ahí.
+
+Al bajar la densidad derecha ρ_R por debajo de 10⁻³, la curva permitida entra en la zona roja y la θ de esa cara cae bajo 0.2.
+
+<ThetaPerFaceSelector />
+
+La zona roja es donde la densidad del paso siguiente rompe el piso. Si θ se detiene en ese borde, la cara queda en la práctica como Lax–Friedrichs de primer orden.
 
 ## Por dónde se filtra la densidad negativa
 
-Un esquema de alto orden siempre equilibra estabilidad y precisión. El upwind de primer orden desdibuja un choque a lo largo de cinco celdas. La diferencia central de segundo orden planta oscilaciones tipo diente de sierra a ambos lados del choque. Si las oscilaciones son leves, solo agitan la presión. Cuando el cociente de densidad entre celdas vecinas supera 100:1 — tubo Le Blanc, explosión Sedov, estela de tobera supersónica — la historia cambia.
+Un esquema de alto orden oscila entre estabilidad y precisión. El upwind de primer orden emborrona un choque a lo largo de unas cinco celdas. La diferencia central de segundo orden siembra un diente de sierra a ambos lados. Si la oscilación es leve, solo tiembla la presión. Cuando el cociente de densidad entre celdas vecinas pasa de 100:1 — Le Blanc, una explosión de Sedov, la estela de una tobera supersónica — cambia el modo de fallo.
 
-Se escribe la conservación de densidad para la celda $i$:
+La conservación de densidad en la celda $i$ queda así:
 
 $$
 \rho_i^{n+1} = \rho_i^n - \frac{\Delta t}{\Delta x}\bigl( F_{i+1/2}^\rho - F_{i-1/2}^\rho \bigr)
 $$
 
-donde $F^\rho = \rho u$ es el flujo de densidad. En una celda con $F_{i+1/2}^\rho \gg F_{i-1/2}^\rho$ (masa saliendo por un lado más rápido de lo que entra por el otro) $\rho_i^{n+1}$ puede caer por debajo de cero. La primera celda detrás de un choque fuerte en una simulación 1D Euler está justo en ese lugar.
+$F^\rho = \rho u$ es el flujo de densidad. En una celda con $F_{i+1/2}^\rho \gg F_{i-1/2}^\rho$, donde sale más masa de la que entra, $\rho_i^{n+1}$ puede volverse negativa. En Euler 1D esa celda es la primera de la expansión justo detrás de un choque fuerte.
 
-¿Qué pasa cuando ρ se vuelve negativa? La velocidad del sonido $a = \sqrt{\gamma p / \rho}$ tiene $a^2 < 0$ cuando $\rho \to 0^-$. La siguiente evaluación de flujo devuelve NaN desde $\sqrt{\cdot}$. El NaN de una celda se contagia a sus dos vecinas, y dos pasos después el dominio entero muere.
+La densidad negativa mata primero a la velocidad del sonido. Con $a = \sqrt{\gamma p / \rho}$, si $\rho \to 0^-$ entonces $a^2 < 0$. La siguiente evaluación del flujo devuelve NaN desde $\sqrt{\cdot}$. El NaN de una celda alcanza a las dos vecinas. Dos pasos después el dominio termina.
 
 ## Lax–Friedrichs — borroso pero nunca roto
 
-El flujo LF que Lax propuso en 1954 está a salvo de esta trampa:
+El flujo LF que Lax escribió en 1954 está fuera de esta trampa.
 
 $$
 F_{i+1/2}^{LF} = \tfrac{1}{2}\bigl(F_L + F_R\bigr) - \tfrac{1}{2}\alpha\bigl(U_R - U_L\bigr)
 $$
 
-con $\alpha$ la velocidad de señal máxima entre ambas celdas y $U = (\rho, \rho u, E)^T$ el estado conservativo. El segundo término es viscosidad artificial (artificial viscosity) — promedia vecinos y mata el diente de sierra. Lax demostró que bajo CFL$\leq$1 se cumple $\rho^{n+1} \geq 0$ (versión simplificada del Teorema 1 de Hu et al.). Sea el choque rápido o débil, LF no revienta.
+$\alpha$ es la velocidad de señal máxima de las dos celdas, y $U = (\rho, \rho u, E)^T$ es el estado conservativo. El término que se resta es viscosidad artificial. Promedia a los vecinos y mata el diente de sierra. Es el mismo gesto que [la viscosidad que von Neumann untó a propósito sobre un choque en 1950](/es/posts/2026-05-13-von-neumann-artificial-viscosity-1950/). Bajo CFL$\leq$1, Lax mostró que $\rho^{n+1} \geq 0$, una forma reducida del teorema 1 de Hu et al. Choque rápido o débil, LF no se cae.
 
-El precio es la precisión. Un choque de dos celdas se convierte en uno de cinco; una discontinuidad de contacto se difumina una celda por paso de tiempo. En producción nadie usa LF en solitario. Pero su margen de seguridad es el pie de apoyo del limitador.
+El costo es la precisión. Un choque de dos celdas pasa a cinco. Un contacto se difumina una celda más en cada paso. En producción nadie usa LF solo. El margen de seguridad sigue siendo el punto de partida del limitador.
 
 ## La mezcla θ — retroceder una muesca cada vez
 
-Supongamos un flujo de alto orden $F_{i+1/2}^{HO}$ (WENO, MUSCL, central) más preciso que LF pero capaz de producir densidad negativa. La idea de Hu, Adams y Shu cabe en una línea:
+Un flujo de alto orden $F_{i+1/2}^{HO}$ (WENO, MUSCL, central) es más nítido que LF y aun así puede crear densidad negativa. Hu, Adams y Shu atan los dos flujos en una línea.
 
 $$
 F_{i+1/2} = F_{i+1/2}^{LF} + \theta_{i+1/2}\bigl( F_{i+1/2}^{HO} - F_{i+1/2}^{LF} \bigr)
 $$
 
-$\theta \in [0, 1]$ es un peso de mezcla por cara (face). $\theta=1$ es alto orden puro; $\theta=0$ es LF puro. El único trabajo del limitador es elegir el mayor $\theta$ que mantenga la densidad del paso siguiente positiva en todas las celdas. No ir muy lejos — retroceder una muesca cada vez.
+$\theta \in [0, 1]$ es un peso por cara. $\theta=1$ es alto orden puro. $\theta=0$ es LF puro. El limitador hace una sola cosa: elegir la θ más grande que deje positiva la densidad siguiente de cada celda. No retrocede por todo el dominio. Un escalón.
 
-Como la pasada LF garantiza $\rho^{LF}_i \geq \rho_{\min}$, se resuelve cara por cara el mayor $\theta$ tal que al sumar la corrección $\Delta F = F^{HO} - F^{LF}$ siga siendo positiva. Una cara toca dos celdas; ambas tienen que quedar por encima del piso, así que el más pequeño de los dos límites gana.
+El estado LF ya cumple $\rho^{LF}_i \geq \rho_{\min}$, así que cada cara resuelve la θ más grande que mantiene positiva la actualización tras sumar $\Delta F = F^{HO} - F^{LF}$. Una cara toca dos celdas. Ambas tienen que quedar sobre el piso, de modo que gana la cota menor.
 
-Pruebe la siguiente simulación.
-
-<ThetaPerFaceSelector />
-
-Baja ρ_R por debajo de 10⁻³ y la curva se hunde en la zona roja; el θ que elige el limitador colapsa por debajo de 0.2. En esa cara el esquema queda efectivamente en LF de primer orden.
+Esa es la cota que bajó θ por debajo de 0.2 cuando bajó ρ_R. La cara se resuelve entonces como LF de primer orden.
 
 ## Limitación en dos pasos — densidad primero, presión después
 
-Densidad positiva sola no basta. Si la presión se vuelve negativa el solver muere del mismo modo (la velocidad del sonido se hace imaginaria). Por eso Hu et al. parten el limitador en dos pasadas.
+Densidad positiva no basta. Presión negativa mata el solver del mismo modo, porque la velocidad del sonido se vuelve imaginaria. Hu et al. parten el limitador en dos pasadas.
 
-**Pasada 1 (densidad).** La fórmula anterior elige $\theta^\rho$ por cara para que la densidad del paso siguiente quede por encima de $\rho_{\min}$ en cada celda.
+**Pasada de densidad.** La fórmula de arriba fija $\theta^\rho$ en cada cara para que toda densidad siguiente quede en o sobre $\rho_{\min}$.
 
-**Pasada 2 (presión).** Con el flujo de densidad fijado por $\theta^\rho$, se calcula otro $\theta^p \leq \theta^\rho$ para los flujos de momentum y energía. La restricción de positividad de la presión
+**Pasada de presión.** Con el flujo de densidad congelado por $\theta^\rho$, los flujos de momento y energía reciben una $\theta^p \leq \theta^\rho$. La restricción de presión
 
 $$
 p = (\gamma - 1)\bigl(E - \tfrac{1}{2}\rho u^2\bigr) \geq p_{\min}
 $$
 
-es no lineal (cuadrática en general), pero una aproximación conservadora (elegir $\theta^p$ en la raíz menor) cabe en una línea.
+es no lineal, cuadrática en general. Una elección conservadora, tomar la raíz menor para $\theta^p$, cabe en una línea.
 
-**Final.** Mezclar con $\theta = \min(\theta^\rho, \theta^p)$ todos los flujos conservativos al mismo peso. Una cara, un $\theta$, consistencia en todas las variables conservadas.
+**Un solo peso.** $\theta = \min(\theta^\rho, \theta^p)$ mezcla todos los flujos conservativos. Una cara, una θ, y las variables conservadas siguen consistentes entre sí.
 
-## 50 líneas de NumPy — θ automático en un tubo Le Blanc
+## 50 líneas de NumPy — θ automática en un tubo Le Blanc
 
-El problema Le Blanc es un tubo de choque fuerte con $\rho_L=1, p_L=100$ frente a $\rho_R=0.02, p_R=0.05$. Una rarefacción intensa viaja hacia la izquierda y la densidad de la primera celda cae bajo cero en cualquier esquema de alto orden sin protección.
+Le Blanc aquí es un tubo fuerte, $\rho_L=1$, $p_L=100$ frente a $\rho_R=0.02$, $p_R=0.05$. Una rarefacción intensa viaja a la izquierda y la densidad de la primera celda se vuelve negativa si nada la guarda.
+
+Al dividir los dos estados, el cociente de densidad es $1/0.02 = 50$ y el de presión es $100/0.05 = 2000$. La línea de 100:1 de arriba era una regla práctica, y el salto de densidad de este par queda por debajo. La violencia está en la presión. Con $\gamma = 1.4$, $a = \sqrt{\gamma p / \rho}$ da $\sqrt{140} \approx 11.83$ a la izquierda y $\sqrt{3.5} \approx 1.871$ a la derecha. El cociente es exactamente $\sqrt{40} \approx 6.32$.
+
+Los números de la malla dicen que el paso de tiempo no fue el culpable. $N = 200$, así que $\Delta x = 1/200 = 0.005$, y $\Delta t = 9.0 \times 10^{-5}$. Entonces $\Delta t/\Delta x = 0.018$. Un número de Courant acústico solo con el estado izquierdo es $a_L \Delta t/\Delta x \approx 0.213$. Encaja con una corrida que ya murió con CFL 0.1. Desde $\rho^{n+1} = \rho^n - (\Delta t/\Delta x)\Delta F$, si la diferencia de flujo supera el margen de densidad, un paso más corto igual perfora el piso.
+
+En el estado derecho $\rho = 0.02$, el margen hasta el piso $10^{-3}$ es $0.019$. Para que θ se quede en 1, la corrección de densidad $|d|$ no puede pasar de $0.019/0.018 \approx 1.06$. Con $|d| = 2$ la cota es $0.019/(0.018 \times 2) \approx 0.53$. Si el margen se encoge a $5 \times 10^{-4}$, el mismo $|d| = 1$ baja la cota a $0.0005/0.018 \approx 0.028$. Esa cara es casi LF puro.
+
+En pesos, la mezcla es $F = (1-\theta)F^{LF} + \theta F^{HO}$. Con $\theta = 0.53$ la parte de alto orden es 53%. Con $\theta = 0.028$ queda en 2.8% y el resto es LF. La cota del listado es la misma desigualdad de la actualización: la corrección mueve la densidad en $(\Delta t/\Delta x)\,\theta\,|d|$, y eso no puede pasar el margen $0.019$, así que $\theta \le 0.019/(0.018\,|d|)$. La igualdad en $\theta = 1$ cae cerca de $|d| \approx 1.06$.
+
+La fórmula de la presión se lee igual. $p = (\gamma - 1)(E - \tfrac{1}{2}\rho u^2)$ y $\gamma - 1 = 0.4$. Con $E$ y $\rho$ fijos, una unidad de energía cinética recorta 0.4 de presión. El estado derecho $p = 0.05$ toca cero con una energía cinética de $0.05/0.4 = 0.125$. El izquierdo $p = 100$ aguanta hasta $250$. Cuidar solo el piso de densidad desplaza la fuga hacia una densidad positiva con velocidad del sonido imaginaria.
 
 ```python
 import numpy as np
@@ -115,24 +129,24 @@ def density_theta(U, dF, dt_dx):
     return theta
 ```
 
-(El driver completo hace una pasada LF, una pasada anti-difusión y una pasada para θ. 220 pasos, 200 celdas. Con el limitador apagado, NaN cerca del paso 30; encendido, el solver sobrevive hasta el final.)
+El controlador hace una pasada LF de primer orden, una pasada de antidifusión central y una pasada para θ. 220 pasos, 200 celdas. Con el limitador apagado, NaN cerca del paso 30. Encendido, la corrida termina.
 
-Desplaza el solver a lo largo del tiempo.
+Con el interruptor del limitador apagado, la curva roja arrastra la densidad por debajo de cero cerca del paso 30.
 
 <BlastDensityFloor1D />
 
-La curva roja (limitador OFF) arrastra ρ por debajo de cero hacia el paso 30 — ese es el instante del colapso. La curva cian se aplana cerca de ρ ≈ 0.02 al mismo tiempo. La diferencia de precisión es menor al 5%, pero un solver vive y el otro muere.
+Ese cruce es el colapso. La curva cian se aplana cerca de $\rho \approx 0.02$ en el mismo instante. La diferencia de precisión queda bajo el 5%. Una corrida vive. La otra muere.
 
 ## Lo que cuesta el limitador
 
-En las caras donde θ cae a 0 el flujo se resuelve por LF de primer orden. El frente de un choque o la cabeza de una rarefacción intensa pierden precisión ahí. Por suerte esa región ocupa menos del 5% del dominio, así que la precisión global apenas se resiente. En promedio θ oscila entre 0.95 y 1.0.
+Una cara con $\theta = 0$ se resuelve por LF de primer orden. Los frentes de choque y las cabezas de rarefacción se embotan ahí. Esa zona ocupa menos del 5% del dominio, así que el error global apenas se mueve. La θ media queda entre 0.95 y 1.0.
 
-Dos trampas. Primera: tomar $\rho_{\min}$ demasiado pequeño (digamos $10^{-12}$) hace que el limitador se active tarde y el NaN regrese. La regla práctica es $10^{-4}$ de la densidad media de la simulación. Segunda: los esquemas de Runge–Kutta multietapa necesitan rehacer el limitador en cada etapa — proteger solo la etapa 1 y la etapa 2 vuelve a divergir.
+Fijar $\rho_{\min}$ en algo como $10^{-12}$ hace que el limitador despierte tarde. El mismo NaN regresa. En la práctica el piso anda cerca de $10^{-4}$ de la densidad media. Un Runge–Kutta de varias etapas tiene que repetir el limitador en cada etapa. Proteger solo la primera etapa deja que la siguiente diverja igual.
 
-## Lo que conviene recordar mañana
+## Un piso de 1e-12 despierta al limitador después del NaN
 
-- **La densidad negativa puede filtrarse desde cualquier rincón** — choques fuertes, rarefacciones, discontinuidades de contacto.
-- **LF no es la respuesta, pero sí el margen de seguridad** — medir la corrección de alto orden contra ese margen y permitir solo lo que quepa.
-- **Densidad primero, presión después** — dos pasadas y se acabó. Los limitadores más sofisticados solo añaden más perillas.
+$\rho_{\min} = 10^{-12}$ es adorno, no un piso. Frente a una densidad derecha de 0.02 casi todo el margen sigue libre, y la cota de arriba se queda cerca de 1. El límite se aprieta solo después de que la densidad ya cayó bajo $10^{-8}$. Para entonces $\gamma p / \rho$ cambió de signo. El limitador retrocede a LF cuando la celda ya está muerta.
+
+La θ de la cara vigila el promedio de la celda. Si ese promedio sigue positivo mientras un punto reconstruido dentro de la celda cruza a negativo, esta línea no ve el punto. Queda abierto si [una reconstrucción positiva en el promedio y negativa en un punto](/es/posts/2026-08-05-positivity-preserving-flux-limiter/) necesita todavía un arreglo propio.
 
 > Referencia: X. Y. Hu, N. A. Adams, C.-W. Shu. *Positivity-preserving method for high-order conservative schemes solving compressible Euler equations.* J. Comput. Phys. 242 (2013) 169–180.

@@ -1,7 +1,9 @@
 ---
 title: "When a Bullet Passes Straight Through a Wall — Continuous Collision Detection by Inclusion Bisection"
 date: 2026-06-08
-description: "Stopping tunneling with CCD: coplanarity roots and conservative bisection"
+updated: 2026-10-19
+description: "An endpoint test says MISS when the crossing sits at t*=0.50000. Inclusion bisection brackets that root in 53 boxes at δ=1e-4 and does not skip the hit."
+takeaway: "Fourteen halvings bring one axis under 1e-4. The printed 53 boxes stay well under a 14-by-14 sweep because empty boxes are thrown out."
 tags: ["Collision-Detection", "Computational-Geometry", "FSI", "Root-Finding", "Interval-Arithmetic"]
 draft: false
 locale: en
@@ -21,7 +23,7 @@ Static collision detection only sees a snapshot of a single instant. It asks whe
 
 If a body moves farther than its own thickness during a time step $\Delta t$, it slips between the snapshots. This is called tunneling. Worse, it cannot recover. Once a collision is missed, the two bodies stay interpenetrated, and at the next step it becomes unclear which face is on which side.
 
-Try it in the simulation below. The point moves left to right over one time step, and the gray bar is the wall.
+Raising `point travel` lengthens the distance the point covers in one step. The gray bar is the wall.
 
 <MovingPointSegmentCCD2D />
 
@@ -50,7 +52,7 @@ f(t) = \big(\mathbf{p}(t)-\mathbf{a}(t)\big)\cdot
 \Big[\big(\mathbf{b}(t)-\mathbf{a}(t)\big)\times\big(\mathbf{c}(t)-\mathbf{a}(t)\big)\Big] = 0
 $$
 
-Since each $\mathbf{x}(t)$ is linear in $t$, $f(t)$ is a **cubic polynomial** in $t$. This is the univariate approach. It is fast but has a trap. Coplanar is not the same as colliding. After finding a root $t^\*$ you must separately check whether the point really lies inside the triangle.
+Since each $\mathbf{x}(t)$ is linear in $t$, $f(t)$ is a **cubic polynomial** in $t$. This is the univariate approach. It is fast but has a trap. Coplanar is not the same as colliding. After finding a root $t^\*$ you must separately check whether the point really lies inside the triangle. The same inside-outside flip, once a triangle is dropped onto a grid, is counted in [the parity test that voxelizes an STL](/en/posts/2026-09-07-stl-voxelization-lbm-boundary-links/). Miss one cell and the symptom matches a trajectory that walked through the wall.
 
 A more robust path is the multivariate form. Write collision directly as the zero of a gap vector.
 
@@ -65,7 +67,7 @@ A collision exists if there is a $(t,u,v)$ with $\mathbf{F}=\mathbf{0}$, $u,v \g
 
 Solving the cubic in floating point is the fastest, so most simulators do exactly that. Yet large-scale benchmarks since 2012 reached a startling conclusion: most univariate numerical solvers produce false negatives (missed collisions).
 
-There are two causes. First, the roots of a cubic are generally irrational and cannot be represented exactly in floating point. Second, when two bodies move parallel within the same plane, $f(t)$ becomes identically zero. Trying to filter this infinite-root case with a numerical threshold throws away genuine collisions too.
+Missed roots come from two separate failures. Cubic roots are generally irrational, so floating point cannot hold them exactly. Separately, when two bodies slide parallel inside the same plane, $f(t)$ is identically zero. A numerical threshold meant to drop that infinite-root case throws away real hits too.
 
 A false positive (reporting a collision that is not there) only costs a little extra work and is recoverable. A false negative, however, leads straight to tunneling. If the collision-response code prevents penetration with a line search, a single miss collapses the whole simulation. So the property CCD truly needs is not speed but **conservativeness**. Better to report a phantom than to miss.
 
@@ -86,11 +88,7 @@ The algorithm is divide and conquer.
 5. Otherwise split the widest dimension in half and push both children.
 6. To get the first contact time, order the queue by $t$.
 
-Below, watch step by step how the $(t,s)$ parameter square is subdivided. Press `step` to advance one level at a time.
-
-<InclusionBisectionToiExplorer />
-
-The red cells are the root region that has converged below $\delta$. Raising $\delta$ stops sooner but makes the red cells larger. That is the trade of accuracy for speed.
+On the $(t,s)$ square, a cell whose inclusion box misses the origin is discarded. Only a cell narrower than $\delta$ is kept as a root.
 
 ## Python — First Contact of a Moving Point and Segment
 
@@ -158,7 +156,15 @@ Output:
 time-of-impact t* = 0.50000   (boxes checked: 53)
 ```
 
+`step` advances the split by one level, and $\delta$ is the width where a red cell is allowed to stop.
+
+<InclusionBisectionToiExplorer />
+
+Red cells are the root region that has shrunk below $\delta$. A larger $\delta$ stops before 53 checks and the cells grow. The printed $t^{*}=0.50000$ is the left edge $t_0$ of that box, rounded to five digits.
+
 It matches the analytic solution exactly. The point reaches $x=5$ at $t=0.5$, and there $y=3.5$ lies within the segment range $[1,6]$. The very collision that the endpoint-only test answered `MISS` was bracketed in 53 box evaluations. Conservative, yet cheap.
+
+The hit is one division. $x$ runs from 0.5 to 9.5, a distance of 9, and the wall at $x=5$ is 4.5 along that segment, so $t=(5-0.5)/9=0.5$, the printed 0.50000. $y$ stays 3.5, and the segment $[1,6]$ leaves 2.5 of clearance at each end. Narrowing one axis from width 1 down to $\delta=10^{-4}$ takes 14 cuts, because $2^{13}=8192$ and $2^{14}=16384$. The run checked 53 boxes. A full $14\times 14=196$ sweep is larger. Corner inclusion throws the empty boxes away. The value returned is the left edge $t_0$ of the accepted box. Printing 0.50000 means that edge matches 0.5 to five digits.
 
 ## Trading Accuracy for Speed With a Single δ
 
@@ -175,8 +181,9 @@ Add minimum separation on top and you can prevent manufacturing-tolerance or rou
 - **Lay a broad phase first.** Filter candidate pairs with a spatial hash or AABB tree before calling CCD. CCD is the expensive last gate of the narrow phase.
 - **Normalize $\delta$ and $m_I$ to the scene scale.** Tie them to the domain size rather than absolute length, so they keep working as speed and scale change.
 
-## What to Take Away
 
-- Tunneling comes from sampling a continuous trajectory at just two endpoints. CCD looks at all of $t\in[0,1]$.
-- Collision is expressed as a polynomial root of the coplanarity condition (univariate) or the zero of a gap vector (multivariate).
-- Inclusion-based bisection brackets the root conservatively using only corner evaluations of a multilinear $\mathbf{F}$. One knob, $\delta$, and it never misses.
+## Raising δ Inflates the Cell and Still Keeps the Hit
+
+$\delta=10^{-4}$ asks for 14 cuts along one axis. At that width the printout is $t^{*}=0.50000$ after 53 checks. A larger $\delta$ grows the red cells and adds false positives, but it does not push the origin outside the inclusion box. The misses come from filtering a coplanar cubic with a numerical cutoff, not from the width.
+
+Two endpoints call this bullet a `MISS`. At $t=0.5$ it sits at $x=5$, $y=3.5$, inside $[1,6]$, and both snapshots are far from the wall. When the fluid lives on the grid and the solid crosses between cells, [Peskin's immersed boundary](/en/posts/2026-05-15-peskin-ibm-direct-forcing-discrete-delta/) refuses to pin the contact onto a grid node. If that boundary crosses a cell between frames, the endpoint test reports `MISS` again.

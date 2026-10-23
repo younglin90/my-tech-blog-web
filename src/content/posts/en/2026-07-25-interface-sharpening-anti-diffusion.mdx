@@ -1,7 +1,9 @@
 ---
 title: "Un-smearing the Interface Every Step — Implementing Anti-Diffusion Sharpening (IST)"
 date: 2026-07-25
-description: "A post-processing technique that pins a numerically smeared interface to a constant thickness"
+updated: 2026-10-19
+description: "After 200 steps a helium bubble edge grows from 6 cells to 20. IST post-processing then locks that smeared thickness to the ratio of ε/a."
+takeaway: "Pinning the cell count is not the same as making the band thin. Lock ε/a after every step, or the interface wanders again beside the shock."
 tags: ["Paper-Review", "Interface-Sharpening", "Diffuse-Interface", "Anti-Diffusion", "Compressible", "Multiphase"]
 locale: en
 slug: interface-sharpening-anti-diffusion
@@ -12,6 +14,12 @@ import { InterfaceSharpeningLab1D } from '@/components/post-viz/2026-07-25-inter
 import { ShockBubbleSharpenGrid } from '@/components/post-viz/2026-07-25-interface-sharpening-anti-diffusion/ShockBubbleSharpenGrid'
 
 I ran a shock-bubble case with a 5-equation model. After 200 steps the helium bubble's edge had swollen from 6 cells to 20. The physical quantities were fine, but the interface was mush. That is the fate of the diffuse interface method (an approach that deliberately lets the interface spread over a finite width). Nguyen et al. (2021) undo that smearing with a single post-processing pass after every time step. Today we build that anti-diffusion technique from scratch and watch, with our own eyes, why the interface thickness locks to a constant.
+
+Turn on `numerical diffusion` and the 6-cell edge swallows cells; turn on `sharpening (IST)` and that spread stops near ε/a.
+
+<InterfaceSharpeningLab1D />
+
+The yellow band is the target thickness. Raising `compression a` shrinks it, raising `regularization ε` fattens it again, and the measured cell count tracks that ratio.
 
 ## Paper information
 
@@ -59,13 +67,7 @@ The interface converges to a hyperbolic-tangent shape, and its thickness scales 
 
 ## In 1D: the tug-of-war between smearing and sharpening
 
-The eye is faster than words. Play with the simulation below directly. Turn on `numerical diffusion` and the interface starts spreading on its own. From that state, turn on `sharpening (IST)` and the spreading stops as the thickness locks near the target.
-
-<InterfaceSharpeningLab1D />
-
-Raising `compression a` makes the interface thinner; raising `regularization ε` makes it thicker. You can confirm that the ratio $\varepsilon/a$ of the two sliders sets the target thickness (the yellow band) by watching the measured band count track that value.
-
-Ported to numpy, the same logic reads like this. First mimic the transport scheme's diffusion, then run the sharpening equation a few times.
+The same tug-of-war, written out, is the script below. It mimics the smear the transport step leaves behind, then runs the sharpening equation in pseudo-time.
 
 ```python
 import numpy as np
@@ -104,7 +106,11 @@ a = sharpen_sweep(a, comp_a=1.0, eps=0.004)
 print("band after sharpening:", band_width(a), "cells")    # -> shrinks to target
 ```
 
-The output shows a wide band after smearing, and after sharpening it drops to the few cells that $\varepsilon/a$ dictates. The key point is that we never touched the scheme. `sharpen_sweep` only receives the result array and cleans it up; it has no idea which Riemann solver produced it.
+The band is wide after the smear and drops to the few cells $\varepsilon/a$ sets. The scheme stays untouched. `sharpen_sweep` only sees the array. It never learns which Riemann solver filled it.
+
+Defaults are comp_a=1.0 and eps=0.004, so the thickness scale $\varepsilon/a$ is 0.004. The steady profile's slope factor is $a/(2\varepsilon)=125$. The tanh that starts the script has denominator 0.012, so the target is steeper than the initial step. $dx=1/200=0.005$. The pseudo-time cap is the smaller of $dx^2/(2\varepsilon)=0.000025/0.008=0.003125$ and $dx/a=0.005$. Diffusion wins. Multiply by 0.9 and $d\tau$ is 0.0028125. Past that cap the anti-diffusion flips sign and the interface rings.
+
+The compressive piece of the face flux scales with $\alpha(1-\alpha)$. That product peaks at 0.25 when $\alpha=0.5$ and is zero in a pure fluid, so compression switches off there. The band counter only tallies cells between 0.05 and 0.95. Double $\varepsilon$ alone and the target thickness doubles; double $a$ alone and it halves. The 200 steps in the opening are physical time. Six cells becoming 20 is about a factor of 3.3. D=0.16 inside smear_once and iters=200 inside the sharpener are different layers. The paper's one to three passes per step assumes the physical step barely diffuses. The Kapila source $\alpha_1 K\nabla\cdot\mathbf{u}$ pushes volume fraction directly wherever a shock spikes the divergence. That source is not numerical diffusion, and IST does not erase it. Unlike the separate pressure relaxation in the [Saurel (2009) procedure](/en/posts/2026-05-09-saurel-2009-pressure-relaxation-multiphase/), this pass only puts the cell count back.
 
 ## What it means to hold thickness constant
 
@@ -114,20 +120,20 @@ In compressible flow there is one more layer. If you fix up $\alpha$, the mixtur
 
 ## In 2D: keeping the bubble interface round
 
-It worked in 1D, so on to a 2D bubble. Let us reproduce what the paper's shock-bubble figures showed — the interface holding a sharp, few-cell-thick circle to the end. Below, turn on `numerical diffusion` and the round bubble's rim goes blurry. Turn on `sharpening` and raise `compression a`, and the rim tightens back into a crisp ring.
+It worked in 1D, so on to a 2D bubble. The paper's shock-bubble figures keep a circle only a few cells thick. Turn on `numerical diffusion` and the rim goes blurry; turn on `sharpening` and raise `compression a`, and the rim tightens back into a ring.
 
 <ShockBubbleSharpenGrid />
 
-Watch two things. First, sharpening tightens the interface but **does not move it** — the bubble neither grows nor shrinks. Second, the number of cells in the teal ring (the interface band) drops as compression rises. Because compression acts along the normal $\hat{\mathbf{n}}$, the circle's curvature is preserved instead of being crumpled.
+The teal ring tightens and the bubble center stays put. It neither grows nor shrinks. Only the cell count in the ring drops. Compression follows $\hat{\mathbf{n}}$, so the curvature does not crumple.
 
 ## What I hit while reproducing it
 
-Three things snagged me. First, $\hat{\mathbf{n}} = \nabla\alpha/|\nabla\alpha|$ divides by zero in the pure fluid, where $|\nabla\alpha|\to 0$. The paper waves this away because the $a\,\alpha(1-\alpha)$ factor is zero there, but in code you must add a small value to the denominator to avoid NaNs. Second, if the pseudo-time step $d\tau$ is too large, the anti-diffusion makes the interface oscillate; a CFL-type limit is needed for stability. Third, there is an iteration-count trade-off. The paper says 1–3 passes per step suffice, but that rests on the diffusion per physical step being small. Coarse grids or strong shocks may need more.
+In pure fluid $|\nabla\alpha|\to 0$, so the normal divides by zero. The paper skips that because $a\,\alpha(1-\alpha)$ is zero there, but the code still needs a small number in the denominator or it writes NaN. A large $d\tau$ makes the interface ring. A CFL-type cap is what keeps it quiet. The paper's one to three passes per step assume the physical step barely diffuses. A coarse grid or a strong shock can need more.
 
 One more thing. The elegance of "post-processing" has a price. Sharpening changes $\alpha$ independently of the governing equations, so at that instant the advection is not a solution of the original PDE. In exchange for constant thickness, local conservation near the interface can drift slightly. The authors minimize this with the mixture-consistent redistribution, but it is not exactly zero. OpenFOAM's `interfoam` uses a compression term of the same family ($\nabla\cdot(\alpha(1-\alpha)\mathbf{u}_r)$), which makes a useful yardstick when porting this technique to a compressible solver.
 
-## What this paper changed
+## Leave ε/a free and the cell count drifts again
 
-- **Separation of scheme and interface cleanup.** Leave the Riemann solver alone and control only the interface thickness as post-processing. Highly portable.
-- **Thickness = $\varepsilon/a$.** Keep the interface not merely thin but **constant**, letting you set the property needed to capture shock and contact discontinuities.
-- **Thermodynamic consistency in compressible flow.** Redistribute not just $\alpha$ but the whole conservative-variable vector by the mixture rules, preserving velocity, pressure, and temperature equilibrium at the interface.
+A sharpening source cuts the diffusion error and still lets the thickness wander in space and time. Fixing $\varepsilon/a$ after the step is what keeps the same cell count beside a shock. Correct $\alpha$ alone, without splitting the conserved variables back by the mixture rules, and pressure and temperature equilibrium go first.
+
+If $d\tau$ exceeds $dx^2/(2\varepsilon)$, anti-diffusion rings the interface instead of tightening it. The price of a constant thickness is that, for that instant, the advection is not a solution of the original PDE. The small conservation drift sits in the same family as the nonconservative terms caught by the [Abgrall criterion](/en/posts/2026-09-06-abgrall-criterion-nonconservative-term/).

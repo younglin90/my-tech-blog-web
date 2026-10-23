@@ -1,19 +1,27 @@
 ---
 title: "Cuando la presión oscila en tablero de ajedrez — SIMPLE y Rhie-Chow"
 date: 2026-07-22
-description: "La causa del tablero de presión, la interpolación de Rhie-Chow y el bucle SIMPLE"
+updated: 2026-10-19
+description: "En una línea periódica de 48 celdas el esténcil naive deja el tablero en 0.80, y Rhie-Chow baja el mismo diente de sierra hasta 3.1e-16."
 tags: ["SIMPLE", "Rhie-Chow", "Pressure-Velocity-Coupling", "Incompressible", "OpenFOAM"]
 locale: es
 slug: simple-pressure-velocity-coupling-rhie-chow
+takeaway: "Con alpha_p en 1 y la presión reemplazada entera en cada paso, el corrector de SIMPLE sobrecorrige y revienta."
 draft: false
 ---
 
 import { CheckerboardRhieChow } from '@/components/post-viz/2026-07-22-simple-pressure-velocity-coupling-rhie-chow/CheckerboardRhieChow'
 import { PressureCorrectionRelaxLab } from '@/components/post-viz/2026-07-22-simple-pressure-velocity-coupling-rhie-chow/PressureCorrectionRelaxLab'
 
-El campo de velocidad se veía bien. Pero al abrir el campo de presión, cada celda saltaba hacia arriba y hacia abajo respecto a su vecina. Un tablero de ajedrez (checkerboard). Los residuos seguían bajando y, aun así, solo la presión oscilaba como un diente de sierra. No era un error de código. Quedó sellado en el instante en que la presión y la velocidad se guardaron en los mismos puntos de la malla.
+El campo de velocidad se veía bien. El de presión, no. Cada celda saltaba contra su vecina. Un tablero de ajedrez (checkerboard). Los residuos bajaban. La presión seguía en diente de sierra. No era un error de código. Quedó sellado al guardar presión y velocidad en los mismos puntos.
 
-Este artículo recorre por qué aparece ese diente de sierra, cómo lo elimina la interpolación de Rhie-Chow y cómo la ecuación de continuidad se convierte en una ecuación de presión. Al final, el mismo solver se estira hasta el flujo compresible.
+Al cambiar el control entre Naive y Rhie-Chow, el diente de sierra sembrado o se queda quieto o se asienta en una curva suave.
+
+<CheckerboardRhieChow />
+
+En Naive la amplitud no baja. En Rhie-Chow el mismo tablero se asienta. `Reseed checkerboard` vuelve a sembrar el diente.
+
+Por qué el diente sobrevive, y cómo la continuidad se vuelve una ecuación de presión, viene después. El estiramiento compresible del mismo solver también queda más adelante.
 
 ## La continuidad no ve la presión de al lado
 
@@ -35,13 +43,9 @@ $$
 u_f = \overline{\left(\frac{\mathbf{H}(\mathbf{u})}{a_P}\right)}_f - \left(\frac{V}{a_P}\right)_f \frac{p_E - p_P}{\Delta x}
 $$
 
-La barra superior es interpolación lineal; el segundo término es el gradiente de presión recalculado en la cara. Ahora la velocidad de cara queda ligada a $p_E - p_P$, la diferencia entre celdas adyacentes. El modo diente de sierra ya no tiene dónde esconderse.
+La barra superior es interpolación lineal. El término de atrás es el gradiente de presión recalculado en la cara. Ahora la velocidad de cara queda ligada a $p_E - p_P$, la diferencia entre celdas adyacentes. El modo diente de sierra ya no tiene dónde esconderse.
 
-Conviene manipular la simulación de abajo. Relaja la presión de dos maneras distintas y muestra qué ocurre con un campo inicializado como tablero de ajedrez.
-
-<CheckerboardRhieChow />
-
-Con la interpolación naive, la amplitud del diente de sierra se queda quieta. Al cambiar a Rhie-Chow, el mismo tablero se asienta sobre la curva suave. Al pulsar `Reseed checkerboard` se puede observar de nuevo.
+Mientras el salto de cara $p_E-p_P$ no sea cero, el diente queda atrapado en ese término. Otra forma de sacar la presión de la cantidad de movimiento es [el método de proyección de Chorin](/es/posts/2026-07-03-chorin-projection-fractional-step/).
 
 ## SIMPLE: convertir la continuidad en una ecuación de presión
 
@@ -125,11 +129,14 @@ for naive in (True, False):
 # Rhie-Chow      checkerboard = 3.1e-16    <- desaparece hasta la precision de maquina
 ```
 
-La misma fuente, el mismo valor inicial, el mismo número de iteraciones. Solo cambió el esténcil. Naive no logra quitar el diente de sierra; Rhie-Chow lo borra por completo, exactamente lo que mostró el visor.
+La misma fuente, el mismo valor inicial, el mismo número de iteraciones. Solo cambió el esténcil. Naive no quita el diente de sierra. Rhie-Chow lo borra. Es el mismo sitio que la figura de arriba.
 
-## Cómo no quemarse ante el solver de presión
+La presión inicial es $0.8\times(-1)^i$. Si la métrica es el valor absoluto del producto interno de $p$ con esa fila de signos, dividido por el número de celdas, arranca en 0.8. Tras 4000 barridos en 48 celdas, naive sigue en $8.00\times 10^{-1}$. No se movió ni un dígito. Rhie-Chow queda en $3.1\times 10^{-16}$. Precisión de máquina.
 
-- En una malla colocada, **nunca se construye la velocidad de cara promediando sin más las velocidades de celda**. Con Rhie-Chow (o una malla escalonada), la diferencia de presión adyacente se siente de forma directa y no se forma diente de sierra.
-- La continuidad no tiene una ecuación para la presión. SIMPLE **la reemplaza por una ecuación de Poisson de presión** dentro de un bucle predictor-corrector.
-- Si diverge, **conviene bajar primero $\alpha_p$**. Empezar cerca de 0.3 y ajustar $\alpha_u$ para que ambos sumen alrededor de uno.
-- Para abarcar bajo Mach y supersónico con un solo código, se liga la densidad a la presión mediante $\psi=\partial\rho/\partial p$ de la EOS, lo que revive el término temporal en la ecuación de presión.
+El esténcil es la razón de que naive conserve 0.8. En un diente de sierra, el índice $i$ y $i\pm 2$ comparten signo. $p_i=0.5(p_{i-2}+p_{i+2}+f_i)$ no promedia ese modo hasta cero. El gradiente en el centro $(p_E-p_W)/2\Delta x$ hace lo mismo. $E$ y $W$ son ambos opuestos a $P$, así que $p_E-p_W=0$. Un diente de amplitud 0.8 tiene gradiente nulo en el centro. No aparece en el residuo. El salto de cara $p_E-p_P$ cambia de signo, y su tamaño es 1.6. Ahí es donde Rhie-Chow agarra. La parte suave de $f=\sin x+0.4\sin 2x$ la resuelven ambos esténciles. La única diferencia que queda es el diente.
+
+## Con alpha_p en 1 el corrector revienta primero
+
+Reemplazar la presión entera, $p\leftarrow p^*$, sobrecorrige el acoplamiento en un solo paso. La actualización solo deja pasar la fracción $\alpha_p$. El par habitual $\alpha_p\approx 0.3$, $\alpha_u\approx 0.7$ suma 1. En la curva del laboratorio, 0.3 se arrastra, cerca de 1.5 cae más rápido, y cerca de 2 el residuo vuelve a saltar en cada barrido. SIMPLE deja $\alpha_p$ entre 0 y 1, en el lado lento de esa curva.
+
+Donde cambiar la relajación cambia la solución convergida es [la velocidad de cara que recuerda la subrelajación](/es/posts/2026-10-14-rhie-chow-under-relaxation-memory/). En una malla colocada, promediar velocidades de celda hacia la cara pierde el salto de presión vecino, y el diente vive fuera del residuo. Revivir el término temporal con $\psi=\partial\rho/\partial p$ viene después. Añadir compresibilidad a una ecuación de presión que todavía carga el diente solo acelera el sonido. El tablero se queda.

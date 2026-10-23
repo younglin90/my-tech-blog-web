@@ -1,7 +1,9 @@
 ---
 title: "[论文评述] 用 tanh 把激波画到亚网格 — 实现 TENO-THINC 重构"
 date: 2026-06-13
-description: "当多项式抹平接触面时，THINC 如何保住亚网格的跳变"
+updated: 2026-10-19
+description: "β=1.8 的 tanh 在五圈后仍守住峰值 1.00 与 30 个网格，minmod 则掉到 0.84、宽度只剩 23 格。"
+takeaway: "若不是只在间断网格换成 tanh，阶数再高，接触面仍会摊到几十个网格。"
 tags: ["THINC", "TENO", "Shock-Capturing", "Compressible", "Paper-Review"]
 locale: zh
 slug: teno-thinc-shock-resolving-reconstruction
@@ -11,7 +13,13 @@ draft: false
 import { ThincReconstructionLab } from '@/components/post-viz/2026-06-13-teno-thinc-shock-resolving-reconstruction/ThincReconstructionLab'
 import { ContactAdvectionDecay } from '@/components/post-viz/2026-06-13-teno-thinc-shock-resolving-reconstruction/ContactAdvectionDecay'
 
-把精度阶数提到五阶、六阶、八阶，接触间断仍会随时间被抹平。WENO 也好，TENO 也罢，结果一样。只要用多项式去画跳变，这个命运就注定了。Takagi 等人 2023 年的论文绕开了它。光滑区域交给高阶 TENO；只在间断网格里换成 tanh 曲线（THINC）。本文在单个网格的层面动手实现这一核心思想，并让一个 top-hat 绕网格转一圈，直接比较多项式与 tanh 的命运。
+精度提到五阶、六阶、八阶，接触间断仍会随时间被抹平。WENO 也好，TENO 也罢，一样。用多项式去画跳变，就会这样。Takagi 等人 2023 年的论文岔开了这条路。光滑处留给高阶 TENO，只有间断网格换成 tanh（THINC）。
+
+把重构开关拨到 Polynomial、THINC、Hybrid，同一组网格平均会分成 S 形、竖直跳变或混合。
+
+<ThincReconstructionLab />
+
+Polynomial 在跳变上下略微越界。THINC 在一个网格里几乎竖直。Hybrid 只在跳变网格用 tanh。
 
 ## 论文一页概览
 
@@ -20,7 +28,7 @@ import { ContactAdvectionDecay } from '@/components/post-viz/2026-06-13-teno-thi
 - **出处**：Communications in Computational Physics, 2023
 - **一句话**：把偶数点 TENO（六点、八点）与 THINC 重构结合，同时获得光滑区的低耗散性与间断处的亚网格分辨率。
 
-诀窍在于免费判定"何时切换"。TENO 已经为每个候选模板用 $\delta_k \in \{0,1\}$ 标记是否光滑。直接复用这些标志即可分辨网格是否藏着间断，THINC 只在那里启动。唯一的新参数是 THINC 的斜率 $\beta$。
+免费知道的，是何时切换。TENO 已经为每个候选模板用 $\delta_k \in \{0,1\}$ 标记是否光滑。直接复用这些标志即可分辨网格是否藏着间断，THINC 只在那里启动。唯一的新参数是 THINC 的斜率 $\beta$。
 
 ## 为何高阶多项式也抹平接触面
 
@@ -28,11 +36,7 @@ import { ContactAdvectionDecay } from '@/components/post-viz/2026-06-13-teno-thi
 
 TENO 与 WENO 选择抑制振荡。它们丢弃跨越间断的模板，强制 ENO 性质。这换来稳定性，但每一步都积累一点数值耗散。接触间断（速度、压力相同而密度跳变的面）不会通过压力机制自我变陡。于是经过长时间对流后，它的宽度蔓延到数十个网格。提高阶数几乎无法减少这种抹平。
 
-下面亲自看看。保持相同的网格平均，只改变重构方式。
-
-<ThincReconstructionLab />
-
-`Polynomial` 把跳变化解成光滑的 S 曲线，并在上下略微越界。切到 `THINC`，同样的数据却在单个网格内几乎竖直。`Hybrid (BVD)` 只在跳变网格用 tanh，其余保持多项式。
+前面选过的三种重构就是这个选择。网格平均相同，曲线不同。TENO 少抹掉小涡的那一面，写在 [低耗散 TENO](/zh/posts/2026-04-25-teno-low-dissipation-shock-capturing/) 里。接触面摊到几十个网格，并不因为耗散降了就停。
 
 ## THINC — tanh 画出亚网格的跳变
 
@@ -44,7 +48,7 @@ $$
 
 其中 $f_a = (f_{i+1}+f_{i-1})/2$ 是邻居平均，$f_d = (f_{i+1}-f_{i-1})/2$ 是跳变的一半，$\beta$ 是 tanh 斜率，$d_i$ 是跳变中心位置。
 
-关键在于 $d_i$ 并不自由。网格平均守恒约束（重构积分须等于 $f_i$）把它钉死。其解析解为
+$d_i$ 不是自由变量。网格平均守恒约束（重构积分须等于 $f_i$）把它钉死。其解析解为
 
 $$
 d_i = \frac{1}{2\beta} \ln \frac{1 - T_2/T_1}{1 + T_2/T_1}
@@ -60,7 +64,13 @@ $$
 - $\beta \approx 1.3$：Superbee 级别（偏过压缩）
 - $\beta = 1.6 \sim 2.0$：锐利激波捕捉区
 
-论文采用 $\beta = 1.8$。调得过高，连光滑曲线也会被阶梯化（squaring），产生人为的平坦化。在上面的模拟中，把滑块的 $\beta$ 从 1.0 提到 2.4，观察跳变如何竖起、overshoot 读数如何变化，那种平衡便触手可及。
+论文采用 $\beta = 1.8$。调得过高，连光滑曲线也会被阶梯化（squaring），产生人为的平坦化。在上面的图里把 $\beta$ 从 1.0 拨到 2.4，跳变立起来，overshoot 读数一起动。
+
+$\beta = 1.8$ 时 $\beta/2 = 0.9$。跳变在网格正中则 $\alpha = 0$，于是 $d_i = 0$。右边界 $X = 0.5$ 处 $\tanh(\beta(X - d_i)) = \tanh(0.9) \approx 0.716$。邻居跳变大约只有 72% 在一个网格里收回来。$\beta = 1.1$ 时 $\tanh(0.55) \approx 0.50$，和 van Leer 一样缓。$\beta = 2.4$ 时 $\tanh(1.2) \approx 0.83$。1.8 夹在竖直和 squaring 中间。
+
+$\alpha = (f_i - f_a)/f_d$。网格平均落在邻居正中，$\alpha = 0$，跳变中心也是 0。平均贴向右邻，$\alpha$ 靠近 1，对数里的 $(1 - T_2/T_1)$ 变小，$d_i$ 往正方向推。$|\alpha| \ge 1$，或者 $(f_{i+1} - f_i)(f_i - f_{i-1}) \le 0$，代码就丢掉 tanh，退回 $\hat f = f_i$。峰所在的网格因此仍交给多项式。
+
+初始 top-hat 在 $0.35$ 与 $0.65$ 之间。宽度 $0.30$，$N = 100$ 就是 30 个网格。$dx = 0.01$，$\Delta t = 0.45 \times dx = 0.0045$。五圈是 $5 / 0.0045 \approx 1111$ 步，CFL 为 0.45。之后 minmod 宽度 23 格，峰值 0.84。超过 0.5 的格子少了 7 个，高度掉了 0.16。THINC-BVD 守住峰值 1.00、宽度 30。代码注释里的两行就是这道算术。
 
 ## TENO 找到它，THINC 填补它 — BVD 混合
 
@@ -140,7 +150,7 @@ print("THINC peak=%.3f  width(>0.5)=%d" % (u_thinc.max(), (u_thinc > 0.5).sum())
 
 ## 亲手把玩的重构与长时间对流
 
-操作下面的模拟。它实时显示同一个 top-hat 绕网格运行时，两种方式如何分道扬镳。
+把 `revolutions` 往前拨，红色 minmod 和青色 THINC 会在同一段时间里分开跑。
 
 <ContactAdvectionDecay />
 
@@ -150,12 +160,14 @@ print("THINC peak=%.3f  width(>0.5)=%d" % (u_thinc.max(), (u_thinc > 0.5).sum())
 
 承诺很干净，但实现时有三点绊住了我。
 
-其一，BVD 判定对探测器质量敏感。若把光滑极值（smooth extremum）误判为间断，那个峰会被不自然地压平。上面的简单 BVD 用单调性检查来防范，但多维、方程组系统需要特征变量分解。
+BVD 判定对探测器质量敏感。若把光滑极值（smooth extremum）误判为间断，那个峰会被不自然地压平。上面的简单 BVD 用单调性检查来防范，但多维、方程组系统需要特征变量分解。
 
-其二，$\beta$ 与问题相关。$\beta = 1.8$ 是为一维基准调出来的值。在强可压缩湍流中，过压缩可能造出人为阶梯，因此自适应 $\beta$ 值得考虑。
+$\beta$ 跟着问题走。$\beta = 1.8$ 是为一维基准调出来的值。在强可压缩湍流中，过压缩可能造出人为阶梯，因此自适应 $\beta$ 值得考虑。
 
-其三，成本论断要看上下文。"THINC 几乎免费，因为间断网格很少"这句话，只看重构时是对的。但分支密集的 BVD 判定可能在 GPU 上引发 warp 发散。把它移植到 OpenFOAM 这类非结构 FV 代码，意味着要把逐网格探测逻辑揉进面通量循环，远不如一维结构网格干净。
+成本论断要看上下文。"THINC 几乎免费，因为间断网格很少"这句话，只看重构时是对的。但分支密集的 BVD 判定可能在 GPU 上引发 warp 发散。把它移植到 OpenFOAM 这类非结构 FV 代码，意味着要把逐网格探测逻辑揉进面通量循环，远不如一维结构网格干净。
 
-## 接下来读什么
+## 要把 β 钉在 1.8 吗
 
-若想了解 THINC 的源头，推荐 Xiao 最初的 VOF 版 THINC；BVD 原理本身则看 Deng 的 P$n$T$m$-BVD。自适应 $\beta$ 与多相扩展由 Shyue & Xiao 的 THINC with PE 系列接力。今日一句：**别用多项式画跳变，用跳变画跳变。**
+五圈之后 THINC-BVD 的峰值是 1.00，宽度 30 格。同样条件下 minmod 是 0.84，23 格。光滑极值也被压成台阶时，这个固定值就过了。按波去怀疑那一个旋钮的，是 [把 THINC 和 MP5 分开](/zh/posts/2026-05-23-chamarthi-2025-wave-appropriate-thinc-mp5/) 的做法。
+
+用 tanh 画跳变，还是事后扫掉涂开的界面，是另一项决定。重构已经守住接触，后处理锐化就闲着。守不住的话，先看探测器，再把 $\beta$ 调高。

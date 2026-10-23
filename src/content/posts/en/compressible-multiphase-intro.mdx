@@ -1,7 +1,9 @@
 ---
 title: "Compressible Multiphase Flow CFD: Why It's Hard, Why It Matters"
 date: 2026-03-04
-description: "Why compressible multiphase numerics differ fundamentally from single-phase flow, and why this remains an active research field."
+updated: 2026-10-19
+description: "Averaging gamma at a gas-liquid interface does not recover the pressure. Near half gas fraction, the mixture sound speed falls to about one hundredth."
+takeaway: "An arithmetic mean of the conserved state does not return the original pressure, and that error becomes the next step's velocity."
 tags: [CFD, Multiphase, Compressible-Flow, Introduction]
 series: "compressible-multiphase"
 seriesOrder: 1
@@ -12,74 +14,74 @@ import { SpeedOfSoundMix } from '@/components/post-viz/compressible-multiphase-i
 
 # What Is Compressible Multiphase Flow?
 
-In fluid mechanics, **multiphase flow** refers to flows where two or more phases coexist.
-Water and air, fuel droplets in hot gas, or gas bubbles from underwater explosions are typical examples.
+A few bubbles in a water tank are enough to slow a pressure wave. Water and air, fuel droplets in hot gas, the gas pocket from an underwater blast. Two phases, and the flow is multiphase. Add compressibility and each phase brings its own equation of state (EOS). Shocks on the interface reflect, transmit, and refract.
 
-Add **compressibility** to the mix and the problem grows much harder.
-Each phase carries its own equation of state (EOS); shock waves form across the interface and undergo reflection, transmission, and refraction.
+A time step built on the pure-phase sound speed goes wrong at the interface first. Push the probe slider to a gas fraction α=0.5 and the cyan Wood curve drops to about one hundredth of the single-phase sound speed.
+
+<SpeedOfSoundMix />
+
+At α of 0 or 1 the Wood curve meets the amber frozen line. Only near the middle does Wood hit the floor. That floor stretches the acoustic time scale by about a hundred.
 
 ## How It Differs from Single-Phase Compressible Flow
 
-The single-phase Euler equations read:
+The single-phase Euler system is short.
 
 $$
 \frac{\partial \mathbf{U}}{\partial t} + \frac{\partial \mathbf{F}}{\partial x} = 0
 $$
 
-Here the conserved variables are $\mathbf{U} = [\rho, \rho u, E]^T$, and the system closes with a single EOS (e.g., ideal gas $p = (\gamma - 1)\rho e$).
+The conserved state is $\mathbf{U} = [\rho, \rho u, E]^T$. One ideal-gas closure, $p = (\gamma - 1)\rho e$, is enough.
 
-In multiphase flow, **the EOS changes across the interface**.
-If the gas region uses an ideal gas with $\gamma = 1.4$ and the liquid region uses a stiffened gas EOS:
+Across an interface the EOS changes. Gas uses $\gamma = 1.4$. Liquid uses a stiffened gas.
 
 $$
 p = (\gamma - 1)\rho e - \gamma p_\infty
 $$
 
-Trouble appears numerically when the two EOS get **mixed** near the interface.
-Naively averaging conserved variables creates non-physical pressure oscillations.
+With γ at 1.4, (γ−1) is 0.4. Only 40 percent of the internal energy ρe shows up as pressure. The liquid law subtracts γ p_∞ from that same term. A mixed cell that inherits an in-between γ drags the coefficient of the shift along with it. Density and energy can look fine while the recovered pressure is not the arithmetic mean of the two neighbors.
+
+The numerical trouble starts when the two equations of state mix near the interface. Averaging conserved variables leaves a non-physical pressure oscillation. A pressure field that looks flat while the residual will not die shows up in [single-phase pressure residuals](/en/posts/2026-03-27-simpleFoam-pressure-divergence/) too. Here the cause is the mixed EOS, not a turbulence constant.
+
+Read Mach off the figure. At α=0.5 the mixture sound speed is one hundredth of the pure-phase value. A speed that was Mach 0.01 in the liquid is Mach 1 on the mixture scale. The velocity did not change. The sound speed did, by a factor of a hundred. A CFL based on the liquid sound speed takes steps a hundred times smaller than the mixture needs. A CFL based on the mixture sound speed suddenly coarsens the time step in the interface cells alone.
 
 ## Why It's Hard: Three Core Difficulties
 
 ### 1. Pressure Oscillations at the Interface
 
-The most famous issue. Abgrall pointed it out in 1994, and resolving it became the starting point of multiphase numerics.
+After Abgrall's 1994 note, killing this oscillation became the starting move in multiphase numerics.
 
 > "The history of compressible multiphase numerics is the history of fighting pressure oscillations."
 
-Plain conservative finite volume schemes produce spurious oscillations when $\gamma$ takes intermediate values across the interface.
+A plain conservative finite-volume update lets γ take an intermediate value at the interface and writes a spurious oscillation.
+
+Two cells can share a pressure and still disagree on ρ and e, because the EOS disagrees. Feed the averaged $\mathbf{U} = [\rho, \rho u, E]^T$ back into either $p = (\gamma - 1)\rho e$ or $p = (\gamma - 1)\rho e - \gamma p_\infty$ and the original pressure does not come back. The pressure error enters the next velocity, and that velocity pushes the density. The oscillation does not die in one step.
 
 ### 2. Variety of Equations of State
 
-Real problems demand more than ideal gas.
-Water uses the **Tait EOS** or **stiffened gas EOS**;
-high-pressure states call for the **Jones–Wilkins–Lee (JWL) EOS**;
-reactive flows couple chemistry with the EOS.
-
-Generalizing Riemann solvers across all these EOS dramatically increases implementation complexity.
+Ideal gas does not describe water. Water wants a Tait EOS or a stiffened gas EOS. High pressure wants the Jones–Wilkins–Lee (JWL) EOS. Reactive flow couples chemistry into the closure. Each EOS needs its own Riemann solver, and the code gets long.
 
 ### 3. Interface Tracking vs. Interface Capturing
 
-How to handle the interface splits roughly into two camps:
+Two ways to hold the interface.
 
 | Approach | Method | Strength | Weakness |
 |----------|--------|----------|----------|
 | **Sharp interface** | Ghost Fluid, Front Tracking | Crisp interface | Hard to handle phase change |
 | **Diffuse interface** | 5-equation, 6-equation model | Natural phase change | Interface smearing |
 
+A sharp method keeps the interface as a line. Ghost fluid extrapolates the other side into the Riemann problem. A diffuse 5- or 6-equation model transports the volume fraction α and spreads the interface over a few cells. Phase change is easier on the spread side. A shock hitting the interface head-on keeps a cleaner pressure jump on the sharp side. If γ still mixes, both sides oscillate.
+
 ## Why It Matters
 
-Compressible multiphase simulation is central to many engineering domains:
+The cases that need this are the ones where an interface and a shock share a cell.
 
 - **Underwater explosion (UNDEX)**: ship survivability assessment
-- **Supersonic combustion**: fuel injection/mixing inside scramjet engines
-- **Medical**: bubble dynamics in shock-wave lithotripsy
-- **Space propulsion**: sloshing of cryogenic propellants
+- **Supersonic combustion**: fuel injection and mixing inside a scramjet
+- **Medical**: bubble motion in shock-wave lithotripsy
+- **Space propulsion**: sloshing of cryogenic propellant
 
-## Coming Up Next
+## A conserved average breaks the interface pressure
 
-The next post covers this field's core tool: **the Riemann problem and Godunov-type schemes**.
-We start with the single-phase Euler Riemann problem, then look at how it extends to multiphase flow.
+A conserved average is a short implementation. One flux, same as single phase. It comes apart at the interface. γ and p_∞ differ from cell to cell, and averaging only U does not make the recovered pressure match its neighbors. The spike can look like a shock. It is not a physical wave.
 
-Slide the probe to α≈0.5 — Wood speed of sound drops to 1/100 of the single-phase value.
-
-<SpeedOfSoundMix />
+If the interface is a real discontinuity, the next decision is where the order lives. [High-order compressible discretization on unstructured meshes](/en/posts/2026-04-20-discontinuous-galerkin-method-cfd/) shows how a single-phase jump sits on a cell face. Before moving that idea into two phases, it is worth seeing how the single-phase Riemann problem puts the pressure back.
