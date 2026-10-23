@@ -1,20 +1,18 @@
-// Cloudflare Pages Function: Umami 방문자·페이지뷰 프록시
+// Cloudflare Pages Function: 방문자·페이지뷰 조회
 // 엔드포인트: GET /api/visitors
 //
 // 응답: { today: {visitors,pageviews}, yesterday: {...}, total: {...},
 //         visitors, pageviews }   ← 마지막 두 개는 구버전 클라이언트 호환(=today)
 //
-// 필수 시크릿 (Cloudflare Pages → Settings → Environment variables, Encrypt):
-//   UMAMI_API_KEY       Umami Cloud: Profile → API keys 에서 발급
-//
-// 아래 두 값은 공개 정보이므로 기본값 하드코딩 (환경변수로 오버라이드 가능):
-//   UMAMI_API_URL       (기본: https://api.umami.is/v1)
-//   UMAMI_WEBSITE_ID    (기본: ef0b4cb2-34b1-4d5e-a70e-26a543816b22)
+// 데이터: /stats/api/send 가 D1(바인딩명 DB)의 visit_daily 에 KST 일 단위로 집계한 값.
+// (Umami 통계 API는 Pro 플랜 전용이라 쓰지 않는다.)
+// 실패해도 200 + error 로 응답 — 5xx는 "Bad gateway" 페이지에 가려 사유를 볼 수 없다.
 
+interface D1Database {
+  prepare(sql: string): { bind(...values: unknown[]): { all<T>(): Promise<{ results: T[] }> } }
+}
 interface Env {
-  UMAMI_API_URL?: string
-  UMAMI_API_KEY?: string
-  UMAMI_WEBSITE_ID?: string
+  DB?: D1Database
 }
 
 interface WindowStats {
@@ -22,99 +20,56 @@ interface WindowStats {
   pageviews: number | null
 }
 
-const DEFAULT_UMAMI_API_URL = 'https://api.umami.is/v1'
-const DEFAULT_UMAMI_WEBSITE_ID = 'ef0b4cb2-34b1-4d5e-a70e-26a543816b22'
+const DAY_MS = 24 * 60 * 60 * 1000
+const KST_OFFSET_MS = 9 * 60 * 60 * 1000
 
-// 사이트 오픈 이전이면 충분한 하한 — "전체" 윈도우의 startAt (2026-01-01 UTC)
-const SITE_EPOCH_MS = Date.UTC(2026, 0, 1)
-
-// Umami stats 응답 가능 형태:
-//   {visitors:{value,prev}, pageviews:{value,prev}, ...}  ← Cloud v1 표준
-//   {visitors:N, pageviews:N}                              ← 일부 self-host 변형
-function pickNum(v: unknown): number {
-  if (typeof v === 'number') return v
-  if (v && typeof v === 'object' && 'value' in (v as object)) {
-    const n = (v as { value: unknown }).value
-    return typeof n === 'number' ? n : 0
-  }
-  return 0
-}
-
-export async function onRequestGet(context: { env: Env; request: Request }): Promise<Response> {
-  const { env, request } = context
-  const UMAMI_API_URL = env.UMAMI_API_URL || DEFAULT_UMAMI_API_URL
-  const UMAMI_WEBSITE_ID = env.UMAMI_WEBSITE_ID || DEFAULT_UMAMI_WEBSITE_ID
-  const UMAMI_API_KEY = env.UMAMI_API_KEY
-  const debug = new URL(request.url).searchParams.get('debug') === '1'
-  const json = (body: unknown, init: ResponseInit = {}) =>
+export async function onRequestGet(context: { env: Env }): Promise<Response> {
+  const { env } = context
+  const json = (body: unknown, cache: string) =>
     new Response(JSON.stringify(body), {
-      ...init,
-      headers: {
-        'Content-Type': 'application/json',
-        'Cache-Control': debug ? 'no-store' : 'public, max-age=60, s-maxage=300',
-        ...(init.headers || {}),
-      },
+      headers: { 'Content-Type': 'application/json', 'Cache-Control': cache },
     })
+  const empty: WindowStats = { visitors: null, pageviews: null }
+  const fail = (error: string) =>
+    json({ today: empty, yesterday: empty, total: empty, visitors: null, pageviews: null, error }, 'no-store')
 
-  if (!UMAMI_API_KEY) {
-    return json({ visitors: null, pageviews: null, error: 'api-key-missing' }, { status: 503 })
+  if (!env.DB) return fail('db-binding-missing')
+
+  const kstNow = Date.now() + KST_OFFSET_MS
+  const today = new Date(kstNow).toISOString().slice(0, 10)
+  const yesterday = new Date(kstNow - DAY_MS).toISOString().slice(0, 10)
+
+  let rows: { day: string; visitors: number; pageviews: number }[] = []
+  let totals = { visitors: 0, pageviews: 0 }
+  try {
+    const [d, t] = await Promise.all([
+      env.DB.prepare('SELECT day, visitors, pageviews FROM visit_daily WHERE day IN (?, ?)')
+        .bind(today, yesterday)
+        .all<{ day: string; visitors: number; pageviews: number }>(),
+      env.DB.prepare('SELECT COALESCE(SUM(visitors), 0) AS visitors, COALESCE(SUM(pageviews), 0) AS pageviews FROM visit_daily')
+        .bind()
+        .all<{ visitors: number; pageviews: number }>(),
+    ])
+    rows = d.results
+    totals = t.results[0] ?? totals
+  } catch (e) {
+    // 첫 페이지뷰가 기록되기 전엔 테이블이 없다 → 0으로 표시
+    if (!String(e).includes('no such table')) return fail('db-error')
   }
 
-  // "오늘/어제"는 블로그 주 독자 기준인 KST(UTC+9, DST 없음) 자정 경계로 계산.
-  const DAY_MS = 24 * 60 * 60 * 1000
-  const KST_OFFSET_MS = 9 * 60 * 60 * 1000
-  const now = Date.now()
-  const todayStart = Math.floor((now + KST_OFFSET_MS) / DAY_MS) * DAY_MS - KST_OFFSET_MS
-  const yesterdayStart = todayStart - DAY_MS
-
-  const base = UMAMI_API_URL.replace(/\/$/, '')
-
-  const fetchWindow = async (startAt: number, endAt: number): Promise<WindowStats & { raw?: unknown; reason?: string }> => {
-    const url = `${base}/websites/${UMAMI_WEBSITE_ID}/stats?startAt=${startAt}&endAt=${endAt}`
-    try {
-      const res = await fetch(url, {
-        headers: {
-          'x-umami-api-key': UMAMI_API_KEY,
-          Accept: 'application/json',
-        },
-      })
-      if (!res.ok) return { visitors: null, pageviews: null, reason: `upstream-${res.status}`, ...(debug && { raw: `upstream-${res.status}` }) }
-      const data = (await res.json().catch(() => ({}))) as Record<string, unknown>
-      return {
-        visitors: pickNum(data.visitors),
-        pageviews: pickNum(data.pageviews),
-        ...(debug && { raw: data }),
-      }
-    } catch (e) {
-      return { visitors: null, pageviews: null, reason: 'upstream-network', ...(debug && { raw: String(e) }) }
-    }
+  const pick = (day: string): WindowStats => {
+    const r = rows.find((x) => x.day === day)
+    return { visitors: r?.visitors ?? 0, pageviews: r?.pageviews ?? 0 }
   }
-
-  const [today, yesterday, total] = await Promise.all([
-    fetchWindow(todayStart, now),
-    fetchWindow(yesterdayStart, todayStart - 1),
-    fetchWindow(SITE_EPOCH_MS, now),
-  ])
-
-  // 전부 실패해도 200으로 보낸다 — 5xx는 브라우저·엣지에서 "Bad gateway" 페이지로 가려져
-  // error 사유(upstream-401 등)를 확인할 수 없다. 클라이언트는 error 필드로 실패를 판단.
-  const allFailed = [today, yesterday, total].every((w) => w.visitors === null)
-  if (allFailed) {
-    return json({
-      today, yesterday, total,
-      visitors: null, pageviews: null,
-      error: today.reason ?? 'upstream-failed',
-      ...(debug && { todayStart, yesterdayStart }),
-    }, { headers: { 'Cache-Control': 'no-store' } })
-  }
-
-  return json({
-    today,
-    yesterday,
-    total,
-    // 구버전 클라이언트(24h 표시) 호환 필드 — 오늘 수치로 대체
-    visitors: today.visitors,
-    pageviews: today.pageviews,
-    ...(debug && { todayStart, yesterdayStart, now }),
-  })
+  const todayStats = pick(today)
+  return json(
+    {
+      today: todayStats,
+      yesterday: pick(yesterday),
+      total: totals,
+      visitors: todayStats.visitors,
+      pageviews: todayStats.pageviews,
+    },
+    'public, max-age=60',
+  )
 }
