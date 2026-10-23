@@ -47,7 +47,8 @@ export function Giscus({ postId }: GiscusProps) {
     script.setAttribute('data-mapping', 'specific')
     script.setAttribute('data-term', postId)
     script.setAttribute('data-strict', '0')
-    script.setAttribute('data-reactions-enabled', '1')
+    // 글 반응은 PostFeedback(👍/👎, D1 집계·로그인 불필요)이 맡는다. 같은 기능이 두 번 보이지 않게 끈다.
+    script.setAttribute('data-reactions-enabled', '0')
     script.setAttribute('data-emit-metadata', '0')
     script.setAttribute('data-input-position', 'bottom')
     script.setAttribute('data-theme', resolvedTheme === 'dark' ? 'dark_dimmed' : 'light')
