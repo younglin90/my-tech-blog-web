@@ -96,6 +96,8 @@ export async function onRequestGet(context: { env: Env; request: Request }): Pro
     fetchWindow(SITE_EPOCH_MS, now),
   ])
 
+  // 전부 실패해도 200으로 보낸다 — 5xx는 브라우저·엣지에서 "Bad gateway" 페이지로 가려져
+  // error 사유(upstream-401 등)를 확인할 수 없다. 클라이언트는 error 필드로 실패를 판단.
   const allFailed = [today, yesterday, total].every((w) => w.visitors === null)
   if (allFailed) {
     return json({
@@ -103,7 +105,7 @@ export async function onRequestGet(context: { env: Env; request: Request }): Pro
       visitors: null, pageviews: null,
       error: today.reason ?? 'upstream-failed',
       ...(debug && { todayStart, yesterdayStart }),
-    }, { status: 502 })
+    }, { headers: { 'Cache-Control': 'no-store' } })
   }
 
   return json({

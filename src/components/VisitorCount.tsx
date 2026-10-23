@@ -16,6 +16,7 @@ interface Stats {
   // 구버전 API 호환 (today/yesterday/total이 없으면 24h 값으로 fallback)
   visitors?: number | null
   pageviews?: number | null
+  error?: string
 }
 
 // Umami 통계 프록시(/api/visitors, Cloudflare Pages Function)에서
@@ -40,6 +41,10 @@ export function VisitorCount() {
       .then((d: Stats) => {
         if (cancelled) return
         setStats(d)
+        if (d.error) {
+          setErrored(true)
+          setReason(d.error)
+        }
       })
       .catch((e: Error) => {
         if (cancelled) return
