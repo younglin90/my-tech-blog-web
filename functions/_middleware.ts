@@ -47,9 +47,57 @@ function pickByAcceptLanguage(accept: string | null): Locale | null {
   return null
 }
 
-export const onRequest: PagesFunction = async (ctx) => {
-  const { request, next } = ctx
+interface Env {
+  ADMIN_PASSWORD?: string
+}
+
+// /admin은 정적 export라 클라이언트 비밀번호 검사로는 막을 수 없다.
+// 엣지에서 Basic Auth로 막는다. 사용자 이름은 무시하고 비밀번호만 본다.
+// ADMIN_PASSWORD 미설정이면 아무도 들어오지 못한다.
+async function adminAuthorized(request: Request, password: string | undefined): Promise<boolean> {
+  if (!password) return false
+  const header = request.headers.get('authorization') ?? ''
+  if (!header.startsWith('Basic ')) return false
+  let decoded: string
+  try {
+    decoded = atob(header.slice(6))
+  } catch {
+    return false
+  }
+  const given = decoded.slice(decoded.indexOf(':') + 1)
+  // 길이·내용이 달라도 같은 시간이 걸리도록 해시끼리 비교한다.
+  const enc = new TextEncoder()
+  const [a, b] = await Promise.all([
+    crypto.subtle.digest('SHA-256', enc.encode(given)),
+    crypto.subtle.digest('SHA-256', enc.encode(password)),
+  ])
+  const x = new Uint8Array(a)
+  const y = new Uint8Array(b)
+  let diff = 0
+  for (let i = 0; i < x.length; i++) diff |= x[i] ^ y[i]
+  return diff === 0
+}
+
+export const onRequest: PagesFunction<Env> = async (ctx) => {
+  const { request, next, env } = ctx
   const url = new URL(request.url)
+
+  // /admin, /admin/, /admin.html, /admin.txt(RSC payload) 모두 포함
+  if (url.pathname === '/admin' || url.pathname.startsWith('/admin/') || url.pathname.startsWith('/admin.')) {
+    if (!(await adminAuthorized(request, env.ADMIN_PASSWORD))) {
+      return new Response('Authentication required', {
+        status: 401,
+        headers: {
+          'WWW-Authenticate': 'Basic realm="cfdblog admin", charset="UTF-8"',
+          'Cache-Control': 'no-store',
+        },
+      })
+    }
+    const res = await next()
+    const out = new Response(res.body, res)
+    out.headers.set('Cache-Control', 'no-store')
+    return out
+  }
 
   // locale prefix 이미 있으면 통과
   if (/^\/(ko|en|ja|zh|es)(\/|$)/.test(url.pathname)) return next()

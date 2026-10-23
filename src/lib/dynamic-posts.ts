@@ -12,35 +12,21 @@ export interface DynamicPost {
 const STORAGE_KEY = 'tech-blog-dynamic-posts'
 const ADMIN_KEY = 'tech-blog-admin-token'
 
-async function sha256(text: string): Promise<string> {
-  const data = new TextEncoder().encode(text)
-  const hashBuffer = await crypto.subtle.digest('SHA-256', data)
-  return Array.from(new Uint8Array(hashBuffer))
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('')
-}
-
+// /admin 접근은 functions/_middleware.ts 의 Basic Auth가 막는다.
+// 페이지가 열렸다면 이미 인증된 것이므로 클라이언트 쪽 비밀번호 검사는 두지 않는다.
+// (예전 NEXT_PUBLIC_ADMIN_PASSWORD_HASH는 번들에 그대로 실려 오프라인 대입으로 풀 수 있었다.)
 export function getAdminToken(): string | null {
   if (typeof window === 'undefined') return null
   return sessionStorage.getItem(ADMIN_KEY)
 }
 
 export function isAdmin(): boolean {
-  return getAdminToken() === 'authenticated'
+  return typeof window !== 'undefined'
 }
 
-export async function adminLogin(password: string): Promise<boolean> {
-  const storedHash = process.env.NEXT_PUBLIC_ADMIN_PASSWORD_HASH
-  if (!storedHash) {
-    console.warn('[Admin] NEXT_PUBLIC_ADMIN_PASSWORD_HASH is not set in .env.local')
-    return false
-  }
-  const inputHash = await sha256(password)
-  if (inputHash === storedHash) {
-    sessionStorage.setItem(ADMIN_KEY, 'authenticated')
-    return true
-  }
-  return false
+export async function adminLogin(_password: string): Promise<boolean> {
+  sessionStorage.setItem(ADMIN_KEY, 'authenticated')
+  return true
 }
 
 export function adminLogout(): void {

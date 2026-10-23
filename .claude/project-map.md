@@ -42,6 +42,6 @@ rehype-pretty-code. 배포: Cloudflare Pages(`main` push → build).
 tools-visual-score, verify-static-routes, install-hooks, translate-existing-posts.
 
 ## 기타
-- 관리자 비번: SHA-256 해시를 `.env.local`(`NEXT_PUBLIC_ADMIN_PASSWORD_HASH`) + Cloudflare env에 동일하게.
+- 관리자 비번: `/admin`은 `functions/_middleware.ts`의 Basic Auth가 막는다. Cloudflare Pages Secret `ADMIN_PASSWORD`. 클라이언트 해시(`NEXT_PUBLIC_*`)는 쓰지 않는다.
 - `scripts/generate_post.py`, `scripts/prompts/*.txt` — 폐기된 API 파이프라인 잔재. 읽지 말 것.
 - 변경 이력: `.claude/history.md`
