@@ -1,0 +1,193 @@
+---
+title: "Changing only τ changed the density of a gas at rest — the (τ−½)² stress of Shan–Chen velocity-shift forcing"
+date: 2026-10-23
+description: "Apply the same force to a resting D1Q3 gas column and only Shan–Chen forcing gives a τ-dependent density. The shifted equilibrium velocity leaves a fake (τ−½)²F²/ρ stress."
+tags: ["Shan-Chen", "Forcing-Term", "LBM", "Chapman-Enskog", "Multiphase"]
+locale: en
+slug: 2026-10-23-shan-chen-velocity-shift-forcing-tau-squared-stress
+takeaway: "A forcing that shifts the equilibrium velocity by τF/ρ adds (τ−½)²F²/ρ to the momentum flux, so the density profile at rest depends on the relaxation time."
+draft: false
+---
+import { ShiftedEquilibriumParabolaLab } from '@/components/post-viz/2026-10-23-shan-chen-velocity-shift-forcing-tau-squared-stress/ShiftedEquilibriumParabolaLab'
+import { ForcedColumnStressRace } from '@/components/post-viz/2026-10-23-shan-chen-velocity-shift-forcing-tau-squared-stress/ForcedColumnStressRace'
+
+## Viscosity changed, and so did a fluid that doesn't move
+
+A gas at rest has no idea what its viscosity is. With zero velocity, the viscous stress is zero. So a resting state where force and pressure balance should not depend on viscosity. In the lattice Boltzmann (LB) method, viscosity is set by the relaxation time $\tau$. Changing $\tau$ should therefore leave the resting density profile untouched.
+
+One family of forcing schemes breaks this. It is the velocity-shift forcing used by Shan–Chen multiphase models. Same force, same lattice, change only $\tau$ from 0.8 to 3, and the density profile moves. This post puts three forcing schemes side by side and tracks down where the difference comes from. You get one line per scheme: the coefficient of the stress it quietly adds to the momentum flux. Guo gives 0, Shan–Chen gives $(\tau-\tfrac12)^2$, and EDM gives $\tfrac14$.
+
+## Criterion 1: where does the equilibrium velocity go?
+
+All three schemes add momentum $F\,\delta t$ per step. They differ in which distribution carries it. Below, $u'=\sum_i f_i c_i/\rho$ is the velocity read straight from the populations. For all three, the physical velocity is $u = u' + F/(2\rho)$ (the half-step correction).
+
+| Scheme | Velocity in the equilibrium | Extra source |
+|---|---|---|
+| Guo | $u$ | $(1-\tfrac{1}{2\tau})S_i(u,F)$ |
+| Shan–Chen | $u' + \tau F/\rho$ | none |
+| EDM (Kupershtokh) | $u'$ | $f_i^{eq}(u'+F/\rho)-f_i^{eq}(u')$ |
+
+At rest $u=0$, so $u'=-F/(2\rho)$. The velocity Shan–Chen feeds into its equilibrium becomes
+
+$$
+u_{eq} = u' + \frac{\tau F}{\rho} = \left(\tau - \tfrac12\right)\frac{F}{\rho}
+$$
+
+Here $u_{eq}$ is the velocity used to build the equilibrium, $\tau$ the dimensionless relaxation time, and $F$ the force per unit volume. The gas is still, yet its equilibrium moves at a speed proportional to $\tau$.
+
+The second moment of the equilibrium (the momentum flux) is a parabola in that velocity:
+
+$$
+\Pi_{eq}(u_{eq}) = \sum_i f_i^{eq} c_i c_i = c_s^2\rho + \rho\, u_{eq}^2
+$$
+
+$c_s^2=1/3$ is the squared lattice sound speed. Any nonzero $u_{eq}$ lifts the flux by $\rho u_{eq}^2$. Try it in the simulation below. A cursor scans the column, and the local force $F(y)$ places each scheme's equilibrium point on the parabola.
+
+<ShiftedEquilibriumParabolaLab />
+
+Drag $\tau$ from near 0.5 up to 3. The orange dot (Shan–Chen) climbs the parabola while the green dot (Guo) stays at the bottom. The purple dots (EDM) sit at $\pm F/(2\rho)$ and keep the same height $F^2/(4\rho)$ regardless of $\tau$.
+
+## Criterion 2: does the lift survive into the steady state?
+
+A lifted equilibrium doesn't automatically mean a lifted macroscopic stress. What actually transports momentum is the second moment of the post-collision populations, $\Pi^*$. Setting the pre- and post-collision second moments equal in the steady state gives
+
+$$
+\Pi^* = \Pi_{eq} + \tau\, S_\Pi
+$$
+
+where $S_\Pi$ is the second moment of the extra source. Guo's source has zero second moment at $u=0$. EDM's source has $\rho(u'+F/\rho)^2-\rho u'^2 = 0$. So the three schemes differ only through the velocity placed in the equilibrium. The force balance in the resting column becomes
+
+$$
+\frac{d}{dy}\left(c_s^2\rho + b\,\frac{F^2}{\rho}\right) = F,
+\qquad b_{Guo}=0,\quad b_{SC}=\left(\tau-\tfrac12\right)^2,\quad b_{EDM}=\tfrac14
+$$
+
+$b$ is the coefficient of the fake stress. Continuum hydrostatics has $b=0$.
+
+Why doesn't this term show up in textbook derivations? The standard Chapman–Enskog expansion (a multiscale expansion that sorts the populations by powers of a small parameter $\epsilon$) treats $F$ as first order. Then $F^2/\rho$ is an $\epsilon^2$ term and gets dropped at the Navier–Stokes level. Once its coefficient grows like $\tau^2$, nothing guarantees it is small. The paper cited in my source notes, *Revised Chapman–Enskog analysis for a class of forcing schemes in the lattice Boltzmann method*, revisits exactly this order assignment of the force term. Whether to feed the force in as a pressure gradient or as a body force was the subject of [the two forms of non-ideal LBM forcing](/en/posts/2026-08-21-nonideal-lbm-pressure-vs-freeenergy-forcing/). This post asks how the same force gets loaded onto the populations.
+
+## Code: a periodic column, three forcings, five values of τ
+
+A periodic D1Q3 column (velocities 0, ±1) of 32 cells is driven by $F = G\sin(ky)$. It starts at uniform density. Once the sound waves die out through viscosity, a resting state remains. On the converged density, a least-squares fit of $c_s^2\rho = \lambda P(y) - bF^2/\rho + c$ measures $b$. $P(y)=-\tfrac{G}{k}\cos(ky)$ is the hydrostatic potential with $P'=F$. $\lambda$ absorbs the amplitude factor introduced by lattice discretization.
+
+```python
+import math
+
+# D1Q3 lattice: velocities 0, +1, -1 ; cs^2 = 1/3
+C = (0.0, 1.0, -1.0)
+W = (2/3, 1/6, 1/6)
+CS2 = 1/3
+
+def d1q3_eq(rho, u):
+    return [W[i]*rho*(1 + C[i]*u/CS2 + 0.5*(C[i]*u)**2/CS2**2 - 0.5*u*u/CS2)
+            for i in range(3)]
+
+def collide_node(fn, F, tau, scheme):
+    rho = sum(fn)
+    mom = fn[1] - fn[2]
+    if scheme == "guo":                 # Guo: u = (sum f c + F/2)/rho, source with (1 - 1/2tau)
+        u = (mom + 0.5*F)/rho
+        feq = d1q3_eq(rho, u)
+        out = []
+        for i in range(3):
+            S = W[i]*((C[i] - u)/CS2 + C[i]*u*C[i]/CS2**2)*F
+            out.append(fn[i] - (fn[i] - feq[i])/tau + (1 - 0.5/tau)*S)
+        return out
+    if scheme == "sc":                  # Shan-Chen: shift equilibrium velocity by tau F / rho
+        feq = d1q3_eq(rho, mom/rho + tau*F/rho)
+        return [fn[i] - (fn[i] - feq[i])/tau for i in range(3)]
+    up = mom/rho                        # EDM: add feq(u'+F/rho) - feq(u')
+    feq = d1q3_eq(rho, up)
+    fsh = d1q3_eq(rho, up + F/rho)
+    return [fn[i] - (fn[i] - feq[i])/tau + fsh[i] - feq[i] for i in range(3)]
+
+def run_column(scheme, tau, G, N=32, tol=1e-12):
+    k = 2*math.pi/N
+    F = [G*math.sin(k*(j + 0.5)) for j in range(N)]
+    f = [d1q3_eq(1.0, 0.0) for _ in range(N)]
+    for it in range(1, 100001):
+        post = [collide_node(f[j], F[j], tau, scheme) for j in range(N)]
+        new = [[post[j][0], post[j-1][1], post[(j+1) % N][2]] for j in range(N)]
+        if it % 100 == 0 and max(abs(sum(new[j]) - sum(f[j])) for j in range(N)) < tol:
+            return F, [sum(fn) for fn in new], it
+        f = new
+    return F, [sum(fn) for fn in f], it
+
+def stress_fit(F, rho, G):
+    # fit  cs^2 rho = lam*P(y) - b*F^2/rho + c,  with P' = F  (hydrostatic: b = 0)
+    N = len(F); k = 2*math.pi/N
+    X = [[F[j]**2/rho[j], -G/k*math.cos(k*(j + 0.5)), 1.0] for j in range(N)]
+    r = [CS2*x for x in rho]
+    A = [[sum(X[n][a]*X[n][b] for n in range(N)) for b in range(3)] for a in range(3)]
+    v = [sum(X[n][a]*r[n] for n in range(N)) for a in range(3)]
+    for i in range(3):
+        for j in range(i + 1, 3):
+            m = A[j][i]/A[i][i]
+            A[j] = [A[j][c] - m*A[i][c] for c in range(3)]
+            v[j] -= m*v[i]
+    x = [0.0]*3
+    for i in (2, 1, 0):
+        x[i] = (v[i] - sum(A[i][c]*x[c] for c in range(i + 1, 3)))/A[i][i]
+    return -x[0], x[1]
+
+G = 0.02
+print(f"periodic column N=32, F = {G} sin(ky), rho0 = 1")
+print(" tau | b_Guo  b_SC   (tau-1/2)^2  b_EDM | lam   | max|rho_SC-rho_Guo|  iters")
+for tau in [0.8, 1.0, 1.5, 2.0, 3.0]:
+    out = {s: run_column(s, tau, G) for s in ("guo", "sc", "edm")}
+    b = {s: stress_fit(out[s][0], out[s][1], G) for s in out}
+    drho = max(abs(p - q) for p, q in zip(out["sc"][1], out["guo"][1]))
+    bg = round(b["guo"][0], 3) + 0.0
+    print(f"{tau:4.1f} | {bg:5.3f} {b['sc'][0]:6.3f}   {(tau-0.5)**2:6.3f}    {b['edm'][0]:5.3f} |"
+          f" {b['guo'][1]:.4f} |  {drho:.2e}            {out['sc'][2]}")
+```
+
+```text
+periodic column N=32, F = 0.02 sin(ky), rho0 = 1
+ tau | b_Guo  b_SC   (tau-1/2)^2  b_EDM | lam   | max|rho_SC-rho_Guo|  iters
+ 0.8 | 0.000  0.090    0.090    0.250 | 0.9968 |  5.49e-05            6100
+ 1.0 | 0.000  0.250    0.250    0.250 | 0.9968 |  1.53e-04            3600
+ 1.5 | 0.000  1.000    1.000    0.250 | 0.9968 |  6.11e-04            1900
+ 2.0 | 0.000  2.250    2.250    0.250 | 0.9968 |  1.38e-03            1300
+ 3.0 | 0.000  6.250    6.250    0.250 | 0.9968 |  3.84e-03            800
+```
+
+## What 0, (τ−½)², and 1/4 are telling us
+
+Now run the code above in your browser. The three columns advance together under the same force, and $b$ is refitted every frame.
+
+<ForcedColumnStressRace />
+
+At the defaults $\tau=1.5$, $G=0.02$, the orange curve settles at 1.000, purple at 0.250, and green at 0.000 — the third row of the output block. Raise $\tau$ to 3 and hit Reset: only orange climbs, to 6.25. Changing $G$ rescales the dots by $G^2$, but $b$ stays put.
+
+The first thing to check in the output is the $b_{SC}$ column against the $(\tau-\tfrac12)^2$ column. All five rows agree to three decimals. Nothing was lost in the derivation. Guo's 0.000 matters too: hydrostatic balance holds all the way down to the $F^2$ level.
+
+At $\tau=1$, Shan–Chen and EDM both read 0.250. That is no accident. With $\tau=1$, the post-collision populations are the equilibrium itself. Shan–Chen becomes $f^{eq}(u'+F/\rho)$, and EDM becomes $f^{eq}(u') + f^{eq}(u'+F/\rho) - f^{eq}(u')$, the same thing. The two schemes meet at a single point.
+
+$\lambda=0.9968$ has nothing to do with forcing. It is the discretization factor a 32-cell lattice applies to the sine amplitude, and it matches $1-k^2/12$. It goes to 1 as the grid is refined. The fit is built so that $b$ is separated from this factor.
+
+The density difference itself looks small: $3.84\times10^{-3}$ at $\tau=3$, or 1.3% of the 0.30 density amplitude. But that ratio grows in proportion to $G$. The main effect scales with $F$, while the fake stress scales with $F^2$.
+
+## The three schemes on one page
+
+| | Guo | Shan–Chen | EDM |
+|---|---|---|---|
+| Equilibrium velocity (at rest) | $0$ | $(\tau-\tfrac12)F/\rho$ | $-F/(2\rho)$ |
+| Fake-stress coefficient $b$ | $0$ | $(\tau-\tfrac12)^2$ | $\tfrac14$ |
+| $\tau$ dependence | none | quadratic | none |
+| Rest state independent of viscosity | yes | no | yes |
+| Matches hydrostatic balance | yes | only near $\tau=\tfrac12$ | no ($\tfrac14$ fixed) |
+
+EDM is independent of $\tau$ but off by a constant $\tfrac14$, which makes it easy to correct. Shan–Chen is small only near $\tau=0.5$, which is exactly where LB is least stable.
+
+## At a multiphase interface, F is large
+
+The force in this experiment was smooth and weak. Pseudopotential multiphase models are different. The interaction force $F=-\mathcal{G}\psi\nabla\psi$ (with $\mathcal{G}$ the interaction strength and $\psi$ the effective density) is large and concentrated within a few cells of the interface. There, $bF^2/\rho$ can grow to the same size as the pressure from the equation of state.
+
+That is why a flat interface built with Shan–Chen forcing has coexistence densities (the density of each phase at equilibrium) that drift with $\tau$. You touch $\tau$ to change viscosity, and the liquid density changes. The column experiment isolates that effect without any interface. The fake stress enters the mechanical equilibrium condition of the interface unchanged.
+
+Some methods use this term on purpose. Treat $b$ as a tunable parameter, and it becomes a knob for matching coexistence densities to thermodynamic consistency: add as much as needed on top of EDM's $\tfrac14$ or Guo's 0. Either way, you first need to know what $b$ your own code has. For another hidden term found with the same Chapman–Enskog machinery, see [the quasi-equilibrium g* of two-population LB](/en/posts/2026-10-19-two-population-lb-quasi-equilibrium-viscous-heating/).
+
+## The 32-cell test to run before trusting a new forcing
+
+When adding a new forcing scheme to a code, don't start with a multiphase case. At an interface, causes get tangled. Run the periodic column above first. Measure $b$ at two values of $\tau$. If $b$ moves with $\tau$, a velocity shift is hiding inside the equilibrium. If $b$ is a nonzero constant, that constant is what will be added to your interface pressure. It takes 32 cells and a few thousand steps.
