@@ -28,6 +28,7 @@ import { PrintButton } from '@/components/PrintButton'
 import { BookmarkButton } from '@/components/BookmarkButton'
 import { CfdReviewCallout } from '@/components/CfdReviewCallout'
 import { dayMeta } from '@/lib/day-meta'
+import { PostViews } from '@/components/PostViews'
 import { LOCALES, isLocale, t, SITE_NAMES, OG_LOCALE, HREFLANG, hreflangAlternates, type Locale } from '@/lib/i18n'
 import type { Metadata } from 'next'
 import { SITE_URL } from '@/lib/site'
@@ -338,6 +339,7 @@ export default async function PostPage({ params }: PostProps) {
                 READ <span style={{ color: 'var(--text)' }}>{post.readingTime}</span>
               </span>
             )}
+            <PostViews slug={post.slug} />
             {post.wordCount && (
               <span className="hidden sm:inline">
                 WORDS <span className="tabular" style={{ color: 'var(--text)' }}>{post.wordCount.toLocaleString()}</span>

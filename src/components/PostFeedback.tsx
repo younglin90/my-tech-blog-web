@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import { usePathname } from 'next/navigation'
 import { localePathPrefix, t } from '@/lib/i18n'
 import { trackEvent } from '@/lib/analytics'
+import { getPostStats, sendVote } from '@/lib/post-stats'
 
 const STORAGE_KEY = 'cfd-lab-post-feedback'
 
@@ -33,17 +34,22 @@ const NEGATIVE_REASONS = ['feedback.r.unclear', 'feedback.r.tooHard', 'feedback.
 // 포스트 끝부분에 마운트. 👍/👎 → 선택 후 짧은 사유 chip 표시 →
 // 한 번 투표하면 thank-you 메시지 + localStorage에 저장(중복 투표 방지).
 // Umami custom event 'post-feedback' 발사 (slug, vote, reason).
+// 표는 /api/feedback 으로 서버(D1)에도 보내고, 누적 👍/👎 수를 함께 보여준다.
 export function PostFeedback({ postId }: { postId: string }) {
   const pathname = usePathname() ?? '/'
   const { locale } = localePathPrefix(pathname)
   const [vote, setVote] = useState<'up' | 'down' | null>(null)
   const [submitted, setSubmitted] = useState<Stored | null>(null)
   const [hydrated, setHydrated] = useState(false)
+  const [counts, setCounts] = useState<{ up: number; down: number } | null>(null)
 
   useEffect(() => {
     setHydrated(true)
     const existing = load()[postId]
     if (existing) setSubmitted(existing)
+    let cancelled = false
+    getPostStats(postId).then((s) => { if (!cancelled && s) setCounts({ up: s.up, down: s.down }) })
+    return () => { cancelled = true }
   }, [postId])
 
   const submit = (v: 'up' | 'down', reason?: string) => {
@@ -53,6 +59,7 @@ export function PostFeedback({ postId }: { postId: string }) {
     save(store)
     setSubmitted(entry)
     trackEvent('post-feedback', { slug: postId, vote: v, reason: reason ?? '' })
+    sendVote(postId, v, reason).then((c) => { if (c) setCounts(c) })
   }
 
   if (!hydrated) return null
@@ -70,6 +77,11 @@ export function PostFeedback({ postId }: { postId: string }) {
         style={{ color: 'var(--text-faint)' }}
       >
         {t(locale, 'feedback.label')}
+        {counts && counts.up + counts.down > 0 && (
+          <span className="mono tabular ml-2 normal-case tracking-normal">
+            · 👍 {counts.up} · 👎 {counts.down}
+          </span>
+        )}
       </div>
 
       {submitted ? (
