@@ -1,0 +1,246 @@
+---
+title: "[논문 리뷰] 기울기 3짜리 MSTACS는 Co=0.5에서 255스텝 만에 터졌다 — 압축 차분과 Courant 한계"
+date: 2026-10-25
+description: "MSTACS 식 (18)의 압축 차분을 1D 슬랩에 걸었다. 재분배 없이는 Co>0.44에서 발산한다. 기울기 k와 Co의 곱이 원인이다."
+tags: ["MSTACS", "Normalized-Variable-Diagram", "Interface-Capturing", "VOF", "Paper-Review"]
+locale: ko
+slug: 2026-10-25-mstacs-slope-three-courant-limit
+takeaway: "MSTACS가 Co>1/3에서 쓰는 기울기 3 압축 차분은 한 스텝에 셀이 가진 것보다 많이 내보내므로, 재분배 알고리즘이 없으면 Crank–Nicolson으로도 버티지 못한다."
+draft: false
+---
+import { NvdSlopeCourantLab } from '@/components/post-viz/2026-10-25-mstacs-slope-three-courant-limit/NvdSlopeCourantLab'
+import { SlabCdsBlowupRace } from '@/components/post-viz/2026-10-25-mstacs-slope-three-courant-limit/SlabCdsBlowupRace'
+
+## Co=0.5에서 255번째 스텝에 슬랩이 터졌다
+
+계면을 더 날카롭게 잡으려고 만든 스킴이 있다. 그 스킴을 가장 쉬운 문제에 걸었다. 1D 슬랩을 오른쪽으로 두 바퀴 보내는 문제다. Co=0.25에서는 계면이 두 칸에 머물렀다. 그런데 Co=0.5로 올리자 255번째 스텝에 체적분율이 10을 넘었다.
+
+이 글은 MSTACS(Modified Switching Technique for Advection and Capturing of Surfaces) 논문의 3절을 다룬다. MSTACS는 VOF(체적분율로 계면을 표현하는 방법) 계열의 대수적 계면 포착 스킴이다. 논문의 핵심은 식 (18) 한 줄이다. 이 글을 읽으면 그 한 줄이 왜 Co=1/3에서 갈라지는지 알게 된다. 그리고 그 한 줄이 무엇에 기대고 있는지도 보게 된다.
+
+같은 저자 계열의 압력 결합은 [MSTACS와 일반 압력 방정식 글](/ko/posts/2026-05-31-gpe-mstacs-iteration-free-twophase/)에서 다뤘다. 오늘은 체적분율 면값 하나에만 집중한다.
+
+## MSTACS가 바꾼 것은 압축 차분 하나다
+
+CICSAM, STACS, SAISH, MSTACS는 모두 같은 틀을 쓴다. 면의 체적분율을 공여(donor) 셀과 수용(acceptor) 셀의 가중 평균으로 만든다.
+
+$$
+C_f^* = \gamma_f \frac{C_A^n + C_A^{n+1}}{2} + (1-\gamma_f)\frac{C_D^n + C_D^{n+1}}{2}
+$$
+
+$C_D$는 공여 셀, $C_A$는 수용 셀 값이다. 시간 방향은 Crank–Nicolson(현재와 다음 시간의 평균)이다. $\gamma_f=0$이면 1차 풍상, $\gamma_f=1$이면 순수 하류 차분이다.
+
+가중치는 정규화 변수로 정한다.
+
+$$
+\tilde C_D = \frac{C_D - C_U}{C_A - C_U}, \qquad \gamma_f = \frac{\tilde C_f - \tilde C_D}{1 - \tilde C_D}
+$$
+
+$C_U$는 공여 셀의 상류 셀 값이다. $\tilde C_f$를 어떤 함수로 주느냐가 스킴의 정체다. 각 스킴은 압축 차분(CDS)과 고해상도 차분(HR)을 $\beta(\theta)=\min(\cos^p\theta,1)$로 섞는다. $\theta$는 계면 법선과 면 법선의 각도다.
+
+네 스킴의 CDS는 다음과 같다. CICSAM은 HYPER-C $\min(\tilde C_D/Co, 1)$을 쓴다. STACS는 SUPERBEE를 쓴다. SAISH는 $\min(4\tilde C_D, 1)$을 쓴다. MSTACS는 Courant 수에 따라 바꾼다.
+
+$$
+\tilde C_{f,\mathrm{MSTACS}} = \begin{cases} \min(\tilde C_D / Co_D,\ 1) & 0 < Co_D \le 1/3 \\ \min(3\tilde C_D,\ 1) & 1/3 < Co_D \le 1 \end{cases}
+$$
+
+$Co_D$는 공여 셀의 유출 Courant 수다. 원문 PDF 변환본의 식 (18) 첫 줄은 $\min(\tilde C_D,1)$로 찍혀 있다. 그러나 본문은 "$Co<0.33$에서는 HYPER-C"라고 쓴다. 위 식은 본문을 따랐다.
+
+## 정규화 변수 그림 위의 기울기
+
+식 (18)에는 숨은 연속성이 있다. Co=1/3에서 HYPER-C의 기울기 $1/Co$는 정확히 3이다. 즉 MSTACS는 HYPER-C의 기울기를 3에서 얼린 스킴이다. Co가 커질수록 HYPER-C는 1차 풍상 쪽으로 눕는다. MSTACS는 눕기를 거부한다.
+
+문제는 빨간 경계선이다. 명시적 유계 조건(CBC, 해가 이웃 값 범위를 벗어나지 않게 하는 조건)은 $\tilde C_f \le \tilde C_D / Co$다. 물리적 뜻은 단순하다. 한 스텝 동안 셀은 자기가 가진 양보다 많이 내보낼 수 없다.
+
+아래 시뮬레이션에서 직접 조작해보자.
+
+<NvdSlopeCourantLab />
+
+Co 슬라이더를 0.33 위로 올리고 MSTACS를 선택해보자. 오른쪽 막대에서 "내보내는 양"이 "가진 양"을 넘는 순간 빨간색이 된다. 기울기 $k$와 Co의 곱이 1을 넘는 구간이다.
+
+## 1D에서는 HR 스킴이 사라진다
+
+1D 계면은 항상 면과 수직이다. 따라서 $\theta=0$, $\cos\theta=1$, $\beta=1$이다. 고해상도 차분은 가중치 0을 받는다. 1D 실험은 CDS만 따로 시험하는 셈이다.
+
+이 점이 오늘 실험의 장점이자 한계다. 장점은 원인을 하나로 좁힌다는 것이다. 한계는 2D보다 가혹하다는 것이다. 2D에서는 비스듬한 계면에서 $\beta<1$이 되어 HR이 섞인다.
+
+## 코드: 같은 슬랩, 네 가지 CDS, 세 Courant 수
+
+100셀 주기 영역에 슬랩 $[30.4, 60.4)$을 놓았다. 양 끝 셀이 0.6과 0.4인 셀 평균 초기값이다. 두 바퀴를 보낸 뒤 L1 오차, 계면 두께($0.05<C<0.95$인 셀 수), 최대 과잉치를 잰다. $\gamma_f$는 $C^n$에서 고정하고 주기 삼중대각 시스템을 푼다. 가장 흔한 구현 방식이다.
+
+```python
+# 1D 슬랩 이류: 압축 차분(CDS) 네 가지를 Crank-Nicolson 면값(식 6-8)으로 비교
+N, LAPS = 100, 2
+
+def cds_face(t, co, name):
+    # 정규화 공여값 t = C~_D (0<t<1) -> 정규화 면값 C~_f
+    if name == "HYPER-C":   # CICSAM
+        return min(t / co, 1.0)
+    if name == "SUPERBEE":  # STACS
+        if t < 1/3: return 2*t
+        if t < 1/2: return 0.5 + 0.5*t
+        if t < 2/3: return 1.5*t
+        return 1.0
+    if name == "BD-SAISH":  # SAISH
+        return min(4*t, 1.0)
+    if name == "MSTACS":    # 식 (18): Co<=1/3 이면 HYPER-C, 아니면 기울기 3
+        return min(t / co, 1.0) if co <= 1/3 else min(3*t, 1.0)
+
+def face_gamma(c, co, name):
+    # 면 i+1/2 (u>0: U=i-1, D=i, A=i+1)의 하류 가중치 gamma_f, 식 (8)
+    g = [0.0]*N
+    for i in range(N):
+        cu, cd, ca = c[i-1], c[i], c[(i+1) % N]
+        if abs(ca - cu) < 1e-12: continue
+        t = (cd - cu) / (ca - cu)
+        if 0 < t < 1:
+            g[i] = (cds_face(t, co, name) - t) / (1 - t)
+    return g
+
+def solve_cyclic(a, b, c, r):
+    # 주기 삼중대각 a_i x_{i-1} + b_i x_i + c_i x_{i+1} = r_i (Sherman-Morrison)
+    n = len(b); gam = -b[0]
+    bb = b[:]; bb[0] -= gam; bb[-1] -= a[0]*c[-1]/gam
+    def thomas(d):
+        cp, dp = [0.0]*n, [0.0]*n
+        cp[0], dp[0] = c[0]/bb[0], d[0]/bb[0]
+        for i in range(1, n):
+            m = bb[i] - a[i]*cp[i-1]
+            cp[i], dp[i] = c[i]/m, (d[i] - a[i]*dp[i-1])/m
+        x = [0.0]*n; x[-1] = dp[-1]
+        for i in range(n-2, -1, -1):
+            x[i] = dp[i] - cp[i]*x[i+1]
+        return x
+    y = thomas(r)
+    u = [0.0]*n; u[0], u[-1] = gam, c[-1]
+    z = thomas(u)
+    f = (y[0] + a[0]*y[-1]/gam) / (1 + z[0] + a[0]*z[-1]/gam)
+    return [y[i] - f*z[i] for i in range(n)]
+
+def cn_step(c, co, g):
+    # 식 (7): gamma는 C^n에서 고정, 면값은 C^n과 C^(n+1)의 평균
+    h = 0.5*co
+    a  = [-h*(1 - g[i-1]) for i in range(N)]
+    b  = [1 + h*(1 - g[i]) - h*g[i-1] for i in range(N)]
+    up = [h*g[i] for i in range(N)]
+    r  = [c[i] - h*((g[i]*c[(i+1) % N] + (1 - g[i])*c[i])
+                    - (g[i-1]*c[i] + (1 - g[i-1])*c[i-1])) for i in range(N)]
+    return solve_cyclic(a, b, up, r)
+
+def redistribute(c):
+    # 단순 clip-재분배: 넘친 양을 이웃에 반씩 (질량 보존, 논문 알고리즘 아님)
+    for _ in range(3):
+        for i in range(N):
+            if c[i] > 1:   e = c[i] - 1; c[i] = 1.0
+            elif c[i] < 0: e = c[i];     c[i] = 0.0
+            else: continue
+            c[(i+1) % N] += e/2; c[i-1] += e/2
+    return c
+
+def slab_init():
+    # 셀 평균 슬랩 [30.4, 60.4): 양 끝 셀이 0.6 / 0.4
+    return [max(0.0, min(i+1, 60.4) - max(i, 30.4)) for i in range(N)]
+
+def run_case(name, co, fix):
+    c0 = slab_init(); c = c0[:]
+    steps = round(LAPS*N/co)
+    for s in range(steps):
+        c = cn_step(c, co, face_gamma(c, co, name))
+        if fix: c = redistribute(c)
+        if max(c) > 10: return f"blow-up at step {s+1}/{steps}"
+    l1 = sum(abs(x - y) for x, y in zip(c, c0)) / N
+    width = sum(1 for x in c if 0.05 < x < 0.95)
+    over = max(max(c) - 1, -min(c), 0.0)
+    return f"L1={l1:.4f} width={width:2d} overshoot={over:.1e}"
+
+for fix in (False, True):
+    print("with redistribution" if fix else "no redistribution")
+    for name in ("HYPER-C", "SUPERBEE", "BD-SAISH", "MSTACS"):
+        for co in (0.25, 0.5, 0.75):
+            print(f"  {name:8s} Co={co:.2f}  {run_case(name, co, fix)}")
+
+def blowup_co(k):
+    # 기울기 k인 CDS min(k t, 1)이 재분배 없이 버티는 최대 Co (0.01 간격)
+    global cds_face
+    old = cds_face
+    cds_face = lambda t, co, name: min(k*t, 1.0)
+    co = 0.10
+    while co < 1.0 and not run_case("k", round(co, 2), False).startswith("blow"):
+        co += 0.01
+    cds_face = old
+    return round(co - 0.01, 2)
+
+print("max stable Co without redistribution (CDS slope k)")
+for k in (2, 3, 4):
+    print(f"  k={k}: Co_max={blowup_co(k):.2f}   1/k={1/k:.2f}")
+```
+
+```text
+no redistribution
+  HYPER-C  Co=0.25  L1=0.0001 width= 2 overshoot=0.0e+00
+  HYPER-C  Co=0.50  L1=0.0025 width= 2 overshoot=0.0e+00
+  HYPER-C  Co=0.75  L1=0.0654 width=29 overshoot=0.0e+00
+  SUPERBEE Co=0.25  L1=0.0085 width= 6 overshoot=0.0e+00
+  SUPERBEE Co=0.50  L1=0.0061 width= 4 overshoot=0.0e+00
+  SUPERBEE Co=0.75  L1=0.0052 width= 2 overshoot=3.6e-03
+  BD-SAISH Co=0.25  L1=0.0001 width= 2 overshoot=0.0e+00
+  BD-SAISH Co=0.50  blow-up at step 141/400
+  BD-SAISH Co=0.75  blow-up at step 30/267
+  MSTACS   Co=0.25  L1=0.0001 width= 2 overshoot=0.0e+00
+  MSTACS   Co=0.50  blow-up at step 255/400
+  MSTACS   Co=0.75  blow-up at step 50/267
+with redistribution
+  HYPER-C  Co=0.25  L1=0.0001 width= 2 overshoot=0.0e+00
+  HYPER-C  Co=0.50  L1=0.0025 width= 2 overshoot=0.0e+00
+  HYPER-C  Co=0.75  L1=0.0654 width=29 overshoot=0.0e+00
+  SUPERBEE Co=0.25  L1=0.0085 width= 6 overshoot=0.0e+00
+  SUPERBEE Co=0.50  L1=0.0061 width= 4 overshoot=0.0e+00
+  SUPERBEE Co=0.75  L1=0.0053 width= 2 overshoot=2.3e-04
+  BD-SAISH Co=0.25  L1=0.0001 width= 2 overshoot=0.0e+00
+  BD-SAISH Co=0.50  L1=0.0163 width= 1 overshoot=1.8e-02
+  BD-SAISH Co=0.75  L1=0.0574 width= 1 overshoot=7.1e-02
+  MSTACS   Co=0.25  L1=0.0001 width= 2 overshoot=0.0e+00
+  MSTACS   Co=0.50  L1=0.0099 width= 0 overshoot=5.1e-03
+  MSTACS   Co=0.75  L1=0.0422 width= 2 overshoot=6.9e-02
+max stable Co without redistribution (CDS slope k)
+  k=2: Co_max=0.70   1/k=0.50
+  k=3: Co_max=0.44   1/k=0.33
+  k=4: Co_max=0.33   1/k=0.25
+```
+
+위 코드를 브라우저에서 직접 돌려보자.
+
+<SlabCdsBlowupRace />
+
+기본값 Co=0.50에서 BD-SAISH는 141스텝, MSTACS는 255스텝에서 터진다. Co를 0.33으로 내리면 넷 모두 살아남는다. 재분배를 켜면 터지지 않는 대신 과잉치가 남는 것을 오른쪽 그래프에서 볼 수 있다.
+
+## 원인: 한 스텝에 가진 것보다 많이 내보낸다
+
+Co=0.25 세 줄을 먼저 보자. HYPER-C, BD-SAISH, MSTACS의 숫자가 완전히 같다. 우연이 아니다. $1/0.25=4$이므로 세 함수가 같은 곡선이다. 차이는 Co가 커질 때만 생긴다.
+
+HYPER-C는 Co=0.75에서 계면이 29칸으로 번졌다. 기울기 $1/Co=1.33$은 거의 1차 풍상이다. 논문이 지적한 CICSAM의 약점 그대로다. SUPERBEE는 반대로 Co=0.25에서 6칸이다. TVD 영역 안의 CDS는 낮은 Co에서 압축이 약하다. 이것도 논문의 STACS 진단과 같다.
+
+기울기가 고정된 BD-SAISH와 MSTACS는 Co가 커지면 터졌다. 마지막 표가 경계를 보여준다. $k=2$는 0.70, $k=3$은 0.44, $k=4$는 0.33까지 버틴다. 셋 다 $k\cdot Co_{max}\approx 1.3$~$1.4$다. Crank–Nicolson은 명시적 한계 $k\cdot Co=1$보다 30~40%의 여유만 준다. 무한한 여유는 주지 않는다.
+
+논문은 Darwish–Moukalled를 인용해 "CN에서는 과도 유계가 필요 없다"고 쓴다. 적어도 $\gamma_f$를 $C^n$에서 얼리는 구현에서는 그렇지 않았다. 기울기 3은 Co=0.44를 넘으면 스스로 서지 못한다.
+
+## 해결 1: 재분배가 식 (18)을 떠받친다
+
+논문 3절의 마지막 문단은 짧다. 과잉치와 부족치를 Saincher–Banerjee 재분배 알고리즘으로 없앤다고만 쓴다. 실험을 보면 이 문장이 장식이 아니다.
+
+단순 clip-재분배를 켜면 넷 모두 두 바퀴를 끝낸다. 질량 오차도 $10^{-15}$ 수준이다. 그러나 대가가 있다. MSTACS Co=0.50은 두께 0이 됐다. 모든 셀이 0 아니면 1이다. 초기의 0.6/0.4 셀이 셀 면에 달라붙은 계단이 된 것이다. L1 0.0099 대부분이 이 0.4칸 위치 이동이다.
+
+Co=0.75에서는 MSTACS L1이 0.0422다. SUPERBEE 0.0053의 8배다. 3회 재분배 후에도 과잉치 6.9%가 남는다. 재분배가 하는 일이 많을수록 해는 계단처럼 굳는다.
+
+## 해결 2: 논문 표의 MSTACS가 이기는 이유
+
+그런데 논문 표 1에서 MSTACS는 Co=0.75 원 이동에서 $2.622\times10^{-3}$으로 가장 좋다. 1D 결과와 모순일까. 그렇지 않다. 세 가지가 다르다.
+
+첫째, 2D 비스듬한 계면에서는 $\beta=\cos^4\theta$가 빠르게 작아진다. CDS 비중이 줄고 HR이 섞인다. 둘째, 논문의 재분배는 단순 clip이 아니다. 셋째, 원과 사각형 이동은 계면 대부분이 격자에 비스듬하다. 1D 슬랩은 $\beta=1$인 최악의 경우다.
+
+결국 식 (18)은 혼자 일하지 않는다. 기울기 3의 압축은 혼합 함수와 재분배가 함께 받쳐줄 때만 안전하다. 압축형 리미터에서 비슷한 교환을 본 적이 있다. [β를 2로 올린 Tallois 리미터 글](/ko/posts/2026-10-24-compressive-beta-limiter-volume-fraction/)에서도 압축의 대가는 다른 곳에서 치렀다.
+
+## MSTACS를 내 VOF 코드에 넣기 전에 돌려볼 한 줄
+
+식 (18)을 옮길 때는 먼저 1D 슬랩을 Co=0.5로 두 바퀴 돌려본다. 재분배를 끈 상태로 돌린다. 터지면 코드는 논문대로 구현된 것이다. 그 다음 재분배를 켜고 과잉치와 두께를 본다.
+
+이 순서를 거꾸로 하면 재분배가 모든 문제를 덮는다. 계면이 날카롭게 보이는 이유가 스킴인지 clip인지 구분할 수 없다. 기울기 $k$와 Co의 곱을 로그에 함께 찍어두면 디버깅이 쉬워진다. $k\cdot Co$가 1.3을 넘는 면이 많다면 그 스텝의 계면은 재분배가 만든 것이다.

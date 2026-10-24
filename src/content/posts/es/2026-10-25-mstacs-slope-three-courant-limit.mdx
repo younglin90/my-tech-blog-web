@@ -1,0 +1,246 @@
+---
+title: "[Revisión de artículo] MSTACS con pendiente 3 divergió en el paso 255 con Co=0.5 — esquemas compresivos y el límite de Courant"
+date: 2026-10-25
+description: "Se probó el esquema compresivo de la ec. (18) de MSTACS en una franja 1D. Sin redistribución diverge por encima de Co=0.44; la causa es el producto de la pendiente k y el número de Courant."
+tags: ["MSTACS", "Normalized-Variable-Diagram", "Interface-Capturing", "VOF", "Paper-Review"]
+locale: es
+slug: 2026-10-25-mstacs-slope-three-courant-limit
+takeaway: "El esquema compresivo de pendiente 3 que MSTACS usa por encima de Co=1/3 hace que una celda envíe en un paso más de lo que contiene, así que Crank–Nicolson por sí solo no lo mantiene acotado sin el algoritmo de redistribución."
+draft: false
+---
+import { NvdSlopeCourantLab } from '@/components/post-viz/2026-10-25-mstacs-slope-three-courant-limit/NvdSlopeCourantLab'
+import { SlabCdsBlowupRace } from '@/components/post-viz/2026-10-25-mstacs-slope-three-courant-limit/SlabCdsBlowupRace'
+
+## Con Co=0.5 la franja explotó en el paso 255
+
+Existe un esquema diseñado para mantener las interfaces más nítidas. Se aplicó al problema más sencillo posible: una franja 1D que recorre dos veces un dominio periódico. Con Co=0.25 la interfaz se quedó en dos celdas. Con Co=0.5, en cambio, la fracción volumétrica superó 10 en el paso 255.
+
+Este artículo trata la sección 3 del trabajo sobre MSTACS (Modified Switching Technique for Advection and Capturing of Surfaces). MSTACS es un esquema algebraico de captura de interfaces para VOF (método que representa la interfaz con un campo de fracción volumétrica). El corazón del trabajo es una sola línea, la ec. (18). Al terminar quedará claro por qué esa línea cambia en Co=1/3 y de qué depende en silencio.
+
+El acoplamiento de presión construido alrededor de MSTACS se analizó en [el artículo sobre MSTACS y la ecuación general de presión](/es/posts/2026-05-31-gpe-mstacs-iteration-free-twophase/). Hoy la atención está solo en el valor de cara de la fracción volumétrica.
+
+## MSTACS cambia una sola cosa: el esquema compresivo
+
+CICSAM, STACS, SAISH y MSTACS comparten el mismo marco. La fracción volumétrica en la cara es un promedio ponderado de la celda donante (donor) y la receptora (acceptor).
+
+$$
+C_f^* = \gamma_f \frac{C_A^n + C_A^{n+1}}{2} + (1-\gamma_f)\frac{C_D^n + C_D^{n+1}}{2}
+$$
+
+$C_D$ es el valor de la celda donante y $C_A$ el de la receptora. En el tiempo se usa Crank–Nicolson (promedio del nivel actual y el siguiente). $\gamma_f=0$ es upwind de primer orden; $\gamma_f=1$ es diferencia aguas abajo pura.
+
+El peso se obtiene con variables normalizadas.
+
+$$
+\tilde C_D = \frac{C_D - C_U}{C_A - C_U}, \qquad \gamma_f = \frac{\tilde C_f - \tilde C_D}{1 - \tilde C_D}
+$$
+
+$C_U$ es la celda aguas arriba de la donante. La función que da $\tilde C_f$ define el esquema. Cada esquema mezcla un esquema compresivo (CDS) y uno de alta resolución (HR) con $\beta(\theta)=\min(\cos^p\theta,1)$, donde $\theta$ es el ángulo entre la normal de la interfaz y la normal de la cara.
+
+Las cuatro opciones de CDS: CICSAM usa HYPER-C, $\min(\tilde C_D/Co, 1)$. STACS usa SUPERBEE. SAISH usa $\min(4\tilde C_D, 1)$. MSTACS cambia según el número de Courant.
+
+$$
+\tilde C_{f,\mathrm{MSTACS}} = \begin{cases} \min(\tilde C_D / Co_D,\ 1) & 0 < Co_D \le 1/3 \\ \min(3\tilde C_D,\ 1) & 1/3 < Co_D \le 1 \end{cases}
+$$
+
+$Co_D$ es el número de Courant de salida de la celda donante. En el PDF convertido, la primera línea de la ec. (18) dice $\min(\tilde C_D,1)$. Sin embargo, el texto indica "HYPER-C por debajo de Co=0.33". La ecuación de arriba sigue al texto.
+
+## Pendientes en el diagrama de variables normalizadas
+
+La ec. (18) esconde una continuidad. En Co=1/3 la pendiente de HYPER-C, $1/Co$, vale exactamente 3. Es decir, MSTACS es HYPER-C con la pendiente congelada en 3. Al crecer Co, HYPER-C se acuesta hacia upwind. MSTACS se niega a acostarse.
+
+El problema es la línea roja. El criterio explícito de acotación (CBC, la condición que mantiene el valor dentro del rango de sus vecinos) es $\tilde C_f \le \tilde C_D / Co$. Su sentido físico es simple: en un paso una celda no puede enviar más de lo que contiene.
+
+Conviene manipularlo directamente en la simulación de abajo.
+
+<NvdSlopeCourantLab />
+
+Al subir Co por encima de 0.33 con MSTACS seleccionado, la barra derecha se vuelve roja en cuanto lo "enviado" supera lo "contenido". Esa es la región donde la pendiente $k$ por Co supera 1.
+
+## En 1D desaparece el esquema HR
+
+En 1D la interfaz siempre es normal a la cara. Por lo tanto $\theta=0$, $\cos\theta=1$ y $\beta=1$. El esquema de alta resolución recibe peso cero. Una prueba 1D aísla el CDS.
+
+Esa es a la vez la ventaja y el límite del experimento. La ventaja es reducir la causa a una sola función. El límite es que resulta más severo que en 2D, donde las interfaces oblicuas dan $\beta<1$ y mezclan HR.
+
+## Código: una franja, cuatro CDS, tres números de Courant
+
+Se coloca la franja $[30.4, 60.4)$ en un dominio periódico de 100 celdas, con celdas extremas de 0.6 y 0.4 en promedio. Tras dos vueltas se miden el error L1, el espesor de la interfaz (celdas con $0.05<C<0.95$) y el mayor sobrepaso. $\gamma_f$ se congela en $C^n$ y se resuelve un sistema tridiagonal periódico, la implementación más habitual.
+
+```python
+# Advección de una franja 1D: cuatro esquemas compresivos (CDS) con valores de cara Crank-Nicolson (ecs. 6-8)
+N, LAPS = 100, 2
+
+def cds_face(t, co, name):
+    # valor donante normalizado t = C~_D (0<t<1) -> valor de cara normalizado C~_f
+    if name == "HYPER-C":   # CICSAM
+        return min(t / co, 1.0)
+    if name == "SUPERBEE":  # STACS
+        if t < 1/3: return 2*t
+        if t < 1/2: return 0.5 + 0.5*t
+        if t < 2/3: return 1.5*t
+        return 1.0
+    if name == "BD-SAISH":  # SAISH
+        return min(4*t, 1.0)
+    if name == "MSTACS":    # ec. (18): HYPER-C si Co<=1/3, si no pendiente 3
+        return min(t / co, 1.0) if co <= 1/3 else min(3*t, 1.0)
+
+def face_gamma(c, co, name):
+    # peso aguas abajo gamma_f de la cara i+1/2 (u>0: U=i-1, D=i, A=i+1), ec. (8)
+    g = [0.0]*N
+    for i in range(N):
+        cu, cd, ca = c[i-1], c[i], c[(i+1) % N]
+        if abs(ca - cu) < 1e-12: continue
+        t = (cd - cu) / (ca - cu)
+        if 0 < t < 1:
+            g[i] = (cds_face(t, co, name) - t) / (1 - t)
+    return g
+
+def solve_cyclic(a, b, c, r):
+    # tridiagonal periódico a_i x_{i-1} + b_i x_i + c_i x_{i+1} = r_i (Sherman-Morrison)
+    n = len(b); gam = -b[0]
+    bb = b[:]; bb[0] -= gam; bb[-1] -= a[0]*c[-1]/gam
+    def thomas(d):
+        cp, dp = [0.0]*n, [0.0]*n
+        cp[0], dp[0] = c[0]/bb[0], d[0]/bb[0]
+        for i in range(1, n):
+            m = bb[i] - a[i]*cp[i-1]
+            cp[i], dp[i] = c[i]/m, (d[i] - a[i]*dp[i-1])/m
+        x = [0.0]*n; x[-1] = dp[-1]
+        for i in range(n-2, -1, -1):
+            x[i] = dp[i] - cp[i]*x[i+1]
+        return x
+    y = thomas(r)
+    u = [0.0]*n; u[0], u[-1] = gam, c[-1]
+    z = thomas(u)
+    f = (y[0] + a[0]*y[-1]/gam) / (1 + z[0] + a[0]*z[-1]/gam)
+    return [y[i] - f*z[i] for i in range(n)]
+
+def cn_step(c, co, g):
+    # ec. (7): gamma congelado en C^n, valor de cara = promedio de C^n y C^(n+1)
+    h = 0.5*co
+    a  = [-h*(1 - g[i-1]) for i in range(N)]
+    b  = [1 + h*(1 - g[i]) - h*g[i-1] for i in range(N)]
+    up = [h*g[i] for i in range(N)]
+    r  = [c[i] - h*((g[i]*c[(i+1) % N] + (1 - g[i])*c[i])
+                    - (g[i-1]*c[i] + (1 - g[i-1])*c[i-1])) for i in range(N)]
+    return solve_cyclic(a, b, up, r)
+
+def redistribute(c):
+    # recorte-redistribución simple: el exceso va por mitades a los vecinos (conserva masa, no es el algoritmo del trabajo)
+    for _ in range(3):
+        for i in range(N):
+            if c[i] > 1:   e = c[i] - 1; c[i] = 1.0
+            elif c[i] < 0: e = c[i];     c[i] = 0.0
+            else: continue
+            c[(i+1) % N] += e/2; c[i-1] += e/2
+    return c
+
+def slab_init():
+    # franja promediada por celda [30.4, 60.4): celdas extremas 0.6 / 0.4
+    return [max(0.0, min(i+1, 60.4) - max(i, 30.4)) for i in range(N)]
+
+def run_case(name, co, fix):
+    c0 = slab_init(); c = c0[:]
+    steps = round(LAPS*N/co)
+    for s in range(steps):
+        c = cn_step(c, co, face_gamma(c, co, name))
+        if fix: c = redistribute(c)
+        if max(c) > 10: return f"blow-up at step {s+1}/{steps}"
+    l1 = sum(abs(x - y) for x, y in zip(c, c0)) / N
+    width = sum(1 for x in c if 0.05 < x < 0.95)
+    over = max(max(c) - 1, -min(c), 0.0)
+    return f"L1={l1:.4f} width={width:2d} overshoot={over:.1e}"
+
+for fix in (False, True):
+    print("with redistribution" if fix else "no redistribution")
+    for name in ("HYPER-C", "SUPERBEE", "BD-SAISH", "MSTACS"):
+        for co in (0.25, 0.5, 0.75):
+            print(f"  {name:8s} Co={co:.2f}  {run_case(name, co, fix)}")
+
+def blowup_co(k):
+    # mayor Co que soporta un CDS de pendiente k, min(k t, 1), sin redistribución (pasos de 0.01)
+    global cds_face
+    old = cds_face
+    cds_face = lambda t, co, name: min(k*t, 1.0)
+    co = 0.10
+    while co < 1.0 and not run_case("k", round(co, 2), False).startswith("blow"):
+        co += 0.01
+    cds_face = old
+    return round(co - 0.01, 2)
+
+print("max stable Co without redistribution (CDS slope k)")
+for k in (2, 3, 4):
+    print(f"  k={k}: Co_max={blowup_co(k):.2f}   1/k={1/k:.2f}")
+```
+
+```text
+no redistribution
+  HYPER-C  Co=0.25  L1=0.0001 width= 2 overshoot=0.0e+00
+  HYPER-C  Co=0.50  L1=0.0025 width= 2 overshoot=0.0e+00
+  HYPER-C  Co=0.75  L1=0.0654 width=29 overshoot=0.0e+00
+  SUPERBEE Co=0.25  L1=0.0085 width= 6 overshoot=0.0e+00
+  SUPERBEE Co=0.50  L1=0.0061 width= 4 overshoot=0.0e+00
+  SUPERBEE Co=0.75  L1=0.0052 width= 2 overshoot=3.6e-03
+  BD-SAISH Co=0.25  L1=0.0001 width= 2 overshoot=0.0e+00
+  BD-SAISH Co=0.50  blow-up at step 141/400
+  BD-SAISH Co=0.75  blow-up at step 30/267
+  MSTACS   Co=0.25  L1=0.0001 width= 2 overshoot=0.0e+00
+  MSTACS   Co=0.50  blow-up at step 255/400
+  MSTACS   Co=0.75  blow-up at step 50/267
+with redistribution
+  HYPER-C  Co=0.25  L1=0.0001 width= 2 overshoot=0.0e+00
+  HYPER-C  Co=0.50  L1=0.0025 width= 2 overshoot=0.0e+00
+  HYPER-C  Co=0.75  L1=0.0654 width=29 overshoot=0.0e+00
+  SUPERBEE Co=0.25  L1=0.0085 width= 6 overshoot=0.0e+00
+  SUPERBEE Co=0.50  L1=0.0061 width= 4 overshoot=0.0e+00
+  SUPERBEE Co=0.75  L1=0.0053 width= 2 overshoot=2.3e-04
+  BD-SAISH Co=0.25  L1=0.0001 width= 2 overshoot=0.0e+00
+  BD-SAISH Co=0.50  L1=0.0163 width= 1 overshoot=1.8e-02
+  BD-SAISH Co=0.75  L1=0.0574 width= 1 overshoot=7.1e-02
+  MSTACS   Co=0.25  L1=0.0001 width= 2 overshoot=0.0e+00
+  MSTACS   Co=0.50  L1=0.0099 width= 0 overshoot=5.1e-03
+  MSTACS   Co=0.75  L1=0.0422 width= 2 overshoot=6.9e-02
+max stable Co without redistribution (CDS slope k)
+  k=2: Co_max=0.70   1/k=0.50
+  k=3: Co_max=0.44   1/k=0.33
+  k=4: Co_max=0.33   1/k=0.25
+```
+
+El mismo código se puede ejecutar aquí, en el navegador.
+
+<SlabCdsBlowupRace />
+
+Con el valor por defecto Co=0.50, BD-SAISH explota en el paso 141 y MSTACS en el 255. Al bajar Co a 0.33 los cuatro sobreviven. Con la redistribución activada nada explota, pero la historia del sobrepaso a la derecha nunca vuelve al error de redondeo.
+
+## Causa: la celda envía más de lo que contiene
+
+Primero, las tres filas con Co=0.25. HYPER-C, BD-SAISH y MSTACS imprimen números idénticos. No es casualidad: $1/0.25=4$, así que las tres funciones son la misma curva. Solo se separan al crecer Co.
+
+Con Co=0.75, HYPER-C reparte la interfaz en 29 celdas. Una pendiente de $1/Co=1.33$ es casi upwind, la debilidad de CICSAM que señala el trabajo. SUPERBEE hace lo contrario: 6 celdas con Co=0.25. Un CDS dentro de la región TVD comprime poco a Co bajo, en línea con el diagnóstico del trabajo sobre STACS.
+
+Los esquemas de pendiente fija, BD-SAISH y MSTACS, explotan al crecer Co. La última tabla marca el borde: $k=2$ aguanta hasta 0.70, $k=3$ hasta 0.44 y $k=4$ hasta 0.33. Los tres quedan en $k\cdot Co_{max}\approx 1.3$–$1.4$. Crank–Nicolson concede un 30–40 % sobre el límite explícito $k\cdot Co=1$. No concede un margen ilimitado.
+
+Citando a Darwish y Moukalled, el trabajo afirma que con CN no hace falta acotación transitoria. Con $\gamma_f$ congelado en $C^n$ eso no se cumplió. La pendiente 3 no se sostiene sola por encima de Co=0.44.
+
+## Solución 1: la redistribución sostiene la ec. (18)
+
+El último párrafo de la sección 3 es breve. Solo dice que los sobrepasos se eliminan con el algoritmo de redistribución de Saincher–Banerjee. El experimento muestra que esa frase es estructural.
+
+Con un recorte-y-redistribución simple, los cuatro completan dos vueltas. El error de masa ronda $10^{-15}$. Hay un precio. MSTACS con Co=0.50 termina con espesor 0: cada celda vale 0 o 1. Las celdas iniciales de 0.6/0.4 quedaron pegadas a las caras, como una escalera. Casi todo el L1 de 0.0099 es ese desplazamiento de 0.4 celdas.
+
+Con Co=0.75, MSTACS tiene L1 de 0.0422, ocho veces el 0.0053 de SUPERBEE. Un sobrepaso de 6.9 % sobrevive a tres pasadas de redistribución. Cuanto más trabaja la redistribución, más se congela la solución en escalones.
+
+## Solución 2: por qué MSTACS gana igual en las tablas del trabajo
+
+Aun así, la tabla 1 del trabajo pone a MSTACS primero en la traslación del círculo con Co=0.75, con $2.622\times10^{-3}$. ¿Contradice eso el resultado 1D? No. Hay tres diferencias.
+
+Primero, en interfaces 2D oblicuas $\beta=\cos^4\theta$ cae rápido, el CDS pierde peso y entra HR. Segundo, la redistribución del trabajo no es un recorte simple. Tercero, casi toda la interfaz de un círculo o un cuadrado trasladado es oblicua a la malla. La franja 1D, con $\beta=1$, es el peor caso.
+
+En suma, la ec. (18) no trabaja sola. La compresión de pendiente 3 es segura solo cuando la función de mezcla y la redistribución cargan parte del peso. Algo parecido apareció con los limitadores compresivos: en [el artículo sobre subir la β de Tallois a 2](/es/posts/2026-10-24-compressive-beta-limiter-volume-fraction/), el costo de comprimir también se pagaba en otro lugar.
+
+## Una corrida antes de meter MSTACS en un código VOF propio
+
+Al portar la ec. (18), primero conviene correr una franja 1D dos vueltas con Co=0.5 y la redistribución apagada. Si explota, el código coincide con el trabajo. Después se activa la redistribución y se revisan el sobrepaso y el espesor.
+
+En el orden inverso, la redistribución lo tapa todo. No se distingue si la interfaz nítida viene del esquema o del recorte. Registrar el producto de la pendiente $k$ por Co en cada cara facilita la depuración. Si muchas caras muestran $k\cdot Co$ por encima de 1.3, la interfaz de ese paso la construyó la redistribución.

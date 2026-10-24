@@ -1,0 +1,246 @@
+---
+title: "[Paper Review] MSTACS with Slope 3 Blew Up After 255 Steps at Co=0.5 — Compressive Differencing and the Courant Limit"
+date: 2026-10-25
+description: "We ran the compressive scheme of MSTACS eq. (18) on a 1D slab. Without redistribution it diverges above Co=0.44. The culprit is the product of the NVD slope k and the Courant number."
+tags: ["MSTACS", "Normalized-Variable-Diagram", "Interface-Capturing", "VOF", "Paper-Review"]
+locale: en
+slug: 2026-10-25-mstacs-slope-three-courant-limit
+takeaway: "The slope-3 compressive scheme MSTACS uses above Co=1/3 lets a cell send out more than it holds in one step, so Crank–Nicolson alone cannot keep it bounded without the redistribution step."
+draft: false
+---
+import { NvdSlopeCourantLab } from '@/components/post-viz/2026-10-25-mstacs-slope-three-courant-limit/NvdSlopeCourantLab'
+import { SlabCdsBlowupRace } from '@/components/post-viz/2026-10-25-mstacs-slope-three-courant-limit/SlabCdsBlowupRace'
+
+## The slab blew up at step 255 with Co=0.5
+
+Here is a scheme built to keep interfaces sharper. We put it on the easiest problem we know: a 1D slab carried twice around a periodic box. At Co=0.25 the interface stayed two cells wide. At Co=0.5 the volume fraction passed 10 at step 255.
+
+This post covers Section 3 of the MSTACS paper (Modified Switching Technique for Advection and Capturing of Surfaces). MSTACS is an algebraic interface-capturing scheme for VOF (representing the interface with a volume fraction field). The heart of the paper is one line, eq. (18). By the end you will see why that line switches at Co=1/3, and what it quietly depends on.
+
+The pressure coupling built around MSTACS was covered in [the post on MSTACS and the general pressure equation](/en/posts/2026-05-31-gpe-mstacs-iteration-free-twophase/). Today we look only at the face value of the volume fraction.
+
+## MSTACS changes exactly one thing: the compressive scheme
+
+CICSAM, STACS, SAISH and MSTACS share one framework. The face volume fraction is a weighted average of the donor and acceptor cells.
+
+$$
+C_f^* = \gamma_f \frac{C_A^n + C_A^{n+1}}{2} + (1-\gamma_f)\frac{C_D^n + C_D^{n+1}}{2}
+$$
+
+$C_D$ is the donor cell value and $C_A$ the acceptor value. Time is Crank–Nicolson (average of current and next levels). $\gamma_f=0$ is first-order upwind; $\gamma_f=1$ is pure downwind.
+
+The weight comes from normalized variables.
+
+$$
+\tilde C_D = \frac{C_D - C_U}{C_A - C_U}, \qquad \gamma_f = \frac{\tilde C_f - \tilde C_D}{1 - \tilde C_D}
+$$
+
+$C_U$ is the cell upstream of the donor. The function that gives $\tilde C_f$ defines the scheme. Each scheme blends a compressive scheme (CDS) and a high-resolution scheme (HR) with $\beta(\theta)=\min(\cos^p\theta,1)$, where $\theta$ is the angle between the interface normal and the face normal.
+
+The four CDS choices: CICSAM uses HYPER-C, $\min(\tilde C_D/Co, 1)$. STACS uses SUPERBEE. SAISH uses $\min(4\tilde C_D, 1)$. MSTACS switches on the Courant number.
+
+$$
+\tilde C_{f,\mathrm{MSTACS}} = \begin{cases} \min(\tilde C_D / Co_D,\ 1) & 0 < Co_D \le 1/3 \\ \min(3\tilde C_D,\ 1) & 1/3 < Co_D \le 1 \end{cases}
+$$
+
+$Co_D$ is the outflow Courant number of the donor cell. In the converted PDF, the first line of eq. (18) reads $\min(\tilde C_D,1)$. The text, however, says "HYPER-C below Co=0.33". The equation above follows the text.
+
+## Slopes on the normalized variable diagram
+
+Eq. (18) hides a continuity. At Co=1/3 the HYPER-C slope $1/Co$ is exactly 3. So MSTACS is HYPER-C with its slope frozen at 3. As Co grows, HYPER-C lies down toward upwind. MSTACS refuses to lie down.
+
+The trouble is the red line. The explicit convection boundedness criterion (CBC, the condition that keeps a value inside its neighbors' range) is $\tilde C_f \le \tilde C_D / Co$. Its physical meaning is simple: in one step a cell cannot send out more than it holds.
+
+Try it yourself in the simulation below.
+
+<NvdSlopeCourantLab />
+
+Push the Co slider above 0.33 and select MSTACS. The right-hand bar turns red the moment "sends" exceeds "holds". That is the region where slope $k$ times Co exceeds 1.
+
+## In 1D the HR scheme disappears
+
+A 1D interface is always normal to the face. So $\theta=0$, $\cos\theta=1$ and $\beta=1$. The high-resolution scheme gets zero weight. A 1D test isolates the CDS.
+
+That is both the strength and the limit of today's experiment. It narrows the cause to one function. It is also harsher than 2D, where oblique interfaces give $\beta<1$ and mix in HR.
+
+## Code: one slab, four CDS, three Courant numbers
+
+A slab $[30.4, 60.4)$ sits in a 100-cell periodic domain, with cell-averaged end cells of 0.6 and 0.4. After two laps we measure the L1 error, interface width (cells with $0.05<C<0.95$) and the largest overshoot. $\gamma_f$ is frozen at $C^n$ and a periodic tridiagonal system is solved, the most common way to implement it.
+
+```python
+# 1D slab advection: four compressive schemes (CDS) with Crank-Nicolson face values (eqs. 6-8)
+N, LAPS = 100, 2
+
+def cds_face(t, co, name):
+    # normalized donor value t = C~_D (0<t<1) -> normalized face value C~_f
+    if name == "HYPER-C":   # CICSAM
+        return min(t / co, 1.0)
+    if name == "SUPERBEE":  # STACS
+        if t < 1/3: return 2*t
+        if t < 1/2: return 0.5 + 0.5*t
+        if t < 2/3: return 1.5*t
+        return 1.0
+    if name == "BD-SAISH":  # SAISH
+        return min(4*t, 1.0)
+    if name == "MSTACS":    # eq. (18): HYPER-C if Co<=1/3, otherwise slope 3
+        return min(t / co, 1.0) if co <= 1/3 else min(3*t, 1.0)
+
+def face_gamma(c, co, name):
+    # downwind weight gamma_f of face i+1/2 (u>0: U=i-1, D=i, A=i+1), eq. (8)
+    g = [0.0]*N
+    for i in range(N):
+        cu, cd, ca = c[i-1], c[i], c[(i+1) % N]
+        if abs(ca - cu) < 1e-12: continue
+        t = (cd - cu) / (ca - cu)
+        if 0 < t < 1:
+            g[i] = (cds_face(t, co, name) - t) / (1 - t)
+    return g
+
+def solve_cyclic(a, b, c, r):
+    # periodic tridiagonal a_i x_{i-1} + b_i x_i + c_i x_{i+1} = r_i (Sherman-Morrison)
+    n = len(b); gam = -b[0]
+    bb = b[:]; bb[0] -= gam; bb[-1] -= a[0]*c[-1]/gam
+    def thomas(d):
+        cp, dp = [0.0]*n, [0.0]*n
+        cp[0], dp[0] = c[0]/bb[0], d[0]/bb[0]
+        for i in range(1, n):
+            m = bb[i] - a[i]*cp[i-1]
+            cp[i], dp[i] = c[i]/m, (d[i] - a[i]*dp[i-1])/m
+        x = [0.0]*n; x[-1] = dp[-1]
+        for i in range(n-2, -1, -1):
+            x[i] = dp[i] - cp[i]*x[i+1]
+        return x
+    y = thomas(r)
+    u = [0.0]*n; u[0], u[-1] = gam, c[-1]
+    z = thomas(u)
+    f = (y[0] + a[0]*y[-1]/gam) / (1 + z[0] + a[0]*z[-1]/gam)
+    return [y[i] - f*z[i] for i in range(n)]
+
+def cn_step(c, co, g):
+    # eq. (7): gamma frozen at C^n, face value = average of C^n and C^(n+1)
+    h = 0.5*co
+    a  = [-h*(1 - g[i-1]) for i in range(N)]
+    b  = [1 + h*(1 - g[i]) - h*g[i-1] for i in range(N)]
+    up = [h*g[i] for i in range(N)]
+    r  = [c[i] - h*((g[i]*c[(i+1) % N] + (1 - g[i])*c[i])
+                    - (g[i-1]*c[i] + (1 - g[i-1])*c[i-1])) for i in range(N)]
+    return solve_cyclic(a, b, up, r)
+
+def redistribute(c):
+    # simple clip-redistribution: excess split half to each neighbor (mass-conserving, not the paper algorithm)
+    for _ in range(3):
+        for i in range(N):
+            if c[i] > 1:   e = c[i] - 1; c[i] = 1.0
+            elif c[i] < 0: e = c[i];     c[i] = 0.0
+            else: continue
+            c[(i+1) % N] += e/2; c[i-1] += e/2
+    return c
+
+def slab_init():
+    # cell-averaged slab [30.4, 60.4): end cells are 0.6 / 0.4
+    return [max(0.0, min(i+1, 60.4) - max(i, 30.4)) for i in range(N)]
+
+def run_case(name, co, fix):
+    c0 = slab_init(); c = c0[:]
+    steps = round(LAPS*N/co)
+    for s in range(steps):
+        c = cn_step(c, co, face_gamma(c, co, name))
+        if fix: c = redistribute(c)
+        if max(c) > 10: return f"blow-up at step {s+1}/{steps}"
+    l1 = sum(abs(x - y) for x, y in zip(c, c0)) / N
+    width = sum(1 for x in c if 0.05 < x < 0.95)
+    over = max(max(c) - 1, -min(c), 0.0)
+    return f"L1={l1:.4f} width={width:2d} overshoot={over:.1e}"
+
+for fix in (False, True):
+    print("with redistribution" if fix else "no redistribution")
+    for name in ("HYPER-C", "SUPERBEE", "BD-SAISH", "MSTACS"):
+        for co in (0.25, 0.5, 0.75):
+            print(f"  {name:8s} Co={co:.2f}  {run_case(name, co, fix)}")
+
+def blowup_co(k):
+    # largest Co that a slope-k CDS min(k t, 1) survives without redistribution (0.01 steps)
+    global cds_face
+    old = cds_face
+    cds_face = lambda t, co, name: min(k*t, 1.0)
+    co = 0.10
+    while co < 1.0 and not run_case("k", round(co, 2), False).startswith("blow"):
+        co += 0.01
+    cds_face = old
+    return round(co - 0.01, 2)
+
+print("max stable Co without redistribution (CDS slope k)")
+for k in (2, 3, 4):
+    print(f"  k={k}: Co_max={blowup_co(k):.2f}   1/k={1/k:.2f}")
+```
+
+```text
+no redistribution
+  HYPER-C  Co=0.25  L1=0.0001 width= 2 overshoot=0.0e+00
+  HYPER-C  Co=0.50  L1=0.0025 width= 2 overshoot=0.0e+00
+  HYPER-C  Co=0.75  L1=0.0654 width=29 overshoot=0.0e+00
+  SUPERBEE Co=0.25  L1=0.0085 width= 6 overshoot=0.0e+00
+  SUPERBEE Co=0.50  L1=0.0061 width= 4 overshoot=0.0e+00
+  SUPERBEE Co=0.75  L1=0.0052 width= 2 overshoot=3.6e-03
+  BD-SAISH Co=0.25  L1=0.0001 width= 2 overshoot=0.0e+00
+  BD-SAISH Co=0.50  blow-up at step 141/400
+  BD-SAISH Co=0.75  blow-up at step 30/267
+  MSTACS   Co=0.25  L1=0.0001 width= 2 overshoot=0.0e+00
+  MSTACS   Co=0.50  blow-up at step 255/400
+  MSTACS   Co=0.75  blow-up at step 50/267
+with redistribution
+  HYPER-C  Co=0.25  L1=0.0001 width= 2 overshoot=0.0e+00
+  HYPER-C  Co=0.50  L1=0.0025 width= 2 overshoot=0.0e+00
+  HYPER-C  Co=0.75  L1=0.0654 width=29 overshoot=0.0e+00
+  SUPERBEE Co=0.25  L1=0.0085 width= 6 overshoot=0.0e+00
+  SUPERBEE Co=0.50  L1=0.0061 width= 4 overshoot=0.0e+00
+  SUPERBEE Co=0.75  L1=0.0053 width= 2 overshoot=2.3e-04
+  BD-SAISH Co=0.25  L1=0.0001 width= 2 overshoot=0.0e+00
+  BD-SAISH Co=0.50  L1=0.0163 width= 1 overshoot=1.8e-02
+  BD-SAISH Co=0.75  L1=0.0574 width= 1 overshoot=7.1e-02
+  MSTACS   Co=0.25  L1=0.0001 width= 2 overshoot=0.0e+00
+  MSTACS   Co=0.50  L1=0.0099 width= 0 overshoot=5.1e-03
+  MSTACS   Co=0.75  L1=0.0422 width= 2 overshoot=6.9e-02
+max stable Co without redistribution (CDS slope k)
+  k=2: Co_max=0.70   1/k=0.50
+  k=3: Co_max=0.44   1/k=0.33
+  k=4: Co_max=0.33   1/k=0.25
+```
+
+Run the same code right here in the browser.
+
+<SlabCdsBlowupRace />
+
+At the default Co=0.50, BD-SAISH blows up at step 141 and MSTACS at step 255. Drop Co to 0.33 and all four survive. Turn redistribution on and nothing blows up, but the overshoot history on the right never returns to round-off.
+
+## Cause: a cell sends more than it holds
+
+Look at the three Co=0.25 rows first. HYPER-C, BD-SAISH and MSTACS print identical numbers. That is no coincidence: $1/0.25=4$, so all three are the same curve. They differ only as Co grows.
+
+At Co=0.75 HYPER-C smears the interface over 29 cells. A slope of $1/Co=1.33$ is nearly upwind, the CICSAM weakness the paper points out. SUPERBEE does the opposite: 6 cells at Co=0.25. A CDS inside the TVD region compresses weakly at low Co, matching the paper's diagnosis of STACS.
+
+The fixed-slope schemes, BD-SAISH and MSTACS, blow up as Co grows. The last table gives the edge: $k=2$ survives to 0.70, $k=3$ to 0.44, $k=4$ to 0.33. All three sit at $k\cdot Co_{max}\approx 1.3$–$1.4$. Crank–Nicolson buys 30–40% over the explicit limit $k\cdot Co=1$. It does not buy unlimited headroom.
+
+Citing Darwish and Moukalled, the paper says transient bounding is unnecessary with CN. With $\gamma_f$ frozen at $C^n$, that did not hold. Slope 3 cannot stand on its own above Co=0.44.
+
+## Fix 1: redistribution holds eq. (18) up
+
+The last paragraph of Section 3 is short. It says overshoots and undershoots are removed by the Saincher–Banerjee redistribution algorithm. The experiment shows that sentence is load-bearing.
+
+With a simple clip-and-redistribute, all four finish two laps. Mass error stays around $10^{-15}$. There is a price. MSTACS at Co=0.50 ends with width 0: every cell is either 0 or 1. The initial 0.6/0.4 cells snapped onto cell faces as a staircase. Most of the L1 of 0.0099 is that 0.4-cell shift.
+
+At Co=0.75, MSTACS has L1 0.0422, eight times SUPERBEE's 0.0053. An overshoot of 6.9% survives three redistribution passes. The more work redistribution does, the more the solution freezes into steps.
+
+## Fix 2: why MSTACS still wins the paper's tables
+
+Yet Table 1 of the paper puts MSTACS first for the translated circle at Co=0.75, with $2.622\times10^{-3}$. Does that contradict the 1D result? No. Three things differ.
+
+First, on oblique 2D interfaces $\beta=\cos^4\theta$ falls quickly, so CDS gets less weight and HR is mixed in. Second, the paper's redistribution is not a simple clip. Third, most of a translated circle or square is oblique to the grid. A 1D slab, with $\beta=1$, is the worst case.
+
+So eq. (18) does not work alone. Slope-3 compression is safe only when the blending function and redistribution carry part of the load. We saw a similar trade with compressive limiters: in [the post on raising Tallois's β to 2](/en/posts/2026-10-24-compressive-beta-limiter-volume-fraction/), the cost of compression was also paid somewhere else.
+
+## One run before you drop MSTACS into your VOF code
+
+When porting eq. (18), first run a 1D slab for two laps at Co=0.5 with redistribution off. If it blows up, your code matches the paper. Then turn redistribution on and check the overshoot and width.
+
+Do it in the reverse order and redistribution hides everything. You cannot tell whether the sharp interface comes from the scheme or from the clip. Logging slope $k$ times Co per face makes debugging easy. If many faces show $k\cdot Co$ above 1.3, the interface at that step was built by redistribution.

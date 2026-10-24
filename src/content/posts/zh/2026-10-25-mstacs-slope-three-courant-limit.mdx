@@ -1,0 +1,246 @@
+---
+title: "[论文评述] 斜率为3的MSTACS在Co=0.5时第255步发散 — 压缩差分与Courant极限"
+date: 2026-10-25
+description: "把MSTACS式(18)的压缩差分放到一维平板上测试。没有再分配时Co>0.44即发散，原因是NVD斜率k与Co的乘积。"
+tags: ["MSTACS", "Normalized-Variable-Diagram", "Interface-Capturing", "VOF", "Paper-Review"]
+locale: zh
+slug: 2026-10-25-mstacs-slope-three-courant-limit
+takeaway: "MSTACS在Co>1/3时使用的斜率3压缩差分，会让单元在一步内送出比自身所含更多的量，因此没有再分配算法时，仅靠Crank–Nicolson无法保持有界。"
+draft: false
+---
+import { NvdSlopeCourantLab } from '@/components/post-viz/2026-10-25-mstacs-slope-three-courant-limit/NvdSlopeCourantLab'
+import { SlabCdsBlowupRace } from '@/components/post-viz/2026-10-25-mstacs-slope-three-courant-limit/SlabCdsBlowupRace'
+
+## Co=0.5时平板在第255步炸开
+
+有一种格式专门为了让界面更锐利而设计。我们把它放到最简单的问题上：一维平板在周期域里绕两圈。Co=0.25时，界面始终保持两个单元宽。可是Co提高到0.5后，第255步体积分数超过了10。
+
+本文讨论MSTACS（Modified Switching Technique for Advection and Capturing of Surfaces）论文的第3节。MSTACS是VOF（用体积分数场表示界面的方法）类的代数界面捕捉格式。论文的核心是式(18)这一行。读完本文，你会明白这一行为什么在Co=1/3处切换，也会看到它背后依赖的是什么。
+
+与MSTACS配套的压力耦合，已在[MSTACS与广义压力方程一文](/zh/posts/2026-05-31-gpe-mstacs-iteration-free-twophase/)中讨论过。今天只关注体积分数的面值。
+
+## MSTACS只改了一样东西：压缩差分
+
+CICSAM、STACS、SAISH和MSTACS共用同一个框架。面上的体积分数取供体（donor）单元和受体（acceptor）单元的加权平均。
+
+$$
+C_f^* = \gamma_f \frac{C_A^n + C_A^{n+1}}{2} + (1-\gamma_f)\frac{C_D^n + C_D^{n+1}}{2}
+$$
+
+$C_D$是供体单元值，$C_A$是受体单元值。时间方向采用Crank–Nicolson（当前与下一时刻的平均）。$\gamma_f=0$是一阶迎风，$\gamma_f=1$是纯下游差分。
+
+权重由归一化变量决定。
+
+$$
+\tilde C_D = \frac{C_D - C_U}{C_A - C_U}, \qquad \gamma_f = \frac{\tilde C_f - \tilde C_D}{1 - \tilde C_D}
+$$
+
+$C_U$是供体上游单元的值。用什么函数给出$\tilde C_f$，就决定了格式本身。各格式用$\beta(\theta)=\min(\cos^p\theta,1)$把压缩差分（CDS）和高分辨率差分（HR）混合起来，$\theta$是界面法向与面法向的夹角。
+
+四种CDS如下。CICSAM用HYPER-C，即$\min(\tilde C_D/Co, 1)$。STACS用SUPERBEE。SAISH用$\min(4\tilde C_D, 1)$。MSTACS按Courant数切换。
+
+$$
+\tilde C_{f,\mathrm{MSTACS}} = \begin{cases} \min(\tilde C_D / Co_D,\ 1) & 0 < Co_D \le 1/3 \\ \min(3\tilde C_D,\ 1) & 1/3 < Co_D \le 1 \end{cases}
+$$
+
+$Co_D$是供体单元的流出Courant数。PDF转换版中式(18)第一行印成了$\min(\tilde C_D,1)$。但正文写的是“$Co<0.33$时使用HYPER-C”。上式以正文为准。
+
+## 归一化变量图上的斜率
+
+式(18)藏着一个连续性。Co=1/3时，HYPER-C的斜率$1/Co$恰好等于3。也就是说，MSTACS是把HYPER-C斜率冻结在3的格式。Co越大，HYPER-C越向一阶迎风倒下。MSTACS拒绝倒下。
+
+问题在那条红线。显式有界性准则（CBC，保证解不越出相邻值范围的条件）是$\tilde C_f \le \tilde C_D / Co$。它的物理含义很简单：一步之内，单元送出的量不能超过它所含的量。
+
+在下面的模拟中亲手操作一下。
+
+<NvdSlopeCourantLab />
+
+把Co滑块拉到0.33以上并选择MSTACS。右侧柱条中“送出量”一旦超过“含有量”就会变红。这正是斜率$k$与Co之积大于1的区域。
+
+## 一维里HR格式消失了
+
+一维界面总是垂直于面。因此$\theta=0$，$\cos\theta=1$，$\beta=1$。高分辨率差分的权重为0。一维实验相当于单独测试CDS。
+
+这既是今天实验的优点，也是它的局限。优点是把原因缩小到一个函数。局限是它比二维更苛刻。二维中倾斜界面给出$\beta<1$，HR会被混入。
+
+## 代码：同一平板、四种CDS、三个Courant数
+
+在100个单元的周期域中放置平板$[30.4, 60.4)$，两端单元的单元平均初值为0.6和0.4。绕两圈后测量L1误差、界面厚度（$0.05<C<0.95$的单元数）和最大过冲。$\gamma_f$固定在$C^n$，求解周期三对角方程组。这是最常见的实现方式。
+
+```python
+# 一维平板对流: 用Crank-Nicolson面值(式6-8)比较四种压缩差分(CDS)
+N, LAPS = 100, 2
+
+def cds_face(t, co, name):
+    # 归一化供体值 t = C~_D (0<t<1) -> 归一化面值 C~_f
+    if name == "HYPER-C":   # CICSAM
+        return min(t / co, 1.0)
+    if name == "SUPERBEE":  # STACS
+        if t < 1/3: return 2*t
+        if t < 1/2: return 0.5 + 0.5*t
+        if t < 2/3: return 1.5*t
+        return 1.0
+    if name == "BD-SAISH":  # SAISH
+        return min(4*t, 1.0)
+    if name == "MSTACS":    # 式(18): Co<=1/3时用HYPER-C，否则斜率为3
+        return min(t / co, 1.0) if co <= 1/3 else min(3*t, 1.0)
+
+def face_gamma(c, co, name):
+    # 面 i+1/2 (u>0: U=i-1, D=i, A=i+1) 的下游权重 gamma_f，式(8)
+    g = [0.0]*N
+    for i in range(N):
+        cu, cd, ca = c[i-1], c[i], c[(i+1) % N]
+        if abs(ca - cu) < 1e-12: continue
+        t = (cd - cu) / (ca - cu)
+        if 0 < t < 1:
+            g[i] = (cds_face(t, co, name) - t) / (1 - t)
+    return g
+
+def solve_cyclic(a, b, c, r):
+    # 周期三对角 a_i x_{i-1} + b_i x_i + c_i x_{i+1} = r_i (Sherman-Morrison)
+    n = len(b); gam = -b[0]
+    bb = b[:]; bb[0] -= gam; bb[-1] -= a[0]*c[-1]/gam
+    def thomas(d):
+        cp, dp = [0.0]*n, [0.0]*n
+        cp[0], dp[0] = c[0]/bb[0], d[0]/bb[0]
+        for i in range(1, n):
+            m = bb[i] - a[i]*cp[i-1]
+            cp[i], dp[i] = c[i]/m, (d[i] - a[i]*dp[i-1])/m
+        x = [0.0]*n; x[-1] = dp[-1]
+        for i in range(n-2, -1, -1):
+            x[i] = dp[i] - cp[i]*x[i+1]
+        return x
+    y = thomas(r)
+    u = [0.0]*n; u[0], u[-1] = gam, c[-1]
+    z = thomas(u)
+    f = (y[0] + a[0]*y[-1]/gam) / (1 + z[0] + a[0]*z[-1]/gam)
+    return [y[i] - f*z[i] for i in range(n)]
+
+def cn_step(c, co, g):
+    # 式(7): gamma固定在C^n，面值取C^n与C^(n+1)的平均
+    h = 0.5*co
+    a  = [-h*(1 - g[i-1]) for i in range(N)]
+    b  = [1 + h*(1 - g[i]) - h*g[i-1] for i in range(N)]
+    up = [h*g[i] for i in range(N)]
+    r  = [c[i] - h*((g[i]*c[(i+1) % N] + (1 - g[i])*c[i])
+                    - (g[i-1]*c[i] + (1 - g[i-1])*c[i-1])) for i in range(N)]
+    return solve_cyclic(a, b, up, r)
+
+def redistribute(c):
+    # 简单截断再分配: 溢出量平分给两侧邻居(质量守恒，并非论文算法)
+    for _ in range(3):
+        for i in range(N):
+            if c[i] > 1:   e = c[i] - 1; c[i] = 1.0
+            elif c[i] < 0: e = c[i];     c[i] = 0.0
+            else: continue
+            c[(i+1) % N] += e/2; c[i-1] += e/2
+    return c
+
+def slab_init():
+    # 单元平均平板 [30.4, 60.4): 两端单元为 0.6 / 0.4
+    return [max(0.0, min(i+1, 60.4) - max(i, 30.4)) for i in range(N)]
+
+def run_case(name, co, fix):
+    c0 = slab_init(); c = c0[:]
+    steps = round(LAPS*N/co)
+    for s in range(steps):
+        c = cn_step(c, co, face_gamma(c, co, name))
+        if fix: c = redistribute(c)
+        if max(c) > 10: return f"blow-up at step {s+1}/{steps}"
+    l1 = sum(abs(x - y) for x, y in zip(c, c0)) / N
+    width = sum(1 for x in c if 0.05 < x < 0.95)
+    over = max(max(c) - 1, -min(c), 0.0)
+    return f"L1={l1:.4f} width={width:2d} overshoot={over:.1e}"
+
+for fix in (False, True):
+    print("with redistribution" if fix else "no redistribution")
+    for name in ("HYPER-C", "SUPERBEE", "BD-SAISH", "MSTACS"):
+        for co in (0.25, 0.5, 0.75):
+            print(f"  {name:8s} Co={co:.2f}  {run_case(name, co, fix)}")
+
+def blowup_co(k):
+    # 斜率为k的CDS min(k t, 1)在无再分配时能承受的最大Co(间隔0.01)
+    global cds_face
+    old = cds_face
+    cds_face = lambda t, co, name: min(k*t, 1.0)
+    co = 0.10
+    while co < 1.0 and not run_case("k", round(co, 2), False).startswith("blow"):
+        co += 0.01
+    cds_face = old
+    return round(co - 0.01, 2)
+
+print("max stable Co without redistribution (CDS slope k)")
+for k in (2, 3, 4):
+    print(f"  k={k}: Co_max={blowup_co(k):.2f}   1/k={1/k:.2f}")
+```
+
+```text
+no redistribution
+  HYPER-C  Co=0.25  L1=0.0001 width= 2 overshoot=0.0e+00
+  HYPER-C  Co=0.50  L1=0.0025 width= 2 overshoot=0.0e+00
+  HYPER-C  Co=0.75  L1=0.0654 width=29 overshoot=0.0e+00
+  SUPERBEE Co=0.25  L1=0.0085 width= 6 overshoot=0.0e+00
+  SUPERBEE Co=0.50  L1=0.0061 width= 4 overshoot=0.0e+00
+  SUPERBEE Co=0.75  L1=0.0052 width= 2 overshoot=3.6e-03
+  BD-SAISH Co=0.25  L1=0.0001 width= 2 overshoot=0.0e+00
+  BD-SAISH Co=0.50  blow-up at step 141/400
+  BD-SAISH Co=0.75  blow-up at step 30/267
+  MSTACS   Co=0.25  L1=0.0001 width= 2 overshoot=0.0e+00
+  MSTACS   Co=0.50  blow-up at step 255/400
+  MSTACS   Co=0.75  blow-up at step 50/267
+with redistribution
+  HYPER-C  Co=0.25  L1=0.0001 width= 2 overshoot=0.0e+00
+  HYPER-C  Co=0.50  L1=0.0025 width= 2 overshoot=0.0e+00
+  HYPER-C  Co=0.75  L1=0.0654 width=29 overshoot=0.0e+00
+  SUPERBEE Co=0.25  L1=0.0085 width= 6 overshoot=0.0e+00
+  SUPERBEE Co=0.50  L1=0.0061 width= 4 overshoot=0.0e+00
+  SUPERBEE Co=0.75  L1=0.0053 width= 2 overshoot=2.3e-04
+  BD-SAISH Co=0.25  L1=0.0001 width= 2 overshoot=0.0e+00
+  BD-SAISH Co=0.50  L1=0.0163 width= 1 overshoot=1.8e-02
+  BD-SAISH Co=0.75  L1=0.0574 width= 1 overshoot=7.1e-02
+  MSTACS   Co=0.25  L1=0.0001 width= 2 overshoot=0.0e+00
+  MSTACS   Co=0.50  L1=0.0099 width= 0 overshoot=5.1e-03
+  MSTACS   Co=0.75  L1=0.0422 width= 2 overshoot=6.9e-02
+max stable Co without redistribution (CDS slope k)
+  k=2: Co_max=0.70   1/k=0.50
+  k=3: Co_max=0.44   1/k=0.33
+  k=4: Co_max=0.33   1/k=0.25
+```
+
+在浏览器里直接运行上面的代码。
+
+<SlabCdsBlowupRace />
+
+默认Co=0.50时，BD-SAISH在第141步、MSTACS在第255步发散。把Co降到0.33，四种格式都能存活。打开再分配后不会发散，但右侧曲线中的过冲始终回不到舍入误差水平。
+
+## 原因：一步送出的比含有的多
+
+先看Co=0.25的三行。HYPER-C、BD-SAISH和MSTACS的数字完全相同。这不是巧合：$1/0.25=4$，三个函数是同一条曲线。差别只在Co变大时出现。
+
+HYPER-C在Co=0.75时把界面抹到了29个单元。斜率$1/Co=1.33$几乎就是一阶迎风，这正是论文指出的CICSAM弱点。SUPERBEE则相反，在Co=0.25时有6个单元。位于TVD区域内的CDS在低Co下压缩偏弱，这与论文对STACS的诊断一致。
+
+斜率固定的BD-SAISH和MSTACS在Co变大时发散。最后一张表给出了边界：$k=2$撑到0.70，$k=3$撑到0.44，$k=4$撑到0.33。三者都满足$k\cdot Co_{max}\approx 1.3$~$1.4$。Crank–Nicolson只比显式极限$k\cdot Co=1$多给了30%~40%的余量，并非无限余量。
+
+论文引用Darwish–Moukalled，称CN下不需要瞬态有界化。至少在把$\gamma_f$冻结在$C^n$的实现中，这一点并不成立。斜率3在Co超过0.44后无法独自站稳。
+
+## 解决1：再分配撑起了式(18)
+
+论文第3节最后一段很短，只说过冲和欠冲由Saincher–Banerjee再分配算法消除。实验表明这句话并非点缀。
+
+打开简单的截断再分配后，四种格式都跑完两圈，质量误差也在$10^{-15}$量级。但有代价。MSTACS在Co=0.50时厚度变成0：所有单元非0即1。初始的0.6/0.4单元被吸附到单元面上，成了阶梯。L1 0.0099的大部分正是这0.4个单元的位置偏移。
+
+Co=0.75时，MSTACS的L1为0.0422，是SUPERBEE 0.0053的8倍。三次再分配后仍残留6.9%的过冲。再分配做的事越多，解就越僵化成阶梯。
+
+## 解决2：论文表格里MSTACS为何胜出
+
+然而论文表1中，Co=0.75的圆平移里MSTACS以$2.622\times10^{-3}$排名第一。这与一维结果矛盾吗？并不。有三点不同。
+
+第一，二维倾斜界面上$\beta=\cos^4\theta$迅速变小，CDS占比下降，HR被混入。第二，论文的再分配不是简单截断。第三，平移的圆和方形大部分界面相对网格是倾斜的。$\beta=1$的一维平板是最坏情况。
+
+所以式(18)并不是单独工作的。斜率3的压缩只有在混合函数和再分配共同分担时才安全。我们在压缩型限制器上也见过类似的交换：[把Tallois的β提到2一文](/zh/posts/2026-10-24-compressive-beta-limiter-volume-fraction/)中，压缩的代价同样在别处支付。
+
+## 把MSTACS放进自己的VOF代码前先跑一次
+
+移植式(18)时，先在关闭再分配的情况下，让一维平板以Co=0.5绕两圈。如果发散，说明代码与论文一致。然后打开再分配，再检查过冲和厚度。
+
+顺序反过来，再分配就会掩盖一切。你无法分辨界面锐利是来自格式还是来自截断。把每个面的斜率$k$与Co之积写进日志，调试会容易很多。如果大量面上$k\cdot Co$超过1.3，那一步的界面就是再分配造出来的。

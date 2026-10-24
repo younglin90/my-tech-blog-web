@@ -1,0 +1,246 @@
+---
+title: "[論文レビュー] 傾き3のMSTACSはCo=0.5で255ステップ目に発散した — 圧縮差分とCourant限界"
+date: 2026-10-25
+description: "MSTACS式(18)の圧縮差分を1Dスラブで試しました。再分配なしではCo>0.44で発散します。原因は傾きkとCoの積です。"
+tags: ["MSTACS", "Normalized-Variable-Diagram", "Interface-Capturing", "VOF", "Paper-Review"]
+locale: ja
+slug: 2026-10-25-mstacs-slope-three-courant-limit
+takeaway: "MSTACSがCo>1/3で使う傾き3の圧縮差分は、1ステップでセルが持つ量より多くを送り出すため、再分配アルゴリズムなしではCrank–Nicolsonでも有界性を保てません。"
+draft: false
+---
+import { NvdSlopeCourantLab } from '@/components/post-viz/2026-10-25-mstacs-slope-three-courant-limit/NvdSlopeCourantLab'
+import { SlabCdsBlowupRace } from '@/components/post-viz/2026-10-25-mstacs-slope-three-courant-limit/SlabCdsBlowupRace'
+
+## Co=0.5で255ステップ目にスラブが壊れた
+
+界面をより鋭く捉えるために作られたスキームがあります。それを最も簡単な問題に適用しました。1Dスラブを周期領域で2周させる問題です。Co=0.25では界面は2セルに収まりました。ところがCo=0.5にすると、255ステップ目に体積分率が10を超えました。
+
+この記事ではMSTACS(Modified Switching Technique for Advection and Capturing of Surfaces)論文の3節を扱います。MSTACSはVOF(体積分率で界面を表す手法)系の代数的界面捕獲スキームです。論文の核心は式(18)の1行です。読み終えると、その1行がなぜCo=1/3で切り替わるのか分かります。そして、その1行が何に支えられているかも見えてきます。
+
+MSTACSと組み合わせた圧力連成は[MSTACSと一般圧力方程式の記事](/ja/posts/2026-05-31-gpe-mstacs-iteration-free-twophase/)で扱いました。今日は体積分率の面値だけに集中します。
+
+## MSTACSが変えたのは圧縮差分ひとつだけ
+
+CICSAM、STACS、SAISH、MSTACSはすべて同じ枠組みを使います。面の体積分率を、供与(donor)セルと受容(acceptor)セルの重み付き平均で作ります。
+
+$$
+C_f^* = \gamma_f \frac{C_A^n + C_A^{n+1}}{2} + (1-\gamma_f)\frac{C_D^n + C_D^{n+1}}{2}
+$$
+
+$C_D$は供与セル、$C_A$は受容セルの値です。時間方向はCrank–Nicolson(現在と次の時刻の平均)です。$\gamma_f=0$なら1次風上、$\gamma_f=1$なら純粋な下流差分です。
+
+重みは正規化変数で決めます。
+
+$$
+\tilde C_D = \frac{C_D - C_U}{C_A - C_U}, \qquad \gamma_f = \frac{\tilde C_f - \tilde C_D}{1 - \tilde C_D}
+$$
+
+$C_U$は供与セルの上流セルの値です。$\tilde C_f$をどんな関数で与えるかがスキームの正体です。各スキームは圧縮差分(CDS)と高解像度差分(HR)を$\beta(\theta)=\min(\cos^p\theta,1)$で混ぜます。$\theta$は界面法線と面法線のなす角です。
+
+4つのCDSは次の通りです。CICSAMはHYPER-C $\min(\tilde C_D/Co, 1)$を使います。STACSはSUPERBEEです。SAISHは$\min(4\tilde C_D, 1)$です。MSTACSはCourant数で切り替えます。
+
+$$
+\tilde C_{f,\mathrm{MSTACS}} = \begin{cases} \min(\tilde C_D / Co_D,\ 1) & 0 < Co_D \le 1/3 \\ \min(3\tilde C_D,\ 1) & 1/3 < Co_D \le 1 \end{cases}
+$$
+
+$Co_D$は供与セルの流出Courant数です。PDF変換版では式(18)の1行目が$\min(\tilde C_D,1)$になっています。しかし本文は「$Co<0.33$ではHYPER-C」と書いています。上の式は本文に従いました。
+
+## 正規化変数図の上の傾き
+
+式(18)には隠れた連続性があります。Co=1/3でHYPER-Cの傾き$1/Co$はちょうど3です。つまりMSTACSは、HYPER-Cの傾きを3で凍結したスキームです。Coが大きくなるとHYPER-Cは1次風上側へ寝ていきます。MSTACSは寝ることを拒みます。
+
+問題は赤い境界線です。陽的な有界性条件(CBC、解が隣接値の範囲を出ないための条件)は$\tilde C_f \le \tilde C_D / Co$です。物理的な意味は単純です。1ステップの間に、セルは持っている量より多くを送り出せません。
+
+下のシミュレーションで実際に操作してみましょう。
+
+<NvdSlopeCourantLab />
+
+Coスライダーを0.33より上げてMSTACSを選んでください。右の棒で「送り出す量」が「持つ量」を超えた瞬間に赤くなります。傾き$k$とCoの積が1を超える領域です。
+
+## 1DではHRスキームが消える
+
+1Dの界面は常に面と垂直です。したがって$\theta=0$、$\cos\theta=1$、$\beta=1$です。高解像度差分の重みは0になります。1D実験はCDSだけを単独で試すことになります。
+
+これが今日の実験の長所であり限界です。長所は原因を1つに絞れることです。限界は2Dより厳しいことです。2Dでは斜めの界面で$\beta<1$となりHRが混ざります。
+
+## コード:同じスラブ、4つのCDS、3つのCourant数
+
+100セルの周期領域にスラブ$[30.4, 60.4)$を置きました。両端セルが0.6と0.4のセル平均初期値です。2周させた後、L1誤差、界面厚さ($0.05<C<0.95$のセル数)、最大オーバーシュートを測ります。$\gamma_f$は$C^n$で固定し、周期三重対角系を解きます。最もよくある実装方法です。
+
+```python
+# 1Dスラブ移流: 4つの圧縮差分(CDS)をCrank-Nicolson面値(式6-8)で比較
+N, LAPS = 100, 2
+
+def cds_face(t, co, name):
+    # 正規化供与値 t = C~_D (0<t<1) -> 正規化面値 C~_f
+    if name == "HYPER-C":   # CICSAM
+        return min(t / co, 1.0)
+    if name == "SUPERBEE":  # STACS
+        if t < 1/3: return 2*t
+        if t < 1/2: return 0.5 + 0.5*t
+        if t < 2/3: return 1.5*t
+        return 1.0
+    if name == "BD-SAISH":  # SAISH
+        return min(4*t, 1.0)
+    if name == "MSTACS":    # 式(18): Co<=1/3ならHYPER-C、それ以外は傾き3
+        return min(t / co, 1.0) if co <= 1/3 else min(3*t, 1.0)
+
+def face_gamma(c, co, name):
+    # 面 i+1/2 (u>0: U=i-1, D=i, A=i+1) の下流重み gamma_f、式(8)
+    g = [0.0]*N
+    for i in range(N):
+        cu, cd, ca = c[i-1], c[i], c[(i+1) % N]
+        if abs(ca - cu) < 1e-12: continue
+        t = (cd - cu) / (ca - cu)
+        if 0 < t < 1:
+            g[i] = (cds_face(t, co, name) - t) / (1 - t)
+    return g
+
+def solve_cyclic(a, b, c, r):
+    # 周期三重対角 a_i x_{i-1} + b_i x_i + c_i x_{i+1} = r_i (Sherman-Morrison)
+    n = len(b); gam = -b[0]
+    bb = b[:]; bb[0] -= gam; bb[-1] -= a[0]*c[-1]/gam
+    def thomas(d):
+        cp, dp = [0.0]*n, [0.0]*n
+        cp[0], dp[0] = c[0]/bb[0], d[0]/bb[0]
+        for i in range(1, n):
+            m = bb[i] - a[i]*cp[i-1]
+            cp[i], dp[i] = c[i]/m, (d[i] - a[i]*dp[i-1])/m
+        x = [0.0]*n; x[-1] = dp[-1]
+        for i in range(n-2, -1, -1):
+            x[i] = dp[i] - cp[i]*x[i+1]
+        return x
+    y = thomas(r)
+    u = [0.0]*n; u[0], u[-1] = gam, c[-1]
+    z = thomas(u)
+    f = (y[0] + a[0]*y[-1]/gam) / (1 + z[0] + a[0]*z[-1]/gam)
+    return [y[i] - f*z[i] for i in range(n)]
+
+def cn_step(c, co, g):
+    # 式(7): gammaはC^nで固定、面値はC^nとC^(n+1)の平均
+    h = 0.5*co
+    a  = [-h*(1 - g[i-1]) for i in range(N)]
+    b  = [1 + h*(1 - g[i]) - h*g[i-1] for i in range(N)]
+    up = [h*g[i] for i in range(N)]
+    r  = [c[i] - h*((g[i]*c[(i+1) % N] + (1 - g[i])*c[i])
+                    - (g[i-1]*c[i] + (1 - g[i-1])*c[i-1])) for i in range(N)]
+    return solve_cyclic(a, b, up, r)
+
+def redistribute(c):
+    # 単純なclip再分配: 超過分を両隣に半分ずつ(質量保存、論文のアルゴリズムではない)
+    for _ in range(3):
+        for i in range(N):
+            if c[i] > 1:   e = c[i] - 1; c[i] = 1.0
+            elif c[i] < 0: e = c[i];     c[i] = 0.0
+            else: continue
+            c[(i+1) % N] += e/2; c[i-1] += e/2
+    return c
+
+def slab_init():
+    # セル平均スラブ [30.4, 60.4): 両端セルは 0.6 / 0.4
+    return [max(0.0, min(i+1, 60.4) - max(i, 30.4)) for i in range(N)]
+
+def run_case(name, co, fix):
+    c0 = slab_init(); c = c0[:]
+    steps = round(LAPS*N/co)
+    for s in range(steps):
+        c = cn_step(c, co, face_gamma(c, co, name))
+        if fix: c = redistribute(c)
+        if max(c) > 10: return f"blow-up at step {s+1}/{steps}"
+    l1 = sum(abs(x - y) for x, y in zip(c, c0)) / N
+    width = sum(1 for x in c if 0.05 < x < 0.95)
+    over = max(max(c) - 1, -min(c), 0.0)
+    return f"L1={l1:.4f} width={width:2d} overshoot={over:.1e}"
+
+for fix in (False, True):
+    print("with redistribution" if fix else "no redistribution")
+    for name in ("HYPER-C", "SUPERBEE", "BD-SAISH", "MSTACS"):
+        for co in (0.25, 0.5, 0.75):
+            print(f"  {name:8s} Co={co:.2f}  {run_case(name, co, fix)}")
+
+def blowup_co(k):
+    # 傾きkのCDS min(k t, 1)が再分配なしで耐える最大Co(0.01刻み)
+    global cds_face
+    old = cds_face
+    cds_face = lambda t, co, name: min(k*t, 1.0)
+    co = 0.10
+    while co < 1.0 and not run_case("k", round(co, 2), False).startswith("blow"):
+        co += 0.01
+    cds_face = old
+    return round(co - 0.01, 2)
+
+print("max stable Co without redistribution (CDS slope k)")
+for k in (2, 3, 4):
+    print(f"  k={k}: Co_max={blowup_co(k):.2f}   1/k={1/k:.2f}")
+```
+
+```text
+no redistribution
+  HYPER-C  Co=0.25  L1=0.0001 width= 2 overshoot=0.0e+00
+  HYPER-C  Co=0.50  L1=0.0025 width= 2 overshoot=0.0e+00
+  HYPER-C  Co=0.75  L1=0.0654 width=29 overshoot=0.0e+00
+  SUPERBEE Co=0.25  L1=0.0085 width= 6 overshoot=0.0e+00
+  SUPERBEE Co=0.50  L1=0.0061 width= 4 overshoot=0.0e+00
+  SUPERBEE Co=0.75  L1=0.0052 width= 2 overshoot=3.6e-03
+  BD-SAISH Co=0.25  L1=0.0001 width= 2 overshoot=0.0e+00
+  BD-SAISH Co=0.50  blow-up at step 141/400
+  BD-SAISH Co=0.75  blow-up at step 30/267
+  MSTACS   Co=0.25  L1=0.0001 width= 2 overshoot=0.0e+00
+  MSTACS   Co=0.50  blow-up at step 255/400
+  MSTACS   Co=0.75  blow-up at step 50/267
+with redistribution
+  HYPER-C  Co=0.25  L1=0.0001 width= 2 overshoot=0.0e+00
+  HYPER-C  Co=0.50  L1=0.0025 width= 2 overshoot=0.0e+00
+  HYPER-C  Co=0.75  L1=0.0654 width=29 overshoot=0.0e+00
+  SUPERBEE Co=0.25  L1=0.0085 width= 6 overshoot=0.0e+00
+  SUPERBEE Co=0.50  L1=0.0061 width= 4 overshoot=0.0e+00
+  SUPERBEE Co=0.75  L1=0.0053 width= 2 overshoot=2.3e-04
+  BD-SAISH Co=0.25  L1=0.0001 width= 2 overshoot=0.0e+00
+  BD-SAISH Co=0.50  L1=0.0163 width= 1 overshoot=1.8e-02
+  BD-SAISH Co=0.75  L1=0.0574 width= 1 overshoot=7.1e-02
+  MSTACS   Co=0.25  L1=0.0001 width= 2 overshoot=0.0e+00
+  MSTACS   Co=0.50  L1=0.0099 width= 0 overshoot=5.1e-03
+  MSTACS   Co=0.75  L1=0.0422 width= 2 overshoot=6.9e-02
+max stable Co without redistribution (CDS slope k)
+  k=2: Co_max=0.70   1/k=0.50
+  k=3: Co_max=0.44   1/k=0.33
+  k=4: Co_max=0.33   1/k=0.25
+```
+
+上のコードをブラウザで直接動かしてみましょう。
+
+<SlabCdsBlowupRace />
+
+既定値Co=0.50では、BD-SAISHが141ステップ、MSTACSが255ステップで発散します。Coを0.33に下げると4つとも生き残ります。再分配をオンにすると発散しない代わりに、右のグラフでオーバーシュートが残り続けるのが見えます。
+
+## 原因:1ステップで持つ量より多く送り出す
+
+まずCo=0.25の3行を見てください。HYPER-C、BD-SAISH、MSTACSの数字が完全に一致します。偶然ではありません。$1/0.25=4$なので、3つの関数は同じ曲線です。違いはCoが大きいときにだけ現れます。
+
+HYPER-CはCo=0.75で界面が29セルに広がりました。傾き$1/Co=1.33$はほぼ1次風上です。論文が指摘したCICSAMの弱点そのものです。SUPERBEEは逆にCo=0.25で6セルです。TVD領域内のCDSは低Coで圧縮が弱いのです。これも論文のSTACS診断と一致します。
+
+傾きが固定されたBD-SAISHとMSTACSは、Coが大きくなると発散しました。最後の表が境界を示します。$k=2$は0.70、$k=3$は0.44、$k=4$は0.33まで耐えます。3つとも$k\cdot Co_{max}\approx 1.3$〜$1.4$です。Crank–Nicolsonは陽的限界$k\cdot Co=1$より30〜40%の余裕しか与えません。無限の余裕はありません。
+
+論文はDarwish–Moukalledを引用し「CNでは過渡的な有界化は不要」と書いています。少なくとも$\gamma_f$を$C^n$で凍結する実装では、そうなりませんでした。傾き3はCo=0.44を超えると自力では立てません。
+
+## 解決1:再分配が式(18)を支えている
+
+論文3節の最後の段落は短いです。オーバー・アンダーシュートをSaincher–Banerjeeの再分配アルゴリズムで除去する、とだけ書いています。実験を見ると、この一文は飾りではありません。
+
+単純なclip再分配をオンにすると、4つとも2周を終えます。質量誤差も$10^{-15}$程度です。しかし代償があります。MSTACSのCo=0.50は厚さ0になりました。すべてのセルが0か1です。初期の0.6/0.4セルがセル面に張り付いた階段になったのです。L1 0.0099の大半は、この0.4セル分の位置ずれです。
+
+Co=0.75ではMSTACSのL1が0.0422です。SUPERBEEの0.0053の8倍です。3回の再分配後も6.9%のオーバーシュートが残ります。再分配の仕事が多いほど、解は階段状に固まります。
+
+## 解決2:論文の表でMSTACSが勝つ理由
+
+それでも論文の表1では、Co=0.75の円の移流でMSTACSが$2.622\times10^{-3}$と最良です。1Dの結果と矛盾するでしょうか。そうではありません。3つの点が違います。
+
+第一に、2Dの斜め界面では$\beta=\cos^4\theta$が急速に小さくなり、CDSの比重が減ってHRが混ざります。第二に、論文の再分配は単純なclipではありません。第三に、円や正方形の移流では界面の大部分が格子に対して斜めです。$\beta=1$の1Dスラブは最悪のケースです。
+
+結局、式(18)は単独では働きません。傾き3の圧縮は、混合関数と再分配が一緒に支えるときだけ安全です。圧縮型リミッターでも似た交換を見ました。[Talloisのβを2に上げた記事](/ja/posts/2026-10-24-compressive-beta-limiter-volume-fraction/)でも、圧縮の代価は別の場所で払われていました。
+
+## MSTACSを自分のVOFコードに入れる前に回す1本
+
+式(18)を移植するときは、まず1DスラブをCo=0.5で2周させます。再分配はオフにしておきます。発散すれば、コードは論文通りに実装されています。その後で再分配をオンにし、オーバーシュートと厚さを確認します。
+
+この順序を逆にすると、再分配がすべての問題を覆い隠します。界面が鋭く見える理由がスキームなのかclipなのか区別できません。面ごとに傾き$k$とCoの積をログに出しておくとデバッグが楽になります。$k\cdot Co$が1.3を超える面が多ければ、そのステップの界面は再分配が作ったものです。
