@@ -1,0 +1,181 @@
+---
+title: "A Small Wobble in Mixture Fraction Drops the Mean Flame Temperature by 964 K — Presumed β-PDF and the Infinity at Z=0"
+date: 2026-10-27
+description: "At stoichiometric mean Z, the β-PDF mean temperature sits 964 K below T(Z̄). When a<1, a 100-cell uniform-grid integral also overshoots by 115 K. Here is why, with code."
+tags: ["Beta-PDF", "Mixture-Fraction", "Flamelet", "Combustion", "Turbulence"]
+locale: en
+slug: 2026-10-27-presumed-beta-pdf-mean-flame-temperature
+takeaway: "The mean temperature of a turbulent flame is not the flame temperature at the mean mixture fraction. Once the β-PDF exponent a drops below 1, the cold air mass near Z=0 must be integrated exactly with the incomplete beta function."
+draft: false
+---
+import { BetaPdfFlameMeanLab } from '@/components/post-viz/2026-10-27-presumed-beta-pdf-mean-flame-temperature/BetaPdfFlameMeanLab'
+import { PresumedPdfQuadratureRace } from '@/components/post-viz/2026-10-27-presumed-beta-pdf-mean-flame-temperature/PresumedPdfQuadratureRace'
+
+## Why can't you read the flame temperature off the mean mixture fraction?
+
+Picture a turbulent methane–air jet flame. At one point, the time-averaged mixture fraction is exactly stoichiometric, 0.055. What is the mean temperature there? The adiabatic flame temperature at stoichiometric is 2230 K, so 2230 K is the tempting answer.
+
+The answer is 1266 K, when the fluctuations are moderate. This post shows where those 964 K go. We integrate the presumed β-PDF (assuming the probability density has a beta-distribution shape) by hand. Then we follow why a 100-cell uniform grid gets it wrong by 115 K.
+
+The starting point is a set of slides from a 2018 summer combustion seminar on using FlameMaster. Between the installation steps, `ScanMan`, and `FlameMaster` commands sit a few theory slides: PDF and CDF, the Beta function, mixture fraction and dissipation rate, the S-curve. Only the slide titles survive. Here we fill in the "PDF and Beta function" blank.
+
+## Z handles mixing, T(Z) handles chemistry
+
+Mixture fraction $Z$ (the mass fraction that came from the fuel stream) is 0 in air and 1 in fuel. With infinitely fast chemistry, temperature becomes a function of $Z$ alone. That is the Burke–Schumann solution: a roof shape with its peak at stoichiometric $Z_{st}$ and straight lines down on each side.
+
+At a point inside turbulence, $Z$ fluctuates in time. An air pocket passing by pushes it toward 0. A fuel pocket kicks it high. The mean temperature is the average of $T(Z)$ over all of those fluctuations.
+
+$$\tilde T = \int_0^1 T(Z)\,P(Z)\,dZ \neq T(\tilde Z)$$
+
+$P(Z)$ is the probability density of $Z$ at that point, and $\tilde Z$ is the mean mixture fraction.
+
+If $T(Z)$ were a straight line, the two would match. The roof bends at its peak. Put the mean right on top of the bend, and any fluctuation in either direction lowers the temperature. Try it yourself in the simulation below.
+
+<BetaPdfFlameMeanLab />
+
+Each particle is a $Z$ drawn from the β-PDF. The height where it lands on the roof is its temperature. The pink dot is the running mean of all particles, and it quickly locks onto the green line $\tilde T$. At $s=0.1$, a third of the particles pile up below $Z<0.01$. Now slide $\bar Z$ to 0.2. The right side of the roof is gentle, so the gap shrinks a lot.
+
+## β-PDF: two numbers set the shape
+
+An LES or RANS solver hands over only two things: $\tilde Z$ and the variance $\widetilde{Z''^2}$. Nobody solves for the full PDF. So the shape is fixed in advance. For a variable trapped between 0 and 1, the beta distribution is the natural choice.
+
+$$P(Z) = \frac{Z^{a-1}(1-Z)^{b-1}}{B(a,b)}, \qquad a = \tilde Z\,\gamma,\quad b = (1-\tilde Z)\,\gamma,\quad \gamma = \frac{1}{s} - 1$$
+
+$B(a,b)$ is the beta function (the normalizing constant). $s = \widetilde{Z''^2}/[\tilde Z(1-\tilde Z)]$ is the segregation intensity: 0 is perfectly mixed, 1 is fully segregated into pure 0 and pure 1.
+
+Near stoichiometric, $\tilde Z$ is small. So $a$ drops below 1 quickly. With $\tilde Z = 0.055$, $a<1$ for any $s > 0.052$. Then $Z^{a-1}$ blows up as $Z\to0$. The integral stays finite. But the PDF value itself diverges at the endpoint. That property is what wrecks the uniform-grid integral later.
+
+## A bent line integrates exactly with the incomplete beta function
+
+If $T(Z)$ is piecewise linear, no numerical quadrature is needed. Each piece needs only two integrals.
+
+$$\int_0^{x} P\,dZ = I_x(a,b), \qquad \int_0^{x} Z\,P\,dZ = \tilde Z\, I_x(a+1,b)$$
+
+$I_x(a,b)$ is the regularized incomplete beta function (the CDF of the beta distribution). The second identity holds because $Z\cdot Z^{a-1} = Z^{a}$ and $B(a+1,b)/B(a,b) = a/(a+b) = \tilde Z$.
+
+Plug in the lean and rich lines on either side of $Z_{st}$, and $\tilde T$ comes out in closed form. The endpoint infinity is handled analytically inside $I_x$. $I_x$ is evaluated with a continued fraction (Lentz's method), the same algorithm as Numerical Recipes' `betai`.
+
+The same holds for a flamelet library. The $T(Z;\chi)$ curves from [the scalar dissipation and extinction limit](/en/posts/2026-09-22-flamelet-scalar-dissipation-extinction/) replace the roof. If the table's $Z$ grid is linearly interpolated, apply the formula above piece by piece.
+
+## Code: variance from 0.01 to 0.8 at stoichiometric Z̄
+
+Fix $\tilde Z = Z_{st} = 0.055$ and vary only $s$. Alongside the exact integral, run a uniform-grid integral that samples the PDF at cell centers and renormalizes the sum to 1, with $N=100$ and $1000$. The last two columns are differences from the exact value.
+
+```python
+import math
+
+# Burke-Schumann methane-air flame temperature T(Z)
+T_U, T_AD, Z_ST = 300.0, 2230.0, 0.055
+
+def t_burke(z):
+    if z <= Z_ST:
+        return T_U + (T_AD - T_U) * z / Z_ST
+    return T_U + (T_AD - T_U) * (1.0 - z) / (1.0 - Z_ST)
+
+def betacf(a, b, x):
+    # continued fraction for the incomplete beta (Lentz)
+    qab, qap, qam = a + b, a + 1.0, a - 1.0
+    c, d = 1.0, 1.0 - qab * x / qap
+    d = 1.0 / (d if abs(d) > 1e-300 else 1e-300)
+    h = d
+    for m in range(1, 300):
+        m2 = 2 * m
+        aa = m * (b - m) * x / ((qam + m2) * (a + m2))
+        d = 1.0 + aa * d; c = 1.0 + aa / c
+        d = 1.0 / (d if abs(d) > 1e-300 else 1e-300); h *= d * c
+        aa = -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2))
+        d = 1.0 + aa * d; c = 1.0 + aa / c
+        d = 1.0 / (d if abs(d) > 1e-300 else 1e-300)
+        dl = d * c; h *= dl
+        if abs(dl - 1.0) < 1e-14:
+            break
+    return h
+
+def inc_beta(a, b, x):
+    # regularized incomplete beta I_x(a, b)
+    if x <= 0.0: return 0.0
+    if x >= 1.0: return 1.0
+    lnf = (math.lgamma(a + b) - math.lgamma(a) - math.lgamma(b)
+           + a * math.log(x) + b * math.log(1.0 - x))
+    if x < (a + 1.0) / (a + b + 2.0):
+        return math.exp(lnf) * betacf(a, b, x) / a
+    return 1.0 - math.exp(lnf) * betacf(b, a, 1.0 - x) / b
+
+def beta_ab(zm, s):
+    # s = Z''^2 / (Zm (1 - Zm)), segregation intensity
+    g = 1.0 / s - 1.0
+    return zm * g, (1.0 - zm) * g
+
+def mean_t_exact(zm, s):
+    # T is piecewise linear, so each piece integrates with I_x
+    a, b = beta_ab(zm, s)
+    p_lo = inc_beta(a, b, Z_ST)                 # P(Z < Z_st)
+    z_lo = zm * inc_beta(a + 1.0, b, Z_ST)      # int_0^Zst Z P dZ
+    k1 = (T_AD - T_U) / Z_ST
+    k2 = (T_AD - T_U) / (1.0 - Z_ST)
+    lean = T_U * p_lo + k1 * z_lo
+    rich = (T_U + k2) * (1.0 - p_lo) - k2 * (zm - z_lo)
+    return lean + rich
+
+def mean_t_grid(zm, s, n):
+    # naive: evaluate the pdf at n cell centres, renormalise
+    a, b = beta_ab(zm, s)
+    num = den = 0.0
+    for i in range(n):
+        z = (i + 0.5) / n
+        p = z ** (a - 1.0) * (1.0 - z) ** (b - 1.0)
+        num += p * t_burke(z); den += p
+    return num / den
+
+zm = Z_ST
+print(f"Z_mean = {zm}, T(Z_mean) = {t_burke(zm):.1f} K")
+print(" s      a       b      T_exact   gap    grid100  grid1000")
+for s in [0.01, 0.03, 0.05, 0.1, 0.2, 0.4, 0.8]:
+    a, b = beta_ab(zm, s)
+    te = mean_t_exact(zm, s)
+    g1, g2 = mean_t_grid(zm, s, 100), mean_t_grid(zm, s, 1000)
+    print(f"{s:4.2f} {a:7.3f} {b:8.2f} {te:9.1f} {te - t_burke(zm):7.1f}"
+          f" {g1 - te:+8.1f} {g2 - te:+8.1f}")
+```
+
+```text
+Z_mean = 0.055, T(Z_mean) = 2230.0 K
+ s      a       b      T_exact   gap    grid100  grid1000
+0.01   5.445    93.55    1895.7  -334.3     +5.4     -0.0
+0.03   1.778    30.55    1663.1  -566.9     -5.9     -0.2
+0.05   1.045    17.95    1513.3  -716.7     +3.0     -0.2
+0.10   0.495     8.50    1266.2  -963.8   +114.6    +32.3
+0.20   0.220     3.78     980.9 -1249.1   +335.4   +167.4
+0.40   0.083     1.42     682.6 -1547.4   +585.9   +382.0
+0.80   0.014     0.24     391.7 -1838.3   +664.2   +506.9
+```
+
+Run the code above directly in your browser.
+
+<PresumedPdfQuadratureRace />
+
+Hit Play and it sweeps $s$ from 0.01 to 0.8 on a log scale, tracing three curves. At the defaults, the table on the right reproduces the output above. The red band is the $a<1$ region, and the blue error curve shoots up right after crossing it. Raise $\bar Z$ to 0.2 and the red band slides right, and the $N_1=100$ error shrinks with it.
+
+## What 964 K and +115 K are telling you
+
+The first number is physics. At $s=0.1$, the rms fluctuation is 0.072. That is larger than the mean 0.055, and common at the edge of a mixing layer. There, $\tilde T$ is 1266 K, which is 964 K below $T(\tilde Z)$. Even a tiny wobble at $s=0.01$ removes 334 K. A mean sitting on the peak is the most sensitive spot.
+
+Push $s$ to 0.8 and $\tilde T$ falls to 392 K. In the limit $s\to1$, the PDF splits into two deltas at $Z=0$ and $Z=1$. Both ends are at 300 K. A mean temperature returning to ambient is exactly right.
+
+The second number is numerics. For $s\le0.05$, the 100-cell grid error stays under 6 K, because $a$ is above or near 1. At $s=0.1$, $a=0.495$, and the error jumps to +115 K. Going to 1000 cells still leaves +32 K. At $s=0.8$, even 1000 cells is off by +507 K. Refining the grid 10× cuts the error by only 3.6×.
+
+## With $a<1$, a uniform grid misses the cold air
+
+The sign is always positive, and that is the clue. The grid integral makes the mean too hot. It is undercounting mass on the cold side.
+
+At $s=0.1$, the true probability in the first cell $[0, 0.01]$ is $I_{0.01}(a,b) = 0.320$. A third of all air pockets sit in that one cell. Sampling the PDF at the cell center $Z=0.005$ gives that cell only 0.247. $Z^{a-1}$ curves far above its center value inside the cell. The missing 0.073 flows to hotter cells through renormalization.
+
+The midpoint rule normally converges as $h^2$. But with a singular integrand like $Z^{a-1}$, the first cell's relative error is fixed regardless of grid size. Since the first cell holds mass proportional to $h^a$, the total error also shrinks like $h^a$. With $a=0.495$, a 10× finer grid cuts error by $10^{-0.495}\approx 0.32$. That nearly matches 115 → 32 (0.28×) in the output.
+
+There are two fixes. One is to put the exact mass into each cell via differences of $I_x$, as above. The other is to cluster the grid geometrically toward $Z=0$. The first is cheaper and airtight. Also, when $s$ is tiny and $\gamma$ is huge, computing $B(a,b)$ directly overflows, so work in log space with `lgamma`.
+
+## Where to recheck the Z grid when building a flamelet table
+
+The last FlameMaster slide is a single line: use `ListTool` to dump `.kg` files and build a library. When that library feeds an [SLF/FPV table](/en/posts/2026-10-06-flamelet-library-slf-fpv-progress-variable/), β-PDF integration is the very next step. Flamelet solutions usually cluster points near $Z_{st}$. Yet the place where the PDF diverges is $Z=0$.
+
+After building the table, run one check. At $\tilde Z = Z_{st}$ and $s=0.1$, compute $\tilde T$ both by grid quadrature and by $I_x$. If they differ by tens of kelvin, that difference lands directly in the LES mean temperature field. And for quantities exponentially sensitive to temperature, like reaction rates or NO formation, it grows several-fold.
