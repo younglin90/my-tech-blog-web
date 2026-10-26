@@ -288,6 +288,7 @@ export function rayleighFromMach(M: number, gamma = 1.4): RayleighState | null {
   const P0_P0Star =
     (gp1 / denom) * Math.pow((1 + 0.5 * gm1 * M * M) / (0.5 * gp1), gamma / gm1)
   const U_UStar = (gp1 * M * M) / denom
-  const sStarMinusS_over_R = Math.log(P0_P0Star)
+  // Rayleigh is not adiabatic: (s*-s)/R = [γ/(γ-1)] ln(T0*/T0) + ln(p0/p0*).
+  const sStarMinusS_over_R = (gamma / gm1) * Math.log(1 / T0_T0Star) + Math.log(P0_P0Star)
   return { M, T0_T0Star, T_TStar, P_PStar, P0_P0Star, U_UStar, sStarMinusS_over_R }
 }

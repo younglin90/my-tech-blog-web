@@ -1,7 +1,7 @@
 import { ImageResponse } from 'next/og'
 import { LOCALES, t, type Locale } from '@/lib/i18n'
 import { listAllSeries, getSeries } from '@/lib/series'
-import { titleFromSlug } from '@/lib/jsonld'
+import { seriesTitle } from '@/lib/series-title'
 import { OgFrame, ogFonts, OG_SIZE, OG_CONTENT_TYPE } from '@/lib/og'
 
 export const dynamic = 'force-static'
@@ -26,7 +26,7 @@ export default async function Image({ params }: { params: Promise<{ locale: stri
       <OgFrame
         locale={loc}
         command="$ cat series/"
-        title={titleFromSlug(slug)}
+        title={seriesTitle(slug, loc)}
         subtitle={t(loc, 'series.parts', { count: String(series?.count ?? 0) })}
         chips={(series?.posts ?? []).slice(0, 4).map((p, i) => `${i + 1}. ${p.title.slice(0, 28)}`)}
         stat="cfdblog.cc/series"

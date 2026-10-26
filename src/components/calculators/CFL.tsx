@@ -19,7 +19,7 @@ export function CFLCalculator() {
         <Field label="u — wave speed (m/s)" value={u} onChange={setU} step={0.1} />
         <Field label="Δt — time step (s)" value={dt} onChange={setDt} step={0.0001} />
         <Field label="Δx — grid spacing (m)" value={dx} onChange={setDx} step={0.001} />
-        <Field label="C_max (e.g., 1.0 advect, 0.5 RK4)" value={Cmax} onChange={setCmax} step={0.05} />
+        <Field label="C_max (1 upwind Euler, about 2 for RK4 advection)" value={Cmax} onChange={setCmax} step={0.05} />
       </div>
       <div className="mt-5 grid gap-3 sm:grid-cols-2">
         <div className="rounded-lg p-3" style={{ background: 'var(--bg)', border: `2px solid ${safe ? '#34d399' : '#f87171'}` }}>

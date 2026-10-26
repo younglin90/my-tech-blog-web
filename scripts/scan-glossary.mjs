@@ -6,8 +6,10 @@ import { readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 const SRC = 'source-docs/glossary.yaml'
+const I18N = 'source-docs/glossary-i18n.json'
 const POSTS_DIR = 'src/content/posts/ko'
 const OUT = 'src/lib/glossary.json'
+const LOCALES = ['ja', 'zh', 'es']
 
 const AUTO_TERMS = {
   'Navier-Stokes': {
@@ -213,7 +215,7 @@ function parseGlossaryYaml(raw) {
       continue
     }
 
-    const field = line.match(/^    (ko|en|wiki):\s*"?(.*?)"?\s*$/)
+    const field = line.match(/^    (ko|en|ja|zh|es|wiki):\s*"?(.*?)"?\s*$/)
     if (field && currentEntry) {
       const [, key, val] = field
       currentEntry[key] = val
@@ -286,6 +288,23 @@ function mergeAutoTerms(result) {
 
 const result = parseGlossaryYaml(readFileSync(SRC, 'utf-8'))
 mergeAutoTerms(result)
+
+const localeOverlay = JSON.parse(readFileSync(I18N, 'utf-8'))
+for (const [term, texts] of Object.entries(localeOverlay)) {
+  if (!result[term]) {
+    console.error(`glossary-i18n: unknown term ${term}`)
+    process.exitCode = 1
+    continue
+  }
+  for (const loc of LOCALES) {
+    if (texts[loc] && !result[term][loc]) result[term][loc] = texts[loc]
+  }
+}
+for (const term of Object.keys(result)) {
+  for (const loc of LOCALES) {
+    if (!result[term][loc]) console.error(`glossary-i18n: missing ${loc} for ${term}`)
+  }
+}
 
 const posts = loadPosts()
 for (const [term, entry] of Object.entries(result)) {

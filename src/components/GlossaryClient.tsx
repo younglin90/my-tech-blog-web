@@ -3,10 +3,9 @@
 import Link from 'next/link'
 import { useMemo, useState, useCallback } from 'react'
 import { t, type Locale } from '@/lib/i18n'
+import { glossaryText, type GlossaryTexts } from '@/lib/glossary-text'
 
-interface Entry {
-  ko: string
-  en: string
+interface Entry extends GlossaryTexts {
   wiki?: string
   count?: number
   source?: string
@@ -132,7 +131,7 @@ function FlashcardMode({ entries, locale }: { entries: [string, Entry][]; locale
           {pct}%
         </div>
         <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
-          {correct} correct · {incorrect} missed · {total} total
+          {t(locale, 'glossary.score', { correct: String(correct), missed: String(incorrect), total: String(total) })}
         </p>
         <div className="w-full max-w-xs rounded-full h-2" style={{ background: 'var(--border)' }}>
           <div className="h-2 rounded-full" style={{ width: `${pct}%`, background: 'var(--accent)' }} />
@@ -149,7 +148,7 @@ function FlashcardMode({ entries, locale }: { entries: [string, Entry][]; locale
   }
 
   const [term, def] = deck[idx]
-  const definition = (locale === 'ko' ? def.ko : def.en) || def.en || def.ko
+  const definition = glossaryText(def, locale)
 
   return (
     <div className="flex flex-col items-center gap-6">
@@ -217,7 +216,7 @@ export function GlossaryClient({ entries, locale, total }: Props) {
     const lower = q.trim().toLowerCase()
     if (!lower) return entries
     return entries.filter(([term, def]) => {
-      const def_text = (locale === 'ko' ? def.ko : def.en) || def.en || def.ko
+      const def_text = glossaryText(def, locale)
       const postText = (def.posts ?? []).map((post) => post.title).join(' ')
       return [term, def_text, postText].join(' ').toLowerCase().includes(lower)
     })
@@ -270,7 +269,7 @@ export function GlossaryClient({ entries, locale, total }: Props) {
               onClick={() => setQ('')}
               className="absolute right-0 top-1/2 flex min-h-11 min-w-11 -translate-y-1/2 items-center justify-center text-sm"
               style={{ color: 'var(--text-faint)' }}
-              aria-label="Clear search"
+              aria-label={t(locale, 'search.clear')}
             >
               ×
             </button>
@@ -312,7 +311,7 @@ export function GlossaryClient({ entries, locale, total }: Props) {
 
       <dl className="space-y-5">
         {filtered.map(([term, def], idx) => {
-          const definition = (locale === 'ko' ? def.ko : def.en) || def.en || def.ko
+          const definition = glossaryText(def, locale)
           const letter = term[0]?.toUpperCase()
           const prevLetter = idx > 0 ? filtered[idx - 1][0][0]?.toUpperCase() : null
           const showAnchor = !q && letter !== prevLetter
@@ -339,7 +338,7 @@ export function GlossaryClient({ entries, locale, total }: Props) {
                   </span>
                   {typeof def.count === 'number' && def.count > 0 && (
                     <span className="mono rounded px-1.5 py-0.5 text-[10px]" style={{ background: 'var(--bg)', color: 'var(--text-faint)' }}>
-                      {def.count} hits
+                      {t(locale, 'glossary.hits', { count: String(def.count) })}
                     </span>
                   )}
                   {def.wiki && (

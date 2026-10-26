@@ -5,6 +5,7 @@ import type { Metadata } from 'next'
 import { BookmarksClient } from '@/components/BookmarksClient'
 import { LOCALES, isLocale, t, type Locale } from '@/lib/i18n'
 import { SITE_URL } from '@/lib/site'
+import { slash } from '@/lib/jsonld'
 
 interface BookmarksProps {
   params: Promise<{ locale: string }>
@@ -24,7 +25,7 @@ export async function generateMetadata({ params }: BookmarksProps): Promise<Meta
     title: t(loc, 'bookmarks.title'),
     description: t(loc, 'bookmarks.subtitle'),
     robots: { index: false, follow: true },
-    alternates: { canonical: `${SITE_URL}/${loc}/bookmarks` },
+    alternates: { canonical: slash(`${SITE_URL}/${loc}/bookmarks`) },
   }
 }
 
@@ -48,7 +49,7 @@ export default async function BookmarksPage({ params }: BookmarksProps) {
       description: p.description,
       tags: p.tags ?? [],
       readingTime: p.readingTime,
-      url: `/${loc}/posts/${p.slug}`,
+      url: `/${loc}/posts/${p.slug}/`,
     }))
 
   return (

@@ -38,22 +38,22 @@ export function VizGalleryClient({ locale, items }: { locale: Locale; items: Viz
         className="relative overflow-hidden rounded-3xl"
         style={{
           background:
-            'radial-gradient(circle at 16% 16%, rgba(34,211,238,0.24), transparent 30%), radial-gradient(circle at 88% 14%, rgba(129,140,248,0.18), transparent 30%), linear-gradient(135deg, rgba(8,17,31,0.98), rgba(15,29,46,0.94))',
+            'radial-gradient(circle at 16% 16%, color-mix(in srgb, var(--accent) 28%, transparent), transparent 32%), radial-gradient(circle at 88% 14%, color-mix(in srgb, var(--accent-dim) 16%, transparent), transparent 30%), linear-gradient(135deg, var(--surface), var(--bg))',
           border: '1px solid var(--border)',
-          boxShadow: '0 30px 90px rgba(8,17,31,0.32)',
+          boxShadow: '0 24px 60px color-mix(in srgb, var(--bg) 35%, transparent)',
         }}
       >
         <div className="relative z-10 p-5 sm:p-7 lg:p-8">
-          <div className="mb-4 inline-flex items-center gap-2 rounded-full px-3 py-1" style={{ background: 'rgba(34,211,238,0.10)', border: '1px solid rgba(34,211,238,0.28)' }}>
-            <span className="h-2 w-2 rounded-full" style={{ background: '#22d3ee', boxShadow: '0 0 18px #22d3ee' }} />
-            <span className="mono text-[10px] font-semibold uppercase tracking-[0.28em]" style={{ color: '#22d3ee' }}>
-              post-viz gallery
+          <div className="mb-4 inline-flex items-center gap-2 rounded-full px-3 py-1" style={{ background: 'var(--accent-glow)', border: '1px solid color-mix(in srgb, var(--accent) 40%, transparent)' }}>
+            <span className="h-2 w-2 rounded-full" style={{ background: 'var(--accent)' }} />
+            <span className="mono text-[10px] font-semibold uppercase tracking-[0.28em]" style={{ color: 'var(--accent)' }}>
+              {t(locale, 'viz.badge')}
             </span>
           </div>
-          <h1 className="display max-w-xl text-4xl font-bold tracking-[-0.045em] sm:text-5xl" style={{ color: '#e2e8f0' }}>
+          <h1 className="display max-w-xl text-4xl font-bold tracking-[-0.045em] sm:text-5xl" style={{ color: 'var(--text)' }}>
             {t(locale, 'viz.title')}
           </h1>
-          <p className="mt-4 max-w-2xl text-sm sm:text-base" style={{ color: '#a8b3c4', lineHeight: 1.75 }}>
+          <p className="mt-4 max-w-2xl text-sm sm:text-base" style={{ color: 'var(--text-muted)', lineHeight: 1.75 }}>
             {t(locale, 'viz.subtitle')}
           </p>
         </div>
@@ -129,11 +129,6 @@ export function VizGalleryClient({ locale, items }: { locale: Locale; items: Viz
                       item.postTitle
                     )}
                   </h2>
-                  {item.file && (
-                    <p className="mono text-[10px]" style={{ color: 'var(--text-faint)' }}>
-                      {item.file}
-                    </p>
-                  )}
                   <div className="flex flex-wrap gap-2">
                     {Component ? (
                       <button

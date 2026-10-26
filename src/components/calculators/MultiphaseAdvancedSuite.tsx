@@ -33,8 +33,8 @@ export function TwoPhasePressureDropCalculator() {
     const reG = gG * diameter / Math.max(muG, 1e-12)
     const fL = pipeFriction(reL)
     const fG = pipeFriction(reG)
-    const dpdzL = (2 * fL * gL * gL) / Math.max(rhoL * diameter, 1e-12)
-    const dpdzG = (2 * fG * gG * gG) / Math.max(rhoG * diameter, 1e-12)
+    const dpdzL = (fL * gL * gL) / Math.max(2 * rhoL * diameter, 1e-12)
+    const dpdzG = (fG * gG * gG) / Math.max(2 * rhoG * diameter, 1e-12)
     const xLm = Math.sqrt(dpdzL / Math.max(dpdzG, 1e-12))
     const phiL2 = 1 + cLm / Math.max(xLm, 1e-12) + 1 / Math.max(xLm * xLm, 1e-12)
     const dpdzTwoPhase = phiL2 * dpdzL

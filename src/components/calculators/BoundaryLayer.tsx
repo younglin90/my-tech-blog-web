@@ -1,6 +1,16 @@
 'use client'
 
 import { useMemo, useState } from 'react'
+import { usePathname } from 'next/navigation'
+import { localePathPrefix, type Locale } from '@/lib/i18n'
+
+const REGIME: Record<Locale, { lead: string; turbulent: string; laminar: string }> = {
+  ko: { lead: '평판 천이는 Re_x ≈ 5×10⁵ 근처입니다. 이 위치는', turbulent: '난류 영역', laminar: '층류 영역' },
+  en: { lead: 'Flat-plate transition sits near Re_x ≈ 5×10⁵. This station is', turbulent: 'turbulent', laminar: 'laminar' },
+  ja: { lead: '平板の遷移は Re_x ≈ 5×10⁵ 付近です。この位置は', turbulent: '乱流側', laminar: '層流側' },
+  zh: { lead: '平板转捩大约在 Re_x ≈ 5×10⁵。此处处于', turbulent: '湍流区', laminar: '层流区' },
+  es: { lead: 'La transición en placa plana está cerca de Re_x ≈ 5×10⁵. Esta estación es', turbulent: 'turbulenta', laminar: 'laminar' },
+}
 
 // 평판 BL 두께
 //   δ_lam ≈ 5 x / sqrt(Re_x)
@@ -10,6 +20,8 @@ export function BoundaryLayerCalculator() {
   const [x, setX] = useState(1)             // m
   const [nu, setNu] = useState(1.5e-5)      // m²/s (공기)
 
+  const { locale } = localePathPrefix(usePathname() ?? '/')
+  const copy = REGIME[locale]
   const Rex = useMemo(() => (U * x) / nu, [U, x, nu])
   const dLam = useMemo(() => (5 * x) / Math.sqrt(Rex), [x, Rex])
   const dTurb = useMemo(() => (0.37 * x) / Math.pow(Rex, 0.2), [x, Rex])
@@ -28,7 +40,7 @@ export function BoundaryLayerCalculator() {
         <Stat label="δ turbulent (mm)" value={(dTurb * 1000).toFixed(2)} color="#f87171" />
       </div>
       <p className="mt-3 text-xs" style={{ color: 'var(--text-muted)' }}>
-        평판 천이 임계: Re_x ≈ 5×10⁵. 현재 <strong style={{ color: transition ? '#f87171' : '#34d399' }}>{transition ? '난류 영역' : '층류 영역'}</strong>입니다.
+        {copy.lead} <strong style={{ color: transition ? '#f87171' : '#34d399' }}>{transition ? copy.turbulent : copy.laminar}</strong>.
       </p>
     </div>
   )

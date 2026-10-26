@@ -168,6 +168,27 @@ export function DynamicPressureCalculator() {
   )
 }
 
+function observedOrder(r21: number, r32: number, e21: number, e32: number): number {
+  const target = Math.abs(e32 / e21)
+  if (!(r21 > 1.000001) || !(r32 > 1.000001) || !Number.isFinite(target) || target === 0) return Number.NaN
+  if (Math.abs(Math.log(r21 / r32)) < 1e-4) return Math.log(target) / Math.log(r21)
+  const residual = (p: number) => {
+    const a = Math.pow(r21, p)
+    const b = Math.pow(r32, p)
+    return (a * (b - 1)) / (a - 1) - target
+  }
+  let lo = 0.05
+  let hi = 12
+  if (residual(lo) > 0) return lo
+  if (residual(hi) < 0) return hi
+  for (let i = 0; i < 60; i++) {
+    const mid = 0.5 * (lo + hi)
+    if (residual(mid) > 0) hi = mid
+    else lo = mid
+  }
+  return 0.5 * (lo + hi)
+}
+
 export function GciCalculator() {
   const [h1, setH1] = useState(0.01)
   const [h2, setH2] = useState(0.02)
@@ -182,7 +203,7 @@ export function GciCalculator() {
     const r32 = h3 / Math.max(h2, 1e-12)
     const e21 = phi2 - phi1
     const e32 = phi3 - phi2
-    const p = Math.log(Math.abs(e32 / Math.max(Math.abs(e21), 1e-12))) / Math.log(Math.max(r21, 1.000001))
+    const p = observedOrder(r21, r32, e21, e32)
     const pSafe = Math.abs(p) > 1e-9 ? Math.abs(p) : Number.NaN
     const extrapolated = phi1 + (phi1 - phi2) / (Math.pow(r21, pSafe) - 1)
     const gci21 = safety * Math.abs((phi1 - phi2) / Math.max(Math.abs(phi1), 1e-12)) / (Math.pow(r21, pSafe) - 1) * 100

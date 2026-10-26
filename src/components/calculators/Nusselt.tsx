@@ -2,12 +2,13 @@
 
 import { useMemo, useState } from 'react'
 
-// 대류 열전달 계수 h = Nu · k / L
-// 여러 상관식: 층류 평판(포흐하우젠), 난류 평판(Dittus-Boelter), 원통(Churchill-Bernstein)
+// h = Nu · k / L
+// 평판 층류: Pohlhausen 평균 Nu. 평판 난류: 앞전에서 난류로 가정한 평균 Nu.
+// 관 난류: Dittus–Boelter 가열 (n = 0.4).
 type Correlation = 'flat-laminar' | 'flat-turbulent' | 'pipe-turbulent'
 
 export function NusseltCalculator() {
-  const [Re, setRe] = useState(5000)
+  const [Re, setRe] = useState(20000)
   const [Pr, setPr] = useState(0.71)      // air
   const [k, setK] = useState(0.026)       // W/m·K (air 20°C)
   const [L, setL] = useState(0.1)         // m
@@ -20,7 +21,7 @@ export function NusseltCalculator() {
       else { Nu = 0.664 * Math.pow(Re, 0.5) * Math.pow(Pr, 1/3); regime = 'Flat plate laminar (Pohlhausen)' }
     } else if (mode === 'flat-turbulent') {
       if (Re < 5e5) { valid = false; regime = 'Re < 5×10⁵ — use laminar' }
-      else { Nu = 0.037 * Math.pow(Re, 0.8) * Math.pow(Pr, 1/3); regime = 'Flat plate turbulent (Dittus-Boelter approx)' }
+      else { Nu = 0.037 * Math.pow(Re, 0.8) * Math.pow(Pr, 1/3); regime = 'Flat plate turbulent average (turbulent from the leading edge)' }
     } else {
       if (Re < 10000 || Pr < 0.6 || Pr > 160) { valid = false; regime = 'Outside Dittus-Boelter range (Re>10⁴, 0.6<Pr<160)' }
       else { Nu = 0.023 * Math.pow(Re, 0.8) * Math.pow(Pr, 0.4); regime = 'Pipe turbulent (Dittus-Boelter, heating)' }
@@ -45,7 +46,7 @@ export function NusseltCalculator() {
             className="rounded-md px-3 py-1 text-xs transition-colors"
             style={{
               background: mode === m.value ? 'var(--accent)' : 'var(--bg)',
-              color: mode === m.value ? '#fff' : 'var(--text-muted)',
+              color: mode === m.value ? 'var(--on-accent)' : 'var(--text-muted)',
               border: '1px solid var(--border)',
             }}
           >

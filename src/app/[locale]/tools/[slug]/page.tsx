@@ -1,7 +1,7 @@
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
 import type { Metadata } from 'next'
-import { LOCALES, isLocale, t, SITE_NAMES, type Locale } from '@/lib/i18n'
+import { LOCALES, isLocale, t, SITE_NAMES, hreflangAlternates, type Locale } from '@/lib/i18n'
 import { CALCULATORS, getCategoryLabel } from '@/lib/calculators'
 import { CALCULATOR_COMPONENTS } from '@/components/calculators'
 import { ToolFormula } from '@/components/ToolFormula'
@@ -9,7 +9,7 @@ import { ToolInsightPanel } from '@/components/ToolInsightPanel'
 import { ToolViewTracker } from '@/components/ToolViewTracker'
 import { CfdReviewCallout } from '@/components/CfdReviewCallout'
 import { SITE_URL } from '@/lib/site'
-import { jsonLdHtml, PERSON_ID, ORG_ID, WEBSITE_ID } from '@/lib/jsonld'
+import { jsonLdHtml, slash, PERSON_ID, ORG_ID, WEBSITE_ID } from '@/lib/jsonld'
 
 interface Props {
   params: Promise<{ locale: string; slug: string }>
@@ -26,22 +26,19 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const loc = isLocale(locale) ? locale : 'en'
   const title = c.title[loc] ?? c.title.en
   const description = c.desc[loc] ?? c.desc.en
-  const url = `${SITE_URL}/${locale}/tools/${slug}`
+  const url = slash(`${SITE_URL}/${locale}/tools/${slug}`)
   return {
     title,
     description,
     alternates: {
       canonical: url,
-      languages: {
-        ...Object.fromEntries(LOCALES.map((l) => [l, `${SITE_URL}/${l}/tools/${slug}`])),
-        'x-default': `${SITE_URL}/en/tools/${slug}`,
-      },
+      languages: hreflangAlternates(`/tools/${slug}`),
     },
     openGraph: {
       title,
       description,
       url,
-      siteName: "Younglin's CFD Blog",
+      siteName: SITE_NAMES[loc],
       type: 'website',
     },
     twitter: {
@@ -128,7 +125,7 @@ export default async function CalculatorPage({ params }: Props) {
             {meta.desc[loc] ?? meta.desc.en}
           </p>
           <ToolInsightPanel meta={meta} locale={loc} categoryLabel={categoryLabel} />
-          <ToolFormula formula={meta.formula} label={t(loc, 'tools.formula')} />
+          <ToolFormula formula={meta.formula} label={t(loc, 'tools.formula')} renderedLabel={t(loc, 'tools.rendered')} asciiLabel={t(loc, 'tools.ascii')} />
 
           <Component />
 

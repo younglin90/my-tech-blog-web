@@ -23,7 +23,7 @@ const CATEGORY_TONES: Record<CalculatorCategory, { glow: string; hot: string; co
 
 const PANEL_COPY: Record<Locale, { eyebrow: string; headline: string; body: string; input: string; model: string; output: string }> = {
   ko: {
-    eyebrow: 'visual calculator',
+    eyebrow: '시각 계산기',
     headline: '숫자를 넣기 전에 유동의 모양을 먼저 잡습니다.',
     body: '이 도구는 입력값을 단순 결과표가 아니라 레짐, 스케일, 지배 효과로 읽게 만듭니다. 아래 계산기를 조작하면서 그림의 흐름과 결과가 어떻게 같이 움직이는지 확인하세요.',
     input: '입력 스케일',
@@ -39,7 +39,7 @@ const PANEL_COPY: Record<Locale, { eyebrow: string; headline: string; body: stri
     output: 'check',
   },
   ja: {
-    eyebrow: 'visual calculator',
+    eyebrow: 'ビジュアル計算',
     headline: '数値を見る前に、流れの形をつかみます。',
     body: 'このツールは入力値をレジーム、スケール、支配効果として読めるようにします。下の計算機を動かし、図と結果の変化を見比べてください。',
     input: '入力スケール',
@@ -47,7 +47,7 @@ const PANEL_COPY: Record<Locale, { eyebrow: string; headline: string; body: stri
     output: '判定',
   },
   zh: {
-    eyebrow: 'visual calculator',
+    eyebrow: '可视化计算',
     headline: '先看流动形态，再相信数字。',
     body: '该工具把 CFD 设置转换为工况、尺度和主导效应提示。调节下方计算器，观察动态图与计算结果如何一起变化。',
     input: '输入尺度',
@@ -55,7 +55,7 @@ const PANEL_COPY: Record<Locale, { eyebrow: string; headline: string; body: stri
     output: '判断',
   },
   es: {
-    eyebrow: 'visual calculator',
+    eyebrow: 'calculadora visual',
     headline: 'Lee la forma del flujo antes de confiar en el número.',
     body: 'La herramienta convierte una configuración CFD en pistas de régimen, escala y efecto dominante. Ajusta la calculadora y compara la gráfica con el resultado.',
     input: 'escala',
@@ -73,7 +73,7 @@ export function ToolInsightPanel({ meta, locale, categoryLabel }: ToolInsightPan
     <section
       className="mb-6 overflow-hidden rounded-3xl"
       style={{
-        background: `radial-gradient(circle at 20% 20%, ${tone.glow}, transparent 38%), linear-gradient(135deg, rgba(15,29,46,0.96), rgba(8,17,31,0.84))`,
+        background: `radial-gradient(circle at 20% 20%, ${tone.glow}, transparent 38%), linear-gradient(135deg, var(--surface), var(--bg))`,
         border: '1px solid var(--border)',
         boxShadow: `0 24px 80px ${tone.glow}`,
       }}
@@ -87,20 +87,20 @@ export function ToolInsightPanel({ meta, locale, categoryLabel }: ToolInsightPan
           <div className="flex flex-wrap items-center gap-2">
             <span
               className="mono rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.22em]"
-              style={{ background: 'rgba(34,211,238,0.12)', border: '1px solid rgba(34,211,238,0.32)', color: '#22d3ee' }}
+              style={{ background: 'var(--accent-glow)', border: '1px solid var(--accent)', color: 'var(--accent)' }}
             >
               {copy.eyebrow}
             </span>
-            <span className="rounded-full px-2.5 py-1 text-[10px]" style={{ background: 'rgba(8,17,31,0.62)', color: '#a8b3c4' }}>
+            <span className="rounded-full px-2.5 py-1 text-[10px]" style={{ background: 'var(--bg)', color: 'var(--text-muted)', border: '1px solid var(--border)' }}>
               {categoryLabel}
             </span>
           </div>
 
           <div>
-            <h2 className="display text-2xl font-bold tracking-[-0.03em] sm:text-3xl" style={{ color: '#e2e8f0' }}>
+            <h2 className="display text-2xl font-bold tracking-[-0.03em] sm:text-3xl" style={{ color: 'var(--text)' }}>
               {copy.headline}
             </h2>
-            <p className="mt-3 text-sm leading-7" style={{ color: '#a8b3c4' }}>
+            <p className="mt-3 text-sm leading-7" style={{ color: 'var(--text-muted)' }}>
               {copy.body}
             </p>
           </div>
@@ -108,7 +108,7 @@ export function ToolInsightPanel({ meta, locale, categoryLabel }: ToolInsightPan
           <div className="grid gap-2 sm:grid-cols-3">
             <StageCard label="01" value={copy.input} tone={tone.cool} />
             <StageCard label="02" value={copy.model} tone={tone.hot} />
-            <StageCard label="03" value={copy.output} tone="#22d3ee" />
+            <StageCard label="03" value={copy.output} tone="var(--accent)" />
           </div>
 
           <div className="flex flex-wrap gap-1.5">
@@ -116,7 +116,7 @@ export function ToolInsightPanel({ meta, locale, categoryLabel }: ToolInsightPan
               <span
                 key={tag}
                 className="rounded-full px-2.5 py-1 text-[11px]"
-                style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(148,163,184,0.24)', color: '#a8b3c4' }}
+                style={{ background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text-muted)' }}
               >
                 {tag}
               </span>
@@ -130,11 +130,11 @@ export function ToolInsightPanel({ meta, locale, categoryLabel }: ToolInsightPan
 
 function StageCard({ label, value, tone }: { label: string; value: string; tone: string }) {
   return (
-    <div className="rounded-2xl p-3" style={{ background: 'rgba(8,17,31,0.54)', border: '1px solid rgba(148,163,184,0.24)' }}>
+    <div className="rounded-2xl p-3" style={{ background: 'var(--bg)', border: '1px solid var(--border)' }}>
       <div className="mono text-[10px]" style={{ color: tone }}>
         {label}
       </div>
-      <div className="mt-1 text-xs font-semibold uppercase tracking-widest" style={{ color: '#e2e8f0' }}>
+      <div className="mt-1 text-xs font-semibold uppercase tracking-widest" style={{ color: 'var(--text)' }}>
         {value}
       </div>
     </div>

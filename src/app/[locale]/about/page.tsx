@@ -5,9 +5,9 @@ import { notFound } from 'next/navigation'
 import type { Metadata } from 'next'
 import { ReadingStats } from '@/components/ReadingStats'
 import { TopPosts } from '@/components/TopPosts'
-import { LOCALES, isLocale, t, hreflangAlternates, type Locale } from '@/lib/i18n'
+import { LOCALES, isLocale, t, SITE_NAMES, hreflangAlternates, type Locale } from '@/lib/i18n'
 import { SITE_URL } from '@/lib/site'
-import { jsonLdHtml, PERSON_ID, WEBSITE_ID } from '@/lib/jsonld'
+import { jsonLdHtml, slash, PERSON_ID, WEBSITE_ID } from '@/lib/jsonld'
 
 interface AboutProps {
   params: Promise<{ locale: string }>
@@ -22,19 +22,19 @@ export async function generateMetadata({ params }: AboutProps): Promise<Metadata
   const loc = isLocale(locale) ? locale : 'en'
   const title = t(loc, 'about.title')
   const description = t(loc, 'about.intro')
-  const url = `${SITE_URL}/${locale}/about`
+  const url = slash(`${SITE_URL}/${locale}/about`)
   return {
     title,
     description,
     alternates: {
-      canonical: `${url}/`,
+      canonical: url,
       languages: hreflangAlternates('/about'),
     },
     openGraph: {
       title,
       description,
       url,
-      siteName: "Younglin's CFD Blog",
+      siteName: SITE_NAMES[loc],
       type: 'website',
     },
     twitter: {
@@ -130,9 +130,9 @@ export default async function AboutPage({ params }: AboutProps) {
         <p className="mb-3 text-[10px] font-semibold uppercase tracking-widest" style={{ color: 'var(--text-faint)' }}>
           {t(loc, 'about.activity')}
         </p>
-        <div className="flex items-end gap-1.5 h-12">
+        <div className="flex items-end gap-1 h-16">
           {months.map(({ key, label, count }) => (
-            <div key={key} className="flex flex-1 flex-col items-center gap-1" title={`${label}: ${count} posts`}>
+            <div key={key} className="flex flex-1 flex-col items-center gap-1" title={t(loc, 'about.monthPosts', { month: label, count: String(count) })}>
               <div
                 className="w-full rounded-sm transition-all duration-300"
                 style={{
@@ -142,7 +142,7 @@ export default async function AboutPage({ params }: AboutProps) {
                 }}
               />
               <span className="text-[8px] tabular-nums" style={{ color: 'var(--text-faint)' }}>
-                {label.slice(0, 1)}
+                {label}
               </span>
             </div>
           ))}
@@ -161,18 +161,15 @@ export default async function AboutPage({ params }: AboutProps) {
           {t(loc, 'about.researchInterests')}
         </h2>
         <ul className="space-y-2">
-          {[
-            'Compressible multiphase flow simulation',
-            'Riemann solvers — HLLC, Roe, AUSM+',
-            'Interface capturing methods — VOF, Level Set, Diffuse Interface',
-            'High-order finite volume / discontinuous Galerkin methods',
-            'Shock–interface interaction problems',
-          ].map((item) => (
+          {[1, 2, 3, 4, 5].map((n) => {
+            const item = t(loc, `about.interest${n}`)
+            return (
             <li key={item} className="flex items-start gap-2.5 text-sm leading-relaxed" style={{ color: 'var(--text-muted)' }}>
               <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: 'var(--accent)' }} />
               {item}
             </li>
-          ))}
+            )
+          })}
         </ul>
       </section>
 

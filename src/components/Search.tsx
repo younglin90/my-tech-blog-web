@@ -6,6 +6,7 @@ import { Search as SearchIcon } from 'lucide-react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { format, parseISO } from 'date-fns'
 import { localePathPrefix, t } from '@/lib/i18n'
+import { seriesTitle } from '@/lib/series-title'
 import mathManifest from '@/lib/math-manifest.json'
 import { dedupePostsForLocale, loadPostIndexClient, type PostIndexItem } from '@/lib/post-index'
 
@@ -155,7 +156,9 @@ export function Search() {
             return { post, score: tagMatches * 3 }
           }
           if (isSeriesQuery) {
-            const series = post.series?.toLowerCase() ?? ''
+            const series = post.series
+              ? `${post.series} ${seriesTitle(post.series, locale)}`.toLowerCase()
+              : ''
             // 빈 q이면 series 있는 모든 포스트, 그 외엔 substring 매칭
             const match = q ? series.includes(q) : Boolean(series)
             // 같은 시리즈 안에선 seriesOrder 오름차순(낮은 번호 먼저) 위해 score를 살짝 조정
@@ -409,7 +412,7 @@ export function Search() {
                               className="mono rounded px-1.5 py-0.5 text-[9px] font-semibold"
                               style={{ background: 'var(--accent-glow)', color: 'var(--accent)', border: '1px solid var(--accent)' }}
                             >
-                              {post.series}
+                              {seriesTitle(post.series, locale)}
                               {post.seriesOrder ? ` · ${String(post.seriesOrder).padStart(2, '0')}` : ''}
                             </span>
                           )}

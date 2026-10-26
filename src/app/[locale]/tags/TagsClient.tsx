@@ -92,7 +92,7 @@ export function TagsClient({ tags, locale }: { tags: [string, number][]; locale:
                         key={tag}
                         href={`/${locale}/tags/${encodeURIComponent(tag)}`}
                         className="tag-pill flex items-center gap-1.5"
-                        title={`${count} post${count !== 1 ? 's' : ''}`}
+                        title={t(locale, 'list.tagCount', { count: String(count) })}
                       >
                         {tag}
                         <span
@@ -124,7 +124,7 @@ export function TagsClient({ tags, locale }: { tags: [string, number][]; locale:
                   href={`/${locale}/tags/${encodeURIComponent(tag)}`}
                   className="tag-pill flex items-center gap-1.5 transition-opacity duration-100 hover:opacity-100"
                   style={{ fontSize: `${fontSize}rem`, opacity }}
-                  title={`${count} post${count !== 1 ? 's' : ''}`}
+                  title={t(locale, 'list.tagCount', { count: String(count) })}
                 >
                   {tag}
                   <span

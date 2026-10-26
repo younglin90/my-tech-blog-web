@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { ListOrdered, ChevronDown } from 'lucide-react'
 import { t, type Locale } from '@/lib/i18n'
 import type { SeriesSummary } from '@/lib/series'
+import { seriesTitle } from '@/lib/series-title'
 
 interface Props {
   locale: Locale
@@ -35,7 +36,7 @@ export function SeriesNav({ locale, ctx }: Props) {
           style={{ color: 'var(--accent)' }}
         >
           <ListOrdered className="h-4 w-4" />
-          <span>Series: {series.slug}</span>
+          <span>{t(locale, 'series.navLabel', { title: seriesTitle(series.slug, locale) })}</span>
         </Link>
         <span className="mono text-xs tabular-nums" style={{ color: 'var(--text-faint)' }}>
           {t(locale, 'series.partLabel')} {index + 1} / {series.count}

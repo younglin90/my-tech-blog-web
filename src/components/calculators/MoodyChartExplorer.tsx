@@ -47,7 +47,7 @@ export function MoodyChartExplorerCalculator() {
     const regime = re < 2300 ? 'laminar' : re < 4000 ? 'transition' : 'turbulent'
     const x = xForRe(re)
     const y = yForF(f)
-    const headLossPerD = Number.isFinite(f) ? f / 2 : Number.NaN
+    const headLossPerD = Number.isFinite(f) ? f : Number.NaN
     return { f, regime, x, y, headLossPerD }
   }, [epsOverD, re])
 

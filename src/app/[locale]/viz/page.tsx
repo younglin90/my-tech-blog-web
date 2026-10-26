@@ -1,9 +1,10 @@
+import { allPosts } from 'contentlayer/generated'
 import { notFound } from 'next/navigation'
 import type { Metadata } from 'next'
-import { LOCALES, isLocale, t, type Locale } from '@/lib/i18n'
+import { LOCALES, isLocale, t, SITE_NAMES, hreflangAlternates, type Locale } from '@/lib/i18n'
 import vizManifest from '@/lib/viz-manifest.json'
 import { SITE_URL } from '@/lib/site'
-import { jsonLdHtml, WEBSITE_ID } from '@/lib/jsonld'
+import { jsonLdHtml, slash, WEBSITE_ID } from '@/lib/jsonld'
 import { VizGalleryClient } from '@/components/VizGalleryClient'
 
 interface Props { params: Promise<{ locale: string }> }
@@ -17,22 +18,19 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const loc = isLocale(locale) ? locale : 'en'
   const title = t(loc, 'viz.title')
   const description = t(loc, 'viz.subtitle')
-  const url = `${SITE_URL}/${locale}/viz`
+  const url = slash(`${SITE_URL}/${locale}/viz`)
   return {
     title,
     description,
     alternates: {
       canonical: url,
-      languages: {
-        ...Object.fromEntries(LOCALES.map((l) => [l, `${SITE_URL}/${l}/viz`])),
-        'x-default': `${SITE_URL}/en/viz`,
-      },
+      languages: hreflangAlternates('/viz'),
     },
     openGraph: {
       title,
       description,
       url,
-      siteName: "Younglin's CFD Blog",
+      siteName: SITE_NAMES[loc],
       type: 'website',
     },
     twitter: {
@@ -56,7 +54,13 @@ export default async function VizGallery({ params }: Props) {
   const { locale } = await params
   if (!isLocale(locale)) notFound()
   const loc = locale as Locale
-  const items = vizManifest as VizItem[]
+  const titleBySlug = new Map(
+    allPosts.filter((p) => !p.draft && p.locale === loc).map((p) => [p.slug, p.title]),
+  )
+  const items = (vizManifest as VizItem[]).map((item) => ({
+    ...item,
+    postTitle: titleBySlug.get(item.postSlug) ?? item.postTitle,
+  }))
 
   // 갤러리는 클라이언트 컴포넌트라 크롤러가 목록을 못 본다. ItemList로 선언해
   // 어떤 시각화가 어느 글에 들어 있는지 구조화 데이터로 남긴다.

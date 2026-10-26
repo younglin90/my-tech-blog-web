@@ -4,6 +4,7 @@ import type { Metadata } from 'next'
 import { TagsClient } from './TagsClient'
 import { LOCALES, isLocale, t, SITE_NAMES, hreflangAlternates, type Locale } from '@/lib/i18n'
 import { SITE_URL } from '@/lib/site'
+import { jsonLdHtml, slash } from '@/lib/jsonld'
 import { tagFrequency } from '@/lib/tags'
 
 interface TagsPageProps {
@@ -52,7 +53,7 @@ export default async function TagsPage({ params }: TagsPageProps) {
   const jsonLd = {
     '@context': 'https://schema.org',
     '@type': 'ItemList',
-    name: "Younglin's CFD Blog Tags",
+    name: `${SITE_NAMES[locale]} — ${t(locale, 'tags.title')}`,
     numberOfItems: tags.length,
     itemListElement: tags
       .sort((a, b) => b[1] - a[1])
@@ -61,12 +62,12 @@ export default async function TagsPage({ params }: TagsPageProps) {
         '@type': 'ListItem',
         position: i + 1,
         name: tag,
-        url: `${SITE_URL}/${locale}/tags/${encodeURIComponent(tag)}`,
+        url: slash(`${SITE_URL}/${locale}/tags/${encodeURIComponent(tag)}`),
       })),
   }
   return (
     <>
-      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }} />
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: jsonLdHtml(jsonLd) }} />
       <TagsClient tags={tags} locale={locale} />
     </>
   )

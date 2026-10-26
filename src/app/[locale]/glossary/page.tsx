@@ -1,10 +1,12 @@
+import { allPosts } from 'contentlayer/generated'
 import { notFound } from 'next/navigation'
 import type { Metadata } from 'next'
-import { LOCALES, isLocale, t, type Locale } from '@/lib/i18n'
+import { LOCALES, isLocale, t, SITE_NAMES, hreflangAlternates, type Locale } from '@/lib/i18n'
 import glossary from '@/lib/glossary.json'
 import { GlossaryClient } from '@/components/GlossaryClient'
 import { SITE_URL } from '@/lib/site'
-import { jsonLdHtml, WEBSITE_ID } from '@/lib/jsonld'
+import { jsonLdHtml, slash, WEBSITE_ID } from '@/lib/jsonld'
+import { glossaryText, type GlossaryTexts } from '@/lib/glossary-text'
 
 interface Props { params: Promise<{ locale: string }> }
 
@@ -17,22 +19,19 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const loc = isLocale(locale) ? locale : 'en'
   const title = t(loc, 'glossary.title')
   const description = t(loc, 'glossary.description')
-  const url = `${SITE_URL}/${locale}/glossary`
+  const url = slash(`${SITE_URL}/${locale}/glossary`)
   return {
     title,
     description,
     alternates: {
       canonical: url,
-      languages: {
-        ...Object.fromEntries(LOCALES.map((l) => [l, `${SITE_URL}/${l}/glossary`])),
-        'x-default': `${SITE_URL}/en/glossary`,
-      },
+      languages: hreflangAlternates('/glossary'),
     },
     openGraph: {
       title,
       description,
       url,
-      siteName: "Younglin's CFD Blog",
+      siteName: SITE_NAMES[loc],
       type: 'website',
     },
     twitter: {
@@ -43,9 +42,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   }
 }
 
-interface Entry {
-  ko: string
-  en: string
+interface Entry extends GlossaryTexts {
   wiki?: string
   posts?: Array<{ slug: string; title: string; date: string; count: number }>
 }
@@ -54,8 +51,21 @@ export default async function Glossary({ params }: Props) {
   const { locale } = await params
   if (!isLocale(locale)) notFound()
   const loc = locale as Locale
+  const titleBySlug = new Map(
+    allPosts.filter((p) => !p.draft && p.locale === loc).map((p) => [p.slug, p.title]),
+  )
   const entries = Object.entries(glossary as Record<string, Entry>)
     .sort(([a], [b]) => a.localeCompare(b))
+    .map(([term, entry]) => {
+      if (!entry.posts?.length) return [term, entry] as [string, Entry]
+      return [term, {
+        ...entry,
+        posts: entry.posts.map((post) => ({
+          ...post,
+          title: titleBySlug.get(post.slug) ?? post.title,
+        })),
+      }] as [string, Entry]
+    })
   const linked = entries.filter(([, entry]) => entry.posts && entry.posts.length > 0).length
 
   // 74개 용어를 DefinedTermSet으로 선언한다. 용어별 페이지를 따로 파지 않고도
@@ -73,8 +83,7 @@ export default async function Glossary({ params }: Props) {
       '@type': 'DefinedTerm',
       '@id': `${SITE_URL}/${loc}/glossary/#${encodeURIComponent(term)}`,
       name: term,
-      // glossary.json은 ko/en 정의만 갖고 있다 — 나머지 locale은 en으로 폴백
-      description: loc === 'ko' ? (entry as Entry).ko : (entry as Entry).en,
+      description: glossaryText(entry as Entry, loc),
       inDefinedTermSet: { '@id': `${SITE_URL}/${loc}/glossary/#termset` },
       ...((entry as Entry).wiki ? { sameAs: (entry as Entry).wiki } : {}),
     })),

@@ -6,16 +6,18 @@ import { KatexStyles } from '@/components/KatexStyles'
 interface ToolFormulaProps {
   formula: string
   label: string
+  renderedLabel: string
+  asciiLabel: string
 }
 
-export function ToolFormula({ formula, label }: ToolFormulaProps) {
+export function ToolFormula({ formula, label, renderedLabel, asciiLabel }: ToolFormulaProps) {
   const displayFormula = toSafeDisplayFormula(formula)
 
   return (
     <section
       className="mb-6 overflow-hidden rounded-2xl"
       style={{
-        background: 'linear-gradient(145deg, rgba(34,211,238,0.10), var(--surface) 48%, rgba(8,17,31,0.72))',
+        background: 'linear-gradient(145deg, color-mix(in srgb, var(--accent) 14%, transparent), var(--surface) 48%, var(--bg))',
         border: '1px solid var(--border)',
       }}
     >
@@ -28,7 +30,7 @@ export function ToolFormula({ formula, label }: ToolFormulaProps) {
           {label}
         </div>
         <div className="mono rounded-full px-2 py-1 text-[10px]" style={{ background: 'var(--bg)', color: 'var(--text-faint)' }}>
-          KaTeX rendered
+          {renderedLabel}
         </div>
       </div>
 
@@ -41,9 +43,9 @@ export function ToolFormula({ formula, label }: ToolFormulaProps) {
             {`$$\n${displayFormula}\n$$`}
           </ReactMarkdown>
         </div>
-        <details className="mt-3 rounded-xl px-3 py-2" style={{ background: 'rgba(8,17,31,0.42)' }}>
+        <details className="mt-3 rounded-xl px-3 py-2" style={{ background: 'var(--bg)', border: '1px solid var(--border)' }}>
           <summary className="cursor-pointer text-[11px] uppercase tracking-widest" style={{ color: 'var(--text-faint)' }}>
-            ASCII source
+            {asciiLabel}
           </summary>
           <code className="mt-2 block whitespace-pre-wrap text-xs" style={{ color: 'var(--text-muted)' }}>
             {formula}

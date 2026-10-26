@@ -7,6 +7,14 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value))
 }
 
+function sorSpectralRadius(omega: number, jacobi: number, omegaOpt: number): number {
+  if (omega >= omegaOpt - 1e-9) return Math.abs(omega - 1)
+  const disc = omega * omega * jacobi * jacobi - 4 * (omega - 1)
+  if (disc < 0) return Math.abs(omega - 1)
+  const root = (omega * jacobi + Math.sqrt(disc)) / 2
+  return root * root
+}
+
 type Limiter = 'minmod' | 'vanleer' | 'superbee' | 'mc'
 type Scheme = 'upwind1' | 'central2' | 'quick'
 
@@ -182,7 +190,7 @@ export function SorRelaxationPlannerCalculator() {
     const n = Math.max(4, Math.round(gridN))
     const rhoJacobi = Math.cos(Math.PI / n)
     const omegaOpt = 2 / (1 + Math.sqrt(1 - rhoJacobi * rhoJacobi))
-    const spectral = Math.max(Math.abs(1 - omega), Math.abs(omega - 1) + omega * rhoJacobi * rhoJacobi / 4)
+    const spectral = sorSpectralRadius(omega, rhoJacobi, omegaOpt)
     const clippedSpectral = clamp(spectral, 1e-9, 0.999999)
     const iterations = Math.log(10 ** -toleranceDrop) / Math.log(clippedSpectral)
     return { n, rhoJacobi, omegaOpt, spectral: clippedSpectral, iterations }
@@ -193,7 +201,8 @@ export function SorRelaxationPlannerCalculator() {
     const rhoJacobi = Math.cos(Math.PI / Math.max(4, Math.round(gridN)))
     for (let i = 0; i <= 80; i++) {
       const w = 0.5 + (1.49 * i) / 80
-      const spectral = clamp(Math.max(Math.abs(1 - w), Math.abs(w - 1) + w * rhoJacobi * rhoJacobi / 4), 1e-9, 0.999999)
+      const omegaOpt = 2 / (1 + Math.sqrt(1 - rhoJacobi * rhoJacobi))
+      const spectral = clamp(sorSpectralRadius(w, rhoJacobi, omegaOpt), 1e-9, 0.999999)
       points.push(`${i === 0 ? 'M' : 'L'}${sx(w, 0.5, 1.99).toFixed(1)} ${sy(spectral, 0, 1).toFixed(1)}`)
     }
     return points.join(' ')
@@ -235,9 +244,10 @@ function modifiedWavenumber(scheme: Scheme, kh: number) {
     return { real: Math.sin(kh), imag: 0 }
   }
   if (scheme === 'quick') {
-    const real = (3 * Math.sin(kh) - Math.sin(2 * kh) / 2) / 2
-    const imag = Math.max(0, (1 - Math.cos(kh)) * 0.25)
-    return { real, imag }
+    // QUICK face flux, u > 0. Dispersion is Im(σ); damping is Re(σ) of Δx ∂x.
+    const real = (5 / 4) * Math.sin(kh) - (1 / 8) * Math.sin(2 * kh)
+    const imag = 3 / 8 - 0.5 * Math.cos(kh) + (1 / 8) * Math.cos(2 * kh)
+    return { real, imag: Math.max(0, imag) }
   }
   return { real: Math.sin(kh), imag: 1 - Math.cos(kh) }
 }
@@ -274,7 +284,7 @@ export function ModifiedWavenumberAnalyzerCalculator() {
           options={[
             { value: 'upwind1', label: '1st upwind' },
             { value: 'central2', label: '2nd central' },
-            { value: 'quick', label: 'QUICK-like' },
+            { value: 'quick', label: 'QUICK' },
           ]}
         />
         <NumberField label="k h" value={kh} onChange={setKh} step={0.05} min={0} max={Math.PI} />

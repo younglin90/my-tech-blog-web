@@ -136,7 +136,7 @@ export default async function TagPage({ params }: TagPageProps) {
           <span style={{ color: 'var(--accent)' }}>grep</span>{' '}
           <span style={{ color: 'var(--text)' }}>&quot;#{decoded}&quot;</span>
           <span style={{ color: 'var(--text-faint)', marginLeft: 10 }}>
-            // {posts.length} match{posts.length !== 1 ? 'es' : ''}
+            // {t(loc, 'tags.matchCount', { count: String(posts.length) })}
           </span>
         </div>
         <h1

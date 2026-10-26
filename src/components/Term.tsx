@@ -4,8 +4,9 @@ import { useEffect, useRef, useState } from 'react'
 import { usePathname } from 'next/navigation'
 import { localePathPrefix } from '@/lib/i18n'
 import glossary from '@/lib/glossary.json'
+import { glossaryText, type GlossaryTexts } from '@/lib/glossary-text'
 
-interface Entry { ko: string; en: string; wiki?: string }
+interface Entry extends GlossaryTexts { wiki?: string }
 
 // MDX에서 사용: <Term name="Reynolds">Reynolds 수</Term>
 //
@@ -27,7 +28,7 @@ export function Term({ name, children }: { name: string; children?: React.ReactN
   const [pos, setPos] = useState<{ top: number; left: number; placement: 'top' | 'bottom' } | null>(null)
 
   if (!entry) return <>{children ?? name}</>
-  const def = locale === 'ko' ? entry.ko : entry.en
+  const def = glossaryText(entry, locale)
 
   const computePos = () => {
     const a = anchorRef.current

@@ -31,7 +31,8 @@ import { PostViews } from '@/components/PostViews'
 import { LOCALES, isLocale, t, SITE_NAMES, OG_LOCALE, HREFLANG, hreflangAlternates, type Locale } from '@/lib/i18n'
 import type { Metadata } from 'next'
 import { SITE_URL } from '@/lib/site'
-import { jsonLdHtml, PERSON_ID, ORG_ID, WEBSITE_ID, titleFromSlug } from '@/lib/jsonld'
+import { jsonLdHtml, PERSON_ID, ORG_ID, WEBSITE_ID } from '@/lib/jsonld'
+import { seriesTitle } from '@/lib/series-title'
 
 interface PostProps {
   params: Promise<{ locale: string; slug: string }>
@@ -195,7 +196,7 @@ export default async function PostPage({ params }: PostProps) {
   })()
   const mid = seriesCtx
     ? {
-        name: titleFromSlug(seriesCtx.series.slug),
+        name: seriesTitle(seriesCtx.series.slug, loc),
         url: `${SITE_URL}/${loc}/series/${seriesCtx.series.slug}/`,
         href: `/${loc}/series/${seriesCtx.series.slug}`,
       }

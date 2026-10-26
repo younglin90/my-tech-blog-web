@@ -8,6 +8,7 @@ import { getAllDynamicPosts } from '@/lib/dynamic-posts'
 import { getBookmarks } from '@/components/BookmarkButton'
 import { dayMeta } from '@/lib/day-meta'
 import { localePathPrefix, t } from '@/lib/i18n'
+import { seriesTitle } from '@/lib/series-title'
 import { dedupePostsForLocale, loadPostIndexClient, type PostIndexItem } from '@/lib/post-index'
 
 interface StaticPostItem {
@@ -375,6 +376,7 @@ export function PostList({
 
           const series = (post as any).series as string | undefined
           const seriesOrder = (post as any).seriesOrder as number | undefined
+          const seriesName = series ? seriesTitle(series, locale) : ''
           return (
             <Link key={post.id} href={href} className="post-row group block">
               <div
@@ -452,9 +454,9 @@ export function PostList({
                             color: 'var(--accent)',
                             fontFamily: 'var(--font-mono)',
                           }}
-                          title={t(locale, 'list.partOfSeries', { series })}
+                          title={t(locale, 'list.partOfSeries', { series: seriesName })}
                         >
-                          {series}{seriesOrder ? ` · ${String(seriesOrder).padStart(2, '0')}` : ''}
+                          {seriesName}{seriesOrder ? ` · ${String(seriesOrder).padStart(2, '0')}` : ''}
                         </span>
                       )}
                     </span>

@@ -3,6 +3,7 @@ import { notFound } from 'next/navigation'
 import type { Metadata } from 'next'
 import { LOCALES, isLocale, t, SITE_NAMES, hreflangAlternates, type Locale } from '@/lib/i18n'
 import { listAllSeries } from '@/lib/series'
+import { seriesTitle } from '@/lib/series-title'
 import { SITE_URL } from '@/lib/site'
 import { ogFallbackImages } from '@/lib/og'
 
@@ -81,7 +82,7 @@ export default async function SeriesIndex({ params }: Props) {
                   className="text-lg font-semibold link-hover-accent"
                   style={{ fontFamily: 'var(--font-display)', color: 'var(--text)' }}
                 >
-                  {s.slug}
+                  {seriesTitle(s.slug, locale)}
                 </h2>
                 <span className="mono text-xs tabular-nums" style={{ color: 'var(--text-faint)' }}>
                   {t(locale, 'series.parts', { count: String(s.count) })}

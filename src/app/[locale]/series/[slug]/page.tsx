@@ -4,8 +4,8 @@ import { format, parseISO } from 'date-fns'
 import type { Metadata } from 'next'
 import { LOCALES, isLocale, t, SITE_NAMES, hreflangAlternates, type Locale } from '@/lib/i18n'
 import { listAllSeries, getSeries } from '@/lib/series'
+import { seriesTitle } from '@/lib/series-title'
 import { SITE_URL } from '@/lib/site'
-import { jsonLdHtml, WEBSITE_ID, titleFromSlug } from '@/lib/jsonld'
 
 interface Props {
   params: Promise<{ locale: string; slug: string }>
@@ -30,7 +30,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const series = getSeries(loc, slug)
   // 예전에는 `${slug} series` / `Multi-part series: ${slug}` 였다 — 5개 locale 모두
   // 영어에다 사람이 읽을 수 없는 raw slug가 제목에 그대로 들어갔다.
-  const name = titleFromSlug(slug)
+  const name = seriesTitle(slug, loc)
   const count = String(series?.count ?? 0)
   const samples = (series?.posts ?? []).slice(0, 3).map((p) => p.title).join(' · ')
   const title = t(loc, 'series.metaTitle', { title: name, count })
@@ -67,7 +67,7 @@ export default async function SeriesPage({ params }: Props) {
         className="display mb-2"
         style={{ fontSize: 30, fontWeight: 700, letterSpacing: '-0.02em', color: 'var(--text)' }}
       >
-        {slug}
+        {seriesTitle(slug, locale)}
       </h1>
       <p className="mb-8 text-sm" style={{ color: 'var(--text-muted)' }}>
         {t(locale, 'series.sequential', { count: String(series.count) })}

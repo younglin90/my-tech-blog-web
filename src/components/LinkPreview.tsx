@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { loadPostIndexClient, type PostIndexItem } from '@/lib/post-index'
+import { seriesTitle } from '@/lib/series-title'
 
 // 본문(<article>) 안 내부 포스트 링크에 마우스를 ~250ms 올리고 있으면
 // 작은 팝오버(제목·설명·날짜·태그·읽기시간)를 띄운다. Wikipedia/Notion 스타일.
@@ -179,7 +180,7 @@ export function LinkPreview() {
             className="rounded px-1 py-0.5"
             style={{ background: 'var(--accent-glow)', color: 'var(--accent)' }}
           >
-            {entry.series}
+            {seriesTitle(entry.series, entry.locale)}
             {entry.seriesOrder ? ` · ${String(entry.seriesOrder).padStart(2, '0')}` : ''}
           </span>
         )}

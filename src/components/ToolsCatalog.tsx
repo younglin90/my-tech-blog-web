@@ -99,22 +99,22 @@ export function ToolsCatalog({ locale }: { locale: Locale }) {
         className="relative overflow-hidden rounded-3xl"
         style={{
           background:
-            'radial-gradient(circle at 20% 18%, rgba(34,211,238,0.22), transparent 32%), radial-gradient(circle at 88% 22%, rgba(249,115,22,0.18), transparent 30%), linear-gradient(135deg, rgba(8,17,31,0.98), rgba(15,29,46,0.94))',
+            'radial-gradient(circle at 20% 18%, color-mix(in srgb, var(--accent) 28%, transparent), transparent 34%), radial-gradient(circle at 88% 22%, color-mix(in srgb, var(--accent-dim) 18%, transparent), transparent 32%), linear-gradient(135deg, var(--surface), var(--bg))',
           border: '1px solid var(--border)',
-          boxShadow: '0 30px 90px rgba(8,17,31,0.32)',
+          boxShadow: '0 24px 60px color-mix(in srgb, var(--bg) 35%, transparent)',
         }}
       >
         <div className="relative z-10 p-5 sm:p-7 lg:p-8">
-          <div className="mb-4 inline-flex items-center gap-2 rounded-full px-3 py-1" style={{ background: 'rgba(34,211,238,0.10)', border: '1px solid rgba(34,211,238,0.28)' }}>
-            <span className="h-2 w-2 rounded-full" style={{ background: '#22d3ee', boxShadow: '0 0 18px #22d3ee' }} />
-            <span className="mono text-[10px] font-semibold uppercase tracking-[0.28em]" style={{ color: '#22d3ee' }}>
-              CFD workbench
+          <div className="mb-4 inline-flex items-center gap-2 rounded-full px-3 py-1" style={{ background: 'var(--accent-glow)', border: '1px solid color-mix(in srgb, var(--accent) 40%, transparent)' }}>
+            <span className="h-2 w-2 rounded-full" style={{ background: 'var(--accent)' }} />
+            <span className="mono text-[10px] font-semibold uppercase tracking-[0.28em]" style={{ color: 'var(--accent)' }}>
+              {t(locale, 'tools.badge')}
             </span>
           </div>
-          <h1 className="display max-w-2xl text-4xl font-bold tracking-[-0.045em] sm:text-5xl" style={{ color: '#e2e8f0' }}>
+          <h1 className="display max-w-2xl text-4xl font-bold tracking-[-0.045em] sm:text-5xl" style={{ color: 'var(--text)' }}>
             {t(locale, 'tools.title')}
           </h1>
-          <p className="mt-4 max-w-2xl text-sm sm:text-base" style={{ color: '#a8b3c4', lineHeight: 1.75 }}>
+          <p className="mt-4 max-w-2xl text-sm sm:text-base" style={{ color: 'var(--text-muted)', lineHeight: 1.75 }}>
             {t(locale, 'tools.subtitle')}
           </p>
         </div>
@@ -378,7 +378,10 @@ function ToolCard({
         className="block overflow-hidden rounded-xl transition-colors duration-100"
         style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
       >
-        <ToolCardGlyph category={toolMeta?.category ?? 'numerics'} />
+        <ToolCardGlyph
+          slug={slug}
+          label={getCategoryLabel(toolMeta?.category ?? 'numerics', locale)}
+        />
         <div className="p-4">
           <h3 className="pr-12 text-base font-semibold link-hover-accent" style={{ fontFamily: 'var(--font-display)', color: 'var(--text)' }}>
             {title}
@@ -419,40 +422,39 @@ function ToolCard({
   )
 }
 
-function ToolCardGlyph({ category }: { category: CalculatorCategory }) {
-  const accent = category === 'heat-transfer' || category === 'reacting-flow' ? '#fb923c' : '#22d3ee'
-  const secondary = category === 'multiphase' || category === 'turbulence' ? '#818cf8' : '#14b8a6'
+function ToolCardGlyph({ slug, label }: { slug: string; label: string }) {
+  const gradId = `card-grad-${slug}`
 
   return (
-    <div className="relative h-24 overflow-hidden" style={{ background: 'linear-gradient(135deg, rgba(8,17,31,0.96), rgba(15,29,46,0.82))' }}>
+    <div className="relative h-24 overflow-hidden" style={{ background: 'linear-gradient(135deg, var(--bg), var(--surface))' }}>
       <svg viewBox="0 0 360 96" className="h-full w-full" aria-hidden="true">
         <defs>
-          <linearGradient id={`card-grad-${category}`} x1="0" x2="1">
-            <stop offset="0%" stopColor={accent} stopOpacity="0.82" />
-            <stop offset="100%" stopColor={secondary} stopOpacity="0.66" />
+          <linearGradient id={gradId} x1="0" x2="1">
+            <stop offset="0%" stopColor="var(--accent)" stopOpacity="0.85" />
+            <stop offset="100%" stopColor="var(--accent-dim)" stopOpacity="0.45" />
           </linearGradient>
         </defs>
-        <path d="M0 72 C70 32 118 84 180 48 S292 24 360 56 V96 H0 Z" fill={`url(#card-grad-${category})`} opacity="0.22" />
+        <path d="M0 72 C70 32 118 84 180 48 S292 24 360 56 V96 H0 Z" fill={`url(#${gradId})`} opacity="0.35" />
         {[34, 50, 66].map((y, index) => (
           <path
             key={y}
             d={`M-12 ${y} C78 ${y - 24}, 120 ${y + 20}, 190 ${y - 4} S302 ${y + 24}, 372 ${y - 10}`}
             fill="none"
-            stroke={index % 2 ? secondary : accent}
+            stroke="var(--accent)"
             strokeWidth="2"
             strokeLinecap="round"
             strokeDasharray="9 13"
-            opacity="0.72"
+            opacity={index % 2 ? 0.45 : 0.8}
           >
             <animate attributeName="stroke-dashoffset" from="0" to="-44" dur={`${4 + index}s`} repeatCount="indefinite" />
           </path>
         ))}
-        <circle cx="306" cy="28" r="16" fill="rgba(8,17,31,0.72)" stroke={accent} strokeWidth="2">
+        <circle cx="306" cy="28" r="16" fill="var(--surface)" stroke="var(--accent)" strokeWidth="2">
           <animate attributeName="r" values="13;18;13" dur="3.2s" repeatCount="indefinite" />
         </circle>
       </svg>
-      <div className="absolute left-3 top-3 mono rounded-full px-2 py-1 text-[9px] uppercase tracking-widest" style={{ background: 'rgba(8,17,31,0.62)', color: 'var(--text-faint)', border: '1px solid rgba(148,163,184,0.18)' }}>
-        {category}
+      <div className="absolute left-3 top-3 mono max-w-[70%] truncate rounded-full px-2 py-1 text-[9px] uppercase tracking-widest" title={label} style={{ background: 'color-mix(in srgb, var(--bg) 82%, transparent)', color: 'var(--text-muted)', border: '1px solid var(--border)' }}>
+        {label}
       </div>
     </div>
   )

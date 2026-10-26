@@ -219,7 +219,7 @@ export function BookmarksClient({ posts }: BookmarksClientProps) {
               </div>
               <button
                 onClick={() => handleRemove(post.id)}
-                className="shrink-0 rounded p-1.5 opacity-0 transition-opacity duration-100 group-hover:opacity-100"
+                className="inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-md"
                 style={{ color: 'var(--text-faint)' }}
                 aria-label={`${t(locale, 'bookmarks.remove')}: ${post.title}`}
                 title={t(locale, 'bookmarks.remove')}

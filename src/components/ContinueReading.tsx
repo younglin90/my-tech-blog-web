@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { localePathPrefix, t } from '@/lib/i18n'
+import { seriesTitle } from '@/lib/series-title'
 
 const STORAGE_KEY = 'cfd-lab-reading-positions'
 const MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000
@@ -102,7 +103,7 @@ export function ContinueReading({ posts, limit = 4 }: Props) {
                   className="mono inline-block self-start rounded px-1.5 py-0.5 text-[9px] font-semibold"
                   style={{ background: 'var(--accent-glow)', color: 'var(--accent)' }}
                 >
-                  {it.series}
+                  {seriesTitle(it.series, locale)}
                   {it.seriesOrder ? ` · ${String(it.seriesOrder).padStart(2, '0')}` : ''}
                 </span>
               )}
