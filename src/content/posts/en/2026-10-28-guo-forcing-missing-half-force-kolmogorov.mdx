@@ -1,0 +1,177 @@
+---
+title: "Velocity came out one sixth at τ=0.6 — dropping the half-force F/2 from Guo forcing"
+date: 2026-10-28
+description: "Keep the Guo source term but drop F/2 from the LBM velocity and the effective body force shrinks by (1−1/2τ). On Kolmogorov flow at τ=0.6 the amplitude is 0.166 of exact."
+tags: ["Guo-Forcing", "Forcing-Term", "LBM", "Chapman-Enskog", "Kolmogorov-Flow"]
+locale: en
+slug: 2026-10-28-guo-forcing-missing-half-force-kolmogorov
+takeaway: "The (1−1/2τ) factor in the Guo source is paired with the F/2 shift in the equilibrium velocity. Keep only one and each step injects (1−1/2τ)F of momentum instead of F."
+draft: false
+---
+import { HalfForceMomentumLedgerLab } from '@/components/post-viz/2026-10-28-guo-forcing-missing-half-force-kolmogorov/HalfForceMomentumLedgerLab'
+import { KolmogorovHalfForceRace } from '@/components/post-viz/2026-10-28-guo-forcing-missing-half-force-kolmogorov/KolmogorovHalfForceRace'
+
+## Same force, so why is the velocity one sixth of the answer?
+
+I put a sinusoidal body force on a periodic box. The analytical solution is one line in any textbook. My lattice Boltzmann code (LBM, a method that evolves particle distributions through collide and stream steps) returned an amplitude of 0.16 times that answer. Changing the viscosity changed the ratio. At τ=1 it was exactly one half.
+
+The cause was a single missing term: $\mathbf{F}/2$ in the macroscopic velocity. This post shows why that omission produces an error of exactly $(1-1/2\tau)$. We measure it on Kolmogorov flow (the periodic shear flow driven by a sine-shaped body force), and finish with a one-step test that finds this bug in any LBM code in about 30 seconds.
+
+## Momentum changes three times inside one step
+
+An LBM step is collision plus streaming. Streaming only moves momentum around. Momentum is created only in the collision. So the ledger of a single uniform fluid node tells the whole story.
+
+$$
+\mathbf{m}' = \mathbf{m} - \frac{1}{\tau}\left(\mathbf{m} - \rho\mathbf{u}\right) + \left(1-\frac{1}{2\tau}\right)\mathbf{F}
+$$
+
+$\mathbf{m}=\sum_i f_i\mathbf{c}_i$ is the pre-collision momentum, $\mathbf{m}'$ the post-collision momentum, $\rho\mathbf{u}$ the momentum placed in the equilibrium, $\tau$ the relaxation time, and $\mathbf{F}$ the body force in lattice units.
+
+The second term is relaxation. It vanishes if the equilibrium velocity equals the pre-collision velocity. The third term is the first moment of the Guo source. What you put into $\rho\mathbf{u}$ decides everything.
+
+$$
+\rho\mathbf{u} = \mathbf{m} + \tfrac{1}{2}\mathbf{F} \;\Rightarrow\; \mathbf{m}' = \mathbf{m} + \frac{\mathbf{F}}{2\tau} + \mathbf{F} - \frac{\mathbf{F}}{2\tau} = \mathbf{m} + \mathbf{F}
+$$
+
+$$
+\rho\mathbf{u} = \mathbf{m} \;\Rightarrow\; \mathbf{m}' = \mathbf{m} + \left(1-\frac{1}{2\tau}\right)\mathbf{F}
+$$
+
+In the first line, relaxation supplies the missing $\mathbf{F}/(2\tau)$, so exactly $\mathbf{F}$ goes in. In the second line that top-up is gone. Only the $(1-1/2\tau)$ factor of the source survives.
+
+Try it yourself in the simulation below.
+
+<HalfForceMomentumLedgerLab />
+
+Drag τ toward 0.51. The red slope flattens almost to zero, and the solid relaxation piece disappears from the right-hand bar.
+
+## The half-step velocity: midway between before and after
+
+Why $\mathbf{F}/2$ in particular? Before the collision the momentum is $\mathbf{m}$. After receiving the full force it is $\mathbf{m}+\mathbf{F}$. The physical velocity is the time average over that interval, which sits in the middle. It is the same reason the trapezoidal rule (integrating with the mean of the endpoint values, second-order accurate) works.
+
+Guo et al. (2002) wrote the source term as
+
+$$
+S_i = w_i\left[\frac{\mathbf{c}_i-\mathbf{u}}{c_s^2} + \frac{(\mathbf{c}_i\cdot\mathbf{u})\,\mathbf{c}_i}{c_s^4}\right]\cdot\mathbf{F}
+$$
+
+where $w_i$ are lattice weights, $\mathbf{c}_i$ the discrete velocities, and $c_s^2=1/3$ the squared lattice sound speed. It satisfies $\sum_i S_i\mathbf{c}_i = \mathbf{F}$ and $\sum_i S_i = 0$.
+
+The $(1-1/2\tau)$ factor comes out of the Chapman–Enskog expansion (expanding the distribution in Knudsen number to recover the macroscopic equations). The Taylor expansion in discrete time leaves a residue of the form $-\tfrac{1}{2}S_i$. That residue shares its root with the [half-step viscosity correction](/en/posts/2026-09-28-lbm-half-step-viscosity-taylor-expansion/). Canceling it requires putting $\mathbf{F}/2$ into the equilibrium velocity so the first moment balances. The two are derived as a pair from the start.
+
+## Code: Kolmogorov flow with three velocity definitions
+
+Build a D2Q9 lattice as a $1\times N$ periodic column. The force is $F_x = F_0\sin(ky)$ with $k=2\pi/N$. The steady analytical solution is
+
+$$
+u_x(y) = \frac{F_0}{\nu k^2}\sin(ky),\qquad \nu = \frac{\tau - 1/2}{3}
+$$
+
+with $\nu$ the kinematic viscosity in lattice units. There are no walls, so no bounce-back error contaminates the result. Only the force treatment is measured.
+
+Three cases run. `guo` uses $\mathbf{F}/2$ in both the equilibrium and the output. `nohalf` keeps the Guo source but drops $\mathbf{F}/2$ from the velocity. `rawout` computes correctly but reports $\sum f_i\mathbf{c}_i/\rho$. The amplitude is the $\sin(ky)$ Fourier coefficient divided by the analytical value.
+
+```python
+import math
+
+# D2Q9 lattice: velocities, weights, sound speed squared
+C = [(0,0),(1,0),(0,1),(-1,0),(0,-1),(1,1),(-1,1),(-1,-1),(1,-1)]
+W = [4/9,1/9,1/9,1/9,1/9,1/36,1/36,1/36,1/36]
+CS2 = 1/3
+
+def f_equil(rho, ux):
+    # uy = 0 everywhere: the flow is u_x(y) only
+    out = []
+    for (cx, cy), wi in zip(C, W):
+        cu = cx*ux
+        out.append(wi*rho*(1 + cu/CS2 + 0.5*(cu/CS2)**2 - 0.5*ux*ux/CS2))
+    return out
+
+def guo_term(ux, Fx, tau):
+    out = []
+    for (cx, cy), wi in zip(C, W):
+        cu = cx*ux
+        out.append((1 - 0.5/tau)*wi*((cx - ux)/CS2 + cu*cx/CS2**2)*Fx)
+    return out
+
+def kolmogorov_amp(tau, mode, N=16, F0=1e-6):
+    """mode 'guo'    : u = (sum f c + F/2)/rho in equilibrium and output
+       mode 'nohalf' : Guo source, but u = sum f c / rho everywhere
+       mode 'rawout' : correct update, but report sum f c / rho"""
+    k = 2*math.pi/N
+    Fx = [F0*math.sin(k*(j + 0.5)) for j in range(N)]
+    nu = (tau - 0.5)/3
+    steps = int(12/(nu*k*k))                    # ~12 viscous decay times
+    f = [f_equil(1.0, 0.0) for _ in range(N)]
+    for _ in range(steps):
+        post = []
+        for j in range(N):
+            fj = f[j]
+            rho = sum(fj)
+            mx = sum(fi*cx for fi, (cx, _) in zip(fj, C))
+            ux = mx/rho if mode == 'nohalf' else (mx + 0.5*Fx[j])/rho
+            feq = f_equil(rho, ux)
+            src = guo_term(ux, Fx[j], tau)
+            post.append([fi - (fi - fe)/tau + s for fi, fe, s in zip(fj, feq, src)])
+        # streaming: only the y component moves anything (one cell in x, periodic)
+        f = [[post[(j - C[i][1]) % N][i] for i in range(9)] for j in range(N)]
+    amp = 0.0
+    for j in range(N):
+        rho = sum(f[j]); mx = sum(fi*cx for fi, (cx, _) in zip(f[j], C))
+        u = mx/rho if mode in ('nohalf', 'rawout') else (mx + 0.5*Fx[j])/rho
+        amp += 2*u*math.sin(k*(j + 0.5))/N
+    return amp/(F0/(nu*k*k)), steps
+
+print(" tau  steps   guo     nohalf  rawout   nohalf/guo  1-1/(2tau)")
+for tau in [0.55, 0.6, 0.8, 1.0, 1.5]:
+    r1, n = kolmogorov_amp(tau, 'guo')
+    r2, _ = kolmogorov_amp(tau, 'nohalf')
+    r3, _ = kolmogorov_amp(tau, 'rawout')
+    print(f"{tau:4.2f} {n:6d}  {r1:.4f}  {r2:.4f}  {r3:.4f}   {r2/r1:.4f}      {1-0.5/tau:.4f}")
+```
+
+```text
+ tau  steps   guo     nohalf  rawout   nohalf/guo  1-1/(2tau)
+0.55   4668  0.9746  0.0885  0.9734   0.0908      0.0909
+0.60   2334  0.9754  0.1621  0.9729   0.1662      0.1667
+0.80    778  0.9836  0.3660  0.9759   0.3721      0.3750
+1.00    466  1.0001  0.4936  0.9872   0.4936      0.5000
+1.50    233  1.0772  0.7010  1.0515   0.6508      0.6667
+```
+
+Run the code above directly in your browser.
+
+<KolmogorovHalfForceRace />
+
+At τ=0.6 the red `nohalf` amplitude stalls near 0.16 and sits on the dashed red $1-1/2\tau$ line. Raise N to 32 or more and the green `guo` moves closer to 1, while the `nohalf/guo` ratio stays put.
+
+## What 0.166 and 0.973 are telling us
+
+The `nohalf/guo` column overlaps $1-1/2\tau$: 0.0908 vs 0.0909 at τ=0.55, 0.1662 vs 0.1667 at τ=0.6. The ledger result carries straight into a real flow. In steady state, viscous diffusion balances the momentum injected per step. If the injection is scaled by $(1-1/2\tau)$, so is the amplitude.
+
+As τ grows the ratio drifts slightly from theory: 0.6508 vs 0.6667 at τ=1.5. With $N=16$, $k\approx0.39$, so there are few nodes per wavelength. Lattice truncation error of order $k^2$ creeps in here. That is also why `guo` itself reads 1.0772 rather than 1.
+
+`rawout` is nearly identical to `guo`. The reported velocity just lags by $F/(2\rho)$. The relative error is about $\nu k^2/2$, roughly 0.1% at τ=0.55. This is an easy place to get confused while debugging. Dropping $\mathbf{F}/2$ on the output side is a small error. Dropping it on the equilibrium side is a large one.
+
+The most dangerous regime is high Reynolds number. Push τ toward 0.5 to lower viscosity and the effective force heads to zero too. Crank up the force to compensate, and a hidden factor contaminates every result.
+
+## Where F/2 belongs in the pseudocode
+
+A common LBM loop runs: initialize → macroscopic quantities → equilibrium → force → collision → streaming. This ordering is what breeds the bug. When $\mathbf{u}$ is computed in the macroscopic step, the force has not been computed yet. So it is tempting to stop at $\mathbf{u}=\sum f_i\mathbf{c}_i/\rho$.
+
+The fix is a small reordering.
+
+1. Compute $\rho = \sum_i f_i$ first.
+2. Compute the force $\mathbf{F}$. If it only needs $\rho$, as with gravity, you are done here.
+3. Compute the velocity from $\rho\mathbf{u} = \sum_i f_i\mathbf{c}_i + \mathbf{F}/2$.
+4. Build $f^{eq}$ and $S_i$ from that same $\mathbf{u}$. Output that $\mathbf{u}$ too.
+
+If the force depends on velocity (drag, for example), step 3 becomes implicit. Linear drag can be solved algebraically. Otherwise one or two fixed-point iterations are enough.
+
+"Fixing" it by deleting $(1-1/2\tau)$ is not the answer either. The first moment comes out right, but a τ-dependent stress remains in the second moment. That issue is covered in the [third-moment post on the force term](/en/posts/2026-09-30-lbm-forcing-term-third-moment-limit/) and the [Shan–Chen velocity-shift forcing post](/en/posts/2026-10-23-shan-chen-velocity-shift-forcing-tau-squared-stress/).
+
+## A one-step test to find F/2 in your own LBM loop
+
+Make a periodic box filled with $\rho=1$, $\mathbf{u}=0$. Apply a uniform force $\mathbf{F}$ and run exactly one step. Divide the change in $\sum f_i\mathbf{c}_i$ by $\mathbf{F}$.
+
+A result of 1 means the pair is consistent. A result of $1-1/2\tau$ means $\mathbf{F}/2$ is missing from the equilibrium velocity. Run it at two values of τ to be sure. If the ratio tracks τ, you have the bug. Check this single step before running any validation case.
