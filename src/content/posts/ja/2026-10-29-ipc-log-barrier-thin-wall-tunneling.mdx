@@ -1,0 +1,195 @@
+---
+title: "5 m/sで投げたボールが20 mmの壁を通り抜けた — ペナルティ接触とIPC対数バリアの違い"
+date: 2026-10-29
+description: "同じ陰的Euler 1ステップで、ペナルティ接触は薄い壁を飛び越え、IPCの対数バリアとCCD付き直線探索は数µm手前で止まる理由を1次元実験で確かめます。"
+tags: ["Incremental-Potential-Contact", "Barrier-Method", "Implicit", "FSI", "Algorithms"]
+locale: ja
+slug: 2026-10-29-ipc-log-barrier-thin-wall-tunneling
+takeaway: "ペナルティは1ステップが壁の中に着地して初めて力を出しますが、IPCは距離0で無限大になるエネルギーと衝突時刻で切った直線探索で、貫通そのものを不可能にします。"
+draft: false
+---
+import { IncrementalPotentialLandscapeLab } from '@/components/post-viz/2026-10-29-ipc-log-barrier-thin-wall-tunneling/IncrementalPotentialLandscapeLab'
+import { ThinWallBarrierTunnelRace } from '@/components/post-viz/2026-10-29-ipc-log-barrier-thin-wall-tunneling/ThinWallBarrierTunnelRace'
+
+## 2020年、接触問題に「保証」が付いた
+
+2020年のSIGGRAPHで、Minchen Liらが Incremental Potential Contact(IPC)を発表しました。論文が前面に出したのは速度ではありません。「交差しないことを保証する」という一文でした。接触シミュレーションでこの言葉は長く禁句でした。時間刻みが大きいか物体が速いと、どの手法もときどき貫通したからです。
+
+この記事では、その保証がどこから来るのかを1次元実験ひとつで確かめます。厚さ20 mmの壁に質量1 kgのボールを投げます。ペナルティ接触は5 m/sで壁を飛び越えます。IPCは50 m/sでも壁の手前2.1 µmで止まります。違いは剛性の大きさではありません。エネルギー地形の形と、直線探索(line search、探索方向にどこまで進むかを決める段階)の役割です。
+
+## 二つの古い道:ペナルティと相補性条件
+
+接触の古典的な扱いは大きく二つあります。一つ目はペナルティ法です。物体が深さ $p$ だけ重なったら、ばね力 $kp$ を加えます。実装は簡単です。ただし重なりが生じてから初めて力が出ます。
+
+二つ目は相補性条件(LCP、線形相補性問題)です。「距離 $d \ge 0$、接触力 $\lambda \ge 0$、かつ $d\lambda = 0$」を連立して解きます。原理的には厳密です。しかし非線形弾性や摩擦と組み合わせると解法が不安定になり、実務では許容誤差内の重なりを認めます。
+
+IPCは三つ目の道を選びました。接触を条件ではなくエネルギーに置き換えます。ただしペナルティと違い、距離0で無限大になるエネルギーです。
+
+## 1ステップを最小化問題に:増分ポテンシャル
+
+陰的Euler法の1ステップは最小化問題として書けます。これを増分ポテンシャル(incremental potential、IP)と呼びます。
+
+$$
+E(x) = \frac{1}{2}(x-\tilde{x})^{T} M (x-\tilde{x}) + h^{2}\Psi(x) + B(x) + D(x)
+$$
+
+$x$ は次ステップの節点位置、$M$ は質量行列、$h$ は時間刻みです。$\tilde{x} = x^{t} + h v^{t} + h^{2}M^{-1}f_{ext}$ は接触がない場合の予測位置です。$\Psi$ は超弾性変形エネルギー、$B$ は接触バリア、$D$ は摩擦散逸ポテンシャルです。$\nabla E = 0$ を解くと陰的Eulerの式がそのまま得られます。
+
+鍵は第1項です。慣性は $x$ を $\tilde{x}$ の方へ引っ張ります。接触項はその引力を止めなければなりません。下のシミュレーションで実際に操作してみましょう。
+
+<IncrementalPotentialLandscapeLab />
+
+紫の破線 $\tilde{x}$ を壁の向こうへ動かしてみてください。赤いペナルティ曲線は壁の裏に新しい最小点ができ、そちらへ移ります。緑のIPC曲線は壁の手前で無限に立ち上がるため、最小点は最後まで壁の手前に残ります。
+
+## 対数バリア:距離0でエネルギーが無限大
+
+IPCの接触エネルギーは距離 $d$ の関数です。
+
+$$
+b(d,\hat{d}) =
+\begin{cases}
+-(d-\hat{d})^{2}\ln\left(\dfrac{d}{\hat{d}}\right), & 0 < d < \hat{d} \\
+0, & d \ge \hat{d}
+\end{cases}
+$$
+
+$\hat{d}$ はバリアが働き始める距離、$B(x) = \kappa\sum_k b(d_k(x),\hat{d})$ で $\kappa$ はバリア剛性です。3次元では $d_k$ は点–三角形、辺–辺ペアの符号なし距離です。
+
+この関数には三つの性質があります。$d \ge \hat{d}$ では厳密に0なので、遠いペアは計算から外れます。$d=\hat{d}$ で値も1階微分も0なので、Newton法が滑らかに通過します。$d \to 0$ で $-\ln d$ が無限大になります。最後の性質が保証の半分です。
+
+## バリアだけでは足りない:CCDで絞った直線探索
+
+エネルギーが無限大でも、Newtonの1歩は壁を飛び越えられます。始点と終点のエネルギーだけを見ると、壁の裏はバリアの範囲外なので0だからです。そこでIPCは直線探索に連続衝突検出(CCD、continuous collision detection)を組み込みます。
+
+Newton方向 $\Delta x$ が出たら、$x$ から $x+\Delta x$ への線分上で最初に接触する時刻 $t^{*}$ を求めます。歩幅をまず $\alpha \le t^{*}$ に切り、その後でエネルギーの減少を確認します。実行可能領域の中から始めた反復は、決して外に出られません。これが保証の残り半分です。
+
+## コード:20 mmの壁にボールを6つの速度で投げた
+
+1次元に落とします。ボールは $x=0$ から出発し、壁の前面は0.503 m、厚さは20 mmです。重力はありません。毎ステップ $E(x)$ をNewton法で最小化します。ペナルティは壁の中で近い面へ押し出す½kp²を使います。IPCは上のバリアに $h^{2}\kappa$ を掛けて使い、直線探索の最初の一歩を衝突時刻の90%に切ります。
+
+```python
+import math
+
+M, H = 1.0, 0.01          # 質量 [kg]、時間刻み [s]
+WALL, W = 0.503, 0.02      # 壁の前面位置 [m]、壁の厚さ [m]
+DHAT, KAPPA = 1e-3, 1e4   # バリアの作用距離 [m]、バリア剛性
+K_PEN = 1e4               # ペナルティ剛性 [N/m]
+
+def barrier(d):
+    # b(d) = -κ (d - d̂)² ln(d/d̂),  0 < d < d̂ でのみ働く
+    if d >= DHAT:
+        return 0.0, 0.0, 0.0
+    l = math.log(d / DHAT)
+    b = -(d - DHAT) ** 2 * l
+    db = -2 * (d - DHAT) * l - (d - DHAT) ** 2 / d
+    d2b = -2 * l - 4 * (d - DHAT) / d + (d - DHAT) ** 2 / d ** 2
+    return KAPPA * b, KAPPA * db, KAPPA * d2b
+
+def pen_depth(x):
+    # 壁の中なら近い面までの深さと押し出す向き
+    if WALL < x < WALL + W:
+        a, c = x - WALL, WALL + W - x
+        return (a, -1.0) if a <= c else (c, 1.0)
+    return 0.0, 0.0
+
+def ip_energy(x, xt, mode):
+    e = 0.5 * M * (x - xt) ** 2
+    if mode == "ipc":
+        d = WALL - x
+        if d <= 0:
+            return math.inf
+        e += H * H * barrier(d)[0]
+    else:
+        p, _ = pen_depth(x)
+        e += H * H * 0.5 * K_PEN * p * p
+    return e
+
+def ip_newton(x0, xt, mode, tol=1e-10):
+    x, it = x0, 0
+    for it in range(1, 60):
+        g, hs = M * (x - xt), M
+        if mode == "ipc":
+            _, db, d2b = barrier(WALL - x)
+            g += H * H * (-db)
+            hs += H * H * d2b
+        else:
+            p, s = pen_depth(x)
+            g += H * H * K_PEN * p * (-s)
+            hs += H * H * K_PEN * (p > 0)
+        dx = -g / hs
+        if abs(dx) < tol:
+            break
+        a = 1.0
+        if mode == "ipc" and x + dx >= WALL:
+            a = 0.9 * (WALL - x) / dx        # CCD: 壁を越える手前まで
+        e0 = ip_energy(x, xt, mode)
+        while ip_energy(x + a * dx, xt, mode) > e0 and a > 1e-12:
+            a *= 0.5                           # Armijo の代わりに単純減少条件
+        x += a * dx
+    return x, it
+
+def throw(v0, mode, steps=80):
+    x, v = 0.0, v0
+    xmax, itmax = x, 0
+    for _ in range(steps):
+        xt = x + H * v                         # 接触がない場合の予測位置
+        xn, it = ip_newton(x, xt, mode)
+        v, x = (xn - x) / H, xn
+        if x > WALL + W:
+            return "through", xmax - WALL, itmax
+        xmax, itmax = max(xmax, x), max(itmax, it)
+    return "stopped", xmax - WALL, itmax
+
+print(f"wall at {WALL} m, thickness {W*1000:.0f} mm, h = {H*1000:.0f} ms")
+print(" v0[m/s] | pen k=1e4     | pen k=1e6     | IPC d^=1mm")
+for v0 in [1, 2, 5, 10, 20, 50]:
+    row = []
+    for k in (1e4, 1e6):
+        K_PEN = k
+        r = throw(v0, "pen")
+        row.append(f"{'through':13s}" if r[0] == "through" else f"stop {r[1]*1000:5.2f} mm")
+    r = throw(v0, "ipc")
+    row.append(f"gap {-r[1]*1e6:6.1f} um, newton {r[2]:2d}")
+    print(f" {v0:7.0f} | " + " | ".join(row))
+```
+
+```text
+wall at 0.503 m, thickness 20 mm, h = 10 ms
+ v0[m/s] | pen k=1e4     | pen k=1e6     | IPC d^=1mm
+       1 | stop  5.00 mm | stop  0.07 mm | gap  166.4 um, newton  8
+       2 | through       | stop  0.17 mm | gap   71.0 um, newton  8
+       5 | through       | through       | gap   24.0 um, newton  9
+      10 | through       | through       | gap   11.1 um, newton 10
+      20 | through       | through       | gap   10.4 um, newton 11
+      50 | through       | through       | gap    2.1 um, newton 12
+```
+
+上のコードをブラウザで直接動かしてみましょう。
+
+<ThinWallBarrierTunnelRace />
+
+v0を5 m/s、hを10 msにすると、赤いボールは壁を飛び越え、緑のボールは約24 µm手前で止まります。kを1e8まで上げても赤いボールは通り抜けます。hを縮めて1ステップの移動が壁厚の半分を下回ったとき、ようやく止まる機会が生まれます。
+
+## 5 m/sでペナルティが見逃したもの
+
+5 m/sで10 msなら、1ステップで50 mm進みます。壁は20 mmです。始点0.50 mから見た予測位置 $\tilde{x}=0.55$ mは、すでに壁の裏です。そこではペナルティエネルギーも慣性項も0です。Newton法は1回でその大域最小点に到達します。壁は一度も計算に登場しませんでした。
+
+だからk=1e6でも役に立ちません。剛性はボールが壁の中に着地したときにしか働きません。2 m/sでk=1e4が通り抜けた理由は少し違います。1ステップ20 mmだと、ボールは壁の中央面を越えて着地します。すると「近い面」が裏面になり、ペナルティがボールを裏側へ押し出します。この構造は、[MSTACSが1ステップで持っている量より多くを送り出して破綻した話](/ja/posts/2026-10-25-mstacs-slope-three-courant-limit/)と似ています。1ステップが物理的な長さスケールを超えると、局所的な補正は無力です。
+
+## 2 µmの隙間とNewton 12回の代償
+
+IPCの列は6つの速度すべてで止まりました。代償は二つあります。一つ目に、ボールは壁に触れません。隙間は1 m/sで166 µm、50 m/sで2.1 µmです。速いほど止めるのに大きな力が要り、バリア力 $-\kappa b'(d)$ は $d$ が小さいほど大きくなるため、より近くまで寄ります。10と20 m/sの隙間が近いのは、衝突ステップが壁の手前のどこから始まるかによる位相効果です。
+
+二つ目に、衝突ステップのNewton反復が8〜12回に増えました。CCDが毎回歩幅を90%に切るので、壁へ指数的に近づきながら何度も歩きます。3次元メッシュでは反復ごとにCCDとバリアHessianの組み立てが加わります。保証はただではありません。
+
+隙間は誤差ではなく設計変数です。$\hat{d}$ がそのまま「触れた」の定義です。論文は既定値としてバウンディングボックス対角線の $10^{-3}$ 程度を使い、$\kappa$ は反復中に適応的に大きくします。
+
+## 今日のIPC:摩擦、弾性、そして流体側との接点
+
+原論文は同じ枠組みに摩擦も入れています。接触力 $\lambda$ と接線基底を前の反復で固定(lagging)し、相対接線速度に滑らかな関数 $f_1$ をかぶせて、静止摩擦と滑り摩擦を一つのポテンシャル $D$ にまとめます。弾性 $\Psi$ にNeo-Hookeanのように $J=\det F \to 0$ で無限大になるモデルを使えば、要素の反転(inversion)も同じ直線探索で防げます。
+
+その後、剛体、余次元シェル、FSI(流体–構造連成)へと拡張が続きました。流れで曲がった薄板同士が接触する問題が代表例です。流体側の「接触」は別の意味で、液体界面が壁となす角度は[表面張力と接触角の記事](/ja/posts/2026-06-16-surface-tension-contact-angle-csf/)で扱いました。それでもIPの考え方は流体ソルバーにも通じます。1ステップをエネルギー最小化として書けば、直線探索が実行可能性を守る門番になります。
+
+## 接触コードにバリアを入れる前に測る三つの数
+
+一つ目に、$v h$ と最も薄い部材の厚さを比べます。$vh$ が厚さの半分を超えると、ペナルティは剛性に関係なく貫通しえます。二つ目に、$\hat{d}$ を決めます。その距離以内は接触とみなすという意味なので、形状公差に合わせます。三つ目に、直線探索のCCD安全係数と衝突ステップのNewton反復数を記録します。反復数が急に増えたら、$\kappa$ か $\hat{d}$ が問題に対してずれています。

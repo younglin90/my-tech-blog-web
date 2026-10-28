@@ -1,0 +1,195 @@
+---
+title: "5 m/s로 던진 공이 20 mm 벽을 통과했다 — penalty 접촉과 IPC 로그 장벽의 차이"
+date: 2026-10-29
+description: "같은 implicit Euler 한 스텝에서 penalty 접촉은 얇은 벽을 건너뛰고, IPC 로그 장벽과 CCD 선탐색은 수 µm 앞에서 멈추는 이유를 1차원 실험으로 본다."
+tags: ["Incremental-Potential-Contact", "Barrier-Method", "Implicit", "FSI", "Algorithms"]
+locale: ko
+slug: 2026-10-29-ipc-log-barrier-thin-wall-tunneling
+takeaway: "penalty는 스텝이 벽 안에 떨어져야 힘을 내지만, IPC는 거리 0에서 에너지가 무한대인 장벽과 충돌 시각으로 자른 선탐색으로 관통 자체를 불가능하게 만든다."
+draft: false
+---
+import { IncrementalPotentialLandscapeLab } from '@/components/post-viz/2026-10-29-ipc-log-barrier-thin-wall-tunneling/IncrementalPotentialLandscapeLab'
+import { ThinWallBarrierTunnelRace } from '@/components/post-viz/2026-10-29-ipc-log-barrier-thin-wall-tunneling/ThinWallBarrierTunnelRace'
+
+## 2020년, 접촉 문제에 "보장"이 붙었다
+
+2020년 SIGGRAPH에서 Minchen Li 등이 Incremental Potential Contact(IPC)를 발표했다. 논문이 내세운 말은 성능이 아니었다. "교차가 없음을 보장한다"였다. 접촉 시뮬레이션에서 이 말은 오랫동안 금기였다. 시간 간격이 크거나 물체가 빠르면 어떤 기법이든 가끔은 뚫렸기 때문이다.
+
+이 글은 그 보장이 어디서 나오는지 1차원 실험 하나로 확인한다. 20 mm 두께 벽을 향해 질량 1 kg 공을 던진다. penalty 접촉은 5 m/s에서 벽을 건너뛴다. IPC는 50 m/s에서도 벽 앞 2.1 µm에서 멈춘다. 두 방법의 차이는 강성의 크기가 아니다. 에너지 지형의 모양과 선탐색(line search, 탐색 방향으로 얼마나 갈지 정하는 단계)이 하는 일이다.
+
+## 두 갈래의 오래된 길: penalty와 상보성 조건
+
+접촉을 다루는 고전적 방법은 크게 둘이다. 첫째는 penalty(벌점) 방법이다. 물체가 겹친 깊이 $p$만큼 스프링 힘 $kp$를 준다. 구현이 쉽다. 대신 겹침이 생긴 뒤에야 힘이 나온다.
+
+둘째는 상보성 조건(LCP, linear complementarity problem)이다. "거리 $d \ge 0$, 접촉력 $\lambda \ge 0$, 그리고 $d\lambda = 0$"을 연립해서 푼다. 원리상 정확하다. 하지만 비선형 탄성·마찰과 엮이면 풀이가 불안정해지고, 실무에서는 허용 오차 안에서 겹침을 용인한다.
+
+IPC는 세 번째 길을 택했다. 접촉을 조건이 아니라 에너지로 바꾼다. 단, penalty와 달리 거리 0에서 무한대가 되는 에너지다.
+
+## 한 스텝을 최소화 문제로: 증분 포텐셜
+
+implicit Euler 한 스텝은 최소화 문제로 쓸 수 있다. 이를 증분 포텐셜(incremental potential, IP)이라 부른다.
+
+$$
+E(x) = \frac{1}{2}(x-\tilde{x})^{T} M (x-\tilde{x}) + h^{2}\Psi(x) + B(x) + D(x)
+$$
+
+$x$는 다음 스텝 절점 위치, $M$은 질량 행렬, $h$는 시간 간격이다. $\tilde{x} = x^{t} + h v^{t} + h^{2}M^{-1}f_{ext}$는 접촉이 없을 때 도달할 예측 위치다. $\Psi$는 초탄성 변형 에너지, $B$는 접촉 장벽, $D$는 마찰 소산 포텐셜이다. $\nabla E = 0$을 풀면 implicit Euler 식이 그대로 나온다.
+
+첫 항이 핵심이다. 관성은 $x$를 $\tilde{x}$ 쪽으로 끌어당긴다. 접촉 항은 그 끌림을 막아야 한다. 아래 시뮬레이션에서 직접 조작해보자.
+
+<IncrementalPotentialLandscapeLab />
+
+보라색 점선 $\tilde{x}$를 벽 너머로 밀어 보자. 빨간 penalty 곡선은 벽 뒤에 새 최소점이 생기고 그쪽으로 넘어간다. 초록 IPC 곡선은 벽 앞에서 무한히 솟아서 최소점이 끝까지 벽 앞에 남는다.
+
+## 로그 장벽: 거리 0에서 에너지가 무한대
+
+IPC의 접촉 에너지는 거리 $d$의 함수다.
+
+$$
+b(d,\hat{d}) =
+\begin{cases}
+-(d-\hat{d})^{2}\ln\left(\dfrac{d}{\hat{d}}\right), & 0 < d < \hat{d} \\
+0, & d \ge \hat{d}
+\end{cases}
+$$
+
+$\hat{d}$는 장벽이 켜지는 거리, $B(x) = \kappa\sum_k b(d_k(x),\hat{d})$이고 $\kappa$는 장벽 강성이다. 3차원에서 $d_k$는 점-삼각형, 모서리-모서리 쌍의 부호 없는 거리다.
+
+이 함수는 세 성질을 갖는다. $d \ge \hat{d}$에서는 정확히 0이라 멀리 있는 쌍은 계산에서 빠진다. $d=\hat{d}$에서 값과 1차 미분이 모두 0이라 Newton 방법이 매끄럽게 넘어간다. $d \to 0$에서 $-\ln d$가 무한대로 간다. 마지막 성질이 보장의 절반이다.
+
+## 장벽만으로는 부족하다: CCD로 거른 선탐색
+
+에너지가 무한대라도 Newton 한 걸음은 벽을 건너뛸 수 있다. 시작점과 끝점의 에너지만 보면 벽 뒤는 장벽 범위 밖이라 0이다. 그래서 IPC는 선탐색에 연속 충돌 검출(CCD, continuous collision detection)을 붙인다.
+
+Newton 방향 $\Delta x$가 나오면, $x$에서 $x+\Delta x$까지의 선분 위에서 처음 닿는 시점 $t^{*}$를 구한다. 걸음 길이는 $\alpha \le t^{*}$로 먼저 자르고, 그 뒤에 에너지 감소를 확인한다. 실현 가능한 영역 안에서 시작한 반복은 영영 밖으로 나가지 못한다. 이것이 보장의 나머지 절반이다.
+
+## 코드: 20 mm 벽에 공을 여섯 속도로 던졌다
+
+1차원으로 줄였다. 공은 $x=0$에서 출발하고, 벽 앞면은 0.503 m, 두께는 20 mm다. 중력은 없다. 매 스텝 $E(x)$를 Newton으로 최소화한다. penalty는 벽 안에서 가까운 면 쪽으로 밀어내는 ½kp²를 쓴다. IPC는 위 장벽에 $h^{2}\kappa$를 곱해 쓰고, 선탐색 첫 걸음을 충돌 시점의 90%로 자른다.
+
+```python
+import math
+
+M, H = 1.0, 0.01          # 질량 [kg], 시간 간격 [s]
+WALL, W = 0.503, 0.02      # 벽 앞면 위치 [m], 벽 두께 [m]
+DHAT, KAPPA = 1e-3, 1e4   # 장벽 활성 거리 [m], 장벽 강성
+K_PEN = 1e4               # penalty 강성 [N/m]
+
+def barrier(d):
+    # b(d) = -κ (d - d̂)² ln(d/d̂),  0 < d < d̂ 에서만 켜진다
+    if d >= DHAT:
+        return 0.0, 0.0, 0.0
+    l = math.log(d / DHAT)
+    b = -(d - DHAT) ** 2 * l
+    db = -2 * (d - DHAT) * l - (d - DHAT) ** 2 / d
+    d2b = -2 * l - 4 * (d - DHAT) / d + (d - DHAT) ** 2 / d ** 2
+    return KAPPA * b, KAPPA * db, KAPPA * d2b
+
+def pen_depth(x):
+    # 벽 안에 있으면 가까운 면까지의 깊이와 밀어낼 방향
+    if WALL < x < WALL + W:
+        a, c = x - WALL, WALL + W - x
+        return (a, -1.0) if a <= c else (c, 1.0)
+    return 0.0, 0.0
+
+def ip_energy(x, xt, mode):
+    e = 0.5 * M * (x - xt) ** 2
+    if mode == "ipc":
+        d = WALL - x
+        if d <= 0:
+            return math.inf
+        e += H * H * barrier(d)[0]
+    else:
+        p, _ = pen_depth(x)
+        e += H * H * 0.5 * K_PEN * p * p
+    return e
+
+def ip_newton(x0, xt, mode, tol=1e-10):
+    x, it = x0, 0
+    for it in range(1, 60):
+        g, hs = M * (x - xt), M
+        if mode == "ipc":
+            _, db, d2b = barrier(WALL - x)
+            g += H * H * (-db)
+            hs += H * H * d2b
+        else:
+            p, s = pen_depth(x)
+            g += H * H * K_PEN * p * (-s)
+            hs += H * H * K_PEN * (p > 0)
+        dx = -g / hs
+        if abs(dx) < tol:
+            break
+        a = 1.0
+        if mode == "ipc" and x + dx >= WALL:
+            a = 0.9 * (WALL - x) / dx        # CCD: 벽을 넘기 전 시점까지만
+        e0 = ip_energy(x, xt, mode)
+        while ip_energy(x + a * dx, xt, mode) > e0 and a > 1e-12:
+            a *= 0.5                           # Armijo 대신 단순 감소 조건
+        x += a * dx
+    return x, it
+
+def throw(v0, mode, steps=80):
+    x, v = 0.0, v0
+    xmax, itmax = x, 0
+    for _ in range(steps):
+        xt = x + H * v                         # 접촉이 없을 때의 예측 위치
+        xn, it = ip_newton(x, xt, mode)
+        v, x = (xn - x) / H, xn
+        if x > WALL + W:
+            return "through", xmax - WALL, itmax
+        xmax, itmax = max(xmax, x), max(itmax, it)
+    return "stopped", xmax - WALL, itmax
+
+print(f"wall at {WALL} m, thickness {W*1000:.0f} mm, h = {H*1000:.0f} ms")
+print(" v0[m/s] | pen k=1e4     | pen k=1e6     | IPC d^=1mm")
+for v0 in [1, 2, 5, 10, 20, 50]:
+    row = []
+    for k in (1e4, 1e6):
+        K_PEN = k
+        r = throw(v0, "pen")
+        row.append(f"{'through':13s}" if r[0] == "through" else f"stop {r[1]*1000:5.2f} mm")
+    r = throw(v0, "ipc")
+    row.append(f"gap {-r[1]*1e6:6.1f} um, newton {r[2]:2d}")
+    print(f" {v0:7.0f} | " + " | ".join(row))
+```
+
+```text
+wall at 0.503 m, thickness 20 mm, h = 10 ms
+ v0[m/s] | pen k=1e4     | pen k=1e6     | IPC d^=1mm
+       1 | stop  5.00 mm | stop  0.07 mm | gap  166.4 um, newton  8
+       2 | through       | stop  0.17 mm | gap   71.0 um, newton  8
+       5 | through       | through       | gap   24.0 um, newton  9
+      10 | through       | through       | gap   11.1 um, newton 10
+      20 | through       | through       | gap   10.4 um, newton 11
+      50 | through       | through       | gap    2.1 um, newton 12
+```
+
+위 코드를 브라우저에서 직접 돌려보자.
+
+<ThinWallBarrierTunnelRace />
+
+v0를 5 m/s, h를 10 ms로 두면 빨간 공은 벽을 건너뛰고 초록 공은 약 24 µm 앞에서 선다. k를 1e8까지 올려도 빨간 공은 그대로 통과한다. h를 줄여 한 스텝 이동이 벽 두께의 절반 아래로 내려가야 비로소 멈출 기회가 생긴다.
+
+## 5 m/s에서 penalty가 놓친 것
+
+5 m/s에 10 ms면 한 스텝에 50 mm를 간다. 벽은 20 mm다. 시작점 0.50 m에서 예측 위치 $\tilde{x}=0.55$ m는 이미 벽 뒤다. 그곳에서 penalty 에너지는 0이고 관성 항도 0이다. Newton은 한 번에 그 전역 최소점에 도착한다. 벽은 계산에 한 번도 등장하지 않았다.
+
+그래서 k=1e6도 소용없다. 강성은 공이 벽 안에 떨어졌을 때만 일한다. 2 m/s에서 k=1e4가 통과한 이유는 조금 다르다. 한 스텝 20 mm면 공이 벽 중간을 넘어 떨어진다. 그러면 "가까운 면"이 뒷면이 되고, penalty가 공을 뒤로 밀어낸다. 같은 구조는 [MSTACS가 한 스텝에 가진 것보다 많이 내보내 터진 이야기](/ko/posts/2026-10-25-mstacs-slope-three-courant-limit/)와 닮았다. 스텝 하나가 물리적 길이 척도를 넘으면 국소적인 보정은 무력하다.
+
+## 2 µm 틈과 Newton 12회의 값
+
+IPC 열은 여섯 속도 모두 멈췄다. 대가는 두 가지다. 첫째, 공은 벽에 닿지 않는다. 틈은 1 m/s에서 166 µm, 50 m/s에서 2.1 µm다. 빠를수록 멈추는 데 큰 힘이 필요하고, 장벽 힘 $-\kappa b'(d)$는 $d$가 작아질수록 커지므로 더 바짝 붙는다. 10과 20 m/s의 틈이 비슷한 것은 충돌 스텝이 벽 앞 어디서 시작하느냐에 따른 위상 효과다.
+
+둘째, 충돌 스텝의 Newton 반복이 8~12회로 늘었다. CCD가 걸음을 매번 90%로 자르니 벽에 지수적으로 다가가며 여러 번 걷는다. 3차원 메시에서는 매 반복마다 CCD와 장벽 Hessian 조립이 붙는다. 보장은 공짜가 아니다.
+
+틈은 오차가 아니라 설계 변수다. $\hat{d}$가 곧 "닿았다"의 정의다. 논문은 기본값으로 바운딩 박스 대각선의 $10^{-3}$ 정도를 쓰고, $\kappa$는 반복 중에 적응적으로 키운다.
+
+## 오늘의 IPC: 마찰, 탄성, 그리고 유체 쪽 접점
+
+원 논문은 같은 틀에 마찰도 넣었다. 접촉력 $\lambda$와 접선 기저를 이전 반복에서 고정(lagging)하고, 상대 접선 속도에 매끄러운 함수 $f_1$을 씌워 정지·미끄럼 마찰을 하나의 포텐셜 $D$로 만든다. 탄성 $\Psi$는 Neo-Hookean처럼 $J=\det F \to 0$에서 무한대가 되는 모델을 쓰면 요소 뒤집힘(inversion)도 같은 선탐색으로 막힌다.
+
+이후 강체·코로테이셔널 셸·FSI(유체-구조 연성)로 확장이 이어졌다. 얇은 판이 유동에 휘어 서로 닿는 문제가 대표적이다. 유체 쪽 "접촉"은 다른 의미다. 액체 계면이 벽과 만나는 각도는 [표면장력과 접촉각 글](/ko/posts/2026-06-16-surface-tension-contact-angle-csf/)에서 다뤘다. 다만 IP의 사고방식은 유체 솔버에도 통한다. 한 스텝을 에너지 최소화로 쓰면 선탐색이 실현 가능성을 지키는 문지기가 된다.
+
+## 접촉 코드에 장벽을 넣기 전에 재 볼 세 숫자
+
+첫째, $v h$와 가장 얇은 부재의 두께를 비교한다. $vh$가 두께의 절반을 넘으면 penalty는 강성과 무관하게 뚫릴 수 있다. 둘째, $\hat{d}$를 정한다. 그 거리 안에서는 닿은 것으로 본다는 뜻이므로 형상 공차와 맞춘다. 셋째, 선탐색의 CCD 안전계수와 충돌 스텝의 Newton 반복수를 기록한다. 반복수가 갑자기 늘면 $\kappa$나 $\hat{d}$가 문제에 비해 어긋난 것이다.

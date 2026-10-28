@@ -1,0 +1,195 @@
+---
+title: "A Ball Thrown at 5 m/s Passed Through a 20 mm Wall — Penalty Contact vs. the IPC Log Barrier"
+date: 2026-10-29
+description: "In the same implicit Euler step, penalty contact skips over a thin wall while the IPC log barrier with a CCD-filtered line search stops micrometers short. A 1D experiment shows why."
+tags: ["Incremental-Potential-Contact", "Barrier-Method", "Implicit", "FSI", "Algorithms"]
+locale: en
+slug: 2026-10-29-ipc-log-barrier-thin-wall-tunneling
+takeaway: "Penalty contact only pushes back once a step lands inside the wall; IPC makes penetration impossible with an energy that blows up at zero distance and a line search clipped at the time of impact."
+draft: false
+---
+import { IncrementalPotentialLandscapeLab } from '@/components/post-viz/2026-10-29-ipc-log-barrier-thin-wall-tunneling/IncrementalPotentialLandscapeLab'
+import { ThinWallBarrierTunnelRace } from '@/components/post-viz/2026-10-29-ipc-log-barrier-thin-wall-tunneling/ThinWallBarrierTunnelRace'
+
+## 2020: contact simulation got a guarantee
+
+At SIGGRAPH 2020, Minchen Li and coauthors presented Incremental Potential Contact (IPC). The headline claim wasn't speed. It was "guaranteed intersection-free." For decades that phrase was off-limits in contact simulation. With a large enough time step or a fast enough object, every method leaked sometimes.
+
+This post traces where the guarantee comes from, using one 1D experiment. We throw a 1 kg ball at a wall 20 mm thick. Penalty contact skips the wall at 5 m/s. IPC stops 2.1 µm in front of it even at 50 m/s. The difference is not stiffness. It is the shape of the energy landscape and what the line search (the step that decides how far to move along the search direction) is allowed to do.
+
+## Two old roads: penalty and complementarity
+
+Classic contact handling splits into two camps. The first is the penalty method. If bodies overlap by depth $p$, apply a spring force $kp$. It is easy to implement. But force only appears after the overlap has already happened.
+
+The second is a complementarity formulation (LCP, linear complementarity problem). You solve "distance $d \ge 0$, contact force $\lambda \ge 0$, and $d\lambda = 0$" together. In principle it is exact. Coupled with nonlinear elasticity and friction, though, the solve gets fragile, and production codes tolerate overlap within a tolerance.
+
+IPC took a third road. It turns contact into energy instead of a constraint. Unlike penalty, that energy goes to infinity at zero distance.
+
+## One step as a minimization: the incremental potential
+
+A single implicit Euler step can be written as a minimization problem, called the incremental potential (IP).
+
+$$
+E(x) = \frac{1}{2}(x-\tilde{x})^{T} M (x-\tilde{x}) + h^{2}\Psi(x) + B(x) + D(x)
+$$
+
+$x$ is the nodal position at the next step, $M$ the mass matrix, $h$ the time step. $\tilde{x} = x^{t} + h v^{t} + h^{2}M^{-1}f_{ext}$ is where the nodes would land with no contact. $\Psi$ is the hyperelastic energy, $B$ the contact barrier, and $D$ the friction dissipation potential. Setting $\nabla E = 0$ recovers implicit Euler exactly.
+
+The first term does the heavy lifting. Inertia pulls $x$ toward $\tilde{x}$. The contact term has to stop that pull. Try it yourself in the simulation below.
+
+<IncrementalPotentialLandscapeLab />
+
+Drag the purple dashed $\tilde{x}$ past the wall. The red penalty curve grows a new minimum behind the wall and the solution jumps there. The green IPC curve shoots to infinity in front of the wall, so its minimum stays on the near side no matter what.
+
+## The log barrier: infinite energy at zero distance
+
+IPC's contact energy is a function of distance $d$.
+
+$$
+b(d,\hat{d}) =
+\begin{cases}
+-(d-\hat{d})^{2}\ln\left(\dfrac{d}{\hat{d}}\right), & 0 < d < \hat{d} \\
+0, & d \ge \hat{d}
+\end{cases}
+$$
+
+$\hat{d}$ is the activation distance, $B(x) = \kappa\sum_k b(d_k(x),\hat{d})$, and $\kappa$ is the barrier stiffness. In 3D, $d_k$ is the unsigned distance of point–triangle and edge–edge pairs.
+
+The function has three properties. For $d \ge \hat{d}$ it is exactly zero, so distant pairs drop out. At $d=\hat{d}$ both its value and first derivative vanish, so Newton's method crosses smoothly. As $d \to 0$, $-\ln d$ blows up. That last property is half of the guarantee.
+
+## A barrier alone is not enough: CCD-filtered line search
+
+Even with infinite energy, a single Newton step can jump over the wall. If you only evaluate the start and end points, the far side sits outside the barrier's range and reads zero. So IPC adds continuous collision detection (CCD) to the line search.
+
+Given a Newton direction $\Delta x$, compute the first time of impact $t^{*}$ along the segment from $x$ to $x+\Delta x$. Clip the step to $\alpha \le t^{*}$ first, then check for energy decrease. An iteration that starts in the feasible region can never leave it. That is the other half of the guarantee.
+
+## Code: one ball, one 20 mm wall, six speeds
+
+The setup is 1D. The ball starts at $x=0$, the wall's front face is at 0.503 m, and it is 20 mm thick. No gravity. Each step minimizes $E(x)$ with Newton. Penalty uses ½kp², pushing toward the nearest face. IPC multiplies the barrier above by $h^{2}\kappa$ and clips the first line-search step to 90% of the time of impact.
+
+```python
+import math
+
+M, H = 1.0, 0.01          # mass [kg], time step [s]
+WALL, W = 0.503, 0.02      # wall front face [m], wall thickness [m]
+DHAT, KAPPA = 1e-3, 1e4   # barrier activation distance [m], barrier stiffness
+K_PEN = 1e4               # penalty stiffness [N/m]
+
+def barrier(d):
+    # b(d) = -κ (d - d̂)² ln(d/d̂),  active only for 0 < d < d̂
+    if d >= DHAT:
+        return 0.0, 0.0, 0.0
+    l = math.log(d / DHAT)
+    b = -(d - DHAT) ** 2 * l
+    db = -2 * (d - DHAT) * l - (d - DHAT) ** 2 / d
+    d2b = -2 * l - 4 * (d - DHAT) / d + (d - DHAT) ** 2 / d ** 2
+    return KAPPA * b, KAPPA * db, KAPPA * d2b
+
+def pen_depth(x):
+    # inside the wall: depth to the nearest face and push direction
+    if WALL < x < WALL + W:
+        a, c = x - WALL, WALL + W - x
+        return (a, -1.0) if a <= c else (c, 1.0)
+    return 0.0, 0.0
+
+def ip_energy(x, xt, mode):
+    e = 0.5 * M * (x - xt) ** 2
+    if mode == "ipc":
+        d = WALL - x
+        if d <= 0:
+            return math.inf
+        e += H * H * barrier(d)[0]
+    else:
+        p, _ = pen_depth(x)
+        e += H * H * 0.5 * K_PEN * p * p
+    return e
+
+def ip_newton(x0, xt, mode, tol=1e-10):
+    x, it = x0, 0
+    for it in range(1, 60):
+        g, hs = M * (x - xt), M
+        if mode == "ipc":
+            _, db, d2b = barrier(WALL - x)
+            g += H * H * (-db)
+            hs += H * H * d2b
+        else:
+            p, s = pen_depth(x)
+            g += H * H * K_PEN * p * (-s)
+            hs += H * H * K_PEN * (p > 0)
+        dx = -g / hs
+        if abs(dx) < tol:
+            break
+        a = 1.0
+        if mode == "ipc" and x + dx >= WALL:
+            a = 0.9 * (WALL - x) / dx        # CCD: only up to just before crossing the wall
+        e0 = ip_energy(x, xt, mode)
+        while ip_energy(x + a * dx, xt, mode) > e0 and a > 1e-12:
+            a *= 0.5                           # plain decrease check instead of Armijo
+        x += a * dx
+    return x, it
+
+def throw(v0, mode, steps=80):
+    x, v = 0.0, v0
+    xmax, itmax = x, 0
+    for _ in range(steps):
+        xt = x + H * v                         # predicted position without contact
+        xn, it = ip_newton(x, xt, mode)
+        v, x = (xn - x) / H, xn
+        if x > WALL + W:
+            return "through", xmax - WALL, itmax
+        xmax, itmax = max(xmax, x), max(itmax, it)
+    return "stopped", xmax - WALL, itmax
+
+print(f"wall at {WALL} m, thickness {W*1000:.0f} mm, h = {H*1000:.0f} ms")
+print(" v0[m/s] | pen k=1e4     | pen k=1e6     | IPC d^=1mm")
+for v0 in [1, 2, 5, 10, 20, 50]:
+    row = []
+    for k in (1e4, 1e6):
+        K_PEN = k
+        r = throw(v0, "pen")
+        row.append(f"{'through':13s}" if r[0] == "through" else f"stop {r[1]*1000:5.2f} mm")
+    r = throw(v0, "ipc")
+    row.append(f"gap {-r[1]*1e6:6.1f} um, newton {r[2]:2d}")
+    print(f" {v0:7.0f} | " + " | ".join(row))
+```
+
+```text
+wall at 0.503 m, thickness 20 mm, h = 10 ms
+ v0[m/s] | pen k=1e4     | pen k=1e6     | IPC d^=1mm
+       1 | stop  5.00 mm | stop  0.07 mm | gap  166.4 um, newton  8
+       2 | through       | stop  0.17 mm | gap   71.0 um, newton  8
+       5 | through       | through       | gap   24.0 um, newton  9
+      10 | through       | through       | gap   11.1 um, newton 10
+      20 | through       | through       | gap   10.4 um, newton 11
+      50 | through       | through       | gap    2.1 um, newton 12
+```
+
+Now run the same code in your browser.
+
+<ThinWallBarrierTunnelRace />
+
+With v0 at 5 m/s and h at 10 ms, the red ball skips the wall and the green one stops about 24 µm short. Crank k up to 1e8 and the red ball still passes. Only when h shrinks enough that one step covers less than half the wall does it get a chance to stop.
+
+## What penalty missed at 5 m/s
+
+At 5 m/s and 10 ms, one step travels 50 mm. The wall is 20 mm. Starting from 0.50 m, the predicted position $\tilde{x}=0.55$ m is already behind the wall. There, penalty energy is zero and so is the inertia term. Newton reaches that global minimum in one iteration. The wall never enters the computation.
+
+That is why k=1e6 doesn't help. Stiffness only acts when the ball lands inside the wall. The k=1e4 failure at 2 m/s is slightly different. A 20 mm step drops the ball past the wall's midplane. The "nearest face" becomes the back face, and penalty pushes the ball out the far side. The pattern echoes [how MSTACS blew up by shipping out more than a cell held in one step](/en/posts/2026-10-25-mstacs-slope-three-courant-limit/). Once one step exceeds the physical length scale, local corrections are powerless.
+
+## The price of a 2 µm gap and 12 Newton iterations
+
+The IPC column stopped at all six speeds. It costs two things. First, the ball never touches the wall. The gap is 166 µm at 1 m/s and 2.1 µm at 50 m/s. A faster ball needs more force to stop, and the barrier force $-\kappa b'(d)$ grows as $d$ shrinks, so it gets closer. The similar gaps at 10 and 20 m/s are a phase effect: it depends on where the impact step starts relative to the wall.
+
+Second, Newton iterations on the impact step rise to 8–12. CCD cuts every step to 90%, so the ball creeps toward the wall geometrically over several iterations. On a 3D mesh, every iteration also pays for CCD and barrier Hessian assembly. The guarantee isn't free.
+
+The gap is not an error. It is a design parameter: $\hat{d}$ is your definition of "touching." The paper defaults to roughly $10^{-3}$ of the bounding-box diagonal and adapts $\kappa$ during the solve.
+
+## IPC today: friction, elasticity, and the fluids side
+
+The original paper folds friction into the same framework. It lags the contact force $\lambda$ and the tangent basis from the previous iterate, then wraps the relative tangential velocity in a smooth function $f_1$, so static and sliding friction become one potential $D$. If the elastic energy $\Psi$ blows up as $J=\det F \to 0$, like Neo-Hookean, element inversion is blocked by the same line search.
+
+Follow-up work extended IPC to rigid bodies, codimensional shells, and FSI (fluid–structure interaction). Thin plates bending in a flow and touching each other is a typical case. "Contact" means something else on the fluid side; the angle a liquid interface makes with a wall is covered in [the surface tension and contact angle post](/en/posts/2026-06-16-surface-tension-contact-angle-csf/). Still, the IP mindset carries over to flow solvers. Write a step as an energy minimization, and the line search becomes the gatekeeper of feasibility.
+
+## Three numbers to measure before adding a barrier
+
+First, compare $v h$ with the thinnest member's thickness. If $vh$ exceeds half of it, penalty can tunnel regardless of stiffness. Second, pick $\hat{d}$. Anything within that distance counts as contact, so match it to your geometric tolerance. Third, log the CCD safety factor and the Newton iteration count on impact steps. A sudden jump in iterations means $\kappa$ or $\hat{d}$ is mismatched to the problem.

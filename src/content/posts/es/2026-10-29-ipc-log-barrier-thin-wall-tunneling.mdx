@@ -1,0 +1,195 @@
+---
+title: "Una pelota lanzada a 5 m/s atravesó una pared de 20 mm — contacto por penalización frente a la barrera logarítmica de IPC"
+date: 2026-10-29
+description: "En el mismo paso de Euler implícito, el contacto por penalización salta una pared delgada y la barrera logarítmica de IPC con búsqueda lineal filtrada por CCD se detiene a micrómetros."
+tags: ["Incremental-Potential-Contact", "Barrier-Method", "Implicit", "FSI", "Algorithms"]
+locale: es
+slug: 2026-10-29-ipc-log-barrier-thin-wall-tunneling
+takeaway: "La penalización solo empuja cuando un paso ya cayó dentro de la pared; IPC hace imposible la penetración con una energía que diverge a distancia cero y una búsqueda lineal recortada en el instante de impacto."
+draft: false
+---
+import { IncrementalPotentialLandscapeLab } from '@/components/post-viz/2026-10-29-ipc-log-barrier-thin-wall-tunneling/IncrementalPotentialLandscapeLab'
+import { ThinWallBarrierTunnelRace } from '@/components/post-viz/2026-10-29-ipc-log-barrier-thin-wall-tunneling/ThinWallBarrierTunnelRace'
+
+## 2020: el contacto recibió una garantía
+
+En SIGGRAPH 2020, Minchen Li y coautores presentaron Incremental Potential Contact (IPC). La afirmación principal no era la velocidad. Era "sin intersecciones, garantizado". Durante décadas esa frase estuvo vetada en simulación de contacto. Con un paso de tiempo grande o un objeto rápido, cualquier método se filtraba de vez en cuando.
+
+Este artículo rastrea de dónde sale esa garantía con un solo experimento 1D. Se lanza una pelota de 1 kg contra una pared de 20 mm de espesor. El contacto por penalización salta la pared a 5 m/s. IPC se detiene a 2,1 µm de ella incluso a 50 m/s. La diferencia no es la rigidez. Es la forma del paisaje de energía y lo que hace la búsqueda lineal (line search, la etapa que decide cuánto avanzar en la dirección de búsqueda).
+
+## Dos caminos antiguos: penalización y complementariedad
+
+El tratamiento clásico del contacto se divide en dos familias. La primera es el método de penalización. Si los cuerpos se solapan una profundidad $p$, se aplica una fuerza de resorte $kp$. Es fácil de implementar. Pero la fuerza aparece solo después de que el solape ya ocurrió.
+
+La segunda es la formulación de complementariedad (LCP, problema de complementariedad lineal). Se resuelve en conjunto "distancia $d \ge 0$, fuerza de contacto $\lambda \ge 0$ y $d\lambda = 0$". En principio es exacta. Acoplada con elasticidad no lineal y fricción, la resolución se vuelve frágil, y en la práctica se tolera solape dentro de una tolerancia.
+
+IPC tomó un tercer camino. Convierte el contacto en energía en lugar de restricción. A diferencia de la penalización, esa energía diverge a distancia cero.
+
+## Un paso como minimización: el potencial incremental
+
+Un paso de Euler implícito puede escribirse como un problema de minimización, llamado potencial incremental (incremental potential, IP).
+
+$$
+E(x) = \frac{1}{2}(x-\tilde{x})^{T} M (x-\tilde{x}) + h^{2}\Psi(x) + B(x) + D(x)
+$$
+
+$x$ es la posición nodal del paso siguiente, $M$ la matriz de masa y $h$ el paso de tiempo. $\tilde{x} = x^{t} + h v^{t} + h^{2}M^{-1}f_{ext}$ es la posición predicha sin contacto. $\Psi$ es la energía hiperelástica, $B$ la barrera de contacto y $D$ el potencial disipativo de fricción. Imponer $\nabla E = 0$ devuelve exactamente Euler implícito.
+
+El primer término es el decisivo. La inercia arrastra $x$ hacia $\tilde{x}$. El término de contacto tiene que frenar ese arrastre. Conviene manipularlo directamente en la simulación de abajo.
+
+<IncrementalPotentialLandscapeLab />
+
+Al llevar la línea discontinua morada $\tilde{x}$ más allá de la pared, la curva roja de penalización desarrolla un nuevo mínimo detrás de la pared y la solución salta allí. La curva verde de IPC se dispara al infinito delante de la pared, así que su mínimo queda siempre del lado cercano.
+
+## La barrera logarítmica: energía infinita a distancia cero
+
+La energía de contacto de IPC es función de la distancia $d$.
+
+$$
+b(d,\hat{d}) =
+\begin{cases}
+-(d-\hat{d})^{2}\ln\left(\dfrac{d}{\hat{d}}\right), & 0 < d < \hat{d} \\
+0, & d \ge \hat{d}
+\end{cases}
+$$
+
+$\hat{d}$ es la distancia de activación, $B(x) = \kappa\sum_k b(d_k(x),\hat{d})$ y $\kappa$ es la rigidez de la barrera. En 3D, $d_k$ es la distancia sin signo de pares punto–triángulo y arista–arista.
+
+La función tiene tres propiedades. Para $d \ge \hat{d}$ vale exactamente cero, de modo que los pares lejanos salen del cálculo. En $d=\hat{d}$ se anulan el valor y la primera derivada, así que Newton cruza suavemente. Cuando $d \to 0$, $-\ln d$ diverge. Esta última propiedad es la mitad de la garantía.
+
+## La barrera sola no basta: búsqueda lineal filtrada por CCD
+
+Aun con energía infinita, un paso de Newton puede saltar la pared. Si solo se evalúan los extremos, el otro lado queda fuera del alcance de la barrera y vale cero. Por eso IPC añade detección continua de colisiones (CCD, continuous collision detection) a la búsqueda lineal.
+
+Dada una dirección de Newton $\Delta x$, se calcula el primer instante de impacto $t^{*}$ sobre el segmento de $x$ a $x+\Delta x$. Primero se recorta el paso a $\alpha \le t^{*}$ y después se comprueba que la energía baje. Una iteración que arranca dentro de la región factible nunca puede salir. Esa es la otra mitad de la garantía.
+
+## Código: una pelota, una pared de 20 mm, seis velocidades
+
+El montaje es 1D. La pelota parte de $x=0$, la cara frontal de la pared está en 0,503 m y su espesor es 20 mm. Sin gravedad. En cada paso se minimiza $E(x)$ con Newton. La penalización usa ½kp² hacia la cara más cercana. IPC multiplica la barrera anterior por $h^{2}\kappa$ y recorta el primer paso de la búsqueda lineal al 90 % del instante de impacto.
+
+```python
+import math
+
+M, H = 1.0, 0.01          # masa [kg], paso de tiempo [s]
+WALL, W = 0.503, 0.02      # cara frontal de la pared [m], espesor [m]
+DHAT, KAPPA = 1e-3, 1e4   # distancia de activación [m], rigidez de barrera
+K_PEN = 1e4               # rigidez de penalización [N/m]
+
+def barrier(d):
+    # b(d) = -κ (d - d̂)² ln(d/d̂),  activa solo para 0 < d < d̂
+    if d >= DHAT:
+        return 0.0, 0.0, 0.0
+    l = math.log(d / DHAT)
+    b = -(d - DHAT) ** 2 * l
+    db = -2 * (d - DHAT) * l - (d - DHAT) ** 2 / d
+    d2b = -2 * l - 4 * (d - DHAT) / d + (d - DHAT) ** 2 / d ** 2
+    return KAPPA * b, KAPPA * db, KAPPA * d2b
+
+def pen_depth(x):
+    # dentro de la pared: profundidad a la cara más cercana y sentido de empuje
+    if WALL < x < WALL + W:
+        a, c = x - WALL, WALL + W - x
+        return (a, -1.0) if a <= c else (c, 1.0)
+    return 0.0, 0.0
+
+def ip_energy(x, xt, mode):
+    e = 0.5 * M * (x - xt) ** 2
+    if mode == "ipc":
+        d = WALL - x
+        if d <= 0:
+            return math.inf
+        e += H * H * barrier(d)[0]
+    else:
+        p, _ = pen_depth(x)
+        e += H * H * 0.5 * K_PEN * p * p
+    return e
+
+def ip_newton(x0, xt, mode, tol=1e-10):
+    x, it = x0, 0
+    for it in range(1, 60):
+        g, hs = M * (x - xt), M
+        if mode == "ipc":
+            _, db, d2b = barrier(WALL - x)
+            g += H * H * (-db)
+            hs += H * H * d2b
+        else:
+            p, s = pen_depth(x)
+            g += H * H * K_PEN * p * (-s)
+            hs += H * H * K_PEN * (p > 0)
+        dx = -g / hs
+        if abs(dx) < tol:
+            break
+        a = 1.0
+        if mode == "ipc" and x + dx >= WALL:
+            a = 0.9 * (WALL - x) / dx        # CCD: solo hasta justo antes de cruzar la pared
+        e0 = ip_energy(x, xt, mode)
+        while ip_energy(x + a * dx, xt, mode) > e0 and a > 1e-12:
+            a *= 0.5                           # condición de descenso simple en lugar de Armijo
+        x += a * dx
+    return x, it
+
+def throw(v0, mode, steps=80):
+    x, v = 0.0, v0
+    xmax, itmax = x, 0
+    for _ in range(steps):
+        xt = x + H * v                         # posición predicha sin contacto
+        xn, it = ip_newton(x, xt, mode)
+        v, x = (xn - x) / H, xn
+        if x > WALL + W:
+            return "through", xmax - WALL, itmax
+        xmax, itmax = max(xmax, x), max(itmax, it)
+    return "stopped", xmax - WALL, itmax
+
+print(f"wall at {WALL} m, thickness {W*1000:.0f} mm, h = {H*1000:.0f} ms")
+print(" v0[m/s] | pen k=1e4     | pen k=1e6     | IPC d^=1mm")
+for v0 in [1, 2, 5, 10, 20, 50]:
+    row = []
+    for k in (1e4, 1e6):
+        K_PEN = k
+        r = throw(v0, "pen")
+        row.append(f"{'through':13s}" if r[0] == "through" else f"stop {r[1]*1000:5.2f} mm")
+    r = throw(v0, "ipc")
+    row.append(f"gap {-r[1]*1e6:6.1f} um, newton {r[2]:2d}")
+    print(f" {v0:7.0f} | " + " | ".join(row))
+```
+
+```text
+wall at 0.503 m, thickness 20 mm, h = 10 ms
+ v0[m/s] | pen k=1e4     | pen k=1e6     | IPC d^=1mm
+       1 | stop  5.00 mm | stop  0.07 mm | gap  166.4 um, newton  8
+       2 | through       | stop  0.17 mm | gap   71.0 um, newton  8
+       5 | through       | through       | gap   24.0 um, newton  9
+      10 | through       | through       | gap   11.1 um, newton 10
+      20 | through       | through       | gap   10.4 um, newton 11
+      50 | through       | through       | gap    2.1 um, newton 12
+```
+
+Ahora el mismo código corre directamente en el navegador.
+
+<ThinWallBarrierTunnelRace />
+
+Con v0 en 5 m/s y h en 10 ms, la pelota roja salta la pared y la verde se detiene unos 24 µm antes. Aunque k suba hasta 1e8, la roja sigue pasando. Solo al reducir h hasta que un paso recorra menos de la mitad del espesor aparece la posibilidad de que se detenga.
+
+## Lo que la penalización no vio a 5 m/s
+
+A 5 m/s y 10 ms, un paso recorre 50 mm. La pared mide 20 mm. Desde 0,50 m, la posición predicha $\tilde{x}=0{,}55$ m ya está detrás de la pared. Allí la energía de penalización es cero y el término inercial también. Newton llega a ese mínimo global en una iteración. La pared nunca entra en el cálculo.
+
+Por eso k=1e6 no ayuda. La rigidez solo actúa si la pelota cae dentro de la pared. El fallo con k=1e4 a 2 m/s es algo distinto. Un paso de 20 mm deja la pelota más allá del plano medio de la pared. La "cara más cercana" pasa a ser la trasera y la penalización empuja la pelota hacia afuera por detrás. El patrón recuerda [cómo MSTACS explotó al sacar en un paso más de lo que la celda contenía](/es/posts/2026-10-25-mstacs-slope-three-courant-limit/). Cuando un paso supera la escala física de longitud, las correcciones locales no sirven.
+
+## El precio de un hueco de 2 µm y 12 iteraciones de Newton
+
+La columna de IPC se detuvo en las seis velocidades. Cuesta dos cosas. Primero, la pelota nunca toca la pared. El hueco es de 166 µm a 1 m/s y 2,1 µm a 50 m/s. Una pelota más rápida necesita más fuerza para frenar, y la fuerza de barrera $-\kappa b'(d)$ crece al bajar $d$, así que se acerca más. Los huecos parecidos a 10 y 20 m/s son un efecto de fase: dependen de dónde empieza el paso de impacto respecto a la pared.
+
+Segundo, las iteraciones de Newton en el paso de impacto suben a 8–12. La CCD recorta cada paso al 90 %, así que la pelota se aproxima a la pared de forma geométrica en varias iteraciones. En una malla 3D, cada iteración paga además la CCD y el ensamblaje del Hessiano de barrera. La garantía no es gratis.
+
+El hueco no es un error. Es un parámetro de diseño: $\hat{d}$ define qué significa "tocar". El artículo usa por defecto alrededor de $10^{-3}$ de la diagonal de la caja envolvente y adapta $\kappa$ durante la resolución.
+
+## IPC hoy: fricción, elasticidad y el lado de los fluidos
+
+El artículo original integra la fricción en el mismo marco. Congela (lagging) la fuerza de contacto $\lambda$ y la base tangente de la iteración anterior, y envuelve la velocidad tangencial relativa en una función suave $f_1$, de modo que fricción estática y deslizante forman un único potencial $D$. Si la energía elástica $\Psi$ diverge cuando $J=\det F \to 0$, como en Neo-Hookean, la misma búsqueda lineal impide la inversión de elementos.
+
+Trabajos posteriores extendieron IPC a cuerpos rígidos, láminas codimensionales y FSI (interacción fluido–estructura). Placas delgadas que se curvan en un flujo y se tocan entre sí son el caso típico. En fluidos, "contacto" significa otra cosa; el ángulo que forma una interfaz líquida con la pared se trató en [el artículo sobre tensión superficial y ángulo de contacto](/es/posts/2026-06-16-surface-tension-contact-angle-csf/). Aun así, la lógica del IP sirve para solvers de flujo. Si un paso se escribe como minimización de energía, la búsqueda lineal se vuelve la guardiana de la factibilidad.
+
+## Tres números para medir antes de añadir una barrera
+
+Primero, comparar $v h$ con el espesor del elemento más delgado. Si $vh$ supera la mitad, la penalización puede atravesarlo sea cual sea la rigidez. Segundo, fijar $\hat{d}$. Todo lo que esté dentro de esa distancia cuenta como contacto, así que debe coincidir con la tolerancia geométrica. Tercero, registrar el factor de seguridad de la CCD y el número de iteraciones de Newton en los pasos de impacto. Un salto repentino en las iteraciones indica que $\kappa$ o $\hat{d}$ no encajan con el problema.

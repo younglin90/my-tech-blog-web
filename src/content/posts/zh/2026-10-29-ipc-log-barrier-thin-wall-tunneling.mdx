@@ -1,0 +1,195 @@
+---
+title: "以 5 m/s 抛出的球穿过了 20 mm 的墙 — 罚函数接触与 IPC 对数障碍的区别"
+date: 2026-10-29
+description: "在同一个隐式 Euler 步中，罚函数接触会跳过薄墙，而 IPC 对数障碍配合 CCD 线搜索停在几微米之外。用一维实验说明原因。"
+tags: ["Incremental-Potential-Contact", "Barrier-Method", "Implicit", "FSI", "Algorithms"]
+locale: zh
+slug: 2026-10-29-ipc-log-barrier-thin-wall-tunneling
+takeaway: "罚函数只有在一步落进墙内之后才产生力；IPC 用在距离为零处趋于无穷的能量和按碰撞时刻截断的线搜索，让穿透本身变得不可能。"
+draft: false
+---
+import { IncrementalPotentialLandscapeLab } from '@/components/post-viz/2026-10-29-ipc-log-barrier-thin-wall-tunneling/IncrementalPotentialLandscapeLab'
+import { ThinWallBarrierTunnelRace } from '@/components/post-viz/2026-10-29-ipc-log-barrier-thin-wall-tunneling/ThinWallBarrierTunnelRace'
+
+## 2020 年，接触问题有了"保证"
+
+2020 年的 SIGGRAPH 上，Minchen Li 等人发表了 Incremental Potential Contact（IPC）。论文主打的不是速度，而是"保证无相交"。在接触模拟里，这句话长期是禁区。只要时间步长够大或物体够快，任何方法都会偶尔穿透。
+
+本文用一个一维实验确认这个保证从何而来。把 1 kg 的球扔向 20 mm 厚的墙。罚函数接触在 5 m/s 时跳过了墙。IPC 即使在 50 m/s 也停在墙前 2.1 µm。两者的差别不在刚度大小，而在能量地形的形状，以及线搜索（line search，决定沿搜索方向走多远的步骤）的作用。
+
+## 两条老路：罚函数与互补条件
+
+经典的接触处理大致分两类。第一类是罚函数法。物体重叠深度为 $p$ 时，施加弹簧力 $kp$。实现很简单。但力只有在重叠发生之后才出现。
+
+第二类是互补条件（LCP，线性互补问题）。联立求解"距离 $d \ge 0$、接触力 $\lambda \ge 0$ 且 $d\lambda = 0$"。原理上是精确的。可一旦与非线性弹性和摩擦耦合，求解就变得脆弱，工程实践中会容忍公差范围内的重叠。
+
+IPC 走了第三条路。它把接触从约束变成能量。与罚函数不同，这个能量在距离为零时趋于无穷。
+
+## 把一步写成最小化：增量势
+
+隐式 Euler 的一步可以写成最小化问题，称为增量势（incremental potential，IP）。
+
+$$
+E(x) = \frac{1}{2}(x-\tilde{x})^{T} M (x-\tilde{x}) + h^{2}\Psi(x) + B(x) + D(x)
+$$
+
+$x$ 是下一步的节点位置，$M$ 是质量矩阵，$h$ 是时间步长。$\tilde{x} = x^{t} + h v^{t} + h^{2}M^{-1}f_{ext}$ 是无接触时的预测位置。$\Psi$ 是超弹性变形能，$B$ 是接触障碍，$D$ 是摩擦耗散势。令 $\nabla E = 0$ 即得到隐式 Euler 方程。
+
+关键在第一项。惯性把 $x$ 拉向 $\tilde{x}$，接触项必须挡住这股拉力。在下面的模拟中亲手操作一下。
+
+<IncrementalPotentialLandscapeLab />
+
+把紫色虚线 $\tilde{x}$ 推过墙。红色罚函数曲线会在墙后长出新的最小点，解随之跳过去。绿色 IPC 曲线在墙前无限升高，因此最小点始终留在墙前。
+
+## 对数障碍：距离为零时能量无穷大
+
+IPC 的接触能量是距离 $d$ 的函数。
+
+$$
+b(d,\hat{d}) =
+\begin{cases}
+-(d-\hat{d})^{2}\ln\left(\dfrac{d}{\hat{d}}\right), & 0 < d < \hat{d} \\
+0, & d \ge \hat{d}
+\end{cases}
+$$
+
+$\hat{d}$ 是障碍开始起作用的距离，$B(x) = \kappa\sum_k b(d_k(x),\hat{d})$，$\kappa$ 是障碍刚度。三维中 $d_k$ 是点–三角形、边–边对的无符号距离。
+
+这个函数有三个性质。$d \ge \hat{d}$ 时恰好为零，远处的对不参与计算。$d=\hat{d}$ 处函数值和一阶导数都为零，Newton 法可以平滑通过。$d \to 0$ 时 $-\ln d$ 趋于无穷。最后一条是保证的一半。
+
+## 只有障碍还不够：用 CCD 过滤的线搜索
+
+即使能量无穷大，Newton 的一步仍可能跨过墙。只看起点和终点的能量，墙后在障碍范围之外，读数为零。所以 IPC 在线搜索中加入了连续碰撞检测（CCD，continuous collision detection）。
+
+得到 Newton 方向 $\Delta x$ 后，求出从 $x$ 到 $x+\Delta x$ 的线段上第一次接触的时刻 $t^{*}$。先把步长截断为 $\alpha \le t^{*}$，再检查能量是否下降。从可行域内部出发的迭代永远出不去。这是保证的另一半。
+
+## 代码：一个球、一堵 20 mm 的墙、六个速度
+
+问题降到一维。球从 $x=0$ 出发，墙前表面在 0.503 m，厚 20 mm，无重力。每一步用 Newton 法最小化 $E(x)$。罚函数在墙内使用推向最近表面的 ½kp²。IPC 把上面的障碍乘以 $h^{2}\kappa$，并把线搜索的第一步截断到碰撞时刻的 90%。
+
+```python
+import math
+
+M, H = 1.0, 0.01          # 质量 [kg]，时间步长 [s]
+WALL, W = 0.503, 0.02      # 墙前表面位置 [m]，墙厚 [m]
+DHAT, KAPPA = 1e-3, 1e4   # 障碍作用距离 [m]，障碍刚度
+K_PEN = 1e4               # 罚刚度 [N/m]
+
+def barrier(d):
+    # b(d) = -κ (d - d̂)² ln(d/d̂),  仅在 0 < d < d̂ 时起作用
+    if d >= DHAT:
+        return 0.0, 0.0, 0.0
+    l = math.log(d / DHAT)
+    b = -(d - DHAT) ** 2 * l
+    db = -2 * (d - DHAT) * l - (d - DHAT) ** 2 / d
+    d2b = -2 * l - 4 * (d - DHAT) / d + (d - DHAT) ** 2 / d ** 2
+    return KAPPA * b, KAPPA * db, KAPPA * d2b
+
+def pen_depth(x):
+    # 在墙内时：到最近表面的深度和推出方向
+    if WALL < x < WALL + W:
+        a, c = x - WALL, WALL + W - x
+        return (a, -1.0) if a <= c else (c, 1.0)
+    return 0.0, 0.0
+
+def ip_energy(x, xt, mode):
+    e = 0.5 * M * (x - xt) ** 2
+    if mode == "ipc":
+        d = WALL - x
+        if d <= 0:
+            return math.inf
+        e += H * H * barrier(d)[0]
+    else:
+        p, _ = pen_depth(x)
+        e += H * H * 0.5 * K_PEN * p * p
+    return e
+
+def ip_newton(x0, xt, mode, tol=1e-10):
+    x, it = x0, 0
+    for it in range(1, 60):
+        g, hs = M * (x - xt), M
+        if mode == "ipc":
+            _, db, d2b = barrier(WALL - x)
+            g += H * H * (-db)
+            hs += H * H * d2b
+        else:
+            p, s = pen_depth(x)
+            g += H * H * K_PEN * p * (-s)
+            hs += H * H * K_PEN * (p > 0)
+        dx = -g / hs
+        if abs(dx) < tol:
+            break
+        a = 1.0
+        if mode == "ipc" and x + dx >= WALL:
+            a = 0.9 * (WALL - x) / dx        # CCD：只走到越过墙之前
+        e0 = ip_energy(x, xt, mode)
+        while ip_energy(x + a * dx, xt, mode) > e0 and a > 1e-12:
+            a *= 0.5                           # 用简单下降条件代替 Armijo
+        x += a * dx
+    return x, it
+
+def throw(v0, mode, steps=80):
+    x, v = 0.0, v0
+    xmax, itmax = x, 0
+    for _ in range(steps):
+        xt = x + H * v                         # 无接触时的预测位置
+        xn, it = ip_newton(x, xt, mode)
+        v, x = (xn - x) / H, xn
+        if x > WALL + W:
+            return "through", xmax - WALL, itmax
+        xmax, itmax = max(xmax, x), max(itmax, it)
+    return "stopped", xmax - WALL, itmax
+
+print(f"wall at {WALL} m, thickness {W*1000:.0f} mm, h = {H*1000:.0f} ms")
+print(" v0[m/s] | pen k=1e4     | pen k=1e6     | IPC d^=1mm")
+for v0 in [1, 2, 5, 10, 20, 50]:
+    row = []
+    for k in (1e4, 1e6):
+        K_PEN = k
+        r = throw(v0, "pen")
+        row.append(f"{'through':13s}" if r[0] == "through" else f"stop {r[1]*1000:5.2f} mm")
+    r = throw(v0, "ipc")
+    row.append(f"gap {-r[1]*1e6:6.1f} um, newton {r[2]:2d}")
+    print(f" {v0:7.0f} | " + " | ".join(row))
+```
+
+```text
+wall at 0.503 m, thickness 20 mm, h = 10 ms
+ v0[m/s] | pen k=1e4     | pen k=1e6     | IPC d^=1mm
+       1 | stop  5.00 mm | stop  0.07 mm | gap  166.4 um, newton  8
+       2 | through       | stop  0.17 mm | gap   71.0 um, newton  8
+       5 | through       | through       | gap   24.0 um, newton  9
+      10 | through       | through       | gap   11.1 um, newton 10
+      20 | through       | through       | gap   10.4 um, newton 11
+      50 | through       | through       | gap    2.1 um, newton 12
+```
+
+把上面的代码直接放到浏览器里运行。
+
+<ThinWallBarrierTunnelRace />
+
+v0 取 5 m/s、h 取 10 ms 时，红球跳过了墙，绿球停在约 24 µm 之前。把 k 提到 1e8，红球依然穿过。只有把 h 缩小到一步位移低于墙厚的一半，它才有机会停下。
+
+## 5 m/s 时罚函数漏掉了什么
+
+5 m/s、10 ms，一步走 50 mm，而墙只有 20 mm。从 0.50 m 出发，预测位置 $\tilde{x}=0.55$ m 已在墙后。那里罚能量为零，惯性项也为零。Newton 一次迭代就到达这个全局最小点。墙从未进入计算。
+
+所以 k=1e6 也无济于事。刚度只在球落进墙内时才起作用。2 m/s 时 k=1e4 穿透的原因略有不同。一步 20 mm 会让球落在墙的中面之后。此时"最近的表面"变成了背面，罚函数把球推向背后。这种结构与[MSTACS 在一步内送出多于单元所含量而爆掉的故事](/zh/posts/2026-10-25-mstacs-slope-three-courant-limit/)相似。一旦一步超过物理长度尺度，局部修正就无能为力。
+
+## 2 µm 间隙与 12 次 Newton 迭代的代价
+
+IPC 一列在六个速度下全部停住。代价有两点。其一，球始终碰不到墙。间隙在 1 m/s 时为 166 µm，50 m/s 时为 2.1 µm。速度越快，需要越大的力才能停下，而障碍力 $-\kappa b'(d)$ 随 $d$ 减小而增大，所以靠得更近。10 与 20 m/s 的间隙相近，是相位效应：取决于碰撞步从墙前哪个位置开始。
+
+其二，碰撞步的 Newton 迭代增加到 8–12 次。CCD 每次都把步长截到 90%，球以几何级数逼近墙，要走好几步。在三维网格上，每次迭代还要加上 CCD 和障碍 Hessian 的组装。保证不是免费的。
+
+间隙不是误差，而是设计参数。$\hat{d}$ 就是"接触"的定义。论文默认取包围盒对角线的 $10^{-3}$ 左右，并在迭代中自适应增大 $\kappa$。
+
+## 今天的 IPC：摩擦、弹性与流体一侧的交点
+
+原论文在同一框架里也加入了摩擦。把接触力 $\lambda$ 和切向基底固定为上一次迭代的值（lagging），再对相对切向速度套上平滑函数 $f_1$，静摩擦与滑动摩擦就合成一个势 $D$。如果弹性能 $\Psi$ 像 Neo-Hookean 那样在 $J=\det F \to 0$ 时趋于无穷，单元翻转（inversion）也能被同一线搜索挡住。
+
+此后 IPC 被扩展到刚体、余维壳和 FSI（流固耦合）。薄板在流动中弯曲并彼此接触是典型场景。流体一侧的"接触"含义不同，液体界面与壁面的夹角在[表面张力与接触角一文](/zh/posts/2026-06-16-surface-tension-contact-angle-csf/)中讨论过。不过 IP 的思路同样适用于流体求解器。把一步写成能量最小化，线搜索就成了守护可行性的门卫。
+
+## 在接触代码里加障碍之前先量三个数
+
+第一，比较 $v h$ 与最薄构件的厚度。$vh$ 超过厚度一半时，罚函数无论刚度多大都可能穿透。第二，确定 $\hat{d}$。该距离以内都视为接触，所以要与几何公差匹配。第三，记录线搜索的 CCD 安全系数和碰撞步的 Newton 迭代次数。迭代次数突然增加，说明 $\kappa$ 或 $\hat{d}$ 与问题不匹配。
