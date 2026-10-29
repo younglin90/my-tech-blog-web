@@ -61,7 +61,7 @@ export default async function SeriesPage({ params }: Props) {
         className="mono mb-3 inline-block"
         style={{ fontSize: 12, color: 'var(--text-muted)' }}
       >
-        <span style={{ color: 'var(--accent)' }}>$</span> cd ..
+        ←
       </Link>
       <h1
         className="display mb-2"

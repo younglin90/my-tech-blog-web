@@ -130,7 +130,7 @@ export default async function TagPage({ params }: TagPageProps) {
           className="mono"
           style={{ fontSize: 12, color: 'var(--text-muted)' }}
         >
-          <span style={{ color: 'var(--accent)' }}>$</span> cd ..
+          ←
         </Link>
         <div className="mono mt-3" style={{ fontSize: 12, color: 'var(--text-muted)' }}>
           <span style={{ color: 'var(--accent)' }}>grep</span>{' '}

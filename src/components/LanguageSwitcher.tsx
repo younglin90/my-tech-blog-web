@@ -83,8 +83,7 @@ export function LanguageSwitcher({ current }: { current?: string }) {
         aria-expanded={open}
       >
         <Globe className="h-4 w-4" strokeWidth={1.5} />
-        <span className="hidden sm:inline">{LOCALE_LABELS[detected]}</span>
-        <span className="sm:hidden uppercase">{detected}</span>
+        <span className="uppercase">{detected}</span>
       </button>
       {/* 목록은 닫혀 있어도 DOM에 남긴다. {open && ...}로 조건부 렌더하면 초기 HTML에
           링크가 없어서, 크롤러 입장에서 locale 트리 사이에 연결이 하나도 없게 된다. */}

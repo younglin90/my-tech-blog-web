@@ -92,9 +92,6 @@ export default async function Glossary({ params }: Props) {
   return (
     <div>
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: jsonLdHtml(glossaryJsonLd) }} />
-      <div className="mono mb-1" style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-        <span style={{ color: 'var(--accent)' }}>$</span> man cfd-glossary
-      </div>
       <h1 className="display mb-2" style={{ fontSize: 32, fontWeight: 700, letterSpacing: '-0.02em', color: 'var(--text)' }}>
         {t(loc, 'glossary.title')}
       </h1>

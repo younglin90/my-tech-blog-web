@@ -114,7 +114,7 @@ export default async function CalculatorPage({ params }: Props) {
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: jsonLdHtml(breadcrumbJsonLd) }} />
       <ToolViewTracker slug={meta.slug} />
       <Link href={`/${loc}/tools`} className="mono mb-3 inline-block" style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-        <span style={{ color: 'var(--accent)' }}>$</span> cd ..
+        ←
       </Link>
       <div className="grid gap-6 xl:grid-cols-[1fr,280px]">
         <div>

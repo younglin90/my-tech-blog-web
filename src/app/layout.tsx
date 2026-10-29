@@ -5,8 +5,8 @@ import { ThemeProvider } from '@/components/ThemeProvider'
 import { BackToTop } from '@/components/BackToTop'
 import { MobileNav } from '@/components/MobileNav'
 import { KeyboardShortcuts } from '@/components/KeyboardShortcuts'
-import { TerminalHeader } from '@/components/TerminalHeader'
-import { TerminalFooter } from '@/components/TerminalFooter'
+import { SiteHeader } from '@/components/SiteHeader'
+import { SiteFooter } from '@/components/SiteFooter'
 import { ServiceWorkerRegister } from '@/components/ServiceWorkerRegister'
 import type { Metadata, Viewport } from 'next'
 import { SITE_URL } from '@/lib/site'
@@ -144,13 +144,13 @@ export default function RootLayout({
           >
             Skip to content
           </a>
-          <div className="mx-auto max-w-3xl px-4 py-6 pb-20 sm:px-7 sm:py-8 sm:pb-10">
-            <TerminalHeader />
+          <SiteHeader />
+          <div className="mx-auto max-w-3xl px-4 pt-10 pb-24 sm:px-7 sm:pt-14 sm:pb-12">
             <main id="main-content" className="animate-fade-up">{children}</main>
             <KeyboardShortcuts />
             <MobileNav />
             <BackToTop />
-            <TerminalFooter />
+            <SiteFooter />
           </div>
         </ThemeProvider>
       </body>

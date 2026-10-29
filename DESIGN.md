@@ -44,9 +44,9 @@
 | Token | Hex | Usage |
 |-------|-----|-------|
 | `--bg` | `#08111f` | 페이지 배경 (딥 네이비, HPC 터미널) |
-| `--surface` | `#162943` | 카드, 코드블록, 헤더 배경 |
-| `--surface-hover` | `#1f3557` | hover 상태 |
-| `--border` | `#2c4a70` | 구분선, 카드 테두리 |
+| `--surface` | `#111f35` | 카드, 코드블록, 헤더 배경 |
+| `--surface-hover` | `#1a2c48` | hover 상태 |
+| `--border` | `#263f61` | 구분선, 카드 테두리 |
 | `--accent` | `#fbbf24` | 링크, 강조, 인터랙티브 요소 (앰버 — 계기판/터미널) |
 | `--accent-dim` | `#d97706` | accent hover, 눌린 상태 |
 | `--accent-glow` | `color-mix(accent 15%)` | accent 배경 hint (필터 pill 등) |
@@ -60,7 +60,7 @@
 |-------|-----|-------|
 | `--bg` | `#fafaf9` | 페이지 배경 (따뜻한 흰색) |
 | `--surface` | `#f1f5f9` | 카드, 헤더 |
-| `--border` | `#cbd5e1` | 구분선 |
+| `--border` | `#d5dde6` | 구분선 |
 | `--accent` | `#b45309` | 링크, 강조 (오렌지) |
 | `--accent-dim` | `#78350f` | accent hover, 눌린 상태 |
 | `--text` | `#0f172a` | 본문 |
@@ -155,3 +155,4 @@
 | 2026-07-10 | Accent 앰버 doc-sync (dark `#fbbf24` / light `#b45309`) | 라이브 "HPC Terminal" 테마는 이미 앰버. 문서가 옛 시안(`#22d3ee`)으로 stale → globals.css 실제값에 맞춰 Color 섹션 정정. |
 | 2026-07-10 | Atmospheric layered background | 단색 배경 대신 amber glow + 딥블루 wash + CFD 메쉬 그리드(mask)로 깊이. anti-AI-slop, 도메인(유동/메쉬) 정체성. 서피스가 --bg로 덮어 가독성 유지. |
 | 2026-07-10 | Load-reveal orchestration + hero streamline | 홈 진입 1회 계단식 등장(≤700ms) + 히어로 유선 언더라인. 산발적 마이크로 인터랙션 대신 한 번의 오케스트레이션. LCP 무해(opacity/translateY, 스크롤 무관), reduced-motion 대응. |
+| 2026-10-29 | 정리(declutter) 패스 | 터미널 창 헤더(신호등 점·`$ cmd` 접두)·명령어 eyebrow·그라데이션 히어로·메쉬 그리드·요일 색 막대를 걷어냄. 상단 고정 바 + 평문 내비, 카드 대신 구분선, 서피스·테두리 대비 완화. 앰버/네이비·Fraunces는 유지. 글 목록·본문에 조회·좋아요·댓글 수, 홈에 D1 기반 인기 글·최근 댓글. |

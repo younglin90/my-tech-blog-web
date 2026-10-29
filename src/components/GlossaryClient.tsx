@@ -329,8 +329,8 @@ export function GlossaryClient({ entries, locale, total }: Props) {
               )}
               <div
                 id={term.toLowerCase()}
-                className="rounded-lg p-4"
-                style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
+                className="border-b py-5"
+                style={{ borderColor: 'var(--border-soft)' }}
               >
                 <dt className="flex items-baseline gap-3">
                   <span className="text-lg font-semibold" style={{ fontFamily: 'var(--font-display)', color: 'var(--accent)' }}>
@@ -361,25 +361,20 @@ export function GlossaryClient({ entries, locale, total }: Props) {
                   )}
                 </dd>
                 {def.posts && def.posts.length > 0 && (
-                  <div className="mt-4">
-                    <div className="mb-2 text-[10px] font-semibold uppercase tracking-widest" style={{ color: 'var(--text-faint)' }}>
+                  <div className="mt-3">
+                    <div className="mb-1 text-xs" style={{ color: 'var(--text-faint)' }}>
                       {t(locale, 'glossary.sourcePosts')}
                     </div>
-                    <div className="flex flex-wrap gap-2">
+                    <ul className="space-y-0.5">
                       {def.posts.slice(0, 5).map((post) => (
-                        <Link
-                          key={`${term}-${post.slug}`}
-                          href={`/${locale}/posts/${post.slug}`}
-                          className="inline-flex min-h-11 items-center rounded-lg px-2.5 py-1.5 text-xs transition-colors"
-                          style={{ background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text-muted)' }}
-                        >
-                          <span className="link-hover-accent">{post.title}</span>
-                          <span className="mono ml-1" style={{ color: 'var(--text-faint)' }}>
-                            ×{post.count}
-                          </span>
-                        </Link>
+                        <li key={`${term}-${post.slug}`} className="text-[13px]">
+                          <Link href={`/${locale}/posts/${post.slug}`} className="link-hover-accent" style={{ color: 'var(--text-muted)' }}>
+                            {post.title}
+                          </Link>
+                          <span className="tabular ml-1.5 text-xs" style={{ color: 'var(--text-faint)' }}>×{post.count}</span>
+                        </li>
                       ))}
-                    </div>
+                    </ul>
                   </div>
                 )}
               </div>

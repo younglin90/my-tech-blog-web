@@ -5,7 +5,7 @@
 // (slug, 해시된 IP)당 표 1개 — 다시 누르면 표가 늘지 않고 바뀌기만 한다.
 // UA를 바꿔도 같은 IP면 같은 표다. 대신 같은 공유 IP(연구실 NAT 등)는 글당 1표로 묶인다.
 
-import { clientIp, ensureSchema, hashId, isBot, isKnownSlug, json, rateLimited, sameOrigin, type Env } from '../../functions-lib/guard'
+import { clientIp, ensureSchema, hashId, isBot, isKnownSlug, json, purgeEdge, rateLimited, sameOrigin, type Env } from '../../functions-lib/guard'
 
 const REASONS = new Set([
   'feedback.r.clear', 'feedback.r.useful', 'feedback.r.code', 'feedback.r.viz',
@@ -53,9 +53,7 @@ export async function onRequestPost(context: {
     }
     await db.batch(stmts)
     const { results: tot } = await db.prepare('SELECT up, down FROM post_total WHERE slug = ?').bind(slug).all<{ up: number; down: number }>()
-    // 이 데이터센터의 post-stats 캐시를 비워 새 숫자가 바로 보이게
-    const cache = (globalThis as unknown as { caches?: { default?: Cache } }).caches?.default
-    if (cache) context.waitUntil(cache.delete(new Request(new URL(`/api/post-stats?slug=${slug}`, request.url).toString())))
+    purgeEdge(request, [`/api/post-stats?slug=${slug}`, '/api/stats'], context.waitUntil)
     return json(tot[0] ?? { up: 0, down: 0 })
   } catch (e) {
     console.error('feedback', e)

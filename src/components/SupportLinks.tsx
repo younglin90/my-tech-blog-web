@@ -38,16 +38,10 @@ export function SupportLinks({ source = 'author' }: SupportLinksProps) {
     <section
       aria-labelledby="support-title"
       className="overflow-hidden rounded-xl"
-      style={{
-        background: 'color-mix(in srgb, var(--surface) 88%, var(--accent) 12%)',
-        border: '1px solid color-mix(in srgb, var(--border) 72%, var(--accent) 28%)',
-      }}
+      style={{ border: '1px solid var(--border-soft)' }}
     >
       <div className="p-4 sm:p-5">
-        <div className="mono text-[10px] font-semibold uppercase tracking-[0.18em]" style={{ color: 'var(--accent)' }}>
-          {t(locale, 'support.eyebrow')}
-        </div>
-        <h2 id="support-title" className="display mt-1.5 text-lg font-semibold" style={{ color: 'var(--text)' }}>
+        <h2 id="support-title" className="text-base font-semibold" style={{ color: 'var(--text)' }}>
           {t(locale, 'support.title')}
         </h2>
         <p className="mt-2 text-xs leading-relaxed" style={{ color: 'var(--text-muted)' }}>
@@ -63,7 +57,7 @@ export function SupportLinks({ source = 'author' }: SupportLinksProps) {
                 target="_blank"
                 rel="noopener noreferrer"
                 className="group flex min-h-16 items-center gap-3 rounded-lg px-3.5 py-3 transition-colors duration-100 hover:[border-color:var(--accent)]"
-                style={{ background: 'var(--bg)', border: '1px solid var(--border)' }}
+                style={{ border: '1px solid var(--border-soft)' }}
                 aria-label={`${label} · ${amount}`}
               >
                 <span

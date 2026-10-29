@@ -34,30 +34,14 @@ export function VizGalleryClient({ locale, items }: { locale: Locale; items: Viz
 
   return (
     <div className="space-y-8">
-      <section
-        className="relative overflow-hidden rounded-3xl"
-        style={{
-          background:
-            'radial-gradient(circle at 16% 16%, color-mix(in srgb, var(--accent) 28%, transparent), transparent 32%), radial-gradient(circle at 88% 14%, color-mix(in srgb, var(--accent-dim) 16%, transparent), transparent 30%), linear-gradient(135deg, var(--surface), var(--bg))',
-          border: '1px solid var(--border)',
-          boxShadow: '0 24px 60px color-mix(in srgb, var(--bg) 35%, transparent)',
-        }}
-      >
-        <div className="relative z-10 p-5 sm:p-7 lg:p-8">
-          <div className="mb-4 inline-flex items-center gap-2 rounded-full px-3 py-1" style={{ background: 'var(--accent-glow)', border: '1px solid color-mix(in srgb, var(--accent) 40%, transparent)' }}>
-            <span className="h-2 w-2 rounded-full" style={{ background: 'var(--accent)' }} />
-            <span className="mono text-[10px] font-semibold uppercase tracking-[0.28em]" style={{ color: 'var(--accent)' }}>
-              {t(locale, 'viz.badge')}
-            </span>
-          </div>
-          <h1 className="display max-w-xl text-4xl font-bold tracking-[-0.045em] sm:text-5xl" style={{ color: 'var(--text)' }}>
-            {t(locale, 'viz.title')}
-          </h1>
-          <p className="mt-4 max-w-2xl text-sm sm:text-base" style={{ color: 'var(--text-muted)', lineHeight: 1.75 }}>
-            {t(locale, 'viz.subtitle')}
-          </p>
-        </div>
-      </section>
+      <header>
+        <h1 className="display mb-2" style={{ fontSize: 32, fontWeight: 700, letterSpacing: '-0.02em', color: 'var(--text)' }}>
+          {t(locale, 'viz.title')}
+        </h1>
+        <p className="max-w-2xl text-sm" style={{ color: 'var(--text-muted)', lineHeight: 1.7 }}>
+          {t(locale, 'viz.subtitle')}
+        </p>
+      </header>
 
       <section className="space-y-3">
         <label className="flex max-w-xl flex-col gap-1">
@@ -102,7 +86,7 @@ export function VizGalleryClient({ locale, items }: { locale: Locale; items: Viz
               <article
                 key={key}
                 className="overflow-hidden rounded-xl"
-                style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
+                style={{ border: '1px solid var(--border-soft)' }}
               >
                 <div className="space-y-3 p-4">
                   <div className="flex flex-wrap items-center gap-2">
@@ -134,7 +118,7 @@ export function VizGalleryClient({ locale, items }: { locale: Locale; items: Viz
                       <button
                         onClick={() => setOpen((current) => ({ ...current, [key]: !isOpen }))}
                         className="inline-flex min-h-11 items-center rounded-lg px-3 py-1.5 text-xs font-medium transition-opacity hover:opacity-80"
-                        style={{ background: 'var(--accent)', color: 'var(--on-accent)' }}
+                        style={{ border: '1px solid var(--accent)', color: 'var(--accent)' }}
                       >
                         {isOpen ? t(locale, 'viz.hide') : t(locale, 'viz.render')}
                       </button>

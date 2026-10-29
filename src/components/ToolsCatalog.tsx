@@ -95,30 +95,14 @@ export function ToolsCatalog({ locale }: { locale: Locale }) {
 
   return (
     <div id="tools-top" className="space-y-8">
-      <section
-        className="relative overflow-hidden rounded-3xl"
-        style={{
-          background:
-            'radial-gradient(circle at 20% 18%, color-mix(in srgb, var(--accent) 28%, transparent), transparent 34%), radial-gradient(circle at 88% 22%, color-mix(in srgb, var(--accent-dim) 18%, transparent), transparent 32%), linear-gradient(135deg, var(--surface), var(--bg))',
-          border: '1px solid var(--border)',
-          boxShadow: '0 24px 60px color-mix(in srgb, var(--bg) 35%, transparent)',
-        }}
-      >
-        <div className="relative z-10 p-5 sm:p-7 lg:p-8">
-          <div className="mb-4 inline-flex items-center gap-2 rounded-full px-3 py-1" style={{ background: 'var(--accent-glow)', border: '1px solid color-mix(in srgb, var(--accent) 40%, transparent)' }}>
-            <span className="h-2 w-2 rounded-full" style={{ background: 'var(--accent)' }} />
-            <span className="mono text-[10px] font-semibold uppercase tracking-[0.28em]" style={{ color: 'var(--accent)' }}>
-              {t(locale, 'tools.badge')}
-            </span>
-          </div>
-          <h1 className="display max-w-2xl text-4xl font-bold tracking-[-0.045em] sm:text-5xl" style={{ color: 'var(--text)' }}>
-            {t(locale, 'tools.title')}
-          </h1>
-          <p className="mt-4 max-w-2xl text-sm sm:text-base" style={{ color: 'var(--text-muted)', lineHeight: 1.75 }}>
-            {t(locale, 'tools.subtitle')}
-          </p>
-        </div>
-      </section>
+      <header>
+        <h1 className="display mb-2" style={{ fontSize: 32, fontWeight: 700, letterSpacing: '-0.02em', color: 'var(--text)' }}>
+          {t(locale, 'tools.title')}
+        </h1>
+        <p className="max-w-2xl text-sm" style={{ color: 'var(--text-muted)', lineHeight: 1.7 }}>
+          {t(locale, 'tools.subtitle')}
+        </p>
+      </header>
 
       <section className="space-y-4">
         <div className="grid gap-3 lg:grid-cols-[1.3fr,auto]">
@@ -165,40 +149,12 @@ export function ToolsCatalog({ locale }: { locale: Locale }) {
           ))}
         </div>
 
-        <div className="mono text-xs" style={{ color: 'var(--text-faint)' }}>
-          <span style={{ color: 'var(--accent)' }}>$</span> {filtered.length} {t(locale, 'tools.matches')}
+        <div className="text-xs" style={{ color: 'var(--text-faint)' }}>
+          {filtered.length} {t(locale, 'tools.matches')}
           {activeLabel ? ` / ${activeLabel}` : ''}
           {deferredQuery ? ` / "${deferredQuery}"` : ''}
         </div>
       </section>
-
-      {grouped.length > 1 && (
-        <section
-          aria-labelledby="tools-jump-nav"
-          className="rounded-xl p-4"
-          style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
-        >
-          <div
-            id="tools-jump-nav"
-            className="mb-3 text-xs font-semibold uppercase tracking-widest"
-            style={{ color: 'var(--text-faint)' }}
-          >
-            {t(locale, 'tools.jumpTo')}
-          </div>
-          <div className="flex flex-wrap gap-2">
-            {grouped.map((group) => (
-              <a
-                key={group.category}
-                href={`#tools-category-${group.category}`}
-                className="inline-flex min-h-11 items-center rounded-full px-3 py-1.5 text-xs font-medium transition-colors"
-                style={{ background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text-muted)' }}
-              >
-                {group.label}
-              </a>
-            ))}
-          </div>
-        </section>
-      )}
 
       {favoriteTools.length > 0 && !deferredQuery && activeCategory === 'all' && (
         <section>
@@ -375,27 +331,22 @@ function ToolCard({
     <div className="group relative">
       <Link
         href={`/${locale}/tools/${slug}`}
-        className="block overflow-hidden rounded-xl transition-colors duration-100"
-        style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
+        className="block h-full overflow-hidden rounded-xl transition-colors duration-100 hover:[border-color:var(--accent)]"
+        style={{ border: '1px solid var(--border-soft)' }}
       >
-        <ToolCardGlyph
-          slug={slug}
-          label={getCategoryLabel(toolMeta?.category ?? 'numerics', locale)}
-        />
         <div className="p-4">
+          <div className="mb-1.5 text-xs" style={{ color: 'var(--text-faint)' }}>
+            {getCategoryLabel(toolMeta?.category ?? 'numerics', locale)}
+          </div>
           <h3 className="pr-12 text-base font-semibold link-hover-accent" style={{ fontFamily: 'var(--font-display)', color: 'var(--text)' }}>
             {title}
           </h3>
           <p className="mt-1 text-sm" style={{ color: 'var(--text-muted)', lineHeight: 1.6 }}>
             {desc}
           </p>
-          <div className="mt-3 flex flex-wrap gap-1.5">
-            {tags.slice(0, 4).map((tag) => (
-              <span key={tag} className="rounded px-1.5 py-0.5 text-[10px]" style={{ background: 'var(--bg)', color: 'var(--text-faint)' }}>
-                {tag}
-              </span>
-            ))}
-          </div>
+          <p className="mt-3 text-xs" style={{ color: 'var(--text-faint)' }}>
+            {tags.slice(0, 4).join(' · ')}
+          </p>
         </div>
       </Link>
       {onToggleFavorite && (
@@ -418,44 +369,6 @@ function ToolCard({
           {isFavorite ? '★' : '☆'}
         </button>
       )}
-    </div>
-  )
-}
-
-function ToolCardGlyph({ slug, label }: { slug: string; label: string }) {
-  const gradId = `card-grad-${slug}`
-
-  return (
-    <div className="relative h-24 overflow-hidden" style={{ background: 'linear-gradient(135deg, var(--bg), var(--surface))' }}>
-      <svg viewBox="0 0 360 96" className="h-full w-full" aria-hidden="true">
-        <defs>
-          <linearGradient id={gradId} x1="0" x2="1">
-            <stop offset="0%" stopColor="var(--accent)" stopOpacity="0.85" />
-            <stop offset="100%" stopColor="var(--accent-dim)" stopOpacity="0.45" />
-          </linearGradient>
-        </defs>
-        <path d="M0 72 C70 32 118 84 180 48 S292 24 360 56 V96 H0 Z" fill={`url(#${gradId})`} opacity="0.35" />
-        {[34, 50, 66].map((y, index) => (
-          <path
-            key={y}
-            d={`M-12 ${y} C78 ${y - 24}, 120 ${y + 20}, 190 ${y - 4} S302 ${y + 24}, 372 ${y - 10}`}
-            fill="none"
-            stroke="var(--accent)"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeDasharray="9 13"
-            opacity={index % 2 ? 0.45 : 0.8}
-          >
-            <animate attributeName="stroke-dashoffset" from="0" to="-44" dur={`${4 + index}s`} repeatCount="indefinite" />
-          </path>
-        ))}
-        <circle cx="306" cy="28" r="16" fill="var(--surface)" stroke="var(--accent)" strokeWidth="2">
-          <animate attributeName="r" values="13;18;13" dur="3.2s" repeatCount="indefinite" />
-        </circle>
-      </svg>
-      <div className="absolute left-3 top-3 mono max-w-[70%] truncate rounded-full px-2 py-1 text-[9px] uppercase tracking-widest" title={label} style={{ background: 'color-mix(in srgb, var(--bg) 82%, transparent)', color: 'var(--text-muted)', border: '1px solid var(--border)' }}>
-        {label}
-      </div>
     </div>
   )
 }

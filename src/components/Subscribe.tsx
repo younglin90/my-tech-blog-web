@@ -21,20 +21,15 @@ export function Subscribe() {
 
   if (!username) {
     return (
-      <div
-        className="rounded-lg p-4"
-        style={{ background: 'var(--bg)', border: '1px dashed var(--border)' }}
-      >
-        <div className="flex items-center gap-2 text-xs" style={{ color: 'var(--text-faint)' }}>
-          <Mail className="h-3.5 w-3.5" />
-          <span>{t(locale, 'subscribe.subtitle')}</span>
-        </div>
+      <div className="flex flex-wrap items-center gap-2 text-xs" style={{ color: 'var(--text-faint)' }}>
+        <Mail className="h-3.5 w-3.5" />
+        <span>{t(locale, 'subscribe.subtitle')}</span>
         <a
           href={locale === 'ko' ? '/feed.xml' : `/feed-${locale}.xml`}
-          className="mt-2 inline-block text-xs font-medium underline underline-offset-4"
+          className="font-medium underline underline-offset-4"
           style={{ color: 'var(--accent)' }}
         >
-          RSS →
+          RSS
         </a>
       </div>
     )

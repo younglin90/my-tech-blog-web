@@ -19,9 +19,6 @@ export function TagsClient({ tags, locale }: { tags: [string, number][]; locale:
     <div>
       <div className="mb-6 flex items-center justify-between">
         <div>
-          <div className="mono mb-1" style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-            <span style={{ color: 'var(--accent)' }}>$</span> ls tags/ | sort -nr
-          </div>
           <h1
             className="display mb-1"
             style={{ fontSize: 32, fontWeight: 700, letterSpacing: '-0.02em', color: 'var(--text)' }}

@@ -51,9 +51,6 @@ export default async function SeriesIndex({ params }: Props) {
 
   return (
     <div>
-      <div className="mono mb-1" style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-        <span style={{ color: 'var(--accent)' }}>$</span> ls series/
-      </div>
       <h1
         className="display mb-2"
         style={{ fontSize: 32, fontWeight: 700, letterSpacing: '-0.02em', color: 'var(--text)' }}

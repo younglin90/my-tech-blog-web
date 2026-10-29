@@ -45,6 +45,10 @@ const SCHEMA = [
   'CREATE TABLE IF NOT EXISTS post_daily (day TEXT NOT NULL, slug TEXT NOT NULL, views INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (day, slug)) WITHOUT ROWID',
   'CREATE TABLE IF NOT EXISTS post_total (slug TEXT PRIMARY KEY, views INTEGER NOT NULL DEFAULT 0, up INTEGER NOT NULL DEFAULT 0, down INTEGER NOT NULL DEFAULT 0) WITHOUT ROWID',
   'CREATE TABLE IF NOT EXISTS post_vote (slug TEXT NOT NULL, vid TEXT NOT NULL, vote INTEGER NOT NULL, reason TEXT, ts INTEGER NOT NULL, PRIMARY KEY (slug, vid)) WITHOUT ROWID',
+  // 댓글. hidden=1은 관리자가 숨긴 것 (삭제 대신 — 실수로 지워도 되살릴 수 있게).
+  'CREATE TABLE IF NOT EXISTS comment (id INTEGER PRIMARY KEY AUTOINCREMENT, slug TEXT NOT NULL, name TEXT NOT NULL, body TEXT NOT NULL, ts INTEGER NOT NULL, vid TEXT NOT NULL, hidden INTEGER NOT NULL DEFAULT 0)',
+  'CREATE INDEX IF NOT EXISTS comment_slug_ts ON comment (slug, ts)',
+  'CREATE INDEX IF NOT EXISTS comment_ts ON comment (ts)',
 ]
 let schemaReady: Promise<unknown> | null = null
 export function ensureSchema(db: D1Database): Promise<unknown> {
@@ -137,6 +141,13 @@ export async function edgeCached(
   const res = json(body, 200, ok ? `public, max-age=${ttl}` : 'no-store')
   if (cache && ok) waitUntil(cache.put(cacheKey, res.clone()))
   return res
+}
+
+// 쓰기 후 이 데이터센터의 GET 캐시를 비워 새 값이 바로 보이게 한다.
+export function purgeEdge(request: Request, keys: string[], waitUntil: (p: Promise<unknown>) => void): void {
+  const cache = (globalThis as unknown as { caches?: { default?: Cache } }).caches?.default
+  if (!cache) return
+  for (const k of keys) waitUntil(cache.delete(new Request(new URL(k, request.url).toString())))
 }
 
 // ---------- 페이지뷰 기록 ----------

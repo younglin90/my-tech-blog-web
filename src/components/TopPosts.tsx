@@ -2,96 +2,65 @@
 
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
+import { t } from '@/lib/i18n'
+import { usePostTitles } from '@/lib/use-post-titles'
 
-interface Item { slug: string; views: number; title?: string }
-interface PostIndexEntry { slug: string; locale: string; title: string; url: string }
+interface Item { slug: string; views: number }
 
-interface TopPostsProps {
+// D1 조회 로그(post_daily: 방문자·글·날짜당 1회) 기준 지난 N일 인기 글.
+export function TopPosts({ locale, days = 7, limit = 5, heading, hint }: {
   locale: string
   days?: number
   limit?: number
   heading: string
-}
-
-export function TopPosts({ locale, days = 7, limit = 5, heading }: TopPostsProps) {
+  hint?: string
+}) {
   const [items, setItems] = useState<Item[] | null>(null)
-  const [errored, setErrored] = useState(false)
+  const titles = usePostTitles(locale)
 
   useEffect(() => {
     let cancelled = false
-    const url = `/api/top-posts?limit=${limit}&days=${days}`
-    Promise.all([
-      fetch(url, { cache: 'no-store' }).then((r) => (r.ok ? r.json() : Promise.reject(new Error(`http-${r.status}`)))),
-      fetch('/post-index.json', { cache: 'no-store' }).then((r) => (r.ok ? r.json() : Promise.reject(new Error('idx')))),
-    ])
-      .then(([top, index]) => {
-        if (cancelled) return
-        const idxItems = (index?.items || []) as PostIndexEntry[]
-        const lookup = new Map<string, PostIndexEntry>()
-        for (const it of idxItems) {
-          if (it.locale === locale) lookup.set(it.slug, it)
-        }
-        // fallback to ko
-        for (const it of idxItems) {
-          if (it.locale === 'ko' && !lookup.has(it.slug)) lookup.set(it.slug, it)
-        }
-        const enriched = (top.items as Item[]).map((x) => {
-          const m = lookup.get(x.slug)
-          return { ...x, title: m?.title }
-        }).filter((x) => x.title)
-        setItems(enriched)
-      })
-      .catch(() => {
-        if (!cancelled) setErrored(true)
-      })
+    fetch(`/api/top-posts?limit=${limit}&days=${days}`)
+      .then((r) => (r.ok ? r.json() : { items: [] }))
+      .then((d: { items?: Item[] }) => { if (!cancelled) setItems(d.items ?? []) })
+      .catch(() => { if (!cancelled) setItems([]) })
     return () => { cancelled = true }
-  }, [locale, days, limit])
+  }, [days, limit])
 
-  if (errored) return null
-  if (!items) {
-    return (
-      <section className="mb-10">
-        <h2 className="mb-3 text-xl font-semibold" style={{ fontFamily: 'var(--font-display)', color: 'var(--text)' }}>
-          {heading}
-        </h2>
-        <p className="text-sm" style={{ color: 'var(--text-faint)' }}>…</p>
-      </section>
-    )
-  }
-  if (items.length === 0) return null
+  const rows = items && titles ? items.filter((i) => titles.has(i.slug)) : null
 
-  const max = Math.max(...items.map((i) => i.views), 1)
   return (
-    <section className="mb-10">
-      <h2 className="mb-3 text-xl font-semibold" style={{ fontFamily: 'var(--font-display)', color: 'var(--text)' }}>
-        {heading}
-      </h2>
-      <ol className="space-y-2">
-        {items.map((item, i) => (
-          <li key={item.slug} className="flex items-center gap-3 text-sm">
-            <span className="mono shrink-0 text-right" style={{ width: 16, color: 'var(--text-faint)' }}>{i + 1}</span>
-            <div className="flex-1 min-w-0">
+    <section className="home-panel">
+      <header>
+        <h2>{heading}</h2>
+        {hint && <span>{hint}</span>}
+      </header>
+      {rows === null ? (
+        <div className="space-y-2.5">{[0, 1, 2].map((i) => <div key={i} className="skeleton h-4 rounded" />)}</div>
+      ) : rows.length === 0 ? (
+        <p className="home-panel-empty">{t(locale, 'home.noData')}</p>
+      ) : (
+        <ol className="space-y-2.5">
+          {rows.map((item, i) => (
+            <li key={item.slug} className="flex items-baseline gap-3 text-sm">
+              <span className="tabular w-4 shrink-0 text-right text-xs" style={{ color: i === 0 ? 'var(--accent)' : 'var(--text-faint)' }}>
+                {i + 1}
+              </span>
               <Link
-                href={`/${locale}/posts/${item.slug}`}
-                className="block truncate link-hover-text"
+                href={`/${locale}/posts/${item.slug}/`}
+                className="min-w-0 flex-1 truncate link-hover-text-accent"
                 style={{ color: 'var(--text)' }}
-                title={item.title}
+                title={titles!.get(item.slug)}
               >
-                {item.title}
+                {titles!.get(item.slug)}
               </Link>
-              <div className="mt-1 h-1 rounded-full" style={{ background: 'var(--border)' }}>
-                <div
-                  className="h-full rounded-full"
-                  style={{ width: `${(item.views / max) * 100}%`, background: 'var(--accent)' }}
-                />
-              </div>
-            </div>
-            <span className="mono shrink-0 tabular-nums" style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-              {item.views.toLocaleString()}
-            </span>
-          </li>
-        ))}
-      </ol>
+              <span className="tabular shrink-0 text-xs" style={{ color: 'var(--text-faint)' }}>
+                {item.views.toLocaleString()}
+              </span>
+            </li>
+          ))}
+        </ol>
+      )}
     </section>
   )
 }

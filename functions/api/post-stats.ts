@@ -1,5 +1,5 @@
 // Cloudflare Pages Function: 글 하나의 조회수·추천수
-// 엔드포인트: GET /api/post-stats?slug=...  → { views, up, down }
+// 엔드포인트: GET /api/post-stats?slug=...  → { views, up, down, comments }
 // 존재하는 slug만 받고, 결과는 엣지에 60초 캐시 (D1 읽기는 slug당 분당 1회 이하).
 
 import { clientIp, edgeCached, ensureSchema, isKnownSlug, json, rateLimited, type Env } from '../../functions-lib/guard'
@@ -23,7 +23,11 @@ export async function onRequestGet(context: {
         .prepare('SELECT views, up, down FROM post_total WHERE slug = ?')
         .bind(slug)
         .all<{ views: number; up: number; down: number }>()
-      return { ok: true, body: results[0] ?? { views: 0, up: 0, down: 0 } }
+      const { results: c } = await db
+        .prepare('SELECT COUNT(*) AS n FROM comment WHERE slug = ? AND hidden = 0')
+        .bind(slug)
+        .all<{ n: number }>()
+      return { ok: true, body: { ...(results[0] ?? { views: 0, up: 0, down: 0 }), comments: c[0]?.n ?? 0 } }
     } catch (e) {
       console.error('post-stats', e)
       return { ok: false, body: { error: 'db-error' } }

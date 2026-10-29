@@ -214,21 +214,15 @@ export function Search() {
     <>
       <button
         onClick={() => setOpen(true)}
-        className="search-trigger flex min-h-11 items-center gap-2 whitespace-nowrap rounded-md px-3 py-1.5 text-sm transition-colors duration-100"
-        style={{
-          border: '1px solid var(--border)',
-          color: 'var(--text-muted)',
-          background: 'transparent',
-        }}
+        className="search-trigger flex min-h-11 min-w-11 items-center justify-center gap-2 whitespace-nowrap rounded-md px-2 py-1.5 text-sm transition-colors duration-100"
+        style={{ color: 'var(--text-muted)', background: 'transparent' }}
+        aria-label={t(locale, 'nav.search')}
       >
-        <SearchIcon className="h-3.5 w-3.5" />
-        <span className="hidden sm:inline">{t(locale, 'nav.search')}</span>
-        <kbd
-          className="hidden rounded px-1.5 py-0.5 text-[10px] font-medium sm:inline"
-          style={{ background: 'var(--surface)', color: 'var(--text-faint)', border: '1px solid var(--border)' }}
-        >
-          {isMac ? '⌘K' : 'Ctrl K'}
-        </kbd>
+        <SearchIcon className="h-4 w-4" />
+        {/* 전역 kbd 규칙(display: inline-block)이 유틸리티보다 강해 바깥 span으로 숨긴다 */}
+        <span className="hidden lg:inline">
+          <kbd className="text-[10px]">{isMac ? '⌘K' : 'Ctrl K'}</kbd>
+        </span>
       </button>
 
       <AnimatePresence>

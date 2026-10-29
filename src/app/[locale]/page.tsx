@@ -1,10 +1,9 @@
 import { notFound } from 'next/navigation'
 import { PostList } from '@/components/PostList'
-import { QuoteHero } from '@/components/QuoteHero'
 import { ContinueReading } from '@/components/ContinueReading'
 import { TopPosts } from '@/components/TopPosts'
+import { RecentComments } from '@/components/RecentComments'
 import { StartHere } from '@/components/StartHere'
-import { DAY_META, getDayLabel } from '@/lib/day-meta'
 import { LOCALES, isLocale, t, hreflangAlternates, type Locale } from '@/lib/i18n'
 import postIndex from '@/lib/post-index.json'
 import { dedupePostsForLocale } from '@/lib/post-index'
@@ -45,7 +44,6 @@ export async function generateMetadata({ params }: HomeProps): Promise<Metadata>
   }
 }
 
-const DAY_ORDER: Array<keyof typeof DAY_META> = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']
 // SSR로 보내는 첫 페이로드. 무한 스크롤 sentinel이 IntersectionObserver로
 // PAGE_SIZE(10)씩 추가 로드하므로 첫 화면에 보이는 양만큼만 보내 LCP 개선.
 const HOME_INITIAL_POSTS = 12
@@ -88,55 +86,29 @@ export default async function Home({ params }: HomeProps) {
     <div>
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: jsonLdHtml(jsonLd) }} />
 
-      <QuoteHero />
+      <section className="mb-12">
+        <h1 className="display" style={{ fontSize: 'clamp(1.6rem, 5vw, 2.1rem)', fontWeight: 700, lineHeight: 1.2, color: 'var(--text)', margin: 0 }}>
+          {t(loc, 'home.subtitle')}
+        </h1>
+      </section>
 
-      <div className="reveal reveal-1">
-        <StartHere locale={loc} />
+      <StartHere locale={loc} />
+
+      <div className="mb-12 grid gap-4 sm:grid-cols-2">
+        <TopPosts locale={loc} heading={t(loc, 'home.popular')} hint={t(loc, 'home.popularHint')} limit={5} days={7} />
+        <RecentComments locale={loc} />
       </div>
 
-      <div
-        className="reveal reveal-2 mb-5 flex flex-wrap items-center gap-x-5 gap-y-2 px-4 py-3 rounded-lg"
-        style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
-      >
-        <span
-          className="mono"
-          style={{ fontSize: 10, color: 'var(--text-faint)', letterSpacing: '0.2em', fontWeight: 600 }}
-        >
-          {t(loc, 'home.weekly')}
-        </span>
-        {DAY_ORDER.map((k) => {
-          const m = DAY_META[k]
-          return (
-            <span key={k} className="inline-flex items-center gap-1.5" style={{ fontSize: 12 }}>
-              <span
-                className="inline-block rounded-full"
-                style={{ width: 6, height: 6, background: m.colorVar }}
-              />
-              <span className="mono" style={{ color: 'var(--text-muted)', fontSize: 10.5 }}>
-                {m.short}
-              </span>
-              <span style={{ color: 'var(--text)' }}>{getDayLabel(k, loc)}</span>
-            </span>
-          )
-        })}
-      </div>
+      <ContinueReading
+        posts={posts.map((p) => ({
+          slug: p.id, title: p.title, url: p.url,
+          series: p.series, seriesOrder: p.seriesOrder,
+        }))}
+      />
 
-      <div className="reveal reveal-3">
-        <ContinueReading
-          posts={posts.map((p) => ({
-            slug: p.id, title: p.title, url: p.url,
-            series: p.series, seriesOrder: p.seriesOrder,
-          }))}
-        />
-      </div>
-
-      <div>
-        <TopPosts locale={loc} heading={t(loc, 'about.topPosts')} limit={5} days={7} />
-      </div>
-
+      <h2 className="mb-4 text-lg font-semibold" style={{ color: 'var(--text)' }}>{t(loc, 'home.latest')}</h2>
       <PostList
         staticPosts={initialPosts}
-        initialTotalCount={posts.length}
         indexPath="/post-index.json"
       />
     </div>

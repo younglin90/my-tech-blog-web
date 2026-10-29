@@ -2,20 +2,15 @@
 
 import { useEffect, useState } from 'react'
 import { usePathname } from 'next/navigation'
+import { Heart, ThumbsDown } from 'lucide-react'
 import { localePathPrefix, t } from '@/lib/i18n'
 import { getPostStats, sendVote } from '@/lib/post-stats'
 
 const STORAGE_KEY = 'cfd-lab-post-feedback'
 
-interface Stored {
-  vote: 'up' | 'down'
-  reason?: string
-  ts: number
-}
-type Store = Record<string, Stored>
+type Store = Record<string, { vote: 'up' | 'down'; ts: number }>
 
 function load(): Store {
-  if (typeof localStorage === 'undefined') return {}
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
     return raw ? (JSON.parse(raw) as Store) : {}
@@ -23,136 +18,66 @@ function load(): Store {
     return {}
   }
 }
-function save(store: Store) {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(store)) } catch {}
-}
 
-const POSITIVE_REASONS = ['feedback.r.clear', 'feedback.r.useful', 'feedback.r.code', 'feedback.r.viz']
-const NEGATIVE_REASONS = ['feedback.r.unclear', 'feedback.r.tooHard', 'feedback.r.errors', 'feedback.r.shallow']
-
-// 포스트 끝부분에 마운트. 👍/👎 → 선택 후 짧은 사유 chip 표시 →
-// 한 번 투표하면 thank-you 메시지 + localStorage에 저장(중복 투표 방지).
-// 표는 /api/feedback 으로 서버(D1)에도 보내고, 누적 👍/👎 수를 함께 보여준다.
+// 글 끝 좋아요/아쉬움. 표는 /api/feedback (D1, IP당 글마다 1표 — 다시 누르면 바뀌기만 한다).
+// 내가 누른 쪽은 localStorage로 기억해 강조한다.
 export function PostFeedback({ postId }: { postId: string }) {
   const pathname = usePathname() ?? '/'
   const { locale } = localePathPrefix(pathname)
-  const [vote, setVote] = useState<'up' | 'down' | null>(null)
-  const [submitted, setSubmitted] = useState<Stored | null>(null)
-  const [hydrated, setHydrated] = useState(false)
-  const [counts, setCounts] = useState<{ up: number; down: number } | null>(null)
+  const [mine, setMine] = useState<'up' | 'down' | null>(null)
+  const [up, setUp] = useState<number | null>(null)
 
   useEffect(() => {
-    setHydrated(true)
-    const existing = load()[postId]
-    if (existing) setSubmitted(existing)
+    setMine(load()[postId]?.vote ?? null)
     let cancelled = false
-    getPostStats(postId).then((s) => { if (!cancelled && s) setCounts({ up: s.up, down: s.down }) })
+    getPostStats(postId).then((s) => { if (!cancelled && s) setUp(s.up) })
     return () => { cancelled = true }
   }, [postId])
 
-  const submit = (v: 'up' | 'down', reason?: string) => {
-    const entry: Stored = { vote: v, reason, ts: Date.now() }
+  const vote = (v: 'up' | 'down') => {
+    if (mine === v) return
     const store = load()
-    store[postId] = entry
-    save(store)
-    setSubmitted(entry)
-    sendVote(postId, v, reason).then((c) => { if (c) setCounts(c) })
+    store[postId] = { vote: v, ts: Date.now() }
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(store)) } catch {}
+    // 서버 응답 전에 숫자를 먼저 움직인다
+    setUp((n) => (n ?? 0) + (v === 'up' ? 1 : mine === 'up' ? -1 : 0))
+    setMine(v)
+    sendVote(postId, v).then((c) => { if (c) setUp(c.up) })
   }
 
-  if (!hydrated) return null
-
-  const reasons = vote === 'up' ? POSITIVE_REASONS : vote === 'down' ? NEGATIVE_REASONS : null
-  const headerColor = submitted?.vote === 'down' ? 'var(--text-muted)' : 'var(--accent)'
-
+  const liked = mine === 'up'
   return (
-    <div
-      className="mt-10 rounded-xl p-5"
-      style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
-    >
-      <div
-        className="text-[10px] font-semibold uppercase tracking-widest"
-        style={{ color: 'var(--text-faint)' }}
+    <div className="flex items-center gap-2">
+      <button
+        type="button"
+        onClick={() => vote('up')}
+        aria-pressed={liked}
+        className="inline-flex min-h-10 items-center gap-2 rounded-full px-4 text-sm font-medium transition-colors"
+        style={{
+          border: `1px solid ${liked ? 'var(--accent)' : 'var(--border)'}`,
+          background: liked ? 'var(--accent-glow)' : 'transparent',
+          color: liked ? 'var(--accent)' : 'var(--text)',
+        }}
       >
-        {t(locale, 'feedback.label')}
-        {counts && counts.up + counts.down > 0 && (
-          <span className="mono tabular ml-2 normal-case tracking-normal">
-            · 👍 {counts.up} · 👎 {counts.down}
-          </span>
-        )}
-      </div>
-
-      {submitted ? (
-        <div className="mt-2">
-          <div className="text-sm font-medium" style={{ color: headerColor }}>
-            {submitted.vote === 'up'
-              ? t(locale, 'feedback.thanksUp')
-              : t(locale, 'feedback.thanksDown')}
-          </div>
-          {submitted.reason && (
-            <div className="mt-1 text-xs" style={{ color: 'var(--text-faint)' }}>
-              · {t(locale, submitted.reason)}
-            </div>
-          )}
-        </div>
-      ) : vote === null ? (
-        <div className="mt-3 flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => setVote('up')}
-            className="min-h-11 rounded-lg px-4 py-2 text-sm font-medium transition-all hover:opacity-90"
-            style={{
-              background: 'var(--bg)',
-              border: '1px solid var(--border)',
-              color: 'var(--text)',
-            }}
-          >
-            👍 {t(locale, 'feedback.up')}
-          </button>
-          <button
-            type="button"
-            onClick={() => setVote('down')}
-            className="min-h-11 rounded-lg px-4 py-2 text-sm font-medium transition-all hover:opacity-90"
-            style={{
-              background: 'var(--bg)',
-              border: '1px solid var(--border)',
-              color: 'var(--text)',
-            }}
-          >
-            👎 {t(locale, 'feedback.down')}
-          </button>
-        </div>
-      ) : (
-        <div className="mt-3">
-          <div className="mb-2 text-xs" style={{ color: 'var(--text-muted)' }}>
-            {t(locale, vote === 'up' ? 'feedback.askWhyUp' : 'feedback.askWhyDown')}
-          </div>
-          <div className="flex flex-wrap gap-1.5">
-            {reasons?.map((rk) => (
-              <button
-                key={rk}
-                type="button"
-                onClick={() => submit(vote, rk)}
-                className="mono inline-flex min-h-11 items-center rounded-full px-2.5 py-1 text-[11px] transition-colors hover:[border-color:var(--accent)] hover:[color:var(--accent)]"
-                style={{
-                  background: 'var(--bg)',
-                  border: '1px solid var(--border)',
-                  color: 'var(--text-muted)',
-                }}
-              >
-                {t(locale, rk)}
-              </button>
-            ))}
-            <button
-              type="button"
-              onClick={() => submit(vote)}
-              className="mono inline-flex min-h-11 items-center rounded-full px-2.5 py-1 text-[11px]"
-              style={{ color: 'var(--text-faint)', textDecoration: 'underline' }}
-            >
-              {t(locale, 'feedback.skip')}
-            </button>
-          </div>
-        </div>
-      )}
+        <Heart className="h-4 w-4" fill={liked ? 'currentColor' : 'none'} aria-hidden="true" />
+        {t(locale, 'stats.likes')}
+        {up !== null && <span className="tabular" style={{ color: liked ? 'var(--accent)' : 'var(--text-muted)' }}>{up}</span>}
+      </button>
+      <button
+        type="button"
+        onClick={() => vote('down')}
+        aria-pressed={mine === 'down'}
+        title={t(locale, 'feedback.down')}
+        aria-label={t(locale, 'feedback.down')}
+        className="inline-flex h-10 w-10 items-center justify-center rounded-full transition-colors"
+        style={{
+          border: '1px solid var(--border)',
+          color: mine === 'down' ? 'var(--text)' : 'var(--text-faint)',
+          background: mine === 'down' ? 'var(--surface)' : 'transparent',
+        }}
+      >
+        <ThumbsDown className="h-4 w-4" aria-hidden="true" />
+      </button>
     </div>
   )
 }

@@ -13,8 +13,8 @@ export function AuthorBio() {
 
   return (
     <aside
-      className="mt-12 flex flex-col gap-5 rounded-xl p-5"
-      style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
+      className="mt-14 flex flex-col gap-5 border-t pt-8"
+      style={{ borderColor: 'var(--border-soft)' }}
     >
       <div className="flex items-start gap-4">
         <div

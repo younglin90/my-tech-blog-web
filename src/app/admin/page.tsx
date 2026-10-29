@@ -24,6 +24,7 @@ import {
   importPosts,
 } from '@/lib/dynamic-posts'
 import { format, parseISO } from 'date-fns'
+import { AdminComments } from '@/components/admin/AdminComments'
 
 type View = 'login' | 'dashboard' | 'write' | 'edit' | 'view'
 
@@ -457,6 +458,7 @@ export default function AdminPage() {
           </div>
         ))}
       </div>
+      <AdminComments />
     </div>
   )
 }

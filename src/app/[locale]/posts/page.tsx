@@ -99,7 +99,7 @@ export default async function ArchivePage({ params }: ArchiveProps) {
 
       <div className="mb-8">
         <Link href={`/${loc}`} className="mono" style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-          <span style={{ color: 'var(--accent)' }}>$</span> cd ..
+          ←
         </Link>
         <div className="mono mt-3" style={{ fontSize: 12, color: 'var(--text-muted)' }}>
           <span style={{ color: 'var(--accent)' }}>ls</span>{' '}

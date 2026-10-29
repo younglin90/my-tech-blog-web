@@ -18,7 +18,7 @@ import { AdSlot } from '@/components/AdSlot'
 import { PostSourceLinks } from '@/components/PostSourceLinks'
 import { ReadingFontSize } from '@/components/ReadingFontSize'
 import { ReadingFocusMode } from '@/components/ReadingFocusMode'
-import { Giscus } from '@/components/Giscus'
+import { Comments } from '@/components/Comments'
 import { AuthorBio } from '@/components/AuthorBio'
 import { SeriesNav } from '@/components/SeriesNav'
 import { JumpToSim } from '@/components/JumpToSim'
@@ -27,7 +27,7 @@ import { PrintButton } from '@/components/PrintButton'
 import { BookmarkButton } from '@/components/BookmarkButton'
 import { CfdReviewCallout } from '@/components/CfdReviewCallout'
 import { dayMeta } from '@/lib/day-meta'
-import { PostViews } from '@/components/PostViews'
+import { PostStatLine } from '@/components/StatLine'
 import { LOCALES, isLocale, t, SITE_NAMES, OG_LOCALE, HREFLANG, hreflangAlternates, type Locale } from '@/lib/i18n'
 import type { Metadata } from 'next'
 import { SITE_URL } from '@/lib/site'
@@ -254,7 +254,7 @@ export default async function PostPage({ params }: PostProps) {
   const localeLabel = ({ ko: '한국어', en: 'English', ja: '日本語', zh: '中文', es: 'Español' } as const)[loc]
 
   return (
-    <article className="py-6">
+    <article>
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: jsonLdHtml(articleJsonLd) }} />
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: jsonLdHtml(breadcrumbJsonLd) }} />
       <ReadingProgress />
@@ -264,19 +264,22 @@ export default async function PostPage({ params }: PostProps) {
       <nav aria-label="Breadcrumb" className="mb-6 flex flex-wrap items-center gap-x-2">
         <Link
           href={`/${loc}`}
-          className="mono inline-flex min-h-11 items-center transition-colors duration-100"
-          style={{ fontSize: 12, color: 'var(--text-muted)' }}
+          className="link-hover-text inline-flex min-h-9 items-center"
+          style={{ fontSize: 13, color: 'var(--text-faint)' }}
         >
-          <span style={{ color: 'var(--accent)' }}>$</span> cd ..
+          {SITE_NAMES[loc]}
         </Link>
         {mid && (
-          <Link
-            href={mid.href}
-            className="mono link-hover-text-accent inline-flex min-h-11 items-center"
-            style={{ fontSize: 12, color: 'var(--text-faint)' }}
-          >
-            / {mid.name}
-          </Link>
+          <>
+            <span aria-hidden="true" style={{ color: 'var(--text-faint)', fontSize: 13 }}>/</span>
+            <Link
+              href={mid.href}
+              className="link-hover-text-accent inline-flex min-h-9 items-center"
+              style={{ fontSize: 13, color: 'var(--text-faint)' }}
+            >
+              {mid.name}
+            </Link>
+          </>
         )}
       </nav>
 
@@ -303,76 +306,14 @@ export default async function PostPage({ params }: PostProps) {
         </p>
       )}
 
-      {(() => {
-        const day = dayMeta(post.date)
-        const no = posts.length - currentIndex
-        return (
-          <div
-            className="mono mb-8 flex flex-wrap items-center gap-x-4 gap-y-1 rounded-md px-4 py-2.5"
-            style={{
-              background: 'var(--surface)',
-              border: '1px solid var(--border)',
-              borderLeft: `3px solid ${day.colorVar}`,
-              fontSize: 11,
-              color: 'var(--text-muted)',
-            }}
-          >
-            <span>
-              NOTE <span style={{ color: 'var(--text)' }}>#{String(no).padStart(3, '0')}</span>
-            </span>
-            <span>
-              DAY{' '}
-              <span style={{ color: day.colorVar, fontWeight: 600 }}>{day.short}</span>{' '}
-              <span style={{ color: 'var(--text)' }}>{day.label}</span>
-            </span>
-            <span>
-              DATE <span className="tabular" style={{ color: 'var(--text)' }}>{format(parseISO(post.date), 'yyyy.MM.dd')}</span>
-            </span>
-            {updatedRaw && updatedRaw !== post.date && (
-              <span title={t(loc, 'post.updated')}>
-                UPDATED <span className="tabular" style={{ color: 'var(--accent)' }}>{format(parseISO(updatedRaw), 'yyyy.MM.dd')}</span>
-              </span>
-            )}
-            {post.readingTime && (
-              <span>
-                READ <span style={{ color: 'var(--text)' }}>{post.readingTime}</span>
-              </span>
-            )}
-            <PostViews slug={post.slug} />
-            {post.wordCount && (
-              <span className="hidden sm:inline">
-                WORDS <span className="tabular" style={{ color: 'var(--text)' }}>{post.wordCount.toLocaleString()}</span>
-              </span>
-            )}
-            {post.tags && post.tags.length > 0 && (
-              <>
-                <span aria-hidden="true">·</span>
-                <span className="inline-flex min-w-0 max-w-full flex-wrap gap-x-2 gap-y-1">
-                  {post.tags.map((tg) => (
-                    <Link
-                      key={tg}
-                      href={`/${loc}/tags/${encodeURIComponent(tg)}`}
-                      className="max-w-full break-all link-hover-text-accent"
-                      style={{ color: 'var(--accent)' }}
-                    >
-                      #{tg}
-                    </Link>
-                  ))}
-                </span>
-              </>
-            )}
-          </div>
-        )
-      })()}
-
       <h1
         className="display"
         style={{
-          fontSize: 'clamp(1.75rem, 7vw, 38px)',
+          fontSize: 'clamp(1.75rem, 7vw, 36px)',
           fontWeight: 700,
           letterSpacing: '-0.025em',
-          lineHeight: 1.15,
-          margin: '0 0 16px',
+          lineHeight: 1.2,
+          margin: '0 0 14px',
           color: 'var(--text)',
         }}
       >
@@ -385,25 +326,38 @@ export default async function PostPage({ params }: PostProps) {
         // takeaway가 있으면 그걸 쓴다 (신규 글부터 — daily-post.md 참고).
         const dek = (post as unknown as { takeaway?: string }).takeaway || post.description
         if (!dek) return null
-        const day = dayMeta(post.date)
         return (
-          <p
-            className="display"
-            style={{
-              fontSize: 'clamp(1rem, 4.4vw, 19px)',
-              fontStyle: 'italic',
-              color: 'var(--text)',
-              lineHeight: 1.6,
-              margin: '0 0 40px',
-              maxWidth: 680,
-              paddingLeft: 16,
-              borderLeft: `2px solid ${day.colorVar}`,
-            }}
-          >
+          <p style={{ fontSize: 'clamp(1rem, 4.2vw, 17.5px)', color: 'var(--text-muted)', lineHeight: 1.65, margin: '0 0 18px', maxWidth: 680 }}>
             {dek}
           </p>
         )
       })()}
+
+      <div className="mb-10 flex flex-wrap items-center gap-x-3 gap-y-2 border-b pb-5 text-xs" style={{ color: 'var(--text-faint)', borderColor: 'var(--border-soft)' }}>
+        <time className="tabular" dateTime={post.date}>{format(parseISO(post.date), 'yyyy.MM.dd')}</time>
+        {updatedRaw && updatedRaw !== post.date && (
+          <span title={t(loc, 'post.updated')}>
+            ({t(loc, 'post.updated')} <span className="tabular">{format(parseISO(updatedRaw), 'yyyy.MM.dd')}</span>)
+          </span>
+        )}
+        {post.readingTime && <><span aria-hidden="true">·</span><span>{post.readingTime}</span></>}
+        <span aria-hidden="true">·</span>
+        <PostStatLine slug={post.slug} locale={loc} />
+        {post.tags && post.tags.length > 0 && (
+          <span className="flex w-full min-w-0 flex-wrap gap-x-3 gap-y-1">
+            {post.tags.map((tg) => (
+              <Link
+                key={tg}
+                href={`/${loc}/tags/${encodeURIComponent(tg)}`}
+                className="break-all link-hover-text-accent"
+                style={{ color: 'var(--text-muted)' }}
+              >
+                #{tg}
+              </Link>
+            ))}
+          </span>
+        )}
+      </div>
 
       <JumpToSim label={t(loc, 'post.jumpToSim')} />
       <SeriesNav locale={loc} ctx={seriesCtx} />
@@ -417,9 +371,25 @@ export default async function PostPage({ params }: PostProps) {
       <QuoteShare />
       <LinkPreview />
 
+      <div className="mt-14 flex flex-wrap items-center justify-between gap-4 border-y py-5" style={{ borderColor: 'var(--border-soft)' }}>
+        <PostFeedback postId={post.slug} />
+        <div className="post-tools flex flex-wrap items-center gap-1">
+          <ReadingFontSize />
+          <ReadingFocusMode />
+          <CiteButton title={post.title} date={post.date} slug={post.slug} />
+          <BookmarkButton postId={post.slug} />
+          <PrintButton />
+          <ShareButton title={post.title} />
+        </div>
+      </div>
+
+      <PostSourceLinks locale={loc} slug={post.slug} />
+
+      <Comments slug={post.slug} />
+
       {related.length > 0 && (
-        <div className="mt-10">
-          <h2 className="mb-4 text-sm font-semibold uppercase tracking-widest" style={{ color: 'var(--text-muted)' }}>
+        <div className="mt-14">
+          <h2 className="mb-4 text-lg font-semibold" style={{ color: 'var(--text)' }}>
             {t(loc, 'post.related')}
           </h2>
           <div className="grid gap-3 sm:grid-cols-3">
@@ -427,8 +397,8 @@ export default async function PostPage({ params }: PostProps) {
               <Link
                 key={r.slug}
                 href={`/${loc}/posts/${r.slug}`}
-                className="group flex flex-col gap-1.5 rounded-lg p-3.5 transition-colors duration-100"
-                style={{ border: '1px solid var(--border)', background: 'var(--surface)' }}
+                className="prev-next-card group flex flex-col gap-1.5 rounded-xl p-4"
+                style={{ border: '1px solid var(--border-soft)' }}
               >
                 <span className="text-sm font-medium leading-snug link-hover-accent group-hover:text-[var(--accent)]" style={{ color: 'var(--text)' }}>
                   {r.title}
@@ -439,7 +409,7 @@ export default async function PostPage({ params }: PostProps) {
                   </span>
                 )}
                 <div className="mt-auto flex items-center gap-1.5 pt-1 text-[10px] tabular-nums" style={{ color: 'var(--text-faint)' }}>
-                  <span>{format(parseISO(r.date), 'MMM d, yyyy')}</span>
+                  <span>{format(parseISO(r.date), 'yyyy.MM.dd')}</span>
                   {r.readingTime && (
                     <>
                       <span>·</span>
@@ -453,69 +423,32 @@ export default async function PostPage({ params }: PostProps) {
         </div>
       )}
 
-      <nav
-        className="mt-12 grid grid-cols-2 gap-3 border-t pt-6"
-        style={{ borderColor: 'var(--border)' }}
-      >
+      <nav className="mt-10 grid grid-cols-2 gap-3">
         {prevPost ? (
           <Link
             href={`/${loc}/posts/${prevPost.slug}`}
-            className="prev-next-card group rounded-lg p-4 text-left"
-            style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
+            className="prev-next-card group rounded-xl p-4 text-left"
+            style={{ border: '1px solid var(--border-soft)' }}
           >
-            <div
-              className="mono flex items-center gap-1.5"
-              style={{ fontSize: 11, color: 'var(--text-faint)' }}
-            >
-              ← {t(loc, 'post.previous')} · #{String(posts.length - (currentIndex + 1)).padStart(3, '0')}
-              <kbd className="rounded px-1 py-0.5 text-[9px]" style={{ background: 'var(--surface-hover)', border: '1px solid var(--border)', color: 'var(--text-faint)' }}>K</kbd>
-            </div>
-            <div className="display mt-1.5" style={{ fontSize: 15, fontWeight: 500, color: 'var(--text)', lineHeight: 1.4 }}>
-              {prevPost.title}
-            </div>
+            <div className="text-xs" style={{ color: 'var(--text-faint)' }}>← {t(loc, 'post.previous')}</div>
+            <div className="mt-1.5 text-[15px] font-medium leading-snug" style={{ color: 'var(--text)' }}>{prevPost.title}</div>
           </Link>
         ) : <div />}
         {nextPost ? (
           <Link
             href={`/${loc}/posts/${nextPost.slug}`}
-            className="prev-next-card group rounded-lg p-4 text-right"
-            style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
+            className="prev-next-card group rounded-xl p-4 text-right"
+            style={{ border: '1px solid var(--border-soft)' }}
           >
-            <div
-              className="mono flex items-center justify-end gap-1.5"
-              style={{ fontSize: 11, color: 'var(--text-faint)' }}
-            >
-              <kbd className="rounded px-1 py-0.5 text-[9px]" style={{ background: 'var(--surface-hover)', border: '1px solid var(--border)', color: 'var(--text-faint)' }}>J</kbd>
-              {t(loc, 'post.next')} → · #{String(posts.length - (currentIndex - 1)).padStart(3, '0')}
-            </div>
-            <div className="display mt-1.5" style={{ fontSize: 15, fontWeight: 500, color: 'var(--text)', lineHeight: 1.4 }}>
-              {nextPost.title}
-            </div>
+            <div className="text-xs" style={{ color: 'var(--text-faint)' }}>{t(loc, 'post.next')} →</div>
+            <div className="mt-1.5 text-[15px] font-medium leading-snug" style={{ color: 'var(--text)' }}>{nextPost.title}</div>
           </Link>
         ) : <div />}
       </nav>
 
-      <div className="mt-12 flex flex-wrap items-center justify-between gap-3 border-t pt-6" style={{ borderColor: 'var(--border)' }}>
-        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{t(loc, 'post.share')}</p>
-        <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:justify-end">
-          <ReadingFontSize />
-          <ReadingFocusMode />
-          <CiteButton title={post.title} date={post.date} slug={post.slug} />
-          <BookmarkButton postId={post.slug} />
-          <PrintButton />
-          <ShareButton title={post.title} />
-        </div>
-      </div>
-
-      <PostSourceLinks locale={loc} slug={post.slug} />
-
-      <PostFeedback postId={post.slug} />
-
       <CfdReviewCallout source="post" />
 
       <AuthorBio />
-
-      <Giscus postId={post.slug} />
     </article>
   )
 }

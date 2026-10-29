@@ -98,9 +98,6 @@ export default async function AboutPage({ params }: AboutProps) {
   return (
     <div className="max-w-none">
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: jsonLdHtml(profileJsonLd) }} />
-      <div className="mono mb-2" style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-        <span style={{ color: 'var(--accent)' }}>$</span> whoami
-      </div>
       <h1
         className="display mb-4"
         style={{ fontSize: 36, fontWeight: 700, letterSpacing: '-0.02em', color: 'var(--text)' }}
@@ -151,7 +148,9 @@ export default async function AboutPage({ params }: AboutProps) {
 
       <ReadingStats posts={published.map((p) => ({ id: p.slug, readingTime: p.readingTime }))} />
 
-      <TopPosts locale={loc} heading={t(loc, 'about.topPosts')} />
+      <div className="mb-10">
+        <TopPosts locale={loc} heading={t(loc, 'about.topPosts')} />
+      </div>
 
       <section className="mb-10">
         <h2
