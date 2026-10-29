@@ -1,0 +1,185 @@
+---
+title: "A Steady-State Preconditioner Inside a Dual-Time Loop Took 19× More Inner Iterations — A Low-Mach Acoustic Pulse Test"
+date: 2026-10-30
+description: "Put a Weiss–Smith preconditioner into physical time and the acoustic pulse freezes in place. Put it inside dual time and the answer returns, but inner iterations jump from 16 to 305."
+tags: ["Dual-Time-Stepping", "Preconditioning", "Low-Mach", "Implicit", "Compressible"]
+locale: en
+slug: 2026-10-30-dual-time-steady-preconditioner-inner-iterations
+takeaway: "Dual time stops Γ from changing the physics; it does not make the solve faster. How strong Γ should be depends on whether Δt resolves the acoustics."
+draft: false
+---
+import { PreconditionedWaveSpeedLab } from '@/components/post-viz/2026-10-30-dual-time-steady-preconditioner-inner-iterations/PreconditionedWaveSpeedLab'
+import { DualTimeInnerLoopRace } from '@/components/post-viz/2026-10-30-dual-time-steady-preconditioner-inner-iterations/DualTimeInnerLoopRace'
+
+## The speed-up switch made it 19 times slower
+
+In low-Mach compressible codes, preconditioning is known as the switch that makes things faster. So it is tempting to leave it on for unsteady runs too. Try it and two things happen. Put it in physical time and a pressure pulse stops moving. Put it inside a dual-time loop and the answer comes back, but each time step now needs 305 inner iterations instead of 16.
+
+This post starts from a code-structure slide deck I wrote in 2018. One slide says: "The preconditioning scheme is only used for steady case. In unsteady case, it is not physically correct." The very next slide lists "Implicit + Unsteady + dual time + Preconditioning" as the final form. Below, a 1D experiment shows how both lines can be true, and when that combination pays off or costs you.
+
+## Eight flavors of the governing equations
+
+The first slide counts cases: preconditioning on or off, steady or unsteady, explicit or implicit. That is 2×2×2, eight flavors. The code tries to fold all eight into one equation.
+
+$$
+\Gamma\frac{\partial Q}{\partial \tau} + \frac{3Q-4Q^{n}+Q^{n-1}}{2\Delta t} + \frac{\partial F}{\partial x} = S
+$$
+
+$\tau$ is pseudo time (an iteration variable used only for convergence), and $t$ is physical time. $\Gamma$ is the preconditioning matrix, and the second term is second-order backward differencing (BDF2). For a steady problem, drop the second term. Without preconditioning, set $\Gamma=I$. Once pseudo time converges, the first term vanishes. Whatever $\Gamma$ was, what remains is the original equation discretized with BDF2. That is why both lines on the slides hold at once.
+
+## What Γ changes is the wave speed
+
+Write the linearized 1D Euler equations with $Q=(p,u)$. With density and sound speed set to 1, $A=\begin{pmatrix}u_0&1\\1&u_0\end{pmatrix}$ with eigenvalues $u_0\pm c$. A Weiss–Smith-type preconditioner only rescales the time derivative of pressure. Here we simplify it to $\Gamma=\mathrm{diag}(\delta,1)$.
+
+$$
+\lambda_\pm(\Gamma A) = \frac{(1+\delta)u_0 \pm \sqrt{(1-\delta)^2u_0^2 + 4\delta c^2}}{2}
+$$
+
+With $\delta=1$ you get the original $u_0\pm c$. With the steady-state choice $\delta=M^2$, the radicand becomes $\approx 5u_0^2$ and $\lambda\approx u_0(1\pm\sqrt5)/2$. The ratio of the fastest wave to the flow speed drops from $1/M$ to about 1.6. That ratio is why steady problems converge faster.
+
+Try adjusting $M$ and $\delta$ in the simulation below.
+
+<PreconditionedWaveSpeedLab />
+
+Lower $\delta$ from 1 to $M^2$ and the red pulse no longer splits in two; it nearly stays put. The lower plot shows why: both eigenvalues drop from the $u\pm c$ dashed lines down toward $u$.
+
+Integrate this equation in physical time and sound travels at roughly the flow speed instead of the speed of sound. That is what the slide means by "not physically correct."
+
+## Dual time: move Γ to the pseudo-time side
+
+The fix is to detach $\Gamma$ from the physical time derivative and attach it to the pseudo-time derivative. Each physical step runs an inner loop. The inner loop uses a point-implicit update that treats only the physical time term implicitly.
+
+$$
+\left(\frac{\Gamma^{-1}}{\Delta\tau} + \frac{3}{2\Delta t}I\right)\Delta Q = -R(Q),\qquad \Delta\tau = 0.9\,\frac{\Delta x}{\max|\lambda(\Gamma A)|}
+$$
+
+$R$ is the full BDF2 residual above, and $\Delta\tau$ is the pseudo time step set by the preconditioned wave speeds. The numerical dissipation in the flux uses $\Gamma^{-1}|\Gamma A|$, because preconditioned codes change the dissipation matrix too. Convergence means the max-norm residual has fallen to $10^{-6}$ of its starting value. How a stopping rule can mislead you about iteration counts is covered in the [post on Jacobi increment tests](/en/posts/2026-10-21-jacobi-stopping-rule-finer-grid-error/).
+
+## Code: a low-Mach acoustic pulse, three choices of Γ
+
+Take $M=0.05$, a periodic domain of 100 cells, and a Gaussian pressure pulse. The exact answer is two acoustic waves splitting at $u_0\pm c$. Case [A] puts $\Gamma$ into physical time. Case [B] runs BDF2 dual time with no $\Gamma$, with $\delta=M^2$, and with $U_r$ limited by $\Delta t$. The acoustic CFL (Courant number based on sound speed) is 1, 4, and 20.
+
+```python
+import numpy as np
+
+N, M, T = 100, 0.05, 0.3          # cells, Mach number, final time (c = rho = 1)
+dx = 1.0 / N
+x = (np.arange(N) + 0.5) * dx
+
+def pulse(s):                      # periodic Gaussian pressure pulse
+    return np.exp(-(((s - 0.5 + 0.5) % 1 - 0.5) / 0.08) ** 2)
+
+def exact_p(t):                    # splits into two acoustic waves u0 +/- c
+    return 0.5 * (pulse(x - (M + 1) * t) + pulse(x - (M - 1) * t))
+
+def precond_mats(delta):
+    A = np.array([[M, 1.0], [1.0, M]])          # linearized Euler, q = (p, u)
+    G = np.diag([delta, 1.0])                   # Gamma: scales dp/dt only
+    lam, R = np.linalg.eig(G @ A)
+    D = np.linalg.inv(G) @ (R @ np.diag(abs(lam)) @ np.linalg.inv(R)).real
+    return A, G, D, abs(lam).max()              # D = Gamma^-1 |Gamma A|
+
+def flux_res(q, A, D):             # upwind finite-volume residual dF/dx
+    qr = np.roll(q, -1, 1)
+    F = A @ (q + qr) / 2 - D @ (qr - q) / 2
+    return (F - np.roll(F, 1, 1)) / dx
+
+def real_time_precond(delta):      # Gamma put directly into physical time (RK2)
+    A, G, D, lam = precond_mats(delta)
+    ns = int(np.ceil(T / (0.5 * dx / lam))); dt = T / ns
+    q = np.vstack([pulse(x), 0 * x])
+    for _ in range(ns):
+        k1 = -G @ flux_res(q, A, D)
+        k2 = -G @ flux_res(q + dt * k1, A, D)
+        q = q + dt / 2 * (k1 + k2)
+    return ns, np.abs(q[0] - exact_p(T)).max(), x[np.argmax(q[0])]
+
+def dual_time_run(cfl, delta, tol=1e-6):
+    A, G, D, lam = precond_mats(delta)
+    ns = int(round(T / (cfl * dx / (1 + M)))); dt = T / ns
+    dtau = 0.9 * dx / lam                       # pseudo-time step from Gamma A
+    g = np.array([[delta], [1.0]])
+    q = np.vstack([pulse(x), 0 * x]); qm = q.copy(); its = 0
+    for n in range(ns):
+        qn = q.copy(); a = 1.5 / dt if n else 1.0 / dt
+        for k in range(20000):                  # inner pseudo-time loop
+            tt = (3 * q - 4 * qn + qm) / (2 * dt) if n else (q - qn) / dt
+            r = tt + flux_res(q, A, D)          # BDF2 unsteady residual
+            rn = np.abs(r).max()
+            if k == 0: r0 = rn
+            if rn < tol * r0: break
+            q = q - r / (1 / (g * dtau) + a)    # point-implicit in real-time term
+        its += k; qm = qn
+    return its / ns, np.abs(q[0] - exact_p(T)).max()
+
+print(f"M={M}, N={N}, T={T}, exact peaks at x={(0.5+(M+1)*T)%1:.3f}, {(0.5+(M-1)*T)%1:.3f}")
+print("[A] Gamma in physical time (explicit RK2)")
+for name, d in [("no Gamma", 1.0), ("Gamma d=M^2", M * M)]:
+    ns, err, xp = real_time_precond(d)
+    print(f"  {name:12s} steps={ns:3d}  max|p-p_exact|={err:.3f}  peak x={xp:.3f}")
+print("[B] dual time BDF2, mean inner iterations per step / max|p-p_exact|")
+print("  CFL_ac   no Gamma         Gamma d=M^2      Ur=max(u,L/(pi dt)) -> d")
+for cfl in [1, 4, 20]:
+    dt = T / int(round(T / (cfl * dx / (1 + M))))
+    d_un = min(1.0, max(M, 1.0 / (np.pi * dt)) ** 2)   # L = domain length
+    row = [dual_time_run(cfl, d) for d in (1.0, M * M, d_un)]
+    print(f"  {cfl:5d}" + "".join(f"   {i:6.1f} / {e:.3f}" for i, e in row) + f"   d={d_un:.2f}")
+```
+
+```text
+M=0.05, N=100, T=0.3, exact peaks at x=0.815, 0.215
+[A] Gamma in physical time (explicit RK2)
+  no Gamma     steps= 63  max|p-p_exact|=0.145  peak x=0.215
+  Gamma d=M^2  steps=  5  max|p-p_exact|=0.947  peak x=0.495
+[B] dual time BDF2, mean inner iterations per step / max|p-p_exact|
+  CFL_ac   no Gamma         Gamma d=M^2      Ur=max(u,L/(pi dt)) -> d
+      1     16.4 / 0.149    304.7 / 0.317     16.4 / 0.149   d=1.00
+      4     50.1 / 0.221   1093.4 / 0.314     50.1 / 0.221   d=1.00
+     20    199.5 / 0.344   2578.0 / 0.344    199.5 / 0.344   d=1.00
+```
+
+Now run the code above right in your browser.
+
+<DualTimeInnerLoopRace />
+
+With the defaults, both cases race on the same iteration budget. Yellow finishes near 16.4 iterations per step, red near 304.7. Raise $\delta$ toward 1, or increase CFL_ac, and watch the two columns of table [B] close in.
+
+## [A]: done in five steps, but the pulse sits at 0.495
+
+With $\Gamma$ in physical time, the fastest wave speed drops to 0.08. So 63 steps become 5. But the exact peaks are at 0.215 and 0.815. The computed peak is at 0.495, right next to where it started. An error of 0.947 is about the pulse height. The fast run solved a different equation.
+
+## [B]: the pressure barely moved during the inner loop
+
+Dual time removes that physics error. The price was iterations. The cause is the pressure coefficient $1/(\delta\Delta\tau)$ in the point-implicit update. With $\delta=M^2$, $\Delta\tau$ grows about 13×. But the step pressure actually takes, $\delta\Delta\tau$, shrinks to $0.0025\times13\approx0.032$, about 1/31.
+
+For a steady problem this is a good trade. Convergence is set by how long slow convective waves take to leave the domain, and $\Gamma$ speeds them up to acoustic pace. Here the content is acoustic. On top of that, the physical time term $3/(2\Delta t)$ already damps every mode evenly. There was no stiffness (slow convergence caused by a spread in eigenvalue sizes) to fix, yet pressure was slowed 31×. The result is 304.7 iterations. Even at CFL_ac = 20 the gap remains, 2578 versus 199.5.
+
+## Put Δt into Ur and Γ turns itself off
+
+Weiss and Smith proposed an unsteady reference velocity $U_r=\max(u, L/(\pi\Delta t))$, where $L$ is the domain length and $\Delta t$ the physical time step. The shorter the step, the better the acoustics are resolved; $U_r$ then exceeds the sound speed and $\delta=\min(1,U_r^2/c^2)$ hits 1. The last column of the table shows $\delta=1.00$ at all three CFLs, with iteration counts identical to no $\Gamma$.
+
+So a properly built unsteady preconditioner switches off when acoustics matter. It should be on when $\Delta t$ is of order $L/u$ and acoustics are not resolved at all. Then $\Delta t$ spans tens of acoustic periods, and the inner loop is again tied to convective waves, just like a steady problem. The split between these regimes is the same "resolve sound or filter it out" question from the [post on asymptotic-preserving low-Mach schemes](/en/posts/2026-06-21-asymptotic-preserving-low-mach-wave/).
+
+## Why the answers split into 0.149 and 0.317
+
+Both converged under dual time, yet the error is 0.317 for $\delta=M^2$ and 0.149 with no $\Gamma$. The $\Gamma$ on the time derivative vanishes at convergence. The dissipation matrix $\Gamma^{-1}|\Gamma A|$ does not. When $\delta$ is small, its pressure component grows and smears the acoustic waves more.
+
+For steady low-Mach flow, this dissipation actually rescues accuracy. For unsteady runs where sound is the main character, it hurts. Dual time only protects the time derivative. Any $\Gamma$ inside the flux needs its own decision.
+
+## The order of five subroutines
+
+Slide 8 lists the call order for the final form (implicit + unsteady + dual time + preconditioning). Mapped to the Python inner loop above:
+
+1. `RHS.f90` → `cflux.f90`, `vflux.f90`: convective and viscous fluxes. `flux_res` in the code.
+2. `hsource.f90`: the physical time residual. `tt` in the code (the BDF2 term).
+3. `hsource.f90`: the source term. None in this experiment.
+4. The RHS summing 1–3. `r` in the code.
+5. `LHS.f90`: inverting the left-hand side. The original code uses LU-SGS or Gauss–Seidel; the code above uses only a diagonal point-implicit step.
+
+The slide notes that the implicit treatment in step 5 is "the same as the concept of residual smoothing." That is right. The inner-loop LHS does not change the converged answer. It only changes the path and the iteration count. As long as $\Gamma$ sits on the time derivative, it belongs in the same class.
+
+## One ratio to compute before enabling Γ in unsteady code
+
+First compute $c\Delta t/L$. If it is well below 1, you are resolving acoustics. Then give $U_r$ the $L/(\pi\Delta t)$ floor so $\Gamma$ switches off. If it is of order $1/M$, you are filtering acoustics, and only then does $\Gamma$ cut inner iterations.
+
+Next, look at the dissipation matrix separately. Keeping the $\Gamma$ on the time derivative and the $\Gamma$ in the flux on separate switches is safer. Finally, log the inner iterations for one step with $\Gamma$ on and off. If you see a 19× gap like this experiment, it is time to reread that one line on the slide.

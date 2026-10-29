@@ -1,0 +1,185 @@
+---
+title: "把稳态预处理放进双时间步循环，内迭代多了19倍 — 低马赫声脉冲实验"
+date: 2026-10-30
+description: "把 Weiss–Smith 预处理放进物理时间，声波停在原地；放进双时间步，内迭代次数增加19倍。"
+tags: ["Dual-Time-Stepping", "Preconditioning", "Low-Mach", "Implicit", "Compressible"]
+locale: zh
+slug: 2026-10-30-dual-time-steady-preconditioner-inner-iterations
+takeaway: "双时间步只保证 Γ 不改变物理，并不让求解变快。Γ 该多强，取决于 Δt 是否解析声学。"
+draft: false
+---
+import { PreconditionedWaveSpeedLab } from '@/components/post-viz/2026-10-30-dual-time-steady-preconditioner-inner-iterations/PreconditionedWaveSpeedLab'
+import { DualTimeInnerLoopRace } from '@/components/post-viz/2026-10-30-dual-time-steady-preconditioner-inner-iterations/DualTimeInnerLoopRace'
+
+## 用来提速的选项让计算慢了19倍
+
+在低马赫可压缩代码里，预处理(preconditioning)被视为"打开就变快"的选项。于是很自然地想在非定常计算里也打开它。真打开后会发生两件事。放进物理时间，压力脉冲会停在原地。放进双时间步(dual time)循环，答案回来了，但每个时间步的内迭代从16次增加到305次。
+
+本文出发点是2018年整理的一份代码结构幻灯片。其中一页写着："预处理只用于定常。在非定常中物理上不正确。"紧接着的下一页，却把"Implicit + Unsteady + dual time + Preconditioning"列为最终形式。下面用一个一维实验说明这两句话如何同时成立，以及这种组合何时划算、何时吃亏。
+
+## 控制方程的八种组合
+
+幻灯片第一页在数组合：有无预处理、定常或非定常、显式或隐式。2×2×2，共八种。代码试图把这八种合成一个方程。
+
+$$
+\Gamma\frac{\partial Q}{\partial \tau} + \frac{3Q-4Q^{n}+Q^{n-1}}{2\Delta t} + \frac{\partial F}{\partial x} = S
+$$
+
+$\tau$ 是伪时间(pseudo time，只为收敛而用的迭代变量)，$t$ 是物理时间。$\Gamma$ 是预处理矩阵，第二项是二阶后向差分(BDF2)。定常问题去掉第二项即可；不用预处理就令 $\Gamma=I$。伪时间收敛后第一项为零。于是无论 $\Gamma$ 取什么，剩下的都是用 BDF2 离散的原方程。这正是幻灯片上两句话能同时成立的原因。
+
+## Γ 改变的是波速
+
+把线性化的一维欧拉方程写成 $Q=(p,u)$。令密度和声速为1，则 $A=\begin{pmatrix}u_0&1\\1&u_0\end{pmatrix}$，特征值为 $u_0\pm c$。Weiss–Smith 型预处理只改变压力时间导数的系数。这里简化为 $\Gamma=\mathrm{diag}(\delta,1)$。
+
+$$
+\lambda_\pm(\Gamma A) = \frac{(1+\delta)u_0 \pm \sqrt{(1-\delta)^2u_0^2 + 4\delta c^2}}{2}
+$$
+
+$\delta=1$ 时回到原来的 $u_0\pm c$。代入稳态常用的 $\delta=M^2$，根号内约为 $5u_0^2$，得到 $\lambda\approx u_0(1\pm\sqrt5)/2$。最快波速与流速之比从 $1/M$ 缩小到约1.6。稳态问题收敛变快，靠的就是这个比值。
+
+在下面的模拟中亲手调节 $M$ 和 $\delta$。
+
+<PreconditionedWaveSpeedLab />
+
+把 $\delta$ 从1降到 $M^2$，红色脉冲不再一分为二，几乎停在原地。下方图中两个特征值从 $u\pm c$ 虚线降到 $u$ 附近，就是原因。
+
+在物理时间里积分这个方程，声波以接近流速而不是声速传播。幻灯片说"非定常中物理上不正确"，指的就是这个。
+
+## 双时间步：把 Γ 挪到伪时间一侧
+
+解决办法是把 $\Gamma$ 从物理时间导数上拿下来，挂到伪时间导数上。每个物理时间步内跑一个内迭代。内迭代采用点隐式(point-implicit)更新，只对物理时间项做隐式处理。
+
+$$
+\left(\frac{\Gamma^{-1}}{\Delta\tau} + \frac{3}{2\Delta t}I\right)\Delta Q = -R(Q),\qquad \Delta\tau = 0.9\,\frac{\Delta x}{\max|\lambda(\Gamma A)|}
+$$
+
+$R$ 是上式完整的 BDF2 残差，$\Delta\tau$ 是按预处理后波速确定的伪时间步长。通量的数值耗散使用 $\Gamma^{-1}|\Gamma A|$，因为预处理代码会同时改变耗散矩阵。收敛判据是残差最大范数降到初值的 $10^{-6}$。判据会如何误导迭代次数，见[关于 Jacobi 增量判据的文章](/zh/posts/2026-10-21-jacobi-stopping-rule-finer-grid-error/)。
+
+## 代码：低马赫声脉冲，三种 Γ
+
+取 $M=0.05$，100个网格的周期域，放一个高斯压力脉冲。精确解是以 $u_0\pm c$ 分开的两列声波。[A] 把 $\Gamma$ 放进物理时间。[B] 用 BDF2 双时间步，比较无 $\Gamma$、$\delta=M^2$、以及由 $\Delta t$ 限制的 $U_r$ 三种情况。声学 CFL(以声速计的库朗数)取1、4、20。
+
+```python
+import numpy as np
+
+N, M, T = 100, 0.05, 0.3          # cells, Mach number, final time (c = rho = 1)
+dx = 1.0 / N
+x = (np.arange(N) + 0.5) * dx
+
+def pulse(s):                      # periodic Gaussian pressure pulse
+    return np.exp(-(((s - 0.5 + 0.5) % 1 - 0.5) / 0.08) ** 2)
+
+def exact_p(t):                    # splits into two acoustic waves u0 +/- c
+    return 0.5 * (pulse(x - (M + 1) * t) + pulse(x - (M - 1) * t))
+
+def precond_mats(delta):
+    A = np.array([[M, 1.0], [1.0, M]])          # linearized Euler, q = (p, u)
+    G = np.diag([delta, 1.0])                   # Gamma: scales dp/dt only
+    lam, R = np.linalg.eig(G @ A)
+    D = np.linalg.inv(G) @ (R @ np.diag(abs(lam)) @ np.linalg.inv(R)).real
+    return A, G, D, abs(lam).max()              # D = Gamma^-1 |Gamma A|
+
+def flux_res(q, A, D):             # upwind finite-volume residual dF/dx
+    qr = np.roll(q, -1, 1)
+    F = A @ (q + qr) / 2 - D @ (qr - q) / 2
+    return (F - np.roll(F, 1, 1)) / dx
+
+def real_time_precond(delta):      # Gamma put directly into physical time (RK2)
+    A, G, D, lam = precond_mats(delta)
+    ns = int(np.ceil(T / (0.5 * dx / lam))); dt = T / ns
+    q = np.vstack([pulse(x), 0 * x])
+    for _ in range(ns):
+        k1 = -G @ flux_res(q, A, D)
+        k2 = -G @ flux_res(q + dt * k1, A, D)
+        q = q + dt / 2 * (k1 + k2)
+    return ns, np.abs(q[0] - exact_p(T)).max(), x[np.argmax(q[0])]
+
+def dual_time_run(cfl, delta, tol=1e-6):
+    A, G, D, lam = precond_mats(delta)
+    ns = int(round(T / (cfl * dx / (1 + M)))); dt = T / ns
+    dtau = 0.9 * dx / lam                       # pseudo-time step from Gamma A
+    g = np.array([[delta], [1.0]])
+    q = np.vstack([pulse(x), 0 * x]); qm = q.copy(); its = 0
+    for n in range(ns):
+        qn = q.copy(); a = 1.5 / dt if n else 1.0 / dt
+        for k in range(20000):                  # inner pseudo-time loop
+            tt = (3 * q - 4 * qn + qm) / (2 * dt) if n else (q - qn) / dt
+            r = tt + flux_res(q, A, D)          # BDF2 unsteady residual
+            rn = np.abs(r).max()
+            if k == 0: r0 = rn
+            if rn < tol * r0: break
+            q = q - r / (1 / (g * dtau) + a)    # point-implicit in real-time term
+        its += k; qm = qn
+    return its / ns, np.abs(q[0] - exact_p(T)).max()
+
+print(f"M={M}, N={N}, T={T}, exact peaks at x={(0.5+(M+1)*T)%1:.3f}, {(0.5+(M-1)*T)%1:.3f}")
+print("[A] Gamma in physical time (explicit RK2)")
+for name, d in [("no Gamma", 1.0), ("Gamma d=M^2", M * M)]:
+    ns, err, xp = real_time_precond(d)
+    print(f"  {name:12s} steps={ns:3d}  max|p-p_exact|={err:.3f}  peak x={xp:.3f}")
+print("[B] dual time BDF2, mean inner iterations per step / max|p-p_exact|")
+print("  CFL_ac   no Gamma         Gamma d=M^2      Ur=max(u,L/(pi dt)) -> d")
+for cfl in [1, 4, 20]:
+    dt = T / int(round(T / (cfl * dx / (1 + M))))
+    d_un = min(1.0, max(M, 1.0 / (np.pi * dt)) ** 2)   # L = domain length
+    row = [dual_time_run(cfl, d) for d in (1.0, M * M, d_un)]
+    print(f"  {cfl:5d}" + "".join(f"   {i:6.1f} / {e:.3f}" for i, e in row) + f"   d={d_un:.2f}")
+```
+
+```text
+M=0.05, N=100, T=0.3, exact peaks at x=0.815, 0.215
+[A] Gamma in physical time (explicit RK2)
+  no Gamma     steps= 63  max|p-p_exact|=0.145  peak x=0.215
+  Gamma d=M^2  steps=  5  max|p-p_exact|=0.947  peak x=0.495
+[B] dual time BDF2, mean inner iterations per step / max|p-p_exact|
+  CFL_ac   no Gamma         Gamma d=M^2      Ur=max(u,L/(pi dt)) -> d
+      1     16.4 / 0.149    304.7 / 0.317     16.4 / 0.149   d=1.00
+      4     50.1 / 0.221   1093.4 / 0.314     50.1 / 0.221   d=1.00
+     20    199.5 / 0.344   2578.0 / 0.344    199.5 / 0.344   d=1.00
+```
+
+把上面的代码直接在浏览器里跑一遍。
+
+<DualTimeInnerLoopRace />
+
+默认参数下，两种情况用相同的迭代预算赛跑。黄色在每步约16.4次处结束，红色在约304.7次处结束。把 $\delta$ 往1调，或增大 CFL_ac，可以看到表 [B] 两列的差距如何缩小。
+
+## [A]：五步就算完，但脉冲停在0.495
+
+把 $\Gamma$ 放进物理时间后，最快波速降到0.08。于是63步变成5步。但精确解的两个峰在0.215和0.815。算出的峰在0.495，几乎就在出发点。误差0.947约等于脉冲高度。算得快的，是另一个方程的解。
+
+## [B]：内迭代期间压力几乎没动
+
+双时间步消除了这个物理错误，代价是迭代次数。原因在点隐式更新的压力系数 $1/(\delta\Delta\tau)$。$\delta=M^2$ 时 $\Delta\tau$ 约增大13倍。但压力实际获得的步长 $\delta\Delta\tau$ 变为 $0.0025\times13\approx0.032$ 倍，也就是缩小到约三十一分之一。
+
+对稳态问题，这是划算的交换。收敛由慢速对流波离开计算域的时间决定，而 $\Gamma$ 把这些波加速到声波量级。本实验的内容却是声波。况且物理时间项 $3/(2\Delta t)$ 已经均匀地衰减了所有模态。没有需要修正的刚性(stiffness，特征值大小差异导致的收敛迟缓)，却把压力拖慢了31倍。结果就是304.7次。即使 CFL_ac 增大到20，差距仍是2578次对199.5次。
+
+## 把 Δt 放进 Ur，Γ 会自己关掉
+
+Weiss 和 Smith 提出非定常参考速度 $U_r=\max(u, L/(\pi\Delta t))$，其中 $L$ 为计算域长度，$\Delta t$ 为物理时间步长。步长越短、声波解析得越好，$U_r$ 就越会超过声速，$\delta=\min(1,U_r^2/c^2)$ 变为1。表中最后一列在三个 CFL 下都是 $\delta=1.00$，迭代次数与无 $\Gamma$ 相同。
+
+也就是说，构造正确的非定常预处理在声学重要的问题中会自行关闭。它应该打开的场合，是 $\Delta t$ 大到 $L/u$ 量级、完全不解析声波的问题。那时 $\Delta t$ 是声波周期的几十倍，内迭代又像稳态问题一样受对流波限制。这两种区域的差别，与[低马赫渐近保持文章](/zh/posts/2026-06-21-asymptotic-preserving-low-mach-wave/)讨论的"解析声波还是滤掉声波"是同一个问题。
+
+## 答案为何分成0.149和0.317
+
+都已在双时间步中收敛，$\delta=M^2$ 的误差却是0.317，无 $\Gamma$ 为0.149。时间导数上的 $\Gamma$ 收敛后会消失。耗散矩阵 $\Gamma^{-1}|\Gamma A|$ 不会。$\delta$ 越小，该矩阵的压力分量越大，声波被削得越多。
+
+在低马赫定常流动中，这种耗散反而保住精度。在以声波为主角的非定常计算中，它是损失。双时间步只保护时间导数。通量里的 $\Gamma$ 需要单独判断。
+
+## 五个子程序的顺序
+
+幻灯片第8页给出了最终形式(隐式 + 非定常 + 双时间步 + 预处理)的调用顺序。与上面 Python 内迭代对应如下：
+
+1. `RHS.f90` → `cflux.f90`, `vflux.f90`：对流与黏性通量。对应代码中的 `flux_res`。
+2. `hsource.f90`：物理时间残差。对应 `tt`(BDF2 项)。
+3. `hsource.f90`：源项。本实验没有。
+4. 合并1～3的 RHS。对应 `r`。
+5. `LHS.f90`：左端求逆。原代码用 LU-SGS 或 Gauss–Seidel，上面的代码只用对角点隐式更新。
+
+幻灯片写道，第5步的隐式处理"与残差光顺(residual smoothing)是同一概念"。这是对的。内迭代的 LHS 不改变收敛后的答案，只改变收敛路径和迭代次数。只要 $\Gamma$ 在时间导数上，它也属于这一类。
+
+## 在非定常代码里打开 Γ 之前要算的一个比值
+
+先算 $c\Delta t/L$。若远小于1，就是在解析声波。这时给 $U_r$ 加上 $L/(\pi\Delta t)$ 的下限，让 $\Gamma$ 自行关闭。若在 $1/M$ 量级，就是在滤掉声波，只有这时 $\Gamma$ 才能减少内迭代。
+
+其次，单独检查耗散矩阵。把时间导数上的 $\Gamma$ 和通量里的 $\Gamma$ 设为两个独立开关更安全。最后，把一个时间步的内迭代次数在 $\Gamma$ 开、关时各记录一次。如果像本实验一样差出19倍，就该重读幻灯片上的那一句了。

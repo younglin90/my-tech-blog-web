@@ -1,0 +1,185 @@
+---
+title: "定常用の前処理をデュアルタイムのループに入れたら内部反復が19倍になった — 低マッハ音響パルスの実験"
+date: 2026-10-30
+description: "Weiss–Smith前処理を実時間に入れると音波が止まり、デュアルタイムに入れると内部反復が19倍に増えます。"
+tags: ["Dual-Time-Stepping", "Preconditioning", "Low-Mach", "Implicit", "Compressible"]
+locale: ja
+slug: 2026-10-30-dual-time-steady-preconditioner-inner-iterations
+takeaway: "デュアルタイムはΓが物理を変えるのを防ぐだけで、速くしてはくれません。Γの強さはΔtが音響を解像するかどうかで決めるべきです。"
+draft: false
+---
+import { PreconditionedWaveSpeedLab } from '@/components/post-viz/2026-10-30-dual-time-steady-preconditioner-inner-iterations/PreconditionedWaveSpeedLab'
+import { DualTimeInnerLoopRace } from '@/components/post-viz/2026-10-30-dual-time-steady-preconditioner-inner-iterations/DualTimeInnerLoopRace'
+
+## 速くするためのオプションが19倍遅くした
+
+低マッハ圧縮性コードでは、前処理(preconditioning)は「入れれば速くなる」オプションとして知られています。そのため非定常計算でもそのまま入れたくなります。実際に入れると二つのことが起きます。実時間に入れると圧力パルスがその場で止まります。デュアルタイム(dual time)のループに入れると答えは戻りますが、1ステップの内部反復が16回から305回に増えます。
+
+この記事は2018年にまとめたコード構造のスライドから出発します。スライドには「前処理は定常にのみ使う。非定常では物理的に正しくない」という一行があります。すぐ次のページには「Implicit + Unsteady + dual time + Preconditioning」が最終形として書かれています。この二行がどう同時に成り立つのか、そしてその組み合わせがいつ得でいつ損なのかを、1次元の実験で測ります。
+
+## 支配方程式の8通り
+
+スライドの1枚目は場合の数を数えます。前処理の有無、定常・非定常、陽解法・陰解法。2×2×2で8通りです。コードはこの8通りを一つの式にまとめようとします。
+
+$$
+\Gamma\frac{\partial Q}{\partial \tau} + \frac{3Q-4Q^{n}+Q^{n-1}}{2\Delta t} + \frac{\partial F}{\partial x} = S
+$$
+
+$\tau$は擬似時間(pseudo time、収束のためだけに使う反復変数)、$t$は実時間です。$\Gamma$は前処理行列、第2項は2次後退差分(BDF2)です。定常問題では第2項を消し、前処理なしなら$\Gamma=I$とします。擬似時間で収束すると第1項は0になります。すると$\Gamma$が何であれ、残るのはBDF2で離散化した元の方程式です。これがスライドの二行が同時に正しい理由です。
+
+## Γが変えるのは波の速さ
+
+線形化した1次元オイラー方程式を$Q=(p,u)$で書きます。密度と音速を1とすると$A=\begin{pmatrix}u_0&1\\1&u_0\end{pmatrix}$で、固有値は$u_0\pm c$です。Weiss–Smith型の前処理は圧力の時間微分の係数だけを変えます。ここでは$\Gamma=\mathrm{diag}(\delta,1)$と単純化します。
+
+$$
+\lambda_\pm(\Gamma A) = \frac{(1+\delta)u_0 \pm \sqrt{(1-\delta)^2u_0^2 + 4\delta c^2}}{2}
+$$
+
+$\delta=1$なら元の$u_0\pm c$に戻ります。定常用の選択$\delta=M^2$を入れると根号の中が$\approx 5u_0^2$となり、$\lambda\approx u_0(1\pm\sqrt5)/2$です。最速の波と流速の比が$1/M$から約1.6に縮みます。定常問題で収束が速くなる理由はこの比です。
+
+下のシミュレーションで$M$と$\delta$を実際に動かしてみましょう。
+
+<PreconditionedWaveSpeedLab />
+
+$\delta$を1から$M^2$へ下げると、赤いパルスは二つに分かれず、ほぼその場に留まります。下のグラフで二つの固有値が$u\pm c$の破線から$u$付近まで下がるのがその理由です。
+
+この式を実時間で積分すると、音波は音速ではなく流速程度で動きます。スライドが「非定常では物理的に正しくない」と書いたのはこのことです。
+
+## デュアルタイム:Γを擬似時間の側へ移す
+
+解決策は、$\Gamma$を実時間微分から外し、擬似時間微分に付けることです。各実時間ステップで内部反復を回します。内部反復は点陰的(point-implicit)な更新で、実時間項だけを陰的に扱います。
+
+$$
+\left(\frac{\Gamma^{-1}}{\Delta\tau} + \frac{3}{2\Delta t}I\right)\Delta Q = -R(Q),\qquad \Delta\tau = 0.9\,\frac{\Delta x}{\max|\lambda(\Gamma A)|}
+$$
+
+$R$は上式のBDF2残差全体、$\Delta\tau$は前処理後の波速で決めた擬似時間刻みです。流束の数値散逸には$\Gamma^{-1}|\Gamma A|$を使います。前処理コードは散逸行列も一緒に変えるからです。収束判定は残差の最大ノルムが初期値の$10^{-6}$倍まで下がったときです。判定基準が反復回数をどう欺くかは[Jacobi増分判定の記事](/ja/posts/2026-10-21-jacobi-stopping-rule-finer-grid-error/)で扱いました。
+
+## コード:低マッハ音響パルス、3通りのΓ
+
+$M=0.05$、100セルの周期領域にガウス型の圧力パルスを置きます。正解は$u_0\pm c$で分かれる二つの音波です。[A]は$\Gamma$を実時間に入れた場合です。[B]はBDF2デュアルタイムで、$\Gamma$なし、$\delta=M^2$、$\Delta t$で制限した$U_r$の3通りです。音響CFL(音速基準のクーラン数)を1、4、20と変えます。
+
+```python
+import numpy as np
+
+N, M, T = 100, 0.05, 0.3          # cells, Mach number, final time (c = rho = 1)
+dx = 1.0 / N
+x = (np.arange(N) + 0.5) * dx
+
+def pulse(s):                      # periodic Gaussian pressure pulse
+    return np.exp(-(((s - 0.5 + 0.5) % 1 - 0.5) / 0.08) ** 2)
+
+def exact_p(t):                    # splits into two acoustic waves u0 +/- c
+    return 0.5 * (pulse(x - (M + 1) * t) + pulse(x - (M - 1) * t))
+
+def precond_mats(delta):
+    A = np.array([[M, 1.0], [1.0, M]])          # linearized Euler, q = (p, u)
+    G = np.diag([delta, 1.0])                   # Gamma: scales dp/dt only
+    lam, R = np.linalg.eig(G @ A)
+    D = np.linalg.inv(G) @ (R @ np.diag(abs(lam)) @ np.linalg.inv(R)).real
+    return A, G, D, abs(lam).max()              # D = Gamma^-1 |Gamma A|
+
+def flux_res(q, A, D):             # upwind finite-volume residual dF/dx
+    qr = np.roll(q, -1, 1)
+    F = A @ (q + qr) / 2 - D @ (qr - q) / 2
+    return (F - np.roll(F, 1, 1)) / dx
+
+def real_time_precond(delta):      # Gamma put directly into physical time (RK2)
+    A, G, D, lam = precond_mats(delta)
+    ns = int(np.ceil(T / (0.5 * dx / lam))); dt = T / ns
+    q = np.vstack([pulse(x), 0 * x])
+    for _ in range(ns):
+        k1 = -G @ flux_res(q, A, D)
+        k2 = -G @ flux_res(q + dt * k1, A, D)
+        q = q + dt / 2 * (k1 + k2)
+    return ns, np.abs(q[0] - exact_p(T)).max(), x[np.argmax(q[0])]
+
+def dual_time_run(cfl, delta, tol=1e-6):
+    A, G, D, lam = precond_mats(delta)
+    ns = int(round(T / (cfl * dx / (1 + M)))); dt = T / ns
+    dtau = 0.9 * dx / lam                       # pseudo-time step from Gamma A
+    g = np.array([[delta], [1.0]])
+    q = np.vstack([pulse(x), 0 * x]); qm = q.copy(); its = 0
+    for n in range(ns):
+        qn = q.copy(); a = 1.5 / dt if n else 1.0 / dt
+        for k in range(20000):                  # inner pseudo-time loop
+            tt = (3 * q - 4 * qn + qm) / (2 * dt) if n else (q - qn) / dt
+            r = tt + flux_res(q, A, D)          # BDF2 unsteady residual
+            rn = np.abs(r).max()
+            if k == 0: r0 = rn
+            if rn < tol * r0: break
+            q = q - r / (1 / (g * dtau) + a)    # point-implicit in real-time term
+        its += k; qm = qn
+    return its / ns, np.abs(q[0] - exact_p(T)).max()
+
+print(f"M={M}, N={N}, T={T}, exact peaks at x={(0.5+(M+1)*T)%1:.3f}, {(0.5+(M-1)*T)%1:.3f}")
+print("[A] Gamma in physical time (explicit RK2)")
+for name, d in [("no Gamma", 1.0), ("Gamma d=M^2", M * M)]:
+    ns, err, xp = real_time_precond(d)
+    print(f"  {name:12s} steps={ns:3d}  max|p-p_exact|={err:.3f}  peak x={xp:.3f}")
+print("[B] dual time BDF2, mean inner iterations per step / max|p-p_exact|")
+print("  CFL_ac   no Gamma         Gamma d=M^2      Ur=max(u,L/(pi dt)) -> d")
+for cfl in [1, 4, 20]:
+    dt = T / int(round(T / (cfl * dx / (1 + M))))
+    d_un = min(1.0, max(M, 1.0 / (np.pi * dt)) ** 2)   # L = domain length
+    row = [dual_time_run(cfl, d) for d in (1.0, M * M, d_un)]
+    print(f"  {cfl:5d}" + "".join(f"   {i:6.1f} / {e:.3f}" for i, e in row) + f"   d={d_un:.2f}")
+```
+
+```text
+M=0.05, N=100, T=0.3, exact peaks at x=0.815, 0.215
+[A] Gamma in physical time (explicit RK2)
+  no Gamma     steps= 63  max|p-p_exact|=0.145  peak x=0.215
+  Gamma d=M^2  steps=  5  max|p-p_exact|=0.947  peak x=0.495
+[B] dual time BDF2, mean inner iterations per step / max|p-p_exact|
+  CFL_ac   no Gamma         Gamma d=M^2      Ur=max(u,L/(pi dt)) -> d
+      1     16.4 / 0.149    304.7 / 0.317     16.4 / 0.149   d=1.00
+      4     50.1 / 0.221   1093.4 / 0.314     50.1 / 0.221   d=1.00
+     20    199.5 / 0.344   2578.0 / 0.344    199.5 / 0.344   d=1.00
+```
+
+上のコードをブラウザで直接動かしてみましょう。
+
+<DualTimeInnerLoopRace />
+
+既定値では二つのケースが同じ反復予算で競走します。黄色は1ステップあたり16.4回、赤は304.7回付近で終わります。$\delta$を1側へ上げたりCFL_acを大きくしたりすると、表[B]の二列の差がどう縮まるかが見えます。
+
+## [A]:5ステップで終わったがパルスは0.495にある
+
+実時間に$\Gamma$を入れると、最速の波速が0.08まで下がります。そのため63ステップが5ステップになります。しかし正解の二つのピークは0.215と0.815です。計算されたピークは0.495、出発点のすぐそばです。誤差0.947はパルスの高さとほぼ同じです。速く計算したのは別の方程式の解でした。
+
+## [B]:内部反復の間、圧力はほとんど動かなかった
+
+デュアルタイムはこの物理的な誤りを消します。代償は反復回数でした。原因は点陰的更新の圧力係数$1/(\delta\Delta\tau)$にあります。$\delta=M^2$なら$\Delta\tau$は約13倍になります。しかし圧力が実際に受ける歩幅$\delta\Delta\tau$は$0.0025\times13\approx0.032$倍、つまり31分の1に縮みます。
+
+定常問題ではこれは正しい取引です。遅い対流波が領域を抜ける時間が収束を支配し、$\Gamma$はその波を音波並みに速くします。この実験の中身は音波です。そのうえ実時間項$3/(2\Delta t)$がすでにすべてのモードを均等に減衰させています。直すべき硬さ(stiffness、固有値の大きさの差による収束の遅れ)がないのに、圧力だけを31倍遅くしました。その結果が304.7回です。CFL_acを20にしても2578回対199.5回の差が残ります。
+
+## UrにΔtを入れるとΓは自ら切れる
+
+WeissとSmithは非定常用の基準速度を$U_r=\max(u, L/(\pi\Delta t))$と提案しました。$L$は領域長、$\Delta t$は実時間刻みです。刻みが短く音波が解像されるほど$U_r$は音速を超え、$\delta=\min(1,U_r^2/c^2)$は1になります。表の最後の列は三つのCFLすべてで$\delta=1.00$、反復回数は$\Gamma$なしと同じです。
+
+つまり、正しく作った非定常前処理は音響が重要な問題では切れます。入っているべきなのは、$\Delta t$が$L/u$程度まで大きく、音波をまったく解像しない問題です。そのとき$\Delta t$は音波周期の数十倍で、内部反復は再び定常問題のように対流波に縛られます。この二つの領域の違いは、[低マッハ漸近保存の記事](/ja/posts/2026-06-21-asymptotic-preserving-low-mach-wave/)で扱った「音波を解くか、取り除くか」と同じ問いです。
+
+## 答えが0.149と0.317に分かれた理由
+
+デュアルタイムで収束したのに、$\delta=M^2$の誤差は0.317、$\Gamma$なしは0.149です。時間微分の$\Gamma$は収束すれば消えます。散逸行列$\Gamma^{-1}|\Gamma A|$は消えません。$\delta$が小さいとこの行列の圧力成分が大きくなり、音波をより削ります。
+
+低マッハの定常流れでは、この散逸がむしろ精度を救います。音波が主役の非定常計算では損です。デュアルタイムが守ってくれるのは時間微分だけです。流束に入った$\Gamma$は別に判断する必要があります。
+
+## 五つのサブルーチンの順序
+
+スライド8枚目は最終形(陰的 + 非定常 + デュアルタイム + 前処理)の呼び出し順を示しています。上のPythonの内部ループと対応させるとこうなります。
+
+1. `RHS.f90` → `cflux.f90`, `vflux.f90`:対流・粘性流束。コードの`flux_res`。
+2. `hsource.f90`:実時間残差。コードの`tt`(BDF2項)。
+3. `hsource.f90`:ソース項。この実験にはありません。
+4. 1〜3を合わせたRHS。コードの`r`。
+5. `LHS.f90`:左辺の逆行列。元のコードはLU-SGSやGauss–Seidelで解き、上のコードは対角の点陰的更新だけを使います。
+
+スライドは、5段階目の陰的処理が「残差平滑化(residual smoothing)と同じ概念」だと書いています。その通りです。内部反復のLHSは収束した答えを変えません。変えるのは収束までの経路と反復回数だけです。時間微分にある限り、$\Gamma$も同じ部類です。
+
+## 非定常コードでΓを入れる前に計算する比
+
+まず$c\Delta t/L$を計算します。これが1より十分小さければ、音波を解像する計算です。このときは$U_r$に$L/(\pi\Delta t)$の下限を入れ、$\Gamma$が切れるようにします。これが$1/M$程度なら音波を取り除く計算で、そのときだけ$\Gamma$が内部反復を減らします。
+
+次に散逸行列を別に確認します。時間微分の$\Gamma$と流束の$\Gamma$は別々のスイッチにしておくほうが安全です。最後に、1ステップの内部反復回数を$\Gamma$のオンとオフで一度ずつ記録します。この実験のように19倍の差が出たら、スライドの一行を読み直すときです。

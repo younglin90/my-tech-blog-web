@@ -1,0 +1,185 @@
+---
+title: "Un precondicionador de estado estacionario dentro de un bucle de tiempo dual multiplicó por 19 las iteraciones internas — prueba con un pulso acústico a bajo Mach"
+date: 2026-10-30
+description: "Con el precondicionador de Weiss–Smith en el tiempo físico, el pulso acústico se queda quieto. Dentro del tiempo dual la respuesta vuelve, pero las iteraciones internas pasan de 16 a 305."
+tags: ["Dual-Time-Stepping", "Preconditioning", "Low-Mach", "Implicit", "Compressible"]
+locale: es
+slug: 2026-10-30-dual-time-steady-preconditioner-inner-iterations
+takeaway: "El tiempo dual impide que Γ cambie la física, pero no acelera la solución. La intensidad de Γ debe depender de si Δt resuelve la acústica."
+draft: false
+---
+import { PreconditionedWaveSpeedLab } from '@/components/post-viz/2026-10-30-dual-time-steady-preconditioner-inner-iterations/PreconditionedWaveSpeedLab'
+import { DualTimeInnerLoopRace } from '@/components/post-viz/2026-10-30-dual-time-steady-preconditioner-inner-iterations/DualTimeInnerLoopRace'
+
+## La opción para acelerar lo hizo 19 veces más lento
+
+En los códigos compresibles a bajo Mach, el precondicionamiento (preconditioning) tiene fama de opción que "acelera todo". Por eso resulta tentador dejarlo activo también en cálculos no estacionarios. Al hacerlo pasan dos cosas. En el tiempo físico, un pulso de presión deja de moverse. Dentro de un bucle de tiempo dual (dual time), la respuesta vuelve, pero cada paso necesita 305 iteraciones internas en lugar de 16.
+
+El punto de partida es una presentación sobre la estructura de un código, preparada en 2018. Una diapositiva dice: "El precondicionamiento solo se usa en el caso estacionario. En el caso no estacionario no es físicamente correcto". La siguiente presenta "Implicit + Unsteady + dual time + Preconditioning" como forma final. A continuación, un experimento 1D muestra cómo ambas frases son ciertas a la vez, y cuándo esa combinación conviene y cuándo cuesta caro.
+
+## Ocho variantes de las ecuaciones de gobierno
+
+La primera diapositiva cuenta casos: con o sin precondicionamiento, estacionario o no, explícito o implícito. Son 2×2×2, ocho variantes. El código intenta reunirlas en una sola ecuación.
+
+$$
+\Gamma\frac{\partial Q}{\partial \tau} + \frac{3Q-4Q^{n}+Q^{n-1}}{2\Delta t} + \frac{\partial F}{\partial x} = S
+$$
+
+$\tau$ es el pseudotiempo (una variable de iteración que solo sirve para converger) y $t$ es el tiempo físico. $\Gamma$ es la matriz de precondicionamiento y el segundo término es una diferencia regresiva de segundo orden (BDF2). En un problema estacionario se elimina el segundo término. Sin precondicionamiento, $\Gamma=I$. Cuando el pseudotiempo converge, el primer término se anula. Sea cual sea $\Gamma$, queda la ecuación original discretizada con BDF2. Por eso las dos frases de las diapositivas se cumplen a la vez.
+
+## Lo que Γ cambia es la velocidad de las ondas
+
+Se escriben las ecuaciones de Euler 1D linealizadas con $Q=(p,u)$. Con densidad y velocidad del sonido iguales a 1, $A=\begin{pmatrix}u_0&1\\1&u_0\end{pmatrix}$, con autovalores $u_0\pm c$. Un precondicionador tipo Weiss–Smith solo cambia el coeficiente de la derivada temporal de la presión. Aquí se simplifica a $\Gamma=\mathrm{diag}(\delta,1)$.
+
+$$
+\lambda_\pm(\Gamma A) = \frac{(1+\delta)u_0 \pm \sqrt{(1-\delta)^2u_0^2 + 4\delta c^2}}{2}
+$$
+
+Con $\delta=1$ se recupera $u_0\pm c$. Con la elección estacionaria $\delta=M^2$, el radicando queda $\approx 5u_0^2$ y $\lambda\approx u_0(1\pm\sqrt5)/2$. La razón entre la onda más rápida y la velocidad del flujo baja de $1/M$ a cerca de 1,6. Esa razón explica por qué los problemas estacionarios convergen más rápido.
+
+En la simulación de abajo se pueden manipular $M$ y $\delta$ directamente.
+
+<PreconditionedWaveSpeedLab />
+
+Al bajar $\delta$ de 1 a $M^2$, el pulso rojo ya no se divide en dos y casi no se mueve. La gráfica inferior muestra la razón: los dos autovalores bajan desde las líneas discontinuas $u\pm c$ hasta cerca de $u$.
+
+Si esta ecuación se integra en tiempo físico, el sonido viaja a una velocidad del orden del flujo y no a la del sonido. A eso se refiere la diapositiva con "no es físicamente correcto".
+
+## Tiempo dual: llevar Γ al lado del pseudotiempo
+
+La solución es separar $\Gamma$ de la derivada temporal física y unirlo a la derivada en pseudotiempo. En cada paso físico corre un bucle interno. Ese bucle usa una actualización puntual implícita (point-implicit) que trata de forma implícita solo el término de tiempo físico.
+
+$$
+\left(\frac{\Gamma^{-1}}{\Delta\tau} + \frac{3}{2\Delta t}I\right)\Delta Q = -R(Q),\qquad \Delta\tau = 0.9\,\frac{\Delta x}{\max|\lambda(\Gamma A)|}
+$$
+
+$R$ es el residuo BDF2 completo de arriba y $\Delta\tau$ es el paso de pseudotiempo fijado por las velocidades precondicionadas. La disipación numérica del flujo usa $\Gamma^{-1}|\Gamma A|$, porque los códigos precondicionados también cambian la matriz de disipación. Se considera convergido cuando la norma máxima del residuo cae a $10^{-6}$ de su valor inicial. Cómo un criterio de parada puede engañar sobre el número de iteraciones se trató en el [artículo sobre el criterio de incremento de Jacobi](/es/posts/2026-10-21-jacobi-stopping-rule-finer-grid-error/).
+
+## Código: pulso acústico a bajo Mach, tres opciones de Γ
+
+Se toma $M=0.05$, un dominio periódico de 100 celdas y un pulso gaussiano de presión. La solución exacta son dos ondas acústicas que se separan a $u_0\pm c$. El caso [A] pone $\Gamma$ en el tiempo físico. El caso [B] usa tiempo dual BDF2 sin $\Gamma$, con $\delta=M^2$ y con $U_r$ limitado por $\Delta t$. El CFL acústico (número de Courant basado en la velocidad del sonido) toma los valores 1, 4 y 20.
+
+```python
+import numpy as np
+
+N, M, T = 100, 0.05, 0.3          # cells, Mach number, final time (c = rho = 1)
+dx = 1.0 / N
+x = (np.arange(N) + 0.5) * dx
+
+def pulse(s):                      # periodic Gaussian pressure pulse
+    return np.exp(-(((s - 0.5 + 0.5) % 1 - 0.5) / 0.08) ** 2)
+
+def exact_p(t):                    # splits into two acoustic waves u0 +/- c
+    return 0.5 * (pulse(x - (M + 1) * t) + pulse(x - (M - 1) * t))
+
+def precond_mats(delta):
+    A = np.array([[M, 1.0], [1.0, M]])          # linearized Euler, q = (p, u)
+    G = np.diag([delta, 1.0])                   # Gamma: scales dp/dt only
+    lam, R = np.linalg.eig(G @ A)
+    D = np.linalg.inv(G) @ (R @ np.diag(abs(lam)) @ np.linalg.inv(R)).real
+    return A, G, D, abs(lam).max()              # D = Gamma^-1 |Gamma A|
+
+def flux_res(q, A, D):             # upwind finite-volume residual dF/dx
+    qr = np.roll(q, -1, 1)
+    F = A @ (q + qr) / 2 - D @ (qr - q) / 2
+    return (F - np.roll(F, 1, 1)) / dx
+
+def real_time_precond(delta):      # Gamma put directly into physical time (RK2)
+    A, G, D, lam = precond_mats(delta)
+    ns = int(np.ceil(T / (0.5 * dx / lam))); dt = T / ns
+    q = np.vstack([pulse(x), 0 * x])
+    for _ in range(ns):
+        k1 = -G @ flux_res(q, A, D)
+        k2 = -G @ flux_res(q + dt * k1, A, D)
+        q = q + dt / 2 * (k1 + k2)
+    return ns, np.abs(q[0] - exact_p(T)).max(), x[np.argmax(q[0])]
+
+def dual_time_run(cfl, delta, tol=1e-6):
+    A, G, D, lam = precond_mats(delta)
+    ns = int(round(T / (cfl * dx / (1 + M)))); dt = T / ns
+    dtau = 0.9 * dx / lam                       # pseudo-time step from Gamma A
+    g = np.array([[delta], [1.0]])
+    q = np.vstack([pulse(x), 0 * x]); qm = q.copy(); its = 0
+    for n in range(ns):
+        qn = q.copy(); a = 1.5 / dt if n else 1.0 / dt
+        for k in range(20000):                  # inner pseudo-time loop
+            tt = (3 * q - 4 * qn + qm) / (2 * dt) if n else (q - qn) / dt
+            r = tt + flux_res(q, A, D)          # BDF2 unsteady residual
+            rn = np.abs(r).max()
+            if k == 0: r0 = rn
+            if rn < tol * r0: break
+            q = q - r / (1 / (g * dtau) + a)    # point-implicit in real-time term
+        its += k; qm = qn
+    return its / ns, np.abs(q[0] - exact_p(T)).max()
+
+print(f"M={M}, N={N}, T={T}, exact peaks at x={(0.5+(M+1)*T)%1:.3f}, {(0.5+(M-1)*T)%1:.3f}")
+print("[A] Gamma in physical time (explicit RK2)")
+for name, d in [("no Gamma", 1.0), ("Gamma d=M^2", M * M)]:
+    ns, err, xp = real_time_precond(d)
+    print(f"  {name:12s} steps={ns:3d}  max|p-p_exact|={err:.3f}  peak x={xp:.3f}")
+print("[B] dual time BDF2, mean inner iterations per step / max|p-p_exact|")
+print("  CFL_ac   no Gamma         Gamma d=M^2      Ur=max(u,L/(pi dt)) -> d")
+for cfl in [1, 4, 20]:
+    dt = T / int(round(T / (cfl * dx / (1 + M))))
+    d_un = min(1.0, max(M, 1.0 / (np.pi * dt)) ** 2)   # L = domain length
+    row = [dual_time_run(cfl, d) for d in (1.0, M * M, d_un)]
+    print(f"  {cfl:5d}" + "".join(f"   {i:6.1f} / {e:.3f}" for i, e in row) + f"   d={d_un:.2f}")
+```
+
+```text
+M=0.05, N=100, T=0.3, exact peaks at x=0.815, 0.215
+[A] Gamma in physical time (explicit RK2)
+  no Gamma     steps= 63  max|p-p_exact|=0.145  peak x=0.215
+  Gamma d=M^2  steps=  5  max|p-p_exact|=0.947  peak x=0.495
+[B] dual time BDF2, mean inner iterations per step / max|p-p_exact|
+  CFL_ac   no Gamma         Gamma d=M^2      Ur=max(u,L/(pi dt)) -> d
+      1     16.4 / 0.149    304.7 / 0.317     16.4 / 0.149   d=1.00
+      4     50.1 / 0.221   1093.4 / 0.314     50.1 / 0.221   d=1.00
+     20    199.5 / 0.344   2578.0 / 0.344    199.5 / 0.344   d=1.00
+```
+
+El código anterior puede ejecutarse directamente en el navegador.
+
+<DualTimeInnerLoopRace />
+
+Con los valores por defecto, ambos casos compiten con el mismo presupuesto de iteraciones. El amarillo termina cerca de 16,4 iteraciones por paso; el rojo, cerca de 304,7. Al subir $\delta$ hacia 1 o aumentar CFL_ac, se ve cómo se acercan las dos columnas de la tabla [B].
+
+## [A]: terminó en cinco pasos, pero el pulso está en 0,495
+
+Con $\Gamma$ en el tiempo físico, la onda más rápida baja a 0,08. Así, 63 pasos se convierten en 5. Pero los picos exactos están en 0,215 y 0,815. El pico calculado está en 0,495, junto al punto de partida. Un error de 0,947 es casi la altura del pulso. Lo que se resolvió rápido fue otra ecuación.
+
+## [B]: durante el bucle interno, la presión apenas se movió
+
+El tiempo dual elimina ese error físico. El precio fueron las iteraciones. La causa está en el coeficiente de presión $1/(\delta\Delta\tau)$ de la actualización puntual implícita. Con $\delta=M^2$, $\Delta\tau$ crece unas 13 veces. Pero el paso que realmente recibe la presión, $\delta\Delta\tau$, queda en $0.0025\times13\approx0.032$, cerca de 1/31.
+
+En un problema estacionario, ese intercambio es bueno. La convergencia depende del tiempo que tardan las ondas convectivas lentas en salir del dominio, y $\Gamma$ las acelera hasta el ritmo acústico. Aquí el contenido es acústico. Además, el término de tiempo físico $3/(2\Delta t)$ ya amortigua todos los modos por igual. No había rigidez (stiffness, convergencia lenta por la dispersión del tamaño de los autovalores) que corregir, y aun así la presión se frenó 31 veces. El resultado son 304,7 iteraciones. Incluso con CFL_ac = 20 la brecha sigue: 2578 frente a 199,5.
+
+## Con Δt dentro de Ur, Γ se apaga solo
+
+Weiss y Smith propusieron una velocidad de referencia no estacionaria $U_r=\max(u, L/(\pi\Delta t))$, donde $L$ es la longitud del dominio y $\Delta t$ el paso físico. Cuanto más corto el paso, mejor resuelta la acústica; $U_r$ supera entonces la velocidad del sonido y $\delta=\min(1,U_r^2/c^2)$ llega a 1. La última columna de la tabla muestra $\delta=1.00$ en los tres CFL, con las mismas iteraciones que sin $\Gamma$.
+
+Es decir, un precondicionador no estacionario bien construido se apaga cuando la acústica importa. Debe estar activo cuando $\Delta t$ es del orden de $L/u$ y la acústica no se resuelve en absoluto. Entonces $\Delta t$ abarca decenas de periodos acústicos, y el bucle interno vuelve a depender de las ondas convectivas, como en un problema estacionario. La división entre estos regímenes es la misma pregunta de "resolver el sonido o filtrarlo" del [artículo sobre esquemas asintóticamente preservantes a bajo Mach](/es/posts/2026-06-21-asymptotic-preserving-low-mach-wave/).
+
+## Por qué las respuestas quedaron en 0,149 y 0,317
+
+Ambos casos convergieron con tiempo dual, pero el error es 0,317 con $\delta=M^2$ y 0,149 sin $\Gamma$. El $\Gamma$ de la derivada temporal desaparece al converger. La matriz de disipación $\Gamma^{-1}|\Gamma A|$ no. Con $\delta$ pequeño, su componente de presión crece y desgasta más las ondas acústicas.
+
+En flujo estacionario a bajo Mach, esa disipación en realidad salva la precisión. En un cálculo no estacionario donde el sonido es el protagonista, perjudica. El tiempo dual solo protege la derivada temporal. Cualquier $\Gamma$ dentro del flujo numérico requiere una decisión aparte.
+
+## El orden de cinco subrutinas
+
+La diapositiva 8 indica el orden de llamadas de la forma final (implícito + no estacionario + tiempo dual + precondicionamiento). Emparejado con el bucle interno de Python:
+
+1. `RHS.f90` → `cflux.f90`, `vflux.f90`: flujos convectivo y viscoso. En el código, `flux_res`.
+2. `hsource.f90`: residuo de tiempo físico. En el código, `tt` (el término BDF2).
+3. `hsource.f90`: término fuente. No hay en este experimento.
+4. El RHS que suma 1–3. En el código, `r`.
+5. `LHS.f90`: inversión del lado izquierdo. El código original usa LU-SGS o Gauss–Seidel; el de arriba solo un paso puntual implícito diagonal.
+
+La diapositiva señala que el tratamiento implícito del paso 5 es "el mismo concepto que el suavizado de residuos (residual smoothing)". Es correcto. El LHS del bucle interno no cambia la respuesta convergida. Solo cambia el camino y el número de iteraciones. Mientras $\Gamma$ esté en la derivada temporal, pertenece a la misma clase.
+
+## Una razón que conviene calcular antes de activar Γ en un código no estacionario
+
+Primero se calcula $c\Delta t/L$. Si es mucho menor que 1, se está resolviendo la acústica. En ese caso conviene dar a $U_r$ el piso $L/(\pi\Delta t)$ para que $\Gamma$ se apague. Si es del orden de $1/M$, se está filtrando la acústica, y solo entonces $\Gamma$ reduce las iteraciones internas.
+
+Después, se revisa la matriz de disipación por separado. Es más seguro tener interruptores distintos para el $\Gamma$ de la derivada temporal y el $\Gamma$ del flujo. Por último, se registran las iteraciones internas de un paso con $\Gamma$ activo e inactivo. Si aparece una diferencia de 19 veces como en este experimento, es momento de releer esa frase de la diapositiva.
