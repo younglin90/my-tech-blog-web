@@ -1,10 +1,10 @@
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
-import { format, parseISO } from 'date-fns'
 import type { Metadata } from 'next'
 import { LOCALES, isLocale, t, SITE_NAMES, hreflangAlternates, type Locale } from '@/lib/i18n'
 import { listAllSeries, getSeries } from '@/lib/series'
-import { seriesTitle } from '@/lib/series-title'
+import { seriesTitle, seriesDescription } from '@/lib/series-title'
+import { SeriesPostList } from '@/components/SeriesPostList'
 import { SITE_URL } from '@/lib/site'
 
 interface Props {
@@ -51,57 +51,59 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 export default async function SeriesPage({ params }: Props) {
   const { locale, slug } = await params
   if (!isLocale(locale)) notFound()
-  const series = getSeries(locale as Locale, slug)
+  const loc = locale as Locale
+  const series = getSeries(loc, slug)
   if (!series) notFound()
+  const fmt = (d: string) => d.replaceAll('-', '.')
+  const latest = [...series.posts].sort((a, b) => b.date.localeCompare(a.date))[0]
+  const first = series.posts[0]
+  const posts = series.posts.map((p) => ({ ...p, date: String(p.date).slice(0, 10) }))
 
   return (
     <div>
       <Link
-        href={`/${locale}/series`}
-        className="mono mb-3 inline-block"
+        href={`/${loc}/series`}
+        className="mono mb-3 inline-flex min-h-11 items-center"
         style={{ fontSize: 12, color: 'var(--text-muted)' }}
       >
-        ←
+        ← {t(loc, 'series.title')}
       </Link>
       <h1
         className="display mb-2"
         style={{ fontSize: 30, fontWeight: 700, letterSpacing: '-0.02em', color: 'var(--text)' }}
       >
-        {seriesTitle(slug, locale)}
+        {seriesTitle(slug, loc)}
       </h1>
-      <p className="mb-8 text-sm" style={{ color: 'var(--text-muted)' }}>
-        {t(locale, 'series.sequential', { count: String(series.count) })}
+      {seriesDescription(slug, loc) && (
+        <p className="mb-2 max-w-2xl text-sm" style={{ color: 'var(--text-muted)', lineHeight: 1.7 }}>
+          {seriesDescription(slug, loc)}
+        </p>
+      )}
+      <p className="mono mb-5 text-xs tabular-nums" style={{ color: 'var(--text-faint)' }}>
+        {t(loc, 'series.parts', { count: String(series.count) })} · {fmt(series.started)} – {fmt(series.updated)}
       </p>
+      <div className="mb-8 flex flex-wrap gap-2 text-xs">
+        {first && (
+          <Link
+            href={`/${loc}/posts/${first.slug}`}
+            className="inline-flex min-h-11 items-center rounded-lg px-3 font-medium"
+            style={{ border: '1px solid var(--accent)', color: 'var(--accent)' }}
+          >
+            {t(loc, 'series.startHere')}
+          </Link>
+        )}
+        {latest && latest.slug !== first?.slug && (
+          <Link
+            href={`/${loc}/posts/${latest.slug}`}
+            className="inline-flex min-h-11 items-center rounded-lg px-3 font-medium"
+            style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text-muted)' }}
+          >
+            {t(loc, 'series.latestPost')} · {fmt(String(latest.date).slice(0, 10))}
+          </Link>
+        )}
+      </div>
 
-      <ol className="space-y-3">
-        {series.posts.map((p, i) => (
-          <li key={p.slug}>
-            <Link
-              href={`/${locale}/posts/${p.slug}`}
-              className="group flex items-start gap-4 rounded-lg p-4 transition-colors duration-100"
-              style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
-            >
-              <div
-                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md font-semibold tabular-nums"
-                style={{ background: 'var(--accent-glow)', color: 'var(--accent)', fontFamily: 'var(--font-mono)' }}
-              >
-                {String(p.seriesOrder ?? i + 1).padStart(2, '0')}
-              </div>
-              <div className="min-w-0 flex-1">
-                <p className="text-base font-medium link-hover-accent" style={{ color: 'var(--text)' }}>
-                  {p.title}
-                </p>
-                <p className="mt-0.5 line-clamp-1 text-sm" style={{ color: 'var(--text-muted)' }}>
-                  {p.description}
-                </p>
-                <p className="mt-1 text-xs" style={{ color: 'var(--text-faint)' }}>
-                  {format(parseISO(p.date), 'MMM d, yyyy')}
-                </p>
-              </div>
-            </Link>
-          </li>
-        ))}
-      </ol>
+      <SeriesPostList locale={loc} posts={posts} />
     </div>
   )
 }

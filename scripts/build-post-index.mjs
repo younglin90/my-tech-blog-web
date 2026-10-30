@@ -1,5 +1,6 @@
 import { readdirSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
+import { resolveSeries } from '../src/lib/series-rules.mjs'
 
 const POSTS_ROOT = join(process.cwd(), 'src/content/posts')
 const LOCALES = ['ko', 'en', 'ja', 'zh', 'es']
@@ -60,7 +61,8 @@ for (const locale of LOCALES) {
       url: `/${locale}/posts/${slug}`,
       readingTime: readingTimeFromBody(parsed.body),
       // 옵션 필드 — undefined는 JSON에서 자동 생략
-      series: parsed.series,
+      // frontmatter series가 없으면 태그로 자동 배정 (src/lib/series-rules.mjs)
+      series: resolveSeries({ series: parsed.series, tags: parsed.tags }),
       seriesOrder: parsed.seriesOrder,
       updated: parsed.updated,
     })

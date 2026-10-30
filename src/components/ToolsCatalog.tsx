@@ -156,61 +156,38 @@ export function ToolsCatalog({ locale }: { locale: Locale }) {
         </div>
       </section>
 
-      {favoriteTools.length > 0 && !deferredQuery && activeCategory === 'all' && (
-        <section>
-          <h2 className="mb-3 text-xs font-semibold uppercase tracking-widest" style={{ color: 'var(--accent)' }}>
-            ★ {t(locale, 'tools.favorites')} / {favoriteTools.length}
-          </h2>
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-            {favoriteTools.map((tool) => (
-              <ToolCard
-                key={tool.slug}
-                locale={locale}
-                slug={tool.slug}
-                title={tool.title[locale]}
-                desc={tool.desc[locale]}
-                tags={tool.tags}
-                isFavorite={true}
-                onToggleFavorite={toggleFavorite}
-              />
-            ))}
-          </div>
-        </section>
-      )}
-
-      {recentTools.length > 0 && !deferredQuery && activeCategory === 'all' && (
-        <section>
-          <div className="mb-3 flex items-center justify-between gap-3">
-            <h2 className="text-xs font-semibold uppercase tracking-widest" style={{ color: 'var(--text-faint)' }}>
-              {t(locale, 'tools.recentlyViewed')}
-            </h2>
-            <button
-              onClick={() => {
-                try {
-                  localStorage.removeItem(RECENT_TOOLS_KEY)
-                } catch {}
-                setRecentSlugs([])
-              }}
-              className="inline-flex min-h-11 items-center rounded-md px-2.5 py-1 text-[10px] font-medium transition-colors"
-              style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text-muted)' }}
+      {(favoriteTools.length > 0 || recentTools.length > 0) && !deferredQuery && activeCategory === 'all' && (
+        <section className="space-y-2">
+          {favoriteTools.length > 0 && (
+            <ChipRow label={`★ ${t(locale, 'tools.favorites')}`} accent>
+              {favoriteTools.map((tool) => (
+                <ToolChip key={tool.slug} locale={locale} slug={tool.slug} title={tool.title[locale]} />
+              ))}
+            </ChipRow>
+          )}
+          {recentTools.length > 0 && (
+            <ChipRow
+              label={t(locale, 'tools.recentlyViewed')}
+              action={
+                <button
+                  onClick={() => {
+                    try {
+                      localStorage.removeItem(RECENT_TOOLS_KEY)
+                    } catch {}
+                    setRecentSlugs([])
+                  }}
+                  className="inline-flex min-h-11 items-center px-1 text-[11px] underline-offset-2 hover:underline"
+                  style={{ color: 'var(--text-faint)' }}
+                >
+                  {t(locale, 'tools.clearRecent')}
+                </button>
+              }
             >
-              {t(locale, 'tools.clearRecent')}
-            </button>
-          </div>
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-            {recentTools.map((tool) => (
-              <ToolCard
-                key={tool.slug}
-                locale={locale}
-                slug={tool.slug}
-                title={tool.title[locale]}
-                desc={tool.desc[locale]}
-                tags={tool.tags}
-                isFavorite={isFav(tool.slug)}
-                onToggleFavorite={toggleFavorite}
-              />
-            ))}
-          </div>
+              {recentTools.slice(0, 6).map((tool) => (
+                <ToolChip key={tool.slug} locale={locale} slug={tool.slug} title={tool.title[locale]} />
+              ))}
+            </ChipRow>
+          )}
         </section>
       )}
 
@@ -220,15 +197,71 @@ export function ToolsCatalog({ locale }: { locale: Locale }) {
             {t(locale, 'tools.featured')}
           </h2>
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-            {featured.map((tool) => (
+            {featured.slice(0, 6).map((tool) => (
               <ToolCard key={tool.slug} locale={locale} slug={tool.slug} title={tool.title[locale]} desc={tool.desc[locale]} tags={tool.tags} isFavorite={isFav(tool.slug)} onToggleFavorite={toggleFavorite} />
             ))}
           </div>
         </section>
       )}
 
-      {grouped.length > 0 ? (
+      {!deferredQuery && activeCategory === 'all' ? (
+        <section>
+          <h2 className="mb-3 text-xs font-semibold uppercase tracking-widest" style={{ color: 'var(--text-faint)' }}>
+            {t(locale, 'tools.browseByCategory')}
+          </h2>
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+            {grouped.map((group) => (
+              <div
+                key={group.category}
+                className="flex flex-col rounded-xl p-4"
+                style={{ background: 'var(--surface)', border: '1px solid var(--border-soft)' }}
+              >
+                <div className="flex items-baseline justify-between gap-2">
+                  <h3 className="text-base font-semibold" style={{ fontFamily: 'var(--font-display)', color: 'var(--text)' }}>
+                    {group.label}
+                  </h3>
+                  <span className="mono text-xs tabular-nums" style={{ color: 'var(--text-faint)' }}>
+                    {group.items.length}
+                  </span>
+                </div>
+                <ul className="mt-2 space-y-1 text-sm">
+                  {group.items.slice(0, 4).map((tool) => (
+                    <li key={tool.slug}>
+                      <Link href={`/${locale}/tools/${tool.slug}`} className="line-clamp-1 link-hover-accent" style={{ color: 'var(--text-muted)' }}>
+                        {tool.title[locale]}
+                      </Link>
+                    </li>
+                  ))}
+                </ul>
+                {group.items.length > 4 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActiveCategoryRaw(group.category)
+                      document.getElementById('tools-top')?.scrollIntoView({ block: 'start' })
+                    }}
+                    className="mt-auto inline-flex min-h-11 items-center self-start pt-2 text-xs font-medium"
+                    style={{ color: 'var(--accent)' }}
+                  >
+                    {t(locale, 'tools.showAll', { count: String(group.items.length) })} →
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : grouped.length > 0 ? (
         <div className="space-y-8">
+          {activeCategory !== 'all' && (
+            <button
+              type="button"
+              onClick={() => setActiveCategoryRaw('all')}
+              className="inline-flex min-h-11 items-center text-xs font-medium"
+              style={{ color: 'var(--text-muted)' }}
+            >
+              {t(locale, 'tools.backToOverview')}
+            </button>
+          )}
           {grouped.map((group) => (
             <section key={group.category} id={`tools-category-${group.category}`} style={{ scrollMarginTop: 96 }}>
               <div className="mb-3 flex items-center justify-between gap-3">
@@ -370,5 +403,29 @@ function ToolCard({
         </button>
       )}
     </div>
+  )
+}
+
+function ChipRow({ label, accent, action, children }: { label: string; accent?: boolean; action?: ReactNode; children: ReactNode }) {
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <span className="mr-1 text-xs font-semibold uppercase tracking-widest" style={{ color: accent ? 'var(--accent)' : 'var(--text-faint)' }}>
+        {label}
+      </span>
+      {children}
+      {action}
+    </div>
+  )
+}
+
+function ToolChip({ locale, slug, title }: { locale: Locale; slug: string; title: string }) {
+  return (
+    <Link
+      href={`/${locale}/tools/${slug}`}
+      className="inline-flex min-h-11 items-center rounded-full px-3 text-xs font-medium transition-colors hover:[border-color:var(--accent)]"
+      style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text)' }}
+    >
+      {title}
+    </Link>
   )
 }

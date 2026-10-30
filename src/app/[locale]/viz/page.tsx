@@ -6,6 +6,8 @@ import vizManifest from '@/lib/viz-manifest.json'
 import { SITE_URL } from '@/lib/site'
 import { jsonLdHtml, slash, WEBSITE_ID } from '@/lib/jsonld'
 import { VizGalleryClient } from '@/components/VizGalleryClient'
+import { listAllSeries, postSeries } from '@/lib/series'
+import { seriesTitle } from '@/lib/series-title'
 
 interface Props { params: Promise<{ locale: string }> }
 
@@ -54,13 +56,24 @@ export default async function VizGallery({ params }: Props) {
   const { locale } = await params
   if (!isLocale(locale)) notFound()
   const loc = locale as Locale
-  const titleBySlug = new Map(
-    allPosts.filter((p) => !p.draft && p.locale === loc).map((p) => [p.slug, p.title]),
+  const postBySlug = new Map(
+    allPosts.filter((p) => !p.draft && p.locale === loc).map((p) => [p.slug, p]),
   )
-  const items = (vizManifest as VizItem[]).map((item) => ({
-    ...item,
-    postTitle: titleBySlug.get(item.postSlug) ?? item.postTitle,
-  }))
+  // 글 날짜와 주제(시리즈)를 붙여, 갤러리를 최신 순·주제별로 나눠 보여 준다.
+  const items = (vizManifest as VizItem[])
+    .map((item) => {
+      const post = postBySlug.get(item.postSlug)
+      return {
+        ...item,
+        postTitle: post?.title ?? item.postTitle,
+        date: post ? String(post.date).slice(0, 10) : (item.postSlug.match(/^\d{4}-\d{2}-\d{2}/)?.[0] ?? ''),
+        series: post ? postSeries(post as { series?: string; tags?: string[] }) : undefined,
+      }
+    })
+    .sort((a, b) => b.date.localeCompare(a.date))
+  const topics = listAllSeries(loc)
+    .map((s) => ({ slug: s.slug, title: seriesTitle(s.slug, loc), count: items.filter((i) => i.series === s.slug).length }))
+    .filter((s) => s.count > 0)
 
   // 갤러리는 클라이언트 컴포넌트라 크롤러가 목록을 못 본다. ItemList로 선언해
   // 어떤 시각화가 어느 글에 들어 있는지 구조화 데이터로 남긴다.
@@ -88,7 +101,7 @@ export default async function VizGallery({ params }: Props) {
   return (
     <>
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: jsonLdHtml(listJsonLd) }} />
-      <VizGalleryClient locale={loc} items={items} />
+      <VizGalleryClient locale={loc} items={items} topics={topics} />
     </>
   )
 }

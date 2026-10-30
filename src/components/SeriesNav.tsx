@@ -43,7 +43,20 @@ export function SeriesNav({ locale, ctx }: Props) {
         </span>
       </div>
 
-      {/* 진행도 점 — 한눈에 위치 파악 */}
+      {/* 진행도 — 16편까지는 점, 그보다 길면 막대 (점 수십 개는 줄을 넘쳐 읽히지 않는다) */}
+      {series.count > 16 ? (
+        <div
+          className="mb-3 h-1.5 overflow-hidden rounded-full"
+          style={{ background: 'var(--border)' }}
+          role="progressbar"
+          aria-valuemin={1}
+          aria-valuemax={series.count}
+          aria-valuenow={index + 1}
+          aria-label={`${t(locale, 'series.partLabel')} ${index + 1} / ${series.count}`}
+        >
+          <div className="h-full rounded-full" style={{ width: `${((index + 1) / series.count) * 100}%`, background: 'var(--accent)' }} />
+        </div>
+      ) : (
       <div className="mb-3 flex items-center gap-1">
         {series.posts.map((p, i) => (
           <Link
@@ -61,6 +74,7 @@ export function SeriesNav({ locale, ctx }: Props) {
           />
         ))}
       </div>
+      )}
 
       <div className="grid grid-cols-2 gap-2 text-xs">
         {prev ? (
@@ -105,7 +119,11 @@ export function SeriesNav({ locale, ctx }: Props) {
             {expanded ? t(locale, 'series.hide') : t(locale, 'series.show')}
           </button>
           {expanded && (
-            <ol className="mt-2 space-y-1">
+            <ol className="relative mt-2 max-h-72 space-y-1 overflow-y-auto pr-1" ref={(el) => {
+              // 긴 시리즈에서도 현재 글이 목록 안에 보이게, 목록 자체만 스크롤한다.
+              const cur = el?.querySelector<HTMLElement>('[aria-current="page"]')
+              if (el && cur) el.scrollTop = cur.offsetTop - el.clientHeight / 2
+            }}>
               {series.posts.map((p, i) => {
                 const isCurrent = i === index
                 return (

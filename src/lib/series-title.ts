@@ -1,30 +1,13 @@
 import type { Locale } from '@/lib/i18n'
 import { titleFromSlug } from '@/lib/jsonld'
+import { SERIES } from '@/lib/series-rules.mjs'
 
-const SERIES_TITLES: Record<string, Record<Locale, string>> = {
-  'numerical-methods': {
-    ko: '수치 기법',
-    en: 'Numerical Methods',
-    ja: '数値手法',
-    zh: '数值方法',
-    es: 'Métodos numéricos',
-  },
-  'compressible-multiphase': {
-    ko: '압축성 다상유동',
-    en: 'Compressible Multiphase',
-    ja: '圧縮性多相流',
-    zh: '可压缩多相流',
-    es: 'Flujo multifásico compresible',
-  },
-  'fem-dg': {
-    ko: '유한요소와 DG',
-    en: 'FEM and DG',
-    ja: '有限要素と DG',
-    zh: '有限元与 DG',
-    es: 'FEM y DG',
-  },
-}
+const BY_SLUG = new Map(SERIES.map((s) => [s.slug, s]))
 
 export function seriesTitle(slug: string, locale: Locale): string {
-  return SERIES_TITLES[slug]?.[locale] ?? titleFromSlug(slug)
+  return (BY_SLUG.get(slug)?.title as Record<Locale, string> | undefined)?.[locale] ?? titleFromSlug(slug)
+}
+
+export function seriesDescription(slug: string, locale: Locale): string {
+  return (BY_SLUG.get(slug)?.description as Record<Locale, string> | undefined)?.[locale] ?? ''
 }

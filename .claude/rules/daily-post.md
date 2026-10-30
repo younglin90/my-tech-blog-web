@@ -98,6 +98,11 @@ draft: false                        # 항상 false
 en/es는 120~155자를 목표로. `takeaway`는 스니펫이 아니라 독자가 처음 보는 한 문장이다.
 frontmatter 바로 아래 `import { X } from '@/components/post-viz/{DATE}-{slug}/X'`.
 
+**시리즈**: frontmatter에 `series`를 쓰지 않는다. 태그로 자동 배정된다(`src/lib/series-rules.mjs`,
+`/series` 페이지·글 배지·검색이 같은 규칙을 쓴다). 확인:
+`node -e "import('./src/lib/series-rules.mjs').then(m=>console.log(m.resolveSeries({tags:[...]})))"` —
+`undefined`면 첫 태그를 기존 시리즈 태그(같은 파일의 `tags`)로 바꾸거나, 새 주제면 그 파일에 태그를 추가한다.
+
 **태그**: "CFD"는 진짜 일반론일 때만. FVM/FEM/DGM/LBM/IBM/Riemann/TVD/WENO/SIMPLE/Multigrid/AMR/
 Krylov/Multiphase/Turbulence/Combustion/Heat-Transfer/Compressible/Incompressible/OpenFOAM 등 우선.
 - **ASCII 영문 하이픈만.** 한글·공백 금지 (`논문리뷰` ✗ → `Paper-Review` ✓). 5 locale 동일.

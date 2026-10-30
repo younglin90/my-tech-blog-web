@@ -62,6 +62,9 @@ export default async function CalculatorPage({ params }: Props) {
   const categoryIndex = categoryTools.findIndex((tool) => tool.slug === meta.slug)
   const previousInCategory = categoryIndex > 0 ? categoryTools[categoryIndex - 1] : null
   const nextInCategory = categoryIndex >= 0 && categoryIndex < categoryTools.length - 1 ? categoryTools[categoryIndex + 1] : null
+  // 사이드바에는 현재 도구 주변 6개만. 나머지는 카탈로그의 카테고리 필터로 보낸다.
+  const windowStart = Math.max(0, Math.min(categoryIndex - 2, categoryTools.length - 6))
+  const categoryWindow = categoryTools.slice(windowStart, windowStart + 6)
   const related = CALCULATORS
     .filter((tool) => tool.slug !== meta.slug)
     .map((tool) => {
@@ -177,82 +180,77 @@ export default async function CalculatorPage({ params }: Props) {
             </div>
           )}
 
-          <div className="rounded-xl p-4" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
-            <div className="text-[10px] uppercase tracking-widest" style={{ color: 'var(--text-faint)' }}>{t(loc, 'tools.category')}</div>
-            <div className="mt-1 text-sm font-medium" style={{ color: 'var(--text)' }}>
-              {categoryLabel}
-            </div>
-            <div className="mt-1 text-xs" style={{ color: 'var(--text-muted)' }}>
-              {t(loc, 'tools.categoryCount', { count: String(categoryTools.length) })}
-            </div>
-            <div className="mt-4 text-[10px] uppercase tracking-widest" style={{ color: 'var(--text-faint)' }}>{t(loc, 'tools.runtime')}</div>
-            <div className="mt-1 text-sm" style={{ color: 'var(--text-muted)' }}>
-              {t(loc, 'tools.runtimeBody')}
-            </div>
-            <div className="mt-4 text-[10px] uppercase tracking-widest" style={{ color: 'var(--text-faint)' }}>{t(loc, 'tools.bestFor')}</div>
-            <div className="mt-1 text-sm" style={{ color: 'var(--text-muted)' }}>
-              {t(loc, 'tools.bestForBody')}
-            </div>
-          </div>
-
           {categoryTools.length > 1 && (
             <div className="rounded-xl p-4" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
-              <div className="mb-3 text-[10px] uppercase tracking-widest" style={{ color: 'var(--text-faint)' }}>
-                {t(loc, 'tools.moreInCategory')}
+              <div className="mb-2 flex items-baseline justify-between gap-2">
+                <span className="text-[10px] uppercase tracking-widest" style={{ color: 'var(--text-faint)' }}>
+                  {t(loc, 'tools.moreInCategory')}
+                </span>
+                <span className="mono text-[10px] tabular-nums" style={{ color: 'var(--text-faint)' }}>{categoryLabel}</span>
               </div>
-              <div className="space-y-2">
-                {categoryTools.map((tool) => {
+              <ul className="space-y-0.5">
+                {categoryWindow.map((tool) => {
                   const active = tool.slug === meta.slug
                   return (
-                    <Link
-                      key={tool.slug}
-                      href={`/${loc}/tools/${tool.slug}`}
-                      className="block rounded-lg px-3 py-2 transition-colors"
-                      style={{
-                        background: active ? 'var(--accent-glow)' : 'var(--bg)',
-                        border: `1px solid ${active ? 'var(--accent)' : 'var(--border)'}`,
-                      }}
-                      aria-current={active ? 'page' : undefined}
-                    >
-                      <div className="text-sm font-medium" style={{ color: active ? 'var(--accent)' : 'var(--text)' }}>
-                        {tool.title[loc] ?? tool.title.en}
-                      </div>
-                      {!active && (
-                        <div className="mt-0.5 text-xs" style={{ color: 'var(--text-muted)' }}>
-                          {tool.desc[loc] ?? tool.desc.en}
-                        </div>
-                      )}
-                    </Link>
+                    <li key={tool.slug}>
+                      <Link
+                        href={`/${loc}/tools/${tool.slug}`}
+                        className="flex min-h-9 items-center rounded-md px-2 text-sm transition-colors"
+                        style={{
+                          background: active ? 'var(--accent-glow)' : 'transparent',
+                          color: active ? 'var(--accent)' : 'var(--text-muted)',
+                          fontWeight: active ? 600 : 400,
+                        }}
+                        aria-current={active ? 'page' : undefined}
+                      >
+                        <span className="line-clamp-1">{tool.title[loc] ?? tool.title.en}</span>
+                      </Link>
+                    </li>
                   )
                 })}
-              </div>
+              </ul>
+              {categoryTools.length > categoryWindow.length && (
+                <Link
+                  href={`/${loc}/tools?cat=${meta.category}`}
+                  className="mt-2 inline-flex min-h-11 items-center text-xs font-medium"
+                  style={{ color: 'var(--accent)' }}
+                >
+                  {t(loc, 'tools.categoryAll', { count: String(categoryTools.length) })} →
+                </Link>
+              )}
             </div>
           )}
 
           {related.length > 0 && (
             <div className="rounded-xl p-4" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
-              <div className="mb-3 text-[10px] uppercase tracking-widest" style={{ color: 'var(--text-faint)' }}>
+              <div className="mb-2 text-[10px] uppercase tracking-widest" style={{ color: 'var(--text-faint)' }}>
                 {t(loc, 'tools.related')}
               </div>
-              <div className="space-y-2">
-                {related.map(({ tool }) => (
-                  <Link
-                    key={tool.slug}
-                    href={`/${loc}/tools/${tool.slug}`}
-                    className="block rounded-lg px-3 py-2 transition-colors"
-                    style={{ background: 'var(--bg)', border: '1px solid var(--border)' }}
-                  >
-                    <div className="text-sm font-medium" style={{ color: 'var(--text)' }}>
-                      {tool.title[loc] ?? tool.title.en}
-                    </div>
-                    <div className="mt-0.5 text-xs" style={{ color: 'var(--text-muted)' }}>
-                      {tool.desc[loc] ?? tool.desc.en}
-                    </div>
-                  </Link>
+              <ul className="space-y-0.5">
+                {related.slice(0, 4).map(({ tool }) => (
+                  <li key={tool.slug}>
+                    <Link
+                      href={`/${loc}/tools/${tool.slug}`}
+                      className="flex min-h-9 items-center rounded-md px-2 text-sm link-hover-accent"
+                      style={{ color: 'var(--text-muted)' }}
+                    >
+                      <span className="line-clamp-1">{tool.title[loc] ?? tool.title.en}</span>
+                    </Link>
+                  </li>
                 ))}
-              </div>
+              </ul>
             </div>
           )}
+
+          <details className="rounded-xl p-4 text-sm" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
+            <summary className="min-h-9 cursor-pointer py-1 text-[10px] uppercase tracking-widest" style={{ color: 'var(--text-faint)' }}>
+              {t(loc, 'tools.aboutTool')}
+            </summary>
+            <div className="mt-2 text-[10px] uppercase tracking-widest" style={{ color: 'var(--text-faint)' }}>{t(loc, 'tools.runtime')}</div>
+            <div className="mt-1" style={{ color: 'var(--text-muted)' }}>{t(loc, 'tools.runtimeBody')}</div>
+            <div className="mt-3 text-[10px] uppercase tracking-widest" style={{ color: 'var(--text-faint)' }}>{t(loc, 'tools.bestFor')}</div>
+            <div className="mt-1" style={{ color: 'var(--text-muted)' }}>{t(loc, 'tools.bestForBody')}</div>
+          </details>
         </aside>
       </div>
       <CfdReviewCallout source="tool" />
