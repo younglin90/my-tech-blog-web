@@ -1,0 +1,187 @@
+---
+title: "[Paper Review] A water-air interface in uniform flow produced an 8×10⁸ Pa pressure spike — the non-disturbance condition in a pressure-based BN model"
+date: 2026-10-31
+description: "Reproducing the non-disturbance condition from Re and Abgrall's 2022 pressure-based Baer–Nunziato model: if volume fraction and phase mass don't share one flux, interface pressure jumps by hundreds of MPa."
+tags: ["Non-Disturbance-Condition", "Baer-Nunziato", "Compressible-Multiphase", "Diffuse-Interface", "Paper-Review"]
+locale: en
+slug: 2026-10-31-pressure-based-bn-non-disturbance
+takeaway: "Discretize the volume-fraction non-conservative term with exactly the same numerical diffusion as the mass equation, and the pressure non-conservative term with exactly the same difference as the pressure gradient — only then do uniform p and u stay uniform across an interface."
+draft: false
+---
+
+import { InterfaceForceBalanceLab } from '@/components/post-viz/2026-10-31-pressure-based-bn-non-disturbance/InterfaceForceBalanceLab'
+import { AlphaMassConsistencyRace } from '@/components/post-viz/2026-10-31-pressure-based-bn-non-disturbance/AlphaMassConsistencyRace'
+
+## One interface in a uniform flow, and the pressure jumped by 8×10⁸ Pa
+
+Take a 1D pipe with uniform velocity 1 m/s and uniform pressure 1 bar. A slug of water floats through it, surrounded by air. Physically, nothing should happen. Yet when I upgraded only the mass flux to second order and left the volume fraction at first order, the pressure in the interface cells was off by $8\times10^{8}$ Pa after 120 steps. This post reads Re and Abgrall's 2022 paper (IJNMF, *A pressure-based method for weakly compressible two-phase flows under a Baer–Nunziato type model*) as five questions and answers. By the end, you will know how to discretize the non-conservative terms of a multiphase code so that this number goes back to zero.
+
+## Q1. What problem does the paper tackle?
+
+The target is weakly compressible two-phase flow (low Mach number, small density changes). Think sloshing in a tank or air pockets trapped near a wall. The liquid is nearly incompressible, but a bubbly mixture is highly compressible. So the compressibility of both phases has to stay in the model.
+
+The model is the Saurel–Abgrall Baer–Nunziato type system (BN: a seven-equation model in which each phase carries its own pressure, velocity, and temperature). The paper keeps the pressure and velocity relaxation parameters (source terms that pull the two phases toward equilibrium) finite instead of infinite. The equation of state (EOS) can be general: stiffened gas, Peng–Robinson, and beyond.
+
+Density-based solvers need preconditioning at low Mach number. But a two-phase mixture has no single well-defined speed of sound. So the authors chose a pressure-based formulation. Bijl–Wesseling scaling splits the pressure into two variables, and the acoustic terms are integrated implicitly. As a result, runs stayed stable at acoustic CFL numbers above 10. A staggered grid removes checkerboard oscillations. The motivation is the same as in [the Toro–Vázquez splitting that moves stiffness into a pressure subsystem](/en/posts/2026-10-10-toro-vazquez-split-pressure-wave-speed/).
+
+## Q2. What is the non-disturbance condition?
+
+The non-disturbance condition was formalized by Abgrall in 1996. **A state with uniform pressure and velocity must remain uniform as an interface passes through it.** In the continuous equations this is trivial. In the discrete equations it is not.
+
+The momentum equation of phase $\sigma$ in the BN model contains the non-conservative term $P_I\,\partial\alpha_\sigma/\partial x$.
+
+$$
+\frac{\partial (\alpha\rho u)_\sigma}{\partial t} + \frac{\partial (\alpha\rho u^2)_\sigma}{\partial x} + \frac{\partial (\alpha P)_\sigma}{\partial x} = P_I \frac{\partial \alpha_\sigma}{\partial x} + \text{relaxation}
+$$
+
+$\alpha_\sigma$ is the volume fraction and $P_I$ the interface pressure. With uniform $P$, the pressure term on the left, $P\,\partial\alpha/\partial x$, cancels the right-hand side exactly. For the cancellation to survive discretization, both terms must use the same difference. Equation (49) of the paper is the answer.
+
+$$
+H_P(\alpha, P_I)_k = (P_I)_k\left[\alpha_{i+1} - \alpha_i\right]
+$$
+
+$k$ is the staggered cell between cells $i$ and $i+1$. The pressure gradient is differenced as $-[(\alpha P)_{i+1}-(\alpha P)_i]$. It is the same difference over the same two cells, so the sum is zero for uniform $P$.
+
+Try switching the $H_P$ discretization yourself in the simulation below.
+
+<InterfaceForceBalanceLab />
+
+Pick `averaged` (a cell-centered central gradient averaged to the face) and red forces appear on the faces around the interface, while the water velocity drifts away from 1. Widening the interface from 1 to 6 cells shrinks the force but never removes it. Equation (49) keeps the green bars — zero — at any width and pressure.
+
+## Q3. Why must the volume-fraction equation follow the mass flux?
+
+The same logic applies to the volume-fraction equation $\partial_t\alpha_\sigma + u_I\,\partial_x\alpha_\sigma = \dots$. The phase density is recovered as $\rho_\sigma = (\alpha\rho)_\sigma/\alpha_\sigma$. If numerator and denominator receive different diffusion, a uniform $\rho_\sigma$ changes in the interface cells.
+
+With an EOS linearized around the phase sound speed $c_\sigma$, the mixture pressure error takes one line.
+
+$$
+p_{\text{mix}} - p_0 = \sum_\sigma \alpha_\sigma\, c_\sigma^2 \left(\rho_\sigma - \rho_{0,\sigma}\right) = \sum_\sigma c_\sigma^2 \left[(\alpha\rho)_\sigma - \rho_{0,\sigma}\,\alpha_\sigma\right]
+$$
+
+$\rho_{0,\sigma}$ is the reference density. The bracket is the difference between "what the mass equation transported" and "what the volume-fraction equation transported." Water has $c^2 = 2.25\times10^6$ m²/s², so a mismatch of just 1 kg/m³ becomes 2.25 MPa.
+
+That is why equation (45) writes $u_I\,\partial_x\alpha$ in the same form as the Rusanov flux of the mass equation (a first-order flux whose diffusion is set by the local maximum wave speed).
+
+$$
+\hat F_{i+\frac12} = \tfrac12 (u_I)_i\left[\alpha_{i+1}+\alpha_i\right] - \tfrac12 \left|(u_I)_i\right|\left[\alpha_{i+1}-\alpha_i\right]
+$$
+
+Because the method is pressure-based, the wave speed $S$ contains no sound speed. The Rusanov flux of the mass equation also uses $S=\max|u|$. Both equations share the same $S$, so a uniform $\rho_\sigma$ is preserved. In other words, $\hat F$ is not a true face flux. It is an operator that mimics the mass flux.
+
+## Q4. What does the code show?
+
+A water (1000 kg/m³, 1500 m/s) and air (1.2 kg/m³, 340 m/s) interface is advected by 0.3 at $u=1$. The volume fraction and the two phase masses are solved in four combinations. Then, under uniform $P$, the momentum face residual $R_k$ is measured for two choices of $H_P$.
+
+```python
+import numpy as np
+
+# 1D water-air interface moving at uniform u, uniform p (should stay so)
+N, L, u, CFL = 200, 1.0, 1.0, 0.5
+dx = L / N
+dt = CFL * dx / u
+x = (np.arange(N) + 0.5) * dx
+rho0 = np.array([1000.0, 1.2])     # water, air reference densities [kg/m^3]
+c0 = np.array([1500.0, 340.0])     # phase sound speeds [m/s]
+p0, eps = 1.0e5, 1e-6
+
+def minmod_slope(q):
+    a = q - np.roll(q, 1)
+    b = np.roll(q, -1) - q
+    return np.where(a * b > 0, np.sign(a) * np.minimum(abs(a), abs(b)), 0.0)
+
+def face_flux(q, order):
+    # Rusanov flux with S=|u| (pressure-based: no sound speed), u>0
+    qL = q + 0.5 * minmod_slope(q) if order == 2 else q
+    return u * qL
+
+def central_flux(q):
+    return 0.5 * u * (q + np.roll(q, -1))
+
+def mixture_dp(a1, m1, m2):
+    a = np.array([a1, 1 - a1])
+    rho = np.array([m1, m2]) / a
+    p = p0 + (c0**2)[:, None] * (rho - rho0[:, None])
+    return np.max(abs((a * p).sum(0) - p0))
+
+def march(alpha_rule, mass_order, t_end=0.3):
+    a1 = np.where(abs(x - 0.3) < 0.15, 1 - eps, eps)
+    m1, m2 = rho0[0] * a1, rho0[1] * (1 - a1)
+    n = int(round(t_end / dt))
+    for _ in range(n):
+        Fa = central_flux(a1) if alpha_rule == "central" else face_flux(a1, alpha_rule)
+        F1, F2 = face_flux(m1, mass_order), face_flux(m2, mass_order)
+        a1 = np.clip(a1 - dt / dx * (Fa - np.roll(Fa, 1)), eps, 1 - eps)
+        m1 = m1 - dt / dx * (F1 - np.roll(F1, 1))
+        m2 = m2 - dt / dx * (F2 - np.roll(F2, 1))
+    return n, mixture_dp(a1, m1, m2)
+
+cases = [("A  alpha 1st / mass 1st", 1, 1),
+         ("B  alpha 1st / mass 2nd", 1, 2),
+         ("C  alpha 2nd / mass 2nd", 2, 2),
+         ("D  alpha central / mass 1st", "central", 1)]
+print("uniform u=1, p=1e5 Pa, N=200, CFL=0.5")
+for name, ar, mo in cases:
+    n, dp = march(ar, mo)
+    print(f"{name:30s} steps={n:4d}  max|p_mix - p0| = {dp:10.3e} Pa")
+
+def hp_residual(a, P, rule):
+    # momentum source on staggered face k (between cell i and i+1)
+    grad = -(np.roll(a, -1) * P - a * P)          # -[(aP)_{i+1} - (aP)_i]
+    if rule == "jump":
+        HP = P * (np.roll(a, -1) - a)             # paper eq. (49)
+    else:
+        g = 0.5 * (np.roll(a, -1) - np.roll(a, 1))   # cell-centre central gradient
+        HP = P * 0.5 * (g + np.roll(g, -1))          # averaged to the face
+    return grad + HP
+
+print()
+print("momentum source on faces, uniform P=1e5 Pa, water-rich faces (alpha>0.5)")
+for w in (1, 3, 6):
+    aw = 0.5 * (1 + np.tanh((0.15 - abs(x - 0.3)) / (w * dx)))
+    aw = np.clip(aw, eps, 1 - eps)
+    af = 0.5 * (aw + np.roll(aw, -1))
+    for rule in ("jump", "averaged"):
+        R = hp_residual(aw, p0, rule)
+        du = dt * R / (dx * af * rho0[0])
+        wet = af > 0.5
+        print(f"width={w}  H_P={rule:8s}  max|R| = {np.max(abs(R)):9.3e} Pa"
+              f"  du_water/step = {np.max(abs(du[wet])):9.3e} m/s")
+```
+
+```text
+uniform u=1, p=1e5 Pa, N=200, CFL=0.5
+A  alpha 1st / mass 1st        steps= 120  max|p_mix - p0| =  5.116e-07 Pa
+B  alpha 1st / mass 2nd        steps= 120  max|p_mix - p0| =  8.024e+08 Pa
+C  alpha 2nd / mass 2nd        steps= 120  max|p_mix - p0| =  1.769e-05 Pa
+D  alpha central / mass 1st    steps= 120  max|p_mix - p0| =  1.665e+09 Pa
+
+momentum source on faces, uniform P=1e5 Pa, water-rich faces (alpha>0.5)
+width=1  H_P=jump      max|R| = 1.319e-11 Pa  du_water/step = 6.777e-15 m/s
+width=1  H_P=averaged  max|R| = 1.203e+04 Pa  du_water/step = 1.874e+00 m/s
+width=3  H_P=jump      max|R| = 8.185e-12 Pa  du_water/step = 4.670e-15 m/s
+width=3  H_P=averaged  max|R| = 8.326e+02 Pa  du_water/step = 4.142e-01 m/s
+width=6  H_P=jump      max|R| = 1.283e-11 Pa  du_water/step = 6.439e-15 m/s
+width=6  H_P=averaged  max|R| = 1.126e+02 Pa  du_water/step = 8.670e-02 m/s
+```
+
+Now run the code above in your browser.
+
+<AlphaMassConsistencyRace />
+
+With the defaults, after 120 steps the four numbers match the output block. Lower `c_water` from 1500 to 300 and the errors of B and D drop by about 25×. That is exactly the $c^2$ scaling from Q3. A and C stay at round-off for any setting.
+
+A and C sit at $5\times10^{-7}$ and $2\times10^{-5}$ Pa. What separated the results was not the order but **whether the two equations use the same difference**. B upgraded only the mass to MUSCL. In the interface cells, $(\alpha\rho)_1$ smears less while $\alpha_1$ smears more. Cells on the air side end up with less water mass than water volume, so $\rho_1$ drifts far from its reference value. D's central difference makes $\alpha$ oscillate, and that oscillation becomes pressure.
+
+On the momentum side, equation (49) gives $10^{-11}$ Pa — machine precision. The averaged gradient produces a face residual of $1.2\times10^4$ Pa for a one-cell interface. The water velocity changes by 1.87 m/s in a single step. The flow itself moves at 1 m/s, so the first step reverses it.
+
+## Q5. Do we have to give up second-order accuracy, then?
+
+No. As case C shows, use the **same** reconstruction in both equations. Minmod is homogeneous of degree one. So if $(\alpha\rho)_\sigma = \rho_0\alpha_\sigma$, the slope is also scaled by $\rho_0$ and the ratio is preserved. A nonlinear limiter applied separately to each phase mass can break this property. In that case, reconstruct primitive variables such as $\alpha$ and $\rho_\sigma$, and build the mass flux from their product.
+
+Two caveats. First, $u$ is constant in this experiment, so $u_I\,\partial_x\alpha$ equals $\partial_x(\alpha u)$. In a real code $u_I$ varies from cell to cell. That is why the paper uses the cell value $(u_I)_i$ rather than a face value — a choice that makes $H_u=0$ for uniform $\alpha$. Second, the paper itself calls this discretization "robust, but scheme-dependent." Change the mass flux and $H_u$ and $H_P$ must be re-derived. Attempts to [change only the volume-fraction reconstruction](/en/posts/2026-10-24-compressive-beta-limiter-volume-fraction/), such as a compressive limiter, are risky precisely here.
+
+A quick summary of the paper's other results. Water–aluminum and water–air shock tubes and a CO₂ vapor–liquid mixture matched reference solutions within a few percent. The discrepancies near shocks are what one expects from a non-conservative model. With finite relaxation parameters, the approach of both phases toward pressure and velocity equilibrium shows up directly in the solution.
+
+## A uniform-interface test to run before you swap your next limiter
+
+Place one sharp interface in uniform $u$ and $p$ and march 100 steps. Print the maximum deviation of the mixture pressure. Anything above machine precision means the $\alpha$ equation and the mass equation are differenced inconsistently. For momentum, check only the face residual $R_k$ after the first step. Rerun this test whenever you change a flux or a limiter. It is a few lines long, but it catches an 8×10⁸ Pa bug on day one.

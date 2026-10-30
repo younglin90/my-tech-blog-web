@@ -1,0 +1,187 @@
+---
+title: "[论文解读] 匀速流动的水-空气界面上压力跳了8亿Pa — 压力基BN模型的不扰动条件"
+date: 2026-10-31
+description: "复现Re–Abgrall(2022)压力基Baer–Nunziato模型的不扰动条件:体积分数与质量若不用同一通量求解,界面压力会跳动数亿Pa。"
+tags: ["Non-Disturbance-Condition", "Baer-Nunziato", "Compressible-Multiphase", "Diffuse-Interface", "Paper-Review"]
+locale: zh
+slug: 2026-10-31-pressure-based-bn-non-disturbance
+takeaway: "体积分数方程的非守恒项必须与质量方程使用完全相同的数值耗散,压力非守恒项必须与压力梯度使用完全相同的差分,均匀的p和u才能在界面经过后依然均匀。"
+draft: false
+---
+
+import { InterfaceForceBalanceLab } from '@/components/post-viz/2026-10-31-pressure-based-bn-non-disturbance/InterfaceForceBalanceLab'
+import { AlphaMassConsistencyRace } from '@/components/post-viz/2026-10-31-pressure-based-bn-non-disturbance/AlphaMassConsistencyRace'
+
+## 均匀流里只有一个界面,压力却跳了8亿Pa
+
+设想一根一维管道,速度均匀为1 m/s,压力均匀为1 bar。一段水夹在空气中随流移动。物理上什么都不该发生。可是当我只把质量通量升到二阶、体积分数仍保留一阶时,120步后界面单元的压力偏差达到 $8\times10^{8}$ Pa。本文以五个问答的形式解读Re与Abgrall的2022年论文(IJNMF, *A pressure-based method for weakly compressible two-phase flows under a Baer–Nunziato type model*)。读完后,你会知道多相代码的非守恒项该如何离散,才能让这个数字回到零。
+
+## Q1. 这篇论文想解决什么问题?
+
+研究对象是弱可压(weakly compressible,马赫数低、密度变化小)两相流,例如储罐内的晃荡或贴近壁面的封闭气泡。液体几乎不可压,但含气泡的混合物却高度可压。因此两相的可压缩性都必须保留。
+
+模型采用Saurel–Abgrall的Baer–Nunziato型(BN,每一相各自拥有压力、速度和温度的七方程)模型。论文将压力和速度松弛(relaxation,把两相拉向平衡的源项)系数取为有限值,而非无穷大。状态方程(EOS)允许stiffened gas、Peng–Robinson等一般形式。
+
+密度基求解器在低马赫数下需要预条件(preconditioning)。但两相混合物没有唯一确定的声速。因此作者选择了压力基表述。借助Bijl–Wesseling缩放把压力拆成两个变量,并隐式求解声学项。结果在声学CFL超过10时依然稳定。交错网格(staggered grid)则抑制了棋盘振荡。这与[Toro–Vázquez分裂把刚性转移到压力子系统的做法](/zh/posts/2026-10-10-toro-vazquez-split-pressure-wave-speed/)出于同样的考虑。
+
+## Q2. 什么是不扰动条件?
+
+不扰动条件(non-disturbance condition)由Abgrall于1996年系统提出。**压力和速度均匀的状态,在界面经过之后仍须保持均匀。** 在连续方程中这是显然的。在离散方程中却并不显然。
+
+BN模型中相 $\sigma$ 的动量方程含有非守恒项 $P_I\,\partial\alpha_\sigma/\partial x$。
+
+$$
+\frac{\partial (\alpha\rho u)_\sigma}{\partial t} + \frac{\partial (\alpha\rho u^2)_\sigma}{\partial x} + \frac{\partial (\alpha P)_\sigma}{\partial x} = P_I \frac{\partial \alpha_\sigma}{\partial x} + \text{relaxation}
+$$
+
+$\alpha_\sigma$ 为体积分数,$P_I$ 为界面压力。若 $P$ 均匀,左侧压力项 $P\,\partial\alpha/\partial x$ 与右侧恰好抵消。要在离散后仍然抵消,两项必须采用相同的差分。论文式(49)给出了答案。
+
+$$
+H_P(\alpha, P_I)_k = (P_I)_k\left[\alpha_{i+1} - \alpha_i\right]
+$$
+
+$k$ 是单元 $i$ 与 $i+1$ 之间的交错单元。压力梯度差分为 $-[(\alpha P)_{i+1}-(\alpha P)_i]$。同样两个单元、同样的差,因此均匀 $P$ 下两者之和为零。
+
+在下面的模拟中亲手切换 $H_P$ 的差分方式。
+
+<InterfaceForceBalanceLab />
+
+选择 `averaged`(单元中心的中心差分梯度再平均到面上)后,界面两侧的面上出现红色的力,水的速度逐渐偏离1。把界面宽度从1格拉宽到6格,力会变小,但不会消失。式(49)无论宽度和压力如何,都保持绿色柱,也就是零。
+
+## Q3. 为什么体积分数方程必须跟随质量通量?
+
+同样的逻辑适用于体积分数方程 $\partial_t\alpha_\sigma + u_I\,\partial_x\alpha_\sigma = \dots$。相密度由 $\rho_\sigma = (\alpha\rho)_\sigma/\alpha_\sigma$ 恢复。若分子与分母受到不同的数值耗散,原本均匀的 $\rho_\sigma$ 就会在界面单元中发生变化。
+
+采用在声速 $c_\sigma$ 附近线性化的EOS,混合压力误差可以写成一行。
+
+$$
+p_{\text{mix}} - p_0 = \sum_\sigma \alpha_\sigma\, c_\sigma^2 \left(\rho_\sigma - \rho_{0,\sigma}\right) = \sum_\sigma c_\sigma^2 \left[(\alpha\rho)_\sigma - \rho_{0,\sigma}\,\alpha_\sigma\right]
+$$
+
+$\rho_{0,\sigma}$ 为参考密度。括号内是"质量方程输运的量"与"体积分数方程输运的量"之差。水的 $c^2 = 2.25\times10^6$ m²/s²,所以哪怕1 kg/m³的不一致也会变成2.25 MPa。
+
+因此论文在式(45)中把 $u_I\,\partial_x\alpha$ 写成与质量方程Rusanov通量(以局部最大波速提供耗散的一阶通量)相同的形式。
+
+$$
+\hat F_{i+\frac12} = \tfrac12 (u_I)_i\left[\alpha_{i+1}+\alpha_i\right] - \tfrac12 \left|(u_I)_i\right|\left[\alpha_{i+1}-\alpha_i\right]
+$$
+
+由于是压力基方法,波速 $S$ 中不含声速。质量方程的Rusanov通量同样使用 $S=\max|u|$。两个方程共享同一个 $S$,于是均匀的 $\rho_\sigma$ 得以保持。换言之,$\hat F$ 并不是真正的面通量,而是"模仿质量通量的算子"。
+
+## Q4. 用代码验证会怎样?
+
+让水(1000 kg/m³, 1500 m/s)与空气(1.2 kg/m³, 340 m/s)的界面以 $u=1$ 移动0.3。体积分数和两相质量分别用四种组合求解。随后在均匀 $P$ 下,用两种 $H_P$ 测量动量面残差 $R_k$。
+
+```python
+import numpy as np
+
+# 在均匀 u, p 中流动的一维水-空气界面(应保持均匀)
+N, L, u, CFL = 200, 1.0, 1.0, 0.5
+dx = L / N
+dt = CFL * dx / u
+x = (np.arange(N) + 0.5) * dx
+rho0 = np.array([1000.0, 1.2])     # 水、空气参考密度 [kg/m^3]
+c0 = np.array([1500.0, 340.0])     # 各相声速 [m/s]
+p0, eps = 1.0e5, 1e-6
+
+def minmod_slope(q):
+    a = q - np.roll(q, 1)
+    b = np.roll(q, -1) - q
+    return np.where(a * b > 0, np.sign(a) * np.minimum(abs(a), abs(b)), 0.0)
+
+def face_flux(q, order):
+    # S=|u| 的Rusanov通量(压力基:不含声速), u>0
+    qL = q + 0.5 * minmod_slope(q) if order == 2 else q
+    return u * qL
+
+def central_flux(q):
+    return 0.5 * u * (q + np.roll(q, -1))
+
+def mixture_dp(a1, m1, m2):
+    a = np.array([a1, 1 - a1])
+    rho = np.array([m1, m2]) / a
+    p = p0 + (c0**2)[:, None] * (rho - rho0[:, None])
+    return np.max(abs((a * p).sum(0) - p0))
+
+def march(alpha_rule, mass_order, t_end=0.3):
+    a1 = np.where(abs(x - 0.3) < 0.15, 1 - eps, eps)
+    m1, m2 = rho0[0] * a1, rho0[1] * (1 - a1)
+    n = int(round(t_end / dt))
+    for _ in range(n):
+        Fa = central_flux(a1) if alpha_rule == "central" else face_flux(a1, alpha_rule)
+        F1, F2 = face_flux(m1, mass_order), face_flux(m2, mass_order)
+        a1 = np.clip(a1 - dt / dx * (Fa - np.roll(Fa, 1)), eps, 1 - eps)
+        m1 = m1 - dt / dx * (F1 - np.roll(F1, 1))
+        m2 = m2 - dt / dx * (F2 - np.roll(F2, 1))
+    return n, mixture_dp(a1, m1, m2)
+
+cases = [("A  alpha 1st / mass 1st", 1, 1),
+         ("B  alpha 1st / mass 2nd", 1, 2),
+         ("C  alpha 2nd / mass 2nd", 2, 2),
+         ("D  alpha central / mass 1st", "central", 1)]
+print("uniform u=1, p=1e5 Pa, N=200, CFL=0.5")
+for name, ar, mo in cases:
+    n, dp = march(ar, mo)
+    print(f"{name:30s} steps={n:4d}  max|p_mix - p0| = {dp:10.3e} Pa")
+
+def hp_residual(a, P, rule):
+    # 交错面 k(单元 i 与 i+1 之间)的动量源项
+    grad = -(np.roll(a, -1) * P - a * P)          # -[(aP)_{i+1} - (aP)_i]
+    if rule == "jump":
+        HP = P * (np.roll(a, -1) - a)             # 论文式(49)
+    else:
+        g = 0.5 * (np.roll(a, -1) - np.roll(a, 1))   # 单元中心的中心差分梯度
+        HP = P * 0.5 * (g + np.roll(g, -1))          # 平均到面上
+    return grad + HP
+
+print()
+print("momentum source on faces, uniform P=1e5 Pa, water-rich faces (alpha>0.5)")
+for w in (1, 3, 6):
+    aw = 0.5 * (1 + np.tanh((0.15 - abs(x - 0.3)) / (w * dx)))
+    aw = np.clip(aw, eps, 1 - eps)
+    af = 0.5 * (aw + np.roll(aw, -1))
+    for rule in ("jump", "averaged"):
+        R = hp_residual(aw, p0, rule)
+        du = dt * R / (dx * af * rho0[0])
+        wet = af > 0.5
+        print(f"width={w}  H_P={rule:8s}  max|R| = {np.max(abs(R)):9.3e} Pa"
+              f"  du_water/step = {np.max(abs(du[wet])):9.3e} m/s")
+```
+
+```text
+uniform u=1, p=1e5 Pa, N=200, CFL=0.5
+A  alpha 1st / mass 1st        steps= 120  max|p_mix - p0| =  5.116e-07 Pa
+B  alpha 1st / mass 2nd        steps= 120  max|p_mix - p0| =  8.024e+08 Pa
+C  alpha 2nd / mass 2nd        steps= 120  max|p_mix - p0| =  1.769e-05 Pa
+D  alpha central / mass 1st    steps= 120  max|p_mix - p0| =  1.665e+09 Pa
+
+momentum source on faces, uniform P=1e5 Pa, water-rich faces (alpha>0.5)
+width=1  H_P=jump      max|R| = 1.319e-11 Pa  du_water/step = 6.777e-15 m/s
+width=1  H_P=averaged  max|R| = 1.203e+04 Pa  du_water/step = 1.874e+00 m/s
+width=3  H_P=jump      max|R| = 8.185e-12 Pa  du_water/step = 4.670e-15 m/s
+width=3  H_P=averaged  max|R| = 8.326e+02 Pa  du_water/step = 4.142e-01 m/s
+width=6  H_P=jump      max|R| = 1.283e-11 Pa  du_water/step = 6.439e-15 m/s
+width=6  H_P=averaged  max|R| = 1.126e+02 Pa  du_water/step = 8.670e-02 m/s
+```
+
+在浏览器里直接运行上面的代码。
+
+<AlphaMassConsistencyRace />
+
+默认参数下跑完120步,四个数字与输出块一致。把 `c_water` 从1500降到300,B和D的误差约减小25倍,正好符合Q3中误差与 $c^2$ 成正比的公式。A和C在任何参数下都停留在舍入误差水平。
+
+A和C分别为 $5\times10^{-7}$ 和 $2\times10^{-5}$ Pa。决定结果的不是阶数,而是**两个方程的差分是否一致**。B只把质量升级为MUSCL。在界面单元中,$(\alpha\rho)_1$ 抹平得少,$\alpha_1$ 抹平得多。空气一侧的单元里,水的质量比体积留得少,$\rho_1$ 严重偏离参考值。D的中心差分让 $\alpha$ 产生振荡,振荡直接变成了压力。
+
+动量方面,式(49)给出 $10^{-11}$ Pa,即机器精度。平均梯度在1格宽的界面上产生 $1.2\times10^4$ Pa的面残差。水的速度一步之内改变1.87 m/s。流速本身只有1 m/s,所以第一步就让流动反向。
+
+## Q5. 那是否必须放弃二阶精度?
+
+不必。正如C所示,只要两个方程使用**相同的**重构即可。minmod是一次齐次函数。因此若 $(\alpha\rho)_\sigma = \rho_0\alpha_\sigma$,斜率也按 $\rho_0$ 倍缩放,比值保持不变。若对各相质量分别施加非线性限制器,这一性质可能被破坏。此时应重构 $\alpha$、$\rho_\sigma$ 等原始变量,再用它们的乘积构造质量通量。
+
+有两点需要注意。第一,本实验中 $u$ 为常数,所以 $u_I\,\partial_x\alpha$ 与 $\partial_x(\alpha u)$ 相同。实际代码中 $u_I$ 随单元变化。因此论文使用单元值 $(u_I)_i$ 而不是面值,目的是在均匀 $\alpha$ 下保证 $H_u=0$。第二,论文自己也说这种离散"稳健但依赖格式"。一旦更换质量通量,就必须重新推导 $H_u$ 和 $H_P$。像压缩型限制器那样[只改体积分数重构的尝试](/zh/posts/2026-10-24-compressive-beta-limiter-volume-fraction/),恰恰在这里存在风险。
+
+简要概括论文的其他结果。水-铝、水-空气激波管以及CO₂汽液混合物算例,与参考解的偏差在几个百分点以内。激波附近的差异处于非守恒模型可预期的范围。松弛系数取有限值时,两相压力与速度趋向平衡的过程会直接体现在解中。
+
+## 更换下一个限制器之前先跑的匀速界面测试
+
+在均匀的 $u$、$p$ 中放置一个尖锐界面,推进100步。输出混合压力的最大偏差。若不在机器精度量级,说明 $\alpha$ 方程与质量方程的差分不一致。动量方面只需检查第一步的面残差 $R_k$。每次更换通量或限制器都重跑一次。这个测试只有几行,却能在第一天就抓住8亿Pa的bug。

@@ -1,0 +1,187 @@
+---
+title: "[論文レビュー] 等速で流れる水-空気界面で圧力が8億Pa跳ねた — 圧力ベースBNモデルの非擾乱条件"
+date: 2026-10-31
+description: "Re–Abgrall(2022)の圧力ベースBaer–Nunziatoモデルの非擾乱条件を再現します。体積分率と質量を同じ流束で解かないと界面で圧力が数億Pa跳ねます。"
+tags: ["Non-Disturbance-Condition", "Baer-Nunziato", "Compressible-Multiphase", "Diffuse-Interface", "Paper-Review"]
+locale: ja
+slug: 2026-10-31-pressure-based-bn-non-disturbance
+takeaway: "体積分率式の非保存項は質量式とまったく同じ数値拡散で、圧力の非保存項は圧力勾配とまったく同じ差分で書いて初めて、一様なpとuが界面を通過しても一様に保たれます。"
+draft: false
+---
+
+import { InterfaceForceBalanceLab } from '@/components/post-viz/2026-10-31-pressure-based-bn-non-disturbance/InterfaceForceBalanceLab'
+import { AlphaMassConsistencyRace } from '@/components/post-viz/2026-10-31-pressure-based-bn-non-disturbance/AlphaMassConsistencyRace'
+
+## 一様な流れに界面がひとつ、圧力は8億Pa跳ねた
+
+速度1 m/s、圧力1 barで一様な1D管があります。その中を、空気に挟まれた水の塊が流れていきます。物理的には何も起きないはずです。ところが質量流束だけを2次に上げ、体積分率を1次のまま残したところ、120ステップ後に界面セルの圧力が $8\times10^{8}$ Pa ずれました。本記事では、ReとAbgrallの2022年の論文(IJNMF, *A pressure-based method for weakly compressible two-phase flows under a Baer–Nunziato type model*)を5つのQ&Aで読みます。読み終えると、多相コードの非保存項をどう差分化すればこの数字が0に戻るのかが分かります。
+
+## Q1. この論文は何を解こうとしたのか?
+
+対象は弱圧縮性(weakly compressible、マッハ数が小さく密度変化が小さい)の二相流です。タンク内のスロッシングや、壁近くに閉じ込められた気泡が例です。液体はほぼ非圧縮ですが、気泡を含む混合物は強く圧縮されます。そのため両相の圧縮性を残す必要があります。
+
+モデルはSaurel–AbgrallのBaer–Nunziato型(BN、各相が自分の圧力・速度・温度を持つ7方程式)モデルです。論文は圧力・速度の緩和(relaxation、両相の値を平衡へ引き寄せる生成項)係数を無限大ではなく有限値にしています。状態方程式(EOS)はstiffened gasやPeng–Robinsonなど一般形を許します。
+
+密度ベースのソルバーは低マッハ数で前処理(preconditioning)が必要です。しかし二相混合物では音速がひとつに定まりません。そこで著者らは圧力ベースの定式化を選びました。Bijl–Wesselingのスケーリングで圧力を2変数に分け、音響項を陰的に解きます。その結果、音響CFLが10を超えても安定でした。スタガード格子(staggered grid)でチェッカーボード振動も防いでいます。[Toro–Vázquez分割が圧力部分系へ剛性を移す方法](/ja/posts/2026-10-10-toro-vazquez-split-pressure-wave-speed/)と同じ問題意識です。
+
+## Q2. 非擾乱条件とは何か?
+
+非擾乱条件(non-disturbance condition)は、Abgrallが1996年に整理した要件です。**圧力と速度が一様な状態は、界面が通過しても一様に保たれなければなりません。** 連続の方程式では自明です。離散方程式では自明ではありません。
+
+BNモデルの相 $\sigma$ の運動量式には、非保存項 $P_I\,\partial\alpha_\sigma/\partial x$ があります。
+
+$$
+\frac{\partial (\alpha\rho u)_\sigma}{\partial t} + \frac{\partial (\alpha\rho u^2)_\sigma}{\partial x} + \frac{\partial (\alpha P)_\sigma}{\partial x} = P_I \frac{\partial \alpha_\sigma}{\partial x} + \text{relaxation}
+$$
+
+$\alpha_\sigma$ は体積分率、$P_I$ は界面圧力です。$P$ が一様なら、左辺の圧力項 $P\,\partial\alpha/\partial x$ と右辺が正確に打ち消し合います。離散化後も打ち消し合うには、両項が同じ差分でなければなりません。論文の式(49)がその答えです。
+
+$$
+H_P(\alpha, P_I)_k = (P_I)_k\left[\alpha_{i+1} - \alpha_i\right]
+$$
+
+$k$ はセル $i$ と $i+1$ の間のスタガードセルです。圧力勾配は $-[(\alpha P)_{i+1}-(\alpha P)_i]$ と差分化します。同じ2セルの同じ差なので、一様な $P$ では和が0になります。
+
+下のシミュレーションで $H_P$ の差分を実際に切り替えてみましょう。
+
+<InterfaceForceBalanceLab />
+
+`averaged`(セル中心の中心差分勾配を面へ平均)を選ぶと、界面の両側の面に赤い力が生じ、水の速度が1からずれていきます。界面幅を1セルから6セルに広げると力は小さくなりますが、消えはしません。式(49)は幅や圧力によらず緑のバー、つまり0を保ちます。
+
+## Q3. なぜ体積分率式は質量流束に従う必要があるのか?
+
+同じ論理が体積分率式 $\partial_t\alpha_\sigma + u_I\,\partial_x\alpha_\sigma = \dots$ にも当てはまります。相密度は $\rho_\sigma = (\alpha\rho)_\sigma/\alpha_\sigma$ で復元されます。分子と分母が異なる拡散を受けると、一様だった $\rho_\sigma$ が界面セルで変わります。
+
+音速 $c_\sigma$ のまわりで線形化したEOSを使うと、混合圧力の誤差は1行で書けます。
+
+$$
+p_{\text{mix}} - p_0 = \sum_\sigma \alpha_\sigma\, c_\sigma^2 \left(\rho_\sigma - \rho_{0,\sigma}\right) = \sum_\sigma c_\sigma^2 \left[(\alpha\rho)_\sigma - \rho_{0,\sigma}\,\alpha_\sigma\right]
+$$
+
+$\rho_{0,\sigma}$ は基準密度です。括弧の中は「質量式が運んだ量」と「体積分率式が運んだ量」の差です。水は $c^2 = 2.25\times10^6$ m²/s² なので、1 kg/m³ の不一致でも2.25 MPaになります。
+
+だから論文は式(45)で、$u_I\,\partial_x\alpha$ を質量式のRusanov流束(局所最大波速で拡散を与える1次流束)と同じ形で書きます。
+
+$$
+\hat F_{i+\frac12} = \tfrac12 (u_I)_i\left[\alpha_{i+1}+\alpha_i\right] - \tfrac12 \left|(u_I)_i\right|\left[\alpha_{i+1}-\alpha_i\right]
+$$
+
+圧力ベースなので、波速 $S$ に音速は入りません。質量式のRusanov流束も $S=\max|u|$ を使います。両式が同じ $S$ を共有するので、一様な $\rho_\sigma$ が保たれます。つまり $\hat F$ は本当の面流束ではなく、「質量流束をまねた演算子」です。
+
+## Q4. コードで確かめるとどうなるか?
+
+水(1000 kg/m³、1500 m/s)と空気(1.2 kg/m³、340 m/s)の界面を $u=1$ で0.3だけ移動させます。体積分率と両相の質量を4通りの組み合わせで解きます。続いて一様な $P$ のもとで、運動量の面残差 $R_k$ を2種類の $H_P$ で測ります。
+
+```python
+import numpy as np
+
+# 一様な u, p の中を流れる1D水-空気界面(一様のまま保たれるべき)
+N, L, u, CFL = 200, 1.0, 1.0, 0.5
+dx = L / N
+dt = CFL * dx / u
+x = (np.arange(N) + 0.5) * dx
+rho0 = np.array([1000.0, 1.2])     # 水・空気の基準密度 [kg/m^3]
+c0 = np.array([1500.0, 340.0])     # 相ごとの音速 [m/s]
+p0, eps = 1.0e5, 1e-6
+
+def minmod_slope(q):
+    a = q - np.roll(q, 1)
+    b = np.roll(q, -1) - q
+    return np.where(a * b > 0, np.sign(a) * np.minimum(abs(a), abs(b)), 0.0)
+
+def face_flux(q, order):
+    # S=|u| のRusanov流束(圧力ベース:音速なし), u>0
+    qL = q + 0.5 * minmod_slope(q) if order == 2 else q
+    return u * qL
+
+def central_flux(q):
+    return 0.5 * u * (q + np.roll(q, -1))
+
+def mixture_dp(a1, m1, m2):
+    a = np.array([a1, 1 - a1])
+    rho = np.array([m1, m2]) / a
+    p = p0 + (c0**2)[:, None] * (rho - rho0[:, None])
+    return np.max(abs((a * p).sum(0) - p0))
+
+def march(alpha_rule, mass_order, t_end=0.3):
+    a1 = np.where(abs(x - 0.3) < 0.15, 1 - eps, eps)
+    m1, m2 = rho0[0] * a1, rho0[1] * (1 - a1)
+    n = int(round(t_end / dt))
+    for _ in range(n):
+        Fa = central_flux(a1) if alpha_rule == "central" else face_flux(a1, alpha_rule)
+        F1, F2 = face_flux(m1, mass_order), face_flux(m2, mass_order)
+        a1 = np.clip(a1 - dt / dx * (Fa - np.roll(Fa, 1)), eps, 1 - eps)
+        m1 = m1 - dt / dx * (F1 - np.roll(F1, 1))
+        m2 = m2 - dt / dx * (F2 - np.roll(F2, 1))
+    return n, mixture_dp(a1, m1, m2)
+
+cases = [("A  alpha 1st / mass 1st", 1, 1),
+         ("B  alpha 1st / mass 2nd", 1, 2),
+         ("C  alpha 2nd / mass 2nd", 2, 2),
+         ("D  alpha central / mass 1st", "central", 1)]
+print("uniform u=1, p=1e5 Pa, N=200, CFL=0.5")
+for name, ar, mo in cases:
+    n, dp = march(ar, mo)
+    print(f"{name:30s} steps={n:4d}  max|p_mix - p0| = {dp:10.3e} Pa")
+
+def hp_residual(a, P, rule):
+    # スタガード面 k(セル i と i+1 の間)の運動量生成項
+    grad = -(np.roll(a, -1) * P - a * P)          # -[(aP)_{i+1} - (aP)_i]
+    if rule == "jump":
+        HP = P * (np.roll(a, -1) - a)             # 論文の式(49)
+    else:
+        g = 0.5 * (np.roll(a, -1) - np.roll(a, 1))   # セル中心の中心差分勾配
+        HP = P * 0.5 * (g + np.roll(g, -1))          # 面へ平均
+    return grad + HP
+
+print()
+print("momentum source on faces, uniform P=1e5 Pa, water-rich faces (alpha>0.5)")
+for w in (1, 3, 6):
+    aw = 0.5 * (1 + np.tanh((0.15 - abs(x - 0.3)) / (w * dx)))
+    aw = np.clip(aw, eps, 1 - eps)
+    af = 0.5 * (aw + np.roll(aw, -1))
+    for rule in ("jump", "averaged"):
+        R = hp_residual(aw, p0, rule)
+        du = dt * R / (dx * af * rho0[0])
+        wet = af > 0.5
+        print(f"width={w}  H_P={rule:8s}  max|R| = {np.max(abs(R)):9.3e} Pa"
+              f"  du_water/step = {np.max(abs(du[wet])):9.3e} m/s")
+```
+
+```text
+uniform u=1, p=1e5 Pa, N=200, CFL=0.5
+A  alpha 1st / mass 1st        steps= 120  max|p_mix - p0| =  5.116e-07 Pa
+B  alpha 1st / mass 2nd        steps= 120  max|p_mix - p0| =  8.024e+08 Pa
+C  alpha 2nd / mass 2nd        steps= 120  max|p_mix - p0| =  1.769e-05 Pa
+D  alpha central / mass 1st    steps= 120  max|p_mix - p0| =  1.665e+09 Pa
+
+momentum source on faces, uniform P=1e5 Pa, water-rich faces (alpha>0.5)
+width=1  H_P=jump      max|R| = 1.319e-11 Pa  du_water/step = 6.777e-15 m/s
+width=1  H_P=averaged  max|R| = 1.203e+04 Pa  du_water/step = 1.874e+00 m/s
+width=3  H_P=jump      max|R| = 8.185e-12 Pa  du_water/step = 4.670e-15 m/s
+width=3  H_P=averaged  max|R| = 8.326e+02 Pa  du_water/step = 4.142e-01 m/s
+width=6  H_P=jump      max|R| = 1.283e-11 Pa  du_water/step = 6.439e-15 m/s
+width=6  H_P=averaged  max|R| = 1.126e+02 Pa  du_water/step = 8.670e-02 m/s
+```
+
+上のコードをブラウザで実際に動かしてみましょう。
+
+<AlphaMassConsistencyRace />
+
+既定値で120ステップが終わると、4つの数字が出力ブロックと一致します。`c_water` を1500から300に下げると、BとDの誤差が約25分の1になります。誤差が $c^2$ に比例するというQ3の式どおりです。AとCはどの値でも丸め誤差レベルにとどまります。
+
+AとCはそれぞれ $5\times10^{-7}$、$2\times10^{-5}$ Paです。結果を分けたのは次数ではなく、**2つの式の差分が同じかどうか**でした。Bは質量だけをMUSCLに上げました。界面セルでは $(\alpha\rho)_1$ はあまりにじまず、$\alpha_1$ はよりにじみます。空気側のセルでは水の質量が体積より少なく残り、$\rho_1$ が基準値から大きく外れます。Dの中心差分は $\alpha$ に振動を作り、その振動がそのまま圧力になります。
+
+運動量側では、式(49)が $10^{-11}$ Paで機械精度です。平均勾配は1セル幅の界面で面残差 $1.2\times10^4$ Paを生みます。水の速度は1ステップで1.87 m/s変わります。流速そのものが1 m/sなので、最初のステップで流れが反転します。
+
+## Q5. では2次精度は諦めるべきか?
+
+いいえ。Cが示すように、両式に**同じ**再構成を使えばよいのです。minmodは1次同次関数です。そのため $(\alpha\rho)_\sigma = \rho_0\alpha_\sigma$ なら勾配も $\rho_0$ 倍になり、比が保たれます。非線形リミッターを相ごとの質量に別々にかけると、この性質が壊れることがあります。その場合は $\alpha$ や $\rho_\sigma$ のような原始変数を再構成し、その積で質量流束を作ります。
+
+注意点が2つあります。第一に、この実験は $u$ が定数なので、$u_I\,\partial_x\alpha$ と $\partial_x(\alpha u)$ が一致します。実際のコードでは $u_I$ がセルごとに異なります。そのため論文は $(u_I)_i$ を面ではなくセルの値として使います。一様な $\alpha$ で $H_u=0$ にするための選択です。第二に、論文自身がこの離散化を「頑健だがスキーム依存」と述べています。質量流束を変えれば、$H_u$ と $H_P$ を導き直す必要があります。圧縮型リミッターのように[体積分率側の再構成だけを変える試み](/ja/posts/2026-10-24-compressive-beta-limiter-volume-fraction/)は、まさにこの点で危険です。
+
+論文のほかの結果も短くまとめます。水-アルミニウム、水-空気の衝撃波管とCO₂の蒸気-液体混合物の問題で、参照解と数%以内で一致しました。衝撃波付近の差は、非保存モデルで予想される程度です。緩和係数を有限にすると、両相の圧力・速度が平衡へ向かう過程が解にそのまま現れます。
+
+## 次にリミッターを替える前に回す等速界面テスト
+
+一様な $u$、$p$ の中に鋭い界面をひとつ置き、100ステップ進めます。混合圧力の最大偏差を出力します。機械精度でなければ、$\alpha$ 式と質量式の差分がずれています。運動量は最初のステップの面残差 $R_k$ だけを見れば十分です。流束やリミッターを替えるたびに、このテストを回し直します。数行のテストですが、8億Paのバグを初日に捕まえられます。
