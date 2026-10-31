@@ -1,0 +1,221 @@
+---
+title: "[Paper Review] Sizing Δt by the Interface Instead of Sound Cut 23,865 Steps to 201 — A Reference-State IMEX Two-Fluid Solver"
+date: 2026-11-01
+description: "In low-Mach two-fluid flow, an acoustic CFL smears the interface and multiplies the step count. A 1D reproduction of how reference-state IMEX keeps a material CFL and a sharp bubble."
+tags: ["IMEX", "All-Mach", "Asymptotic-Preserving", "Compressible-Multiphase", "Paper-Review"]
+locale: en
+slug: 2026-11-01-rs-imex-two-fluid-material-cfl
+takeaway: "Let the sound speed set Δt at low Mach and the run gets 100× longer while the interface melts away. Linearize only the pressure around a reference state, solve it implicitly, and Δt follows the interface instead."
+draft: false
+---
+import { AcousticMaterialClockLab } from '@/components/post-viz/2026-11-01-rs-imex-two-fluid-material-cfl/AcousticMaterialClockLab'
+import { BubbleImexCflRace } from '@/components/post-viz/2026-11-01-rs-imex-two-fluid-material-cfl/BubbleImexCflRace'
+
+## Why does moving one bubble take 20,000 steps?
+
+A bubble drifts through water at 1 m/s. Sound in water travels at 1,500 m/s. A fully explicit compressible solver shrinks its time step to match the sound. The bubble hasn't crossed a single cell, yet the solver has taken thousands of steps. Worse, every step adds sound-speed-sized numerical diffusion to the interface.
+
+This post reads the 2024 JCP paper by Lukáčová-Medvid'ová, Peshkov, and Thomann, *An implicit-explicit solver for a two-fluid single-temperature model*. The core idea is simple. Linearize only the pressure terms around a constant reference state and treat them implicitly. The time step is then set by how fast the interface moves. By the end you will see why this split ends in a single linear system, and how step count and interface thickness change in a 1D experiment.
+
+## Two clocks: acoustic CFL and material CFL
+
+Nondimensionalize with the Mach number $M$ (flow speed divided by sound speed) and a factor $1/M^2$ appears in front of the pressure. The waves it creates travel at $|u| \pm c/M$. A fully explicit scheme must follow the fastest wave.
+
+$$
+\Delta t_{\text{ex}} \le \nu \frac{\Delta x}{\max\left(|u| + c/M\right)}
+$$
+
+$\nu$ is the CFL number, $c$ the dimensionless sound speed, and $\Delta x$ the cell size.
+
+The paper uses a different bound: the material CFL of Eq. (59), a time step set by how fast material moves.
+
+$$
+\Delta t_{\text{IMEX}} \le \nu \frac{\Delta x}{\max\left(|\lambda^{v}_1|, |\lambda^{v}_2|\right)}, \qquad \lambda^{v}_1 = \boldsymbol v\cdot\boldsymbol n,\ \ \lambda^{v}_2 = (\boldsymbol v + (1-2c_1)\boldsymbol w)\cdot \boldsymbol n
+$$
+
+$\boldsymbol v$ is the mixture velocity, $\boldsymbol w$ the relative velocity between phases, and $c_1$ the phase-1 mass fraction. Sound has dropped out entirely. The two clocks differ by roughly $1 + c/M$, about 120× at $M=0.01$.
+
+The time step is not the only casualty. A Rusanov flux (the simplest approximate Riemann solver, which adds diffusion scaled by the local maximum wave speed) has numerical diffusion $\lambda \Delta x/2$. Once $\lambda$ contains $c/M$, the volume fraction $\alpha$ smears at the speed of sound too.
+
+Try it yourself in the simulation below.
+
+<AcousticMaterialClockLab />
+
+Drag the Mach slider left. The orange pressure pulses blur across the whole tube and the blue ticks pack together, while the green bubble keeps the same pace. In the bottom panel, the blue $\alpha$ curve flattens faster as $M$ gets smaller.
+
+## What gets treated implicitly: pressure and chemical potential
+
+The paper's model is a single-temperature two-fluid model derived in the symmetric hyperbolic thermodynamically compatible (SHTC) framework. The unknowns are $\alpha_1$, the phase masses $\alpha_l\rho_l$, the mixture momentum $\rho\boldsymbol v$, the relative velocity $\boldsymbol w$, and the total energy $\rho E$. In the low-Mach limit, stiffness (widely separated time scales that make explicit integration impractical) comes from two places: the pressure $p$ in the momentum equation and the chemical potential difference $\mu$ in the relative velocity equation.
+
+Pressure is conveniently linear in $\rho E$ (Eq. 42).
+
+$$
+p = (\phi_p - 1)\left(\rho E - \rho E_{\text{kin}}\right), \qquad \phi_p = \frac{\gamma_1\alpha_1\rho_1 c_{v,1} + \gamma_2\alpha_2\rho_2 c_{v,2}}{\alpha_1\rho_1 c_{v,1} + \alpha_2\rho_2 c_{v,2}}
+$$
+
+$\gamma_l$ are the heat capacity ratios, $c_{v,l}$ the specific heats at constant volume, and $E_{\text{kin}}$ the kinetic energy terms. For a single phase $\phi_p=\gamma-1$ and the Euler equations come back.
+
+The trouble is $\mu$. It depends nonlinearly on $\rho E$ through the phase entropies. Treated implicitly as is, it would require a nonlinear solve every step.
+
+## Reference-state linearization: the leftover is $O(M^2)$
+
+The paper's answer is the reference solution (RS) approach. Expand $\mu$ in a Taylor series around a constant leading-order state $\boldsymbol q_{\text{RS}}$ supplied by asymptotic analysis (Eqs. 45, 48).
+
+$$
+\mu = \hat\mu + \bar\mu, \qquad \hat\mu = \hat\mu_{\text{RS}} + \left(\frac{\partial \mu}{\partial(\rho E)}\right)_{\text{RS}} \rho E
+$$
+
+$\hat\mu$ is the part linear in $\rho E$; $\bar\mu$ is the remainder. For well-prepared data (initial pressure perturbations of order $M^2$), the paper shows $\bar\mu = O(M^2)$ (Eq. 53). At low Mach the remainder is small, so treating it explicitly does not constrain the time step.
+
+The resulting split is clean. The explicit subsystem (54) is pure transport, with characteristic speeds $\lambda^v_1$ and $\lambda^v_2$ only. The implicit subsystem (57) becomes a linear system with constant coefficients, because the reference state is constant. One direct or iterative solve per stage and you're done.
+
+Time integration uses a stiffly accurate IMEX Runge–Kutta scheme, and the pressure terms are discretized centrally. The paper proves these two choices guarantee the asymptotic preserving property (AP: in the limit $M\to0$ the scheme becomes a consistent discretization of the incompressible equations). For a contrast with preconditioning inside a dual-time loop, see [the dual-time steady-preconditioner experiment](/en/posts/2026-10-30-dual-time-steady-preconditioner-inner-iterations/).
+
+## Code: 1D bubble advection, three combinations
+
+Section 5.3 of the paper carries a bubble once around a periodic box at $\boldsymbol v=(1,1)$. I reduced it to 1D. I also reduced the model: isentropic single-phase Euler with $p=\rho^\gamma$, carrying $\alpha_1$ as a color function. It is a stripped-down analog in which $\rho$ plays the role of the paper's $\rho E$. The reference state is $\rho_{\text{RS}}=1$.
+
+$$
+\hat p = 1 + \gamma(\rho - 1), \qquad \bar p = \rho^\gamma - \hat p = O\left((\rho-1)^2\right)
+$$
+
+$\hat p$ goes in implicitly and $\bar p$ explicitly. Write the face momentum in terms of $\rho^{n+1}$, substitute into the mass equation, and a single equation remains.
+
+$$
+\left[1 + \beta\left(2 - S^{+} - S^{-}\right)\right]\rho^{n+1} = \text{rhs}, \qquad \beta = \frac{\gamma\,\Delta t^2}{M^2\Delta x^2}
+$$
+
+$S^{\pm}$ are one-cell shift operators. The matrix is circulant with constant coefficients, so one FFT solves it. Three combinations are compared: (A) fully explicit with acoustic CFL, (B) fully explicit with material CFL, and (C) RS-IMEX with material CFL. All use $\nu=0.5$, $N=100$, and $t=1$ (one full period).
+
+```python
+import numpy as np
+np.seterr(all='ignore')
+
+N, GAM, NU, TEND = 100, 1.4, 0.5, 1.0
+dx = 1.0 / N
+x = (np.arange(N) + 0.5) * dx
+
+def bubble_init(M):
+    """1D analog of the paper's bubble test: u=1, p in equilibrium, sharp alpha."""
+    r = np.abs(x - 0.5)
+    alpha = 0.8 * np.arctan(-2000.0 * (r - 0.2)) / np.pi + 0.5
+    rho = 1.0 + 0.1 * M**2 * np.cos(2 * np.pi * x)   # well-prepared O(M^2) perturbation
+    return alpha, rho, rho * 1.0
+
+def ddx_c(f):  # centered derivative, periodic
+    return (np.roll(f, -1) - np.roll(f, 1)) / (2 * dx)
+
+def lap(f):
+    return (np.roll(f, -1) - 2 * f + np.roll(f, 1)) / dx**2
+
+def alpha_update(alpha, u, lam, dt):
+    """Rusanov form of alpha_t + u alpha_x = 0 with dissipation speed lam."""
+    adv = u * ddx_c(alpha)
+    diss = 0.5 * lam * lap(alpha) * dx
+    return alpha - dt * (adv - diss)
+
+def rusanov_full(rho, m, M, dt):
+    u = m / rho
+    p = rho**GAM
+    lam = np.max(np.abs(u) + np.sqrt(GAM * p / rho) / M)
+    U = np.stack([rho, m])
+    F = np.stack([m, m * u + p / M**2])
+    Up, Fp = np.roll(U, -1, axis=1), np.roll(F, -1, axis=1)
+    H = 0.5 * (F + Fp) - 0.5 * lam * (Up - U)       # face i+1/2
+    U = U - dt / dx * (H - np.roll(H, 1, axis=1))
+    return U[0], U[1], lam
+
+def rs_imex_step(rho, m, M, dt):
+    """Explicit: advection + nonlinear pressure remainder. Implicit: linearized pressure."""
+    u = m / rho
+    lam_u = np.max(np.abs(u))
+    pbar = rho**GAM - (1.0 + GAM * (rho - 1.0))      # p - p_hat, O((rho-rho_RS)^2)
+    G = m * u + pbar / M**2
+    H = 0.5 * (G + np.roll(G, -1)) - 0.5 * lam_u * (np.roll(m, -1) - m)
+    m_star = m - dt / dx * (H - np.roll(H, 1))
+    # face momentum: m_f = avg(m*) - dt*GAM/M^2 * drho/dx ;  rho^{n+1} = rho - dt*div(m_f)
+    beta = dt**2 * GAM / M**2 / dx**2
+    mf_star = 0.5 * (m_star + np.roll(m_star, -1))
+    rhs = rho - dt / dx * (mf_star - np.roll(mf_star, 1))
+    k = np.fft.fftfreq(N) * 2 * np.pi
+    rho_new = np.real(np.fft.ifft(np.fft.fft(rhs) / (1 + beta * (2 - 2 * np.cos(k)))))
+    m_new = m_star - dt * GAM / M**2 * ddx_c(rho_new)
+    return rho_new, m_new, lam_u
+
+def run(M, scheme, dt_mode):
+    alpha, rho, m = bubble_init(M)
+    a0 = alpha.copy()
+    t, n = 0.0, 0
+    while t < TEND - 1e-12:
+        u = m / rho
+        c = np.sqrt(GAM * rho**(GAM - 1))
+        speed = np.max(np.abs(u) + c / M) if dt_mode == "acoustic" else np.max(np.abs(u))
+        dt = min(NU * dx / speed, TEND - t)
+        if scheme == "explicit":
+            rho, m, lam = rusanov_full(rho, m, M, dt)
+        else:
+            rho, m, lam = rs_imex_step(rho, m, M, dt)
+        alpha = alpha_update(alpha, u, lam, dt)
+        t += dt; n += 1
+        if not np.isfinite(rho).all() or np.max(np.abs(rho - 1.0)) > 0.5:
+            return n, t
+    err = np.sum(np.abs(alpha - a0)) * dx
+    width = np.count_nonzero((alpha > 0.15) & (alpha < 0.85))
+    du = np.max(np.abs(m / rho - 1.0))
+    return n, (err, width, du, alpha.max())
+
+print(f"N={N}, nu={NU}, T=1 (one period), initial interface width = 2 cells")
+print(f"{'M':>6} {'case':<26} {'steps':>7} {'L1(alpha)':>10} {'width':>6} {'max a':>6} {'max|u-1|':>9}")
+for M in [0.1, 0.03, 0.01]:
+    for label, sch, mode in [("explicit, acoustic CFL", "explicit", "acoustic"),
+                             ("explicit, material CFL", "explicit", "material"),
+                             ("RS-IMEX, material CFL", "imex", "material")]:
+        n, res = run(M, sch, mode)
+        if not isinstance(res, tuple):
+            print(f"{M:>6} {label:<26} {n:>7}  blew up at t={res:.3f}")
+        else:
+            err, w, du, am = res
+            print(f"{M:>6} {label:<26} {n:>7} {err:>10.4f} {w:>6d} {am:>6.3f} {du:>9.1e}")
+```
+
+```text
+N=100, nu=0.5, T=1 (one period), initial interface width = 2 cells
+     M case                         steps  L1(alpha)  width  max a  max|u-1|
+   0.1 explicit, acoustic CFL        2568     0.3580    100  0.458   2.5e-03
+   0.1 explicit, material CFL          16  blew up at t=0.074
+   0.1 RS-IMEX, material CFL          201     0.0886     44  0.895   2.9e-08
+  0.03 explicit, acoustic CFL        8089     0.3813    100  0.420   2.2e-05
+  0.03 explicit, material CFL          11  blew up at t=0.048
+  0.03 RS-IMEX, material CFL          201     0.0885     44  0.895   2.0e-13
+  0.01 explicit, acoustic CFL       23865     0.3814    100  0.420   6.9e-09
+  0.01 explicit, material CFL           9  blew up at t=0.031
+  0.01 RS-IMEX, material CFL          201     0.0885     44  0.895   1.8e-12
+```
+
+Now run the code above in your browser.
+
+<BubbleImexCflRace />
+
+Slide Mach from 0.1 down to 0.003. A's step count grows like $1/M$ while C stays at 201. B blows up within a few dozen steps at any $M$. Raise ν to 0.9 and watch C's interface width shrink.
+
+## 23,865 vs. 201, and 0.38 vs. 0.09
+
+Three things stand out in the output.
+
+First, step count. A needs 2,568 → 8,089 → 23,865 steps at $M=0.1, 0.03, 0.01$, tracking $1+c/M$ exactly. C needs 201 steps regardless of $M$. That is a 119× gap at $M=0.01$.
+
+Second, stability. B uses the same time step as C, yet its density blew up between $t=0.03$ and $0.07$. Keeping the acoustic terms explicit while using a material CFL does not work. The large time step is earned by the implicit pressure solve.
+
+Third, the interface. A's peak $\alpha$ dropped from 0.9 to 0.42, which is the domain average. The bubble mixed away completely, hence the L1 error of 0.38. It's not because of the many steps. It's because each step adds diffusion of size $(c/M)\Delta x/2$. Total diffusion scales with $\lambda\cdot t$, so it gets worse as $M$ shrinks. C kept a peak of 0.895. Being first order, though, it widened the interface from 2 cells to 44. The paper also calls RS-IMEX1 "quite diffusive" and notes that the second-order extension (Sec. 3.4) captures the initial shape well.
+
+Look at the velocity disturbance $\max|u-1|$ too. C stays below $3\times10^{-8}$. A shows $2.5\times10^{-3}$ at $M=0.1$, where acoustic waves are still alive. At low Mach there is little reason to resolve them.
+
+## What this 1D experiment can't show
+
+A reduced model leaves things out. The real model has the relative velocity $\boldsymbol w$ and friction relaxation $\tau^{(w)}$. In the bubble test the paper needed $\tau^{(w)}=10^{-8}$ to $10^{-12}$ to suppress perturbations in $\boldsymbol w$. The two phases can also have different Mach numbers. In the paper's test, $M_1=1.336$ and $M_2=2.67\times10^{-2}$ coexist in one domain. The mixture Mach number then ranges from 1.23 to 0.36, and the paper points out that it is a poor indicator of the per-phase regimes.
+
+There is also the non-disturbance issue. A mixture EOS can produce pressure oscillations at a uniformly advected interface. That is exactly the topic of yesterday's post on [the non-disturbance condition for pressure-based BN models](/en/posts/2026-10-31-pressure-based-bn-non-disturbance/). Hyperbolicity of the six-equation two-fluid model was covered in [the post on complex eigenvalues of two-fluid models](/en/posts/2026-08-23-two-fluid-model-hyperbolicity-interfacial-pressure/). The paper's SHTC model is symmetric hyperbolic, so it sidesteps that problem.
+
+## Two numbers to measure before adding IMEX to a low-Mach multiphase code
+
+First, compute $1 + c/M$. If it exceeds 10, an explicit scheme loses both wall time and interface sharpness. Next, expand the pressure around a reference state and measure the size of the remainder. Check that it shrinks like $O(M^2)$. If it does, that term can stay explicit, and the implicit part reduces to a single constant-coefficient linear system.

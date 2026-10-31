@@ -1,0 +1,221 @@
+---
+title: "[論文レビュー] 音速ではなく界面速度でΔtを決めたら23,865ステップが201ステップになった — 基準状態IMEX二流体ソルバー"
+date: 2026-11-01
+description: "低マッハ二流体流れでは音響CFLが界面をぼかします。基準状態線形化IMEXが材料CFLで界面を守る仕組みを1Dで再現します。"
+tags: ["IMEX", "All-Mach", "Asymptotic-Preserving", "Compressible-Multiphase", "Paper-Review"]
+locale: ja
+slug: 2026-11-01-rs-imex-two-fluid-material-cfl
+takeaway: "低マッハで時間刻みを音速に決めさせると、計算は100倍長くなり界面も消えます。圧力だけを基準状態まわりで線形化して陰的に解けば、界面速度でΔtを取れます。"
+draft: false
+---
+import { AcousticMaterialClockLab } from '@/components/post-viz/2026-11-01-rs-imex-two-fluid-material-cfl/AcousticMaterialClockLab'
+import { BubbleImexCflRace } from '@/components/post-viz/2026-11-01-rs-imex-two-fluid-material-cfl/BubbleImexCflRace'
+
+## 気泡を一つ運ぶのに、なぜ2万ステップ必要なのか
+
+水中の気泡が1 m/sで流れています。ところが水の音速は1,500 m/sです。完全陽的な圧縮性ソルバーは、この音速に合わせて時間刻みを縮めます。気泡は1セルも進んでいないのに、ステップは数千回回ります。さらに悪いことがあります。ステップごとに音速規模の数値拡散が界面に加わるのです。
+
+本記事では、Lukáčová-Medvid'ová、Peshkov、Thomannによる2024年のJCP論文 *An implicit-explicit solver for a two-fluid single-temperature model* を読みます。要点は一つです。圧力項だけを定数の基準状態まわりで線形化し、陰的に解きます。すると時間刻みは界面が動く速さで決まります。読み終えると、この分割がなぜ線形システム一つで済むのか、1D実験でステップ数と界面の厚さがどう変わるのかを確認できます。
+
+## 二つの時計：音響CFLと材料CFL
+
+マッハ数（流速を音速で割った値）$M$で無次元化すると、圧力項の前に$1/M^2$が付きます。この項が生む波の速さは$|u| \pm c/M$です。完全陽解法の安定条件は最も速い波に従います。
+
+$$
+\Delta t_{\text{ex}} \le \nu \frac{\Delta x}{\max\left(|u| + c/M\right)}
+$$
+
+$\nu$はCFL数、$c$は無次元音速、$\Delta x$は格子幅です。
+
+論文が使う条件は異なります。式(59)の材料CFL（物質が動く速さで決める時間刻み）です。
+
+$$
+\Delta t_{\text{IMEX}} \le \nu \frac{\Delta x}{\max\left(|\lambda^{v}_1|, |\lambda^{v}_2|\right)}, \qquad \lambda^{v}_1 = \boldsymbol v\cdot\boldsymbol n,\ \ \lambda^{v}_2 = (\boldsymbol v + (1-2c_1)\boldsymbol w)\cdot \boldsymbol n
+$$
+
+$\boldsymbol v$は混合物速度、$\boldsymbol w$は二相の相対速度、$c_1$は第1相の質量分率です。音速が式から完全に消えました。二つの時計の比はおよそ$1 + c/M$で、$M=0.01$なら約120倍です。
+
+問題は時間刻みだけではありません。Rusanov流束（局所最大波速で拡散を与える最も単純な近似リーマン解法）の数値拡散は$\lambda \Delta x/2$です。$\lambda$に$c/M$が入ると、体積分率$\alpha$も音速規模でぼやけます。
+
+下のシミュレーションで実際に操作してみましょう。
+
+<AcousticMaterialClockLab />
+
+Machスライダーを左へ動かすと、オレンジの圧力パルスは管全体ににじみ、青い目盛りは密になります。緑の気泡は同じ速さで進みます。下のパネルでは、$M$が小さいほど青い$\alpha$曲線が早く平らになります。
+
+## 何を陰的に解くのか：圧力と化学ポテンシャル
+
+論文のモデルは単一温度二流体モデルで、対称双曲型熱力学整合（SHTC）の枠組みから導かれています。変数は$\alpha_1$、相ごとの質量$\alpha_l\rho_l$、混合運動量$\rho\boldsymbol v$、相対速度$\boldsymbol w$、全エネルギー$\rho E$です。低マッハ極限での硬さ（stiffness、時間スケールが大きく離れて陽的に解きにくい性質）は二か所から来ます。運動量式の圧力$p$と、相対速度式の化学ポテンシャル差$\mu$です。
+
+幸い、圧力は$\rho E$について線形です（式42）。
+
+$$
+p = (\phi_p - 1)\left(\rho E - \rho E_{\text{kin}}\right), \qquad \phi_p = \frac{\gamma_1\alpha_1\rho_1 c_{v,1} + \gamma_2\alpha_2\rho_2 c_{v,2}}{\alpha_1\rho_1 c_{v,1} + \alpha_2\rho_2 c_{v,2}}
+$$
+
+$\gamma_l$は比熱比、$c_{v,l}$は定積比熱、$E_{\text{kin}}$は運動エネルギー項です。単相なら$\phi_p=\gamma-1$となり、オイラー方程式に一致します。
+
+厄介なのは$\mu$です。相エントロピーを通じて$\rho E$に非線形に依存します。そのまま陰的に解くと、毎ステップ非線形連立方程式を解く必要があります。
+
+## 基準状態線形化：残る非線形項は$O(M^2)$
+
+論文の答えは基準状態（reference state、RS）法です。漸近解析が与える定数の主要次数状態$\boldsymbol q_{\text{RS}}$まわりで$\mu$をテイラー展開します（式45、48）。
+
+$$
+\mu = \hat\mu + \bar\mu, \qquad \hat\mu = \hat\mu_{\text{RS}} + \left(\frac{\partial \mu}{\partial(\rho E)}\right)_{\text{RS}} \rho E
+$$
+
+$\hat\mu$は$\rho E$に線形な部分、$\bar\mu$は残りです。論文は、well-prepared な初期値（圧力摂動が$O(M^2)$の初期条件）なら$\bar\mu = O(M^2)$になることを示しています（式53）。低マッハではこの残りは小さいです。そのため陽的に扱っても時間刻みを縛りません。
+
+こう分けた結果はすっきりしています。陽的部分系(54)は移流だけが残り、特性速度は$\lambda^v_1$と$\lambda^v_2$のみです。陰的部分系(57)は定数係数の線形システムになります。基準状態が定数なので係数も定数です。直接法でも反復法でも一度解けば終わりです。
+
+時間積分には stiffly accurate なIMEX Runge–Kutta法を使い、圧力項は中心差分で扱います。論文は、この二つの条件が漸近保存性（AP、$M\to0$極限で非圧縮離散化と一致する性質）を保証することを証明しています。似た分割を二重時間の前処理と比べたい方は、[定常用前処理を二重時間ループに入れた実験](/ja/posts/2026-10-30-dual-time-steady-preconditioner-inner-iterations/)もあわせてご覧ください。
+
+## コード：1D気泡移流、三つの組み合わせ
+
+論文5.3節では、周期領域で気泡を$\boldsymbol v=(1,1)$で一周させます。これを1Dに縮めました。モデルも縮めています。等エントロピー単相オイラー$p=\rho^\gamma$に、$\alpha_1$を色関数として乗せました。論文の$\rho E$の位置に$\rho$が入る縮小版です。基準状態は$\rho_{\text{RS}}=1$です。
+
+$$
+\hat p = 1 + \gamma(\rho - 1), \qquad \bar p = \rho^\gamma - \hat p = O\left((\rho-1)^2\right)
+$$
+
+$\hat p$は陰的に、$\bar p$は陽的に入れます。面運動量を$\rho^{n+1}$で書いて質量式に代入すると、次の式一つが残ります。
+
+$$
+\left[1 + \beta\left(2 - S^{+} - S^{-}\right)\right]\rho^{n+1} = \text{rhs}, \qquad \beta = \frac{\gamma\,\Delta t^2}{M^2\Delta x^2}
+$$
+
+$S^{\pm}$は1セルのシフト演算子です。定数係数の巡回行列なので、FFT一回で解けます。比較する組み合わせは三つです。(A) 完全陽的＋音響CFL、(B) 完全陽的＋材料CFL、(C) RS-IMEX＋材料CFL。いずれも$\nu=0.5$、$N=100$、$t=1$（一周）です。
+
+```python
+import numpy as np
+np.seterr(all='ignore')
+
+N, GAM, NU, TEND = 100, 1.4, 0.5, 1.0
+dx = 1.0 / N
+x = (np.arange(N) + 0.5) * dx
+
+def bubble_init(M):
+    """1D analog of the paper's bubble test: u=1, p in equilibrium, sharp alpha."""
+    r = np.abs(x - 0.5)
+    alpha = 0.8 * np.arctan(-2000.0 * (r - 0.2)) / np.pi + 0.5
+    rho = 1.0 + 0.1 * M**2 * np.cos(2 * np.pi * x)   # well-prepared O(M^2) perturbation
+    return alpha, rho, rho * 1.0
+
+def ddx_c(f):  # centered derivative, periodic
+    return (np.roll(f, -1) - np.roll(f, 1)) / (2 * dx)
+
+def lap(f):
+    return (np.roll(f, -1) - 2 * f + np.roll(f, 1)) / dx**2
+
+def alpha_update(alpha, u, lam, dt):
+    """Rusanov form of alpha_t + u alpha_x = 0 with dissipation speed lam."""
+    adv = u * ddx_c(alpha)
+    diss = 0.5 * lam * lap(alpha) * dx
+    return alpha - dt * (adv - diss)
+
+def rusanov_full(rho, m, M, dt):
+    u = m / rho
+    p = rho**GAM
+    lam = np.max(np.abs(u) + np.sqrt(GAM * p / rho) / M)
+    U = np.stack([rho, m])
+    F = np.stack([m, m * u + p / M**2])
+    Up, Fp = np.roll(U, -1, axis=1), np.roll(F, -1, axis=1)
+    H = 0.5 * (F + Fp) - 0.5 * lam * (Up - U)       # face i+1/2
+    U = U - dt / dx * (H - np.roll(H, 1, axis=1))
+    return U[0], U[1], lam
+
+def rs_imex_step(rho, m, M, dt):
+    """Explicit: advection + nonlinear pressure remainder. Implicit: linearized pressure."""
+    u = m / rho
+    lam_u = np.max(np.abs(u))
+    pbar = rho**GAM - (1.0 + GAM * (rho - 1.0))      # p - p_hat, O((rho-rho_RS)^2)
+    G = m * u + pbar / M**2
+    H = 0.5 * (G + np.roll(G, -1)) - 0.5 * lam_u * (np.roll(m, -1) - m)
+    m_star = m - dt / dx * (H - np.roll(H, 1))
+    # face momentum: m_f = avg(m*) - dt*GAM/M^2 * drho/dx ;  rho^{n+1} = rho - dt*div(m_f)
+    beta = dt**2 * GAM / M**2 / dx**2
+    mf_star = 0.5 * (m_star + np.roll(m_star, -1))
+    rhs = rho - dt / dx * (mf_star - np.roll(mf_star, 1))
+    k = np.fft.fftfreq(N) * 2 * np.pi
+    rho_new = np.real(np.fft.ifft(np.fft.fft(rhs) / (1 + beta * (2 - 2 * np.cos(k)))))
+    m_new = m_star - dt * GAM / M**2 * ddx_c(rho_new)
+    return rho_new, m_new, lam_u
+
+def run(M, scheme, dt_mode):
+    alpha, rho, m = bubble_init(M)
+    a0 = alpha.copy()
+    t, n = 0.0, 0
+    while t < TEND - 1e-12:
+        u = m / rho
+        c = np.sqrt(GAM * rho**(GAM - 1))
+        speed = np.max(np.abs(u) + c / M) if dt_mode == "acoustic" else np.max(np.abs(u))
+        dt = min(NU * dx / speed, TEND - t)
+        if scheme == "explicit":
+            rho, m, lam = rusanov_full(rho, m, M, dt)
+        else:
+            rho, m, lam = rs_imex_step(rho, m, M, dt)
+        alpha = alpha_update(alpha, u, lam, dt)
+        t += dt; n += 1
+        if not np.isfinite(rho).all() or np.max(np.abs(rho - 1.0)) > 0.5:
+            return n, t
+    err = np.sum(np.abs(alpha - a0)) * dx
+    width = np.count_nonzero((alpha > 0.15) & (alpha < 0.85))
+    du = np.max(np.abs(m / rho - 1.0))
+    return n, (err, width, du, alpha.max())
+
+print(f"N={N}, nu={NU}, T=1 (one period), initial interface width = 2 cells")
+print(f"{'M':>6} {'case':<26} {'steps':>7} {'L1(alpha)':>10} {'width':>6} {'max a':>6} {'max|u-1|':>9}")
+for M in [0.1, 0.03, 0.01]:
+    for label, sch, mode in [("explicit, acoustic CFL", "explicit", "acoustic"),
+                             ("explicit, material CFL", "explicit", "material"),
+                             ("RS-IMEX, material CFL", "imex", "material")]:
+        n, res = run(M, sch, mode)
+        if not isinstance(res, tuple):
+            print(f"{M:>6} {label:<26} {n:>7}  blew up at t={res:.3f}")
+        else:
+            err, w, du, am = res
+            print(f"{M:>6} {label:<26} {n:>7} {err:>10.4f} {w:>6d} {am:>6.3f} {du:>9.1e}")
+```
+
+```text
+N=100, nu=0.5, T=1 (one period), initial interface width = 2 cells
+     M case                         steps  L1(alpha)  width  max a  max|u-1|
+   0.1 explicit, acoustic CFL        2568     0.3580    100  0.458   2.5e-03
+   0.1 explicit, material CFL          16  blew up at t=0.074
+   0.1 RS-IMEX, material CFL          201     0.0886     44  0.895   2.9e-08
+  0.03 explicit, acoustic CFL        8089     0.3813    100  0.420   2.2e-05
+  0.03 explicit, material CFL          11  blew up at t=0.048
+  0.03 RS-IMEX, material CFL          201     0.0885     44  0.895   2.0e-13
+  0.01 explicit, acoustic CFL       23865     0.3814    100  0.420   6.9e-09
+  0.01 explicit, material CFL           9  blew up at t=0.031
+  0.01 RS-IMEX, material CFL          201     0.0885     44  0.895   1.8e-12
+```
+
+上のコードをブラウザで直接動かしてみましょう。
+
+<BubbleImexCflRace />
+
+Machスライダーを0.1から0.003まで下げてみてください。Aのステップ数は$1/M$に比例して増え、Cは201のままです。Bはどの$M$でも数十ステップ以内に発散します。νを0.9に上げると、Cの界面幅（width）が縮むことも確認できます。
+
+## 23,865と201、そして0.38と0.09
+
+出力から三つのことが読み取れます。
+
+一つ目はステップ数です。Aは$M=0.1, 0.03, 0.01$で2,568 → 8,089 → 23,865ステップです。比は$1+c/M$にそのまま従います。Cは$M$によらず201ステップです。$M=0.01$で119倍の差です。
+
+二つ目は安定性です。BはCと同じ時間刻みを使いますが、$t=0.03\sim0.07$で密度が発散しました。音響項を陽的に残したまま材料CFLを使うことはできません。時間刻みを大きくできたのは陰的な圧力解法のおかげです。
+
+三つ目は界面です。Aの$\alpha$は最大値が0.9から0.42に落ちました。0.42は領域平均です。気泡は完全に混ざって消えました。L1誤差0.38がその結果です。ステップ数が多いからではありません。ステップごとに$(c/M)\Delta x/2$規模の拡散が加わるからです。総拡散量は$\lambda\cdot t$に比例するので、$M$が小さいほど悪化します。Cは最大値0.895を保ちました。ただし1次精度なので、界面は2セルから44セルに広がりました。論文もRS-IMEX1は「かなり拡散的」で、2次拡張（3.4節）が初期形状をよく捉えると述べています。
+
+速度擾乱$\max|u-1|$も見てみましょう。Cは$3\times10^{-8}$以下です。Aは$M=0.1$で$2.5\times10^{-3}$となり、音波が残っています。低マッハではこの音波をわざわざ解像する理由はありません。
+
+## この1D実験では見えないもの
+
+縮小版なので抜けているものがあります。実際のモデルには相対速度$\boldsymbol w$と摩擦緩和$\tau^{(w)}$があります。論文は気泡試験で$\tau^{(w)}=10^{-8}\sim10^{-12}$を与えて、ようやく$\boldsymbol w$の擾乱を抑えました。二相のマッハ数が異なる場合もあります。論文の試験では$M_1=1.336$と$M_2=2.67\times10^{-2}$が一つの領域に共存します。このとき混合マッハ数は1.23から0.36の間で、相ごとの領域をうまく表さないと論文は指摘しています。
+
+非擾乱の問題もあります。混合EOSを使うと、等速界面で圧力振動が生じることがあります。昨日扱った[圧力ベースBNモデルの非擾乱条件](/ja/posts/2026-10-31-pressure-based-bn-non-disturbance/)がまさにその話です。6方程式二流体モデルの双曲性は[two-fluidモデルの複素固有値の記事](/ja/posts/2026-08-23-two-fluid-model-hyperbolicity-interfacial-pressure/)で扱いました。論文のSHTCモデルは対称双曲型なので、この問題を避けられます。
+
+## 低マッハ多相コードにIMEXを入れる前に測る二つの数
+
+まず$1 + c/M$を計算します。この値が10を超えると、陽解法は計算時間と界面の鋭さを同時に失います。次に、圧力を基準状態まわりで展開したときの残差項の大きさを測ります。それが$O(M^2)$で小さくなるかを確認します。小さくなれば、その項は陽的に残して構いません。そのとき陰的部分は定数係数の線形システム一つで済みます。

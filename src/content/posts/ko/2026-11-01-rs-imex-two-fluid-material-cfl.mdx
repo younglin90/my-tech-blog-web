@@ -1,0 +1,221 @@
+---
+title: "[논문 리뷰] 음속 대신 계면 속도로 Δt를 잡았더니 23,865스텝이 201스텝이 됐다 — 기준 상태 IMEX 2유체 솔버"
+date: 2026-11-01
+description: "저마하 2유체 흐름에서 음향 CFL은 계면을 번지게 한다. 기준 상태 선형화 IMEX가 재료 CFL로 계면을 지키는 원리를 1D로 재현한다."
+tags: ["IMEX", "All-Mach", "Asymptotic-Preserving", "Compressible-Multiphase", "Paper-Review"]
+locale: ko
+slug: 2026-11-01-rs-imex-two-fluid-material-cfl
+takeaway: "저마하에서 시간 간격을 음속이 정하게 두면 계산이 100배 길어지고 계면도 다 번진다. 압력만 기준 상태 주위로 선형화해 암시적으로 풀면 계면 속도로 Δt를 잡을 수 있다."
+draft: false
+---
+import { AcousticMaterialClockLab } from '@/components/post-viz/2026-11-01-rs-imex-two-fluid-material-cfl/AcousticMaterialClockLab'
+import { BubbleImexCflRace } from '@/components/post-viz/2026-11-01-rs-imex-two-fluid-material-cfl/BubbleImexCflRace'
+
+## 기포 하나 옮기는 데 왜 2만 스텝이 필요할까
+
+물속 기포가 1 m/s로 떠간다. 그런데 물의 음속은 1,500 m/s다. 완전 명시적 압축성 솔버는 이 음속에 맞춰 시간 간격을 줄인다. 기포는 한 칸도 못 갔는데 스텝은 수천 번 돈다. 더 나쁜 일도 있다. 스텝마다 음속 크기의 수치 확산이 계면에 붙는다.
+
+이 글은 Lukáčová-Medvid'ová, Peshkov, Thomann의 2024년 JCP 논문 *An implicit-explicit solver for a two-fluid single-temperature model*을 읽는다. 핵심은 하나다. 압력 항만 상수 기준 상태 주위로 선형화해 암시적으로 푼다. 그러면 시간 간격은 계면이 움직이는 속도로 정해진다. 끝까지 읽으면 이 분할이 왜 선형 시스템 하나로 끝나는지, 1D 실험에서 스텝 수와 계면 두께가 어떻게 바뀌는지 직접 확인할 수 있다.
+
+## 두 개의 시계: 음향 CFL과 재료 CFL
+
+마하수(Mach number, 유속을 음속으로 나눈 값) $M$으로 무차원화하면 압력 항 앞에 $1/M^2$가 붙는다. 이 항이 만드는 파동 속도는 $|u| \pm c/M$이다. 완전 명시적 기법의 안정 조건은 가장 빠른 파동을 따른다.
+
+$$
+\Delta t_{\text{ex}} \le \nu \frac{\Delta x}{\max\left(|u| + c/M\right)}
+$$
+
+$\nu$는 CFL 수, $c$는 무차원 음속, $\Delta x$는 격자 간격이다.
+
+논문이 쓰는 조건은 다르다. 식 (59)의 재료 CFL(material CFL, 물질이 움직이는 속도로 정한 시간 간격)이다.
+
+$$
+\Delta t_{\text{IMEX}} \le \nu \frac{\Delta x}{\max\left(|\lambda^{v}_1|, |\lambda^{v}_2|\right)}, \qquad \lambda^{v}_1 = \boldsymbol v\cdot\boldsymbol n,\ \ \lambda^{v}_2 = (\boldsymbol v + (1-2c_1)\boldsymbol w)\cdot \boldsymbol n
+$$
+
+$\boldsymbol v$는 혼합물 속도, $\boldsymbol w$는 두 상의 상대 속도, $c_1$은 1상 질량분율이다. 음속이 식에서 아예 빠졌다. 두 시계의 비는 대략 $1 + c/M$이다. $M=0.01$이면 약 120배다.
+
+시간 간격만의 문제가 아니다. Rusanov 플럭스(국소 최대 파속으로 확산을 주는 가장 단순한 근사 리만 해법)의 수치 확산은 $\lambda \Delta x/2$다. $\lambda$에 $c/M$이 들어가면 체적분율 $\alpha$도 음속 크기로 번진다.
+
+아래 시뮬레이션에서 직접 조작해보자.
+
+<AcousticMaterialClockLab />
+
+Mach 슬라이더를 왼쪽으로 밀면 주황색 압력 펄스는 관 전체로 번지고 파란 눈금은 빽빽해진다. 초록 기포는 같은 속도로 간다. 아래 패널에서 파란 $\alpha$ 곡선은 $M$이 작을수록 빨리 평평해진다.
+
+## 무엇을 암시적으로 푸는가: 압력과 화학 포텐셜
+
+논문의 모델은 단일 온도 2유체 모델이다. 대칭 쌍곡형 열역학 호환(SHTC) 틀에서 유도했다. 변수는 $\alpha_1$, 상별 질량 $\alpha_l\rho_l$, 혼합 운동량 $\rho\boldsymbol v$, 상대 속도 $\boldsymbol w$, 총에너지 $\rho E$다. 저마하 극한에서 강성(stiffness, 시간 척도가 크게 벌어져 명시적으로 풀기 어려운 성질)은 두 곳에서 온다. 운동량 식의 압력 $p$와 상대 속도 식의 화학 포텐셜 차 $\mu$다.
+
+압력은 다행히 $\rho E$에 대해 선형이다(식 42).
+
+$$
+p = (\phi_p - 1)\left(\rho E - \rho E_{\text{kin}}\right), \qquad \phi_p = \frac{\gamma_1\alpha_1\rho_1 c_{v,1} + \gamma_2\alpha_2\rho_2 c_{v,2}}{\alpha_1\rho_1 c_{v,1} + \alpha_2\rho_2 c_{v,2}}
+$$
+
+$\gamma_l$은 비열비, $c_{v,l}$은 정적 비열, $E_{\text{kin}}$은 운동 에너지 항이다. 단상이면 $\phi_p=\gamma-1$이 되어 오일러 방정식과 같다.
+
+문제는 $\mu$다. 상 엔트로피를 거쳐 $\rho E$에 비선형으로 걸린다. 그대로 암시적으로 풀면 매 스텝 비선형 연립을 풀어야 한다.
+
+## 기준 상태 선형화: 남는 비선형 항은 $O(M^2)$
+
+논문의 답은 기준 상태(reference state, RS) 기법이다. 점근 해석이 주는 상수 선행 차수 상태 $\boldsymbol q_{\text{RS}}$ 주위로 $\mu$를 테일러 전개한다(식 45, 48).
+
+$$
+\mu = \hat\mu + \bar\mu, \qquad \hat\mu = \hat\mu_{\text{RS}} + \left(\frac{\partial \mu}{\partial(\rho E)}\right)_{\text{RS}} \rho E
+$$
+
+$\hat\mu$는 $\rho E$에 선형인 부분, $\bar\mu$는 나머지다. 논문은 잘 준비된 초기값(well-prepared data, 압력 섭동이 $O(M^2)$인 초기 조건)이면 $\bar\mu = O(M^2)$임을 보인다(식 53). 저마하에서 이 나머지는 작다. 그래서 명시적으로 처리해도 시간 간격을 묶지 않는다.
+
+이렇게 나눈 결과는 깔끔하다. 명시적 부분식 (54)는 이류만 남는다. 특성 속도는 $\lambda^v_1$, $\lambda^v_2$뿐이다. 암시적 부분식 (57)은 상수 계수를 가진 선형 시스템이 된다. 기준 상태가 상수라서 계수도 상수다. 직접법이든 반복법이든 한 번 풀면 끝난다.
+
+시간 적분은 강하게 정확한(stiffly accurate) IMEX Runge–Kutta다. 압력 항은 중심 차분으로 처리한다. 논문은 이 두 조건이 점근 보존(AP, $M\to0$ 극한에서 비압축 이산화와 일치하는 성질)을 보장한다고 증명한다. 비슷한 분할을 이중 시간 예조건과 비교해 보고 싶다면 [정상 상태용 예조건을 이중 시간 루프에 넣은 실험](/ko/posts/2026-10-30-dual-time-steady-preconditioner-inner-iterations/)을 함께 보자.
+
+## 코드: 1D 기포 이류, 세 가지 조합
+
+논문 5.3절은 주기 영역에서 기포를 $\boldsymbol v=(1,1)$로 한 바퀴 돌린다. 이것을 1D로 줄였다. 모델도 줄였다. 등엔트로피 단상 오일러 $p=\rho^\gamma$에 $\alpha_1$을 표지 함수로 실었다. 논문의 $\rho E$ 자리에 $\rho$가 들어간 축소판이다. 기준 상태는 $\rho_{\text{RS}}=1$이다.
+
+$$
+\hat p = 1 + \gamma(\rho - 1), \qquad \bar p = \rho^\gamma - \hat p = O\left((\rho-1)^2\right)
+$$
+
+$\hat p$는 암시적으로, $\bar p$는 명시적으로 넣는다. 면 운동량을 $\rho^{n+1}$로 쓰고 질량식에 대입하면 다음 식 하나가 남는다.
+
+$$
+\left[1 + \beta\left(2 - S^{+} - S^{-}\right)\right]\rho^{n+1} = \text{rhs}, \qquad \beta = \frac{\gamma\,\Delta t^2}{M^2\Delta x^2}
+$$
+
+$S^{\pm}$는 한 칸 이동 연산자다. 계수가 상수인 순환 행렬이라 FFT 한 번으로 풀린다. 비교 조합은 셋이다. (A) 완전 명시적 + 음향 CFL, (B) 완전 명시적 + 재료 CFL, (C) RS-IMEX + 재료 CFL. 모두 $\nu=0.5$, $N=100$, $t=1$(한 바퀴)이다.
+
+```python
+import numpy as np
+np.seterr(all='ignore')
+
+N, GAM, NU, TEND = 100, 1.4, 0.5, 1.0
+dx = 1.0 / N
+x = (np.arange(N) + 0.5) * dx
+
+def bubble_init(M):
+    """1D analog of the paper's bubble test: u=1, p in equilibrium, sharp alpha."""
+    r = np.abs(x - 0.5)
+    alpha = 0.8 * np.arctan(-2000.0 * (r - 0.2)) / np.pi + 0.5
+    rho = 1.0 + 0.1 * M**2 * np.cos(2 * np.pi * x)   # well-prepared O(M^2) perturbation
+    return alpha, rho, rho * 1.0
+
+def ddx_c(f):  # centered derivative, periodic
+    return (np.roll(f, -1) - np.roll(f, 1)) / (2 * dx)
+
+def lap(f):
+    return (np.roll(f, -1) - 2 * f + np.roll(f, 1)) / dx**2
+
+def alpha_update(alpha, u, lam, dt):
+    """Rusanov form of alpha_t + u alpha_x = 0 with dissipation speed lam."""
+    adv = u * ddx_c(alpha)
+    diss = 0.5 * lam * lap(alpha) * dx
+    return alpha - dt * (adv - diss)
+
+def rusanov_full(rho, m, M, dt):
+    u = m / rho
+    p = rho**GAM
+    lam = np.max(np.abs(u) + np.sqrt(GAM * p / rho) / M)
+    U = np.stack([rho, m])
+    F = np.stack([m, m * u + p / M**2])
+    Up, Fp = np.roll(U, -1, axis=1), np.roll(F, -1, axis=1)
+    H = 0.5 * (F + Fp) - 0.5 * lam * (Up - U)       # face i+1/2
+    U = U - dt / dx * (H - np.roll(H, 1, axis=1))
+    return U[0], U[1], lam
+
+def rs_imex_step(rho, m, M, dt):
+    """Explicit: advection + nonlinear pressure remainder. Implicit: linearized pressure."""
+    u = m / rho
+    lam_u = np.max(np.abs(u))
+    pbar = rho**GAM - (1.0 + GAM * (rho - 1.0))      # p - p_hat, O((rho-rho_RS)^2)
+    G = m * u + pbar / M**2
+    H = 0.5 * (G + np.roll(G, -1)) - 0.5 * lam_u * (np.roll(m, -1) - m)
+    m_star = m - dt / dx * (H - np.roll(H, 1))
+    # face momentum: m_f = avg(m*) - dt*GAM/M^2 * drho/dx ;  rho^{n+1} = rho - dt*div(m_f)
+    beta = dt**2 * GAM / M**2 / dx**2
+    mf_star = 0.5 * (m_star + np.roll(m_star, -1))
+    rhs = rho - dt / dx * (mf_star - np.roll(mf_star, 1))
+    k = np.fft.fftfreq(N) * 2 * np.pi
+    rho_new = np.real(np.fft.ifft(np.fft.fft(rhs) / (1 + beta * (2 - 2 * np.cos(k)))))
+    m_new = m_star - dt * GAM / M**2 * ddx_c(rho_new)
+    return rho_new, m_new, lam_u
+
+def run(M, scheme, dt_mode):
+    alpha, rho, m = bubble_init(M)
+    a0 = alpha.copy()
+    t, n = 0.0, 0
+    while t < TEND - 1e-12:
+        u = m / rho
+        c = np.sqrt(GAM * rho**(GAM - 1))
+        speed = np.max(np.abs(u) + c / M) if dt_mode == "acoustic" else np.max(np.abs(u))
+        dt = min(NU * dx / speed, TEND - t)
+        if scheme == "explicit":
+            rho, m, lam = rusanov_full(rho, m, M, dt)
+        else:
+            rho, m, lam = rs_imex_step(rho, m, M, dt)
+        alpha = alpha_update(alpha, u, lam, dt)
+        t += dt; n += 1
+        if not np.isfinite(rho).all() or np.max(np.abs(rho - 1.0)) > 0.5:
+            return n, t
+    err = np.sum(np.abs(alpha - a0)) * dx
+    width = np.count_nonzero((alpha > 0.15) & (alpha < 0.85))
+    du = np.max(np.abs(m / rho - 1.0))
+    return n, (err, width, du, alpha.max())
+
+print(f"N={N}, nu={NU}, T=1 (one period), initial interface width = 2 cells")
+print(f"{'M':>6} {'case':<26} {'steps':>7} {'L1(alpha)':>10} {'width':>6} {'max a':>6} {'max|u-1|':>9}")
+for M in [0.1, 0.03, 0.01]:
+    for label, sch, mode in [("explicit, acoustic CFL", "explicit", "acoustic"),
+                             ("explicit, material CFL", "explicit", "material"),
+                             ("RS-IMEX, material CFL", "imex", "material")]:
+        n, res = run(M, sch, mode)
+        if not isinstance(res, tuple):
+            print(f"{M:>6} {label:<26} {n:>7}  blew up at t={res:.3f}")
+        else:
+            err, w, du, am = res
+            print(f"{M:>6} {label:<26} {n:>7} {err:>10.4f} {w:>6d} {am:>6.3f} {du:>9.1e}")
+```
+
+```text
+N=100, nu=0.5, T=1 (one period), initial interface width = 2 cells
+     M case                         steps  L1(alpha)  width  max a  max|u-1|
+   0.1 explicit, acoustic CFL        2568     0.3580    100  0.458   2.5e-03
+   0.1 explicit, material CFL          16  blew up at t=0.074
+   0.1 RS-IMEX, material CFL          201     0.0886     44  0.895   2.9e-08
+  0.03 explicit, acoustic CFL        8089     0.3813    100  0.420   2.2e-05
+  0.03 explicit, material CFL          11  blew up at t=0.048
+  0.03 RS-IMEX, material CFL          201     0.0885     44  0.895   2.0e-13
+  0.01 explicit, acoustic CFL       23865     0.3814    100  0.420   6.9e-09
+  0.01 explicit, material CFL           9  blew up at t=0.031
+  0.01 RS-IMEX, material CFL          201     0.0885     44  0.895   1.8e-12
+```
+
+위 코드를 브라우저에서 직접 돌려보자.
+
+<BubbleImexCflRace />
+
+Mach 슬라이더를 0.1에서 0.003까지 내려 보자. A의 스텝 수는 $1/M$에 비례해 늘고 C는 201에 머문다. B는 어떤 $M$에서도 수십 스텝 안에 터진다. ν를 0.9로 올리면 C의 계면 폭(width)이 줄어드는 것도 확인해 보자.
+
+## 23,865와 201, 그리고 0.38과 0.09
+
+출력에서 세 가지를 읽는다.
+
+첫째, 스텝 수다. A는 $M=0.1, 0.03, 0.01$에서 2,568 → 8,089 → 23,865스텝이다. 비율은 $1+c/M$을 그대로 따른다. C는 $M$과 무관하게 201스텝이다. $M=0.01$에서 119배 차이다.
+
+둘째, 안정성이다. B는 C와 같은 시간 간격을 쓰지만 $t=0.03\sim0.07$에서 밀도가 터졌다. 음향 항을 명시적으로 두고 재료 CFL을 쓰면 안 된다. 시간 간격을 키운 공은 암시적 압력 풀이에 있다.
+
+셋째, 계면이다. A의 $\alpha$는 최댓값이 0.9에서 0.42로 떨어졌다. 0.42는 영역 평균이다. 기포가 완전히 섞여 사라졌다. L1 오차 0.38이 그 결과다. 스텝을 많이 밟아서가 아니다. 스텝마다 $(c/M)\Delta x/2$ 크기 확산이 붙어서다. 총 확산량은 $\lambda\cdot t$에 비례하므로 $M$이 작을수록 나빠진다. C는 최댓값 0.895를 지켰다. 다만 1차 기법이라 계면은 2칸에서 44칸으로 넓어졌다. 논문도 RS-IMEX1이 "꽤 확산적"이고 2차 확장(3.4절)이 초기 형상을 잘 잡는다고 적었다.
+
+속도 교란 $\max|u-1|$도 보자. C는 $3\times10^{-8}$ 이하다. A는 $M=0.1$에서 $2.5\times10^{-3}$로 음파가 살아 있다. 저마하에서는 이 음파를 굳이 해상할 이유가 없다.
+
+## 이 1D 실험이 보여주지 못하는 것
+
+축소판이라 빠진 것이 있다. 실제 모델에는 상대 속도 $\boldsymbol w$와 마찰 이완 $\tau^{(w)}$가 있다. 논문은 기포 시험에서 $\tau^{(w)}=10^{-8}\sim10^{-12}$를 줘야 $\boldsymbol w$ 교란을 누를 수 있었다. 두 상의 마하수가 다른 경우도 있다. 논문 시험에서는 $M_1=1.336$, $M_2=2.67\times10^{-2}$가 한 영역에 공존한다. 이때 혼합 마하수는 1.23에서 0.36 사이라 상별 영역을 잘 나타내지 못한다고 논문은 지적한다.
+
+비교란 문제도 있다. 혼합 EOS를 쓰면 등속 계면에서 압력 진동이 생길 수 있다. 어제 다룬 [압력기반 BN 모델의 비교란 조건](/ko/posts/2026-10-31-pressure-based-bn-non-disturbance/)이 바로 그 이야기다. 6방정식 2유체 모델의 쌍곡성은 [two-fluid 모델의 복소 고유값 글](/ko/posts/2026-08-23-two-fluid-model-hyperbolicity-interfacial-pressure/)에서 다뤘다. 논문의 SHTC 모델은 대칭 쌍곡형이라 이 문제를 피한다.
+
+## 내 저마하 다상 코드에 IMEX를 넣기 전에 잴 두 숫자
+
+먼저 $1 + c/M$을 계산한다. 이 값이 10을 넘으면 명시적 기법은 시간과 계면 두께를 함께 잃는다. 다음으로 압력을 기준 상태 주위로 전개했을 때 나머지 항의 크기를 잰다. 그 값이 $O(M^2)$로 줄어드는지 확인한다. 줄어들면 그 항은 명시적으로 남겨도 된다. 그때 암시적 부분은 상수 계수 선형 시스템 하나로 끝난다.
