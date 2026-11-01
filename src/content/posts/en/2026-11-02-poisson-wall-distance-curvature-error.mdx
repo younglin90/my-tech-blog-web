@@ -1,0 +1,192 @@
+---
+title: "Measuring Wall Distance with a Poisson Equation Gave 2× Next to a Sphere — Curvature Error in Spalding's PDE Wall Distance"
+date: 2026-11-02
+description: "PDE wall distance is exact on a flat plate, yet one radius out it reads 1.38× beside a cylinder, 2× beside a sphere, and 0.71× at a pipe center."
+tags: ["Wall-Distance", "Poisson", "Turbulence", "Algorithms"]
+locale: en
+slug: 2026-11-02-poisson-wall-distance-curvature-error
+takeaway: "Near a wall, the Poisson wall distance behaves like d ≈ y(1 + κy/2). It grows on convex walls and shrinks on concave ones, so don't trust it one curvature radius away from the wall."
+draft: false
+---
+
+import { PoissonDistanceCurvatureMap } from '@/components/post-viz/2026-11-02-poisson-wall-distance-curvature-error/PoissonDistanceCurvatureMap'
+import { RadialSorWallDistanceRace } from '@/components/post-viz/2026-11-02-poisson-wall-distance-curvature-error/RadialSorWallDistanceRace'
+
+## How far from the wall is a point one radius off a cylinder?
+
+The answer is obviously $a$. Yet the "PDE wall distance" option in a commercial solver returns $1.38a$ there. Measure the same distance next to a sphere and you get $2.0a$. At the center of a pipe you get $0.71a$. This post traces where those numbers come from. We start with Spalding's 1994 idea and derive the curvature error $d \approx y(1+\kappa y/2)$. Then a 1D radial experiment checks the formula. By the end, you can tell in one line how far to trust a PDE wall distance.
+
+Wall distance (the distance from a cell center to the nearest no-slip wall) is a required input for turbulence models. The Spalart–Allmaras destruction term scales as $(\tilde\nu/d)^2$. SST blending functions and two-layer models use $d$ too. The exact approach was covered in the [Eikonal and Fast Marching post](/en/posts/2026-04-22-wall-distance-eikonal-fast-marching/). Today's method is older and simpler.
+
+## 1994: measuring distance with heat conduction
+
+Spalding was computing turbulent heat transfer in "cluttered spaces." Finding the geometric distance to every obstacle was expensive on the hardware of the day. So he reused a tool he already had: a diffusion solver. Solve steady heat conduction with zero temperature on walls and a uniform heat source inside. The hotter a point is, the farther it sits from a wall.
+
+The STAR-CCM+ theory guide states it directly.
+
+$$
+\nabla^2 \phi = -1, \qquad \phi = 0 \ \text{on } \Gamma_w, \qquad \nabla\phi\cdot\mathbf{n} = 0 \ \text{on } \Gamma_o
+$$
+
+$\phi$ is an auxiliary distance-like variable $\Gamma_w$ is the wall, $\Gamma_o$ the other boundaries, and $\mathbf{n}$ is the boundary normal. Distance is recovered with the formula below.
+
+$$
+d = -|\nabla\phi| + \sqrt{|\nabla\phi|^2 + 2\phi}
+$$
+
+The same guide lists two methods side by side. Implicit Tree is an exact projection onto surface triangles. PDE is described as "faster, but approximate." How approximate is never stated.
+
+Try it yourself in the simulation below. A wall sits in a box, $\phi$ is solved with SOR, and $d_{PDE}/d_{exact}$ is painted as color.
+
+<PoissonDistanceCurvatureMap />
+
+With `Flat wall`, the solid (PDE) and dashed (exact) contours overlap and the map stays white. Switch to `Convex` and the area around the cylinder turns red (overestimate). `Concave` turns it blue (underestimate). Shrink the radius $a$ to raise curvature, and the ratio at the same probe distance spreads further.
+
+## Why it's exact in 1D
+
+Take one flat wall and a symmetry boundary at height $H$. The solution of $\phi'' = -1$, $\phi(0)=0$, $\phi'(H)=0$ is:
+
+$$
+\phi(y) = Hy - \frac{y^2}{2}, \qquad \phi'(y) = H - y
+$$
+
+Here $y$ is the distance from the wall. Eliminate $H$ and you get $\phi = y\,\phi' + y^2/2$. That is a quadratic in $y$, and its positive root is exactly the recovery formula. In other words, the formula inverts an assumed local 1D parabolic profile. When that assumption holds, $d=y$ comes out exactly, whatever $H$ is. In a channel between two walls, $\phi = y(L-y)/2$ gives exactly $d=\min(y, L-y)$.
+
+## What breaks on curved walls
+
+Outside a cylinder ($r \ge a$), the Laplacian picks up a $\phi'/r$ term. The radial equation is $\phi'' + (k/r)\phi' = -1$, with $k$ = 0 (plate), 1 (cylinder), or 2 (sphere). For a cylinder with a Neumann condition at outer radius $R$:
+
+$$
+\phi = \frac{R^2}{2}\ln\frac{r}{a} - \frac{r^2-a^2}{4}, \qquad \phi' = \frac{R^2}{2r} - \frac{r}{2}
+$$
+
+For $R \gg r$, $\phi'^2 \gg 2\phi$, so $d \approx \phi/\phi' \approx r\ln(r/a)$. Expanding in $y=r-a$:
+
+$$
+d \approx y\left(1 + \frac{k\,y}{2a}\right)
+$$
+
+The sphere works the same way: $d \approx r(r-a)/a = y(1+y/a)$, matching $k=2$. Here $k/a$ is the sum of the wall's principal curvatures $\kappa$ (positive for convex). The cause is simple. Outside a convex wall, contours spread out and the flux dilutes, so $\phi'$ decays faster than the 1D parabola. The recovery formula reads that decay as "farther from the wall." On a concave wall the flux converges, and distance reads short. At a pipe center, $\phi = (a^2-r^2)/4$ gives exactly $d = a/\sqrt2 \approx 0.707a$.
+
+## Code: flat, cylinder, sphere, and pipe interior in radial 1D
+
+We discretize the radial equation with 160 nodes and solve it with SOR (Successive Over-Relaxation, weighted Gauss–Seidel). A ghost node applies the Neumann condition at the outer boundary. After recovering $d$, we print $d_{PDE}/y$ at $y=0.1, 0.5, 1.0$ from the wall.
+
+```python
+import math
+
+def poisson_phi(k, r0, r1, wall_at_r1, n, tol=1e-9):
+    """Solve phi'' + (k/r) phi' = -1 with SOR. Wall (phi=0) at one end, dphi/dr=0 at the other."""
+    h = (r1 - r0) / n
+    r = [r0 + i * h for i in range(n + 1)]
+    phi = [0.0] * (n + 1)
+    omega = 2.0 / (1.0 + math.sin(math.pi / (2 * n)))
+    wall = n if wall_at_r1 else 0
+    for it in range(1, 200001):
+        dmax = 0.0
+        for i in range(n + 1):
+            if i == wall:
+                continue
+            if i == 0 and r[0] == 0.0:          # pipe center: (1+k) phi'' = -1
+                new = phi[1] + h * h / (2.0 * (1 + k))
+            elif i == 0 or i == n:              # outer boundary Neumann (ghost = inner neighbor)
+                j = 1 if i == 0 else n - 1
+                new = phi[j] + 0.5 * h * h
+            else:
+                c = k * h / (2.0 * r[i])
+                new = 0.5 * ((1 - c) * phi[i - 1] + (1 + c) * phi[i + 1] + h * h)
+            du = omega * (new - phi[i])
+            phi[i] += du
+            dmax = max(dmax, abs(du))
+        if dmax < tol * max(phi[0], phi[n]):
+            return r, phi, it
+    return r, phi, it
+
+def spalding_d(r, phi):
+    """d = -|grad phi| + sqrt(|grad phi|^2 + 2 phi)"""
+    n = len(r) - 1
+    h = r[1] - r[0]
+    d = []
+    for i in range(n + 1):
+        if i == 0:
+            g = (-3 * phi[0] + 4 * phi[1] - phi[2]) / (2 * h)
+        elif i == n:
+            g = (3 * phi[n] - 4 * phi[n - 1] + phi[n - 2]) / (2 * h)
+        else:
+            g = (phi[i + 1] - phi[i - 1]) / (2 * h)
+        g = abs(g)
+        d.append(-g + math.sqrt(g * g + 2 * max(phi[i], 0.0)))
+    return d
+
+def ratio_at(r, d, wall_r, y):
+    """d_PDE / d_exact at distance y from the wall (linear interpolation)"""
+    target = wall_r + y if r[0] == wall_r else wall_r - y
+    for i in range(len(r) - 1):
+        lo, hi = sorted((r[i], r[i + 1]))
+        if lo <= target <= hi:
+            t = (target - r[i]) / (r[i + 1] - r[i])
+            return (d[i] + t * (d[i + 1] - d[i])) / y
+    return float('nan')
+
+a = 1.0
+cases = [  # (name, k, r0, r1, wall at r1?)
+    ("flat  H=5", 0, a, a + 5, False),
+    ("cyl   R=2", 1, a, 2.0, False),
+    ("cyl   R=5", 1, a, 5.0, False),
+    ("cyl   R=20", 1, a, 20.0, False),
+    ("sph   R=5", 2, a, 5.0, False),
+    ("sph   R=20", 2, a, 20.0, False),
+    ("pipe  inside", 1, 0.0, a, True),
+]
+ys = [0.1, 0.5, 1.0]
+print(f"{'case':<13}{'k':>3}{'N':>5}{'SOR it':>8}" + "".join(f"{'y='+str(y):>9}" for y in ys))
+for name, k, r0, r1, wall_hi in cases:
+    n = 160
+    r, phi, it = poisson_phi(k, r0, r1, wall_hi, n)
+    d = spalding_d(r, phi)
+    wall_r = r1 if wall_hi else r0
+    row = [ratio_at(r, d, wall_r, y) for y in ys]
+    print(f"{name:<13}{k:>3}{n:>5}{it:>8}" + "".join(f"{v:>9.3f}" for v in row))
+
+print("\nnear-wall model d/y = 1 + k*y/(2a):", "  ".join(
+    f"k={k}: " + "/".join(f"{1 + k * y / (2 * a):.3f}" for y in ys) for k in (1, 2)))
+```
+
+```text
+case           k    N  SOR it    y=0.1    y=0.5    y=1.0
+flat  H=5      0  160    1006    1.000    1.000    1.000
+cyl   R=2      1  160    1672    1.046    1.146    1.128
+cyl   R=5      1  160    2630    1.048    1.206    1.337
+cyl   R=20     1  160    4439    1.053    1.214    1.382
+sph   R=5      2  160    6032    1.099    1.487    1.900
+sph   R=20     2  160   22189    1.106    1.495    1.995
+pipe  inside   1  160     968    0.954    0.823    0.707
+
+near-wall model d/y = 1 + k*y/(2a): k=1: 1.050/1.250/1.500  k=2: 1.100/1.500/2.000
+```
+
+Now run that code in your browser. The same SOR loop advances all four cases at once: the left panel shows $d_{PDE}/y$, the right panel the convergence history.
+
+<RadialSorWallDistanceRace />
+
+At the defaults ($R/a=20$, $N=160$), you get cylinder 1.382, sphere 1.995, and pipe 0.707, matching the output block. Drop `R/a` to 2 and the cylinder value at $y=1$ falls to 1.128. Raise it to 30 and the sphere needs tens of thousands of sweeps.
+
+## What 1.38, 2.00, and 0.71 are telling us
+
+The plate gives 1.000 at every $y$, exactly as the 1D derivation predicts. The cylinder reads 1.05 at $y=0.1a$, matching the model $1+y/2a$. At $y=a$ it reads 1.38, below the model's 1.50, because the second-order expansion has already broken down at that distance. The sphere tracks $1+y/a$ almost exactly and reaches 2.0 at $y=a$.
+
+The outer boundary $R$ also changes the result. The exact wall distance knows nothing about the outer box. The Poisson solution, however, depends on the whole domain up to the Neumann boundary. The value 1.128 for the $R=2$ cylinder is "accidental accuracy" from a nearby boundary, not from small curvature error.
+
+Look at iteration counts too. The plate takes 1,006 sweeps; the sphere with $R=20$ takes 22,189. Most of the domain outside a sphere is far field where $\phi$ is large, and error near the Neumann boundary drains slowly. "PDE is faster" assumes a good linear solver. Production codes use [multigrid](/en/posts/2026-05-06-multigrid-v-cycle-poisson-acceleration/) instead of SOR.
+
+## How PDE wall distance is used today
+
+The method survived anyway, because of how turbulence models use $d$. The SA destruction term $(\tilde\nu/d)^2$ is large near the wall and fades quickly away from it. On a mesh with first-cell $y^+ \sim 1$, near-wall $y$ is thousands of times smaller than the curvature radius. The error $\kappa y/2$ there is below 0.1%.
+
+Trouble starts where curvature radius and boundary-layer thickness become comparable: thin wires, trailing edges, blade tip gaps. If $d$ is 1.38× too large at $y=a$ on a cylinder, SA destruction drops to $1/1.38^2 \approx 0.52$×. Inside a concave corner, destruction grows instead.
+
+Improved variants exist. Tucker-style methods use the $p$-Poisson equation ($\nabla\cdot(|\nabla\phi|^{p-2}\nabla\phi)=-1$), which approaches the Eikonal equation as $p\to\infty$. Others solve a Hamilton–Jacobi form directly. On unstructured meshes, keep in mind that $\nabla\phi$ itself depends on the quality of [non-orthogonal correction](/en/posts/2026-07-01-non-orthogonal-diffusion-correction/).
+
+## One number to check before switching to PDE wall distance
+
+Find the smallest curvature radius $a_{min}$ on your mesh. Near it, estimate the height where the turbulence model is sensitive to $d$, roughly the boundary-layer thickness $\delta$. If $\delta/a_{min}$ is below 0.1, the PDE wall distance error stays under 5%. Above 0.5, a sphere-like shape can be off by 50%. In that case, switch to Implicit Tree or an Eikonal-type method.
