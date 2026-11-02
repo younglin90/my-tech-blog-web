@@ -1,11 +1,11 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
+import Link from 'next/link'
 import { loadPostIndexClient, type PostIndexItem } from '@/lib/post-index'
-import { seriesTitle } from '@/lib/series-title'
 
 // 본문(<article>) 안 내부 포스트 링크에 마우스를 ~250ms 올리고 있으면
-// 작은 팝오버(제목·설명·날짜·태그·읽기시간)를 띄운다. Wikipedia/Notion 스타일.
+// 제목만 보여 주는 작은 팝오버를 띄운다. 팝오버를 누르면 그 글로 이동한다.
 //
 // SSR 비용 0 — post-index.json을 한 번 fetch해 캐시.
 // 동일 슬러그를 5개 locale 모두 가지므로 사용자 현재 locale로 매치 후 fallback.
@@ -64,10 +64,10 @@ function parseInternalPostHref(href: string): { locale: string; slug: string } |
 }
 
 export function LinkPreview() {
-  const [hover, setHover] = useState<{ entry: PostIndexItem; rect: DOMRect } | null>(null)
+  const [hover, setHover] = useState<{ entry: PostIndexItem; href: string; rect: DOMRect } | null>(null)
   const enterTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const leaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const cardRef = useRef<HTMLDivElement | null>(null)
+  const cardRef = useRef<HTMLAnchorElement | null>(null)
   const mapRef = useRef<PostMap | null>(null)
 
   useEffect(() => {
@@ -109,7 +109,7 @@ export function LinkPreview() {
           ?? Object.values(map).find((p) => p.slug === parsed.slug)
         if (!entry) return
         const rect = a.getBoundingClientRect()
-        setHover({ entry, rect })
+        setHover({ entry, href: `/${parsed.locale}/posts/${parsed.slug}/`, rect })
       }, 250)
     }
 
@@ -137,30 +137,28 @@ export function LinkPreview() {
 
   if (!hover) return null
 
-  const { entry, rect } = hover
-  // 화면 위쪽으로 띄움. 위 공간 부족하면 아래로
-  const cardHeight = 150
+  const { entry, href, rect } = hover
+  // 제목 두 줄 정도. 위 공간이 부족하면 링크 아래로 붙인다.
+  const cardHeight = 58
   const showAbove = rect.top > cardHeight + 16
   const top = (showAbove ? rect.top - cardHeight - 8 : rect.bottom + 8) + window.scrollY
-  // 좌측 정렬, 우측 viewport 넘침 방지
-  const cardWidth = 320
+  const cardWidth = 260
   const rawLeft = rect.left + window.scrollX
   const maxLeft = window.scrollX + document.documentElement.clientWidth - cardWidth - 12
   const left = Math.max(window.scrollX + 12, Math.min(rawLeft, maxLeft))
 
   return (
-    <div
+    <Link
+      href={href}
       ref={cardRef}
-      role="tooltip"
-      className="absolute z-40 rounded-lg shadow-xl"
+      className="absolute z-40 block rounded-md"
       style={{
         top, left,
         width: cardWidth,
-        padding: '12px 14px',
+        padding: '8px 10px',
         background: 'var(--surface)',
         border: '1px solid var(--accent)',
-        boxShadow: '0 8px 28px rgba(0,0,0,0.22)',
-        pointerEvents: 'auto',
+        boxShadow: '0 6px 18px rgba(0,0,0,0.18)',
       }}
       onMouseEnter={() => {
         if (leaveTimerRef.current) {
@@ -173,39 +171,9 @@ export function LinkPreview() {
         leaveTimerRef.current = setTimeout(() => setHover(null), 120)
       }}
     >
-      <div className="mono mb-1 flex items-center gap-2 text-[10px] uppercase tracking-widest" style={{ color: 'var(--text-faint)' }}>
-        <span>{entry.date} · {entry.readingTime}</span>
-        {entry.series && (
-          <span
-            className="rounded px-1 py-0.5"
-            style={{ background: 'var(--accent-glow)', color: 'var(--accent)' }}
-          >
-            {seriesTitle(entry.series, entry.locale)}
-            {entry.seriesOrder ? ` · ${String(entry.seriesOrder).padStart(2, '0')}` : ''}
-          </span>
-        )}
-      </div>
-      <div className="mb-1.5 text-sm font-semibold" style={{ color: 'var(--accent)', lineHeight: 1.35 }}>
+      <span className="line-clamp-2 text-[13px] font-semibold leading-snug" style={{ color: 'var(--accent)' }}>
         {entry.title}
-      </div>
-      {entry.description && (
-        <div className="mb-2 line-clamp-3 text-xs" style={{ color: 'var(--text-muted)', lineHeight: 1.5 }}>
-          {entry.description}
-        </div>
-      )}
-      {entry.tags && entry.tags.length > 0 && (
-        <div className="flex flex-wrap gap-1">
-          {entry.tags.slice(0, 4).map((tag) => (
-            <span
-              key={tag}
-              className="mono rounded px-1.5 py-0.5 text-[10px]"
-              style={{ background: 'var(--bg)', color: 'var(--text-faint)', border: '1px solid var(--border)' }}
-            >
-              {tag}
-            </span>
-          ))}
-        </div>
-      )}
-    </div>
+      </span>
+    </Link>
   )
 }

@@ -1,11 +1,13 @@
 // Cloudflare Pages Function: 글 댓글 (D1)
 // GET  /api/comments?slug=...                    → { items: [{ id, name, body, ts }] }  (오래된 순)
-// POST /api/comments  body { slug, name, body, website }  → { item }
+// POST /api/comments  body { slug, name, body, website, check: { nonce, answer } }  → { item }
 //
 // 조작 방지: 같은 Origin + 봇 UA 거절 + IP별 rate limit + 존재하는 slug만 +
-// 길이 제한 + 링크 2개 초과 거절 + honeypot(website) + 같은 사람의 같은 글 10분 내 중복 거절.
+// 길이 제한 + 링크 2개 초과 거절 + honeypot(website) + 그림 글자 확인(한 번용) +
+// 같은 사람의 같은 글 10분 내 중복 거절.
 // 숨김은 /admin/api/comments (Basic Auth) 에서.
 
+import { consumeChallenge } from '../../functions-lib/comment-gate'
 import { clientIp, edgeCached, ensureSchema, hashId, isBot, isKnownSlug, json, purgeEdge, rateLimited, sameOrigin, type Env } from '../../functions-lib/guard'
 
 const MAX_NAME = 40
@@ -44,7 +46,7 @@ export async function onRequestPost(context: Ctx): Promise<Response> {
   const raw = await request.text()
   if (raw.length > 8192) return json({ error: 'too-large' }, 413)
 
-  let msg: { slug?: unknown; name?: unknown; body?: unknown; website?: unknown }
+  let msg: { slug?: unknown; name?: unknown; body?: unknown; website?: unknown; check?: { nonce?: unknown; answer?: unknown } }
   try { msg = JSON.parse(raw) } catch { return json({ error: 'bad-json' }, 400) }
   const slug = typeof msg.slug === 'string' ? msg.slug : ''
   const name = typeof msg.name === 'string' ? msg.name.replace(/\s+/g, ' ').trim() : ''
@@ -54,12 +56,15 @@ export async function onRequestPost(context: Ctx): Promise<Response> {
   if (!name || name.length > MAX_NAME) return json({ error: 'bad-name' }, 400)
   if (body.length < 2 || body.length > MAX_BODY) return json({ error: 'bad-body' }, 400)
   if ((body.match(/https?:\/\//g) ?? []).length > 2) return json({ error: 'too-many-links' }, 400)
+  const nonce = typeof msg.check?.nonce === 'string' ? msg.check.nonce : ''
+  const answer = typeof msg.check?.answer === 'string' ? msg.check.answer : ''
   if (!(await isKnownSlug(env, request, slug))) return json({ error: 'unknown-slug' }, 404)
   const db = env.DB
   if (!db) return json({ error: 'db-binding-missing' }, 503)
 
   try {
     await ensureSchema(db)
+    if ((await consumeChallenge(db, nonce, answer)) !== 'ok') return json({ error: 'challenge' }, 400)
     const vid = await hashId(env, ip, 'comment')
     const now = Date.now()
     const { results: dup } = await db

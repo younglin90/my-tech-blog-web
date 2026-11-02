@@ -58,6 +58,22 @@ export interface CommentItem {
   ts: number
 }
 
+export interface CommentChallenge {
+  nonce: string
+  image: string
+}
+
+export async function getCommentChallenge(): Promise<CommentChallenge | null> {
+  try {
+    const r = await fetch('/api/comment-challenge')
+    if (!r.ok) return null
+    const d = (await r.json()) as Partial<CommentChallenge>
+    return d.nonce && d.image ? { nonce: d.nonce, image: d.image } : null
+  } catch {
+    return null
+  }
+}
+
 export async function getComments(slug: string): Promise<CommentItem[] | null> {
   try {
     const r = await fetch(`/api/comments?slug=${encodeURIComponent(slug)}`)
@@ -74,12 +90,13 @@ export async function postComment(
   name: string,
   body: string,
   website: string,
+  check: { nonce: string; answer: string },
 ): Promise<{ item: CommentItem | null } | { error: string }> {
   try {
     const r = await fetch('/api/comments', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ slug, name, body, website }),
+      body: JSON.stringify({ slug, name, body, website, check }),
     })
     const d = await r.json().catch(() => ({ error: `http-${r.status}` }))
     return r.ok ? d : { error: d.error ?? `http-${r.status}` }

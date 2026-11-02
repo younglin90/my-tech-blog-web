@@ -49,6 +49,8 @@ const SCHEMA = [
   'CREATE TABLE IF NOT EXISTS comment (id INTEGER PRIMARY KEY AUTOINCREMENT, slug TEXT NOT NULL, name TEXT NOT NULL, body TEXT NOT NULL, ts INTEGER NOT NULL, vid TEXT NOT NULL, hidden INTEGER NOT NULL DEFAULT 0)',
   'CREATE INDEX IF NOT EXISTS comment_slug_ts ON comment (slug, ts)',
   'CREATE INDEX IF NOT EXISTS comment_ts ON comment (ts)',
+  // 댓글 사람 확인. 정답은 여기만 있고, 한 번 쓰면 지운다.
+  'CREATE TABLE IF NOT EXISTS comment_challenge (nonce TEXT PRIMARY KEY, code TEXT NOT NULL, iat INTEGER NOT NULL, exp INTEGER NOT NULL) WITHOUT ROWID',
 ]
 let schemaReady: Promise<unknown> | null = null
 export function ensureSchema(db: D1Database): Promise<unknown> {

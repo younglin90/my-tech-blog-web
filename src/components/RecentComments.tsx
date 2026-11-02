@@ -37,7 +37,7 @@ export function RecentComments({ locale, limit = 5 }: { locale: string; limit?: 
         <ul className="space-y-3">
           {rows.map((c) => (
             <li key={c.id} className="text-sm">
-              <Link href={`/${locale}/posts/${c.slug}/#comment-${c.id}`} className="group block">
+              <Link href={`/${locale}/posts/${c.slug}/#note-${c.id}`} className="group block">
                 <p className="line-clamp-2 leading-snug transition-colors group-hover:[color:var(--accent)]" style={{ color: 'var(--text)' }}>
                   {c.body}
                 </p>

@@ -46,7 +46,7 @@ export function AdminComments() {
               <div className="min-w-0 flex-1">
                 <div className="text-xs text-zinc-500">
                   <b className="text-zinc-800 dark:text-zinc-200">{c.name}</b> · {new Date(c.ts).toLocaleString()} ·{' '}
-                  <a href={`/ko/posts/${c.slug}/#comment-${c.id}`} className="underline" target="_blank" rel="noreferrer">{c.slug}</a>
+                  <a href={`/ko/posts/${c.slug}/#note-${c.id}`} className="underline" target="_blank" rel="noreferrer">{c.slug}</a>
                 </div>
                 <p className="mt-1 whitespace-pre-wrap break-words text-sm">{c.body}</p>
               </div>
