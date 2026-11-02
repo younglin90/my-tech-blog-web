@@ -1293,7 +1293,7 @@ export const CALCULATORS: CalculatorMeta[] = [
       zh: '由三套网格解计算观测阶、Richardson 外推与 GCI。',
       es: 'Calcula orden observado, extrapolación de Richardson y GCI con tres mallas.',
     },
-    formula: 'GCI_21 = F_s |(phi1 - phi2)/phi1| / (r_21^p - 1)',
+    formula: 'GCI_21 = F_s |(phi1 - phi2)/phi1| / (r_21^p - 1),  ratio = GCI_32 / (r_21^p GCI_21)',
     tags: ['verification', 'GCI', 'Richardson extrapolation', 'mesh convergence'],
   },
   {

@@ -206,8 +206,12 @@ export function GciCalculator() {
     const p = observedOrder(r21, r32, e21, e32)
     const pSafe = Math.abs(p) > 1e-9 ? Math.abs(p) : Number.NaN
     const extrapolated = phi1 + (phi1 - phi2) / (Math.pow(r21, pSafe) - 1)
-    const gci21 = safety * Math.abs((phi1 - phi2) / Math.max(Math.abs(phi1), 1e-12)) / (Math.pow(r21, pSafe) - 1) * 100
-    const asymptotic = gci21 / Math.max(Math.pow(r21, pSafe) * safety * Math.abs((phi2 - phi3) / Math.max(Math.abs(phi2), 1e-12)) / (Math.pow(r32, pSafe) - 1) * 100, 1e-12)
+    const gci = (fine: number, coarse: number, ratio: number) =>
+      safety * Math.abs((fine - coarse) / Math.max(Math.abs(fine), 1e-12)) / (Math.pow(ratio, pSafe) - 1) * 100
+    const gci21 = gci(phi1, phi2, r21)
+    const gci32 = gci(phi2, phi3, r32)
+    // Celik et al.: GCI_32 / (r_21^p GCI_21) is near 1 in the asymptotic range.
+    const asymptotic = gci32 / Math.max(Math.pow(r21, pSafe) * gci21, 1e-12)
     return { r21, r32, p: pSafe, extrapolated, gci21, asymptotic }
   }, [h1, h2, h3, phi1, phi2, phi3, safety])
 
@@ -228,7 +232,7 @@ export function GciCalculator() {
         <MetricCard label="GCI_21 (%)" value={formatNumber(result.gci21)} color="#fbbf24" />
         <MetricCard label="asymptotic ratio" value={formatNumber(result.asymptotic)} color="#f87171" />
       </div>
-      <Note>Assumes monotonic three-grid convergence. Treat non-monotonic values as a warning, not a certification.</Note>
+      <Note>Assumes monotonic three-grid convergence. The asymptotic ratio is GCI_32 / (r_21^p GCI_21); near 1, the three grids sit in the asymptotic range.</Note>
     </CalculatorPanel>
   )
 }
