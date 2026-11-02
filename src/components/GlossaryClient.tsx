@@ -1,7 +1,7 @@
 'use client'
 
 import Link from 'next/link'
-import { useMemo, useState, useCallback } from 'react'
+import { useEffect, useMemo, useState, useCallback, useRef } from 'react'
 import { t, type Locale } from '@/lib/i18n'
 import { glossaryText, type GlossaryTexts } from '@/lib/glossary-text'
 
@@ -209,18 +209,108 @@ function FlashcardMode({ entries, locale }: { entries: [string, Entry][]; locale
   )
 }
 
+const PAGE_SIZE = 12
+
+function Pager({
+  page,
+  pages,
+  locale,
+  onPage,
+}: {
+  page: number
+  pages: number
+  locale: Locale
+  onPage: (page: number) => void
+}) {
+  if (pages <= 1) return null
+  const btn = {
+    border: '1px solid var(--border)',
+    color: 'var(--text-muted)',
+    background: 'var(--surface)',
+  }
+  return (
+    <nav className="flex items-center justify-between gap-3" aria-label={t(locale, 'glossary.title')}>
+      <button
+        type="button"
+        disabled={page === 0}
+        onClick={() => onPage(page - 1)}
+        className="inline-flex min-h-11 items-center rounded-md px-3 text-sm disabled:opacity-30"
+        style={btn}
+      >
+        {t(locale, 'glossary.prev')}
+      </button>
+      <span className="mono text-xs" style={{ color: 'var(--text-faint)' }}>
+        {t(locale, 'glossary.pageStatus', { page: String(page + 1), pages: String(pages) })}
+      </span>
+      <button
+        type="button"
+        disabled={page >= pages - 1}
+        onClick={() => onPage(page + 1)}
+        className="inline-flex min-h-11 items-center rounded-md px-3 text-sm disabled:opacity-30"
+        style={btn}
+      >
+        {t(locale, 'glossary.next')}
+      </button>
+    </nav>
+  )
+}
+
 export function GlossaryClient({ entries, locale, total }: Props) {
   const [q, setQ] = useState('')
+  const [letter, setLetter] = useState<string | null>(null)
+  const [page, setPage] = useState(0)
+  const [open, setOpen] = useState<string | null>(null)
   const [mode, setMode] = useState<'browse' | 'flashcard'>('browse')
+  const pendingScroll = useRef<string | null>(null)
   const filtered = useMemo(() => {
     const lower = q.trim().toLowerCase()
-    if (!lower) return entries
     return entries.filter(([term, def]) => {
+      if (!lower && letter && term[0]?.toUpperCase() !== letter) return false
+      if (!lower) return true
       const def_text = glossaryText(def, locale)
       const postText = (def.posts ?? []).map((post) => post.title).join(' ')
       return [term, def_text, postText].join(' ').toLowerCase().includes(lower)
     })
-  }, [q, entries, locale])
+  }, [q, letter, entries, locale])
+  const pages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
+  const safePage = Math.min(page, pages - 1)
+  const visible = filtered.slice(safePage * PAGE_SIZE, (safePage + 1) * PAGE_SIZE)
+
+  const go = useCallback((next: number) => {
+    setPage(next)
+    setOpen(null)
+    document.getElementById('glossary-list')?.scrollIntoView({ block: 'start' })
+  }, [])
+
+  useEffect(() => {
+    const reveal = () => {
+      const id = decodeURIComponent(location.hash.replace(/^#/, '')).toLowerCase()
+      if (!id || id.startsWith('letter-')) return
+      const index = entries.findIndex(([term]) => term.toLowerCase() === id)
+      if (index < 0) return
+      const term = entries[index][0]
+      const initial = term[0]?.toUpperCase() ?? null
+      const group = entries.filter(([name]) => name[0]?.toUpperCase() === initial)
+      const at = group.findIndex(([name]) => name === term)
+      pendingScroll.current = term.toLowerCase()
+      setQ('')
+      setLetter(initial)
+      setPage(Math.max(0, Math.floor(at / PAGE_SIZE)))
+      setOpen(term)
+    }
+    reveal()
+    window.addEventListener('hashchange', reveal)
+    return () => window.removeEventListener('hashchange', reveal)
+  }, [entries])
+
+  useEffect(() => {
+    const id = pendingScroll.current
+    if (!id || open?.toLowerCase() !== id) return
+    const el = document.getElementById(id)
+    if (!el) return
+    pendingScroll.current = null
+    el.scrollIntoView({ block: 'center' })
+  }, [open, letter, safePage])
 
   // A-Z letter jump navigation
   const letters = useMemo(() => {
@@ -260,13 +350,13 @@ export function GlossaryClient({ entries, locale, total }: Props) {
             type="text"
             placeholder={t(locale, 'glossary.filterPlaceholder')}
             value={q}
-            onChange={(e) => setQ(e.target.value)}
+            onChange={(e) => { setQ(e.target.value); setLetter(null); setPage(0); setOpen(null) }}
             className="min-h-11 w-full rounded-lg px-4 py-2 text-sm focus:outline-none"
             style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text)' }}
           />
           {q && (
             <button
-              onClick={() => setQ('')}
+              onClick={() => { setQ(''); setPage(0) }}
               className="absolute right-0 top-1/2 flex min-h-11 min-w-11 -translate-y-1/2 items-center justify-center text-sm"
               style={{ color: 'var(--text-faint)' }}
               aria-label={t(locale, 'search.clear')}
@@ -290,98 +380,140 @@ export function GlossaryClient({ entries, locale, total }: Props) {
         </div>
       </div>
 
-      {!q && (
-        <div className="mb-5 flex flex-wrap gap-1">
-          {letters.map((l) => (
-            <a
+      <div className="mb-4 flex flex-wrap gap-1">
+        <button
+          type="button"
+          aria-pressed={letter === null && !q}
+          onClick={() => { setLetter(null); setQ(''); setPage(0); setOpen(null) }}
+          className="mono inline-flex min-h-11 items-center rounded px-2.5 text-xs"
+          style={letter === null && !q
+            ? { background: 'var(--accent-glow)', color: 'var(--accent)' }
+            : { color: 'var(--text-faint)' }}
+        >
+          {t(locale, 'glossary.all')}
+        </button>
+        {letters.map((l) => {
+          const on = letter === l && !q
+          return (
+            <button
               key={l}
-              href={`#letter-${l}`}
-              className="mono inline-flex min-h-11 min-w-11 items-center justify-center rounded px-2 py-0.5 text-xs transition-colors hover:bg-[var(--surface)]"
-              style={{ color: 'var(--accent)' }}
+              type="button"
+              aria-pressed={on}
+              onClick={() => { setLetter(l); setQ(''); setPage(0); setOpen(null) }}
+              className="mono inline-flex min-h-11 min-w-11 items-center justify-center rounded text-xs"
+              style={on
+                ? { background: 'var(--accent-glow)', color: 'var(--accent)' }
+                : { color: 'var(--text-faint)' }}
             >
               {l}
-            </a>
-          ))}
-        </div>
-      )}
+            </button>
+          )
+        })}
+      </div>
 
       {filtered.length === 0 && (
         <p className="text-sm" style={{ color: 'var(--text-muted)' }}>{t(locale, 'glossary.noMatch', { query: q })}</p>
       )}
 
-      <dl className="space-y-5">
-        {filtered.map(([term, def], idx) => {
+      {filtered.length > 0 && (
+        <div className="mb-2">
+          <Pager page={safePage} pages={pages} locale={locale} onPage={go} />
+        </div>
+      )}
+
+      <dl id="glossary-list" className="scroll-mt-20">
+        {visible.map(([term, def], idx) => {
           const definition = glossaryText(def, locale)
-          const letter = term[0]?.toUpperCase()
-          const prevLetter = idx > 0 ? filtered[idx - 1][0][0]?.toUpperCase() : null
-          const showAnchor = !q && letter !== prevLetter
+          const initial = term[0]?.toUpperCase()
+          const prevInitial = idx > 0 ? visible[idx - 1][0][0]?.toUpperCase() : null
+          const showAnchor = !q && !letter && initial !== prevInitial
+          const expanded = open === term
 
           return (
             <div key={term}>
               {showAnchor && (
                 <div
-                  id={`letter-${letter}`}
-                  className="mono mb-2 text-xs font-bold scroll-mt-20"
+                  className="mono mb-1 mt-4 text-xs font-bold"
                   style={{ color: 'var(--text-faint)', letterSpacing: '0.1em' }}
                 >
-                  — {letter} —
+                  {initial}
                 </div>
               )}
-              <div
-                id={term.toLowerCase()}
-                className="border-b py-5"
-                style={{ borderColor: 'var(--border-soft)' }}
-              >
-                <dt className="flex items-baseline gap-3">
-                  <span className="text-lg font-semibold" style={{ fontFamily: 'var(--font-display)', color: 'var(--accent)' }}>
-                    <Highlight text={term} query={q} />
-                  </span>
-                  {typeof def.count === 'number' && def.count > 0 && (
-                    <span className="mono rounded px-1.5 py-0.5 text-[10px]" style={{ background: 'var(--bg)', color: 'var(--text-faint)' }}>
-                      {t(locale, 'glossary.hits', { count: String(def.count) })}
+              <div id={term.toLowerCase()} className="border-b" style={{ borderColor: 'var(--border-soft)' }}>
+                <dt>
+                  <button
+                    type="button"
+                    aria-expanded={expanded}
+                    onClick={() => setOpen(expanded ? null : term)}
+                    className="flex w-full items-baseline gap-3 py-3 text-left"
+                  >
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-base font-semibold" style={{ fontFamily: 'var(--font-display)', color: 'var(--accent)' }}>
+                        <Highlight text={term} query={q} />
+                      </span>
+                      {!expanded && (
+                        <span className="mt-0.5 block truncate text-sm" style={{ color: 'var(--text-muted)' }}>
+                          {definition}
+                        </span>
+                      )}
                     </span>
-                  )}
-                  {def.wiki && (
-                    <a
-                      href={def.wiki}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="mono text-[10px] underline underline-offset-2"
-                      style={{ color: 'var(--text-faint)' }}
-                    >
-                      wiki ↗
-                    </a>
-                  )}
+                    {typeof def.count === 'number' && def.count > 0 && (
+                      <span className="mono shrink-0 text-[10px]" style={{ color: 'var(--text-faint)' }}>
+                        {t(locale, 'glossary.hits', { count: String(def.count) })}
+                      </span>
+                    )}
+                  </button>
                 </dt>
-                <dd className="mt-1.5 text-sm leading-relaxed" style={{ color: 'var(--text-muted)' }}>
-                  {q ? (
-                    <Highlight text={definition} query={q} />
-                  ) : (
-                    <CrossLink text={definition} terms={allTermNames} exclude={term} />
-                  )}
-                </dd>
-                {def.posts && def.posts.length > 0 && (
-                  <div className="mt-3">
-                    <div className="mb-1 text-xs" style={{ color: 'var(--text-faint)' }}>
-                      {t(locale, 'glossary.sourcePosts')}
-                    </div>
-                    <ul className="space-y-0.5">
-                      {def.posts.slice(0, 5).map((post) => (
-                        <li key={`${term}-${post.slug}`} className="text-[13px]">
-                          <Link href={`/${locale}/posts/${post.slug}`} className="link-hover-accent" style={{ color: 'var(--text-muted)' }}>
-                            {post.title}
-                          </Link>
-                          <span className="tabular ml-1.5 text-xs" style={{ color: 'var(--text-faint)' }}>×{post.count}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
+                {expanded && (
+                  <dd className="pb-4">
+                    <p className="text-sm leading-relaxed" style={{ color: 'var(--text-muted)' }}>
+                      {q ? (
+                        <Highlight text={definition} query={q} />
+                      ) : (
+                        <CrossLink text={definition} terms={allTermNames} exclude={term} />
+                      )}
+                    </p>
+                    {def.wiki && (
+                      <a
+                        href={def.wiki}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="mono mt-2 inline-block text-[10px] underline underline-offset-2"
+                        style={{ color: 'var(--text-faint)' }}
+                      >
+                        wiki ↗
+                      </a>
+                    )}
+                    {def.posts && def.posts.length > 0 && (
+                      <div className="mt-3">
+                        <div className="mb-1 text-xs" style={{ color: 'var(--text-faint)' }}>
+                          {t(locale, 'glossary.sourcePosts')}
+                        </div>
+                        <ul className="space-y-0.5">
+                          {def.posts.slice(0, 5).map((post) => (
+                            <li key={`${term}-${post.slug}`} className="text-[13px]">
+                              <Link href={`/${locale}/posts/${post.slug}`} className="link-hover-accent" style={{ color: 'var(--text-muted)' }}>
+                                {post.title}
+                              </Link>
+                              <span className="tabular ml-1.5 text-xs" style={{ color: 'var(--text-faint)' }}>×{post.count}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </dd>
                 )}
               </div>
             </div>
           )
         })}
       </dl>
+
+      {filtered.length > 0 && (
+        <div className="mt-4">
+          <Pager page={safePage} pages={pages} locale={locale} onPage={go} />
+        </div>
+      )}
     </>
   )
 }

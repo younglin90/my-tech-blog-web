@@ -4,13 +4,8 @@ import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { loadPostIndexClient, type PostIndexItem } from '@/lib/post-index'
 
-// 본문(<article>) 안 내부 포스트 링크에 마우스를 ~250ms 올리고 있으면
-// 제목만 보여 주는 작은 팝오버를 띄운다. 팝오버를 누르면 그 글로 이동한다.
-//
-// SSR 비용 0 — post-index.json을 한 번 fetch해 캐시.
-// 동일 슬러그를 5개 locale 모두 가지므로 사용자 현재 locale로 매치 후 fallback.
-//
-// 모바일은 hover 이벤트가 없으므로 자동으로 비활성 — 그냥 일반 링크 동작.
+// 본문 안 내부 포스트 링크에 마우스를 ~250ms 올리고 있으면 제목만 보여 준다.
+// 한 번 뜨면 그 자리에 고정된다. 팝업과 그 링크 글자에서 모두 벗어나야 사라진다.
 
 interface PostMap {
   [slug_locale: string]: PostIndexItem
@@ -41,15 +36,8 @@ async function loadMap(): Promise<PostMap> {
   return inflight
 }
 
-interface Anchor {
-  el: HTMLAnchorElement
-  slug: string
-  locale: string
-}
-
 function parseInternalPostHref(href: string): { locale: string; slug: string } | null {
   if (!href) return null
-  // 절대 URL이면 origin 일치만 허용 — 외부는 제외
   let path: string
   try {
     const u = new URL(href, window.location.origin)
@@ -63,11 +51,29 @@ function parseInternalPostHref(href: string): { locale: string; slug: string } |
   return { locale: m[1], slug: m[2] }
 }
 
+const CARD_WIDTH = 260
+const CARD_HEIGHT = 58
+
+function placeCard(rect: DOMRect) {
+  const showAbove = rect.top > CARD_HEIGHT + 16
+  const top = (showAbove ? rect.top - CARD_HEIGHT - 8 : rect.bottom + 8) + window.scrollY
+  const rawLeft = rect.left + window.scrollX
+  const maxLeft = window.scrollX + document.documentElement.clientWidth - CARD_WIDTH - 12
+  const left = Math.max(window.scrollX + 12, Math.min(rawLeft, maxLeft))
+  return { top, left }
+}
+
+function covers(rect: DOMRect, x: number, y: number, pad: number) {
+  return x >= rect.left - pad && x <= rect.right + pad && y >= rect.top - pad && y <= rect.bottom + pad
+}
+
 export function LinkPreview() {
-  const [hover, setHover] = useState<{ entry: PostIndexItem; href: string; rect: DOMRect } | null>(null)
+  const [hover, setHover] = useState<{ entry: PostIndexItem; href: string; top: number; left: number } | null>(null)
   const enterTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const leaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const cardRef = useRef<HTMLAnchorElement | null>(null)
+  const anchorRef = useRef<HTMLAnchorElement | null>(null)
+  const pendingRef = useRef<HTMLAnchorElement | null>(null)
   const mapRef = useRef<PostMap | null>(null)
 
   useEffect(() => {
@@ -89,47 +95,82 @@ export function LinkPreview() {
         leaveTimerRef.current = null
       }
     }
+    const hide = () => {
+      cancelLeave()
+      anchorRef.current = null
+      pendingRef.current = null
+      setHover(null)
+    }
+    const insideShown = (x: number, y: number) => {
+      const anchor = anchorRef.current
+      const card = cardRef.current
+      if (!anchor) return false
+      const a = anchor.getBoundingClientRect()
+      const c = card?.getBoundingClientRect()
+      if (!c) return covers(a, x, y, 8)
+      const left = Math.min(a.left, c.left) - 8
+      const right = Math.max(a.right, c.right) + 8
+      const top = Math.min(a.top, c.top) - 8
+      const bottom = Math.max(a.bottom, c.bottom) + 8
+      return x >= left && x <= right && y >= top && y <= bottom
+    }
 
     const onEnter = (e: MouseEvent) => {
       const target = e.target as HTMLElement | null
-      if (!target) return
+      if (!target || target.closest('[data-link-preview]')) return
       const a = target.closest('a') as HTMLAnchorElement | null
       if (!a || !article.contains(a)) return
       const parsed = parseInternalPostHref(a.getAttribute('href') ?? a.href)
       if (!parsed) return
-
+      // 이미 떠 있는 카드는 마우스가 다른 링크를 스쳐도 따라가지 않는다.
+      // 같은 글자로 돌아오면 사라지는 타이머만 끊는다.
+      if (anchorRef.current) {
+        if (anchorRef.current === a) cancelLeave()
+        return
+      }
       cancelEnter()
-      cancelLeave()
+      pendingRef.current = a
       enterTimerRef.current = setTimeout(() => {
-        const map = mapRef.current
-        if (!map) return
-        // 사용자 현재 locale URL이라도, 동일 slug에서 같은 locale을 우선
-        const entry = map[`${parsed.slug}::${parsed.locale}`]
-          ?? map[`${parsed.slug}::ko`]
-          ?? Object.values(map).find((p) => p.slug === parsed.slug)
-        if (!entry) return
-        const rect = a.getBoundingClientRect()
-        setHover({ entry, href: `/${parsed.locale}/posts/${parsed.slug}/`, rect })
+        void (async () => {
+          if (pendingRef.current !== a) return
+          const map = mapRef.current ?? await loadMap()
+          if (pendingRef.current !== a) return
+          const entry = map[`${parsed.slug}::${parsed.locale}`]
+            ?? map[`${parsed.slug}::ko`]
+            ?? Object.values(map).find((p) => p.slug === parsed.slug)
+          if (!entry) return
+          anchorRef.current = a
+          pendingRef.current = null
+          const { top, left } = placeCard(a.getBoundingClientRect())
+          setHover({ entry, href: `/${parsed.locale}/posts/${parsed.slug}/`, top, left })
+        })()
       }, 250)
     }
 
-    const onLeave = (e: MouseEvent) => {
-      const related = e.relatedTarget as Node | null
-      // 카드 위로 옮겨갔다면 유지
-      if (related && cardRef.current?.contains(related)) return
-      cancelEnter()
-      cancelLeave()
-      leaveTimerRef.current = setTimeout(() => setHover(null), 180)
+    const onMove = (e: PointerEvent) => {
+      if (anchorRef.current) {
+        if (insideShown(e.clientX, e.clientY)) cancelLeave()
+        else if (!leaveTimerRef.current) leaveTimerRef.current = setTimeout(hide, 140)
+        return
+      }
+      const pending = pendingRef.current
+      if (!pending) return
+      const r = pending.getBoundingClientRect()
+      if (!covers(r, e.clientX, e.clientY, 6)) {
+        cancelEnter()
+        pendingRef.current = null
+      }
     }
 
     article.addEventListener('mouseover', onEnter)
-    article.addEventListener('mouseout', onLeave)
-    window.addEventListener('scroll', () => setHover(null), { passive: true })
+    window.addEventListener('pointermove', onMove)
+    document.documentElement.addEventListener('pointerleave', hide)
 
     return () => {
       cancelled = true
       article.removeEventListener('mouseover', onEnter)
-      article.removeEventListener('mouseout', onLeave)
+      window.removeEventListener('pointermove', onMove)
+      document.documentElement.removeEventListener('pointerleave', hide)
       cancelEnter()
       cancelLeave()
     }
@@ -137,42 +178,25 @@ export function LinkPreview() {
 
   if (!hover) return null
 
-  const { entry, href, rect } = hover
-  // 제목 두 줄 정도. 위 공간이 부족하면 링크 아래로 붙인다.
-  const cardHeight = 58
-  const showAbove = rect.top > cardHeight + 16
-  const top = (showAbove ? rect.top - cardHeight - 8 : rect.bottom + 8) + window.scrollY
-  const cardWidth = 260
-  const rawLeft = rect.left + window.scrollX
-  const maxLeft = window.scrollX + document.documentElement.clientWidth - cardWidth - 12
-  const left = Math.max(window.scrollX + 12, Math.min(rawLeft, maxLeft))
-
   return (
     <Link
-      href={href}
+      href={hover.href}
       ref={cardRef}
+      data-link-preview=""
       className="absolute z-40 block rounded-md"
       style={{
-        top, left,
-        width: cardWidth,
+        position: 'absolute',
+        top: hover.top,
+        left: hover.left,
+        width: CARD_WIDTH,
         padding: '8px 10px',
         background: 'var(--surface)',
         border: '1px solid var(--accent)',
         boxShadow: '0 6px 18px rgba(0,0,0,0.18)',
       }}
-      onMouseEnter={() => {
-        if (leaveTimerRef.current) {
-          clearTimeout(leaveTimerRef.current)
-          leaveTimerRef.current = null
-        }
-      }}
-      onMouseLeave={() => {
-        if (leaveTimerRef.current) clearTimeout(leaveTimerRef.current)
-        leaveTimerRef.current = setTimeout(() => setHover(null), 120)
-      }}
     >
       <span className="line-clamp-2 text-[13px] font-semibold leading-snug" style={{ color: 'var(--accent)' }}>
-        {entry.title}
+        {hover.entry.title}
       </span>
     </Link>
   )
