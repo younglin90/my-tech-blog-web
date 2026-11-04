@@ -9,7 +9,9 @@ import {
   CATEGORY_ORDER,
   FEATURED_CALCULATOR_SLUGS,
   getCategoryLabel,
+  visibleCalculators,
   type CalculatorCategory,
+  type CalculatorMeta,
 } from '@/lib/calculators'
 import { t, type Locale } from '@/lib/i18n'
 import { useUrlParam } from '@/lib/use-url-param'
@@ -34,12 +36,22 @@ export function ToolsCatalog({ locale }: { locale: Locale }) {
   const [activeCategoryRaw, setActiveCategoryRaw] = useUrlParam<string>('cat', 'all', 'string')
   const [recentSlugs, setRecentSlugs] = useState<string[]>([])
   const [favoriteSlugs, setFavoriteSlugs] = useState<string[]>([])
+  const [searchFocused, setSearchFocused] = useState(false)
+  const tools = useMemo(() => visibleCalculators(), [])
+  const bySlug = useMemo(() => new Map(CALCULATORS.map((tool) => [tool.slug, tool])), [])
   const activeCategory: CalculatorCategory | 'all' = useMemo(() => {
     return activeCategoryRaw === 'all' || CATEGORY_ORDER.includes(activeCategoryRaw as CalculatorCategory)
       ? (activeCategoryRaw as CalculatorCategory | 'all')
       : 'all'
   }, [activeCategoryRaw])
   const deferredQuery = useDeferredValue(query.trim().toLowerCase())
+
+  const resolveListed = (slug: string): CalculatorMeta | undefined => {
+    const tool = bySlug.get(slug)
+    if (!tool) return undefined
+    if (tool.aliasOf) return bySlug.get(tool.aliasOf)
+    return tool
+  }
 
   useEffect(() => {
     try {
@@ -60,11 +72,23 @@ export function ToolsCatalog({ locale }: { locale: Locale }) {
     })
   }
   const isFav = (slug: string) => favoriteSlugs.includes(slug)
-  const favoriteTools = favoriteSlugs
-    .map((slug) => CALCULATORS.find((tool) => tool.slug === slug))
-    .filter((tool): tool is (typeof CALCULATORS)[number] => Boolean(tool))
 
-  const filtered = CALCULATORS.filter((tool) => {
+  const uniqueResolved = (slugs: string[]) => {
+    const seen = new Set<string>()
+    const out: CalculatorMeta[] = []
+    for (const slug of slugs) {
+      const tool = resolveListed(slug)
+      if (!tool || seen.has(tool.slug)) continue
+      seen.add(tool.slug)
+      out.push(tool)
+    }
+    return out
+  }
+
+  const favoriteTools = uniqueResolved(favoriteSlugs)
+  const recentTools = uniqueResolved(recentSlugs)
+
+  const filtered = tools.filter((tool) => {
     if (activeCategory !== 'all' && tool.category !== activeCategory) return false
     if (!deferredQuery) return true
 
@@ -80,10 +104,7 @@ export function ToolsCatalog({ locale }: { locale: Locale }) {
     return haystack.includes(deferredQuery)
   })
 
-  const featured = CALCULATORS.filter((tool) => FEATURED_CALCULATOR_SLUGS.includes(tool.slug))
-  const recentTools = recentSlugs
-    .map((slug) => CALCULATORS.find((tool) => tool.slug === slug))
-    .filter((tool): tool is (typeof CALCULATORS)[number] => Boolean(tool))
+  const featured = tools.filter((tool) => FEATURED_CALCULATOR_SLUGS.includes(tool.slug))
   const activeLabel = activeCategory === 'all' ? null : getCategoryLabel(activeCategory, locale)
   const grouped = CATEGORY_ORDER
     .map((category) => ({
@@ -92,6 +113,7 @@ export function ToolsCatalog({ locale }: { locale: Locale }) {
       items: filtered.filter((tool) => tool.category === category),
     }))
     .filter((group) => group.items.length > 0)
+  const showRails = !deferredQuery && activeCategory === 'all'
 
   return (
     <div id="tools-top" className="space-y-8">
@@ -107,16 +129,22 @@ export function ToolsCatalog({ locale }: { locale: Locale }) {
       <section className="space-y-4">
         <div className="grid gap-3 lg:grid-cols-[1.3fr,auto]">
           <label className="flex flex-col gap-1">
-            <span className="text-xs uppercase tracking-widest" style={{ color: 'var(--text-faint)' }}>
+            <span className="text-[11px] uppercase tracking-wider" style={{ color: 'var(--text-faint)' }}>
               {t(locale, 'tools.search')}
             </span>
             <input
               type="text"
               value={query}
               onChange={(e) => startTransition(() => setQuery(e.target.value))}
+              onFocus={() => setSearchFocused(true)}
+              onBlur={() => setSearchFocused(false)}
               placeholder={t(locale, 'tools.searchPlaceholder')}
-              className="min-h-11 rounded-xl px-3 py-2.5 text-sm focus:outline-none"
-              style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text)' }}
+              className="min-h-11 rounded-lg px-3 py-2.5 text-sm focus:outline-none"
+              style={{
+                background: 'var(--bg)',
+                border: `1px solid ${searchFocused ? 'var(--accent)' : 'var(--border)'}`,
+                color: 'var(--text)',
+              }}
             />
           </label>
 
@@ -149,14 +177,14 @@ export function ToolsCatalog({ locale }: { locale: Locale }) {
           ))}
         </div>
 
-        <div className="text-xs" style={{ color: 'var(--text-faint)' }}>
+        <div className="mono text-xs tabular-nums" style={{ color: 'var(--text-faint)' }}>
           {filtered.length} {t(locale, 'tools.matches')}
           {activeLabel ? ` / ${activeLabel}` : ''}
           {deferredQuery ? ` / "${deferredQuery}"` : ''}
         </div>
       </section>
 
-      {(favoriteTools.length > 0 || recentTools.length > 0) && !deferredQuery && activeCategory === 'all' && (
+      {showRails && (favoriteTools.length > 0 || recentTools.length > 0) && (
         <section className="space-y-2">
           {favoriteTools.length > 0 && (
             <ChipRow label={`★ ${t(locale, 'tools.favorites')}`} accent>
@@ -191,109 +219,61 @@ export function ToolsCatalog({ locale }: { locale: Locale }) {
         </section>
       )}
 
-      {!deferredQuery && activeCategory === 'all' && (
+      {showRails && (
         <section>
-          <h2 className="mb-3 text-xs font-semibold uppercase tracking-widest" style={{ color: 'var(--text-faint)' }}>
+          <h2 className="mb-2 text-[11px] font-semibold uppercase tracking-wider" style={{ color: 'var(--text-faint)' }}>
             {t(locale, 'tools.featured')}
           </h2>
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-            {featured.slice(0, 6).map((tool) => (
-              <ToolCard key={tool.slug} locale={locale} slug={tool.slug} title={tool.title[locale]} desc={tool.desc[locale]} tags={tool.tags} isFavorite={isFav(tool.slug)} onToggleFavorite={toggleFavorite} />
+          <div className="flex flex-wrap gap-2">
+            {featured.slice(0, 8).map((tool) => (
+              <ToolChip key={tool.slug} locale={locale} slug={tool.slug} title={tool.title[locale]} />
             ))}
           </div>
         </section>
       )}
 
-      {!deferredQuery && activeCategory === 'all' ? (
-        <section>
-          <h2 className="mb-3 text-xs font-semibold uppercase tracking-widest" style={{ color: 'var(--text-faint)' }}>
-            {t(locale, 'tools.browseByCategory')}
-          </h2>
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-            {grouped.map((group) => (
-              <div
-                key={group.category}
-                className="flex flex-col rounded-xl p-4"
-                style={{ background: 'var(--surface)', border: '1px solid var(--border-soft)' }}
-              >
-                <div className="flex items-baseline justify-between gap-2">
-                  <h3 className="text-base font-semibold" style={{ fontFamily: 'var(--font-display)', color: 'var(--text)' }}>
-                    {group.label}
-                  </h3>
-                  <span className="mono text-xs tabular-nums" style={{ color: 'var(--text-faint)' }}>
-                    {group.items.length}
-                  </span>
-                </div>
-                <ul className="mt-2 space-y-1 text-sm">
-                  {group.items.slice(0, 4).map((tool) => (
-                    <li key={tool.slug}>
-                      <Link href={`/${locale}/tools/${tool.slug}`} className="line-clamp-1 link-hover-accent" style={{ color: 'var(--text-muted)' }}>
-                        {tool.title[locale]}
-                      </Link>
-                    </li>
-                  ))}
-                </ul>
-                {group.items.length > 4 && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setActiveCategoryRaw(group.category)
-                      document.getElementById('tools-top')?.scrollIntoView({ block: 'start' })
-                    }}
-                    className="mt-auto inline-flex min-h-11 items-center self-start pt-2 text-xs font-medium"
-                    style={{ color: 'var(--accent)' }}
-                  >
-                    {t(locale, 'tools.showAll', { count: String(group.items.length) })} →
-                  </button>
-                )}
-              </div>
-            ))}
-          </div>
-        </section>
-      ) : grouped.length > 0 ? (
+      {activeCategory !== 'all' && (
+        <button
+          type="button"
+          onClick={() => setActiveCategoryRaw('all')}
+          className="inline-flex min-h-11 items-center text-xs font-medium"
+          style={{ color: 'var(--text-muted)' }}
+        >
+          {t(locale, 'tools.backToOverview')}
+        </button>
+      )}
+
+      {grouped.length > 0 ? (
         <div className="space-y-8">
-          {activeCategory !== 'all' && (
-            <button
-              type="button"
-              onClick={() => setActiveCategoryRaw('all')}
-              className="inline-flex min-h-11 items-center text-xs font-medium"
-              style={{ color: 'var(--text-muted)' }}
-            >
-              {t(locale, 'tools.backToOverview')}
-            </button>
-          )}
           {grouped.map((group) => (
             <section key={group.category} id={`tools-category-${group.category}`} style={{ scrollMarginTop: 96 }}>
-              <div className="mb-3 flex items-center justify-between gap-3">
-                <h2
-                  className="flex items-center gap-2 text-xs font-semibold uppercase tracking-widest"
-                  style={{ color: 'var(--text-faint)' }}
-                >
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <h2 className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider" style={{ color: 'var(--text-faint)' }}>
                   <span
                     className="mono rounded px-2 py-0.5 text-[10px]"
                     style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--accent)' }}
                   >
-                    {group.category}
+                    {String(group.items.length).padStart(2, '0')}
                   </span>
                   {group.label}
                 </h2>
                 <a
                   href="#tools-top"
-                  className="inline-flex min-h-11 min-w-11 items-center justify-center text-[10px] uppercase tracking-widest transition-colors"
+                  className="inline-flex min-h-11 min-w-11 items-center justify-center text-[10px] uppercase tracking-widest"
                   style={{ color: 'var(--text-faint)' }}
                 >
                   {t(locale, 'tools.backToTop')}
                 </a>
               </div>
-              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                {group.items.map((tool) => (
-                  <ToolCard
+              <div className="overflow-hidden rounded-xl" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
+                {group.items.map((tool, index) => (
+                  <ToolRow
                     key={tool.slug}
                     locale={locale}
                     slug={tool.slug}
                     title={tool.title[locale]}
                     desc={tool.desc[locale]}
-                    tags={tool.tags}
+                    first={index === 0}
                     isFavorite={isFav(tool.slug)}
                     onToggleFavorite={toggleFavorite}
                   />
@@ -340,12 +320,12 @@ function FilterChip({
   )
 }
 
-function ToolCard({
+function ToolRow({
   locale,
   slug,
   title,
   desc,
-  tags,
+  first,
   isFavorite,
   onToggleFavorite,
 }: {
@@ -353,32 +333,24 @@ function ToolCard({
   slug: string
   title: string
   desc: string
-  tags: string[]
+  first?: boolean
   isFavorite?: boolean
   onToggleFavorite?: (slug: string) => void
 }) {
   const labelAdd = t(locale, 'tools.favoriteAdd')
   const labelRemove = t(locale, 'tools.favoriteRemove')
-  const toolMeta = CALCULATORS.find((tool) => tool.slug === slug)
   return (
-    <div className="group relative">
-      <Link
-        href={`/${locale}/tools/${slug}`}
-        className="block h-full overflow-hidden rounded-xl transition-colors duration-100 hover:[border-color:var(--accent)]"
-        style={{ border: '1px solid var(--border-soft)' }}
-      >
-        <div className="p-4">
-          <div className="mb-1.5 text-xs" style={{ color: 'var(--text-faint)' }}>
-            {getCategoryLabel(toolMeta?.category ?? 'numerics', locale)}
-          </div>
-          <h3 className="pr-12 text-base font-semibold link-hover-accent" style={{ fontFamily: 'var(--font-display)', color: 'var(--text)' }}>
+    <div className="relative" style={first ? undefined : { borderTop: '1px solid var(--border)' }}>
+      <Link href={`/${locale}/tools/${slug}`} className="block py-3 pl-4 pr-14 transition-colors hover:[background:var(--bg)]">
+        <div className="flex flex-col gap-0.5 sm:flex-row sm:items-baseline sm:gap-5">
+          <h3
+            className="text-[15px] font-semibold link-hover-accent sm:w-72 sm:shrink-0"
+            style={{ fontFamily: 'var(--font-display)', color: 'var(--text)', letterSpacing: '-0.02em' }}
+          >
             {title}
           </h3>
-          <p className="mt-1 text-sm" style={{ color: 'var(--text-muted)', lineHeight: 1.6 }}>
+          <p className="line-clamp-2 text-sm sm:line-clamp-1" style={{ color: 'var(--text-muted)', lineHeight: 1.5 }}>
             {desc}
-          </p>
-          <p className="mt-3 text-xs" style={{ color: 'var(--text-faint)' }}>
-            {tags.slice(0, 4).join(' · ')}
           </p>
         </div>
       </Link>
@@ -387,17 +359,9 @@ function ToolCard({
           type="button"
           aria-label={isFavorite ? labelRemove : labelAdd}
           title={isFavorite ? labelRemove : labelAdd}
-          onClick={(e) => {
-            e.preventDefault()
-            e.stopPropagation()
-            onToggleFavorite(slug)
-          }}
-          className="absolute right-2 top-2 flex h-11 w-11 items-center justify-center rounded-md text-base leading-none transition-colors"
-          style={{
-            color: isFavorite ? 'var(--accent)' : 'var(--text-faint)',
-            background: 'transparent',
-            border: '1px solid transparent',
-          }}
+          onClick={() => onToggleFavorite(slug)}
+          className="absolute right-1 top-1/2 flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-md text-base leading-none"
+          style={{ color: isFavorite ? 'var(--accent)' : 'var(--text-faint)', background: 'transparent' }}
         >
           {isFavorite ? '★' : '☆'}
         </button>
@@ -409,7 +373,7 @@ function ToolCard({
 function ChipRow({ label, accent, action, children }: { label: string; accent?: boolean; action?: ReactNode; children: ReactNode }) {
   return (
     <div className="flex flex-wrap items-center gap-2">
-      <span className="mr-1 text-xs font-semibold uppercase tracking-widest" style={{ color: accent ? 'var(--accent)' : 'var(--text-faint)' }}>
+      <span className="mr-1 text-[11px] font-semibold uppercase tracking-wider" style={{ color: accent ? 'var(--accent)' : 'var(--text-faint)' }}>
         {label}
       </span>
       {children}

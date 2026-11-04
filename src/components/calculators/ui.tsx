@@ -25,9 +25,26 @@ export function NumberField({
   min?: number
   max?: number
 }) {
+  const ranged = min != null && max != null && Number.isFinite(min) && Number.isFinite(max) && max > min
+  const log = ranged && min > 0 && max / min >= 100
+  const slider = ranged
+    ? log
+      ? (Math.log(Math.min(max, Math.max(min, value))) - Math.log(min)) / (Math.log(max) - Math.log(min))
+      : (Math.min(max, Math.max(min, value)) - min) / (max - min)
+    : 0
+
+  const fromSlider = (position: number) => {
+    if (!ranged) return value
+    const next = log
+      ? Math.exp(Math.log(min) + position * (Math.log(max) - Math.log(min)))
+      : min + position * (max - min)
+    const snapped = step > 0 ? Math.round(next / step) * step : next
+    return Math.min(max, Math.max(min, snapped))
+  }
+
   return (
-    <label className="flex flex-col gap-1">
-      <span className="text-xs" style={{ color: 'var(--text-muted)' }}>{label}</span>
+    <label className="flex flex-col gap-1.5">
+      <span className="text-[11px] uppercase tracking-wider" style={{ color: 'var(--text-faint)' }}>{label}</span>
       <input
         type="number"
         value={value}
@@ -35,9 +52,24 @@ export function NumberField({
         min={min}
         max={max}
         onChange={(e) => onChange(parseFloat(e.target.value) || 0)}
-        className="rounded-md px-2.5 py-1.5 text-sm tabular-nums focus:outline-none"
+        className="mono rounded-md px-2.5 py-2 text-sm tabular-nums focus:outline-none"
         style={{ background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text)' }}
+        onFocus={(e) => { e.currentTarget.style.borderColor = 'var(--accent)' }}
+        onBlur={(e) => { e.currentTarget.style.borderColor = 'var(--border)' }}
       />
+      {ranged && (
+        <input
+          type="range"
+          min={0}
+          max={1}
+          step={0.001}
+          value={Number.isFinite(slider) ? slider : 0}
+          aria-label={label}
+          onChange={(e) => onChange(fromSlider(parseFloat(e.target.value)))}
+          className="h-1.5 w-full cursor-pointer appearance-none rounded-full"
+          style={{ accentColor: 'var(--accent)' }}
+        />
+      )}
     </label>
   )
 }
@@ -55,12 +87,14 @@ export function SelectField({
 }) {
   return (
     <label className="flex flex-col gap-1">
-      <span className="text-xs" style={{ color: 'var(--text-muted)' }}>{label}</span>
+      <span className="text-[11px] uppercase tracking-wider" style={{ color: 'var(--text-faint)' }}>{label}</span>
       <select
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="rounded-md px-2.5 py-1.5 text-sm focus:outline-none"
+        className="rounded-md px-2.5 py-2 text-sm focus:outline-none"
         style={{ background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text)' }}
+        onFocus={(e) => { e.currentTarget.style.borderColor = 'var(--accent)' }}
+        onBlur={(e) => { e.currentTarget.style.borderColor = 'var(--border)' }}
       >
         {options.map((option) => (
           <option key={option.value} value={option.value}>{option.label}</option>
@@ -79,32 +113,10 @@ export function MetricCard({
   value: string
   color?: string
 }) {
-  const numeric = Number.parseFloat(value.replace(/,/g, ''))
-  const hasScale = Number.isFinite(numeric)
-  const scale = hasScale
-    ? Math.min(100, Math.max(8, ((Math.log10(Math.abs(numeric) + 1e-12) + 6) / 12) * 100))
-    : 0
-
   return (
-    <div className="rounded-lg p-3" style={{ background: 'var(--bg)', border: '1px solid var(--border)' }}>
-      <div className="text-xs uppercase tracking-widest" style={{ color: 'var(--text-faint)' }}>{label}</div>
-      <div className="mono mt-1 tabular-nums font-bold" style={{ fontSize: 18, color }}>{value}</div>
-      {hasScale && (
-        <div
-          className="mt-2 h-1.5 overflow-hidden rounded-full"
-          style={{ background: 'rgba(148,163,184,0.16)' }}
-          aria-hidden="true"
-        >
-          <div
-            className="h-full rounded-full transition-[width] duration-300"
-            style={{
-              width: `${scale}%`,
-              background: `linear-gradient(90deg, ${color}, var(--accent))`,
-              boxShadow: `0 0 14px ${color}`,
-            }}
-          />
-        </div>
-      )}
+    <div className="rounded-lg px-3 py-2.5" style={{ background: 'var(--bg)', border: '1px solid var(--border)', borderLeft: `3px solid ${color}` }}>
+      <div className="text-[11px] uppercase tracking-wider" style={{ color: 'var(--text-faint)' }}>{label}</div>
+      <div className="mono mt-1 tabular-nums" style={{ fontSize: 18, fontWeight: 650, color: 'var(--text)', letterSpacing: '-0.02em' }}>{value}</div>
     </div>
   )
 }

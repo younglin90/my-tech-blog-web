@@ -17,6 +17,8 @@ type LocalizedString = Record<Locale, string>
 
 export interface CalculatorMeta {
   slug: string
+  /** When set, this slug is an old duplicate. The catalog lists `aliasOf` instead. */
+  aliasOf?: string
   title: LocalizedString
   desc: LocalizedString
   formula: string
@@ -120,6 +122,10 @@ export const CATEGORY_LABELS: Record<CalculatorCategory, LocalizedString> = {
 
 export function getCategoryLabel(category: CalculatorCategory, locale: Locale): string {
   return CATEGORY_LABELS[category][locale] ?? CATEGORY_LABELS[category].en
+}
+
+export function visibleCalculators(): CalculatorMeta[] {
+  return CALCULATORS.filter((tool) => !tool.aliasOf)
 }
 
 export const FEATURED_CALCULATOR_SLUGS = [
@@ -277,19 +283,20 @@ export const CALCULATORS: CalculatorMeta[] = [
   {
     slug: 'colebrook-white',
     category: 'internal-flow',
-    title: { ko: 'Colebrook-White 마찰계수', en: 'Colebrook-White Friction Factor', ja: 'Colebrook-White 摩擦係数', zh: 'Colebrook-White 摩擦因子', es: 'Factor de Fricción Colebrook-White' },
+    title: { ko: 'Colebrook–White와 Moody 차트', en: 'Colebrook–White and the Moody Chart', ja: 'Colebrook–White と Moody チャート', zh: 'Colebrook–White 与 Moody 图', es: 'Colebrook–White y el diagrama de Moody' },
     desc: {
-      ko: 'Reynolds 수와 상대 조도에서 Darcy 마찰계수를 반복 계산합니다.',
-      en: 'Iterate the Darcy friction factor from Reynolds number and relative roughness.',
-      ja: 'Reynolds数と相対粗さから Darcy 摩擦係数を反復計算します。',
-      zh: '根据 Reynolds 数与相对粗糙度迭代计算 Darcy 摩擦因子。',
-      es: 'Itera el factor de fricción de Darcy a partir de Reynolds y rugosidad relativa.',
+      ko: 'Reynolds 수와 상대 조도로 Darcy 마찰계수를 구하고, 같은 점을 Moody 차트 위에 올립니다.',
+      en: 'Solve the Darcy friction factor from Reynolds number and relative roughness, and place that point on a Moody chart.',
+      ja: 'Reynolds数と相対粗さから Darcy 摩擦係数を求め、その点を Moody チャートに載せます。',
+      zh: '由 Reynolds 数和相对粗糙度求出 Darcy 摩擦因子，并把该点标在 Moody 图上。',
+      es: 'Calcula el factor de fricción de Darcy con Reynolds y rugosidad relativa, y lo sitúa en un diagrama de Moody.',
     },
     formula: '1/sqrt(f) = -2 log10(epsilon/(3.7D) + 2.51/(Re sqrt(f)))',
     tags: ['pipe flow', 'friction factor', 'Colebrook', 'roughness'],
   },
   {
     slug: 'moody-chart-explorer',
+    aliasOf: 'colebrook-white',
     category: 'internal-flow',
     title: { ko: 'Moody 차트 탐색기', en: 'Moody Chart Explorer', ja: 'Moody チャート探索', zh: 'Moody 图探索器', es: 'Explorador del Diagrama de Moody' },
     desc: {
@@ -405,17 +412,18 @@ export const CALCULATORS: CalculatorMeta[] = [
     category: 'aerodynamics',
     title: { ko: 'Strouhal 와류 방출 주파수', en: 'Strouhal Vortex Shedding', ja: 'Strouhal 渦放出周波数', zh: 'Strouhal 涡脱落频率', es: 'Desprendimiento de Vórtices Strouhal' },
     desc: {
-      ko: 'Strouhal 수, 속도, 대표길이에서 와류 방출 주파수를 계산합니다.',
-      en: 'Compute vortex-shedding frequency from Strouhal number, velocity, and length scale.',
-      ja: 'Strouhal数、速度、代表長さから渦放出周波数を計算します。',
-      zh: '由 Strouhal 数、速度与特征长度计算涡脱落频率。',
-      es: 'Calcula la frecuencia de desprendimiento de vórtices con St, velocidad y escala.',
+      ko: 'Strouhal 수에서 방출 주파수와 주기를 구하고, 원기둥 뒤 와열의 간격이 어떻게 벌어지는지 같이 봅니다.',
+      en: 'Compute shedding frequency and period from the Strouhal number, and watch the vortex spacing behind a cylinder.',
+      ja: 'Strouhal数から放出周波数と周期を求め、円柱背後の渦間隔がどう開くかを一緒に見ます。',
+      zh: '由 Strouhal 数求脱落频率和周期，并一起看圆柱后方涡间距如何拉开。',
+      es: 'Calcula frecuencia y periodo desde Strouhal, y muestra cómo se abre la separación de vórtices tras un cilindro.',
     },
     formula: 'St = f L / U,   f = St U / L',
     tags: ['Strouhal', 'vortex shedding', 'cylinder wake'],
   },
   {
     slug: 'vortex-shedding-street',
+    aliasOf: 'strouhal-vortex-shedding',
     category: 'aerodynamics',
     title: { ko: '와류 방출 거리 시각화', en: 'Vortex Shedding Street', ja: '渦放出ストリート可視化', zh: '涡脱落街可视化', es: 'Calle de Vórtices' },
     desc: {
@@ -755,17 +763,18 @@ export const CALCULATORS: CalculatorMeta[] = [
     category: 'turbulence',
     title: { ko: '난류 강도와 k-epsilon 경계조건', en: 'Turbulence Intensity & k-epsilon BCs', ja: '乱流強度と k-epsilon 境界条件', zh: '湍流强度与 k-epsilon 边界条件', es: 'Intensidad de Turbulencia y BCs k-epsilon' },
     desc: {
-      ko: '난류 강도에서 k, epsilon, omega 입구 경계조건을 계산합니다.',
-      en: 'Compute inlet k, epsilon, and omega from turbulence intensity.',
-      ja: '乱流強度から k, epsilon, omega の入口境界条件を計算します。',
-      zh: '根据湍流强度计算入口 k、epsilon 与 omega。',
-      es: 'Calcula k, epsilon y omega de entrada a partir de la intensidad de turbulencia.',
+      ko: '난류 강도에서 k, epsilon, omega를 구하고, 입구 eddy가 배관 지름에 비해 얼마나 큰지 같이 봅니다.',
+      en: 'Compute inlet k, epsilon, and omega from turbulence intensity, and compare the eddy size with the pipe diameter.',
+      ja: '乱流強度から入口の k、epsilon、omega を求め、渦の大きさが管径に対してどれだけかを見ます。',
+      zh: '由湍流强度求入口 k、epsilon、omega，并看涡尺度相对管径有多大。',
+      es: 'Calcula k, epsilon y omega de entrada desde la intensidad, y compara el tamaño del remolino con el diámetro.',
     },
     formula: 'k = 1.5 (I U)^2,   epsilon = Cmu^(3/4) k^(3/2) / l',
     tags: ['turbulence', 'boundary condition', 'OpenFOAM', 'k-epsilon'],
   },
   {
     slug: 'turbulence-inlet-visualizer',
+    aliasOf: 'turbulence-intensity',
     category: 'turbulence',
     title: { ko: '난류 입구 스케일 시각화', en: 'Turbulence Inlet Visualizer', ja: '乱流入口スケール可視化', zh: '湍流入口尺度可视化', es: 'Visualizador de Entrada Turbulenta' },
     desc: {
@@ -811,17 +820,18 @@ export const CALCULATORS: CalculatorMeta[] = [
     category: 'turbulence',
     title: { ko: 'y+ 첫 셀 높이', en: 'y+ First Cell Height', ja: 'y+ 第一セル高さ', zh: 'y+ 首层网格高度', es: 'Altura de Primera Celda y+' },
     desc: {
-      ko: '목표 y+에 맞는 첫 셀 중심 높이와 마찰속도를 추정합니다.',
-      en: 'Estimate first-cell center height and friction velocity for a target y+.',
-      ja: '目標 y+ に対する第一セル中心高さと摩擦速度を推定します。',
-      zh: '根据目标 y+ 估算首层网格中心高度与摩擦速度。',
-      es: 'Estima la altura del centro de la primera celda y la velocidad de fricción para un y+ objetivo.',
+      ko: '목표 y+의 첫 셀 높이를 구하고, 그 점이 점성저층·buffer·log-law 중 어디에 있는지 벽 단면에서 봅니다.',
+      en: 'Estimate first-cell height for a target y+, and see whether that point sits in the viscous sublayer, buffer, or log layer.',
+      ja: '目標 y+ の第一セル高さを求め、その点が粘性底層・バッファ・対数則のどこにあるかを壁断面で見ます。',
+      zh: '求目标 y+ 的首层高度，并在壁面剖面上看它落在黏性底层、缓冲层还是对数律区。',
+      es: 'Estima la altura de la primera celda para un y+ objetivo y muestra si cae en la subcapa viscosa, el buffer o la capa logarítmica.',
     },
     formula: 'y = y+ mu / (rho u_tau),   u_tau = U sqrt(Cf / 2)',
     tags: ['y+', 'wall modeling', 'mesh', 'SST'],
   },
   {
     slug: 'y-plus-wall-visualizer',
+    aliasOf: 'y-plus',
     category: 'turbulence',
     title: { ko: 'y+ 벽면 레이어 시각화', en: 'y+ Wall-Layer Visualizer', ja: 'y+ 壁面レイヤー可視化', zh: 'y+ 壁面层可视化', es: 'Visualizador de Capa de Pared y+' },
     desc: {
@@ -1091,17 +1101,18 @@ export const CALCULATORS: CalculatorMeta[] = [
     category: 'multiphase',
     title: { ko: '공동수', en: 'Cavitation Number', ja: 'キャビテーション数', zh: '空化数', es: 'Número de Cavitación' },
     desc: {
-      ko: '압력 강하가 증기압에 얼마나 가까운지 계산합니다.',
-      en: 'Measure how close the local pressure drop is to vapor-pressure onset.',
-      ja: '局所圧力低下が蒸気圧にどれだけ近いかを測ります。',
-      zh: '衡量局部压降与蒸汽压起始条件的接近程度。',
-      es: 'Mide qué tan cerca está la caída de presión local del inicio de cavitación.',
+      ko: '자유류 공동수와 국부 압력강하를 한 화면에서 보고, 증기압 마진이 어디부터 줄어드는지 확인합니다.',
+      en: 'Read the freestream cavitation number and the local pressure drop together, and see where the vapor-pressure margin disappears.',
+      ja: '一様流のキャビテーション数と局所圧力低下を同じ画面で見て、蒸気圧マージンがどこから消えるかを確認します。',
+      zh: '在同一画面看自由流空化数和局部压降，确认蒸汽压裕度从哪里开始消失。',
+      es: 'Lee juntos el número de cavitación de la corriente libre y la caída local, y ve dónde desaparece el margen frente a la presión de vapor.',
     },
     formula: 'sigma = (p_inf - p_v) / (0.5 rho U^2)',
     tags: ['cavitation', 'vapor pressure', 'hydrodynamics'],
   },
   {
     slug: 'cavitation-risk-visualizer',
+    aliasOf: 'cavitation-number',
     category: 'multiphase',
     title: { ko: '캐비테이션 위험 시각화', en: 'Cavitation Risk Visualizer', ja: 'キャビテーションリスク可視化', zh: '空化风险可视化', es: 'Visualizador de Riesgo de Cavitación' },
     desc: {

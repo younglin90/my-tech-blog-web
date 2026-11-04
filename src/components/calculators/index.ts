@@ -21,7 +21,6 @@ import { StandardAtmosphereVisualizerCalculator } from '@/components/calculators
 import { StokesCalculator } from '@/components/calculators/Stokes'
 import { TimeStepBudgetVisualizerCalculator } from '@/components/calculators/TimeStepBudgetVisualizer'
 import { TurbulenceInletVisualizerCalculator } from '@/components/calculators/TurbulenceInletVisualizer'
-import { TurbulenceIntensityCalculator } from '@/components/calculators/TurbulenceIntensity'
 import { UnderRelaxationPlannerCalculator } from '@/components/calculators/UnderRelaxationPlanner'
 import { VortexSheddingStreetVisualizerCalculator } from '@/components/calculators/VortexSheddingStreetVisualizer'
 import { ChokedMassFlowCalculator } from '@/components/calculators/ChokedMassFlow'
@@ -31,7 +30,6 @@ import { SchmidtCalculator } from '@/components/calculators/Schmidt'
 import { ShockPolarVisualizerCalculator } from '@/components/calculators/ShockPolarVisualizer'
 import { KnudsenCalculator } from '@/components/calculators/Knudsen'
 import { PressureCoefficientMapperCalculator } from '@/components/calculators/PressureCoefficientMapper'
-import { YPlusCalculator } from '@/components/calculators/YPlus'
 import { LbmBgkStabilityVisualizerCalculator } from '@/components/calculators/LbmBgkStabilityVisualizer'
 import { LewisCalculator } from '@/components/calculators/Lewis'
 import { BiotCalculator } from '@/components/calculators/Biot'
@@ -40,7 +38,6 @@ import { WeberCalculator } from '@/components/calculators/Weber'
 import { CapillaryNumberCalculator } from '@/components/calculators/CapillaryNumber'
 import { BondNumberCalculator } from '@/components/calculators/BondNumber'
 import { CaseMemoryEstimatorCalculator } from '@/components/calculators/CaseMemoryEstimator'
-import { CavitationNumberCalculator } from '@/components/calculators/CavitationNumber'
 import { CavitationRiskVisualizerCalculator } from '@/components/calculators/CavitationRiskVisualizer'
 import { DiffusionCFLCalculator } from '@/components/calculators/DiffusionCFL'
 import { DragPolarExplorerCalculator } from '@/components/calculators/DragPolarExplorer'
@@ -54,11 +51,9 @@ import {
 } from '@/components/calculators/AeroUtilitySuite'
 import {
   BoundaryLayerStackCalculator,
-  ColebrookCalculator,
   Courant3DCalculator,
   DarcyWeisbachCalculator,
   LiftDragCalculator,
-  StrouhalCalculator,
 } from '@/components/calculators/EngineeringSuite'
 import { MoodyChartExplorerCalculator } from '@/components/calculators/MoodyChartExplorer'
 import {
@@ -135,11 +130,11 @@ export const CALCULATOR_COMPONENTS: Record<string, () => ReactElement> = {
   knudsen: KnudsenCalculator,
   'boundary-layer': BoundaryLayerCalculator,
   kolmogorov: KolmogorovCalculator,
-  'turbulence-intensity': TurbulenceIntensityCalculator,
+  'turbulence-intensity': TurbulenceInletVisualizerCalculator,
   'turbulence-inlet-visualizer': TurbulenceInletVisualizerCalculator,
   'les-resolution-planner': LesResolutionPlannerCalculator,
   stokes: StokesCalculator,
-  'y-plus': YPlusCalculator,
+  'y-plus': YPlusWallVisualizerCalculator,
   'y-plus-wall-visualizer': YPlusWallVisualizerCalculator,
   nusselt: NusseltCalculator,
   'natural-convection-regime': NaturalConvectionRegimeVisualizerCalculator,
@@ -158,19 +153,19 @@ export const CALCULATOR_COMPONENTS: Record<string, () => ReactElement> = {
   weber: WeberCalculator,
   'capillary-number': CapillaryNumberCalculator,
   'bond-number': BondNumberCalculator,
-  'cavitation-number': CavitationNumberCalculator,
+  'cavitation-number': CavitationRiskVisualizerCalculator,
   'cavitation-risk-visualizer': CavitationRiskVisualizerCalculator,
   cfl: CFLCalculator,
   'time-step-budget': TimeStepBudgetVisualizerCalculator,
   'diffusion-cfl': DiffusionCFLCalculator,
   'cell-reynolds': CellReynoldsCalculator,
   'lbm-bgk-stability': LbmBgkStabilityVisualizerCalculator,
-  'colebrook-white': ColebrookCalculator,
+  'colebrook-white': MoodyChartExplorerCalculator,
   'darcy-weisbach': DarcyWeisbachCalculator,
   'lift-drag-coefficients': LiftDragCalculator,
   'drag-polar-explorer': DragPolarExplorerCalculator,
   'pressure-coefficient-mapper': PressureCoefficientMapperCalculator,
-  'strouhal-vortex-shedding': StrouhalCalculator,
+  'strouhal-vortex-shedding': VortexSheddingStreetVisualizerCalculator,
   'vortex-shedding-street': VortexSheddingStreetVisualizerCalculator,
   'thin-airfoil-lift-curve': ThinAirfoilLiftCurveCalculator,
   'stall-speed-estimator': StallSpeedEstimatorCalculator,

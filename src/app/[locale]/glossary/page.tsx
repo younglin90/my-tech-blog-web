@@ -68,7 +68,7 @@ export default async function Glossary({ params }: Props) {
     })
   const linked = entries.filter(([, entry]) => entry.posts && entry.posts.length > 0).length
 
-  // 74개 용어를 DefinedTermSet으로 선언한다. 용어별 페이지를 따로 파지 않고도
+  // 용어 전체를 DefinedTermSet으로 선언한다. 용어별 페이지를 따로 파지 않고도
   // (대부분 backlink가 0~1개라 얇은 페이지가 된다) 이 페이지 하나가 용어집으로 인식된다.
   const glossaryJsonLd = {
     '@context': 'https://schema.org',

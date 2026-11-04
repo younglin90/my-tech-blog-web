@@ -1,7 +1,7 @@
 import { notFound } from 'next/navigation'
 import type { Metadata } from 'next'
 import { LOCALES, isLocale, t, SITE_NAMES, hreflangAlternates, type Locale } from '@/lib/i18n'
-import { CALCULATORS } from '@/lib/calculators'
+import { visibleCalculators } from '@/lib/calculators'
 import { ToolsCatalog } from '@/components/ToolsCatalog'
 import { SITE_URL } from '@/lib/site'
 import { ogFallbackImages } from '@/lib/og'
@@ -55,7 +55,7 @@ export default async function ToolsIndex({ params }: Props) {
     inLanguage: loc,
     mainEntity: {
       '@type': 'ItemList',
-      itemListElement: CALCULATORS.map((tool, index) => ({
+      itemListElement: visibleCalculators().map((tool, index) => ({
         '@type': 'ListItem',
         position: index + 1,
         url: slash(`${SITE_URL}/${loc}/tools/${tool.slug}`),

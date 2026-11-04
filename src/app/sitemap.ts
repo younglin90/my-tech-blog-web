@@ -1,7 +1,7 @@
 import { allPosts } from 'contentlayer/generated'
 import type { MetadataRoute } from 'next'
 import { SITE_URL } from '@/lib/site'
-import { CALCULATORS } from '@/lib/calculators'
+import { visibleCalculators } from '@/lib/calculators'
 import { listAllSeries } from '@/lib/series'
 import { TAG_INDEX_MIN } from '@/lib/tags'
 import type { Locale } from '@/lib/i18n'
@@ -113,7 +113,7 @@ export default async function sitemap({ id }: SitemapProps): Promise<MetadataRou
   })
 
   // 각 계산기 도구 (9개) — 빌드 시 정적 생성됨
-  for (const tool of CALCULATORS) {
+  for (const tool of visibleCalculators()) {
     const toolPath = `/tools/${tool.slug}`
     entries.push({
       url: u(toolPath),

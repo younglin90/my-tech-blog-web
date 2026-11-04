@@ -24,15 +24,16 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const c = CALCULATORS.find((x) => x.slug === slug)
   if (!c) return {}
   const loc = isLocale(locale) ? locale : 'en'
+  const canonicalSlug = c.aliasOf ?? slug
   const title = c.title[loc] ?? c.title.en
   const description = c.desc[loc] ?? c.desc.en
-  const url = slash(`${SITE_URL}/${locale}/tools/${slug}`)
+  const url = slash(`${SITE_URL}/${locale}/tools/${canonicalSlug}`)
   return {
     title,
     description,
     alternates: {
       canonical: url,
-      languages: hreflangAlternates(`/tools/${slug}`),
+      languages: hreflangAlternates(`/tools/${canonicalSlug}`),
     },
     openGraph: {
       title,
@@ -57,16 +58,19 @@ export default async function CalculatorPage({ params }: Props) {
   const Component = CALCULATOR_COMPONENTS[slug]
   if (!Component) notFound()
   const loc = locale as Locale
-  const categoryTools = CALCULATORS.filter((tool) => tool.category === meta.category)
+  const canonicalSlug = meta.aliasOf ?? meta.slug
+  const canonicalMeta = CALCULATORS.find((tool) => tool.slug === canonicalSlug) ?? meta
+  const listed = CALCULATORS.filter((tool) => !tool.aliasOf)
+  const categoryTools = listed.filter((tool) => tool.category === meta.category)
   const categoryLabel = getCategoryLabel(meta.category, loc)
-  const categoryIndex = categoryTools.findIndex((tool) => tool.slug === meta.slug)
+  const categoryIndex = categoryTools.findIndex((tool) => tool.slug === canonicalSlug)
   const previousInCategory = categoryIndex > 0 ? categoryTools[categoryIndex - 1] : null
   const nextInCategory = categoryIndex >= 0 && categoryIndex < categoryTools.length - 1 ? categoryTools[categoryIndex + 1] : null
   // 사이드바에는 현재 도구 주변 6개만. 나머지는 카탈로그의 카테고리 필터로 보낸다.
   const windowStart = Math.max(0, Math.min(categoryIndex - 2, categoryTools.length - 6))
   const categoryWindow = categoryTools.slice(windowStart, windowStart + 6)
-  const related = CALCULATORS
-    .filter((tool) => tool.slug !== meta.slug)
+  const related = listed
+    .filter((tool) => tool.slug !== canonicalSlug)
     .map((tool) => {
       const sameCategory = tool.category === meta.category ? 3 : 0
       const sharedTags = tool.tags.filter((tag) => meta.tags.includes(tag)).length
@@ -75,13 +79,13 @@ export default async function CalculatorPage({ params }: Props) {
     .filter((entry) => entry.score > 0)
     .sort((a, b) => b.score - a.score)
     .slice(0, 4)
-  const toolUrl = `${SITE_URL}/${loc}/tools/${meta.slug}/`
+  const toolUrl = `${SITE_URL}/${loc}/tools/${canonicalSlug}/`
   const jsonLd = {
     '@context': 'https://schema.org',
     '@type': 'WebApplication',
     '@id': `${toolUrl}#app`,
-    name: meta.title[loc] ?? meta.title.en,
-    description: meta.desc[loc] ?? meta.desc.en,
+    name: canonicalMeta.title[loc] ?? canonicalMeta.title.en,
+    description: canonicalMeta.desc[loc] ?? canonicalMeta.desc.en,
     applicationCategory: 'DeveloperApplication',
     applicationSubCategory: getCategoryLabel(meta.category, loc),
     operatingSystem: 'Any',
@@ -107,7 +111,7 @@ export default async function CalculatorPage({ params }: Props) {
     itemListElement: [
       { '@type': 'ListItem', position: 1, name: SITE_NAMES[loc], item: `${SITE_URL}/${loc}/` },
       { '@type': 'ListItem', position: 2, name: t(loc, 'nav.tools'), item: `${SITE_URL}/${loc}/tools/` },
-      { '@type': 'ListItem', position: 3, name: meta.title[loc] ?? meta.title.en, item: toolUrl },
+      { '@type': 'ListItem', position: 3, name: canonicalMeta.title[loc] ?? canonicalMeta.title.en, item: toolUrl },
     ],
   }
 
@@ -127,6 +131,13 @@ export default async function CalculatorPage({ params }: Props) {
           <p className="mb-5 text-sm" style={{ color: 'var(--text-muted)', lineHeight: 1.7 }}>
             {meta.desc[loc] ?? meta.desc.en}
           </p>
+          {meta.aliasOf && (
+            <p className="mb-4 text-sm" style={{ color: 'var(--text-muted)' }}>
+              <Link href={`/${loc}/tools/${canonicalMeta.slug}`} className="link-hover-accent" style={{ color: 'var(--accent)' }}>
+                {t(loc, 'tools.mergedInto', { title: canonicalMeta.title[loc] ?? canonicalMeta.title.en })}
+              </Link>
+            </p>
+          )}
           <ToolInsightPanel meta={meta} locale={loc} categoryLabel={categoryLabel} />
           <ToolFormula formula={meta.formula} label={t(loc, 'tools.formula')} renderedLabel={t(loc, 'tools.rendered')} asciiLabel={t(loc, 'tools.ascii')} />
 
@@ -190,7 +201,7 @@ export default async function CalculatorPage({ params }: Props) {
               </div>
               <ul className="space-y-0.5">
                 {categoryWindow.map((tool) => {
-                  const active = tool.slug === meta.slug
+                  const active = tool.slug === canonicalSlug
                   return (
                     <li key={tool.slug}>
                       <Link
