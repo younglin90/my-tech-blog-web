@@ -1,0 +1,182 @@
+---
+title: "CFL 调到 10⁸，LU-SGS 仍要迭代 1,012 次 — 被舍弃的 LD⁻¹U 决定收敛下限"
+date: 2026-11-06
+description: "把伪时间 CFL 推向无穷大，LU-SGS 就退化为对称 Gauss–Seidel。在 32×32 对流扩散问题中，流向与扩散把迭代次数分成 7、26 和 1,012。"
+tags: ["LU-SGS", "Implicit", "Iterative-Solver", "Convection-Diffusion", "Numerical-Analysis"]
+locale: zh
+slug: 2026-11-06-lu-sgs-factorization-error-cfl-limit
+takeaway: "提高 LU-SGS 的 CFL，迭代次数先减少，随后停在一个下限。这个下限由近似分解时舍弃的 LD⁻¹U 决定：流动顺着扫描方向时 7 次，横穿时 26 次，扩散主导时 1,012 次。"
+draft: false
+---
+import { SweepInfluenceStencilLab } from '@/components/post-viz/2026-11-06-lu-sgs-factorization-error-cfl-limit/SweepInfluenceStencilLab'
+import { PseudoTimeCflSaturationRace } from '@/components/post-viz/2026-11-06-lu-sgs-factorization-error-cfl-limit/PseudoTimeCflSaturationRace'
+
+## CFL 调到 10⁸，却花了 1,012 次
+
+教科书说，隐式格式(implicit scheme)的 CFL 越大越好。对线性问题，$\Delta\tau\to\infty$ 相当于一次牛顿迭代。一次就应该到达定常解。我在 32×32 扩散问题上把 CFL 设为 $10^8$。精确求解矩阵的隐式格式 2 次就结束了。LU-SGS 却用了 1,012 次。
+
+同一个问题改成 45° 对流，LU-SGS 7 次结束。把流向转到 135°，需要 26 次。三种情况的 CFL 都是 $10^8$。本文追查这三个数字从何而来。答案是 LU-SGS 在分解时丢掉的一项：$LD^{-1}U$。读完之后，就能解释为什么无论 CFL 调多高，迭代次数都会贴在一个下限上。
+
+## LU-SGS 实际求逆的矩阵
+
+把定常问题 $A\phi=b$ 在伪时间(pseudo time，仅为收敛而引入的虚拟时间)中推进。每次迭代求解下面的线性方程组。
+
+$$
+\left(\frac{I}{\Delta\tau}+A\right)\Delta\phi=-R,\qquad R=A\phi-b
+$$
+
+$\Delta\tau$ 是伪时间步长，$R$ 是残差(residual，方程未被满足的量)。每次都精确求解这个矩阵代价很高。LU-SGS 把 $A$ 拆成对角 $D_A$、严格下三角 $L$ 和严格上三角 $U$，再把左端矩阵换成下面的乘积。
+
+$$
+M=(D+L)\,D^{-1}\,(D+U)=D+L+U+LD^{-1}U,\qquad D=\frac{I}{\Delta\tau}+D_A
+$$
+
+$D+L+U$ 与原矩阵完全相同。多出来的只有 $LD^{-1}U$，它就是近似分解的误差。原始笔记附录 A 在这个位置只写了一个词："Neglect"。换来的是两次扫描。下扫描(lower sweep)按单元编号顺序求解 $(D+L)y=-R$，上扫描(upper sweep)按逆序求解 $(D+U)\Delta\phi=Dy$。
+
+这一项何时为零，看图最快。在下面的模拟中亲手操作一下。左图是在 CFL = ∞ 下，对放在一个单元上的单位源施加一次 $M^{-1}$ 的结果。右图是精确响应 $A^{-1}e$。
+
+<SweepInfluenceStencilLab />
+
+按下 45° 按钮，仅靠下扫描就能把羽流一直画到右上方，误差几乎为零。切换到 135° 后，下扫描只把信息向上传，上扫描只把信息向左传。两次扫描之后仍留下阶梯状的形状。增大 $\nu$，任何角度下误差都会变大。
+
+## 被舍弃的项何时为零
+
+一阶迎风(upwind)对流中，单元只与上游邻居耦合。若单元编号为 $k=i+Nj$，西、南邻居进入 $L$，东、北邻居进入 $U$。流向为 45° 时上游是西和南。对流系数全部在 $L$ 中，$U$ 只剩很小的扩散系数，因此 $LD^{-1}U\approx 0$。225° 时正好相反，$L$ 几乎为空，乘积同样接近零。
+
+135° 不一样。上游是东和南。一个在 $U$ 中，另一个在 $L$ 中。乘积 $LD^{-1}U$ 以两个对流系数之积的量级保留下来。纯扩散时四个邻居都相互耦合，所以不论方向，这一项都会存在。
+
+现在令 $\Delta\tau\to\infty$。此时 $D\to D_A$，$M$ 就变成对称 Gauss–Seidel(SGS)预条件矩阵。每次迭代误差都乘以 $I-M^{-1}A$，而这个矩阵不再依赖 $\Delta\tau$。CFL 再高，收敛率也停在 SGS 的谱半径上。反过来，$\Delta\tau$ 较小时 $D$ 很大，$LD^{-1}U$ 相对较小。此时 LU-SGS 与精确隐式格式的迭代次数几乎相同。
+
+## 代码：32×32 对流扩散，五档 CFL
+
+在单位正方形上取 $b=1$，壁面 $\phi=0$。比较三种情况：45° 与 135° 对流(速度 1，$\nu=10^{-4}$，单元 Péclet 数约 312)，以及纯扩散($\nu=1$)。CFL 从 1 到 $10^8$ 共五档。分别统计 LU-SGS 与精确隐式格式(每次迭代 LU 直接求解)把相对残差降到 $10^{-8}$ 所需的迭代次数。
+
+```python
+import numpy as np
+import scipy.sparse as sp
+from scipy.sparse.linalg import spsolve_triangular, splu
+
+N = 32
+h = 1.0 / N
+
+def build_operator(theta_deg, a, nu):
+    # 一阶迎风对流 + 中心扩散，壁面 φ=0，单元编号 k = i + N*j
+    ax, ay = a*np.cos(np.radians(theta_deg)), a*np.sin(np.radians(theta_deg))
+    rows, cols, vals = [], [], []
+    for j in range(N):
+        for i in range(N):
+            k = i + N*j
+            diag = (abs(ax) + abs(ay))/h + 4*nu/h**2
+            rows.append(k); cols.append(k); vals.append(diag)
+            for di, dj in ((-1,0),(1,0),(0,-1),(0,1)):
+                ii, jj = i+di, j+dj
+                if not (0 <= ii < N and 0 <= jj < N):
+                    continue
+                c = -nu/h**2
+                if di == -1 and ax > 0: c -= ax/h
+                if di ==  1 and ax < 0: c += ax/h
+                if dj == -1 and ay > 0: c -= ay/h
+                if dj ==  1 and ay < 0: c += ay/h
+                rows.append(k); cols.append(ii + N*jj); vals.append(c)
+    A = sp.csr_matrix((vals, (rows, cols)), shape=(N*N, N*N))
+    spec = (abs(ax) + abs(ay))/h + 4*nu/h**2
+    return A, spec
+
+def pseudo_march(A, spec, cfl, method, tol=1e-8, itmax=5000):
+    b = np.ones(N*N)
+    phi = np.zeros(N*N)
+    dtau = cfl / spec
+    D = sp.diags(A.diagonal() + 1.0/dtau)
+    L = sp.tril(A, k=-1); U = sp.triu(A, k=1)
+    if method == "exact":  # 每次迭代精确求解 (I/Δτ + A)
+        lu = splu((A + sp.identity(N*N)/dtau).tocsc())
+    else:
+        DL = (D + L).tocsr(); DU = (D + U).tocsr(); d = D.diagonal()
+    r0 = np.linalg.norm(A @ phi - b)
+    hist = [1.0]
+    for it in range(1, itmax+1):
+        R = A @ phi - b
+        if method == "exact":
+            dphi = lu.solve(-R)
+        else:
+            y = spsolve_triangular(DL, -R, lower=True)          # 下扫描 (D+L) y = -R
+            dphi = spsolve_triangular(DU, d*y, lower=False)     # 上扫描 (D+U) Δφ = D y
+        phi += dphi
+        hist.append(np.linalg.norm(A @ phi - b) / r0)
+        if hist[-1] < tol:
+            break
+    rate = (hist[-1]/hist[max(0, len(hist)-11)])**(1/min(10, len(hist)-1))
+    return it, rate
+
+cases = [("advection 45deg", 45, 1.0, 1e-4),
+         ("advection 135deg", 135, 1.0, 1e-4),
+         ("diffusion only", 45, 0.0, 1.0)]
+cfls = [1, 10, 100, 1e4, 1e8]
+print(f"N={N}, tol=1e-8, iterations (LU-SGS / exact implicit)")
+print("case               " + "".join(f"{'CFL='+format(c,'g'):>14}" for c in cfls))
+for name, th, a, nu in cases:
+    A, spec = build_operator(th, a, nu)
+    line = f"{name:<19}"
+    for c in cfls:
+        n1, _ = pseudo_march(A, spec, c, "lusgs")
+        n2, _ = pseudo_march(A, spec, c, "exact")
+        line += f"{f'{n1}/{n2}':>14}"
+    print(line)
+
+# CFL=1e8 时的渐近收敛率与被舍弃项的大小
+print("\nasymptotic residual factor per iteration at CFL=1e8")
+for name, th, a, nu in cases:
+    A, spec = build_operator(th, a, nu)
+    n, rate = pseudo_march(A, spec, 1e8, "lusgs")
+    Lm = sp.tril(A, k=-1); Um = sp.triu(A, k=1)
+    Dinv = sp.diags(1.0/A.diagonal())
+    drop = sp.linalg.norm(Lm @ Dinv @ Um) / sp.linalg.norm(A)
+    print(f"{name:<19} rate={rate:.4f}  ||L D^-1 U||/||A||={drop:.4f}")
+```
+
+```text
+N=32, tol=1e-8, iterations (LU-SGS / exact implicit)
+case                        CFL=1        CFL=10       CFL=100     CFL=10000     CFL=1e+08
+advection 45deg           131/131         25/25          10/9           7/3           7/2
+advection 135deg          136/131         38/25          27/9          26/3          26/2
+diffusion only          4539/4038      1324/412       1042/49        1012/5        1012/2
+
+asymptotic residual factor per iteration at CFL=1e8
+advection 45deg     rate=0.0577  ||L D^-1 U||/||A||=0.0022
+advection 135deg    rate=0.1902  ||L D^-1 U||/||A||=0.1973
+diffusion only      rate=0.9821  ||L D^-1 U||/||A||=0.1338
+```
+
+在浏览器中直接运行上面的代码。默认是 135°、CFL = $10^8$。橙色曲线在 26 次、蓝色曲线在 2 次时到达绿色虚线。
+
+<PseudoTimeCflSaturationRace />
+
+把 CFL 滑块拉到 1，两条曲线重合(131 次对 131 次)。按下 "diffusion only"，橙色曲线缓慢下降到 1,012 次。也可以试试表中没有的角度，比如 0° 或 315°。
+
+## 7、26、1,012 的分水岭
+
+CFL = 1 时，三种情况下两种方法的迭代次数相同或接近。$\Delta\tau$ 很小，$D$ 占主导。此时决定迭代次数的是伪时间本身推进得慢。分解误差还不是问题。
+
+CFL 超过 100 后两者分道扬镳。精确隐式格式持续减少，依次为 9、3、2 次。最后的 2 次，是为了再消除一次大小为 $10^{-8}$ 的 $I/\Delta\tau$ 留下的残差。LU-SGS 则固定在 45° 时 7 次、135° 时 26 次、扩散时 1,012 次。CFL 从 $10^4$ 提高一万倍到 $10^8$，一次也没有减少。
+
+135° 的收敛历史显示了它的特点。前 15 次迭代中，残差每次只下降约 8%。之后才急剧下降。可能的原因是一对扫描只能把信息沿流向搬运几个单元。信息穿过整个区域之后，快速收敛才开始。
+
+扩散更简单。CFL = $10^8$ 时每次迭代的残差缩减率为 0.9821。模型 Poisson 问题中 Gauss–Seidel 的谱半径是 $\cos^2(\pi/(N+1))$。SGS 正向、反向各做一次 GS。大致平方后得 $\cos^4(\pi/33)\approx 0.9820$，与测量值吻合。$\ln 10^{-8}/\ln 0.9821\approx 1{,}020$，与实际的 1,012 次几乎相同。这个值按 $h^2$ 变差。网格加倍，迭代次数约变为四倍。
+
+## 被舍弃项的范数无法预测收敛
+
+输出的最后一张表还列出了 $\|LD^{-1}U\|/\|A\|$。45° 为 0.0022，几乎为零。135° 为 0.197，接近收敛率 0.190。然而扩散为 0.134，比 135° 还小，收敛率却是 0.982，差得多。
+
+范数一次性度量所有模态。在扩散问题中，SGS 能很好地消除高频误差。剩下的是遍布整个区域的低频模态。对这些模态，$M^{-1}A$ 的特征值接近零。决定收敛的不是被舍弃项有多大，而是它作用在哪些模态上。这就是扩散主导问题中单靠 LU-SGS 不够，需要配合多重网格(multigrid)或 Krylov 加速的原因。
+
+## 重读原始笔记里的两句话
+
+2018 年的代码结构笔记在 LU-SGS 旁边写着："Implicit scheme is the same as the concept of residual smooth scheme." 上面的结果说明了这句话的含义。CFL = ∞ 的 LU-SGS 与其说是寻找定常解的迭代法，不如说是平滑残差的算子。大时间步的收益或时间精度，只有在 $M$ 接近 $I/\Delta\tau+A$ 时才会出现。
+
+同一份笔记的最终形式是双时间(dual time)推进。此时 $D$ 还要加上真实时间项 $3/(2\Delta t)$。这一项只进入对角。因此即使伪时间 CFL 为无穷大，$D$ 也会变大，$LD^{-1}U$ 相对缩小。这就是非定常计算的内迭代比定常计算更适合 LU-SGS 的原因。带预条件的双时间循环的迭代次数问题，见[双时间预条件实验](/zh/posts/2026-10-30-dual-time-steady-preconditioner-inner-iterations/)。LU-SGS 本身的推导与粘性谱半径的处理，见[LU-SGS 入门文章](/zh/posts/2026-06-22-lu-sgs-implicit-time-integration/)。
+
+## 提高伪时间 CFL 之前先看什么
+
+如果迭代次数对 CFL 的增加不再有反应，说明分解误差已经定下了下限。再提高 CFL 也没用。需要检查两件事。一是流向与单元编号的关系。仅仅改变单元顺序就让迭代次数大幅变化的例子，见[RCM 重排序文章](/zh/posts/2026-10-16-lu-sgs-cell-ordering-reverse-cuthill-mckee/)。二是扩散所占的比重。如果单元 Péclet 数在 1 左右或更低的区域很大，就需要用其他加速方法越过 SGS 的 $h^2$ 限制。
+
+有一个简单的诊断方法。分别用 CFL = $10^2$、$10^4$、$10^6$ 运行三次，记下迭代次数。如果三者相同，这个数字就是 LU-SGS 在当前网格和单元顺序下能达到的最好结果。

@@ -1,0 +1,182 @@
+---
+title: "CFL = 10⁸ and LU-SGS Still Needs 1,012 Iterations — How the Dropped Term LD⁻¹U Caps Convergence"
+date: 2026-11-06
+description: "Push the pseudo-time CFL to infinity and LU-SGS turns into symmetric Gauss–Seidel. On a 32×32 convection-diffusion problem, flow direction and diffusion split the iteration count into 7, 26, and 1,012."
+tags: ["LU-SGS", "Implicit", "Iterative-Solver", "Convection-Diffusion", "Numerical-Analysis"]
+locale: en
+slug: 2026-11-06-lu-sgs-factorization-error-cfl-limit
+takeaway: "Raising the LU-SGS CFL cuts iterations only until they hit a floor. The floor is set by the discarded LD⁻¹U: 7 iterations when the flow follows the sweep, 26 when it crosses it, 1,012 when diffusion dominates."
+draft: false
+---
+import { SweepInfluenceStencilLab } from '@/components/post-viz/2026-11-06-lu-sgs-factorization-error-cfl-limit/SweepInfluenceStencilLab'
+import { PseudoTimeCflSaturationRace } from '@/components/post-viz/2026-11-06-lu-sgs-factorization-error-cfl-limit/PseudoTimeCflSaturationRace'
+
+## CFL went to 10⁸ and it still took 1,012 iterations
+
+With an implicit scheme, the textbook advice is that a bigger CFL is better. For a linear problem, $\Delta\tau\to\infty$ is a single Newton step. You should land on the steady solution in one iteration. I set CFL = $10^8$ on a 32×32 diffusion problem. The implicit scheme that solves the matrix exactly finished in 2 iterations. LU-SGS took 1,012.
+
+Turn the same problem into 45° advection and LU-SGS finishes in 7. Rotate the flow to 135° and it takes 26. The CFL is $10^8$ in all three cases. This post tracks down where those three numbers come from. The answer is one term LU-SGS throws away during factorization: $LD^{-1}U$. By the end you will be able to explain why the iteration count sticks to a floor no matter how far you raise the CFL.
+
+## The matrix LU-SGS actually inverts
+
+Take a steady problem $A\phi=b$ and march it in pseudo time (a fictitious time used only to converge). Each iteration solves this linear system:
+
+$$
+\left(\frac{I}{\Delta\tau}+A\right)\Delta\phi=-R,\qquad R=A\phi-b
+$$
+
+$\Delta\tau$ is the pseudo time step and $R$ is the residual (how far the equation is from being satisfied). Solving this exactly every iteration is expensive. LU-SGS splits $A$ into its diagonal $D_A$, strictly lower part $L$, and strictly upper part $U$, then replaces the left-hand matrix with a product:
+
+$$
+M=(D+L)\,D^{-1}\,(D+U)=D+L+U+LD^{-1}U,\qquad D=\frac{I}{\Delta\tau}+D_A
+$$
+
+$D+L+U$ is exactly the original matrix. Only $LD^{-1}U$ is left over, and that term is the factorization error. In Appendix A of the original notes, that spot carries a single word: "Neglect." What you get in return is two sweeps. The lower sweep solves $(D+L)y=-R$ in cell order. The upper sweep solves $(D+U)\Delta\phi=Dy$ in reverse order.
+
+When this term vanishes is easiest to see in a picture. Try it in the simulation below. The left panel applies $M^{-1}$ once, at CFL = ∞, to a unit source placed in one cell. The right panel is the exact response $A^{-1}e$.
+
+<SweepInfluenceStencilLab />
+
+Press the 45° button and the lower sweep alone draws the whole plume toward the upper right, with almost zero error. Switch to 135° and the lower sweep only carries information upward while the upper sweep only carries it to the left. After both sweeps a staircase pattern remains. Increase $\nu$ and the error grows at every angle.
+
+## When is the dropped term zero?
+
+With first-order upwind advection, a cell couples only to its upstream neighbors. With cell index $k=i+Nj$, the west and south neighbors land in $L$ and the east and north neighbors land in $U$. At 45°, upstream means west and south. All advective coefficients sit in $L$, and $U$ holds only tiny diffusion coefficients, so $LD^{-1}U\approx 0$. At 225° it is the other way around: $L$ is nearly empty and the product is again close to zero.
+
+At 135° things change. Upstream is east and south. One neighbor is in $U$ and the other in $L$. The product $LD^{-1}U$ survives at the size of two advective coefficients multiplied together. Pure diffusion couples all four neighbors, so the term survives regardless of direction.
+
+Now let $\Delta\tau\to\infty$. Then $D\to D_A$, and $M$ becomes the symmetric Gauss–Seidel (SGS) preconditioner. Each iteration multiplies the error by $I-M^{-1}A$, and that matrix no longer depends on $\Delta\tau$. No matter how high the CFL goes, the convergence rate stops at the SGS spectral radius. Conversely, when $\Delta\tau$ is small, $D$ is large and $LD^{-1}U$ is relatively small. In that regime LU-SGS and the exact implicit scheme need nearly the same number of iterations.
+
+## Code: 32×32 convection-diffusion, five CFL levels
+
+The unit square carries $b=1$ with $\phi=0$ on the walls. Three cases are compared: advection at 45° and 135° (speed 1, $\nu=10^{-4}$, cell Péclet number about 312) and pure diffusion ($\nu=1$). The CFL runs over five levels from 1 to $10^8$. We count iterations to a relative residual of $10^{-8}$ for LU-SGS and for the exact implicit scheme (a direct LU solve every iteration).
+
+```python
+import numpy as np
+import scipy.sparse as sp
+from scipy.sparse.linalg import spsolve_triangular, splu
+
+N = 32
+h = 1.0 / N
+
+def build_operator(theta_deg, a, nu):
+    # 1st-order upwind advection + central diffusion, φ=0 on walls, cell index k = i + N*j
+    ax, ay = a*np.cos(np.radians(theta_deg)), a*np.sin(np.radians(theta_deg))
+    rows, cols, vals = [], [], []
+    for j in range(N):
+        for i in range(N):
+            k = i + N*j
+            diag = (abs(ax) + abs(ay))/h + 4*nu/h**2
+            rows.append(k); cols.append(k); vals.append(diag)
+            for di, dj in ((-1,0),(1,0),(0,-1),(0,1)):
+                ii, jj = i+di, j+dj
+                if not (0 <= ii < N and 0 <= jj < N):
+                    continue
+                c = -nu/h**2
+                if di == -1 and ax > 0: c -= ax/h
+                if di ==  1 and ax < 0: c += ax/h
+                if dj == -1 and ay > 0: c -= ay/h
+                if dj ==  1 and ay < 0: c += ay/h
+                rows.append(k); cols.append(ii + N*jj); vals.append(c)
+    A = sp.csr_matrix((vals, (rows, cols)), shape=(N*N, N*N))
+    spec = (abs(ax) + abs(ay))/h + 4*nu/h**2
+    return A, spec
+
+def pseudo_march(A, spec, cfl, method, tol=1e-8, itmax=5000):
+    b = np.ones(N*N)
+    phi = np.zeros(N*N)
+    dtau = cfl / spec
+    D = sp.diags(A.diagonal() + 1.0/dtau)
+    L = sp.tril(A, k=-1); U = sp.triu(A, k=1)
+    if method == "exact":  # solve (I/Δτ + A) exactly every iteration
+        lu = splu((A + sp.identity(N*N)/dtau).tocsc())
+    else:
+        DL = (D + L).tocsr(); DU = (D + U).tocsr(); d = D.diagonal()
+    r0 = np.linalg.norm(A @ phi - b)
+    hist = [1.0]
+    for it in range(1, itmax+1):
+        R = A @ phi - b
+        if method == "exact":
+            dphi = lu.solve(-R)
+        else:
+            y = spsolve_triangular(DL, -R, lower=True)          # lower sweep (D+L) y = -R
+            dphi = spsolve_triangular(DU, d*y, lower=False)     # upper sweep (D+U) Δφ = D y
+        phi += dphi
+        hist.append(np.linalg.norm(A @ phi - b) / r0)
+        if hist[-1] < tol:
+            break
+    rate = (hist[-1]/hist[max(0, len(hist)-11)])**(1/min(10, len(hist)-1))
+    return it, rate
+
+cases = [("advection 45deg", 45, 1.0, 1e-4),
+         ("advection 135deg", 135, 1.0, 1e-4),
+         ("diffusion only", 45, 0.0, 1.0)]
+cfls = [1, 10, 100, 1e4, 1e8]
+print(f"N={N}, tol=1e-8, iterations (LU-SGS / exact implicit)")
+print("case               " + "".join(f"{'CFL='+format(c,'g'):>14}" for c in cfls))
+for name, th, a, nu in cases:
+    A, spec = build_operator(th, a, nu)
+    line = f"{name:<19}"
+    for c in cfls:
+        n1, _ = pseudo_march(A, spec, c, "lusgs")
+        n2, _ = pseudo_march(A, spec, c, "exact")
+        line += f"{f'{n1}/{n2}':>14}"
+    print(line)
+
+# asymptotic rate and size of the dropped term at CFL=1e8
+print("\nasymptotic residual factor per iteration at CFL=1e8")
+for name, th, a, nu in cases:
+    A, spec = build_operator(th, a, nu)
+    n, rate = pseudo_march(A, spec, 1e8, "lusgs")
+    Lm = sp.tril(A, k=-1); Um = sp.triu(A, k=1)
+    Dinv = sp.diags(1.0/A.diagonal())
+    drop = sp.linalg.norm(Lm @ Dinv @ Um) / sp.linalg.norm(A)
+    print(f"{name:<19} rate={rate:.4f}  ||L D^-1 U||/||A||={drop:.4f}")
+```
+
+```text
+N=32, tol=1e-8, iterations (LU-SGS / exact implicit)
+case                        CFL=1        CFL=10       CFL=100     CFL=10000     CFL=1e+08
+advection 45deg           131/131         25/25          10/9           7/3           7/2
+advection 135deg          136/131         38/25          27/9          26/3          26/2
+diffusion only          4539/4038      1324/412       1042/49        1012/5        1012/2
+
+asymptotic residual factor per iteration at CFL=1e8
+advection 45deg     rate=0.0577  ||L D^-1 U||/||A||=0.0022
+advection 135deg    rate=0.1902  ||L D^-1 U||/||A||=0.1973
+diffusion only      rate=0.9821  ||L D^-1 U||/||A||=0.1338
+```
+
+Now run the code above directly in the browser. The default is 135° at CFL = $10^8$. The orange curve reaches the green dashed line after 26 iterations, the blue curve after 2.
+
+<PseudoTimeCflSaturationRace />
+
+Drag the CFL slider down to 1 and the two curves overlap (131 vs. 131). Press "diffusion only" and the orange curve creeps down to 1,012. Also try angles the table does not cover, such as 0° or 315°.
+
+## What separates 7, 26, and 1,012
+
+At CFL = 1, both methods take the same or similar iteration counts in all three cases. $\Delta\tau$ is small, so $D$ dominates. What limits convergence here is the slowness of pseudo time itself. The factorization error is not yet the problem.
+
+Above CFL = 100 the paths split. The exact implicit scheme keeps dropping: 9, 3, then 2 iterations. The final 2 is one extra pass to clean up the residual left by an $I/\Delta\tau$ of size $10^{-8}$. LU-SGS locks in at 7 for 45°, 26 for 135°, and 1,012 for diffusion. Raising the CFL ten-thousandfold, from $10^4$ to $10^8$, did not save a single iteration.
+
+The 135° convergence history shows its character. For the first 15 iterations, the residual fell only about 8% per iteration. Then it dropped sharply. A likely explanation is that one sweep pair moves information only a few cells along the flow. Fast convergence starts only after information has crossed the whole domain.
+
+Diffusion is simpler. At CFL = $10^8$ the residual reduction factor per iteration was 0.9821. For the model Poisson problem, the Gauss–Seidel spectral radius is $\cos^2(\pi/(N+1))$. SGS runs one forward and one backward GS pass. Roughly squaring gives $\cos^4(\pi/33)\approx 0.9820$, which matches the measurement. Then $\ln 10^{-8}/\ln 0.9821\approx 1{,}020$, close to the observed 1,012. This rate degrades like $h^2$. Double the grid and the iteration count roughly quadruples.
+
+## The norm of the dropped term does not predict convergence
+
+The last table in the output also lists $\|LD^{-1}U\|/\|A\|$. At 45° it is 0.0022, essentially zero. At 135° it is 0.197, close to the convergence factor of 0.190. But diffusion shows 0.134, smaller than 135°, while its convergence factor of 0.982 is far worse.
+
+A norm measures all modes at once. On a diffusion problem, SGS wipes out high-frequency error well. What remains are low-frequency modes spanning the whole domain. For those modes the eigenvalues of $M^{-1}A$ are close to zero. Convergence depends not on how large the dropped term is, but on which modes it acts on. That is why LU-SGS alone falls short on diffusion-dominated problems, and why multigrid or Krylov acceleration gets bolted on.
+
+## Rereading two lines from the original notes
+
+The 2018 code-structure notes include this remark next to LU-SGS: "Implicit scheme is the same as the concept of residual smooth scheme." The results above show what that means. At CFL = ∞, LU-SGS is less a solver that finds the steady state and more an operator that smooths the residual. The payoff of large time steps, or of time accuracy, appears only when $M$ stays close to $I/\Delta\tau+A$.
+
+The final form in the same notes is dual time stepping. There, $D$ also picks up the physical time term $3/(2\Delta t)$. That term enters only the diagonal. So even at infinite pseudo-time CFL, $D$ grows and $LD^{-1}U$ shrinks relative to it. This is why the inner iterations of an unsteady run get along with LU-SGS better than a steady run does. The iteration-count issues of a preconditioned dual-time loop are covered in the [dual-time preconditioning experiment](/en/posts/2026-10-30-dual-time-steady-preconditioner-inner-iterations/). The derivation of LU-SGS itself and the handling of the viscous spectral radius are in the [LU-SGS introduction](/en/posts/2026-06-22-lu-sgs-implicit-time-integration/).
+
+## What to check before raising the pseudo-time CFL
+
+If the iteration count stops responding to the CFL, the factorization error has set the floor. Raising the CFL further will not help. Two things deserve a look. The first is how the flow direction relates to the cell numbering. A case where merely reordering cells changes the iteration count sharply is in the [RCM reordering post](/en/posts/2026-10-16-lu-sgs-cell-ordering-reverse-cuthill-mckee/). The second is the weight of diffusion. If large regions have a cell Péclet number around 1 or below, the $h^2$ limit of SGS has to be overcome with another acceleration method.
+
+There is a quick diagnostic. Run with CFL = $10^2$, $10^4$, and $10^6$ and write down the iteration counts. If all three match, that number is the best LU-SGS can do on your grid with your cell ordering.

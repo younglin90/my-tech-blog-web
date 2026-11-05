@@ -1,0 +1,182 @@
+---
+title: "Con CFL = 10⁸, LU-SGS sigue necesitando 1,012 iteraciones — el término descartado LD⁻¹U fija el límite de convergencia"
+date: 2026-11-06
+description: "Al llevar el CFL de pseudotiempo a infinito, LU-SGS se convierte en Gauss–Seidel simétrico. En un problema de convección-difusión de 32×32, la dirección del flujo y la difusión separan las iteraciones en 7, 26 y 1,012."
+tags: ["LU-SGS", "Implicit", "Iterative-Solver", "Convection-Diffusion", "Numerical-Analysis"]
+locale: es
+slug: 2026-11-06-lu-sgs-factorization-error-cfl-limit
+takeaway: "Subir el CFL de LU-SGS reduce las iteraciones solo hasta un piso. Ese piso lo fija el término LD⁻¹U descartado: 7 iteraciones si el flujo sigue el barrido, 26 si lo cruza y 1,012 si domina la difusión."
+draft: false
+---
+import { SweepInfluenceStencilLab } from '@/components/post-viz/2026-11-06-lu-sgs-factorization-error-cfl-limit/SweepInfluenceStencilLab'
+import { PseudoTimeCflSaturationRace } from '@/components/post-viz/2026-11-06-lu-sgs-factorization-error-cfl-limit/PseudoTimeCflSaturationRace'
+
+## Con CFL = 10⁸ hicieron falta 1,012 iteraciones
+
+Con un esquema implícito (implicit scheme), la regla de manual dice que un CFL mayor es mejor. En un problema lineal, $\Delta\tau\to\infty$ equivale a un paso de Newton. Debería alcanzarse la solución estacionaria en una sola iteración. Se fijó CFL = $10^8$ en un problema de difusión de 32×32. El esquema implícito que resuelve la matriz de forma exacta terminó en 2 iteraciones. LU-SGS tardó 1,012.
+
+Si el mismo problema se convierte en advección a 45°, LU-SGS termina en 7. Con el flujo girado a 135°, necesita 26. El CFL es $10^8$ en los tres casos. Este artículo rastrea el origen de esos tres números. La respuesta es un único término que LU-SGS descarta al factorizar: $LD^{-1}U$. Al final será posible explicar por qué el número de iteraciones se queda pegado a un piso por mucho que suba el CFL.
+
+## La matriz que LU-SGS invierte en realidad
+
+Un problema estacionario $A\phi=b$ se avanza en pseudotiempo (pseudo time, un tiempo ficticio que solo sirve para converger). Cada iteración resuelve el siguiente sistema lineal.
+
+$$
+\left(\frac{I}{\Delta\tau}+A\right)\Delta\phi=-R,\qquad R=A\phi-b
+$$
+
+$\Delta\tau$ es el paso de pseudotiempo y $R$ es el residuo (residual, cuánto falta para satisfacer la ecuación). Resolver esta matriz de forma exacta en cada iteración es caro. LU-SGS divide $A$ en su diagonal $D_A$, su parte estrictamente inferior $L$ y su parte estrictamente superior $U$, y sustituye la matriz del lado izquierdo por un producto.
+
+$$
+M=(D+L)\,D^{-1}\,(D+U)=D+L+U+LD^{-1}U,\qquad D=\frac{I}{\Delta\tau}+D_A
+$$
+
+$D+L+U$ coincide exactamente con la matriz original. Solo sobra $LD^{-1}U$, y ese término es el error de factorización. En el apéndice A de las notas originales, ese lugar lleva una sola palabra: "Neglect". A cambio se obtienen dos barridos. El barrido inferior (lower sweep) resuelve $(D+L)y=-R$ en el orden de las celdas. El barrido superior (upper sweep) resuelve $(D+U)\Delta\phi=Dy$ en orden inverso.
+
+Cuándo se anula este término se ve más rápido en una imagen. Conviene manipular la simulación de abajo. El panel izquierdo aplica $M^{-1}$ una vez, con CFL = ∞, a una fuente unitaria colocada en una celda. El panel derecho es la respuesta exacta $A^{-1}e$.
+
+<SweepInfluenceStencilLab />
+
+Con el botón de 45°, el barrido inferior por sí solo dibuja toda la pluma hacia arriba a la derecha, con un error casi nulo. Al cambiar a 135°, el barrido inferior solo lleva información hacia arriba y el superior solo hacia la izquierda. Tras los dos barridos queda un patrón escalonado. Al aumentar $\nu$, el error crece en cualquier ángulo.
+
+## ¿Cuándo vale cero el término descartado?
+
+Con advección upwind de primer orden, una celda solo se acopla a sus vecinas aguas arriba. Con el índice de celda $k=i+Nj$, las vecinas oeste y sur caen en $L$, y las vecinas este y norte caen en $U$. A 45°, aguas arriba significa oeste y sur. Todos los coeficientes advectivos quedan en $L$, y $U$ solo contiene coeficientes de difusión pequeños. Por eso $LD^{-1}U\approx 0$. A 225° ocurre lo contrario: $L$ queda casi vacía y el producto vuelve a ser casi cero.
+
+A 135° la situación cambia. Aguas arriba están el este y el sur. Una vecina está en $U$ y la otra en $L$. El producto $LD^{-1}U$ sobrevive con el tamaño de dos coeficientes advectivos multiplicados. La difusión pura acopla las cuatro vecinas, así que el término sobrevive sin importar la dirección.
+
+Ahora se toma $\Delta\tau\to\infty$. Entonces $D\to D_A$ y $M$ se vuelve el precondicionador de Gauss–Seidel simétrico (SGS). En cada iteración el error se multiplica por $I-M^{-1}A$, y esa matriz ya no depende de $\Delta\tau$. Por alto que sea el CFL, la tasa de convergencia se detiene en el radio espectral de SGS. Al revés, cuando $\Delta\tau$ es pequeño, $D$ es grande y $LD^{-1}U$ resulta relativamente pequeño. En ese régimen, LU-SGS y el esquema implícito exacto necesitan casi las mismas iteraciones.
+
+## Código: convección-difusión de 32×32, cinco niveles de CFL
+
+El cuadrado unitario lleva $b=1$ con $\phi=0$ en las paredes. Se comparan tres casos: advección a 45° y a 135° (velocidad 1, $\nu=10^{-4}$, número de Péclet de celda de unos 312) y difusión pura ($\nu=1$). El CFL recorre cinco niveles, de 1 a $10^8$. Se cuentan las iteraciones hasta un residuo relativo de $10^{-8}$ para LU-SGS y para el esquema implícito exacto (una resolución LU directa por iteración).
+
+```python
+import numpy as np
+import scipy.sparse as sp
+from scipy.sparse.linalg import spsolve_triangular, splu
+
+N = 32
+h = 1.0 / N
+
+def build_operator(theta_deg, a, nu):
+    # advección upwind de 1er orden + difusión central, φ=0 en paredes, índice k = i + N*j
+    ax, ay = a*np.cos(np.radians(theta_deg)), a*np.sin(np.radians(theta_deg))
+    rows, cols, vals = [], [], []
+    for j in range(N):
+        for i in range(N):
+            k = i + N*j
+            diag = (abs(ax) + abs(ay))/h + 4*nu/h**2
+            rows.append(k); cols.append(k); vals.append(diag)
+            for di, dj in ((-1,0),(1,0),(0,-1),(0,1)):
+                ii, jj = i+di, j+dj
+                if not (0 <= ii < N and 0 <= jj < N):
+                    continue
+                c = -nu/h**2
+                if di == -1 and ax > 0: c -= ax/h
+                if di ==  1 and ax < 0: c += ax/h
+                if dj == -1 and ay > 0: c -= ay/h
+                if dj ==  1 and ay < 0: c += ay/h
+                rows.append(k); cols.append(ii + N*jj); vals.append(c)
+    A = sp.csr_matrix((vals, (rows, cols)), shape=(N*N, N*N))
+    spec = (abs(ax) + abs(ay))/h + 4*nu/h**2
+    return A, spec
+
+def pseudo_march(A, spec, cfl, method, tol=1e-8, itmax=5000):
+    b = np.ones(N*N)
+    phi = np.zeros(N*N)
+    dtau = cfl / spec
+    D = sp.diags(A.diagonal() + 1.0/dtau)
+    L = sp.tril(A, k=-1); U = sp.triu(A, k=1)
+    if method == "exact":  # resolver (I/Δτ + A) exactamente en cada iteración
+        lu = splu((A + sp.identity(N*N)/dtau).tocsc())
+    else:
+        DL = (D + L).tocsr(); DU = (D + U).tocsr(); d = D.diagonal()
+    r0 = np.linalg.norm(A @ phi - b)
+    hist = [1.0]
+    for it in range(1, itmax+1):
+        R = A @ phi - b
+        if method == "exact":
+            dphi = lu.solve(-R)
+        else:
+            y = spsolve_triangular(DL, -R, lower=True)          # barrido inferior (D+L) y = -R
+            dphi = spsolve_triangular(DU, d*y, lower=False)     # barrido superior (D+U) Δφ = D y
+        phi += dphi
+        hist.append(np.linalg.norm(A @ phi - b) / r0)
+        if hist[-1] < tol:
+            break
+    rate = (hist[-1]/hist[max(0, len(hist)-11)])**(1/min(10, len(hist)-1))
+    return it, rate
+
+cases = [("advection 45deg", 45, 1.0, 1e-4),
+         ("advection 135deg", 135, 1.0, 1e-4),
+         ("diffusion only", 45, 0.0, 1.0)]
+cfls = [1, 10, 100, 1e4, 1e8]
+print(f"N={N}, tol=1e-8, iterations (LU-SGS / exact implicit)")
+print("case               " + "".join(f"{'CFL='+format(c,'g'):>14}" for c in cfls))
+for name, th, a, nu in cases:
+    A, spec = build_operator(th, a, nu)
+    line = f"{name:<19}"
+    for c in cfls:
+        n1, _ = pseudo_march(A, spec, c, "lusgs")
+        n2, _ = pseudo_march(A, spec, c, "exact")
+        line += f"{f'{n1}/{n2}':>14}"
+    print(line)
+
+# tasa asintótica y tamaño del término descartado con CFL=1e8
+print("\nasymptotic residual factor per iteration at CFL=1e8")
+for name, th, a, nu in cases:
+    A, spec = build_operator(th, a, nu)
+    n, rate = pseudo_march(A, spec, 1e8, "lusgs")
+    Lm = sp.tril(A, k=-1); Um = sp.triu(A, k=1)
+    Dinv = sp.diags(1.0/A.diagonal())
+    drop = sp.linalg.norm(Lm @ Dinv @ Um) / sp.linalg.norm(A)
+    print(f"{name:<19} rate={rate:.4f}  ||L D^-1 U||/||A||={drop:.4f}")
+```
+
+```text
+N=32, tol=1e-8, iterations (LU-SGS / exact implicit)
+case                        CFL=1        CFL=10       CFL=100     CFL=10000     CFL=1e+08
+advection 45deg           131/131         25/25          10/9           7/3           7/2
+advection 135deg          136/131         38/25          27/9          26/3          26/2
+diffusion only          4539/4038      1324/412       1042/49        1012/5        1012/2
+
+asymptotic residual factor per iteration at CFL=1e8
+advection 45deg     rate=0.0577  ||L D^-1 U||/||A||=0.0022
+advection 135deg    rate=0.1902  ||L D^-1 U||/||A||=0.1973
+diffusion only      rate=0.9821  ||L D^-1 U||/||A||=0.1338
+```
+
+Ahora el código de arriba se puede ejecutar directamente en el navegador. El valor por defecto es 135° con CFL = $10^8$. La curva naranja alcanza la línea verde discontinua en 26 iteraciones y la azul en 2.
+
+<PseudoTimeCflSaturationRace />
+
+Al bajar el control de CFL hasta 1, las dos curvas se superponen (131 frente a 131). Con "diffusion only", la curva naranja desciende lentamente hasta 1,012. También vale la pena probar ángulos que la tabla no cubre, como 0° o 315°.
+
+## Qué separa 7, 26 y 1,012
+
+Con CFL = 1, ambos métodos necesitan iteraciones iguales o parecidas en los tres casos. $\Delta\tau$ es pequeño y $D$ domina. Lo que limita la convergencia aquí es la lentitud del propio pseudotiempo. El error de factorización todavía no es el problema.
+
+Por encima de CFL = 100 los caminos se separan. El esquema implícito exacto sigue bajando: 9, 3 y luego 2 iteraciones. Las 2 finales son una pasada extra para limpiar el residuo que deja un $I/\Delta\tau$ de tamaño $10^{-8}$. LU-SGS se fija en 7 para 45°, 26 para 135° y 1,012 para difusión. Multiplicar el CFL por diez mil, de $10^4$ a $10^8$, no ahorró ni una iteración.
+
+La historia de convergencia a 135° muestra su carácter. Durante las primeras 15 iteraciones, el residuo bajó apenas un 8 % por iteración. Después cayó de golpe. Una explicación probable es que un par de barridos solo mueve la información unas pocas celdas a lo largo del flujo. La convergencia rápida empieza cuando la información ya cruzó todo el dominio.
+
+La difusión es más simple. Con CFL = $10^8$, el factor de reducción del residuo por iteración fue 0.9821. En el problema de Poisson modelo, el radio espectral de Gauss–Seidel es $\cos^2(\pi/(N+1))$. SGS hace una pasada de GS hacia adelante y otra hacia atrás. Elevando aproximadamente al cuadrado se obtiene $\cos^4(\pi/33)\approx 0.9820$, que coincide con la medición. Así, $\ln 10^{-8}/\ln 0.9821\approx 1{,}020$, muy cerca de las 1,012 observadas. Esta tasa empeora como $h^2$. Al duplicar la malla, las iteraciones se multiplican aproximadamente por cuatro.
+
+## La norma del término descartado no predice la convergencia
+
+La última tabla de la salida también muestra $\|LD^{-1}U\|/\|A\|$. A 45° vale 0.0022, prácticamente cero. A 135° vale 0.197, cerca del factor de convergencia 0.190. Pero la difusión da 0.134, menos que 135°, y su factor de convergencia de 0.982 es mucho peor.
+
+Una norma mide todos los modos a la vez. En un problema de difusión, SGS elimina bien el error de alta frecuencia. Lo que queda son modos de baja frecuencia que abarcan todo el dominio. Para esos modos, los autovalores de $M^{-1}A$ están cerca de cero. La convergencia no depende de cuán grande es el término descartado, sino de sobre qué modos actúa. Por eso LU-SGS por sí solo se queda corto en problemas dominados por difusión, y por eso se le añade aceleración multigrid o de Krylov.
+
+## Releer dos frases de las notas originales
+
+Las notas de estructura de código de 2018 incluyen este comentario junto a LU-SGS: "Implicit scheme is the same as the concept of residual smooth scheme." Los resultados de arriba muestran su sentido. Con CFL = ∞, LU-SGS es menos un método que busca el estado estacionario y más un operador que suaviza el residuo. La ventaja de los pasos grandes, o la precisión temporal, solo aparece cuando $M$ se mantiene cerca de $I/\Delta\tau+A$.
+
+La forma final de las mismas notas es el avance en tiempo dual (dual time). Ahí $D$ recibe además el término de tiempo físico $3/(2\Delta t)$. Ese término entra solo en la diagonal. Así, incluso con CFL de pseudotiempo infinito, $D$ crece y $LD^{-1}U$ se reduce en proporción. Por eso las iteraciones internas de un cálculo no estacionario se llevan mejor con LU-SGS que un cálculo estacionario. Los problemas de número de iteraciones de un lazo de tiempo dual con precondicionamiento se tratan en el [experimento de precondicionamiento en tiempo dual](/es/posts/2026-10-30-dual-time-steady-preconditioner-inner-iterations/). La deducción de LU-SGS y el tratamiento del radio espectral viscoso están en la [introducción a LU-SGS](/es/posts/2026-06-22-lu-sgs-implicit-time-integration/).
+
+## Qué revisar antes de subir el CFL de pseudotiempo
+
+Si el número de iteraciones deja de responder al CFL, el error de factorización ya fijó el piso. Subir más el CFL no servirá. Hay dos cosas que revisar. La primera es la relación entre la dirección del flujo y la numeración de celdas. Un caso en el que solo reordenar celdas cambia mucho las iteraciones aparece en el [artículo sobre reordenamiento RCM](/es/posts/2026-10-16-lu-sgs-cell-ordering-reverse-cuthill-mckee/). La segunda es el peso de la difusión. Si hay regiones amplias con número de Péclet de celda cercano a 1 o menor, el límite $h^2$ de SGS debe superarse con otro método de aceleración.
+
+Existe un diagnóstico rápido. Se ejecuta con CFL = $10^2$, $10^4$ y $10^6$ y se anotan las iteraciones. Si las tres coinciden, ese número es lo mejor que LU-SGS puede dar con esa malla y ese orden de celdas.

@@ -1,0 +1,182 @@
+---
+title: "CFLを10⁸にしてもLU-SGSは1,012回反復する — 捨てた項LD⁻¹Uが決める収束の限界"
+date: 2026-11-06
+description: "擬似時間CFLを無限大にするとLU-SGSは対称Gauss–Seidelになります。32×32の移流拡散問題で、流れの向きと拡散が反復回数を7・26・1,012に分けます。"
+tags: ["LU-SGS", "Implicit", "Iterative-Solver", "Convection-Diffusion", "Numerical-Analysis"]
+locale: ja
+slug: 2026-11-06-lu-sgs-factorization-error-cfl-limit
+takeaway: "LU-SGSのCFLを上げると反復回数は減りますが、やがて止まります。その底を決めるのは近似分解で捨てたLD⁻¹Uで、流れがスイープに沿えば7回、横切れば26回、拡散が支配すれば1,012回です。"
+draft: false
+---
+import { SweepInfluenceStencilLab } from '@/components/post-viz/2026-11-06-lu-sgs-factorization-error-cfl-limit/SweepInfluenceStencilLab'
+import { PseudoTimeCflSaturationRace } from '@/components/post-viz/2026-11-06-lu-sgs-factorization-error-cfl-limit/PseudoTimeCflSaturationRace'
+
+## CFLを10⁸にしたら1,012回かかった
+
+陰解法(implicit scheme)ならCFLは大きいほど良い、と教わります。線形問題なら $\Delta\tau\to\infty$ はニュートン法の1回と同じです。1回で定常解に届くはずです。32×32の拡散問題でCFLを $10^8$ にしました。行列を厳密に解く陰解法は2回で終わりました。LU-SGSは1,012回かかりました。
+
+同じ問題で流れを45°の移流にすると、LU-SGSは7回で終わります。135°に回すと26回です。CFLはどれも $10^8$ です。この記事では、この3つの数字がどこから来るのかを追います。答えは、LU-SGSが分解の際に捨てた1つの項 $LD^{-1}U$ です。読み終えると、CFLを上げても反復回数が底に張り付く理由を説明できるようになります。
+
+## LU-SGSが実際に解いている行列
+
+定常問題 $A\phi=b$ を擬似時間(pseudo time、収束のためだけの仮の時間)で進めます。1回の反復では次の線形系を解きます。
+
+$$
+\left(\frac{I}{\Delta\tau}+A\right)\Delta\phi=-R,\qquad R=A\phi-b
+$$
+
+$\Delta\tau$ は擬似時間刻み、$R$ は残差(residual、方程式を満たしていない量)です。この行列を毎回厳密に解くのは高コストです。LU-SGSは $A$ を対角 $D_A$、下三角 $L$、上三角 $U$ に分け、左辺の行列を次の積に置き換えます。
+
+$$
+M=(D+L)\,D^{-1}\,(D+U)=D+L+U+LD^{-1}U,\qquad D=\frac{I}{\Delta\tau}+D_A
+$$
+
+$D+L+U$ は元の行列と完全に一致します。残るのは $LD^{-1}U$ だけで、これが近似分解の誤差です。元のノートの付録Aでは、この箇所に「Neglect」の一語だけが書かれています。代わりに得られるのが2回のスイープです。下向きスイープ(lower sweep)は $(D+L)y=-R$ をセル番号順に、上向きスイープ(upper sweep)は $(D+U)\Delta\phi=Dy$ を逆順に解きます。
+
+この項がいつ0になるかは、図で見るのが早いです。下のシミュレーションで実際に操作してみましょう。左はCFL = ∞で、1つのセルに置いた単位源に $M^{-1}$ を1回適用した結果です。右は厳密な応答 $A^{-1}e$ です。
+
+<SweepInfluenceStencilLab />
+
+45°ボタンを押すと、下向きスイープだけでプルームが右上まで描かれ、誤差はほぼ0です。135°に切り替えると、下向きスイープは上へ、上向きスイープは左へしか情報を運びません。2回のスイープの後も階段状の形が残ります。$\nu$ を大きくすると、どの角度でも誤差が増えます。
+
+## 捨てた項はいつ0になるか
+
+1次風上(upwind)移流では、セルは上流の隣接セルにしかつながりません。セル番号が $k=i+Nj$ なら、西・南の隣は $L$ に、東・北の隣は $U$ に入ります。流れが45°なら上流は西と南です。移流成分はすべて $L$ にあり、$U$ には小さな拡散係数しか残りません。そのため $LD^{-1}U\approx 0$ です。225°なら逆に $L$ がほぼ空になり、やはり0に近くなります。
+
+135°は違います。上流は東と南です。片方は $U$ に、もう片方は $L$ にあります。積 $LD^{-1}U$ が2つの移流係数の積の大きさで生き残ります。純粋な拡散では4つの隣すべてがつながるので、向きに関係なくこの項が残ります。
+
+ここで $\Delta\tau\to\infty$ とします。$D\to D_A$ となり、$M$ は対称Gauss–Seidel(SGS)前処理行列と同じになります。反復誤差には毎回 $I-M^{-1}A$ が掛かります。この行列はもはや $\Delta\tau$ に依存しません。CFLをいくら上げても、収束率はSGSのスペクトル半径で止まります。逆に $\Delta\tau$ が小さいと $D$ が大きく、$LD^{-1}U$ は相対的に小さくなります。そのときLU-SGSと厳密な陰解法はほぼ同じ反復回数になります。
+
+## コード:32×32の移流拡散、CFL 5段階
+
+正方領域に $b=1$ を与え、壁で $\phi=0$ とします。3つのケースを比べます。45°と135°の移流(速度1、$\nu=10^{-4}$、セルペクレ数は約312)、そして純粋な拡散($\nu=1$)です。CFLは1から $10^8$ までの5段階です。相対残差 $10^{-8}$ までの反復回数を、LU-SGSと厳密な陰解法(毎反復LU直接解法)で測ります。
+
+```python
+import numpy as np
+import scipy.sparse as sp
+from scipy.sparse.linalg import spsolve_triangular, splu
+
+N = 32
+h = 1.0 / N
+
+def build_operator(theta_deg, a, nu):
+    # 1次風上移流 + 中心拡散、壁でφ=0、セル番号 k = i + N*j
+    ax, ay = a*np.cos(np.radians(theta_deg)), a*np.sin(np.radians(theta_deg))
+    rows, cols, vals = [], [], []
+    for j in range(N):
+        for i in range(N):
+            k = i + N*j
+            diag = (abs(ax) + abs(ay))/h + 4*nu/h**2
+            rows.append(k); cols.append(k); vals.append(diag)
+            for di, dj in ((-1,0),(1,0),(0,-1),(0,1)):
+                ii, jj = i+di, j+dj
+                if not (0 <= ii < N and 0 <= jj < N):
+                    continue
+                c = -nu/h**2
+                if di == -1 and ax > 0: c -= ax/h
+                if di ==  1 and ax < 0: c += ax/h
+                if dj == -1 and ay > 0: c -= ay/h
+                if dj ==  1 and ay < 0: c += ay/h
+                rows.append(k); cols.append(ii + N*jj); vals.append(c)
+    A = sp.csr_matrix((vals, (rows, cols)), shape=(N*N, N*N))
+    spec = (abs(ax) + abs(ay))/h + 4*nu/h**2
+    return A, spec
+
+def pseudo_march(A, spec, cfl, method, tol=1e-8, itmax=5000):
+    b = np.ones(N*N)
+    phi = np.zeros(N*N)
+    dtau = cfl / spec
+    D = sp.diags(A.diagonal() + 1.0/dtau)
+    L = sp.tril(A, k=-1); U = sp.triu(A, k=1)
+    if method == "exact":  # 毎反復 (I/Δτ + A) を厳密に解く
+        lu = splu((A + sp.identity(N*N)/dtau).tocsc())
+    else:
+        DL = (D + L).tocsr(); DU = (D + U).tocsr(); d = D.diagonal()
+    r0 = np.linalg.norm(A @ phi - b)
+    hist = [1.0]
+    for it in range(1, itmax+1):
+        R = A @ phi - b
+        if method == "exact":
+            dphi = lu.solve(-R)
+        else:
+            y = spsolve_triangular(DL, -R, lower=True)          # 下向きスイープ (D+L) y = -R
+            dphi = spsolve_triangular(DU, d*y, lower=False)     # 上向きスイープ (D+U) Δφ = D y
+        phi += dphi
+        hist.append(np.linalg.norm(A @ phi - b) / r0)
+        if hist[-1] < tol:
+            break
+    rate = (hist[-1]/hist[max(0, len(hist)-11)])**(1/min(10, len(hist)-1))
+    return it, rate
+
+cases = [("advection 45deg", 45, 1.0, 1e-4),
+         ("advection 135deg", 135, 1.0, 1e-4),
+         ("diffusion only", 45, 0.0, 1.0)]
+cfls = [1, 10, 100, 1e4, 1e8]
+print(f"N={N}, tol=1e-8, iterations (LU-SGS / exact implicit)")
+print("case               " + "".join(f"{'CFL='+format(c,'g'):>14}" for c in cfls))
+for name, th, a, nu in cases:
+    A, spec = build_operator(th, a, nu)
+    line = f"{name:<19}"
+    for c in cfls:
+        n1, _ = pseudo_march(A, spec, c, "lusgs")
+        n2, _ = pseudo_march(A, spec, c, "exact")
+        line += f"{f'{n1}/{n2}':>14}"
+    print(line)
+
+# CFL=1e8での漸近収束率と捨てた項の大きさ
+print("\nasymptotic residual factor per iteration at CFL=1e8")
+for name, th, a, nu in cases:
+    A, spec = build_operator(th, a, nu)
+    n, rate = pseudo_march(A, spec, 1e8, "lusgs")
+    Lm = sp.tril(A, k=-1); Um = sp.triu(A, k=1)
+    Dinv = sp.diags(1.0/A.diagonal())
+    drop = sp.linalg.norm(Lm @ Dinv @ Um) / sp.linalg.norm(A)
+    print(f"{name:<19} rate={rate:.4f}  ||L D^-1 U||/||A||={drop:.4f}")
+```
+
+```text
+N=32, tol=1e-8, iterations (LU-SGS / exact implicit)
+case                        CFL=1        CFL=10       CFL=100     CFL=10000     CFL=1e+08
+advection 45deg           131/131         25/25          10/9           7/3           7/2
+advection 135deg          136/131         38/25          27/9          26/3          26/2
+diffusion only          4539/4038      1324/412       1042/49        1012/5        1012/2
+
+asymptotic residual factor per iteration at CFL=1e8
+advection 45deg     rate=0.0577  ||L D^-1 U||/||A||=0.0022
+advection 135deg    rate=0.1902  ||L D^-1 U||/||A||=0.1973
+diffusion only      rate=0.9821  ||L D^-1 U||/||A||=0.1338
+```
+
+上のコードをブラウザで直接動かしてみましょう。既定値は135°、CFL = $10^8$ です。オレンジの曲線は26回、青の曲線は2回で緑の破線に届きます。
+
+<PseudoTimeCflSaturationRace />
+
+CFLスライダーを1まで下げると、2本の曲線が重なります(131回対131回)。「diffusion only」を押すと、オレンジの曲線が1,012回までゆっくり下がります。表にない角度、たとえば0°や315°も試してみてください。
+
+## 7・26・1,012を分けるもの
+
+CFL = 1では、3つのケースすべてで2つの方法の反復回数が同じか近い値です。$\Delta\tau$ が小さく $D$ が支配的だからです。このとき反復回数を決めているのは擬似時間そのものの遅さです。分解誤差はまだ問題になりません。
+
+CFLが100を超えると道が分かれます。厳密な陰解法は9回、3回、2回と減り続けます。最後の2回は、$10^{-8}$ の大きさの $I/\Delta\tau$ が残した残差をもう一度消す分です。LU-SGSは45°で7回、135°で26回、拡散で1,012回に固定されます。CFLを $10^4$ から $10^8$ へ1万倍にしても、1回も減りませんでした。
+
+135°の収束履歴を見ると性格がわかります。最初の15回、残差は1回あたり約8%しか減りませんでした。その後で急激に下がりました。1組のスイープが情報を流れ方向に数セルしか運べないためだと考えられます。情報が領域を渡り切ってから、速い収束が始まります。
+
+拡散はもっと単純です。CFL = $10^8$ での1反復あたりの残差減少率は0.9821でした。モデルPoisson問題でのGauss–Seidelのスペクトル半径は $\cos^2(\pi/(N+1))$ です。SGSはGSを順方向と逆方向に1回ずつ行います。おおよそ2乗すると $\cos^4(\pi/33)\approx 0.9820$ で、測定値と一致します。$\ln 10^{-8}/\ln 0.9821\approx 1{,}020$ となり、実際の1,012回とほぼ同じです。この値は $h^2$ に比例して悪化します。格子を2倍にすると反復回数は約4倍になります。
+
+## 捨てた項のノルムは収束を予測しない
+
+出力の最後の表には $\|LD^{-1}U\|/\|A\|$ も載せています。45°は0.0022でほぼ0です。135°は0.197で、収束率0.190に近い値です。ところが拡散は0.134で135°より小さいのに、収束率は0.982とはるかに悪いです。
+
+ノルムはすべてのモードをまとめて測ります。拡散問題ではSGSは高周波の誤差をよく消します。残るのは領域全体にわたる低周波モードです。このモードでは $M^{-1}A$ の固有値が0に近くなります。収束を決めるのは捨てた項の大きさではなく、それがどのモードに作用するかです。拡散支配の問題でLU-SGS単独では足りず、マルチグリッド(multigrid)やKrylov加速を組み合わせるのはこのためです。
+
+## 元のノートの2つの文を読み直す
+
+2018年のコード構造ノートには、LU-SGSの横にこんなメモがあります。"Implicit scheme is the same as the concept of residual smooth scheme." 上の結果がその意味を示しています。CFL = ∞のLU-SGSは、定常解を探す反復法というより残差を平滑化する演算子です。大きな時間刻みの利点や時間精度が得られるのは、$M$ が $I/\Delta\tau+A$ に近いときだけです。
+
+同じノートの最終形は二重時間(dual time)進行です。このとき $D$ には実時間項 $3/(2\Delta t)$ が加わります。この項は対角にしか入りません。そのため擬似時間CFLが無限大でも $D$ が大きくなり、$LD^{-1}U$ は相対的に小さくなります。非定常計算の内部反復が定常計算よりLU-SGSと相性が良いのはこのためです。前処理を載せた二重時間ループの反復回数の問題は[二重時間前処理の実験](/ja/posts/2026-10-30-dual-time-steady-preconditioner-inner-iterations/)で扱いました。LU-SGS自体の導出と粘性スペクトル半径の扱いは[LU-SGS入門記事](/ja/posts/2026-06-22-lu-sgs-implicit-time-integration/)にあります。
+
+## 擬似時間CFLを上げる前に確認すること
+
+反復回数がCFLの増加に反応しなくなったら、分解誤差が底を決めたというサインです。それ以上CFLを上げても効果はありません。確認すべきことは2つです。1つは流れの向きとセル番号の関係です。セルの順番を変えるだけで反復回数が大きく変わる例は[RCM並べ替えの記事](/ja/posts/2026-10-16-lu-sgs-cell-ordering-reverse-cuthill-mckee/)にあります。もう1つは拡散の比重です。セルペクレ数が1前後以下の領域が広いなら、SGSの $h^2$ の限界を別の加速法で越える必要があります。
+
+簡単な診断法があります。CFLを $10^2$、$10^4$、$10^6$ の3通りで回し、反復回数を記録します。3つが同じなら、その数字があなたの格子とセル順序でLU-SGSが出せる最善です。
