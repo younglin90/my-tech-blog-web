@@ -1,0 +1,246 @@
+---
+title: "[Revisión de artículo] Al resolver una ecuación de presión, el choque llegó diez celdas tarde — el esquema semiimplícito de Dumbser–Casulli que conserva la energía en forma de flujo"
+date: 2026-11-07
+description: "Dos solvers semiimplícitos de presión, misma malla y mismo Δt, distinta posición del choque. Se reproduce Dumbser–Casulli (2016) en tubos de choque 1D y se muestra por qué decide la energía."
+tags: ["Semi-Implicit", "Staggered-Grid", "Compressible", "Van-der-Waals", "Paper-Review"]
+locale: es
+slug: 2026-11-07-dumbser-casulli-conservative-semi-implicit
+takeaway: "Tratar la presión de forma implícita no basta. El choque queda en su lugar solo si la energía se actualiza en forma de flujo."
+draft: false
+---
+import { MildlyNonlinearPressureNewtonLab } from '@/components/post-viz/2026-11-07-dumbser-casulli-conservative-semi-implicit/MildlyNonlinearPressureNewtonLab'
+import { ConservativeShockPlacementRace } from '@/components/post-viz/2026-11-07-dumbser-casulli-conservative-semi-implicit/ConservativeShockPlacementRace'
+
+## La presión se resolvió bien, pero el choque llegó diez celdas tarde
+
+Los dos códigos son casi idénticos. Misma malla escalonada, mismos flujos convectivos, mismo Δt. Ambos resuelven la presión de forma implícita para escapar del CFL acústico. Sin embargo, en un tubo de choque con razón de presiones 10⁵, uno de los choques cae en la posición exacta. El otro queda 0.048 atrás, unas diez celdas.
+
+La única diferencia es cómo se actualiza la energía. Este artículo revisa el trabajo de Dumbser y Casulli de 2016 y reproduce esa diferencia en unas 130 líneas de Python. Al final se podrá explicar con números por qué "basado en presión" y "conservativo" son propiedades que deben comprobarse por separado.
+
+## El problema que el artículo quería resolver
+
+En flujos de bajo Mach (velocidad muy inferior a la del sonido), los esquemas explícitos tipo Godunov fijan Δt con la velocidad del sonido. Con un flujo de 1 m/s y un sonido de 3,700 m/s, el número de pasos crece 3,700 veces. Los métodos semiimplícitos de presión del mundo incompresible fijan Δt con la velocidad del flujo. Pero frente a un choque suelen perder la conservación.
+
+Dumbser y Casulli reúnen ambos requisitos en un solo esquema. La densidad y la convección quedan explícitas. El término de presión del momento y el de velocidad de la energía pasan a ser implícitos. Además, la EOS (ecuación de estado) no tiene que ser de gas ideal. EOS cúbicas como van der Waals y Redlich–Kwong caben en el mismo marco. Otro enfoque de bajo Mach aparece en la [revisión del solver IMEX bifluido con estado de referencia](/es/posts/2026-11-01-rs-imex-two-fluid-material-cfl/).
+
+## Sustituir hasta que solo quede la presión
+
+La malla es escalonada (staggered grid: presión en los centros de celda, velocidad en las caras). La presión $p_i$ y la energía total $(\rho E)_i$ viven en los centros. La densidad $\rho_{i+1/2}$ y el momento $(\rho u)_{i+1/2}$ viven en las caras. La ecuación de momento toma solo la presión en el nuevo nivel temporal.
+
+$$
+(\rho u)^{n+1}_{i+\frac12} = F(\rho u)^n_{i+\frac12} - \frac{\Delta t}{\Delta x}\left(p^{n+1}_{i+1} - p^{n+1}_i\right)
+$$
+
+$F(\rho u)$ es el operador explícito de convección; $\Delta t$ y $\Delta x$ son los pasos de tiempo y espacio.
+
+Se sustituye esto en el flujo de entalpía $h\,(\rho u)$ de la ecuación de energía. La presión queda como única incógnita.
+
+$$
+\Delta x\,\rho^{n+1}_i e\!\left(p^{n+1}_i,\rho^{n+1}_i\right) - \frac{\Delta t^2}{\Delta x}\left[h_{i+\frac12}\left(p_{i+1}-p_i\right) - h_{i-\frac12}\left(p_i-p_{i-1}\right)\right]^{n+1} = b_i
+$$
+
+$e$ es la energía interna específica, $h = e + p/\rho$ la entalpía específica en la cara y $b_i$ reúne los términos conocidos.
+
+La entalpía y la energía cinética se tratan con iteración de Picard (congelar los coeficientes en la iteración anterior y volver a resolver). El artículo afirma que tres pasadas bastan. El sistema queda como $\mathbf V(\mathbf p) + \mathbf T\mathbf p = \mathbf b$. $\mathbf T$ es una matriz tridiagonal simétrica semidefinida positiva. $\mathbf V$ es una función diagonal que evalúa $\Delta x\,\rho_i e(p_i,\rho_i)$ celda por celda.
+
+## La no linealidad vive en la diagonal
+
+Esta estructura es el segundo pilar del artículo. Por compleja que sea la EOS, su no linealidad entra solo por $\mathbf V$, es decir, por la diagonal. Si $e$ crece monótonamente con la presión, los métodos de Newton anidados de Casulli convergen con demostración. Para un gas ideal, $\rho e = p/(\gamma-1)$ es lineal. Con van der Waals, $e$ también es lineal en $p$, y el artículo informa que Newton "convergió en exactamente una iteración".
+
+En la simulación siguiente se puede cambiar la EOS y avanzar la iteración de Newton paso a paso.
+
+<MildlyNonlinearPressureNewtonLab />
+
+Al elegir Redlich–Kwong y subir la atracción $a$, la curva $V(p)$ de la derecha se separa de la cuerda recta y aumenta el número de iteraciones. En cambio, llevar κ (=$\Delta t^2 h/\Delta x^2$, en la práctica el CFL acústico al cuadrado) hasta 10⁴ casi no cambia el conteo. La matriz de acoplamiento $\mathbf T$ es lineal, así que un Δt grande no dificulta a Newton.
+
+## La última línea: cómo actualizar la energía
+
+Una vez conocida la presión hay dos opciones. La primera actualiza el momento con la presión y reescribe la energía en forma de flujo (ec. 24 del artículo).
+
+$$
+(\rho E)^{n+1}_i = F(\rho E)^n_i - \frac{\Delta t}{\Delta x}\left(h_{i+\frac12}(\rho u)^{n+1}_{i+\frac12} - h_{i-\frac12}(\rho u)^{n+1}_{i-\frac12}\right)
+$$
+
+$F(\rho E)$ es un operador explícito que solo contiene la convección de energía cinética. La energía que sale de una celda entra exactamente en la vecina.
+
+La segunda es la vía clásica basada en presión. En lugar de la ecuación de energía, se resuelve de forma semiimplícita la ecuación primitiva de presión $p_t + u p_x + \gamma p u_x = 0$. En flujo suave ambas son equivalentes. En una discontinuidad, en cambio, $\gamma p\,u_x$ no está en forma conservativa. La condición de Rankine–Hugoniot (los flujos de las cantidades conservadas deben equilibrarse a través del choque) falla y la velocidad del choque se desvía. Como en [el caso de LU-SGS donde un término descartado fijaba la convergencia](/es/posts/2026-11-06-lu-sgs-factorization-error-cfl-limit/), un término de aspecto pequeño decide el resultado.
+
+## Código: mismo Δt, dos tratamientos de la energía
+
+Una malla escalonada 1D de 200 celdas, γ = 1.4 y CFL 0.5 basado en la velocidad del flujo resuelven Sod y el RP3 de Toro (razón de presiones $10^5$). El flujo parte del reposo, así que Δt empieza en $10^{-4}$ y crece como máximo 1.1 veces por paso. La posición exacta del choque sale de $p^*$ de la solución exacta de Riemann. Al final, el RP0 del artículo (contacto con salto de densidad $10^5$) compara el número de pasos.
+
+```python
+import numpy as np
+
+G = 1.4
+
+def star_state(rL, uL, pL, rR, uR, pR):
+    # p*, u* de Riemann exacto (Toro, iteración de Newton)
+    def fk(p, r, pk):
+        a = np.sqrt(G * pk / r)
+        if p > pk:
+            A, B = 2 / ((G + 1) * r), (G - 1) / (G + 1) * pk
+            return (p - pk) * np.sqrt(A / (p + B))
+        return 2 * a / (G - 1) * ((p / pk) ** ((G - 1) / (2 * G)) - 1)
+    p = 0.5 * (pL + pR)
+    for _ in range(100):
+        f = fk(p, rL, pL) + fk(p, rR, pR) + uR - uL
+        d = 1e-7 * p
+        df = (fk(p + d, rL, pL) + fk(p + d, rR, pR) - fk(p - d, rL, pL) - fk(p - d, rR, pR)) / (2 * d)
+        p = max(p - f / df, 1e-10)
+    u = 0.5 * (uL + uR) + 0.5 * (fk(p, rR, pR) - fk(p, rL, pL))
+    return p, u
+
+def thomas(a, b, c, d):
+    n = len(d); cp = np.zeros(n); dp = np.zeros(n)
+    cp[0], dp[0] = c[0] / b[0], d[0] / b[0]
+    for i in range(1, n):
+        m = b[i] - a[i] * cp[i - 1]
+        cp[i] = c[i] / m; dp[i] = (d[i] - a[i] * dp[i - 1]) / m
+    x = np.zeros(n); x[-1] = dp[-1]
+    for i in range(n - 2, -1, -1):
+        x[i] = dp[i] - cp[i] * x[i + 1]
+    return x
+
+def si_staggered(rp, N=200, cfl=0.5, picard=3):
+    rL, uL, pL, rR, uR, pR, xd, tend = rp
+    dx = 1.0 / N
+    xf = -0.5 + dx * np.arange(N + 1)            # caras: rho, rho*u
+    xc = 0.5 * (xf[:-1] + xf[1:])                # celdas: p, rho*E
+    rf = np.where(xf < xd, rL, rR); mf = rf * np.where(xf < xd, uL, uR)
+    p = np.where(xc < xd, pL, pR)
+    rk = lambda r, m: 0.5 * m**2 / r
+    def cell_rk(r, m):
+        k = rk(r, m); return 0.5 * (k[:-1] + k[1:])
+    rE = p / (G - 1) + cell_rk(rf, mf)
+    E0 = rE.sum() * dx
+    t, dt, steps, cmax = 0.0, 1e-4, 0, 0.0
+    while t < tend - 1e-12:
+        u = mf / rf
+        rc = 0.5 * (rf[:-1] + rf[1:])
+        cmax = max(cmax, np.max(np.abs(np.r_[u[:-1], u[1:]]) + np.sqrt(G * np.r_[p, p] / np.r_[rc, rc])))
+        dt = min(cfl * dx / max(np.abs(u).max(), 1e-12), 1.1 * dt, tend - t)
+        # (11)(12)(14)(15): densidad y momento en caras — convección explícita
+        umax = np.maximum(np.abs(u[:-1]), np.abs(u[1:]))
+        fr = 0.5 * (mf[:-1] + mf[1:]) - 0.5 * umax * (rf[1:] - rf[:-1])
+        fm = 0.5 * (u[:-1] * mf[:-1] + u[1:] * mf[1:]) - 0.5 * umax * (mf[1:] - mf[:-1])
+        rn = rf.copy(); Fm = mf.copy()
+        rn[1:-1] -= dt / dx * (fr[1:] - fr[:-1])
+        Fm[1:-1] -= dt / dx * (fm[1:] - fm[:-1])
+        # (17)(18): solo la convección de energía cinética es explícita
+        kc = cell_rk(rf, mf)
+        fk = 0.5 * u[1:-1] * (kc[1:] + kc[:-1]) - 0.5 * np.abs(u[1:-1]) * (kc[1:] - kc[:-1])
+        fk = np.r_[u[0] * kc[0], fk, u[-1] * kc[-1]]
+        FE = rE - dt / dx * (fk[1:] - fk[:-1])
+        m, pr = Fm.copy(), p.copy()
+        for r in range(picard):                   # Picard: congelar h, rho*k en la iteración anterior
+            pf = np.maximum(0, np.r_[pr[0], np.maximum(pr[:-1], pr[1:]), pr[-1]])
+            h = G / (G - 1) * pf / rn
+            kc = cell_rk(rn, m)
+            b = dx * (FE - kc) - dt * (h[1:] * Fm[1:] - h[:-1] * Fm[:-1])
+            w = dt**2 * h / dx                        # coeficientes de cara de T (simétrica)
+            w[0] = w[-1] = 0.0                        # el momento en las caras de borde queda fijo
+            diag = dx / (G - 1) + w[1:] + w[:-1]      # V(p)=dx*p/(G-1): lineal para gas ideal
+            pr = thomas(-w[:-1], diag, -w[1:], b)
+            m = Fm.copy(); m[1:-1] -= dt / dx * (pr[1:] - pr[:-1])   # (23)
+        pf = np.maximum(0, np.r_[pr[0], np.maximum(pr[:-1], pr[1:]), pr[-1]])
+        h = G / (G - 1) * pf / rn
+        rE = FE - dt / dx * (h[1:] * m[1:] - h[:-1] * m[:-1])   # (24) forma de flujo
+        p = (G - 1) * (rE - cell_rk(rn, m))       # presión recalculada desde las variables conservadas
+        rf, mf = rn, m
+        t += dt; steps += 1
+    return xc, p, mf / rf, rf, steps, cmax, (rE.sum() * dx - E0)
+
+def shock_x(xc, p, pstar, pR):
+    mid = 0.5 * (pstar + pR)
+    i = np.where(p > mid)[0].max()
+    return xc[i] + (p[i] - mid) / (p[i] - p[i + 1]) * (xc[i + 1] - xc[i])
+
+def si_primitive(rp, N=200, cfl=0.5):
+    # referencia no conservativa: ec. de presión p_t + u p_x + G p u_x = 0 en lugar de energía, semiimplícita
+    rL, uL, pL, rR, uR, pR, xd, tend = rp
+    dx = 1.0 / N
+    xf = -0.5 + dx * np.arange(N + 1); xc = 0.5 * (xf[:-1] + xf[1:])
+    rf = np.where(xf < xd, rL, rR); mf = rf * np.where(xf < xd, uL, uR)
+    p = np.where(xc < xd, pL, pR)
+    E0 = (p / (G - 1) + 0.5 * (0.5 * mf[:-1]**2 / rf[:-1] + 0.5 * mf[1:]**2 / rf[1:])).sum() * dx
+    t, dt, steps = 0.0, 1e-4, 0
+    while t < tend - 1e-12:
+        u = mf / rf
+        dt = min(cfl * dx / max(np.abs(u).max(), 1e-12), 1.1 * dt, tend - t)
+        umax = np.maximum(np.abs(u[:-1]), np.abs(u[1:]))
+        fr = 0.5 * (mf[:-1] + mf[1:]) - 0.5 * umax * (rf[1:] - rf[:-1])
+        fm = 0.5 * (u[:-1] * mf[:-1] + u[1:] * mf[1:]) - 0.5 * umax * (mf[1:] - mf[:-1])
+        rn = rf.copy(); Fm = mf.copy()
+        rn[1:-1] -= dt / dx * (fr[1:] - fr[:-1]); Fm[1:-1] -= dt / dx * (fm[1:] - fm[:-1])
+        uc = 0.5 * (u[:-1] + u[1:])
+        pg = np.r_[p[0], p, p[-1]]
+        Fp = p - dt / dx * (np.maximum(uc, 0) * (pg[1:-1] - pg[:-2]) + np.minimum(uc, 0) * (pg[2:] - pg[1:-1]))
+        w = dt**2 / (dx**2 * rn); w[0] = w[-1] = 0.0
+        gp = G * p
+        b = Fp - dt / dx * gp * (Fm[1:] / rn[1:] - Fm[:-1] / rn[:-1])
+        p = thomas(-gp * w[:-1], 1 + gp * (w[1:] + w[:-1]), -gp * w[1:], b)
+        mf = Fm.copy(); mf[1:-1] -= dt / dx * (p[1:] - p[:-1]); rf = rn
+        t += dt; steps += 1
+    E1 = (p / (G - 1) + 0.5 * (0.5 * mf[:-1]**2 / rf[:-1] + 0.5 * mf[1:]**2 / rf[1:])).sum() * dx
+    return xc, p, mf / rf, rf, steps, E1 - E0
+
+probs = {
+    "Sod": (1.0, 0.0, 1.0, 0.125, 0.0, 0.1, 0.0, 0.2),
+    "RP3": (1.0, 0.0, 1000.0, 1.0, 0.0, 0.01, 0.1, 0.012),
+}
+for name, rp in probs.items():
+    ps, us = star_state(*rp[:6])
+    rR, pR, xd, tend = rp[3], rp[5], rp[6], rp[7]
+    q = (G - 1) / (G + 1)
+    rs = rR * (ps / pR + q) / (q * ps / pR + 1)          # densidad tras el choque (Rankine-Hugoniot)
+    xs = xd + rs * us / (rs - rR) * tend
+    print(f"{name}: exact shock x={xs:.4f}  p*={ps:.3f}  rho*={rs:.3f}")
+    xc, p, u, r, n, cmax, dE = si_staggered(rp)
+    print(f"  conservative SI   steps={n:3d}  shock x={shock_x(xc, p, ps, pR):.4f}"
+          f"  p*={p[(xc > xd) & (xc < xs - 0.03)].mean():8.3f}  rho_max={r.max():6.3f}  dE={dE:+.1e}")
+    xc, p, u, r, n, dE = si_primitive(rp)
+    print(f"  primitive p-eq SI steps={n:3d}  shock x={shock_x(xc, p, ps, pR):.4f}"
+          f"  p*={p[(xc > xd) & (xc < xs - 0.03)].mean():8.3f}  rho_max={r.max():6.3f}  dE={dE:+.1e}")
+rp0 = (1000.0, 1.0, 1e5, 0.01, 1.0, 1e5, -0.25, 0.5)
+xc, p, u, r, n, cmax, dE = si_staggered(rp0)
+print(f"RP0 (rho 1e5 jump, M<0.085): steps={n}  explicit |u|+c CFL would need {int(0.5 / (0.5 * (1 / 200) / cmax)):,d}")
+print(f"  max|p/1e5-1|={np.abs(p / 1e5 - 1).max():.1e}  max|u-1|={np.abs(u - 1).max():.1e}")
+```
+
+```text
+Sod: exact shock x=0.3504  p*=0.303  rho*=0.266
+  conservative SI   steps= 99  shock x=0.3597  p*=   0.305  rho_max= 1.000  dE=+0.0e+00
+  primitive p-eq SI steps=102  shock x=0.3188  p*=   0.288  rho_max= 1.000  dE=-3.1e-02
+RP3: exact shock x=0.3822  p*=460.894  rho*=5.999
+  conservative SI   steps= 96  shock x=0.3882  p*= 459.197  rho_max= 5.114  dE=+2.3e-13
+  primitive p-eq SI steps=112  shock x=0.3337  p*= 381.139  rho_max=11.668  dE=-1.1e+02
+RP0 (rho 1e5 jump, M<0.085): steps=224  explicit |u|+c CFL would need 748,531
+  max|p/1e5-1|=1.1e-10  max|u-1|=1.6e-08
+```
+
+El código anterior puede ejecutarse directamente en el navegador. Ambos esquemas avanzan lado a lado con la misma regla de Δt.
+
+<ConservativeShockPlacementRace />
+
+Con los valores por defecto (RP3, N = 200, CFL 0.5, Picard 3), la línea azul termina en 96 pasos con el choque en 0.388, como en la salida. La naranja necesita 112 pasos, se detiene en 0.334 y pierde el 7% de su energía. Al subir N a 400, el error azul disminuye, mientras que el naranja converge al mismo lugar equivocado.
+
+## Lo que dicen 0.048 y 381
+
+La solución exacta de RP3 tiene el choque en $x = 0.3822$ y $p^* = 460.9$. El esquema conservativo obtiene 0.3882 y 459.2. La diferencia de 0.006 es difusión numérica de primer orden que ensancha el choque en una celda. Disminuye al refinar.
+
+La ecuación primitiva de presión da 0.3337 y 381.1. El choque llega 0.048 tarde (unas diez celdas) y la presión de meseta es 17% menor. La densidad máxima es 11.7, el doble del valor exacto 6.0. La energía cambia en $-1.1\times10^2$, cerca del 7% del total inicial. La energía perdida debilita el choque, y un choque más débil viaja más lento. Refinar no lo corrige. Un esquema no conservativo converge a la solución débil (weak solution) equivocada.
+
+Sod apunta en la misma dirección. El conservativo da 0.3597 y el primitivo 0.3188 (exacto 0.3504), con errores de +0.009 y −0.032. A menor razón de presiones, menor diferencia. Por eso un código basado en presión validado solo con Sod puede pasar por alto este problema.
+
+En RP0 la densidad salta $10^5$ veces en el contacto, pero presión y velocidad se mantienen a niveles de $10^{-10}$ y $10^{-8}$. Se necesitan 224 pasos. Un CFL explícito basado en $|u|+c$ requeriría unos 750,000. Ese número es el "large time steps" que promete el artículo.
+
+## Lo que esta reproducción 1D no puede mostrar
+
+El esquema es de primer orden. El propio artículo reconoce un quiebre no físico de la densidad en RP5 (doble rarefacción) y oscilaciones detrás del choque en RP6 (choques que colisionan). Para choques muy fuertes recomienda añadir la disipación tipo Rusanov de la ec. (25) al flujo de presión. El código de este artículo omite ese término.
+
+La prueba real de una EOS cúbica es Redlich–Kwong. Allí $e(p)$ es no lineal y el Newton anidado realmente trabaja. El Python de este artículo solo trata gas ideal, y esa parte se muestra solo de forma aproximada en la primera simulación. Tampoco se cubren la extensión viscosa 2D ni los resultados de la cavidad con tapa móvil. La rampa de Δt (×1.1) es una elección de este artículo para un fluido inicialmente en reposo, no del artículo original.
+
+## Una prueba antes de confiar en un código compresible basado en presión
+
+Sod es demasiado benévolo. Conviene correr RP3, con su razón de presiones $10^5$, e imprimir el cambio de energía total. Si la energía se conserva a precisión de máquina y el choque queda a una o dos celdas de la posición exacta, el esquema es conservativo. Si desaparecen unos puntos porcentuales de energía y el choque se retrasa, ninguna precisión en la resolución de la presión hará que ese código maneje choques.

@@ -1,0 +1,246 @@
+---
+title: "[논문 리뷰] 압력 방정식으로 풀었더니 충격파가 열 칸 늦게 도착했다 — 에너지를 플럭스로 남긴 Dumbser–Casulli 반암시 기법"
+date: 2026-11-07
+description: "같은 반암시 압력 솔버인데 충격파 위치가 갈렸다. 에너지 식을 보존형으로 남긴 Dumbser–Casulli(2016) 기법을 1D 충격관으로 재현한다."
+tags: ["Semi-Implicit", "Staggered-Grid", "Compressible", "Van-der-Waals", "Paper-Review"]
+locale: ko
+slug: 2026-11-07-dumbser-casulli-conservative-semi-implicit
+takeaway: "압력을 암시적으로 푸는 것만으로는 부족하다. 에너지를 플럭스 형태로 갱신해야 충격파가 제자리에 선다."
+draft: false
+---
+import { MildlyNonlinearPressureNewtonLab } from '@/components/post-viz/2026-11-07-dumbser-casulli-conservative-semi-implicit/MildlyNonlinearPressureNewtonLab'
+import { ConservativeShockPlacementRace } from '@/components/post-viz/2026-11-07-dumbser-casulli-conservative-semi-implicit/ConservativeShockPlacementRace'
+
+## 압력을 풀었는데 충격파가 열 칸 늦게 도착했다
+
+두 코드는 거의 같다. 같은 엇갈림 격자, 같은 대류 플럭스, 같은 Δt를 쓴다. 둘 다 압력을 암시적으로 풀어 음속 CFL을 피한다. 그런데 압력비 10만 배 충격관에서 한쪽 충격파는 정해 위치에 섰다. 다른 쪽은 0.048, 격자 열 칸쯤 뒤처졌다.
+
+차이는 단 하나다. 에너지를 무엇으로 갱신하느냐. 이 글은 Dumbser와 Casulli의 2016년 논문을 읽고, 그 차이를 130줄 남짓한 Python으로 재현한다. 읽고 나면 "압력 기반"과 "보존형"이 왜 따로 따져야 하는 성질인지 숫자로 설명할 수 있다.
+
+## 논문이 겨냥한 자리
+
+저마하(low Mach, 유속이 음속보다 훨씬 느린) 흐름에서 명시적 Godunov 기법은 Δt를 음속으로 잡는다. 유속 1 m/s에 음속 3,700 m/s면 스텝 수가 3,700배로 는다. 반대로 비압축성 쪽의 반암시 압력 기법은 Δt를 유속으로 잡지만, 충격파 앞에서는 대개 보존성이 깨진다.
+
+Dumbser–Casulli는 두 요구를 한 기법에 넣었다. 밀도와 대류항은 명시적으로, 운동량의 압력항과 에너지의 속도항은 암시적으로 둔다. 그리고 EOS(상태방정식)가 이상기체가 아니어도 되도록 했다. van der Waals, Redlich–Kwong 같은 3차 EOS까지 같은 틀에서 푼다. 저마하 쪽 다른 접근은 [기준 상태 IMEX 2유체 솔버 리뷰](/ko/posts/2026-11-01-rs-imex-two-fluid-material-cfl/)에서 다뤘다.
+
+## 압력 하나만 남기는 대입
+
+격자는 엇갈려 있다(staggered grid, 압력은 셀 중심·속도는 셀 경계에 두는 배치). 압력 $p_i$와 총에너지 $(\rho E)_i$는 셀 중심, 밀도 $\rho_{i+1/2}$와 운동량 $(\rho u)_{i+1/2}$은 면에 있다. 운동량 식은 압력만 새 시간에서 취한다.
+
+$$
+(\rho u)^{n+1}_{i+\frac12} = F(\rho u)^n_{i+\frac12} - \frac{\Delta t}{\Delta x}\left(p^{n+1}_{i+1} - p^{n+1}_i\right)
+$$
+
+$F(\rho u)$는 명시적 대류 연산자, $\Delta t$와 $\Delta x$는 시간·공간 간격이다.
+
+이 식을 에너지 식의 엔탈피 플럭스 $h\,(\rho u)$에 대입한다. 그러면 미지수가 압력 하나만 남는다.
+
+$$
+\Delta x\,\rho^{n+1}_i e\!\left(p^{n+1}_i,\rho^{n+1}_i\right) - \frac{\Delta t^2}{\Delta x}\left[h_{i+\frac12}\left(p_{i+1}-p_i\right) - h_{i-\frac12}\left(p_i-p_{i-1}\right)\right]^{n+1} = b_i
+$$
+
+$e$는 비내부에너지, $h = e + p/\rho$는 면의 비엔탈피, $b_i$는 이미 아는 항을 모은 우변이다.
+
+$h$와 운동에너지는 Picard 반복(직전 반복값으로 계수를 고정하고 다시 푸는 방법)으로 처리한다. 논문은 3회로 충분하다고 쓴다. 이렇게 묶으면 식은 $\mathbf V(\mathbf p) + \mathbf T\mathbf p = \mathbf b$ 꼴이 된다. $\mathbf T$는 대칭 양반정치 3중대각 행렬이다. $\mathbf V$는 셀마다 $\Delta x\,\rho_i e(p_i,\rho_i)$를 계산하는 대각 함수다.
+
+## 비선형성은 대각선에만 있다
+
+이 구조가 논문의 두 번째 기둥이다. EOS가 아무리 복잡해도 비선형성은 $\mathbf V$, 즉 대각선에만 들어간다. $e$가 압력에 대해 단조 증가하면 Casulli 계열의 중첩 Newton 기법이 수렴을 보장한다. 이상기체는 $\rho e = p/(\gamma-1)$이라 선형이다. van der Waals도 $e$가 $p$에 선형이라, 논문은 "Newton이 정확히 한 번에 수렴했다"고 보고한다.
+
+아래 시뮬레이션에서 EOS를 바꿔가며 Newton 반복을 직접 한 단계씩 진행해보자.
+
+<MildlyNonlinearPressureNewtonLab />
+
+Redlich–Kwong을 고르고 attraction $a$를 키우면 오른쪽 $V(p)$ 곡선이 직선 현에서 멀어지고 반복 수가 는다. 반대로 κ(=$\Delta t^2 h/\Delta x^2$, 사실상 음향 CFL의 제곱)를 1만까지 올려도 반복 수는 거의 그대로다. 결합 행렬 $\mathbf T$는 선형이라 큰 Δt가 Newton을 어렵게 만들지 않는다.
+
+## 마지막 한 줄: 에너지를 어떻게 갱신하나
+
+압력을 구하고 나면 선택지가 둘이다. 하나는 압력 해로 운동량을 갱신하고, 에너지를 플럭스 형태로 다시 쓰는 것이다(논문 식 24).
+
+$$
+(\rho E)^{n+1}_i = F(\rho E)^n_i - \frac{\Delta t}{\Delta x}\left(h_{i+\frac12}(\rho u)^{n+1}_{i+\frac12} - h_{i-\frac12}(\rho u)^{n+1}_{i-\frac12}\right)
+$$
+
+$F(\rho E)$는 운동에너지 대류만 담은 명시적 연산자다. 셀 사이로 나간 에너지는 정확히 이웃 셀로 들어간다.
+
+다른 하나는 고전적인 압력 기반 방식이다. 에너지 식 대신 원시변수 압력식 $p_t + u p_x + \gamma p u_x = 0$을 반암시로 푼다. 매끄러운 흐름에서는 두 식이 같다. 하지만 불연속에서 $\gamma p\,u_x$는 보존 형태가 아니다. Rankine–Hugoniot 조건(충격파 앞뒤 보존량 플럭스가 맞아야 한다는 조건)이 성립하지 않아 충격파 속도가 틀어진다. [LU-SGS에서 버린 항이 수렴을 정한 이야기](/ko/posts/2026-11-06-lu-sgs-factorization-error-cfl-limit/)처럼, 여기서도 "작아 보이는 한 항"이 결과를 가른다.
+
+## 코드: 같은 Δt, 두 가지 에너지 처리
+
+1D 엇갈림 격자 200셀, γ = 1.4, 유속 기반 CFL 0.5로 Sod 문제와 Toro의 RP3(압력비 $10^5$)를 푼다. 첫 스텝은 유속이 0이라 Δt를 $10^{-4}$에서 시작해 스텝마다 최대 1.1배로 키웠다. 정해 충격파 위치는 정확 Riemann 해의 $p^*$에서 계산한다. 마지막에 논문의 RP0(밀도비 $10^5$ 접촉면)도 돌려 스텝 수를 비교한다.
+
+```python
+import numpy as np
+
+G = 1.4
+
+def star_state(rL, uL, pL, rR, uR, pR):
+    # 정확 Riemann 해의 p*, u* (Toro, Newton 반복)
+    def fk(p, r, pk):
+        a = np.sqrt(G * pk / r)
+        if p > pk:
+            A, B = 2 / ((G + 1) * r), (G - 1) / (G + 1) * pk
+            return (p - pk) * np.sqrt(A / (p + B))
+        return 2 * a / (G - 1) * ((p / pk) ** ((G - 1) / (2 * G)) - 1)
+    p = 0.5 * (pL + pR)
+    for _ in range(100):
+        f = fk(p, rL, pL) + fk(p, rR, pR) + uR - uL
+        d = 1e-7 * p
+        df = (fk(p + d, rL, pL) + fk(p + d, rR, pR) - fk(p - d, rL, pL) - fk(p - d, rR, pR)) / (2 * d)
+        p = max(p - f / df, 1e-10)
+    u = 0.5 * (uL + uR) + 0.5 * (fk(p, rR, pR) - fk(p, rL, pL))
+    return p, u
+
+def thomas(a, b, c, d):
+    n = len(d); cp = np.zeros(n); dp = np.zeros(n)
+    cp[0], dp[0] = c[0] / b[0], d[0] / b[0]
+    for i in range(1, n):
+        m = b[i] - a[i] * cp[i - 1]
+        cp[i] = c[i] / m; dp[i] = (d[i] - a[i] * dp[i - 1]) / m
+    x = np.zeros(n); x[-1] = dp[-1]
+    for i in range(n - 2, -1, -1):
+        x[i] = dp[i] - cp[i] * x[i + 1]
+    return x
+
+def si_staggered(rp, N=200, cfl=0.5, picard=3):
+    rL, uL, pL, rR, uR, pR, xd, tend = rp
+    dx = 1.0 / N
+    xf = -0.5 + dx * np.arange(N + 1)            # 면: rho, rho*u
+    xc = 0.5 * (xf[:-1] + xf[1:])                # 셀: p, rho*E
+    rf = np.where(xf < xd, rL, rR); mf = rf * np.where(xf < xd, uL, uR)
+    p = np.where(xc < xd, pL, pR)
+    rk = lambda r, m: 0.5 * m**2 / r
+    def cell_rk(r, m):
+        k = rk(r, m); return 0.5 * (k[:-1] + k[1:])
+    rE = p / (G - 1) + cell_rk(rf, mf)
+    E0 = rE.sum() * dx
+    t, dt, steps, cmax = 0.0, 1e-4, 0, 0.0
+    while t < tend - 1e-12:
+        u = mf / rf
+        rc = 0.5 * (rf[:-1] + rf[1:])
+        cmax = max(cmax, np.max(np.abs(np.r_[u[:-1], u[1:]]) + np.sqrt(G * np.r_[p, p] / np.r_[rc, rc])))
+        dt = min(cfl * dx / max(np.abs(u).max(), 1e-12), 1.1 * dt, tend - t)
+        # (11)(12)(14)(15): 면 위의 밀도·운동량 — 명시적 대류
+        umax = np.maximum(np.abs(u[:-1]), np.abs(u[1:]))
+        fr = 0.5 * (mf[:-1] + mf[1:]) - 0.5 * umax * (rf[1:] - rf[:-1])
+        fm = 0.5 * (u[:-1] * mf[:-1] + u[1:] * mf[1:]) - 0.5 * umax * (mf[1:] - mf[:-1])
+        rn = rf.copy(); Fm = mf.copy()
+        rn[1:-1] -= dt / dx * (fr[1:] - fr[:-1])
+        Fm[1:-1] -= dt / dx * (fm[1:] - fm[:-1])
+        # (17)(18): 운동에너지 대류만 명시적
+        kc = cell_rk(rf, mf)
+        fk = 0.5 * u[1:-1] * (kc[1:] + kc[:-1]) - 0.5 * np.abs(u[1:-1]) * (kc[1:] - kc[:-1])
+        fk = np.r_[u[0] * kc[0], fk, u[-1] * kc[-1]]
+        FE = rE - dt / dx * (fk[1:] - fk[:-1])
+        m, pr = Fm.copy(), p.copy()
+        for r in range(picard):                   # Picard: h, rho*k 를 직전 값으로 고정
+            pf = np.maximum(0, np.r_[pr[0], np.maximum(pr[:-1], pr[1:]), pr[-1]])
+            h = G / (G - 1) * pf / rn
+            kc = cell_rk(rn, m)
+            b = dx * (FE - kc) - dt * (h[1:] * Fm[1:] - h[:-1] * Fm[:-1])
+            w = dt**2 * h / dx                        # T 행렬의 면 계수 (대칭)
+            w[0] = w[-1] = 0.0                        # 경계면 운동량은 고정
+            diag = dx / (G - 1) + w[1:] + w[:-1]      # V(p)=dx*p/(G-1): 이상기체는 선형
+            pr = thomas(-w[:-1], diag, -w[1:], b)
+            m = Fm.copy(); m[1:-1] -= dt / dx * (pr[1:] - pr[:-1])   # (23)
+        pf = np.maximum(0, np.r_[pr[0], np.maximum(pr[:-1], pr[1:]), pr[-1]])
+        h = G / (G - 1) * pf / rn
+        rE = FE - dt / dx * (h[1:] * m[1:] - h[:-1] * m[:-1])   # (24) 플럭스 형태
+        p = (G - 1) * (rE - cell_rk(rn, m))       # 압력은 보존량에서 다시 계산
+        rf, mf = rn, m
+        t += dt; steps += 1
+    return xc, p, mf / rf, rf, steps, cmax, (rE.sum() * dx - E0)
+
+def shock_x(xc, p, pstar, pR):
+    mid = 0.5 * (pstar + pR)
+    i = np.where(p > mid)[0].max()
+    return xc[i] + (p[i] - mid) / (p[i] - p[i + 1]) * (xc[i + 1] - xc[i])
+
+def si_primitive(rp, N=200, cfl=0.5):
+    # 비보존 비교군: 에너지 대신 압력 방정식 p_t + u p_x + G p u_x = 0 을 반암시로
+    rL, uL, pL, rR, uR, pR, xd, tend = rp
+    dx = 1.0 / N
+    xf = -0.5 + dx * np.arange(N + 1); xc = 0.5 * (xf[:-1] + xf[1:])
+    rf = np.where(xf < xd, rL, rR); mf = rf * np.where(xf < xd, uL, uR)
+    p = np.where(xc < xd, pL, pR)
+    E0 = (p / (G - 1) + 0.5 * (0.5 * mf[:-1]**2 / rf[:-1] + 0.5 * mf[1:]**2 / rf[1:])).sum() * dx
+    t, dt, steps = 0.0, 1e-4, 0
+    while t < tend - 1e-12:
+        u = mf / rf
+        dt = min(cfl * dx / max(np.abs(u).max(), 1e-12), 1.1 * dt, tend - t)
+        umax = np.maximum(np.abs(u[:-1]), np.abs(u[1:]))
+        fr = 0.5 * (mf[:-1] + mf[1:]) - 0.5 * umax * (rf[1:] - rf[:-1])
+        fm = 0.5 * (u[:-1] * mf[:-1] + u[1:] * mf[1:]) - 0.5 * umax * (mf[1:] - mf[:-1])
+        rn = rf.copy(); Fm = mf.copy()
+        rn[1:-1] -= dt / dx * (fr[1:] - fr[:-1]); Fm[1:-1] -= dt / dx * (fm[1:] - fm[:-1])
+        uc = 0.5 * (u[:-1] + u[1:])
+        pg = np.r_[p[0], p, p[-1]]
+        Fp = p - dt / dx * (np.maximum(uc, 0) * (pg[1:-1] - pg[:-2]) + np.minimum(uc, 0) * (pg[2:] - pg[1:-1]))
+        w = dt**2 / (dx**2 * rn); w[0] = w[-1] = 0.0
+        gp = G * p
+        b = Fp - dt / dx * gp * (Fm[1:] / rn[1:] - Fm[:-1] / rn[:-1])
+        p = thomas(-gp * w[:-1], 1 + gp * (w[1:] + w[:-1]), -gp * w[1:], b)
+        mf = Fm.copy(); mf[1:-1] -= dt / dx * (p[1:] - p[:-1]); rf = rn
+        t += dt; steps += 1
+    E1 = (p / (G - 1) + 0.5 * (0.5 * mf[:-1]**2 / rf[:-1] + 0.5 * mf[1:]**2 / rf[1:])).sum() * dx
+    return xc, p, mf / rf, rf, steps, E1 - E0
+
+probs = {
+    "Sod": (1.0, 0.0, 1.0, 0.125, 0.0, 0.1, 0.0, 0.2),
+    "RP3": (1.0, 0.0, 1000.0, 1.0, 0.0, 0.01, 0.1, 0.012),
+}
+for name, rp in probs.items():
+    ps, us = star_state(*rp[:6])
+    rR, pR, xd, tend = rp[3], rp[5], rp[6], rp[7]
+    q = (G - 1) / (G + 1)
+    rs = rR * (ps / pR + q) / (q * ps / pR + 1)          # 충격파 뒤 밀도 (Rankine-Hugoniot)
+    xs = xd + rs * us / (rs - rR) * tend
+    print(f"{name}: exact shock x={xs:.4f}  p*={ps:.3f}  rho*={rs:.3f}")
+    xc, p, u, r, n, cmax, dE = si_staggered(rp)
+    print(f"  conservative SI   steps={n:3d}  shock x={shock_x(xc, p, ps, pR):.4f}"
+          f"  p*={p[(xc > xd) & (xc < xs - 0.03)].mean():8.3f}  rho_max={r.max():6.3f}  dE={dE:+.1e}")
+    xc, p, u, r, n, dE = si_primitive(rp)
+    print(f"  primitive p-eq SI steps={n:3d}  shock x={shock_x(xc, p, ps, pR):.4f}"
+          f"  p*={p[(xc > xd) & (xc < xs - 0.03)].mean():8.3f}  rho_max={r.max():6.3f}  dE={dE:+.1e}")
+rp0 = (1000.0, 1.0, 1e5, 0.01, 1.0, 1e5, -0.25, 0.5)
+xc, p, u, r, n, cmax, dE = si_staggered(rp0)
+print(f"RP0 (rho 1e5 jump, M<0.085): steps={n}  explicit |u|+c CFL would need {int(0.5 / (0.5 * (1 / 200) / cmax)):,d}")
+print(f"  max|p/1e5-1|={np.abs(p / 1e5 - 1).max():.1e}  max|u-1|={np.abs(u - 1).max():.1e}")
+```
+
+```text
+Sod: exact shock x=0.3504  p*=0.303  rho*=0.266
+  conservative SI   steps= 99  shock x=0.3597  p*=   0.305  rho_max= 1.000  dE=+0.0e+00
+  primitive p-eq SI steps=102  shock x=0.3188  p*=   0.288  rho_max= 1.000  dE=-3.1e-02
+RP3: exact shock x=0.3822  p*=460.894  rho*=5.999
+  conservative SI   steps= 96  shock x=0.3882  p*= 459.197  rho_max= 5.114  dE=+2.3e-13
+  primitive p-eq SI steps=112  shock x=0.3337  p*= 381.139  rho_max=11.668  dE=-1.1e+02
+RP0 (rho 1e5 jump, M<0.085): steps=224  explicit |u|+c CFL would need 748,531
+  max|p/1e5-1|=1.1e-10  max|u-1|=1.6e-08
+```
+
+위 코드를 브라우저에서 직접 돌려보자. 두 기법이 같은 Δt 규칙으로 한 스텝씩 함께 전진한다.
+
+<ConservativeShockPlacementRace />
+
+기본값(RP3, N = 200, CFL 0.5, Picard 3)에서 파란 선은 출력 블록처럼 96스텝, 충격파 0.388에 멈춘다. 주황 선은 112스텝, 0.334에 멈추고 에너지가 7% 사라진다. N을 400으로 올려보자. 파란 선의 오차는 줄지만 주황 선은 같은 틀린 자리로 수렴한다.
+
+## 0.048과 381이 말하는 것
+
+RP3 정해는 충격파 $x = 0.3822$, $p^* = 460.9$다. 보존형은 0.3882, 459.2로 맞췄다. 0.006의 차이는 1차 기법의 수치 확산으로 충격파가 한 칸쯤 번진 것이다. 격자를 키우면 줄어든다.
+
+원시변수 압력식은 0.3337, 381.1이다. 충격파는 0.048(약 10칸) 늦고 플래토 압력은 17% 낮다. 밀도 최댓값은 11.7로 정해 6.0의 두 배다. 에너지는 $-1.1\times10^2$, 초기 총에너지의 7%가 사라졌다. 사라진 에너지만큼 충격파가 약해졌고, 약한 충격파는 느리게 간다. 격자를 키워도 이 오차는 남는다. 비보존 기법은 틀린 약해(weak solution)로 수렴하기 때문이다.
+
+Sod도 같은 방향이다. 보존형은 0.3597, 원시형은 0.3188(정해 0.3504)로 각각 +0.009와 −0.032다. 압력비가 작을수록 차이도 작다. 그래서 Sod만으로 검증한 압력 기반 코드는 이 문제를 놓치기 쉽다.
+
+RP0에서는 접촉면 밀도가 $10^5$배 뛰지만 압력과 속도는 $10^{-10}$, $10^{-8}$ 수준으로 그대로였다. 스텝은 224번이다. 같은 계산을 $|u|+c$ 기반 명시적 CFL로 하면 약 75만 스텝이 필요하다. 이 숫자가 논문 제목의 "large time steps"다.
+
+## 이 1D 재현이 보여주지 못하는 것
+
+논문의 기법은 1차 정확도다. 논문도 RP5(이중 희박파)에서 밀도의 비물리적 꺾임을, RP6(충돌 충격파)에서 충격파 뒤 진동을 인정한다. 매우 강한 충격파에는 식 (25)의 Rusanov형 소산을 압력 플럭스에 추가하라고 권한다. 이 글의 코드는 그 항을 생략했다.
+
+3차 EOS의 진짜 시험은 Redlich–Kwong이다. 이 경우 $e(p)$가 비선형이라 중첩 Newton이 실제로 일을 한다. 이 글의 Python은 이상기체만 다뤘고, 그 부분은 첫 번째 시뮬레이션에서 근사적으로만 보였다. 2D 점성 확장과 lid-driven cavity 결과도 다루지 않았다. Δt 램프(×1.1)는 논문에 없는, 유속 0 초기조건을 위한 이 글의 선택이다.
+
+## 압력 기반 압축성 코드를 믿기 전에 돌릴 문제 하나
+
+Sod는 너무 착하다. 압력비 $10^5$짜리 RP3를 돌리고 총에너지 변화를 출력해보자. 에너지가 기계 정밀도로 보존되고 충격파가 정해의 한두 칸 안에 서면 보존형이다. 에너지가 수 % 빠지고 충격파가 뒤처지면, 압력을 아무리 정확히 풀어도 그 코드는 충격파를 다룰 수 없다.
