@@ -1,0 +1,158 @@
+---
+title: "[Paper Review] Two Second-Order IMEX Schemes, and Only One Stayed Second Order as M→0 — Asymptotic Accuracy in Orlando–Boscarino–Russo"
+date: 2026-11-08
+description: "AP guarantees stability in the low-Mach limit, AA guarantees the order. A Prothero–Robinson test shows why only stiffly accurate IMEX schemes keep second order."
+tags: ["IMEX", "Asymptotic-Preserving", "Low-Mach", "Order-Reduction", "Paper-Review"]
+locale: en
+slug: 2026-11-08-imex-order-reduction-stiffly-accurate
+takeaway: "As long as Δt is larger than ε (≈M²), an IMEX scheme that is not stiffly accurate converges at first order, whatever order its tableau claims."
+draft: false
+---
+import { StageSnapAnatomyLab } from '@/components/post-viz/2026-11-08-imex-order-reduction-stiffly-accurate/StageSnapAnatomyLab'
+import { ProtheroRobinsonOrderRace } from '@/components/post-viz/2026-11-08-imex-order-reduction-stiffly-accurate/ProtheroRobinsonOrderRace'
+
+## Two second-order IMEX schemes, one became first order
+
+I ran two second-order IMEX schemes on the same problem. With stiffness parameter $\varepsilon=1$, both showed clean second order. At $\varepsilon=10^{-6}$, one still gave 2.01. The other gave 0.99. Both were stable. Nothing blew up. Only the order was wrong.
+
+This post is about that gap. Orlando, Boscarino, and Russo (2025) give it a name for the low-Mach Euler equations: asymptotic accuracy (AA), as distinct from asymptotic preservation (AP). By the end you will know which row of a Butcher tableau to check.
+
+## AP and AA are different promises
+
+Nondimensionalize the low-Mach Euler equations and the momentum equation picks up $\frac{1}{M^2}\nabla p$. Acoustic waves run $1/M$ times faster than the flow. An IMEX (implicit-explicit, only some terms treated implicitly) integrator treats this pressure term implicitly and advection explicitly. The time step is then set by the flow speed, not the sound speed.
+
+The paper's definition: an AP scheme has a stability condition independent of $M$ and becomes a consistent discretization of the incompressible Euler equations as $M\to0$. AA goes one step further. The scheme must **keep its high-order accuracy** as $M\to0$. AP promises "no blow-up, correct limit." AA promises "the correct limit at the design order."
+
+If Δt is independent of $M$, then $\Delta t/M^2$ is huge. That is the stiff limit. An earlier post on [Orlando–Bonaventura's AP IMEX](/en/posts/2026-05-03-orlando-bonaventura-ap-imex-nonideal-gas/) showed the time step survives there. Today's question is what order that step has.
+
+Try it yourself in the simulation below. It shows where the stage values and the final update of one step go as $\varepsilon$ changes.
+
+<StageSnapAnatomyLab />
+
+Play the ε sweep and both schemes' stage points get pulled onto the yellow curve (the slow manifold). Yet the blue final point stays near the target circle, while the orange one misses even with its stages on the curve. Shrink Δt and compare how far each plateau on the right graph drops.
+
+## The test bench: Prothero–Robinson
+
+Running the full Euler equations mixes in spatial error. So we use the standard stiff ODE test.
+
+$$
+y'(t) = \underbrace{\varphi'(t)}_{\text{explicit}} + \underbrace{\frac{\varphi(t)-y}{\varepsilon}}_{\text{implicit}}, \qquad y(0)=\varphi(0)
+$$
+
+$\varphi(t)=\sin t$ is the slow solution and $\varepsilon$ the relaxation time. The exact solution is $y=\varphi$.
+
+Here $\varepsilon$ plays the role of $M^2$. The second term pulls the solution onto the slow manifold $y=\varphi$, the same structure as the low-Mach pressure term pulling the density field toward an incompressible state. The first term is the slow forcing and is treated explicitly.
+
+Two contenders. One is the IMEX-RK(2,2,2) the paper uses for its second-order runs: the ARK2 of Giraldo et al., a type II scheme with $\gamma=1-1/\sqrt2$. The other is IMEX-SSP2(2,2,2) by co-author Russo with Pareschi, a type I scheme with the same diagonal $\gamma$. Both are second order, and both have $R(\infty)=0$ in the implicit part.
+
+## The cause: is the last stage the answer?
+
+The difference lies in the paper's Definition 3.2. An IMEX scheme is stiffly accurate (SA) if the last row of the implicit matrix $A$ equals the weights $b$.
+
+$$
+a_{sl} = b_l, \qquad l=1,\dots,s
+$$
+
+$a_{sl}$ is the last row of the implicit Butcher matrix and $b_l$ are the final update weights.
+
+With SA, the final update equals the last stage value. In the stiff limit every stage is projected onto the manifold. ARK2 has $c_s=1$, so its last stage lands near $\varphi(t_{n+1})$. The only remaining error is $O(\Delta t^2)$ from the explicit weights.
+
+SSP2 has last row $(1-2\gamma,\gamma)$ and $b=(1/2,1/2)$. Its final value is reassembled from a weighted sum of stage slopes. In the stiff limit those slopes contain a $0/0$ of the form $(\varphi-Y)/\varepsilon$. Mixing their limits reproduces $\varphi$ only to $O(\Delta t)$. Errors do not accumulate, so this local error becomes the global error.
+
+The paper also flags a type II trap. In type II schemes $A$ is not invertible. So SA plus A-stability does not guarantee L-stability (damping stiff components to zero in one step). An extra condition $\mathbf{e}_{s-1}^\top \hat{\mathcal{A}}^{-1}\mathbf{a}=0$ is needed. All schemes in the paper are SA, with L-stable implicit parts.
+
+## Code: four ε values × six Δt values
+
+The implicit stage is linear in $y$, so it is solved in closed form. Error is measured at $t=2$.
+
+```python
+import math
+
+g = 1 - 1/math.sqrt(2)
+d = math.sqrt(2)/4
+al = (3 + 2*math.sqrt(2))/6
+# (A_exp, A_imp, b) — both schemes share b between explicit/implicit parts
+SCHEMES = {
+    "ARK2  (type II, SA)": ([[0, 0, 0], [2*g, 0, 0], [1-al, al, 0]],
+                           [[0, 0, 0], [g, g, 0], [d, d, g]],
+                           [d, d, g]),
+    "SSP2  (type I, non-SA)": ([[0, 0], [1, 0]],
+                              [[g, 0], [1-2*g, g]],
+                              [0.5, 0.5]),
+}
+
+def pr_imex(scheme, eps, dt, T=2.0):
+    """Prothero-Robinson: y' = phi'(t) [explicit] + (phi(t)-y)/eps [implicit], phi=sin"""
+    Ae, Ai, b = scheme
+    s = len(b)
+    ce = [sum(r) for r in Ae]
+    ci = [sum(r) for r in Ai]
+    y, t = 0.0, 0.0
+    for _ in range(int(round(T/dt))):
+        FE, FI = [0.0]*s, [0.0]*s
+        for l in range(s):
+            rhs = y + dt*sum(Ae[l][m]*FE[m] + Ai[l][m]*FI[m] for m in range(l))
+            a = dt*Ai[l][l]/eps
+            Y = (rhs + a*math.sin(t + ci[l]*dt))/(1 + a)   # linear implicit stage
+            FE[l] = math.cos(t + ce[l]*dt)
+            FI[l] = (math.sin(t + ci[l]*dt) - Y)/eps
+        y += dt*sum(b[l]*(FE[l] + FI[l]) for l in range(s))
+        t += dt
+    return abs(y - math.sin(t))
+
+dts = [0.1/2**k for k in range(6)]
+for name, sc in SCHEMES.items():
+    print(name)
+    print("  eps    " + "".join(f"{'dt='+format(h,'.4g'):>12}" for h in dts) + "   order")
+    for eps in [1.0, 1e-2, 1e-4, 1e-6]:
+        e = [pr_imex(sc, eps, h) for h in dts]
+        p = math.log2(e[-2]/e[-1])
+        print(f"  {eps:<6.0e}" + "".join(f"{x:12.2e}" for x in e) + f"  {p:6.2f}")
+```
+
+```text
+ARK2  (type II, SA)
+  eps          dt=0.1     dt=0.05    dt=0.025   dt=0.0125  dt=0.00625 dt=0.003125   order
+  1e+00     3.64e-04    9.15e-05    2.29e-05    5.74e-06    1.44e-06    3.59e-07    2.00
+  1e-02     1.11e-04    1.54e-05    1.18e-05    4.22e-06    1.24e-06    3.33e-07    1.89
+  1e-04     6.57e-04    1.57e-04    3.71e-05    8.56e-06    1.85e-06    3.50e-07    2.40
+  1e-06     6.69e-04    1.62e-04    3.99e-05    9.88e-06    2.46e-06    6.11e-07    2.01
+SSP2  (type I, non-SA)
+  eps          dt=0.1     dt=0.05    dt=0.025   dt=0.0125  dt=0.00625 dt=0.003125   order
+  1e+00     1.36e-03    3.36e-04    8.35e-05    2.08e-05    5.19e-06    1.30e-06    2.00
+  1e-02     8.67e-03    3.50e-03    1.12e-03    3.19e-04    8.52e-05    2.20e-05    1.95
+  1e-04     1.90e-02    1.19e-02    6.43e-03    3.22e-03    1.52e-03    6.63e-04    1.20
+  1e-06     1.92e-02    1.22e-02    6.72e-03    3.52e-03    1.80e-03    9.06e-04    0.99
+```
+
+Run the code above in your browser. It integrates the six Δt values in turn and builds the convergence plot on the right.
+
+<ProtheroRobinsonOrderRace />
+
+At ε = 1e-6 the orange points follow the slope-1 reference and the blue points the slope-2 reference. Switch to ε = 1e-2 and the orange curve bends back to slope 2 once Δt < ε.
+
+## Not second order until Δt < ε
+
+The $\varepsilon=1$ row is non-stiff. Both schemes give 2.00. SSP2's error constant is just 3.7× larger.
+
+The $\varepsilon=10^{-2}$ row is the key one. From Δt=0.1 to 0.025, SSP2's error drops only 2.5× and 3.1× per halving. Only past 0.00625, where Δt falls below ε, does it drop 3.9×. Order returns when Δt/ε drops below one.
+
+At $\varepsilon=10^{-6}$, even a 32× smaller Δt leaves Δt/ε above 3,000. SSP2 stays first order throughout. Its error/Δt is nearly constant at 0.29. ARK2 ends at 6.11e-07. At the same Δt that is a 1,480× gap.
+
+In a low-Mach code $\varepsilon\approx M^2$. At $M=10^{-3}$, $\varepsilon=10^{-6}$. Pushing Δt below $M^2$ throws away the reason to use IMEX at all. So a non-SA scheme is effectively first order in the low-Mach regime.
+
+ARK2's order of 2.40 in the $\varepsilon=10^{-4}$ row is a transition effect, where the error constant shifts with ε. Read the error magnitude there, not the order.
+
+## What the paper verified on the Euler equations
+
+The paper compares two time-integration routes. One is IMEX, which couples momentum and energy implicitly and solves a mildly nonlinear pressure equation by fixed-point iteration. The other is SI-IMEX, which linearizes the stiff dependence and avoids a nonlinear equation. Space is discretized with DG (discontinuous Galerkin).
+
+The traveling vortex convergence results are not tidy. Second-order IMEX-RK(2,2,2) with first-degree DG already degraded at $M=10^{-2}$. The fourth-order ARS-type and type II schemes delivered the expected order up to $M=10^{-3}$. The IMEX method, however, saw order reduction at $M=10^{-2}$. Below $M=10^{-4}$ the error saturated.
+
+The authors do not pin down the cause of saturation. They list DG's low-Mach inaccuracy on quadrilaterals, double-precision round-off, and the classic stiff-ODE order reduction as joint suspects. Time-integration AA alone does not settle low-Mach accuracy.
+
+For non-ideal gases, the equation of state makes the pressure equation more nonlinear. SI-IMEX is extended to analyze this dependence so that only linear systems are solved. It sidesteps the same problem as [Dumbser–Casulli's mildly nonlinear pressure equation](/en/posts/2026-11-07-dumbser-casulli-conservative-semi-implicit/) from yesterday, from the other side. The [reference-state IMEX two-fluid solver](/en/posts/2026-11-01-rs-imex-two-fluid-material-cfl/) belongs to the same family.
+
+## Compare one row before you pick an IMEX tableau
+
+Before putting a new IMEX scheme into your code, compare the last row of the implicit $A$ with $b$. If they differ, do not expect the design order in the low-Mach regime. Then run the 40-line Prothero–Robinson test above once at $\varepsilon=10^{-6}$. If you do not see slope 2, that tableau may be AP, but it is not AA.
