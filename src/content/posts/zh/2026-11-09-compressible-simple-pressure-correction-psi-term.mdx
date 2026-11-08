@@ -1,0 +1,208 @@
+---
+title: "亚音速喷管里SIMPLE发散了，原因是压力修正方程少了ψp′一项 — 可压缩pressure-based压力方程"
+date: 2026-11-09
+description: "把不可压SIMPLE的压力修正方程直接用于收缩-扩张喷管，喉部马赫数0.49时就会发散。密度修正ψp′这一项，甚至会颠倒压力松弛因子的含义。"
+tags: ["SIMPLE", "Compressible", "Pressure-Correction", "Staggered-Grid"]
+locale: zh
+slug: 2026-11-09-compressible-simple-pressure-correction-psi-term
+takeaway: "从可压缩SIMPLE的压力修正方程中去掉ρ′=ψp′，喉部马赫数达到0.49后任何α_p都不收敛。保留它，α_p=1时53次即收敛，反而是小α_p会停滞。"
+draft: false
+---
+import { PressureCorrectionUpwindBiasLab } from '@/components/post-viz/2026-11-09-compressible-simple-pressure-correction-psi-term/PressureCorrectionUpwindBiasLab'
+import { NozzleSimpleRelaxationRace } from '@/components/post-viz/2026-11-09-compressible-simple-pressure-correction-psi-term/NozzleSimpleRelaxationRace'
+
+## 同一个喷管，同一个SIMPLE，只有一个发散了
+
+设想一个喉部马赫数为0.49的亚音速喷管。没有激波，也没有超音速区。能用不可压SIMPLE来算吗？
+
+从入口到喉部，密度只变化约7%。直觉上的回答往往是"只是慢一点，总能算出来"。实际运行后，压力松弛因子 $\alpha_p$ 取0.3还是1.0，都会在10次迭代内发散。降到0.1，才勉强在163次收敛。
+
+本文把原因锁定在压力修正方程（为满足连续方程而修正压力的方程）中的一项。我们把它与加入密度修正 $\rho' = \psi p'$ 的可压缩版本并排运行。读完之后，就能用数字回答可压缩pressure-based代码中 $\alpha_p$ 应该怎么取。
+
+## 原始笔记中的循环顺序
+
+出发点是2020年7月整理的可压缩pressure-based求解器笔记。里面记录了在可压缩多相代码中的求解顺序。
+
+1. 可压缩动量方程 → 更新速度（除压力项外密度不变，形式与不可压相同）
+2. 可压缩压力方程 → 更新速度、面质量通量、压力
+3. 体积分数方程（Crank–Nicolson）→ 重新计算密度
+4. 能量方程 → 更新温度，更新EOS
+
+笔记里有两行："动量 + 连续方程 = 压力方程"，"用更新后的压力变化求速度、面速度和密度"。最后一个词 **密度** 就是本文的主题。不可压SIMPLE的第2步里没有这个词。SIMPLE的基本结构见[Rhie–Chow插值与SIMPLE耦合一文](/zh/posts/2026-07-22-simple-pressure-velocity-coupling-rhie-chow/)。
+
+## 原因：压力修正方程中缺失的ρ′
+
+把面 $f$ 的质量通量 $\dot m_f = \rho_f u_f A_f$ 分为预测值和修正值，并舍去二阶项 $\rho' u'$，得到：
+
+$$
+\dot m_f' \approx \rho_f^* A_f\, u_f' + u_f^* A_f\, \rho_f'
+$$
+
+$\rho^*, u^*$ 是求解动量方程后的值，带撇号的是修正量。
+
+第一项是速度修正，使用SIMPLE近似 $u_f' = d_f(p_P' - p_N')$。$d_f = A_f / a_P$ 来自动量方程的对角系数。
+
+第二项是可压缩流中新出现的。由状态方程得 $\rho' = \psi p'$，理想气体中 $\psi = (\partial\rho/\partial p)_T = 1/(RT)$。迎风（来流一侧）单元的 $p'$ 会随流通过面被带出去。
+
+代入单元 $P$ 的连续方程 $\sum_f \dot m_f' = -\sum_f \dot m_f^*$，在一维交错网格（速度存放在面上的网格）上得到：
+
+$$
+\left(D_w + D_e + C_e\right) p_P' - D_e\, p_E' - \left(D_w + C_w\right) p_W' = \dot m_w^* - \dot m_e^*
+$$
+
+$D = \rho^* d A$ 是压力差改变速度的扩散型系数。$C = u^* \psi A$ 是密度变化随流输运的对流型系数。
+
+$C = 0$ 时它是对称的Poisson方程，正是不可压SIMPLE所求解的方程。加上 $C$ 后，它变成偏向迎风侧的对流-扩散方程。下面可以亲手操作，看两个方程如何吸收一个单元的质量不平衡。
+
+<PressureCorrectionUpwindBiasLab />
+
+把Mach滑块从0拉到0.5。橙色（不可压型）曲线峰值保持在10.5。蓝色（可压缩型）降到1.5左右，上游一侧几乎为0。对同样的不平衡，不可压型给出的 $p'$ 大了7倍。读数中的 `share carried as ρ′u` 表示40%的不平衡以密度变化的形式流出。
+
+## C/D等于γM²/α_u
+
+看两个系数之比，就能知道何时可以忽略 $C$。稳态下动量对角系数约为 $a_P \approx \rho u A / \alpha_u$，于是
+
+$$
+\frac{C}{D} = \frac{u\,\psi\,A}{\rho\, A^2 / a_P} \approx \frac{u^2 \psi}{\alpha_u} = \frac{\gamma M^2}{\alpha_u}
+$$
+
+$\gamma$ 是比热比，$\alpha_u$ 是动量松弛因子。最后一个等号用了 $c^2 = \gamma R T$。
+
+$\alpha_u = 0.5$ 时，$M = 0.1$ 给出 $C/D = 0.028$，可以忽略。$M = 0.49$ 时为0.67，$M = 0.8$ 时为1.8。相当于去掉了占对角系数40%以上的一项。
+
+不可压型方程试图只靠速度来填补同样的质量不平衡，因此会高估 $p'$。抵消这种高估的手段就是 $\alpha_p$。$C/D$ 越大，所需的 $\alpha_p$ 就越小。
+
+## 代码：收缩-扩张喷管，两种p′方程 × 四个α_p
+
+取准一维喷管 $A(x) = 1 + 0.5\,((x-1.5)/1.5)^2$，$x \in [0, 3]$，分为60个单元。入口固定密度和速度，出口固定静压 $p = 1$。不解能量方程，而用总焓守恒 $T = T_0 - u^2/(2c_p)$ 确定温度。动量方程用一阶迎风，$\alpha_u = 0.5$。
+
+只用一个 `compressible` 标志决定是否把 $C$ 加入压力修正矩阵，其余完全相同。残差为单元质量不平衡的最大值除以流量，降到 $10^{-6}$ 时停止。
+
+```python
+import numpy as np
+g, R = 1.4, 1.0
+cp = g*R/(g-1)
+
+def tdma(a, b, c, d):
+    n = len(d); cc = np.zeros(n); dd = np.zeros(n)
+    cc[0] = c[0]/b[0]; dd[0] = d[0]/b[0]
+    for i in range(1, n):
+        m = b[i] - a[i]*cc[i-1]
+        cc[i] = c[i]/m; dd[i] = (d[i] - a[i]*dd[i-1])/m
+    x = np.zeros(n); x[-1] = dd[-1]
+    for i in range(n-2, -1, -1):
+        x[i] = dd[i] - cc[i]*x[i+1]
+    return x
+
+def area_ratio(M):
+    return (1/M)*((2/(g+1))*(1 + 0.5*(g-1)*M**2))**((g+1)/(2*(g-1)))
+
+def throat_exact(M_in):
+    target = area_ratio(M_in)/1.5        # A_t/A*（入口面积 = 1.5 × 喉部面积）
+    lo, hi = 1e-4, 1.0
+    for _ in range(60):
+        mid = 0.5*(lo + hi)
+        lo, hi = (mid, hi) if area_ratio(mid) > target else (lo, mid)
+    return 0.5*(lo + hi)
+
+def nozzle_simple(M_in, compressible, N=60, au=0.5, ap=0.3, tol=1e-6, itmax=3000):
+    xf = np.linspace(0, 3, N+1); xc = 0.5*(xf[1:] + xf[:-1])
+    Af = 1 + 0.5*((xf-1.5)/1.5)**2; Ac = 1 + 0.5*((xc-1.5)/1.5)**2
+    T0, p_out = 1.0, 1.0
+    T_in = T0/(1 + 0.5*(g-1)*M_in**2)
+    u_in = M_in*np.sqrt(g*R*T_in); rho_in = 1.0/(R*T_in)   # 入口: rho, u 固定
+    mdot = rho_in*u_in*Af[0]
+    p = np.full(N, p_out); T = np.full(N, T_in); rho = p/(R*T)
+    u = mdot/(rho_in*Af)
+    for it in range(1, itmax+1):
+        pe = np.concatenate(([p[0]], p, [p_out]))
+        re = np.concatenate(([rho_in], rho, [rho[-1]]))
+        uc = np.concatenate(([u[0]], 0.5*(u[1:] + u[:-1]), [u[-1]]))
+        Ae = np.concatenate(([Af[0]], Ac, [Af[-1]]))
+        F = re*uc*Ae
+        aW = np.maximum(F[:-1], 0); aE = np.maximum(-F[1:], 0)
+        aP = (aW + aE + np.maximum(F[1:] - F[:-1], 0) + 1e-12)/au
+        src = Af*(pe[:-1] - pe[1:]) + (1 - au)*aP*u
+        src[-1] += aE[-1]*u[-1]
+        a = -aW.copy(); c = -aE.copy(); c[-1] = 0.0
+        a[1] = 0.0; src[1] += aW[1]*u[0]                      # u[0] 固定
+        us = np.empty(N+1); us[0] = u[0]
+        us[1:] = tdma(a[1:], aP[1:], c[1:], src[1:])
+        d = Af/aP; d[0] = 0.0
+        rf = np.concatenate(([rho_in], rho))                  # 迎风面密度
+        m = rf*us*Af
+        b = m[:-1] - m[1:]                                    # 各单元质量不平衡
+        ae = rf[1:]*d[1:]*Af[1:]; aw = rf[:-1]*d[:-1]*Af[:-1]
+        diag = ae + aw; west = aw.copy()
+        if compressible:                                      # rho' = psi p' 由 u* 输运
+            psi = 1.0/(R*T)
+            diag += us[1:]*psi*Af[1:]
+            west[1:] += us[1:-1]*psi[:-1]*Af[1:-1]
+        pc = tdma(-west, diag, -ae, b)
+        pce = np.concatenate(([0.0], pc, [0.0]))
+        u = us + d*(pce[:-1] - pce[1:])
+        p = p + ap*pc
+        T = T0 - (0.5*(u[1:] + u[:-1]))**2/(2*cp)
+        rho = p/(R*np.maximum(T, 0.05))
+        res = np.max(np.abs(b))/mdot
+        if not np.isfinite(res) or res > 1e3:
+            return it, np.nan
+        if res < tol:
+            return it, np.max(0.5*(u[1:] + u[:-1])/np.sqrt(g*R*T))
+    return itmax, np.max(0.5*(u[1:] + u[:-1])/np.sqrt(g*R*T))
+
+def tag(r):
+    it, M = r
+    if np.isnan(M): return "  div"
+    return f"{it:5d}" if it < 3000 else "stall"
+
+print("exact throat M (isentropic):",
+      ", ".join(f"{M}->{throat_exact(M):.3f}" for M in [0.1, 0.2, 0.3, 0.42]))
+print("M_in Mt_num | alpha_p:  0.1   0.3   0.6   1.0 (incomp p') |  0.1   0.3   0.6   1.0 (comp p')")
+for M in [0.1, 0.2, 0.3, 0.42]:
+    Mt = nozzle_simple(M, True, ap=1.0)[1]
+    a = [tag(nozzle_simple(M, False, ap=ap)) for ap in [0.1, 0.3, 0.6, 1.0]]
+    b = [tag(nozzle_simple(M, True, ap=ap)) for ap in [0.1, 0.3, 0.6, 1.0]]
+    print(f"{M:4.2f} {Mt:6.3f}  |        " + " ".join(a) + "             | " + " ".join(b))
+```
+
+```text
+exact throat M (isentropic): 0.1->0.151, 0.2->0.310, 0.3->0.491, 0.42->0.855
+M_in Mt_num | alpha_p:  0.1   0.3   0.6   1.0 (incomp p') |  0.1   0.3   0.6   1.0 (comp p')
+0.10  0.151  |          115    38 stall   div             |   115    35    23    88
+0.20  0.310  |          130   142   div   div             |   135   114    82    54
+0.30  0.490  |          163   div   div   div             | stall stall   146    53
+0.42  0.807  |          div   div   div   div             | stall   402   120   158
+```
+
+下面直接在浏览器里运行上面的代码。两个求解器在同一个喷管上同时迭代。
+
+<NozzleSimpleRelaxationRace />
+
+默认值（$M_{in} = 0.3$，$\alpha_p = 0.3$）下，橙色7次就发散，蓝色到3,000次残差仍不下降。把 $\alpha_p$ 调到1.0，蓝色53次收敛，橙色6次就发散。把 $M_{in}$ 降到0.1，两条曲线几乎重合。
+
+## 表格说明了什么：α_p的角色反转了
+
+先确认解本身。收敛情况下喉部马赫数为0.151、0.310、0.490，与等熵解在第三位小数上一致。$M_{in} = 0.42$ 时出现差距，0.807对0.855。喉部附近 $A/A^*$ 接近1，一阶迎风的微小损失也会让马赫数明显变化。
+
+看不可压型那几列。即使 $M_t = 0.15$，$\alpha_p = 0.6$ 也会停滞，1.0则发散。马赫数越高，允许的 $\alpha_p$ 越小。$M_t = 0.49$ 时只有0.1能活下来，$M_t = 0.81$ 时四个全部失败。这与上一节 $C/D$ 的估计方向一致。
+
+可压缩型那几列恰好相反。$\alpha_p = 1.0$ 时，无论马赫数多少都在53~158次内收敛。但 $\alpha_p = 0.1$ 时，一旦 $M_t \ge 0.49$ 就停滞。
+
+对这个实现中的停滞，我的理解如下。可压缩型方程假设"本次迭代密度变化 $\psi p'$"来确定速度修正量。但速度用完整的 $p'$ 修正，压力却只加上 $\alpha_p p'$。密度再由这个压力通过EOS重新计算。假设与实际的密度变化相差 $(1-\alpha_p)\psi p'$，这个差值每次迭代都会以新的质量不平衡回来。
+
+简单说，不可压型中的 $\alpha_p$ 是让你少相信一个错误方程的安全装置。可压缩型中把 $\alpha_p$ 取小，则是让你少相信一个正确的方程。
+
+## 留在实验之外的三件事
+
+第一，能量方程。原始笔记隐式求解能量方程并做Newton线性化。压力和温度一起变化时，$\psi$ 之外还要加上 $(\partial\rho/\partial T)_p\, T'$ 的贡献。笔记中也假设"求解期间速度不变"，用热力学导数项近似了这种耦合。
+
+第二，非定常项。时间推进时对角上会加上 $V\psi/\Delta t$。$\Delta t$ 较小时该项占主导，不可压型方程的问题也就没那么严重。本实验是稳态的，得不到这种帮助。
+
+第三，超音速。马赫数增大后 $C$ 压倒 $D$，$p'$ 方程趋近双曲型。下游信息不向上游传播这一性质，直接体现在矩阵里。这一区域往往不再用分离式，而改用[压力基全耦合求解器](/zh/posts/2026-08-02-coupled-pressure-based-linearisation-all-mach/)。
+
+## 在可压缩代码里把α_p设为0.3之前
+
+来自不可压经验的"$\alpha_u = 0.7$，$\alpha_p = 0.3$"组合，常被原封不动地搬进可压缩循环。先确认压力修正矩阵里是否真的有 $\psi$ 项。标准是：对角上有 $u^*\psi A$，迎风邻点系数上有同样大小的一项。
+
+如果有，就从0.8~1.0开始试 $\alpha_p$。如果没有，先算一次 $\gamma M^2/\alpha_u$。若在该值超过0.1的区域收敛变慢，应先修正压力修正方程，而不是去调 $\alpha_p$。

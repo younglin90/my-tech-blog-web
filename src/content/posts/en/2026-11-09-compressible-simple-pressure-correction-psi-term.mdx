@@ -1,0 +1,208 @@
+---
+title: "SIMPLE Blew Up in a Subsonic Nozzle Because of One ψp′ Term — The Compressible Pressure-Based Pressure Equation"
+date: 2026-11-09
+description: "Reusing the incompressible SIMPLE pressure-correction equation in a converging-diverging nozzle diverges at throat Mach 0.49. One density-correction term, ψp′, even flips what the pressure relaxation factor means."
+tags: ["SIMPLE", "Compressible", "Pressure-Correction", "Staggered-Grid"]
+locale: en
+slug: 2026-11-09-compressible-simple-pressure-correction-psi-term
+takeaway: "Drop ρ′=ψp′ from the compressible SIMPLE pressure correction and no α_p converges once the throat Mach number reaches 0.49. Keep it and α_p=1 converges in 53 iterations, while a small α_p stalls."
+draft: false
+---
+import { PressureCorrectionUpwindBiasLab } from '@/components/post-viz/2026-11-09-compressible-simple-pressure-correction-psi-term/PressureCorrectionUpwindBiasLab'
+import { NozzleSimpleRelaxationRace } from '@/components/post-viz/2026-11-09-compressible-simple-pressure-correction-psi-term/NozzleSimpleRelaxationRace'
+
+## Same nozzle, same SIMPLE, only one of them blew up
+
+Picture a subsonic nozzle with a throat Mach number of 0.49. No shocks, no supersonic pocket. Can you solve it with incompressible SIMPLE?
+
+Density changes by about 7% between the inlet and the throat. The intuitive answer is "it will converge, just a bit slower." Run it, and it diverges within 10 iterations whether the pressure relaxation factor $\alpha_p$ is 0.3 or 1.0. Only at 0.1 does it limp to convergence in 163 iterations.
+
+This post narrows the cause down to one term in the pressure-correction equation (the equation that adjusts pressure so continuity is satisfied). We run it side by side with a compressible version that includes the density correction $\rho' = \psi p'$. By the end, you can answer with numbers how to pick $\alpha_p$ in a compressible pressure-based code.
+
+## The loop order from the original notes
+
+The starting point is a set of notes from July 2020 on a compressible pressure-based solver. They list the order used in a compressible multiphase code.
+
+1. Compressible momentum equation → update velocity (density frozen apart from the pressure term, same form as incompressible)
+2. Compressible pressure equation → update velocity, face mass flux, pressure
+3. Volume-fraction equation (Crank–Nicolson) → recompute density
+4. Energy equation → update temperature, update EOS
+
+The notes contain the lines "momentum + continuity = pressure equation" and "use the updated pressure change to get velocity, face velocity, and density." That last word, **density**, is today's topic. Step 2 of incompressible SIMPLE has no such word. The basic SIMPLE structure is covered in the [post on Rhie–Chow interpolation and SIMPLE coupling](/en/posts/2026-07-22-simple-pressure-velocity-coupling-rhie-chow/).
+
+## The cause: ρ′ missing from the pressure correction
+
+Split the face mass flux $\dot m_f = \rho_f u_f A_f$ into predicted and corrected parts, drop the second-order term $\rho' u'$, and you get:
+
+$$
+\dot m_f' \approx \rho_f^* A_f\, u_f' + u_f^* A_f\, \rho_f'
+$$
+
+$\rho^*, u^*$ are the values right after the momentum solve; primes denote corrections.
+
+The first term is the velocity correction. It uses the SIMPLE approximation $u_f' = d_f(p_P' - p_N')$, where $d_f = A_f / a_P$ comes from the momentum diagonal coefficient.
+
+The second term is new in compressible flow. The equation of state gives $\rho' = \psi p'$, and for an ideal gas $\psi = (\partial\rho/\partial p)_T = 1/(RT)$. The $p'$ of the upwind cell (the side the flow comes from) gets carried out through the face.
+
+Plug this into the cell continuity equation $\sum_f \dot m_f' = -\sum_f \dot m_f^*$ on a 1D staggered grid (velocities stored on faces) and you get:
+
+$$
+\left(D_w + D_e + C_e\right) p_P' - D_e\, p_E' - \left(D_w + C_w\right) p_W' = \dot m_w^* - \dot m_e^*
+$$
+
+$D = \rho^* d A$ is a diffusion-like coefficient for how a pressure difference changes velocity. $C = u^* \psi A$ is a convection-like coefficient for density change carried by the flow.
+
+With $C = 0$ this is a symmetric Poisson equation, which is exactly what incompressible SIMPLE solves. Add $C$ and it becomes a convection-diffusion equation tilted toward the upwind side. Try it below and watch how each equation absorbs one cell's mass imbalance.
+
+<PressureCorrectionUpwindBiasLab />
+
+Raise the Mach slider from 0 to 0.5. The orange (incompressible) curve keeps its peak of 10.5. The blue (compressible) curve drops to about 1.5, and its upstream side goes almost to zero. For the same imbalance, the incompressible form produces a $p'$ seven times larger. The `share carried as ρ′u` readout says 40% of the imbalance leaves as density change.
+
+## C/D is γM²/α_u
+
+The ratio of the two coefficients tells you when $C$ can be ignored. At steady state the momentum diagonal is roughly $a_P \approx \rho u A / \alpha_u$, so
+
+$$
+\frac{C}{D} = \frac{u\,\psi\,A}{\rho\, A^2 / a_P} \approx \frac{u^2 \psi}{\alpha_u} = \frac{\gamma M^2}{\alpha_u}
+$$
+
+$\gamma$ is the specific-heat ratio and $\alpha_u$ is the momentum relaxation factor. The last step uses $c^2 = \gamma R T$.
+
+With $\alpha_u = 0.5$, $M = 0.1$ gives $C/D = 0.028$. Negligible. $M = 0.49$ gives 0.67, and $M = 0.8$ gives 1.8. That means solving without a term worth over 40% of the diagonal.
+
+The incompressible form tries to fill the same mass imbalance with velocity alone, so it overestimates $p'$. The knob that offsets this overestimate is $\alpha_p$. The larger $C/D$, the smaller the $\alpha_p$ you need.
+
+## Code: converging-diverging nozzle, two p′ equations × four α_p values
+
+Take the quasi-1D nozzle $A(x) = 1 + 0.5\,((x-1.5)/1.5)^2$, $x \in [0, 3]$, on 60 cells. The inlet fixes density and velocity; the outlet fixes static pressure $p = 1$. Instead of an energy equation, temperature comes from constant total enthalpy, $T = T_0 - u^2/(2c_p)$. Momentum is first-order upwind with $\alpha_u = 0.5$.
+
+A single `compressible` flag decides whether $C$ enters the pressure-correction matrix. Everything else is identical. The residual is the maximum cell mass imbalance divided by the mass flow, with a stop at $10^{-6}$.
+
+```python
+import numpy as np
+g, R = 1.4, 1.0
+cp = g*R/(g-1)
+
+def tdma(a, b, c, d):
+    n = len(d); cc = np.zeros(n); dd = np.zeros(n)
+    cc[0] = c[0]/b[0]; dd[0] = d[0]/b[0]
+    for i in range(1, n):
+        m = b[i] - a[i]*cc[i-1]
+        cc[i] = c[i]/m; dd[i] = (d[i] - a[i]*dd[i-1])/m
+    x = np.zeros(n); x[-1] = dd[-1]
+    for i in range(n-2, -1, -1):
+        x[i] = dd[i] - cc[i]*x[i+1]
+    return x
+
+def area_ratio(M):
+    return (1/M)*((2/(g+1))*(1 + 0.5*(g-1)*M**2))**((g+1)/(2*(g-1)))
+
+def throat_exact(M_in):
+    target = area_ratio(M_in)/1.5        # A_t/A* (inlet area = 1.5 x throat area)
+    lo, hi = 1e-4, 1.0
+    for _ in range(60):
+        mid = 0.5*(lo + hi)
+        lo, hi = (mid, hi) if area_ratio(mid) > target else (lo, mid)
+    return 0.5*(lo + hi)
+
+def nozzle_simple(M_in, compressible, N=60, au=0.5, ap=0.3, tol=1e-6, itmax=3000):
+    xf = np.linspace(0, 3, N+1); xc = 0.5*(xf[1:] + xf[:-1])
+    Af = 1 + 0.5*((xf-1.5)/1.5)**2; Ac = 1 + 0.5*((xc-1.5)/1.5)**2
+    T0, p_out = 1.0, 1.0
+    T_in = T0/(1 + 0.5*(g-1)*M_in**2)
+    u_in = M_in*np.sqrt(g*R*T_in); rho_in = 1.0/(R*T_in)   # inlet: rho, u fixed
+    mdot = rho_in*u_in*Af[0]
+    p = np.full(N, p_out); T = np.full(N, T_in); rho = p/(R*T)
+    u = mdot/(rho_in*Af)
+    for it in range(1, itmax+1):
+        pe = np.concatenate(([p[0]], p, [p_out]))
+        re = np.concatenate(([rho_in], rho, [rho[-1]]))
+        uc = np.concatenate(([u[0]], 0.5*(u[1:] + u[:-1]), [u[-1]]))
+        Ae = np.concatenate(([Af[0]], Ac, [Af[-1]]))
+        F = re*uc*Ae
+        aW = np.maximum(F[:-1], 0); aE = np.maximum(-F[1:], 0)
+        aP = (aW + aE + np.maximum(F[1:] - F[:-1], 0) + 1e-12)/au
+        src = Af*(pe[:-1] - pe[1:]) + (1 - au)*aP*u
+        src[-1] += aE[-1]*u[-1]
+        a = -aW.copy(); c = -aE.copy(); c[-1] = 0.0
+        a[1] = 0.0; src[1] += aW[1]*u[0]                      # u[0] is fixed
+        us = np.empty(N+1); us[0] = u[0]
+        us[1:] = tdma(a[1:], aP[1:], c[1:], src[1:])
+        d = Af/aP; d[0] = 0.0
+        rf = np.concatenate(([rho_in], rho))                  # upwind face density
+        m = rf*us*Af
+        b = m[:-1] - m[1:]                                    # mass imbalance per cell
+        ae = rf[1:]*d[1:]*Af[1:]; aw = rf[:-1]*d[:-1]*Af[:-1]
+        diag = ae + aw; west = aw.copy()
+        if compressible:                                      # rho' = psi p' carried by u*
+            psi = 1.0/(R*T)
+            diag += us[1:]*psi*Af[1:]
+            west[1:] += us[1:-1]*psi[:-1]*Af[1:-1]
+        pc = tdma(-west, diag, -ae, b)
+        pce = np.concatenate(([0.0], pc, [0.0]))
+        u = us + d*(pce[:-1] - pce[1:])
+        p = p + ap*pc
+        T = T0 - (0.5*(u[1:] + u[:-1]))**2/(2*cp)
+        rho = p/(R*np.maximum(T, 0.05))
+        res = np.max(np.abs(b))/mdot
+        if not np.isfinite(res) or res > 1e3:
+            return it, np.nan
+        if res < tol:
+            return it, np.max(0.5*(u[1:] + u[:-1])/np.sqrt(g*R*T))
+    return itmax, np.max(0.5*(u[1:] + u[:-1])/np.sqrt(g*R*T))
+
+def tag(r):
+    it, M = r
+    if np.isnan(M): return "  div"
+    return f"{it:5d}" if it < 3000 else "stall"
+
+print("exact throat M (isentropic):",
+      ", ".join(f"{M}->{throat_exact(M):.3f}" for M in [0.1, 0.2, 0.3, 0.42]))
+print("M_in Mt_num | alpha_p:  0.1   0.3   0.6   1.0 (incomp p') |  0.1   0.3   0.6   1.0 (comp p')")
+for M in [0.1, 0.2, 0.3, 0.42]:
+    Mt = nozzle_simple(M, True, ap=1.0)[1]
+    a = [tag(nozzle_simple(M, False, ap=ap)) for ap in [0.1, 0.3, 0.6, 1.0]]
+    b = [tag(nozzle_simple(M, True, ap=ap)) for ap in [0.1, 0.3, 0.6, 1.0]]
+    print(f"{M:4.2f} {Mt:6.3f}  |        " + " ".join(a) + "             | " + " ".join(b))
+```
+
+```text
+exact throat M (isentropic): 0.1->0.151, 0.2->0.310, 0.3->0.491, 0.42->0.855
+M_in Mt_num | alpha_p:  0.1   0.3   0.6   1.0 (incomp p') |  0.1   0.3   0.6   1.0 (comp p')
+0.10  0.151  |          115    38 stall   div             |   115    35    23    88
+0.20  0.310  |          130   142   div   div             |   135   114    82    54
+0.30  0.490  |          163   div   div   div             | stall stall   146    53
+0.42  0.807  |          div   div   div   div             | stall   402   120   158
+```
+
+Let's run the code above right in the browser. Both solvers iterate on the same nozzle at the same time.
+
+<NozzleSimpleRelaxationRace />
+
+At the defaults ($M_{in} = 0.3$, $\alpha_p = 0.3$), orange diverges after 7 iterations while blue's residual stops falling all the way to 3,000. Raise $\alpha_p$ to 1.0 and blue converges in 53 while orange blows up at 6. Drop $M_{in}$ to 0.1 and the two curves nearly overlap.
+
+## What the table says: the role of α_p flips
+
+First, check the solution itself. The converged throat Mach numbers, 0.151, 0.310, and 0.490, match the isentropic solution to three digits. At $M_{in} = 0.42$ they separate, 0.807 versus 0.855. Near the throat $A/A^*$ is close to 1, so even the small losses of first-order upwinding move the Mach number a lot.
+
+Look at the incompressible columns. Even at $M_t = 0.15$, $\alpha_p = 0.6$ stalls and 1.0 diverges. As Mach rises, the allowable $\alpha_p$ shrinks. At $M_t = 0.49$ only 0.1 survives; at $M_t = 0.81$ all four fail. This matches the direction of the $C/D$ estimate above.
+
+The compressible columns go the other way. At $\alpha_p = 1.0$ they converge in 53–158 iterations regardless of Mach. But at $\alpha_p = 0.1$ they stall once $M_t \ge 0.49$.
+
+Here is how I read the stall in this implementation. The compressible equation sizes the velocity correction assuming density changes by $\psi p'$ this iteration. But velocity is corrected with the full $p'$, while pressure only takes $\alpha_p p'$. Density is then recomputed from that pressure via the EOS. The assumed and actual density changes differ by $(1-\alpha_p)\psi p'$, and that gap comes back as a fresh mass imbalance every iteration.
+
+Put simply: in the incompressible form, $\alpha_p$ is a safety device that makes you trust a wrong equation less. In the compressible form, a small $\alpha_p$ makes you trust the right equation less.
+
+## Three things left outside this experiment
+
+First, the energy equation. The original notes solve it implicitly with Newton linearization. When pressure and temperature move together, a $(\partial\rho/\partial T)_p\, T'$ contribution joins $\psi$. The notes approximate this coupling with thermodynamic derivative terms, assuming velocity stays fixed during the solve.
+
+Second, the unsteady term. Time marching adds $V\psi/\Delta t$ to the diagonal. At small $\Delta t$ that term dominates, so the incompressible form hurts less. This experiment is steady, so it gets no such help.
+
+Third, supersonic flow. As Mach rises, $C$ overwhelms $D$ and the $p'$ equation approaches hyperbolic behavior. The fact that downstream information does not travel upstream shows up directly in the matrix. Many codes switch from segregated SIMPLE to a [fully coupled pressure-based solver](/en/posts/2026-08-02-coupled-pressure-based-linearisation-all-mach/) here.
+
+## Before you set α_p = 0.3 in a compressible code
+
+The "$\alpha_u = 0.7$, $\alpha_p = 0.3$" combination from incompressible practice often gets copied into compressible loops unchanged. First check whether the $\psi$ term is really in the pressure-correction matrix. The test: $u^*\psi A$ on the diagonal, and the same magnitude on the upwind neighbor coefficient.
+
+If it is there, start testing $\alpha_p$ at 0.8–1.0. If it is missing, compute $\gamma M^2/\alpha_u$ once. If convergence slows where this exceeds 0.1, fix the pressure-correction equation before touching $\alpha_p$.

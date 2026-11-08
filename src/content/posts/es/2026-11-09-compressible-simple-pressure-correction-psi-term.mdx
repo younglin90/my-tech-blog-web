@@ -1,0 +1,208 @@
+---
+title: "SIMPLE divergió en una tobera subsónica por un solo término ψp′ — la ecuación de presión compresible basada en presión"
+date: 2026-11-09
+description: "Reutilizar la corrección de presión de SIMPLE incompresible en una tobera convergente-divergente diverge con Mach 0,49 en la garganta. El término ψp′ invierte incluso el papel del factor de relajación de presión."
+tags: ["SIMPLE", "Compressible", "Pressure-Correction", "Staggered-Grid"]
+locale: es
+slug: 2026-11-09-compressible-simple-pressure-correction-psi-term
+takeaway: "Sin ρ′=ψp′ en la corrección de presión de SIMPLE compresible, ningún α_p converge cuando el Mach de garganta llega a 0,49. Con ese término, α_p=1 converge en 53 iteraciones y es un α_p pequeño el que se estanca."
+draft: false
+---
+import { PressureCorrectionUpwindBiasLab } from '@/components/post-viz/2026-11-09-compressible-simple-pressure-correction-psi-term/PressureCorrectionUpwindBiasLab'
+import { NozzleSimpleRelaxationRace } from '@/components/post-viz/2026-11-09-compressible-simple-pressure-correction-psi-term/NozzleSimpleRelaxationRace'
+
+## La misma tobera, el mismo SIMPLE, y solo uno divergió
+
+Considérese una tobera subsónica con Mach 0,49 en la garganta. No hay choques ni zona supersónica. ¿Se puede resolver con SIMPLE incompresible?
+
+La densidad cambia cerca de un 7 % entre la entrada y la garganta. La respuesta intuitiva es "convergerá, solo un poco más lento". Al ejecutarlo, diverge en menos de 10 iteraciones con un factor de relajación de presión $\alpha_p$ de 0,3 o de 1,0. Solo con 0,1 llega a converger, en 163 iteraciones.
+
+Este artículo reduce la causa a un término de la ecuación de corrección de presión (la ecuación que ajusta la presión para cumplir continuidad). Se compara lado a lado con una versión compresible que incluye la corrección de densidad $\rho' = \psi p'$. Al final, la elección de $\alpha_p$ en un código compresible basado en presión queda respaldada por números.
+
+## El orden del lazo en las notas originales
+
+El punto de partida son unas notas de julio de 2020 sobre un solver compresible basado en presión. Recogen el orden usado en un código multifásico compresible.
+
+1. Ecuación de momento compresible → actualizar velocidad (densidad fija salvo el término de presión, misma forma que el caso incompresible)
+2. Ecuación de presión compresible → actualizar velocidad, flujo másico en caras y presión
+3. Ecuación de fracción volumétrica (Crank–Nicolson) → recalcular densidad
+4. Ecuación de energía → actualizar temperatura y EOS
+
+Las notas incluyen dos líneas: "momento + continuidad = ecuación de presión" y "con el cambio de presión actualizado se obtienen velocidad, velocidad en caras y densidad". Esa última palabra, **densidad**, es el tema de hoy. El paso 2 de SIMPLE incompresible no la contiene. La estructura básica de SIMPLE se trató en el [artículo sobre interpolación de Rhie–Chow y acoplamiento SIMPLE](/es/posts/2026-07-22-simple-pressure-velocity-coupling-rhie-chow/).
+
+## La causa: falta ρ′ en la corrección de presión
+
+Al separar el flujo másico en la cara $f$, $\dot m_f = \rho_f u_f A_f$, en parte predicha y corrección, y despreciar el término de segundo orden $\rho' u'$, queda:
+
+$$
+\dot m_f' \approx \rho_f^* A_f\, u_f' + u_f^* A_f\, \rho_f'
+$$
+
+$\rho^*, u^*$ son los valores justo después de resolver el momento; las primas son correcciones.
+
+El primer término es la corrección de velocidad. Usa la aproximación de SIMPLE $u_f' = d_f(p_P' - p_N')$, donde $d_f = A_f / a_P$ proviene del coeficiente diagonal del momento.
+
+El segundo término aparece solo en flujo compresible. La ecuación de estado da $\rho' = \psi p'$, y para gas ideal $\psi = (\partial\rho/\partial p)_T = 1/(RT)$. El $p'$ de la celda aguas arriba (upwind, el lado de donde viene el flujo) sale transportado por la cara.
+
+Al sustituir en la continuidad de la celda $P$, $\sum_f \dot m_f' = -\sum_f \dot m_f^*$, sobre una malla escalonada 1D (velocidades en las caras), se obtiene:
+
+$$
+\left(D_w + D_e + C_e\right) p_P' - D_e\, p_E' - \left(D_w + C_w\right) p_W' = \dot m_w^* - \dot m_e^*
+$$
+
+$D = \rho^* d A$ es un coeficiente tipo difusión: cómo una diferencia de presión cambia la velocidad. $C = u^* \psi A$ es un coeficiente tipo convección: el cambio de densidad arrastrado por el flujo.
+
+Con $C = 0$ es una ecuación de Poisson simétrica, justo la que resuelve SIMPLE incompresible. Con $C$ se convierte en una ecuación de convección-difusión inclinada hacia aguas arriba. En la simulación siguiente se puede manipular cómo cada ecuación absorbe el desbalance de masa de una celda.
+
+<PressureCorrectionUpwindBiasLab />
+
+Al subir el control de Mach de 0 a 0,5, la curva naranja (incompresible) mantiene su pico de 10,5. La azul (compresible) baja a cerca de 1,5 y su lado aguas arriba queda casi en cero. Para el mismo desbalance, la forma incompresible produce un $p'$ siete veces mayor. La lectura `share carried as ρ′u` indica que el 40 % del desbalance sale como cambio de densidad.
+
+## C/D vale γM²/α_u
+
+El cociente de ambos coeficientes indica cuándo se puede ignorar $C$. En estado estacionario la diagonal del momento es aproximadamente $a_P \approx \rho u A / \alpha_u$, así que
+
+$$
+\frac{C}{D} = \frac{u\,\psi\,A}{\rho\, A^2 / a_P} \approx \frac{u^2 \psi}{\alpha_u} = \frac{\gamma M^2}{\alpha_u}
+$$
+
+$\gamma$ es la razón de calores específicos y $\alpha_u$ el factor de relajación del momento. La última igualdad usa $c^2 = \gamma R T$.
+
+Con $\alpha_u = 0{,}5$, $M = 0{,}1$ da $C/D = 0{,}028$: despreciable. $M = 0{,}49$ da 0,67 y $M = 0{,}8$ da 1,8. Equivale a resolver sin un término que supera el 40 % de la diagonal.
+
+La forma incompresible intenta cubrir el mismo desbalance solo con velocidad, y por eso sobreestima $p'$. El mecanismo que compensa esa sobreestimación es $\alpha_p$. Cuanto mayor es $C/D$, menor es el $\alpha_p$ necesario.
+
+## Código: tobera convergente-divergente, dos ecuaciones de p′ × cuatro valores de α_p
+
+Se toma la tobera cuasi-1D $A(x) = 1 + 0{,}5\,((x-1{,}5)/1{,}5)^2$, $x \in [0, 3]$, con 60 celdas. La entrada fija densidad y velocidad; la salida fija la presión estática $p = 1$. En lugar de una ecuación de energía, la temperatura sale de entalpía total constante, $T = T_0 - u^2/(2c_p)$. El momento es upwind de primer orden con $\alpha_u = 0{,}5$.
+
+Una sola bandera `compressible` decide si $C$ entra en la matriz de corrección de presión. Todo lo demás es idéntico. El residuo es el máximo desbalance de masa por celda dividido entre el caudal, y el cálculo se detiene en $10^{-6}$.
+
+```python
+import numpy as np
+g, R = 1.4, 1.0
+cp = g*R/(g-1)
+
+def tdma(a, b, c, d):
+    n = len(d); cc = np.zeros(n); dd = np.zeros(n)
+    cc[0] = c[0]/b[0]; dd[0] = d[0]/b[0]
+    for i in range(1, n):
+        m = b[i] - a[i]*cc[i-1]
+        cc[i] = c[i]/m; dd[i] = (d[i] - a[i]*dd[i-1])/m
+    x = np.zeros(n); x[-1] = dd[-1]
+    for i in range(n-2, -1, -1):
+        x[i] = dd[i] - cc[i]*x[i+1]
+    return x
+
+def area_ratio(M):
+    return (1/M)*((2/(g+1))*(1 + 0.5*(g-1)*M**2))**((g+1)/(2*(g-1)))
+
+def throat_exact(M_in):
+    target = area_ratio(M_in)/1.5        # A_t/A* (área de entrada = 1.5 x área de garganta)
+    lo, hi = 1e-4, 1.0
+    for _ in range(60):
+        mid = 0.5*(lo + hi)
+        lo, hi = (mid, hi) if area_ratio(mid) > target else (lo, mid)
+    return 0.5*(lo + hi)
+
+def nozzle_simple(M_in, compressible, N=60, au=0.5, ap=0.3, tol=1e-6, itmax=3000):
+    xf = np.linspace(0, 3, N+1); xc = 0.5*(xf[1:] + xf[:-1])
+    Af = 1 + 0.5*((xf-1.5)/1.5)**2; Ac = 1 + 0.5*((xc-1.5)/1.5)**2
+    T0, p_out = 1.0, 1.0
+    T_in = T0/(1 + 0.5*(g-1)*M_in**2)
+    u_in = M_in*np.sqrt(g*R*T_in); rho_in = 1.0/(R*T_in)   # entrada: rho, u fijos
+    mdot = rho_in*u_in*Af[0]
+    p = np.full(N, p_out); T = np.full(N, T_in); rho = p/(R*T)
+    u = mdot/(rho_in*Af)
+    for it in range(1, itmax+1):
+        pe = np.concatenate(([p[0]], p, [p_out]))
+        re = np.concatenate(([rho_in], rho, [rho[-1]]))
+        uc = np.concatenate(([u[0]], 0.5*(u[1:] + u[:-1]), [u[-1]]))
+        Ae = np.concatenate(([Af[0]], Ac, [Af[-1]]))
+        F = re*uc*Ae
+        aW = np.maximum(F[:-1], 0); aE = np.maximum(-F[1:], 0)
+        aP = (aW + aE + np.maximum(F[1:] - F[:-1], 0) + 1e-12)/au
+        src = Af*(pe[:-1] - pe[1:]) + (1 - au)*aP*u
+        src[-1] += aE[-1]*u[-1]
+        a = -aW.copy(); c = -aE.copy(); c[-1] = 0.0
+        a[1] = 0.0; src[1] += aW[1]*u[0]                      # u[0] fijo
+        us = np.empty(N+1); us[0] = u[0]
+        us[1:] = tdma(a[1:], aP[1:], c[1:], src[1:])
+        d = Af/aP; d[0] = 0.0
+        rf = np.concatenate(([rho_in], rho))                  # densidad upwind en la cara
+        m = rf*us*Af
+        b = m[:-1] - m[1:]                                    # desbalance de masa por celda
+        ae = rf[1:]*d[1:]*Af[1:]; aw = rf[:-1]*d[:-1]*Af[:-1]
+        diag = ae + aw; west = aw.copy()
+        if compressible:                                      # rho' = psi p' transportado por u*
+            psi = 1.0/(R*T)
+            diag += us[1:]*psi*Af[1:]
+            west[1:] += us[1:-1]*psi[:-1]*Af[1:-1]
+        pc = tdma(-west, diag, -ae, b)
+        pce = np.concatenate(([0.0], pc, [0.0]))
+        u = us + d*(pce[:-1] - pce[1:])
+        p = p + ap*pc
+        T = T0 - (0.5*(u[1:] + u[:-1]))**2/(2*cp)
+        rho = p/(R*np.maximum(T, 0.05))
+        res = np.max(np.abs(b))/mdot
+        if not np.isfinite(res) or res > 1e3:
+            return it, np.nan
+        if res < tol:
+            return it, np.max(0.5*(u[1:] + u[:-1])/np.sqrt(g*R*T))
+    return itmax, np.max(0.5*(u[1:] + u[:-1])/np.sqrt(g*R*T))
+
+def tag(r):
+    it, M = r
+    if np.isnan(M): return "  div"
+    return f"{it:5d}" if it < 3000 else "stall"
+
+print("exact throat M (isentropic):",
+      ", ".join(f"{M}->{throat_exact(M):.3f}" for M in [0.1, 0.2, 0.3, 0.42]))
+print("M_in Mt_num | alpha_p:  0.1   0.3   0.6   1.0 (incomp p') |  0.1   0.3   0.6   1.0 (comp p')")
+for M in [0.1, 0.2, 0.3, 0.42]:
+    Mt = nozzle_simple(M, True, ap=1.0)[1]
+    a = [tag(nozzle_simple(M, False, ap=ap)) for ap in [0.1, 0.3, 0.6, 1.0]]
+    b = [tag(nozzle_simple(M, True, ap=ap)) for ap in [0.1, 0.3, 0.6, 1.0]]
+    print(f"{M:4.2f} {Mt:6.3f}  |        " + " ".join(a) + "             | " + " ".join(b))
+```
+
+```text
+exact throat M (isentropic): 0.1->0.151, 0.2->0.310, 0.3->0.491, 0.42->0.855
+M_in Mt_num | alpha_p:  0.1   0.3   0.6   1.0 (incomp p') |  0.1   0.3   0.6   1.0 (comp p')
+0.10  0.151  |          115    38 stall   div             |   115    35    23    88
+0.20  0.310  |          130   142   div   div             |   135   114    82    54
+0.30  0.490  |          163   div   div   div             | stall stall   146    53
+0.42  0.807  |          div   div   div   div             | stall   402   120   158
+```
+
+A continuación se ejecuta el código anterior directamente en el navegador. Ambos solvers iteran sobre la misma tobera al mismo tiempo.
+
+<NozzleSimpleRelaxationRace />
+
+Con los valores por defecto ($M_{in} = 0{,}3$, $\alpha_p = 0{,}3$), la naranja diverge a las 7 iteraciones y el residuo de la azul no baja hasta 3.000. Con $\alpha_p = 1{,}0$, la azul converge en 53 y la naranja diverge en 6. Con $M_{in} = 0{,}1$, ambas curvas casi se superponen.
+
+## Lo que dice la tabla: el papel de α_p se invierte
+
+Primero, la solución en sí. Los Mach de garganta convergidos, 0,151, 0,310 y 0,490, coinciden con la solución isentrópica hasta la tercera cifra. Con $M_{in} = 0{,}42$ se separan: 0,807 frente a 0,855. Cerca de la garganta $A/A^*$ es casi 1, y hasta las pequeñas pérdidas del upwind de primer orden mueven mucho el Mach.
+
+En las columnas incompresibles, incluso con $M_t = 0{,}15$, $\alpha_p = 0{,}6$ se estanca y 1,0 diverge. Al subir el Mach, el $\alpha_p$ admisible se reduce. Con $M_t = 0{,}49$ solo sobrevive 0,1; con $M_t = 0{,}81$ fallan los cuatro. Es la misma tendencia que la estimación de $C/D$.
+
+Las columnas compresibles van al revés. Con $\alpha_p = 1{,}0$ convergen en 53–158 iteraciones sin importar el Mach. Pero con $\alpha_p = 0{,}1$ se estancan cuando $M_t \ge 0{,}49$.
+
+En esta implementación, el estancamiento se interpreta así. La ecuación compresible dimensiona la corrección de velocidad suponiendo que la densidad cambia $\psi p'$ en esta iteración. Pero la velocidad se corrige con el $p'$ completo, mientras la presión solo recibe $\alpha_p p'$. Luego la densidad se recalcula desde esa presión con la EOS. El cambio supuesto y el real difieren en $(1-\alpha_p)\psi p'$, y esa diferencia vuelve como un nuevo desbalance de masa en cada iteración.
+
+En resumen: en la forma incompresible, $\alpha_p$ es un seguro para confiar menos en una ecuación equivocada. En la forma compresible, un $\alpha_p$ pequeño hace confiar menos en la ecuación correcta.
+
+## Tres cosas que quedaron fuera del experimento
+
+Primero, la ecuación de energía. Las notas originales la resuelven de forma implícita con linealización de Newton. Cuando presión y temperatura se mueven juntas, se suma a $\psi$ una contribución $(\partial\rho/\partial T)_p\, T'$. Las notas aproximan ese acoplamiento con términos de derivadas termodinámicas, suponiendo velocidad fija durante la resolución.
+
+Segundo, el término transitorio. El avance en el tiempo añade $V\psi/\Delta t$ a la diagonal. Con $\Delta t$ pequeño ese término domina, y la forma incompresible sufre menos. Este experimento es estacionario y no tiene esa ayuda.
+
+Tercero, el régimen supersónico. Al crecer el Mach, $C$ supera ampliamente a $D$ y la ecuación de $p'$ se acerca a un comportamiento hiperbólico. Que la información aguas abajo no viaje aguas arriba aparece directamente en la matriz. En esta zona muchos códigos pasan de SIMPLE segregado a un [solver basado en presión totalmente acoplado](/es/posts/2026-08-02-coupled-pressure-based-linearisation-all-mach/).
+
+## Antes de fijar α_p = 0,3 en un código compresible
+
+La combinación "$\alpha_u = 0{,}7$, $\alpha_p = 0{,}3$" heredada de la práctica incompresible suele copiarse tal cual en lazos compresibles. Lo primero es comprobar si el término $\psi$ está realmente en la matriz de corrección de presión. El criterio: $u^*\psi A$ en la diagonal y la misma magnitud en el coeficiente del vecino aguas arriba.
+
+Si está, conviene probar $\alpha_p$ desde 0,8–1,0. Si falta, hay que calcular una vez $\gamma M^2/\alpha_u$. Si la convergencia se vuelve lenta donde ese valor supera 0,1, corresponde corregir la ecuación de corrección de presión antes de tocar $\alpha_p$.

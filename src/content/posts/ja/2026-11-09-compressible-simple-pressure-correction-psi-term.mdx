@@ -1,0 +1,208 @@
+---
+title: "亜音速ノズルでSIMPLEが発散した原因は圧力補正式のψp′一項だった — 圧縮性pressure-basedの圧力方程式"
+date: 2026-11-09
+description: "非圧縮SIMPLEの圧力補正式を先細末広ノズルに流用すると、スロートマッハ数0.49で発散します。密度補正ψp′の一項が、圧力緩和係数の意味まで反転させます。"
+tags: ["SIMPLE", "Compressible", "Pressure-Correction", "Staggered-Grid"]
+locale: ja
+slug: 2026-11-09-compressible-simple-pressure-correction-psi-term
+takeaway: "圧縮性SIMPLEの圧力補正式からρ′=ψp′を抜くと、スロートマッハ数0.49以上ではどのα_pでも収束しません。入れればα_p=1で53回で収束し、逆に小さなα_pで停滞します。"
+draft: false
+---
+import { PressureCorrectionUpwindBiasLab } from '@/components/post-viz/2026-11-09-compressible-simple-pressure-correction-psi-term/PressureCorrectionUpwindBiasLab'
+import { NozzleSimpleRelaxationRace } from '@/components/post-viz/2026-11-09-compressible-simple-pressure-correction-psi-term/NozzleSimpleRelaxationRace'
+
+## 同じノズル、同じSIMPLE、片方だけが発散した
+
+スロートマッハ数0.49の亜音速ノズルを考えてみましょう。衝撃波も超音速域もありません。非圧縮SIMPLEで解いてもよいでしょうか。
+
+入口からスロートまでの密度変化は7%ほどです。直感的には「少し遅くなるだけで解けるだろう」と答えたくなります。実際に回すと、圧力緩和係数 $\alpha_p$ を0.3にしても1.0にしても10回以内に発散します。0.1まで下げて、ようやく163回で収束します。
+
+本記事ではその原因を圧力補正式(連続の式を満たすように圧力を修正する式)の一項に絞り込みます。密度補正 $\rho' = \psi p'$ を入れた圧縮性版と並べて回します。読み終えると、圧縮性pressure-basedコードで $\alpha_p$ をどう選ぶかを数字で答えられるようになります。
+
+## 元ノートのループ順序
+
+出発点は2020年7月にまとめた圧縮性pressure-basedソルバーのノートです。圧縮性多相コードに実装した順序が書かれています。
+
+1. 圧縮性運動量方程式 → 速度更新(圧力項以外は密度一定、非圧縮と同じ形)
+2. 圧縮性圧力方程式 → 速度・面質量流束・圧力を更新
+3. 体積分率方程式(Crank–Nicolson)→ 密度を再計算
+4. エネルギー方程式 → 温度更新、EOS更新
+
+ノートには「運動量 + 連続の式 = 圧力方程式」「更新した圧力変化で速度、面速度、密度を求める」という行があります。最後の単語 **密度** が今日のテーマです。非圧縮SIMPLEの2段目にこの単語はありません。基本的なSIMPLEの構造は[Rhie–Chow補間とSIMPLE連成の記事](/ja/posts/2026-07-22-simple-pressure-velocity-coupling-rhie-chow/)で扱いました。
+
+## 原因:圧力補正式から抜けたρ′
+
+面 $f$ の質量流束 $\dot m_f = \rho_f u_f A_f$ を予測値と補正値に分け、2次の項 $\rho' u'$ を捨てると次のようになります。
+
+$$
+\dot m_f' \approx \rho_f^* A_f\, u_f' + u_f^* A_f\, \rho_f'
+$$
+
+$\rho^*, u^*$ は運動量方程式を解いた直後の値、プライムは補正量です。
+
+第1項は速度補正です。SIMPLE近似 $u_f' = d_f(p_P' - p_N')$ を使います。$d_f = A_f / a_P$ は運動量方程式の対角係数から来ます。
+
+第2項は圧縮性で新たに現れます。状態方程式から $\rho' = \psi p'$ で、理想気体なら $\psi = (\partial\rho/\partial p)_T = 1/(RT)$ です。風上(流れが来る側)セルの $p'$ が面を通って運ばれます。
+
+セル $P$ の連続の式 $\sum_f \dot m_f' = -\sum_f \dot m_f^*$ に代入すると、1Dスタガード格子(速度を面に置く格子)で次の式になります。
+
+$$
+\left(D_w + D_e + C_e\right) p_P' - D_e\, p_E' - \left(D_w + C_w\right) p_W' = \dot m_w^* - \dot m_e^*
+$$
+
+$D = \rho^* d A$ は圧力差が速度を変える拡散型の係数です。$C = u^* \psi A$ は密度変化が流れに乗って運ばれる対流型の係数です。
+
+$C = 0$ なら対称なPoisson方程式で、非圧縮SIMPLEが解く式そのものです。$C$ が付くと、風上側に傾いた対流拡散方程式になります。下で、1セルの質量不均衡を二つの式がどう吸収するかを操作してみましょう。
+
+<PressureCorrectionUpwindBiasLab />
+
+Machスライダーを0から0.5に上げてみてください。オレンジ(非圧縮型)の曲線はピーク10.5のままです。青(圧縮型)は1.5前後まで下がり、上流側はほぼ0になります。同じ不均衡に対して非圧縮型は7倍大きな $p'$ を出すわけです。readoutの `share carried as ρ′u` は、不均衡の40%が密度変化として出ていくことを示します。
+
+## C/DはγM²/α_uです
+
+二つの係数の比を見れば、いつ $C$ を無視できるかが分かります。定常状態では運動量の対角係数はおおよそ $a_P \approx \rho u A / \alpha_u$ です。すると
+
+$$
+\frac{C}{D} = \frac{u\,\psi\,A}{\rho\, A^2 / a_P} \approx \frac{u^2 \psi}{\alpha_u} = \frac{\gamma M^2}{\alpha_u}
+$$
+
+$\gamma$ は比熱比、$\alpha_u$ は運動量の緩和係数です。最後の等号には $c^2 = \gamma R T$ を使いました。
+
+$\alpha_u = 0.5$ で $M = 0.1$ なら $C/D = 0.028$ で、無視できます。$M = 0.49$ なら0.67、$M = 0.8$ なら1.8です。対角係数の40%を超える項を抜いて解いていることになります。
+
+非圧縮型の式は、同じ質量不均衡を速度だけで埋めようとします。そのため $p'$ を過大評価します。この過大評価を打ち消す仕組みが $\alpha_p$ です。$C/D$ が大きいほど、必要な $\alpha_p$ も小さくなります。
+
+## コード:先細末広ノズル、2種類のp′式 × 4つのα_p
+
+準1次元ノズル $A(x) = 1 + 0.5\,((x-1.5)/1.5)^2$、$x \in [0, 3]$ を60セルに分けます。入口は密度・速度固定、出口は静圧 $p = 1$ です。エネルギー方程式の代わりに全エンタルピー一定 $T = T_0 - u^2/(2c_p)$ で温度を決めます。運動量は1次風上、$\alpha_u = 0.5$ です。
+
+`compressible` フラグ一つで、圧力補正行列に $C$ を入れるかどうかを決めます。それ以外は完全に同じです。残差はセル質量不均衡の最大値を流量で割った値で、$10^{-6}$ で止めます。
+
+```python
+import numpy as np
+g, R = 1.4, 1.0
+cp = g*R/(g-1)
+
+def tdma(a, b, c, d):
+    n = len(d); cc = np.zeros(n); dd = np.zeros(n)
+    cc[0] = c[0]/b[0]; dd[0] = d[0]/b[0]
+    for i in range(1, n):
+        m = b[i] - a[i]*cc[i-1]
+        cc[i] = c[i]/m; dd[i] = (d[i] - a[i]*dd[i-1])/m
+    x = np.zeros(n); x[-1] = dd[-1]
+    for i in range(n-2, -1, -1):
+        x[i] = dd[i] - cc[i]*x[i+1]
+    return x
+
+def area_ratio(M):
+    return (1/M)*((2/(g+1))*(1 + 0.5*(g-1)*M**2))**((g+1)/(2*(g-1)))
+
+def throat_exact(M_in):
+    target = area_ratio(M_in)/1.5        # A_t/A*(入口面積 = 1.5 × スロート面積)
+    lo, hi = 1e-4, 1.0
+    for _ in range(60):
+        mid = 0.5*(lo + hi)
+        lo, hi = (mid, hi) if area_ratio(mid) > target else (lo, mid)
+    return 0.5*(lo + hi)
+
+def nozzle_simple(M_in, compressible, N=60, au=0.5, ap=0.3, tol=1e-6, itmax=3000):
+    xf = np.linspace(0, 3, N+1); xc = 0.5*(xf[1:] + xf[:-1])
+    Af = 1 + 0.5*((xf-1.5)/1.5)**2; Ac = 1 + 0.5*((xc-1.5)/1.5)**2
+    T0, p_out = 1.0, 1.0
+    T_in = T0/(1 + 0.5*(g-1)*M_in**2)
+    u_in = M_in*np.sqrt(g*R*T_in); rho_in = 1.0/(R*T_in)   # 入口: rho, u 固定
+    mdot = rho_in*u_in*Af[0]
+    p = np.full(N, p_out); T = np.full(N, T_in); rho = p/(R*T)
+    u = mdot/(rho_in*Af)
+    for it in range(1, itmax+1):
+        pe = np.concatenate(([p[0]], p, [p_out]))
+        re = np.concatenate(([rho_in], rho, [rho[-1]]))
+        uc = np.concatenate(([u[0]], 0.5*(u[1:] + u[:-1]), [u[-1]]))
+        Ae = np.concatenate(([Af[0]], Ac, [Af[-1]]))
+        F = re*uc*Ae
+        aW = np.maximum(F[:-1], 0); aE = np.maximum(-F[1:], 0)
+        aP = (aW + aE + np.maximum(F[1:] - F[:-1], 0) + 1e-12)/au
+        src = Af*(pe[:-1] - pe[1:]) + (1 - au)*aP*u
+        src[-1] += aE[-1]*u[-1]
+        a = -aW.copy(); c = -aE.copy(); c[-1] = 0.0
+        a[1] = 0.0; src[1] += aW[1]*u[0]                      # u[0] は固定
+        us = np.empty(N+1); us[0] = u[0]
+        us[1:] = tdma(a[1:], aP[1:], c[1:], src[1:])
+        d = Af/aP; d[0] = 0.0
+        rf = np.concatenate(([rho_in], rho))                  # 風上の面密度
+        m = rf*us*Af
+        b = m[:-1] - m[1:]                                    # セルごとの質量不均衡
+        ae = rf[1:]*d[1:]*Af[1:]; aw = rf[:-1]*d[:-1]*Af[:-1]
+        diag = ae + aw; west = aw.copy()
+        if compressible:                                      # rho' = psi p' を u* が運ぶ
+            psi = 1.0/(R*T)
+            diag += us[1:]*psi*Af[1:]
+            west[1:] += us[1:-1]*psi[:-1]*Af[1:-1]
+        pc = tdma(-west, diag, -ae, b)
+        pce = np.concatenate(([0.0], pc, [0.0]))
+        u = us + d*(pce[:-1] - pce[1:])
+        p = p + ap*pc
+        T = T0 - (0.5*(u[1:] + u[:-1]))**2/(2*cp)
+        rho = p/(R*np.maximum(T, 0.05))
+        res = np.max(np.abs(b))/mdot
+        if not np.isfinite(res) or res > 1e3:
+            return it, np.nan
+        if res < tol:
+            return it, np.max(0.5*(u[1:] + u[:-1])/np.sqrt(g*R*T))
+    return itmax, np.max(0.5*(u[1:] + u[:-1])/np.sqrt(g*R*T))
+
+def tag(r):
+    it, M = r
+    if np.isnan(M): return "  div"
+    return f"{it:5d}" if it < 3000 else "stall"
+
+print("exact throat M (isentropic):",
+      ", ".join(f"{M}->{throat_exact(M):.3f}" for M in [0.1, 0.2, 0.3, 0.42]))
+print("M_in Mt_num | alpha_p:  0.1   0.3   0.6   1.0 (incomp p') |  0.1   0.3   0.6   1.0 (comp p')")
+for M in [0.1, 0.2, 0.3, 0.42]:
+    Mt = nozzle_simple(M, True, ap=1.0)[1]
+    a = [tag(nozzle_simple(M, False, ap=ap)) for ap in [0.1, 0.3, 0.6, 1.0]]
+    b = [tag(nozzle_simple(M, True, ap=ap)) for ap in [0.1, 0.3, 0.6, 1.0]]
+    print(f"{M:4.2f} {Mt:6.3f}  |        " + " ".join(a) + "             | " + " ".join(b))
+```
+
+```text
+exact throat M (isentropic): 0.1->0.151, 0.2->0.310, 0.3->0.491, 0.42->0.855
+M_in Mt_num | alpha_p:  0.1   0.3   0.6   1.0 (incomp p') |  0.1   0.3   0.6   1.0 (comp p')
+0.10  0.151  |          115    38 stall   div             |   115    35    23    88
+0.20  0.310  |          130   142   div   div             |   135   114    82    54
+0.30  0.490  |          163   div   div   div             | stall stall   146    53
+0.42  0.807  |          div   div   div   div             | stall   402   120   158
+```
+
+上のコードをブラウザで直接回してみましょう。二つのソルバーが同じノズルで同時に反復します。
+
+<NozzleSimpleRelaxationRace />
+
+既定値($M_{in} = 0.3$、$\alpha_p = 0.3$)では、オレンジは7回で発散し、青は3,000回まで残差が下がりません。$\alpha_p$ を1.0に上げると、青は53回で収束し、オレンジは6回で発散します。$M_{in}$ を0.1に下げると二つの曲線はほぼ重なります。
+
+## 表が語ること:α_pの役割が反転する
+
+まず解そのものを確認します。収束したケースのスロートマッハ数は0.151、0.310、0.490で、等エントロピー解と3桁まで一致します。$M_{in} = 0.42$ では0.807対0.855と離れます。スロート付近は $A/A^*$ が1に近く、1次風上の小さな損失でもマッハ数が大きく動く領域です。
+
+非圧縮型の列を見てください。$M_t = 0.15$ でも $\alpha_p = 0.6$ なら停滞、1.0なら発散します。マッハ数が上がるほど許される $\alpha_p$ が減ります。$M_t = 0.49$ では0.1だけが生き残り、$M_t = 0.81$ では4つすべてが失敗します。前節の $C/D$ の見積もりと同じ方向です。
+
+圧縮型の列は逆です。$\alpha_p = 1.0$ ではマッハ数によらず53〜158回で収束します。その代わり $\alpha_p = 0.1$ では $M_t \ge 0.49$ で停滞します。
+
+この実装での停滞の原因は次のように考えています。圧縮型の式は「この反復で密度が $\psi p'$ だけ変わる」と仮定して速度補正量を決めます。ところが速度は $p'$ 全体で修正し、圧力には $\alpha_p p'$ しか反映しません。密度はその圧力からEOSで再計算されます。仮定と実際の密度変化が $(1-\alpha_p)\psi p'$ だけずれ、この差が毎反復、新しい質量不均衡として戻ってきます。
+
+まとめると、非圧縮型での $\alpha_p$ は間違った式をあまり信じないための安全装置です。圧縮型で $\alpha_p$ を小さくすると、正しい式をあまり信じなくなります。
+
+## 実験の外に残した三つのこと
+
+一つ目はエネルギー方程式です。元ノートではエネルギー方程式を陰的に解き、Newton線形化しています。圧力と温度が一緒に動くと、$\psi$ に $(\partial\rho/\partial T)_p\, T'$ の寄与が加わります。ノートでも「解いている間は速度一定」と仮定し、熱力学微分項でこの連成を近似していました。
+
+二つ目は非定常項です。時間発展では対角に $V\psi/\Delta t$ が加わります。小さな $\Delta t$ ではこの項が支配的なので、非圧縮型の式でも痛手は小さくなります。この実験は定常なので、その助けがありません。
+
+三つ目は超音速です。マッハ数が大きくなると $C$ が $D$ を圧倒し、$p'$ 式は双曲型に近づきます。下流の情報が上流に伝わらないという性質が、行列にそのまま現れます。この領域では分離型ではなく[圧力ベース完全連成ソルバー](/ja/posts/2026-08-02-coupled-pressure-based-linearisation-all-mach/)に移ることが多いです。
+
+## 圧縮性コードでα_pを0.3にする前に
+
+非圧縮の経験から来た「$\alpha_u = 0.7$、$\alpha_p = 0.3$」の組み合わせが、圧縮性ループにそのまま持ち込まれることはよくあります。まず圧力補正行列に $\psi$ 項が本当に入っているかを確認しましょう。対角に $u^*\psi A$、風上隣接係数に同じ大きさが入っているかが基準です。
+
+入っているなら $\alpha_p$ は0.8〜1.0から試しましょう。抜けているなら $\gamma M^2/\alpha_u$ を一度計算しましょう。この値が0.1を超える領域で収束が遅くなるなら、$\alpha_p$ より先に圧力補正式を直すべきです。

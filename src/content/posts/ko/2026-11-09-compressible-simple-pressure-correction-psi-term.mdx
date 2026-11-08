@@ -1,0 +1,208 @@
+---
+title: "아음속 노즐에서 SIMPLE이 터졌다, 압력 보정식의 ψp′ 한 항 때문에 — 압축성 pressure-based 압력 방정식"
+date: 2026-11-09
+description: "비압축성 SIMPLE의 압력 보정식을 축소-확대 노즐에 그대로 쓰면 목 마하수 0.49에서 발산한다. 밀도 보정 ψp′ 한 항이 압력 완화계수의 의미까지 뒤집는다."
+tags: ["SIMPLE", "Compressible", "Pressure-Correction", "Staggered-Grid"]
+locale: ko
+slug: 2026-11-09-compressible-simple-pressure-correction-psi-term
+takeaway: "압축성 SIMPLE의 압력 보정식에서 ρ′=ψp′를 빼면 목 마하수 0.49부터 어떤 α_p로도 수렴하지 않는다. 넣으면 α_p=1에서 53회에 수렴하고, 오히려 작은 α_p에서 정체한다."
+draft: false
+---
+import { PressureCorrectionUpwindBiasLab } from '@/components/post-viz/2026-11-09-compressible-simple-pressure-correction-psi-term/PressureCorrectionUpwindBiasLab'
+import { NozzleSimpleRelaxationRace } from '@/components/post-viz/2026-11-09-compressible-simple-pressure-correction-psi-term/NozzleSimpleRelaxationRace'
+
+## 같은 노즐, 같은 SIMPLE, 한쪽만 터졌다
+
+목 마하수 0.49인 아음속 노즐을 생각해 보자. 충격파도 없고 초음속 구간도 없다. 비압축성 SIMPLE로 풀어도 될까?
+
+입구에서 목까지 밀도가 7% 남짓 변하는 흐름이다. 직관적으로는 "조금 느려질 뿐 풀리긴 하겠지"라고 답하기 쉽다. 실제로 돌려보면 압력 완화계수 $\alpha_p$를 0.3으로 두든 1.0으로 두든 10회 안에 발산한다. 0.1까지 낮춰야 겨우 163회에 수렴한다.
+
+이 글은 그 원인을 압력 보정식(pressure-correction equation, 연속방정식을 만족시키도록 압력을 고치는 식)의 한 항으로 좁힌다. 밀도 보정 $\rho' = \psi p'$를 넣은 압축성 버전과 나란히 돌린다. 끝까지 읽으면 압축성 pressure-based 코드에서 $\alpha_p$를 어떻게 잡아야 하는지 숫자로 답할 수 있다.
+
+## 원본 노트의 루프 순서
+
+출발점은 2020년 7월에 정리한 압축성 pressure-based 솔버 노트다. 다상 압축성 코드에 넣은 순서가 적혀 있다.
+
+1. 압축성 운동량 방정식 → 속도 갱신 (압력항 외 밀도 일정, 비압축성과 같은 형태)
+2. 압축성 압력 방정식 → 속도·면 질량유속·압력 갱신
+3. 체적분율 방정식 (Crank–Nicolson) → 밀도 재계산
+4. 에너지 방정식 → 온도 갱신, EOS 갱신
+
+노트에는 "운동량 + 연속방정식 = 압력 방정식", "업데이트된 압력 변화로 속도, 표면속도, 밀도를 구한다"는 줄이 있다. 마지막 단어 **밀도**가 오늘의 주제다. 비압축성 SIMPLE의 2단계에는 이 단어가 없다. 기본 SIMPLE 구조는 [Rhie–Chow 보간과 SIMPLE 결합 글](/ko/posts/2026-07-22-simple-pressure-velocity-coupling-rhie-chow/)에서 다뤘다.
+
+## 원인: 압력 보정식에서 빠진 ρ′
+
+면 $f$의 질량유속 $\dot m_f = \rho_f u_f A_f$를 예측값과 보정값으로 나누고, 2차 항 $\rho' u'$를 버리면 이렇다.
+
+$$
+\dot m_f' \approx \rho_f^* A_f\, u_f' + u_f^* A_f\, \rho_f'
+$$
+
+$\rho^*, u^*$는 운동량 방정식을 푼 직후의 값이고, 프라임은 보정량이다.
+
+첫 항은 속도 보정이다. SIMPLE 근사 $u_f' = d_f(p_P' - p_N')$를 쓴다. $d_f = A_f / a_P$는 운동량 방정식 대각 계수에서 나온다.
+
+둘째 항이 압축성에서 새로 생긴다. 상태방정식에서 $\rho' = \psi p'$이고, 이상기체에서 $\psi = (\partial\rho/\partial p)_T = 1/(RT)$다. 풍상(upwind, 흐름이 오는 쪽) 셀의 $p'$가 면에 실려 나간다.
+
+셀 $P$의 연속방정식 $\sum_f \dot m_f' = -\sum_f \dot m_f^*$에 넣으면 1D 엇갈림 격자(staggered grid, 속도를 면에 두는 격자)에서 다음 식이 된다.
+
+$$
+\left(D_w + D_e + C_e\right) p_P' - D_e\, p_E' - \left(D_w + C_w\right) p_W' = \dot m_w^* - \dot m_e^*
+$$
+
+$D = \rho^* d A$는 압력차가 속도를 바꾸는 확산형 계수다. $C = u^* \psi A$는 밀도 변화가 흐름에 실려 가는 대류형 계수다.
+
+$C = 0$이면 대칭인 Poisson 방정식이다. 비압축성 SIMPLE이 푸는 식이 이것이다. $C$가 붙으면 식은 풍상 쪽으로 기운 대류-확산 방정식이 된다. 아래에서 셀 하나의 질량 불균형을 두 식이 어떻게 흡수하는지 직접 조작해 보자.
+
+<PressureCorrectionUpwindBiasLab />
+
+Mach 슬라이더를 0에서 0.5로 올려 보자. 주황(비압축형) 곡선은 그대로 봉우리 10.5를 유지한다. 파랑(압축형)은 1.5 안팎으로 내려앉고 상류 쪽은 거의 0이 된다. 같은 불균형에 비압축형이 7배 큰 $p'$를 내놓는 셈이다. 아래 readout의 `share carried as ρ′u`는 불균형의 40%가 밀도 변화로 빠져나간다는 뜻이다.
+
+## C/D는 γM²/α_u다
+
+두 계수의 비를 보면 언제 $C$를 무시해도 되는지 알 수 있다. 정상 상태에서 운동량 대각 계수는 대략 $a_P \approx \rho u A / \alpha_u$다. 그러면
+
+$$
+\frac{C}{D} = \frac{u\,\psi\,A}{\rho\, A^2 / a_P} \approx \frac{u^2 \psi}{\alpha_u} = \frac{\gamma M^2}{\alpha_u}
+$$
+
+$\gamma$는 비열비, $\alpha_u$는 운동량 완화계수다. 마지막 등호에 $c^2 = \gamma R T$를 썼다.
+
+$\alpha_u = 0.5$에서 $M = 0.1$이면 $C/D = 0.028$이다. 무시해도 된다. $M = 0.49$면 0.67이고, $M = 0.8$이면 1.8이다. 대각 계수의 40%가 넘는 항을 빼고 푸는 셈이다.
+
+비압축형 식은 같은 질량 불균형을 속도만으로 메우려 한다. 그래서 $p'$를 과대 추정한다. 이 과대 추정을 상쇄하는 장치가 $\alpha_p$다. $C/D$가 커질수록 필요한 $\alpha_p$도 작아진다.
+
+## 코드: 축소-확대 노즐, 두 가지 p′ 식 × 네 가지 α_p
+
+준1차원 노즐 $A(x) = 1 + 0.5\,((x-1.5)/1.5)^2$, $x \in [0, 3]$을 60셀로 나눈다. 입구는 밀도·속도 고정, 출구는 정압 $p = 1$이다. 에너지 방정식 대신 총엔탈피 일정 $T = T_0 - u^2/(2c_p)$로 온도를 정한다. 운동량은 1차 풍상, $\alpha_u = 0.5$다.
+
+`compressible` 플래그 하나가 압력 보정 행렬에 $C$를 넣을지 정한다. 나머지는 완전히 같다. 잔차는 셀 질량 불균형의 최대값을 유량으로 나눈 값이고, $10^{-6}$에서 멈춘다.
+
+```python
+import numpy as np
+g, R = 1.4, 1.0
+cp = g*R/(g-1)
+
+def tdma(a, b, c, d):
+    n = len(d); cc = np.zeros(n); dd = np.zeros(n)
+    cc[0] = c[0]/b[0]; dd[0] = d[0]/b[0]
+    for i in range(1, n):
+        m = b[i] - a[i]*cc[i-1]
+        cc[i] = c[i]/m; dd[i] = (d[i] - a[i]*dd[i-1])/m
+    x = np.zeros(n); x[-1] = dd[-1]
+    for i in range(n-2, -1, -1):
+        x[i] = dd[i] - cc[i]*x[i+1]
+    return x
+
+def area_ratio(M):
+    return (1/M)*((2/(g+1))*(1 + 0.5*(g-1)*M**2))**((g+1)/(2*(g-1)))
+
+def throat_exact(M_in):
+    target = area_ratio(M_in)/1.5        # A_t/A* (입구 면적 = 1.5 × 목 면적)
+    lo, hi = 1e-4, 1.0
+    for _ in range(60):
+        mid = 0.5*(lo + hi)
+        lo, hi = (mid, hi) if area_ratio(mid) > target else (lo, mid)
+    return 0.5*(lo + hi)
+
+def nozzle_simple(M_in, compressible, N=60, au=0.5, ap=0.3, tol=1e-6, itmax=3000):
+    xf = np.linspace(0, 3, N+1); xc = 0.5*(xf[1:] + xf[:-1])
+    Af = 1 + 0.5*((xf-1.5)/1.5)**2; Ac = 1 + 0.5*((xc-1.5)/1.5)**2
+    T0, p_out = 1.0, 1.0
+    T_in = T0/(1 + 0.5*(g-1)*M_in**2)
+    u_in = M_in*np.sqrt(g*R*T_in); rho_in = 1.0/(R*T_in)   # 입구: rho, u 고정
+    mdot = rho_in*u_in*Af[0]
+    p = np.full(N, p_out); T = np.full(N, T_in); rho = p/(R*T)
+    u = mdot/(rho_in*Af)
+    for it in range(1, itmax+1):
+        pe = np.concatenate(([p[0]], p, [p_out]))
+        re = np.concatenate(([rho_in], rho, [rho[-1]]))
+        uc = np.concatenate(([u[0]], 0.5*(u[1:] + u[:-1]), [u[-1]]))
+        Ae = np.concatenate(([Af[0]], Ac, [Af[-1]]))
+        F = re*uc*Ae
+        aW = np.maximum(F[:-1], 0); aE = np.maximum(-F[1:], 0)
+        aP = (aW + aE + np.maximum(F[1:] - F[:-1], 0) + 1e-12)/au
+        src = Af*(pe[:-1] - pe[1:]) + (1 - au)*aP*u
+        src[-1] += aE[-1]*u[-1]
+        a = -aW.copy(); c = -aE.copy(); c[-1] = 0.0
+        a[1] = 0.0; src[1] += aW[1]*u[0]                      # u[0]은 고정
+        us = np.empty(N+1); us[0] = u[0]
+        us[1:] = tdma(a[1:], aP[1:], c[1:], src[1:])
+        d = Af/aP; d[0] = 0.0
+        rf = np.concatenate(([rho_in], rho))                  # 풍상 면 밀도
+        m = rf*us*Af
+        b = m[:-1] - m[1:]                                    # 셀별 질량 불균형
+        ae = rf[1:]*d[1:]*Af[1:]; aw = rf[:-1]*d[:-1]*Af[:-1]
+        diag = ae + aw; west = aw.copy()
+        if compressible:                                      # rho' = psi p'를 u*가 실어 나름
+            psi = 1.0/(R*T)
+            diag += us[1:]*psi*Af[1:]
+            west[1:] += us[1:-1]*psi[:-1]*Af[1:-1]
+        pc = tdma(-west, diag, -ae, b)
+        pce = np.concatenate(([0.0], pc, [0.0]))
+        u = us + d*(pce[:-1] - pce[1:])
+        p = p + ap*pc
+        T = T0 - (0.5*(u[1:] + u[:-1]))**2/(2*cp)
+        rho = p/(R*np.maximum(T, 0.05))
+        res = np.max(np.abs(b))/mdot
+        if not np.isfinite(res) or res > 1e3:
+            return it, np.nan
+        if res < tol:
+            return it, np.max(0.5*(u[1:] + u[:-1])/np.sqrt(g*R*T))
+    return itmax, np.max(0.5*(u[1:] + u[:-1])/np.sqrt(g*R*T))
+
+def tag(r):
+    it, M = r
+    if np.isnan(M): return "  div"
+    return f"{it:5d}" if it < 3000 else "stall"
+
+print("exact throat M (isentropic):",
+      ", ".join(f"{M}->{throat_exact(M):.3f}" for M in [0.1, 0.2, 0.3, 0.42]))
+print("M_in Mt_num | alpha_p:  0.1   0.3   0.6   1.0 (incomp p') |  0.1   0.3   0.6   1.0 (comp p')")
+for M in [0.1, 0.2, 0.3, 0.42]:
+    Mt = nozzle_simple(M, True, ap=1.0)[1]
+    a = [tag(nozzle_simple(M, False, ap=ap)) for ap in [0.1, 0.3, 0.6, 1.0]]
+    b = [tag(nozzle_simple(M, True, ap=ap)) for ap in [0.1, 0.3, 0.6, 1.0]]
+    print(f"{M:4.2f} {Mt:6.3f}  |        " + " ".join(a) + "             | " + " ".join(b))
+```
+
+```text
+exact throat M (isentropic): 0.1->0.151, 0.2->0.310, 0.3->0.491, 0.42->0.855
+M_in Mt_num | alpha_p:  0.1   0.3   0.6   1.0 (incomp p') |  0.1   0.3   0.6   1.0 (comp p')
+0.10  0.151  |          115    38 stall   div             |   115    35    23    88
+0.20  0.310  |          130   142   div   div             |   135   114    82    54
+0.30  0.490  |          163   div   div   div             | stall stall   146    53
+0.42  0.807  |          div   div   div   div             | stall   402   120   158
+```
+
+위 코드를 브라우저에서 직접 돌려보자. 두 솔버가 같은 노즐에서 동시에 반복한다.
+
+<NozzleSimpleRelaxationRace />
+
+기본값($M_{in} = 0.3$, $\alpha_p = 0.3$)에서 주황은 7회 만에 발산하고 파랑은 3,000회까지 잔차가 줄지 않는다. $\alpha_p$를 1.0으로 올리면 파랑은 53회에 수렴하고 주황은 6회에 터진다. $M_{in}$을 0.1로 내리면 두 곡선이 거의 겹친다.
+
+## 표가 말하는 것: α_p의 역할이 뒤집힌다
+
+먼저 해 자체를 확인하자. 수렴한 경우의 목 마하수는 0.151, 0.310, 0.490으로 등엔트로피 해와 셋째 자리까지 맞는다. $M_{in} = 0.42$에서는 0.807 대 0.855로 벌어진다. 목 근처 $A/A^*$가 1에 가까워 1차 풍상의 작은 손실에도 마하수가 크게 움직이는 구간이다.
+
+비압축형 열을 보자. $M_t = 0.15$에서도 $\alpha_p = 0.6$이면 정체, 1.0이면 발산한다. 마하수가 오를수록 허용되는 $\alpha_p$가 줄어든다. $M_t = 0.49$에서는 0.1만 살아남고, $M_t = 0.81$에서는 넷 다 죽는다. 앞 절의 $C/D$ 추정과 같은 방향이다.
+
+압축형 열은 반대다. $\alpha_p = 1.0$에서 마하수와 무관하게 53~158회에 수렴한다. 대신 $\alpha_p = 0.1$에서 $M_t \ge 0.49$이면 정체한다.
+
+정체의 원인은 이 구현에서 이렇게 본다. 압축형 식은 "이번 반복에 밀도가 $\psi p'$만큼 변한다"고 가정하고 속도 보정량을 정한다. 그런데 속도는 $p'$ 전체로 고치고 압력은 $\alpha_p p'$만 반영한다. 밀도는 그 압력으로 EOS에서 다시 계산된다. 가정과 실제 밀도 변화가 $(1-\alpha_p)\psi p'$만큼 어긋나고, 이 차이가 매 반복 새로운 질량 불균형으로 돌아온다.
+
+정리하면 비압축형에서 $\alpha_p$는 틀린 식을 덜 믿게 하는 안전장치다. 압축형에서 $\alpha_p$를 작게 잡으면 맞는 식을 덜 믿게 된다.
+
+## 실험 밖에 남겨둔 세 가지
+
+첫째, 에너지 방정식이다. 원본 노트는 에너지 방정식을 암시적으로 풀고 Newton 선형화한다. 압력과 온도가 함께 움직이면 $\psi$에 $(\partial\rho/\partial T)_p\, T'$ 기여가 더해진다. 노트도 "푸는 동안 속도 일정" 가정을 두고 열역학 미분 항으로 이 결합을 근사했다.
+
+둘째, 비정상 항이다. 시간 전진에서는 대각에 $V\psi/\Delta t$가 더해진다. 작은 $\Delta t$에서는 이 항이 지배하므로 비압축형 식도 덜 아프다. 이 실험은 정상 상태라 그 도움이 없다.
+
+셋째, 초음속이다. 마하수가 커지면 $C$가 $D$를 압도해 $p'$ 식이 쌍곡형에 가까워진다. 하류 정보가 상류로 가지 않는다는 성질이 행렬에 그대로 드러난다. 이 영역은 분리형 대신 [압력기반 완전연성 솔버](/ko/posts/2026-08-02-coupled-pressure-based-linearisation-all-mach/)로 가는 경우가 많다.
+
+## 압축성 코드에서 α_p를 0.3으로 두기 전에
+
+비압축성 경험에서 온 "$\alpha_u = 0.7$, $\alpha_p = 0.3$" 조합을 압축성 루프에 그대로 옮기는 경우가 많다. 압력 보정 행렬에 $\psi$ 항이 실제로 들어가 있는지부터 확인하자. 대각에 $u^*\psi A$를, 풍상 이웃 계수에 같은 크기를 넣었는지가 기준이다.
+
+들어가 있다면 $\alpha_p$를 0.8~1.0부터 시험하자. 빠져 있다면 $\gamma M^2/\alpha_u$를 한 번 계산하자. 이 값이 0.1을 넘는 영역에서 수렴이 느려진다면 $\alpha_p$보다 압력 보정식을 먼저 고쳐야 한다.
