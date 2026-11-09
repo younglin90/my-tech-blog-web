@@ -1,0 +1,156 @@
+---
+title: "Lift Stayed at Half Even with 64 Panels — The 1/4–3/4 Rule for Thin-Airfoil Vortex Panels"
+date: 2026-11-10
+description: "Why placing the vortex at the panel's quarter point and the control point at three-quarters recovers 2πα with a single panel, and why any other spacing leaves an error that mesh refinement never removes."
+tags: ["Thin-Airfoil-Theory", "Potential-Flow", "Kutta-Joukowski", "Vortex", "Fluid-Mechanics"]
+locale: en
+slug: 2026-11-10-lumped-vortex-quarter-three-quarter-rule
+takeaway: "Flat-plate lift is set by one number, the vortex-to-control-point gap b−a: CL/2πα = 2(b−a)/c no matter how many panels you use, and getting camber right as well requires the vortex at the quarter point."
+draft: false
+---
+import { LumpedVortexPlacementLab } from '@/components/post-viz/2026-11-10-lumped-vortex-quarter-three-quarter-rule/LumpedVortexPlacementLab'
+import { LumpedVortexConvergenceRace } from '@/components/post-viz/2026-11-10-lumped-vortex-quarter-three-quarter-rule/LumpedVortexConvergenceRace'
+
+## One panel, and the lift came out exact
+
+I modeled a flat plate at 5° angle of attack with a single point vortex. One panel, nothing more. The lift coefficient matched the theoretical $2\pi\alpha$ to four decimal places. Then I moved the control point half a slot forward. Now even 64 panels gave exactly half the lift.
+
+The intuition that refinement shrinks error simply fails here. This post derives where the textbook rule "vortex at 1/4, control point at 3/4" comes from. Then it measures, in code, what breaks when you move them. By the end you can audit the placement in any vortex-lattice (VLM) or panel code with a single number.
+
+## What thin-airfoil theory asks for: a vortex sheet γ(x)
+
+Thin-airfoil theory replaces the airfoil with a vortex sheet (a continuous distribution of vorticity) along the chord line. Call its strength $\gamma(x)$. There is one condition: no flow may pass through the airfoil surface.
+
+$$
+\frac{1}{2\pi}\int_0^c \frac{\gamma(x')\,dx'}{x-x'} = V_\infty\left(\alpha - \frac{dz}{dx}\right), \qquad 0<x<c
+$$
+
+$V_\infty$ is the freestream speed, $\alpha$ the angle of attack, $z(x)$ the camber line, $c$ the chord. The left side is the downwash (the downward normal velocity) induced by the sheet. Add the Kutta condition $\gamma(c)=0$ at the trailing edge.
+
+The flat-plate ($z=0$) solution is classic.
+
+$$
+\gamma(x) = 2V_\infty\alpha\sqrt{\frac{c-x}{x}}, \qquad \Gamma = \int_0^c\gamma\,dx = \pi c V_\infty\alpha
+$$
+
+$\Gamma$ is the total circulation. Plug it into the Kutta–Joukowski theorem $L'=\rho V_\infty\Gamma$ and you get $C_L = 2\pi\alpha$. The link between circulation and lift is covered in [circulation and the Kutta–Joukowski theorem](/en/posts/2026-05-07-circulation-lift-kutta-joukowski/). One more fact matters. The centroid of this distribution sits exactly at $c/4$. That is why the flat plate has zero moment about the quarter chord.
+
+Try moving one vortex and one control point yourself in the simulation below.
+
+<LumpedVortexPlacementLab />
+
+Push `control b` from 0.50 to 0.75 and watch where the orange curve in the lower plot meets the white dashed line (the target downwash $V\alpha$). Check that `Γ / Γ_exact` in the readout tracks $2(b-a)$ exactly. Switch to `exact sheet` and every arrow on the plate turns green.
+
+## One vortex, one control point — where the half-chord rule comes from
+
+Replace the continuous sheet with one point vortex at $x=a$. Put the control point (collocation point, where the no-penetration condition is enforced) at $x=b$. A point vortex induces speed $\Gamma/(2\pi r)$ at distance $r$. At the control point the downwash must equal $V_\infty\alpha$.
+
+$$
+\frac{\Gamma}{2\pi(b-a)} = V_\infty\alpha \quad\Longrightarrow\quad \Gamma = 2\pi(b-a)V_\infty\alpha
+$$
+
+For this $\Gamma$ to equal the exact $\pi cV_\infty\alpha$, you need $b-a=c/2$. Lift depends on the gap alone. The vortex position $a$ never enters the lift.
+
+$a$ shows up in the moment. The leading-edge moment is $M_{LE}=-\rho V_\infty\Gamma a$. The exact sheet's resultant acts at $c/4$, so the moment is right only when $a=c/4$. Combine both conditions: $a=c/4$, $b=3c/4$. That is the textbook lumped-vortex rule. In terms of the pressure jump $\Delta C_p = 2\gamma/V_\infty$ it says the same thing. One point vortex is placed to match two numbers: the size of the resultant and where it acts.
+
+So far this is a one-panel story. What happens with $N$ panels, each holding a vortex and control point at the same fractions? Intuition says the placement should stop mattering as $N$ grows.
+
+## Code: sweeping vortex and control-point positions over 1–64 panels
+
+Split the chord into $N$ equal panels. Panel $j$ carries its vortex at $x_j + a\,\Delta x$ and its control point at $x_j + b\,\Delta x$. Enforcing no-penetration at every control point gives an $N\times N$ linear system. Experiment one fixes $a=0.25$ on a flat plate and varies only $b$. Experiment two compares three placements on a parabolic camber line $z=4hx(1-x)$.
+
+```python
+import numpy as np
+
+def lumped_vortex(N, a, b, alpha, h=0.0):
+    """Thin airfoil (c=1, V=1): vortex at fraction a, control point at fraction b of each panel"""
+    xe = np.linspace(0.0, 1.0, N + 1)
+    dx = xe[1:] - xe[:-1]
+    xv = xe[:-1] + a * dx                  # vortex positions
+    xc = xe[:-1] + b * dx                  # control-point positions
+    slope = 4 * h * (1 - 2 * xc)           # parabolic camber z = 4h x(1-x)
+    A = 1.0 / (2 * np.pi * (xc[:, None] - xv[None, :]))
+    G = np.linalg.solve(A, alpha - slope)  # zero normal velocity at control points
+    CL = 2 * G.sum()                       # Kutta-Joukowski
+    Cm_le = -2 * (G * xv).sum()
+    return CL, Cm_le
+
+Ns = (1, 2, 4, 16, 64)
+alpha = np.radians(5.0)
+CL0 = 2 * np.pi * alpha
+print(f"[1] flat plate, alpha=5deg, CL / 2*pi*alpha   (a = 0.25)")
+print(f"{'b':>6} " + "".join(f"{'N=' + str(n):>9}" for n in Ns))
+for b in (0.50, 0.65, 0.75, 0.85, 1.00):
+    print(f"{b:6.2f} " + "".join(f"{lumped_vortex(n, 0.25, b, alpha)[0] / CL0:9.4f}" for n in Ns))
+
+al, h = np.radians(2.0), 0.04
+CLx = 2 * np.pi * (al + 2 * h)
+Cmx = -np.pi / 2 * (al + 4 * h)
+print(f"\n[2] parabolic camber h=0.04c, alpha=2deg  exact CL={CLx:.4f}  Cm_le={Cmx:.4f}")
+print(f"{'(a,b)':>11} " + "".join(f"{'N=' + str(n):>9}" for n in Ns) + "   <- CL error %")
+for a, b in ((0.25, 0.75), (0.00, 0.50), (0.50, 1.00)):
+    errs = [100 * (lumped_vortex(n, a, b, al, h)[0] / CLx - 1) for n in Ns]
+    print(f"({a:.2f},{b:.2f}) " + "".join(f"{e:+9.2f}" for e in errs))
+print(f"{'(a,b)':>11} " + "".join(f"{'N=' + str(n):>9}" for n in Ns) + "   <- Cm_le error %")
+for a, b in ((0.25, 0.75), (0.00, 0.50), (0.50, 1.00)):
+    errs = [100 * (lumped_vortex(n, a, b, al, h)[1] / Cmx - 1) for n in Ns]
+    print(f"({a:.2f},{b:.2f}) " + "".join(f"{e:+9.2f}" for e in errs))
+```
+
+```text
+[1] flat plate, alpha=5deg, CL / 2*pi*alpha   (a = 0.25)
+     b       N=1      N=2      N=4     N=16     N=64
+  0.50    0.5000   0.5000   0.5000   0.5000   0.5000
+  0.65    0.8000   0.8000   0.8000   0.8000   0.8000
+  0.75    1.0000   1.0000   1.0000   1.0000   1.0000
+  0.85    1.2000   1.2000   1.2000   1.2000   1.2000
+  1.00    1.5000   1.5000   1.5000   1.5000   1.5000
+
+[2] parabolic camber h=0.04c, alpha=2deg  exact CL=0.7220  Cm_le=-0.3062
+      (a,b)       N=1      N=2      N=4     N=16     N=64   <- CL error %
+(0.25,0.75)     +0.00    -0.00    -0.00    +0.00    +0.00
+(0.00,0.50)    -69.62   -34.81   -17.41    -4.35    -1.09
+(0.50,1.00)    +69.62   +34.81   +17.41    +4.35    +1.09
+      (a,b)       N=1      N=2      N=4     N=16     N=64   <- Cm_le error %
+(0.25,0.75)    -41.05   -10.26    -2.57    -0.16    -0.01
+(0.00,0.50)   -100.00   -50.00   -25.00    -6.25    -1.56
+(0.50,1.00)   +100.00   +50.00   +25.00    +6.25    +1.56
+```
+
+Now run the same code in your browser. Both placements are solved side by side as the panel count climbs from 1 to 64.
+
+<LumpedVortexConvergenceRace />
+
+At the defaults (B = (0, 0.5), $h=0.04$, $\alpha=2°$) the solid orange line drops with slope −1 and lands at −1.09% at $N=64$. Set `camber h/c` to 0 and B to (0.25, 0.50), and the solid orange line goes flat. That is the 0.5000 row of table [1], reproduced.
+
+## Why 2(b−a) ignores the panel count
+
+The numbers in table [1] are clean. Every row equals $2(b-a)$: 0.5 for $b=0.5$, 1.5 for $b=1.0$. Going to 64 panels changes nothing in the fourth decimal.
+
+The reason is the self-similarity of a uniform grid. The influence coefficients look like $1/\big(2\pi\Delta x\,(i-j+b-a)\big)$. The whole matrix depends on the gap ratio $b-a$ alone. The factor-of-$2(b-a)$ error born on one panel is repeated, with the same structure, on every subdivision. However fine the grid, every panel applies the same wrong rule. It is a consistency error, and it does not converge away.
+
+Conversely, with $b-a=1/2$ the total circulation is exact for any $N$. J. C. James showed this "remarkable accuracy" analytically in 1972. The individual discrete $\Gamma_j$ differ from the exact $\gamma$ integrated over each panel. Only their sum comes out exact.
+
+## Add camber and only a = 1/4 survives
+
+On the flat plate, $b-a=1/2$ was enough. Indeed $(0, 0.5)$ and $(0.5, 1.0)$ also give exact flat-plate lift in the code. Camber changes that. The exact parabolic-camber result is $C_L = 2\pi(\alpha + 2h/c)$.
+
+$(0.25, 0.75)$ has 0.00% error starting at one panel. $(0, 0.5)$ starts at −69.62% and halves its error every time $N$ doubles. That is first-order convergence. $(0.5, 1.0)$ mirrors it with the opposite sign. Shift the vortex forward and lift comes out low; shift it aft and lift comes out high.
+
+The camber slope $dz/dx$ varies along the chord. Moving the control point forward or aft samples a different slope. Vortex and control point must both sit in the right place for that sampling error to cancel. The balance point is $a=1/4$.
+
+The moment behaves differently. For $(0.25, 0.75)$ the $C_{m,LE}$ error goes −41.05 → −10.26 → −2.57, shrinking by four each time. That is second order. With one panel the moment is off by 41%. A flat plate's resultant acts at $c/4$, but camber adds a pure moment $C_{m,c/4} = -\pi h/c$ about the quarter chord. A single point vortex cannot represent that couple. The other two placements converge only at first order in moment as well.
+
+## The 1/4–3/4 rule inside vortex-lattice and panel methods
+
+This rule doesn't end in textbook exercises. A 3D vortex-lattice method puts the bound leg of each horseshoe vortex at the panel's quarter chord. The control point sits at three-quarters. The result above is why even one chordwise panel gets the 2D section lift right.
+
+Compare this with building the flow around a cylinder from a complex potential ([complex potential and d'Alembert's paradox](/en/posts/2026-05-21-complex-potential-cylinder-dalembert/)). There, conformal mapping gives an exact solution. Panel methods give up exactness and place discrete singularities instead. The placement rule then decides the accuracy.
+
+Non-uniform grids need care. When panel lengths vary, as with cosine spacing, the self-similarity breaks. The 1/4–3/4 rule is then no longer "exact at any panel count." It becomes an ordinary approximation that converges with refinement.
+
+## One ratio to print before you move a vortex
+
+Auditing your own VLM or panel code is simple. Solve a flat plate with one panel and print $C_L/2\pi\alpha$. If it isn't 1, half of that value is the vortex-to-control-point gap you are actually using. A reading of 0.5000 means the control point sits a quarter panel from the vortex, not half. Refining the grid 64× will not remove that error.
+
+Next, add parabolic camber and check that $C_L$ at $N=1$ matches $2\pi(\alpha+2h)$. If it does, the vortex is at the quarter point. This two-line test catches placement bugs before any grid-convergence study would.

@@ -209,6 +209,8 @@ export const VIZ_COMPONENTS: Record<string, ComponentType> = {
   "LowMachAcousticDamping1D": lazyViz(() => import("@/components/post-viz/2026-05-17-hope-collins-2022-lowmach-artificial-diffusion/LowMachAcousticDamping1D").then((m) => ({ default: m.LowMachAcousticDamping1D }))),
   "LowMachIMEXPulseLab": lazyViz(() => import("@/components/post-viz/2026-07-26-imex-tvd-ap-low-mach/LowMachIMEXPulseLab").then((m) => ({ default: m.LowMachIMEXPulseLab }))),
   "LowMachWaveDecay1D": lazyViz(() => import("@/components/post-viz/2026-06-21-asymptotic-preserving-low-mach-wave/LowMachWaveDecay1D").then((m) => ({ default: m.LowMachWaveDecay1D }))),
+  "LumpedVortexConvergenceRace": lazyViz(() => import("@/components/post-viz/2026-11-10-lumped-vortex-quarter-three-quarter-rule/LumpedVortexConvergenceRace").then((m) => ({ default: m.LumpedVortexConvergenceRace }))),
+  "LumpedVortexPlacementLab": lazyViz(() => import("@/components/post-viz/2026-11-10-lumped-vortex-quarter-three-quarter-rule/LumpedVortexPlacementLab").then((m) => ({ default: m.LumpedVortexPlacementLab }))),
   "LuSgsSweepConvergence": lazyViz(() => import("@/components/post-viz/2026-06-22-lu-sgs-implicit-time-integration/LuSgsSweepConvergence").then((m) => ({ default: m.LuSgsSweepConvergence }))),
   "MachArchitect": lazyViz(() => import("@/components/MachArchitect").then((m) => ({ default: m.MachArchitect }))),
   "MachConeRadiator": lazyViz(() => import("@/components/post-viz/2026-05-12-laval-nozzle-supersonic-paradox/MachConeRadiator").then((m) => ({ default: m.MachConeRadiator }))),
