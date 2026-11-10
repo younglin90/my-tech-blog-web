@@ -1,0 +1,183 @@
+---
+title: "Porting the Same Poisson Kernel to NumPy Gave 1.4× and 36× — The Tolerance Sets the Hotspot Share p"
+date: 2026-11-11
+description: "In a Python-shell, compiled-hotspot code, Amdahl's p is set by the problem, not the code. A lid-driven cavity solver measures it: the same NumPy port gives 1.4× or 36.1×."
+tags: ["Amdahl-Law", "Poisson", "Iterative-Solver", "Algorithms"]
+locale: en
+slug: 2026-11-11-python-hotspot-amdahl-poisson-share
+takeaway: "Moving only the Poisson solve to NumPy made the same code 1.4× faster at tol=1e-3 and 36.1× faster at 1e-6. The payoff of a port is set by the hotspot's share p in that problem, not by how fast the kernel is."
+draft: false
+---
+import { AmdahlHotspotRaceLab } from '@/components/post-viz/2026-11-11-python-hotspot-amdahl-poisson-share/AmdahlHotspotRaceLab'
+import { CavityHotspotProfilerRace } from '@/components/post-viz/2026-11-11-python-hotspot-amdahl-poisson-share/CavityHotspotProfilerRace'
+
+## Five Lines in a 2020 Note
+
+In February 2020, starting a new code, I wrote a short memo. The first line is a question: "Is Fortran object-oriented?" The conclusion sits below it. Write the whole model in Python. Let Python handle I/O, pre-processing, post-processing, visualization, and unit tests. Replace only the compute-heavy part (the hotspot, the code region that eats most of the run time) with a compiled language. On CPUs that means Fortran or C; on GPUs, CUDA-C or OpenCL-C.
+
+The strategy still holds. But the memo is missing a number. If you replace the hotspot, how much faster does the **whole** run get? This post measures it. In one cavity solver, only the Poisson kernel moves to NumPy. The result ranged from 1.4× to 36.1×. Not a single character of code changed. Only the tolerance of the iterative solver did. Five questions trace why.
+
+## Q1. If I Replace Only the Hotspot, How Much Faster Is the Whole Run?
+
+Call the original run time 1. The hotspot takes a fraction $p$ of it. Make the hotspot $s$ times faster, and the remaining $1-p$ stays put.
+
+$$
+S = \frac{1}{(1-p) + p/s}, \qquad \lim_{s\to\infty} S = \frac{1}{1-p}
+$$
+
+$S$ is the overall speedup, $s$ the kernel speedup, and $p$ the hotspot's share of the original run time. This is Amdahl's law (Gene Amdahl's 1967 argument about the limits of parallelism). The limit on the right is the point. Even an infinitely fast kernel cannot beat $1/(1-p)$. With $p=0.75$ the ceiling is 4×.
+
+Try $p$ and $s$ yourself in the simulation below.
+
+<AmdahlHotspotRaceLab />
+
+Push the $s$ slider all the way right and the blue curve still stalls at the orange dashed line (the ceiling). Click the `p @ tol` buttons. Those are the four $p$ values measured later. Same $s$, different $p$, and the race ends very differently.
+
+## Q2. Why Not Write Everything in a Compiled Language From the Start?
+
+Most of the time goes into development, not computation. Reading meshes, setting boundary conditions, saving results, drawing plots. That code changes often and needs lots of tests. Python is overwhelmingly faster to work in there. Meanwhile, those parts take a small slice of run time.
+
+The memo's first question deserves an answer too. Fortran has had object orientation since Fortran 2003. You can bind procedures to a `type` (type-bound procedures). `extends` gives inheritance and `class` gives polymorphism. So language features are not the issue. The ecosystem is. Testing, plotting, and package management are still easier in Python.
+
+So the strategy becomes "Python shell, compiled hotspot." One question remains. What is the hotspot, and what is its $p$?
+
+## Q3. How Do You Measure p? Three Versions of a Cavity Solver
+
+The test bed is the lid-driven cavity (a square box whose top wall slides). It is solved at $Re=100$ in vorticity–streamfunction form. One time step has three stages.
+
+1. Wall vorticity: Thom's formula $\omega_w = -2\psi_{1}/h^2$ (the lid adds $-2/h$).
+2. Vorticity transport: one FTCS step (forward time, centered space) of $\partial_t\omega + u\,\partial_x\omega + v\,\partial_y\omega = \nabla^2\omega/Re$.
+3. Streamfunction Poisson: $\nabla^2\psi = -\omega$ by Jacobi iteration until $\max|\Delta\psi| < \mathrm{tol}$.
+
+$\omega$ is vorticity, $\psi$ the streamfunction, $h$ the grid spacing. Jacobi starts from the previous step's $\psi$ (warm start). There are three versions: all Python loops, Poisson in NumPy only, and all NumPy. The operation order is identical, so all three give bit-identical answers. Grid 33×33, 60 steps, four tolerances.
+
+Wall-clock time wobbles 10–20% between runs. So the output reports only deterministic values. The code counts sweeps and multiplies by unit costs measured beforehand with `perf_counter` (`US_LOOP`, `US_NP` in the code). Timing the three versions directly with `perf_counter` gave hybrid speedups of 1.3, 3.9, 15.9, and 36.6×. That matches the table below within 0.5.
+
+```python
+import numpy as np
+
+def cavity_run(n, steps, poisson_vec, all_vec, re=100.0, tol=1e-4):
+    h = 1.0 / (n - 1)
+    dt = 0.25 * h * h * re / 4.0          # 1/4 of the diffusion stability limit
+    dt = min(dt, 0.5 * h)                  # convective CFL (lid speed 1)
+    w = np.zeros((n, n)); psi = np.zeros((n, n))
+    iters = 0
+    for _ in range(steps):
+        # 1) wall vorticity (Thom's formula)
+        if all_vec:
+            w[:, 0] = -2 * psi[:, 1] / h**2
+            w[:, -1] = -2 * psi[:, -2] / h**2
+            w[0, :] = -2 * psi[1, :] / h**2
+            w[-1, :] = -2 * psi[-2, :] / h**2 - 2.0 / h
+        else:
+            for k in range(n):
+                w[k, 0] = -2 * psi[k, 1] / h**2
+                w[k, n-1] = -2 * psi[k, n-2] / h**2
+                w[0, k] = -2 * psi[1, k] / h**2
+                w[n-1, k] = -2 * psi[n-2, k] / h**2 - 2.0 / h
+        # 2) vorticity transport (FTCS)
+        if all_vec:
+            u = (psi[2:, 1:-1] - psi[:-2, 1:-1]) / (2*h)
+            v = -(psi[1:-1, 2:] - psi[1:-1, :-2]) / (2*h)
+            wx = (w[1:-1, 2:] - w[1:-1, :-2]) / (2*h)
+            wy = (w[2:, 1:-1] - w[:-2, 1:-1]) / (2*h)
+            lap = (w[2:, 1:-1] + w[:-2, 1:-1] + w[1:-1, 2:] + w[1:-1, :-2] - 4*w[1:-1, 1:-1]) / h**2
+            w[1:-1, 1:-1] = w[1:-1, 1:-1] + dt * (-u*wx - v*wy + lap/re)
+        else:
+            wn = w.copy()
+            for i in range(1, n-1):
+                for j in range(1, n-1):
+                    u = (psi[i+1, j] - psi[i-1, j]) / (2*h)
+                    v = -(psi[i, j+1] - psi[i, j-1]) / (2*h)
+                    wx = (w[i, j+1] - w[i, j-1]) / (2*h)
+                    wy = (w[i+1, j] - w[i-1, j]) / (2*h)
+                    lap = (w[i+1, j] + w[i-1, j] + w[i, j+1] + w[i, j-1] - 4*w[i, j]) / h**2
+                    wn[i, j] = w[i, j] + dt * (-u*wx - v*wy + lap/re)
+            w[:] = wn
+        # 3) streamfunction Poisson: Jacobi until change < tol
+        while True:
+            if poisson_vec:
+                new = 0.25 * (psi[2:, 1:-1] + psi[:-2, 1:-1] + psi[1:-1, 2:] + psi[1:-1, :-2] + h*h*w[1:-1, 1:-1])
+                err = np.abs(new - psi[1:-1, 1:-1]).max()
+                psi[1:-1, 1:-1] = new
+            else:
+                pn = psi.copy(); err = 0.0
+                for i in range(1, n-1):
+                    for j in range(1, n-1):
+                        val = 0.25 * (psi[i+1, j] + psi[i-1, j] + psi[i, j+1] + psi[i, j-1] + h*h*w[i, j])
+                        d = abs(val - psi[i, j])
+                        if d > err: err = d
+                        pn[i, j] = val
+                psi[:] = pn
+            iters += 1
+            if err < tol: break
+    return psi, iters
+
+# unit costs (microseconds): this code timed with perf_counter on my laptop
+US_LOOP = {"bc": 0.30, "transport": 1.789, "jacobi": 0.709}   # per boundary node / per cell / per cell-sweep
+US_NP = {"bc": 13.0, "transport": 33.0, "jacobi": 11.5}        # per step / per step / per sweep
+
+def stage_cost(n, steps, sweeps, vec_bc, vec_tr, vec_jac):
+    cells = (n - 2) ** 2
+    bc = steps * (US_NP["bc"] if vec_bc else US_LOOP["bc"] * 4 * n)
+    tr = steps * (US_NP["transport"] if vec_tr else US_LOOP["transport"] * cells)
+    po = sweeps * (US_NP["jacobi"] if vec_jac else US_LOOP["jacobi"] * cells)
+    return bc, tr, po
+
+N, STEPS = 33, 60
+psiA, itA = cavity_run(N, STEPS, False, False)                 # all Python loops
+psiC, itC = cavity_run(N, STEPS, True, True)                   # all NumPy
+print(f"loop vs NumPy: max|dpsi| = {np.abs(psiA - psiC).max():.1e}, sweeps {itA} vs {itC}")
+print(" tol    sweeps/step    p     s_kern  hybrid  allNumPy  1/(1-p)")
+for tol in (1e-3, 1e-4, 1e-5, 1e-6):
+    psi, it = cavity_run(N, STEPS, True, True, tol=tol)
+    py = stage_cost(N, STEPS, it, False, False, False)
+    hy = stage_cost(N, STEPS, it, False, False, True)          # Poisson only in NumPy
+    al = stage_cost(N, STEPS, it, True, True, True)            # all NumPy
+    p = py[2] / sum(py)                                        # hotspot share
+    s = py[2] / hy[2]                                          # speedup of the kernel itself
+    print(f"{tol:6.0e} {it/STEPS:9.1f}   {p:7.3f} {s:6.0f}x {sum(py)/sum(hy):6.1f}x {sum(py)/sum(al):7.1f}x {1/(1-p):7.1f}x")
+print(f"psi_min (tol 1e-6) = {psi.min():.5f}")
+```
+
+The first line confirms that the loop and NumPy versions give bit-identical answers.
+
+```text
+loop vs NumPy: max|dpsi| = 0.0e+00, sweeps 459 vs 459
+ tol    sweeps/step    p     s_kern  hybrid  allNumPy  1/(1-p)
+ 1e-03       1.1     0.292     59x    1.4x    42.7x     1.4x
+ 1e-04       7.7     0.748     59x    3.8x    52.0x     4.0x
+ 1e-05      54.5     0.955     59x   16.3x    57.8x    22.1x
+ 1e-06     232.4     0.989     59x   36.1x    58.9x    91.0x
+psi_min (tol 1e-6) = -0.05035
+```
+
+Now run the code above in your browser. The solver really runs, and each stage's time is converted using the same unit costs as the top of the code.
+
+<CavityHotspotProfilerRace />
+
+At the defaults (tol 1e-4, 60 steps), running to the end gives 7.7 sweeps per step, $p\approx0.75$, and roughly 3.8×. Drop tol to 1e-6 and the orange bar grows while the speedup jumps to around 36×. Switch to N=17 and $p$ falls even at the same tol.
+
+## Q4. Why Does One Tolerance Move p From 0.29 to 0.99?
+
+The second column answers it. Jacobi sweeps per step grew from 1.1 to 232.4. Transport costs a fixed amount per step. Only the Poisson cost scales with sweeps. So $p$ is set by the iteration count, not by the kernel.
+
+The warm start matters a lot. Vorticity changes only slightly each step. At a loose tol, Jacobi stops after a sweep or two. The 1.1 sweeps at tol 1e-3 mean Poisson is essentially not being solved. In that case the hotspot is not a hotspot. However fast you make it, 1.4× is the ceiling.
+
+The grid pushes the same way. Jacobi convergence is governed by its spectral radius $\rho \approx 1 - \pi^2 h^2/2$. The sweeps needed to cut the error by a fixed factor scale roughly as $N^2$. Transport cost scales only with the cell count $N^2$. Grow the grid and $p$ approaches 1. A $p$ measured on a small test grid underestimates the $p$ on the production grid. Solving wall distance with a Poisson equation had the same structure ([curvature error in Poisson wall distance](/en/posts/2026-11-02-poisson-wall-distance-curvature-error/)).
+
+The table's $s$ is fixed at 59× because it comes from a unit-cost model. Measured directly, $s$ was 25× at 1e-3 and 59× at 1e-6. With few sweeps, the fixed per-step overhead (array allocation, calls) takes a bigger share of kernel time. Even so, the measured hybrid speedups matched the model. The untouched part keeps its time exactly. Amdahl's formula is not an approximation here; it is a time ledger.
+
+## Q5. Does Going to a GPU or FPGA Change Anything?
+
+The memo lists CUDA-C and OpenCL-C for GPUs. The formula is the same. Only $s$ grows into the hundreds. The ceiling in the tol 1e-6 row is 91.0×. Raising $s$ from 59 to infinity takes 36.1× to 91.0×, and that is all. In practice it is lower. Host–device data transfer lands on the $1-p$ side.
+
+The all-NumPy column sits at 43–59× (58–62× measured directly). Unlike the hybrid, it barely cares about tol. Port everything and $p$ disappears. The price is development effort: transport and boundary conditions must be vectorized too. Real choices fall in between. Changing the iterative method itself is another path. Fewer sweeps shrink both $p$ and total time. Implicit schemes like LU-SGS, for example, hit their iteration limit for different reasons ([the CFL convergence limit of LU-SGS](/en/posts/2026-11-06-lu-sgs-factorization-error-cfl-limit/)). Making the kernel faster and calling it less often are different strategies.
+
+## The Problem to Feed the Profiler Before Moving a Hotspot
+
+- Measure $p$ at the **tolerance and grid you will actually use**. A small test grid underestimates it.
+- Compute the ceiling $1/(1-p)$ first. If the target speedup exceeds it, porting the hotspot alone will not get there.
+- If the iteration count sets $p$, swapping the solver (SOR, multigrid) may come before porting the kernel.
+
+The 2020 memo was right. It just needed one more line: "The hotspot's share is set by the problem setup."

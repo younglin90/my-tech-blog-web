@@ -1,0 +1,183 @@
+---
+title: "同じPoissonカーネルをNumPyに移したら1.4倍にも36倍にもなった — ホットスポット比率pを決めるのは許容誤差"
+date: 2026-11-11
+description: "Pythonシェル+コンパイル済みホットスポット戦略では、Amdahlのpはコードではなく問題設定が決めます。キャビティソルバーで実測します。"
+tags: ["Amdahl-Law", "Poisson", "Iterative-Solver", "Algorithms"]
+locale: ja
+slug: 2026-11-11-python-hotspot-amdahl-poisson-share
+takeaway: "Poissonだけを NumPy に移した同じコードが、tol=1e-3 では1.4倍、1e-6 では36.1倍速くなりました。移植の効果を決めるのはカーネルの速さではなく、その問題でホットスポットが占める比率 p です。"
+draft: false
+---
+import { AmdahlHotspotRaceLab } from '@/components/post-viz/2026-11-11-python-hotspot-amdahl-poisson-share/AmdahlHotspotRaceLab'
+import { CavityHotspotProfilerRace } from '@/components/post-viz/2026-11-11-python-hotspot-amdahl-poisson-share/CavityHotspotProfilerRace'
+
+## 2020年のメモに残った5行
+
+2020年2月、新しいコードを書き始めたときのメモがあります。1行目は問いです。「Fortranはオブジェクト指向だろうか?」その下に結論があります。モデル全体はPythonで書く。入出力・前処理・後処理・可視化・ユニットテストはPythonに任せる。計算が集中する部分(hotspot、実行時間の大半を使うコード区間)だけをコンパイル言語に置き換える。CPUならFortran・C、GPUならCUDA-C・OpenCL-Cです。
+
+この戦略は今でも有効です。ただ、メモには数字が一つ欠けています。ホットスポットを置き換えると、**全体**は何倍速くなるのか。本記事はその数字を実測します。同じキャビティソルバーで、Poissonカーネルだけを NumPy に移します。結果は1.4倍から36.1倍まで分かれました。コードは一文字も変わっていません。変わったのは反復法の許容誤差だけです。5つの問いで理由を追います。
+
+## Q1. ホットスポットだけ置き換えると全体はどれだけ速くなるか
+
+元の実行時間を1とします。そのうちホットスポットが占める比率が $p$ です。ホットスポットを $s$ 倍速くしても、残りの $1-p$ はそのまま残ります。
+
+$$
+S = \frac{1}{(1-p) + p/s}, \qquad \lim_{s\to\infty} S = \frac{1}{1-p}
+$$
+
+$S$ は全体の高速化率、$s$ はカーネルの高速化率、$p$ は元の実行でのホットスポットの時間比率です。これがAmdahlの法則(1967年にGene Amdahlが並列化の限界を説明した式)です。右側の極限が要点です。カーネルを無限に速くしても $1/(1-p)$ は超えられません。$p=0.75$ なら天井は4倍です。
+
+下のシミュレーションで $p$ と $s$ を直接操作してみましょう。
+
+<AmdahlHotspotRaceLab />
+
+$s$ のスライダーを右端まで動かしても、青い曲線はオレンジの破線(天井)で止まります。`p @ tol` ボタンを押してみてください。後で測る4ケースの $p$ です。同じ $s$ でも $p$ が変わるとレースの結果はまったく違います。
+
+## Q2. なぜ最初から全部コンパイル言語で書かないのか
+
+時間の大半は計算ではなく開発に消えます。格子の読み込み、境界条件の設定、結果の保存、図の作成などです。こうしたコードは頻繁に変わり、多くのテストが必要です。ここではPythonが圧倒的に速く書けます。一方で、この部分が実行時間に占める割合は小さいです。
+
+メモの最初の問いにも答えておきます。Fortran 2003からオブジェクト指向が入りました。`type` に手続きを結び付けられます(type-bound procedure)。`extends` で継承し、`class` で多態性を使えます。つまり言語機能は問題ではありません。問題はエコシステムです。テスト・可視化・パッケージ管理は今もPythonのほうが楽です。
+
+そこで戦略は「シェルはPython、ホットスポットだけコンパイル」になります。残る問いは一つです。何がホットスポットで、その $p$ はいくつか。
+
+## Q3. pはどう測るか — キャビティソルバー3バージョン
+
+試験台は蓋駆動キャビティ(lid-driven cavity、上壁だけが動く正方形の空洞)です。渦度-流れ関数(vorticity–streamfunction)形式で $Re=100$ を解きます。1ステップは3段階です。
+
+1. 壁面渦度: Thomの公式 $\omega_w = -2\psi_{1}/h^2$(蓋では $-2/h$ を加えます)。
+2. 渦度輸送: $\partial_t\omega + u\,\partial_x\omega + v\,\partial_y\omega = \nabla^2\omega/Re$ をFTCS(時間前進・空間中心差分)で1回。
+3. 流れ関数Poisson: $\nabla^2\psi = -\omega$ をJacobi反復で $\max|\Delta\psi| < \mathrm{tol}$ まで。
+
+$\omega$ は渦度、$\psi$ は流れ関数、$h$ は格子間隔です。Jacobiは前ステップの $\psi$ から出発します(warm start)。3つのバージョンを作ります。全部Pythonループ、PoissonだけNumPy、全部NumPyです。演算順序が同じなので、3つはビット単位で同じ答えを出します。33×33格子、60ステップ、tolは4段階です。
+
+実時間は実行ごとに10〜20%揺れます。そこで出力には決定的な値だけを載せます。スイープ数を数え、`perf_counter` で事前に測った単価(コードの `US_LOOP`、`US_NP`)を掛けます。3バージョンを直接 `perf_counter` で測ったときのhybrid高速化率は1.3・3.9・15.9・36.6倍でした。下の表と0.5以内で一致します。
+
+```python
+import numpy as np
+
+def cavity_run(n, steps, poisson_vec, all_vec, re=100.0, tol=1e-4):
+    h = 1.0 / (n - 1)
+    dt = 0.25 * h * h * re / 4.0          # 拡散安定条件の1/4
+    dt = min(dt, 0.5 * h)                  # 対流CFL(蓋速度1)
+    w = np.zeros((n, n)); psi = np.zeros((n, n))
+    iters = 0
+    for _ in range(steps):
+        # 1) 壁面渦度 (Thomの公式)
+        if all_vec:
+            w[:, 0] = -2 * psi[:, 1] / h**2
+            w[:, -1] = -2 * psi[:, -2] / h**2
+            w[0, :] = -2 * psi[1, :] / h**2
+            w[-1, :] = -2 * psi[-2, :] / h**2 - 2.0 / h
+        else:
+            for k in range(n):
+                w[k, 0] = -2 * psi[k, 1] / h**2
+                w[k, n-1] = -2 * psi[k, n-2] / h**2
+                w[0, k] = -2 * psi[1, k] / h**2
+                w[n-1, k] = -2 * psi[n-2, k] / h**2 - 2.0 / h
+        # 2) 渦度輸送 (FTCS)
+        if all_vec:
+            u = (psi[2:, 1:-1] - psi[:-2, 1:-1]) / (2*h)
+            v = -(psi[1:-1, 2:] - psi[1:-1, :-2]) / (2*h)
+            wx = (w[1:-1, 2:] - w[1:-1, :-2]) / (2*h)
+            wy = (w[2:, 1:-1] - w[:-2, 1:-1]) / (2*h)
+            lap = (w[2:, 1:-1] + w[:-2, 1:-1] + w[1:-1, 2:] + w[1:-1, :-2] - 4*w[1:-1, 1:-1]) / h**2
+            w[1:-1, 1:-1] = w[1:-1, 1:-1] + dt * (-u*wx - v*wy + lap/re)
+        else:
+            wn = w.copy()
+            for i in range(1, n-1):
+                for j in range(1, n-1):
+                    u = (psi[i+1, j] - psi[i-1, j]) / (2*h)
+                    v = -(psi[i, j+1] - psi[i, j-1]) / (2*h)
+                    wx = (w[i, j+1] - w[i, j-1]) / (2*h)
+                    wy = (w[i+1, j] - w[i-1, j]) / (2*h)
+                    lap = (w[i+1, j] + w[i-1, j] + w[i, j+1] + w[i, j-1] - 4*w[i, j]) / h**2
+                    wn[i, j] = w[i, j] + dt * (-u*wx - v*wy + lap/re)
+            w[:] = wn
+        # 3) 流れ関数Poisson: Jacobi、変化量 < tol まで
+        while True:
+            if poisson_vec:
+                new = 0.25 * (psi[2:, 1:-1] + psi[:-2, 1:-1] + psi[1:-1, 2:] + psi[1:-1, :-2] + h*h*w[1:-1, 1:-1])
+                err = np.abs(new - psi[1:-1, 1:-1]).max()
+                psi[1:-1, 1:-1] = new
+            else:
+                pn = psi.copy(); err = 0.0
+                for i in range(1, n-1):
+                    for j in range(1, n-1):
+                        val = 0.25 * (psi[i+1, j] + psi[i-1, j] + psi[i, j+1] + psi[i, j-1] + h*h*w[i, j])
+                        d = abs(val - psi[i, j])
+                        if d > err: err = d
+                        pn[i, j] = val
+                psi[:] = pn
+            iters += 1
+            if err < tol: break
+    return psi, iters
+
+# 単価(マイクロ秒): 同じコードをperf_counterで測った値、私のノートPC
+US_LOOP = {"bc": 0.30, "transport": 1.789, "jacobi": 0.709}   # 境界ノードあたり / セルあたり / セル・スイープあたり
+US_NP = {"bc": 13.0, "transport": 33.0, "jacobi": 11.5}        # ステップあたり / ステップあたり / スイープあたり
+
+def stage_cost(n, steps, sweeps, vec_bc, vec_tr, vec_jac):
+    cells = (n - 2) ** 2
+    bc = steps * (US_NP["bc"] if vec_bc else US_LOOP["bc"] * 4 * n)
+    tr = steps * (US_NP["transport"] if vec_tr else US_LOOP["transport"] * cells)
+    po = sweeps * (US_NP["jacobi"] if vec_jac else US_LOOP["jacobi"] * cells)
+    return bc, tr, po
+
+N, STEPS = 33, 60
+psiA, itA = cavity_run(N, STEPS, False, False)                 # 全部Pythonループ
+psiC, itC = cavity_run(N, STEPS, True, True)                   # 全部NumPy
+print(f"loop vs NumPy: max|dpsi| = {np.abs(psiA - psiC).max():.1e}, sweeps {itA} vs {itC}")
+print(" tol    sweeps/step    p     s_kern  hybrid  allNumPy  1/(1-p)")
+for tol in (1e-3, 1e-4, 1e-5, 1e-6):
+    psi, it = cavity_run(N, STEPS, True, True, tol=tol)
+    py = stage_cost(N, STEPS, it, False, False, False)
+    hy = stage_cost(N, STEPS, it, False, False, True)          # PoissonだけNumPy
+    al = stage_cost(N, STEPS, it, True, True, True)            # 全部NumPy
+    p = py[2] / sum(py)                                        # ホットスポット比率
+    s = py[2] / hy[2]                                          # カーネル自体の高速化
+    print(f"{tol:6.0e} {it/STEPS:9.1f}   {p:7.3f} {s:6.0f}x {sum(py)/sum(hy):6.1f}x {sum(py)/sum(al):7.1f}x {1/(1-p):7.1f}x")
+print(f"psi_min (tol 1e-6) = {psi.min():.5f}")
+```
+
+1行目は、ループ版とNumPy版がビット単位で同じ答えを出すことの確認です。
+
+```text
+loop vs NumPy: max|dpsi| = 0.0e+00, sweeps 459 vs 459
+ tol    sweeps/step    p     s_kern  hybrid  allNumPy  1/(1-p)
+ 1e-03       1.1     0.292     59x    1.4x    42.7x     1.4x
+ 1e-04       7.7     0.748     59x    3.8x    52.0x     4.0x
+ 1e-05      54.5     0.955     59x   16.3x    57.8x    22.1x
+ 1e-06     232.4     0.989     59x   36.1x    58.9x    91.0x
+psi_min (tol 1e-6) = -0.05035
+```
+
+上のコードをブラウザで直接動かしてみましょう。ソルバーは実際に回り、各段階の時間はコード冒頭と同じ単価で換算します。
+
+<CavityHotspotProfilerRace />
+
+既定値(tol 1e-4、60ステップ)で最後まで回すと、ステップあたり7.7スイープ、$p\approx0.75$、約3.8倍になります。tolを1e-6に下げるとオレンジの棒が伸び、高速化率は36倍付近まで跳ね上がります。N=17に切り替えると、同じtolでも $p$ が下がります。
+
+## Q4. なぜ許容誤差一つでpが0.29から0.99に変わるのか
+
+表の2列目が答えです。ステップあたりのJacobiスイープ数が1.1から232.4に増えました。輸送段階のコストはステップあたり一定です。Poissonのコストだけがスイープ数に比例します。つまり $p$ を決めるのはカーネルではなく反復回数です。
+
+warm startの効果も大きいです。渦度は1ステップでわずかしか変わりません。そのため緩いtolでは1〜2回で止まります。tol 1e-3の1.1回は、事実上Poissonを解いていないという意味です。この場合、ホットスポットはホットスポットではありません。どれだけ速くしても1.4倍が天井です。
+
+格子も同じ方向に働きます。Jacobiの収束速度はスペクトル半径 $\rho \approx 1 - \pi^2 h^2/2$ で決まります。誤差を同じ比率で減らすスイープ数はおおよそ $N^2$ に比例します。一方、輸送コストはセル数 $N^2$ にしか比例しません。格子を大きくすると $p$ は1に近づきます。小さな試験格子で測った $p$ は本番格子の $p$ より小さいのです。壁面距離をPoissonで解くときも同じ構造でした([Poisson壁面距離の曲率誤差](/ja/posts/2026-11-02-poisson-wall-distance-curvature-error/))。
+
+表の $s$ は59倍で固定です。単価モデルだからです。直接測った $s$ は1e-3で25倍、1e-6で59倍でした。スイープが少ないと、ステップごとの固定コスト(配列確保・呼び出し)がカーネル時間に占める割合が大きくなります。それでもhybridの実測はモデルと一致しました。置き換えていない部分の時間がそのまま残るからです。Amdahlの式は近似ではなく、時間の帳簿なのです。
+
+## Q5. GPUやFPGAに行けば変わるのか
+
+メモはGPU向けにCUDA-C・OpenCL-Cを挙げています。式は同じです。$s$ が数百倍に増えるだけです。tol 1e-6行の天井は91.0倍です。$s$ を59から無限大にしても、36.1倍が91.0倍になるのがすべてです。実際にはもっと低くなります。ホストとデバイス間のデータ転送が $1-p$ 側に乗るからです。
+
+全部NumPyにした列は43〜59倍です(直接測った値は58〜62倍)。hybridと違い、tolにほとんど左右されません。全部移せば $p$ は消えます。代償は開発コストです。輸送や境界条件までベクトル化する必要があります。現実の選択はその間にあります。反復法そのものを変える道もあります。スイープ数を減らせば $p$ と総時間が一緒に減ります。たとえばLU-SGSのような陰解法では、反復回数の限界は別のところから来ます([LU-SGSのCFL収束限界](/ja/posts/2026-11-06-lu-sgs-factorization-error-cfl-limit/))。カーネルを速くすることと、カーネルを呼ぶ回数を減らすことは別の戦略です。
+
+## ホットスポットを移す前にプロファイラーにかける問題
+
+- $p$ は**実際に使うtolと格子**で測ります。小さな試験格子の $p$ は過小評価です。
+- まず天井 $1/(1-p)$ を計算します。目標の高速化率が天井を超えるなら、ホットスポットの移植だけでは届きません。
+- 反復回数が $p$ を決めているなら、カーネル移植より反復法の交換(SOR・マルチグリッド)が先かもしれません。
+
+2020年のメモは正しかったのです。ただ、もう1行書くべきでした。「ホットスポットの比率は問題設定が決める。」

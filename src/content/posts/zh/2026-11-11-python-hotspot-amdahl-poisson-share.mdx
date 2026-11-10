@@ -1,0 +1,183 @@
+---
+title: "同一个Poisson内核改用NumPy,加速却有1.4倍也有36倍 — 决定热点占比p的是容差"
+date: 2026-11-11
+description: "在“Python外壳+编译热点”策略中,Amdahl定律的p由问题设置而非代码决定。用方腔求解器实际测量。"
+tags: ["Amdahl-Law", "Poisson", "Iterative-Solver", "Algorithms"]
+locale: zh
+slug: 2026-11-11-python-hotspot-amdahl-poisson-share
+takeaway: "只把Poisson求解移到NumPy的同一份代码,在tol=1e-3时快1.4倍,在1e-6时快36.1倍。移植的收益不取决于内核有多快,而取决于该问题中热点所占的比例p。"
+draft: false
+---
+import { AmdahlHotspotRaceLab } from '@/components/post-viz/2026-11-11-python-hotspot-amdahl-poisson-share/AmdahlHotspotRaceLab'
+import { CavityHotspotProfilerRace } from '@/components/post-viz/2026-11-11-python-hotspot-amdahl-poisson-share/CavityHotspotProfilerRace'
+
+## 2020年笔记里的五行字
+
+2020年2月开始写新代码时,我留下了一条备忘。第一行是个问题:“Fortran是面向对象的吗?”下面是结论。整个模型用Python写。输入输出、前处理、后处理、可视化、单元测试都交给Python。只把计算集中的部分(hotspot,即占用大部分运行时间的代码段)换成编译型语言。CPU上用Fortran或C,GPU上用CUDA-C或OpenCL-C。
+
+这个策略至今有效。但备忘里少了一个数字。替换热点之后,**整体**能快多少倍?本文实际测量这个数字。在同一个方腔求解器里,只把Poisson内核移到NumPy。结果从1.4倍到36.1倍不等。代码一个字符都没改。改的只是迭代法的容差。下面用五个问题追溯原因。
+
+## Q1. 只替换热点,整体能快多少
+
+把原始运行时间记为1,其中热点占比为 $p$。把热点加速 $s$ 倍,剩下的 $1-p$ 原样保留。
+
+$$
+S = \frac{1}{(1-p) + p/s}, \qquad \lim_{s\to\infty} S = \frac{1}{1-p}
+$$
+
+$S$ 是整体加速比,$s$ 是内核加速比,$p$ 是热点在原始运行中的时间占比。这就是Amdahl定律(Gene Amdahl在1967年用来说明并行化极限的公式)。关键在右边的极限。即使内核无限快,也超不过 $1/(1-p)$。$p=0.75$ 时上限是4倍。
+
+在下面的模拟中直接调节 $p$ 和 $s$。
+
+<AmdahlHotspotRaceLab />
+
+把 $s$ 滑块拉到最右,蓝色曲线依然停在橙色虚线(上限)处。点一下 `p @ tol` 按钮,那是后文测得的四种情况的 $p$。$s$ 相同而 $p$ 不同,比赛结果截然不同。
+
+## Q2. 为什么不从一开始就全用编译型语言
+
+大部分时间花在开发上,而不是计算上。读取网格、设置边界条件、保存结果、绘图都属于此类。这类代码经常改动,需要大量测试。在这里Python的开发效率遥遥领先。而这些部分在运行时间中的占比很小。
+
+也回答一下备忘里的第一个问题。Fortran 2003起引入了面向对象。可以把过程绑定到 `type` 上(type-bound procedure),用 `extends` 实现继承,用 `class` 实现多态。所以语言特性不是问题。问题在生态。测试、可视化、包管理仍然是Python更方便。
+
+于是策略变成“外壳用Python,只编译热点”。剩下一个问题:热点是什么,它的 $p$ 是多少。
+
+## Q3. 如何测量p — 方腔求解器的三个版本
+
+测试平台是顶盖驱动方腔(lid-driven cavity,只有上壁移动的正方形空腔)。用涡量-流函数(vorticity–streamfunction)形式求解 $Re=100$。每个时间步分三个阶段。
+
+1. 壁面涡量:Thom公式 $\omega_w = -2\psi_{1}/h^2$(顶盖再加上 $-2/h$)。
+2. 涡量输运:用FTCS(时间前向、空间中心差分)推进一次 $\partial_t\omega + u\,\partial_x\omega + v\,\partial_y\omega = \nabla^2\omega/Re$。
+3. 流函数Poisson:用Jacobi迭代求解 $\nabla^2\psi = -\omega$,直到 $\max|\Delta\psi| < \mathrm{tol}$。
+
+$\omega$ 是涡量,$\psi$ 是流函数,$h$ 是网格间距。Jacobi从上一步的 $\psi$ 出发(warm start)。准备三个版本:全部Python循环、仅Poisson用NumPy、全部NumPy。运算顺序相同,所以三者给出逐位相同的结果。33×33网格,60步,四档容差。
+
+实际耗时每次运行会浮动10~20%,所以输出只给出确定性的值。代码统计扫描次数,再乘以事先用 `perf_counter` 测得的单价(代码中的 `US_LOOP`、`US_NP`)。直接用 `perf_counter` 测三个版本时,hybrid加速比为1.3、3.9、15.9、36.6倍,与下表相差不到0.5。
+
+```python
+import numpy as np
+
+def cavity_run(n, steps, poisson_vec, all_vec, re=100.0, tol=1e-4):
+    h = 1.0 / (n - 1)
+    dt = 0.25 * h * h * re / 4.0          # 扩散稳定条件的1/4
+    dt = min(dt, 0.5 * h)                  # 对流CFL(顶盖速度1)
+    w = np.zeros((n, n)); psi = np.zeros((n, n))
+    iters = 0
+    for _ in range(steps):
+        # 1) 壁面涡量 (Thom公式)
+        if all_vec:
+            w[:, 0] = -2 * psi[:, 1] / h**2
+            w[:, -1] = -2 * psi[:, -2] / h**2
+            w[0, :] = -2 * psi[1, :] / h**2
+            w[-1, :] = -2 * psi[-2, :] / h**2 - 2.0 / h
+        else:
+            for k in range(n):
+                w[k, 0] = -2 * psi[k, 1] / h**2
+                w[k, n-1] = -2 * psi[k, n-2] / h**2
+                w[0, k] = -2 * psi[1, k] / h**2
+                w[n-1, k] = -2 * psi[n-2, k] / h**2 - 2.0 / h
+        # 2) 涡量输运 (FTCS)
+        if all_vec:
+            u = (psi[2:, 1:-1] - psi[:-2, 1:-1]) / (2*h)
+            v = -(psi[1:-1, 2:] - psi[1:-1, :-2]) / (2*h)
+            wx = (w[1:-1, 2:] - w[1:-1, :-2]) / (2*h)
+            wy = (w[2:, 1:-1] - w[:-2, 1:-1]) / (2*h)
+            lap = (w[2:, 1:-1] + w[:-2, 1:-1] + w[1:-1, 2:] + w[1:-1, :-2] - 4*w[1:-1, 1:-1]) / h**2
+            w[1:-1, 1:-1] = w[1:-1, 1:-1] + dt * (-u*wx - v*wy + lap/re)
+        else:
+            wn = w.copy()
+            for i in range(1, n-1):
+                for j in range(1, n-1):
+                    u = (psi[i+1, j] - psi[i-1, j]) / (2*h)
+                    v = -(psi[i, j+1] - psi[i, j-1]) / (2*h)
+                    wx = (w[i, j+1] - w[i, j-1]) / (2*h)
+                    wy = (w[i+1, j] - w[i-1, j]) / (2*h)
+                    lap = (w[i+1, j] + w[i-1, j] + w[i, j+1] + w[i, j-1] - 4*w[i, j]) / h**2
+                    wn[i, j] = w[i, j] + dt * (-u*wx - v*wy + lap/re)
+            w[:] = wn
+        # 3) 流函数Poisson: Jacobi,直到变化量 < tol
+        while True:
+            if poisson_vec:
+                new = 0.25 * (psi[2:, 1:-1] + psi[:-2, 1:-1] + psi[1:-1, 2:] + psi[1:-1, :-2] + h*h*w[1:-1, 1:-1])
+                err = np.abs(new - psi[1:-1, 1:-1]).max()
+                psi[1:-1, 1:-1] = new
+            else:
+                pn = psi.copy(); err = 0.0
+                for i in range(1, n-1):
+                    for j in range(1, n-1):
+                        val = 0.25 * (psi[i+1, j] + psi[i-1, j] + psi[i, j+1] + psi[i, j-1] + h*h*w[i, j])
+                        d = abs(val - psi[i, j])
+                        if d > err: err = d
+                        pn[i, j] = val
+                psi[:] = pn
+            iters += 1
+            if err < tol: break
+    return psi, iters
+
+# 单价(微秒): 用perf_counter测同一代码所得,我的笔记本
+US_LOOP = {"bc": 0.30, "transport": 1.789, "jacobi": 0.709}   # 每个边界节点 / 每个单元 / 每个单元·每次扫描
+US_NP = {"bc": 13.0, "transport": 33.0, "jacobi": 11.5}        # 每步 / 每步 / 每次扫描
+
+def stage_cost(n, steps, sweeps, vec_bc, vec_tr, vec_jac):
+    cells = (n - 2) ** 2
+    bc = steps * (US_NP["bc"] if vec_bc else US_LOOP["bc"] * 4 * n)
+    tr = steps * (US_NP["transport"] if vec_tr else US_LOOP["transport"] * cells)
+    po = sweeps * (US_NP["jacobi"] if vec_jac else US_LOOP["jacobi"] * cells)
+    return bc, tr, po
+
+N, STEPS = 33, 60
+psiA, itA = cavity_run(N, STEPS, False, False)                 # 全部Python循环
+psiC, itC = cavity_run(N, STEPS, True, True)                   # 全部NumPy
+print(f"loop vs NumPy: max|dpsi| = {np.abs(psiA - psiC).max():.1e}, sweeps {itA} vs {itC}")
+print(" tol    sweeps/step    p     s_kern  hybrid  allNumPy  1/(1-p)")
+for tol in (1e-3, 1e-4, 1e-5, 1e-6):
+    psi, it = cavity_run(N, STEPS, True, True, tol=tol)
+    py = stage_cost(N, STEPS, it, False, False, False)
+    hy = stage_cost(N, STEPS, it, False, False, True)          # 仅Poisson用NumPy
+    al = stage_cost(N, STEPS, it, True, True, True)            # 全部NumPy
+    p = py[2] / sum(py)                                        # 热点占比
+    s = py[2] / hy[2]                                          # 内核本身的加速
+    print(f"{tol:6.0e} {it/STEPS:9.1f}   {p:7.3f} {s:6.0f}x {sum(py)/sum(hy):6.1f}x {sum(py)/sum(al):7.1f}x {1/(1-p):7.1f}x")
+print(f"psi_min (tol 1e-6) = {psi.min():.5f}")
+```
+
+第一行确认循环版本与NumPy版本给出逐位相同的结果。
+
+```text
+loop vs NumPy: max|dpsi| = 0.0e+00, sweeps 459 vs 459
+ tol    sweeps/step    p     s_kern  hybrid  allNumPy  1/(1-p)
+ 1e-03       1.1     0.292     59x    1.4x    42.7x     1.4x
+ 1e-04       7.7     0.748     59x    3.8x    52.0x     4.0x
+ 1e-05      54.5     0.955     59x   16.3x    57.8x    22.1x
+ 1e-06     232.4     0.989     59x   36.1x    58.9x    91.0x
+psi_min (tol 1e-6) = -0.05035
+```
+
+在浏览器里直接运行上面的代码。求解器真实运行,各阶段时间按代码开头相同的单价换算。
+
+<CavityHotspotProfilerRace />
+
+用默认值(tol 1e-4,60步)跑完,得到每步7.7次扫描、$p\approx0.75$、约3.8倍加速。把tol降到1e-6,橙色条变长,加速比跳到36倍左右。切换到N=17,即使tol相同,$p$ 也会下降。
+
+## Q4. 为什么一个容差能让p从0.29变到0.99
+
+答案在表格第二列。每步Jacobi扫描次数从1.1增加到232.4。输运阶段的成本每步固定,只有Poisson成本与扫描次数成正比。所以 $p$ 由迭代次数决定,而不是由内核决定。
+
+warm start的影响也很大。涡量每步只变化一点点,所以宽松容差下一两次就停了。tol 1e-3时的1.1次,意味着实际上没有在求解Poisson。这种情况下热点并不是热点,无论加速多少,上限都是1.4倍。
+
+网格也朝同一方向起作用。Jacobi的收敛速度由谱半径 $\rho \approx 1 - \pi^2 h^2/2$ 决定。把误差降低固定比例所需的扫描次数大约与 $N^2$ 成正比。而输运成本只与单元数 $N^2$ 成正比。网格加密时 $p$ 趋近于1。在小测试网格上测得的 $p$ 会低估实际网格的 $p$。用Poisson方程求壁面距离时也是同样的结构([Poisson壁面距离的曲率误差](/zh/posts/2026-11-02-poisson-wall-distance-curvature-error/))。
+
+表中的 $s$ 固定为59倍,因为这是单价模型。直接测得的 $s$ 在1e-3时为25倍,1e-6时为59倍。扫描次数少时,每步的固定开销(数组分配、函数调用)在内核时间中占比更大。即便如此,hybrid实测值仍与模型吻合,因为未替换部分的时间完全不变。Amdahl公式在这里不是近似,而是一本时间账。
+
+## Q5. 换成GPU或FPGA会不同吗
+
+备忘中GPU一栏写的是CUDA-C和OpenCL-C。公式不变,只是 $s$ 增大到数百倍。tol 1e-6行的上限是91.0倍。把 $s$ 从59提高到无穷大,也只是把36.1倍变成91.0倍。实际会更低,因为主机与设备之间的数据传输计入 $1-p$ 一侧。
+
+全部NumPy的那一列为43~59倍(直接测得58~62倍)。与hybrid不同,它对tol几乎不敏感。全部移植后 $p$ 就消失了。代价是开发成本,输运和边界条件也要向量化。现实中的选择介于两者之间。还有一条路是更换迭代法本身。减少扫描次数,$p$ 和总时间会一起下降。例如LU-SGS这类隐式方法,迭代次数的极限来自别处([LU-SGS的CFL收敛极限](/zh/posts/2026-11-06-lu-sgs-factorization-error-cfl-limit/))。让内核变快和少调用内核是两种不同的策略。
+
+## 移植热点之前该交给性能分析器的问题
+
+- 在**实际使用的容差和网格**上测量 $p$。小测试网格上的 $p$ 偏低。
+- 先算出上限 $1/(1-p)$。如果目标加速比超过上限,仅移植热点是达不到的。
+- 如果迭代次数决定了 $p$,更换迭代法(SOR、多重网格)可能比移植内核更优先。
+
+2020年的备忘没有错。只是还该再写一行:“热点的占比由问题设置决定。”

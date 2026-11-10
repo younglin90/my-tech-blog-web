@@ -1,0 +1,183 @@
+---
+title: "El mismo kernel de Poisson pasado a NumPy dio 1.4× y 36× — la tolerancia fija la fracción del punto caliente p"
+date: 2026-11-11
+description: "En un código con capa en Python y punto caliente compilado, la p de Amdahl la fija el problema, no el código. Un solver de cavidad lo mide: el mismo port da 1.4× o 36.1×."
+tags: ["Amdahl-Law", "Poisson", "Iterative-Solver", "Algorithms"]
+locale: es
+slug: 2026-11-11-python-hotspot-amdahl-poisson-share
+takeaway: "Mover solo la resolución de Poisson a NumPy hizo el mismo código 1.4 veces más rápido con tol=1e-3 y 36.1 veces con 1e-6. La ganancia de un port la fija la fracción p del punto caliente en ese problema, no la velocidad del kernel."
+draft: false
+---
+import { AmdahlHotspotRaceLab } from '@/components/post-viz/2026-11-11-python-hotspot-amdahl-poisson-share/AmdahlHotspotRaceLab'
+import { CavityHotspotProfilerRace } from '@/components/post-viz/2026-11-11-python-hotspot-amdahl-poisson-share/CavityHotspotProfilerRace'
+
+## Cinco líneas en una nota de 2020
+
+En febrero de 2020, al empezar un código nuevo, quedó escrita una nota breve. La primera línea es una pregunta: "¿Fortran es orientado a objetos?" Debajo está la conclusión. Todo el modelo se escribe en Python. Python se encarga de E/S, preproceso, posproceso, visualización y pruebas unitarias. Solo la parte que concentra el cálculo (el hotspot o punto caliente, la región del código que consume casi todo el tiempo) pasa a un lenguaje compilado. En CPU, Fortran o C; en GPU, CUDA-C u OpenCL-C.
+
+La estrategia sigue vigente. Pero a la nota le falta un número. Si se reemplaza el punto caliente, ¿cuántas veces más rápida es la ejecución **completa**? Este artículo lo mide. En un mismo solver de cavidad, solo el kernel de Poisson pasa a NumPy. El resultado fue de 1.4× a 36.1×. No cambió ni un carácter del código. Solo cambió la tolerancia del método iterativo. Cinco preguntas siguen la causa.
+
+## P1. Si solo se reemplaza el punto caliente, ¿cuánto se acelera todo?
+
+Sea 1 el tiempo de ejecución original. El punto caliente ocupa una fracción $p$. Si se acelera $s$ veces, el resto $1-p$ queda igual.
+
+$$
+S = \frac{1}{(1-p) + p/s}, \qquad \lim_{s\to\infty} S = \frac{1}{1-p}
+$$
+
+$S$ es la aceleración total, $s$ la aceleración del kernel y $p$ la fracción de tiempo del punto caliente en la ejecución original. Es la ley de Amdahl (el argumento de Gene Amdahl en 1967 sobre los límites del paralelismo). Lo importante es el límite de la derecha. Ni un kernel infinitamente rápido supera $1/(1-p)$. Con $p=0.75$ el techo es 4×.
+
+En la simulación de abajo se pueden manipular $p$ y $s$ directamente.
+
+<AmdahlHotspotRaceLab />
+
+Aunque el control de $s$ llegue al extremo derecho, la curva azul se detiene en la línea discontinua naranja (el techo). Los botones `p @ tol` cargan los cuatro valores de $p$ que se miden más adelante. Con la misma $s$ y otra $p$, la carrera termina de forma muy distinta.
+
+## P2. ¿Por qué no escribir todo en un lenguaje compilado desde el inicio?
+
+La mayor parte del tiempo se va en desarrollo, no en cálculo. Leer mallas, fijar condiciones de contorno, guardar resultados, graficar. Ese código cambia a menudo y necesita muchas pruebas. Ahí Python es muchísimo más ágil. Y esas partes ocupan una porción pequeña del tiempo de ejecución.
+
+También conviene responder la primera pregunta de la nota. Fortran tiene orientación a objetos desde Fortran 2003. Se pueden ligar procedimientos a un `type` (type-bound procedures). `extends` da herencia y `class` da polimorfismo. Así que el lenguaje no es el problema. El problema es el ecosistema. Pruebas, gráficos y gestión de paquetes siguen siendo más cómodos en Python.
+
+La estrategia queda así: "capa en Python, punto caliente compilado". Falta una pregunta. ¿Cuál es el punto caliente y cuánto vale su $p$?
+
+## P3. ¿Cómo se mide p? Tres versiones de un solver de cavidad
+
+El banco de pruebas es la cavidad con tapa móvil (lid-driven cavity, una caja cuadrada cuya pared superior se desliza). Se resuelve con $Re=100$ en formulación vorticidad–función de corriente. Cada paso de tiempo tiene tres etapas.
+
+1. Vorticidad de pared: fórmula de Thom $\omega_w = -2\psi_{1}/h^2$ (en la tapa se suma $-2/h$).
+2. Transporte de vorticidad: un paso FTCS (adelantado en tiempo, centrado en espacio) de $\partial_t\omega + u\,\partial_x\omega + v\,\partial_y\omega = \nabla^2\omega/Re$.
+3. Poisson de la función de corriente: $\nabla^2\psi = -\omega$ con iteración de Jacobi hasta $\max|\Delta\psi| < \mathrm{tol}$.
+
+$\omega$ es la vorticidad, $\psi$ la función de corriente y $h$ el espaciado de malla. Jacobi parte del $\psi$ del paso anterior (warm start). Hay tres versiones: todo en bucles de Python, solo Poisson en NumPy y todo en NumPy. El orden de las operaciones es idéntico, así que las tres dan respuestas idénticas bit a bit. Malla 33×33, 60 pasos, cuatro tolerancias.
+
+El tiempo de reloj varía 10–20 % entre ejecuciones. Por eso la salida solo muestra valores deterministas. El código cuenta barridos y los multiplica por costos unitarios medidos antes con `perf_counter` (`US_LOOP`, `US_NP` en el código). Al cronometrar directamente las tres versiones con `perf_counter`, la aceleración hybrid fue 1.3, 3.9, 15.9 y 36.6×. Coincide con la tabla de abajo con diferencia menor a 0.5.
+
+```python
+import numpy as np
+
+def cavity_run(n, steps, poisson_vec, all_vec, re=100.0, tol=1e-4):
+    h = 1.0 / (n - 1)
+    dt = 0.25 * h * h * re / 4.0          # 1/4 del límite de estabilidad difusiva
+    dt = min(dt, 0.5 * h)                  # CFL convectivo (velocidad de tapa 1)
+    w = np.zeros((n, n)); psi = np.zeros((n, n))
+    iters = 0
+    for _ in range(steps):
+        # 1) vorticidad de pared (fórmula de Thom)
+        if all_vec:
+            w[:, 0] = -2 * psi[:, 1] / h**2
+            w[:, -1] = -2 * psi[:, -2] / h**2
+            w[0, :] = -2 * psi[1, :] / h**2
+            w[-1, :] = -2 * psi[-2, :] / h**2 - 2.0 / h
+        else:
+            for k in range(n):
+                w[k, 0] = -2 * psi[k, 1] / h**2
+                w[k, n-1] = -2 * psi[k, n-2] / h**2
+                w[0, k] = -2 * psi[1, k] / h**2
+                w[n-1, k] = -2 * psi[n-2, k] / h**2 - 2.0 / h
+        # 2) transporte de vorticidad (FTCS)
+        if all_vec:
+            u = (psi[2:, 1:-1] - psi[:-2, 1:-1]) / (2*h)
+            v = -(psi[1:-1, 2:] - psi[1:-1, :-2]) / (2*h)
+            wx = (w[1:-1, 2:] - w[1:-1, :-2]) / (2*h)
+            wy = (w[2:, 1:-1] - w[:-2, 1:-1]) / (2*h)
+            lap = (w[2:, 1:-1] + w[:-2, 1:-1] + w[1:-1, 2:] + w[1:-1, :-2] - 4*w[1:-1, 1:-1]) / h**2
+            w[1:-1, 1:-1] = w[1:-1, 1:-1] + dt * (-u*wx - v*wy + lap/re)
+        else:
+            wn = w.copy()
+            for i in range(1, n-1):
+                for j in range(1, n-1):
+                    u = (psi[i+1, j] - psi[i-1, j]) / (2*h)
+                    v = -(psi[i, j+1] - psi[i, j-1]) / (2*h)
+                    wx = (w[i, j+1] - w[i, j-1]) / (2*h)
+                    wy = (w[i+1, j] - w[i-1, j]) / (2*h)
+                    lap = (w[i+1, j] + w[i-1, j] + w[i, j+1] + w[i, j-1] - 4*w[i, j]) / h**2
+                    wn[i, j] = w[i, j] + dt * (-u*wx - v*wy + lap/re)
+            w[:] = wn
+        # 3) Poisson de la función de corriente: Jacobi hasta cambio < tol
+        while True:
+            if poisson_vec:
+                new = 0.25 * (psi[2:, 1:-1] + psi[:-2, 1:-1] + psi[1:-1, 2:] + psi[1:-1, :-2] + h*h*w[1:-1, 1:-1])
+                err = np.abs(new - psi[1:-1, 1:-1]).max()
+                psi[1:-1, 1:-1] = new
+            else:
+                pn = psi.copy(); err = 0.0
+                for i in range(1, n-1):
+                    for j in range(1, n-1):
+                        val = 0.25 * (psi[i+1, j] + psi[i-1, j] + psi[i, j+1] + psi[i, j-1] + h*h*w[i, j])
+                        d = abs(val - psi[i, j])
+                        if d > err: err = d
+                        pn[i, j] = val
+                psi[:] = pn
+            iters += 1
+            if err < tol: break
+    return psi, iters
+
+# costos unitarios (microsegundos): este código cronometrado con perf_counter en una laptop
+US_LOOP = {"bc": 0.30, "transport": 1.789, "jacobi": 0.709}   # por nodo de borde / por celda / por celda y barrido
+US_NP = {"bc": 13.0, "transport": 33.0, "jacobi": 11.5}        # por paso / por paso / por barrido
+
+def stage_cost(n, steps, sweeps, vec_bc, vec_tr, vec_jac):
+    cells = (n - 2) ** 2
+    bc = steps * (US_NP["bc"] if vec_bc else US_LOOP["bc"] * 4 * n)
+    tr = steps * (US_NP["transport"] if vec_tr else US_LOOP["transport"] * cells)
+    po = sweeps * (US_NP["jacobi"] if vec_jac else US_LOOP["jacobi"] * cells)
+    return bc, tr, po
+
+N, STEPS = 33, 60
+psiA, itA = cavity_run(N, STEPS, False, False)                 # todo en bucles de Python
+psiC, itC = cavity_run(N, STEPS, True, True)                   # todo en NumPy
+print(f"loop vs NumPy: max|dpsi| = {np.abs(psiA - psiC).max():.1e}, sweeps {itA} vs {itC}")
+print(" tol    sweeps/step    p     s_kern  hybrid  allNumPy  1/(1-p)")
+for tol in (1e-3, 1e-4, 1e-5, 1e-6):
+    psi, it = cavity_run(N, STEPS, True, True, tol=tol)
+    py = stage_cost(N, STEPS, it, False, False, False)
+    hy = stage_cost(N, STEPS, it, False, False, True)          # solo Poisson en NumPy
+    al = stage_cost(N, STEPS, it, True, True, True)            # todo en NumPy
+    p = py[2] / sum(py)                                        # fracción del punto caliente
+    s = py[2] / hy[2]                                          # aceleración del propio kernel
+    print(f"{tol:6.0e} {it/STEPS:9.1f}   {p:7.3f} {s:6.0f}x {sum(py)/sum(hy):6.1f}x {sum(py)/sum(al):7.1f}x {1/(1-p):7.1f}x")
+print(f"psi_min (tol 1e-6) = {psi.min():.5f}")
+```
+
+La primera línea confirma que las versiones con bucles y con NumPy dan respuestas idénticas bit a bit.
+
+```text
+loop vs NumPy: max|dpsi| = 0.0e+00, sweeps 459 vs 459
+ tol    sweeps/step    p     s_kern  hybrid  allNumPy  1/(1-p)
+ 1e-03       1.1     0.292     59x    1.4x    42.7x     1.4x
+ 1e-04       7.7     0.748     59x    3.8x    52.0x     4.0x
+ 1e-05      54.5     0.955     59x   16.3x    57.8x    22.1x
+ 1e-06     232.4     0.989     59x   36.1x    58.9x    91.0x
+psi_min (tol 1e-6) = -0.05035
+```
+
+Ahora el código de arriba corre en el navegador. El solver se ejecuta de verdad y el tiempo de cada etapa se convierte con los mismos costos unitarios del inicio del código.
+
+<CavityHotspotProfilerRace />
+
+Con los valores por defecto (tol 1e-4, 60 pasos), al terminar se obtienen 7.7 barridos por paso, $p\approx0.75$ y unas 3.8×. Al bajar tol a 1e-6, la barra naranja crece y la aceleración salta a cerca de 36×. Con N=17, $p$ baja incluso con la misma tol.
+
+## P4. ¿Por qué una sola tolerancia lleva p de 0.29 a 0.99?
+
+La segunda columna lo explica. Los barridos de Jacobi por paso pasaron de 1.1 a 232.4. El transporte cuesta una cantidad fija por paso. Solo el costo de Poisson escala con los barridos. Así que $p$ lo fija el número de iteraciones, no el kernel.
+
+El warm start pesa mucho. La vorticidad cambia poco en cada paso. Con una tol holgada, Jacobi se detiene tras uno o dos barridos. Los 1.1 barridos con tol 1e-3 significan que, en la práctica, Poisson no se está resolviendo. En ese caso el punto caliente no es caliente. Por rápido que se haga, el techo es 1.4×.
+
+La malla empuja en la misma dirección. La convergencia de Jacobi la gobierna su radio espectral $\rho \approx 1 - \pi^2 h^2/2$. Los barridos necesarios para reducir el error en un factor fijo escalan aproximadamente como $N^2$. El costo del transporte escala solo con el número de celdas $N^2$. Al refinar la malla, $p$ se acerca a 1. Una $p$ medida en una malla de prueba pequeña subestima la $p$ de la malla real. Calcular la distancia a la pared con una ecuación de Poisson tenía la misma estructura ([error de curvatura en la distancia a la pared por Poisson](/es/posts/2026-11-02-poisson-wall-distance-curvature-error/)).
+
+La $s$ de la tabla queda fija en 59× porque sale de un modelo de costos unitarios. Medida directamente, $s$ fue 25× con 1e-3 y 59× con 1e-6. Con pocos barridos, el costo fijo por paso (asignación de arreglos, llamadas) pesa más dentro del tiempo del kernel. Aun así, la aceleración hybrid medida coincidió con el modelo. La parte no modificada conserva exactamente su tiempo. Aquí la fórmula de Amdahl no es una aproximación: es un libro de cuentas del tiempo.
+
+## P5. ¿Cambia algo al pasar a GPU o FPGA?
+
+La nota anota CUDA-C y OpenCL-C para GPU. La fórmula es la misma. Solo $s$ crece a cientos. El techo de la fila tol 1e-6 es 91.0×. Subir $s$ de 59 a infinito lleva 36.1× a 91.0×, y nada más. En la práctica queda por debajo. La transferencia de datos entre host y dispositivo cae del lado de $1-p$.
+
+La columna todo-NumPy queda en 43–59× (58–62× medido directamente). A diferencia de la hybrid, casi no depende de la tol. Si se porta todo, $p$ desaparece. El precio es el esfuerzo de desarrollo: también hay que vectorizar el transporte y las condiciones de contorno. Las decisiones reales quedan en medio. Otra vía es cambiar el propio método iterativo. Menos barridos reducen a la vez $p$ y el tiempo total. Los métodos implícitos como LU-SGS, por ejemplo, encuentran su límite de iteraciones por otras razones ([el límite de convergencia por CFL de LU-SGS](/es/posts/2026-11-06-lu-sgs-factorization-error-cfl-limit/)). Acelerar el kernel y llamarlo menos veces son estrategias distintas.
+
+## El problema que hay que pasar por el profiler antes de mover un punto caliente
+
+- Medir $p$ con la **tolerancia y la malla que se usarán de verdad**. Una malla de prueba pequeña la subestima.
+- Calcular primero el techo $1/(1-p)$. Si la aceleración buscada lo supera, portar solo el punto caliente no alcanza.
+- Si el número de iteraciones fija $p$, cambiar el solver (SOR, multigrid) puede ir antes que portar el kernel.
+
+La nota de 2020 tenía razón. Solo le faltaba una línea: "La fracción del punto caliente la fija la configuración del problema."
