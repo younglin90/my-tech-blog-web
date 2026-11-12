@@ -1,0 +1,156 @@
+---
+title: "Una GPU con 15 veces más FLOPs acelera Jacobi solo 4,5 veces — el ancho de banda de memoria fija la velocidad de un stencil (modelo roofline)"
+date: 2026-11-13
+description: "Un stencil de Jacobi hace solo 0,25 FLOP por byte, así que su aceleración en GPU queda limitada por la razón de anchos de banda (4,5x), no por la de FLOPs pico. Se calcula con un roofline."
+tags: ["Roofline-Model", "GPU", "Poisson", "Iterative-Solver", "Algorithms"]
+locale: es
+slug: 2026-11-13-roofline-jacobi-gpu-bandwidth-bound
+takeaway: "Un barrido de Jacobi mueve 24 bytes por 6 FLOPs en cada celda. Una intensidad aritmética de 0,25 está limitada por memoria tanto en CPU como en GPU, de modo que la aceleración queda fija en la razón de anchos de banda, 4,50x, sin importar la razón de 15x en FLOPs pico."
+draft: false
+---
+import { RooflineBandwidthPipeLab } from '@/components/post-viz/2026-11-13-roofline-jacobi-gpu-bandwidth-bound/RooflineBandwidthPipeLab'
+import { JacobiRooflineClockRace } from '@/components/post-viz/2026-11-13-roofline-jacobi-gpu-bandwidth-bound/JacobiRooflineClockRace'
+
+## 15 veces más cómputo, 4,5 veces más velocidad
+
+Un solver de Poisson se trasladó a una GPU cuya ficha técnica prometía 15 veces más cómputo. El resultado fue 4,5x. Reescribir el kernel no lo movió. Aprovechar mejor la caché tampoco. Lo curioso viene después: 4,5 coincide hasta el decimal con la razón entre los anchos de banda de memoria de ambos dispositivos. Este artículo muestra que la coincidencia no es casual. Se usa el modelo roofline (un modelo según el cual la velocidad la fija el menor entre el rendimiento de cómputo y el ancho de banda de memoria) para calcular el límite de un barrido de Jacobi. Al final será posible estimar en papel la aceleración de un port a GPU antes de escribir una sola línea de CUDA.
+
+## Tres líneas de una nota de 2020
+
+Una nota de febrero de 2020 resume en tres líneas la diferencia entre CPU y GPU. La CPU sirve para cálculo de propósito general con accesos aleatorios a memoria y control de flujo (ramas, condiciones de bucle). La GPU sirve para cálculo paralelo de datos, que aplica la misma operación a muchos datos. Y el ancho de banda de memoria de la GPU es mayor que el de la CPU. Los números de ejemplo eran 180 GB/s frente a 40 GB/s.
+
+La tercera línea es la más importante. Las dos primeras dicen en qué es buena una GPU. La tercera fija el techo de cuánto más rápido va ese trabajo. Las operaciones stencil de CFD (actualizar un punto a partir de unos pocos puntos vecinos de la malla) son paralelismo de datos de manual. Por eso encajan bien en GPU. Pero cuánto se aceleran lo decide el ancho de banda.
+
+## Roofline: el rendimiento es el menor de dos techos
+
+El rendimiento real $P$ de un kernel está acotado por:
+
+$$
+P = \min\left(P_{\text{peak}},\; I \cdot B\right), \qquad I = \frac{\text{FLOP}}{\text{byte}}
+$$
+
+$P_{\text{peak}}$ es el cómputo pico del dispositivo (FLOP/s) y $B$ su ancho de banda de memoria (byte/s). $I$ es la intensidad aritmética (operaciones realizadas por cada byte traído de DRAM).
+
+En una gráfica log-log esto es una recta inclinada que se junta con una horizontal, como un tejado. El punto de encuentro $I^* = P_{\text{peak}}/B$ se llama punto de cresta (ridge point). Si $I < I^*$, las unidades de cómputo esperan datos: el kernel está limitado por memoria (memory-bound). Si $I > I^*$, los datos llegan a tiempo y el cuello de botella es el cómputo: está limitado por cómputo (compute-bound).
+
+El modelo de dispositivos conserva los anchos de banda de la nota y supone los picos. La CPU tiene 40 GB/s y 300 GFLOP/s. La GPU tiene 180 GB/s y 4.500 GFLOP/s. Los puntos de cresta son 7,5 para la CPU y 25,0 para la GPU. Todo kernel con $I < 7,5$ solo ve ancho de banda en ambos dispositivos. Su aceleración es $180/40 = 4,5$.
+
+La siguiente simulación permite manipularlo directamente.
+
+<RooflineBandwidthPipeLab />
+
+Con AI en 0,25 (Jacobi) solo se enciende cerca del 1 % de las unidades de cómputo de la GPU. Al mover un deslizador de ancho de banda, la aceleración sigue exactamente la razón de anchos de banda. Solo cuando AI llega a 32 ambos puntos tocan su techo plano y la aceleración pasa a 15x.
+
+## Bytes que mueve un barrido de Jacobi
+
+La actualización de Jacobi para la ecuación de Poisson 2D $-\nabla^2 u = f$ es:
+
+$$
+u^{k+1}_{i,j} = \tfrac14\left(u^k_{i-1,j} + u^k_{i+1,j} + u^k_{i,j-1} + u^k_{i,j+1} + h^2 f_{i,j}\right)
+$$
+
+$h$ es el espaciado de malla y $k$ el índice de iteración. Cada celda cuesta 4 sumas y 1 multiplicación. Sumando 1 comparación de $|\Delta u|$ para el criterio de convergencia, se cuentan 6 FLOPs.
+
+El número de bytes depende de la reutilización de caché. Leer los cuatro vecinos y $f$ desde DRAM y escribir el resultado cuesta $6 \times 8 = 48$ bytes en doble precisión. Si la caché reutiliza los vecinos, solo quedan la lectura de $u$, la de $f$ y la escritura de $u^{k+1}$: 24 bytes. Las intensidades aritméticas son 0,125 y 0,25. Ambas están más de 30 veces por debajo de la cresta de la CPU, 7,5. Por bien que se use la caché, este kernel sigue limitado por memoria.
+
+Aquí entra el número de iteraciones. El tiempo total es "tiempo por barrido × número de barridos". El número de barridos lo fija el algoritmo, no el hardware. El radio espectral de Jacobi ronda $1 - \pi^2 h^2/2$. Duplicar la malla multiplica los barridos por 4 en teoría y por unos 3 con el criterio de parada de este artículo.
+
+## Código: contar barridos reales y asignar tiempo a cada dispositivo
+
+El código siguiente resuelve $-\nabla^2 u = 1$ en el cuadrado unidad con Jacobi. Cuenta los barridos de verdad y asigna el tiempo con la fórmula roofline. Seis kernels difieren solo en bytes. Se incluye el bloqueo temporal (temporal blocking, ejecutar $k$ barridos seguidos sobre un bloque residente en caché para reducir los viajes a DRAM a $1/k$) y una copia por PCIe en cada barrido.
+
+```python
+import numpy as np
+
+# Modelo de dispositivos: anchos de banda de la nota original (40 vs 180 GB/s) + picos supuestos
+DEV = {"CPU": (40e9, 300e9), "GPU": (180e9, 4500e9)}   # (B/s, FLOP/s)
+PCIE = 12e9                                            # ancho de banda de copia host<->GPU
+
+def jacobi_sweeps(n, tol=1e-6):
+    """Cuadrado unidad, -∇²u = 1, u=0 en bordes. Barridos de Jacobi hasta max|Δu| < tol."""
+    h2 = (1.0 / (n - 1)) ** 2
+    u = np.zeros((n, n))
+    for it in range(1, 10**6):
+        new = 0.25 * (u[:-2, 1:-1] + u[2:, 1:-1] + u[1:-1, :-2] + u[1:-1, 2:] + h2)
+        du = np.abs(new - u[1:-1, 1:-1]).max()
+        u[1:-1, 1:-1] = new
+        if du < tol:
+            return it
+
+def roofline_time(cells, sweeps, flops, bytes_, dev, pcie_bytes=0.0):
+    bw, peak = DEV[dev]
+    per_sweep = cells * max(flops / peak, bytes_ / bw)
+    return sweeps * (per_sweep + cells * pcie_bytes / PCIE)
+
+FLOPS = 6.0   # por celda: 4 sumas + 1 mult + 1 comparación |Δu|
+KERNELS = [   # (nombre, bytes DRAM por celda, bytes PCIe por celda)
+    ("naive (no reuse)", 48.0, 0.0),
+    ("cached u,f,u_new", 24.0, 0.0),
+    ("temporal block k=4", 24.0 / 4, 0.0),
+    ("temporal block k=32", 24.0 / 32, 0.0),
+    ("temporal block k=128", 24.0 / 128, 0.0),
+    ("cached + PCIe copy/sweep", 24.0, 16.0),
+]
+
+for n in (32, 64, 128):
+    print(f"N={n:4d}  sweeps={jacobi_sweeps(n):6d}")
+
+n = 64
+sweeps = jacobi_sweeps(n)
+cells = (n - 2) ** 2
+print(f"\nN={n}, sweeps={sweeps}, ridge CPU={300/40:.1f}  GPU={4500/180:.1f} FLOP/B")
+print(f"{'kernel':26s} {'AI':>6s} {'CPU ms':>8s} {'GPU ms':>8s} {'speedup':>8s}  bound(GPU)")
+for name, b, pb in KERNELS:
+    ai = FLOPS / b
+    tc = roofline_time(cells, sweeps, FLOPS, b, "CPU") * 1e3
+    tg = roofline_time(cells, sweeps, FLOPS, b, "GPU", pb) * 1e3
+    bound = "memory" if ai < 4500 / 180 else "compute"
+    if pb: bound = "PCIe"
+    print(f"{name:26s} {ai:6.3f} {tc:8.3f} {tg:8.3f} {tc/tg:8.2f}  {bound}")
+print(f"\npeak FLOP ratio = {4500/300:.1f}x, bandwidth ratio = {180/40:.2f}x")
+```
+
+```text
+N=  32  sweeps=  1176
+N=  64  sweeps=  3720
+N= 128  sweeps= 10537
+
+N=64, sweeps=3720, ridge CPU=7.5  GPU=25.0 FLOP/B
+kernel                         AI   CPU ms   GPU ms  speedup  bound(GPU)
+naive (no reuse)            0.125   17.160    3.813     4.50  memory
+cached u,f,u_new            0.250    8.580    1.907     4.50  memory
+temporal block k=4          1.000    2.145    0.477     4.50  memory
+temporal block k=32         8.000    0.286    0.060     4.80  memory
+temporal block k=128       32.000    0.286    0.019    15.00  compute
+cached + PCIe copy/sweep    0.250    8.580   20.973     0.41  PCIe
+
+peak FLOP ratio = 15.0x, bandwidth ratio = 4.50x
+```
+
+El mismo código puede ejecutarse directamente en el navegador.
+
+<JacobiRooflineClockRace />
+
+Con los valores por defecto (N=64, cached), al pulsar Play converge en 3.720 barridos con CPU 8,580 ms y GPU 1,907 ms. Cambiar a naive o block k=4 deja intacto el 4,50x. Elegir block k=128 o activar la copia por PCIe reproduce el 15,00x y el 0,41x de la salida. Subir el deslizador GPU BW eleva la aceleración al mismo ritmo que la razón de anchos de banda.
+
+## Por qué 4,50 aparece cuatro veces, y 15,00 y 0,41 una vez cada uno
+
+Naive, cached y k=4 dan 4,50x. Reducir los bytes 8 veces, de 48 a 6, redujo el tiempo de ambos dispositivos exactamente 8 veces. La razón no cambió. En el régimen limitado por memoria, ahorrar bytes beneficia por igual a los dos dispositivos.
+
+Con k=32 la AI vale 8. La CPU supera su cresta de 7,5 y pasa a estar limitada por cómputo. La GPU sigue limitada por ancho de banda. Por eso la razón sube un poco, a 4,80. Con k=128 la AI vale 32 y la GPU también supera su cresta de 25. La razón alcanza la de FLOPs pico, 15,00. Conviene notar que bloquear 128 barridos en caché no es realista. La región fantasma en los bordes del bloque crece con la profundidad del bloqueo. Esa fila debe leerse como una regla: "15x exige esta intensidad aritmética".
+
+La última fila es 0,41x: la GPU es 2,4 veces más lenta. Enviar el campo al host y de vuelta en cada barrido hace pasar 16 bytes por celda por un bus de 12 GB/s. Ese bus es más lento que la memoria de la CPU. El código que copia todo solo para comprobar la convergencia en el host cae justo en esta trampa. Hacer una reducción (operación que condensa un arreglo en un único valor) en la GPU y traer solo el máximo elimina este costo.
+
+La primera tabla, con N=32, 64 y 128, muestra los barridos creciendo 1.176 → 3.720 → 10.537. Duplicar la malla da 4 veces más celdas y unas 3 veces más barridos. El 4,5x que se gana al cambiar de dispositivo se lo come rápido un solo nivel de refinamiento.
+
+## Tres jugadas frente al muro del ancho de banda
+
+Primero, mover menos bytes. Pasar de doble a simple precisión reduce a la mitad los bytes por celda. Un kernel limitado por memoria se acelera en la misma proporción. Un compromiso habitual es la precisión mixta: iterar en simple precisión y calcular residuos en doble.
+
+Segundo, subir la intensidad aritmética. Además del bloqueo temporal, los stencils de alto orden y los kernels DG de alto orden sin matriz (matrix-free) calculan más por cada byte. Se desplazan hacia el punto de cresta de la GPU. A partir de ahí la razón de FLOPs pico empieza a importar.
+
+Tercero, reducir el número de barridos. El multimalla (multigrid) vuelve el número de barridos casi independiente del tamaño de la malla. Eso supera con creces el 4,5x de un cambio de dispositivo. Un artículo relacionado llega a la misma conclusión desde la ley de Amdahl ([la tolerancia fija la fracción p del punto caliente](/es/posts/2026-11-11-python-hotspot-amdahl-poisson-share/)). Otro factor que fija el número de iteraciones en solvers implícitos se trata en [el límite de convergencia CFL de LU-SGS](/es/posts/2026-11-06-lu-sgs-factorization-error-cfl-limit/).
+
+## El primer número en un presupuesto de port a GPU
+
+Para cada kernel, contar FLOPs por celda y bytes por celda, y dividir. Si el resultado queda por debajo de las crestas de ambos dispositivos, la aceleración esperada es la razón de anchos de banda. La razón de FLOPs pico no va en el presupuesto. Luego, comprobar si algún byte cruza entre host y dispositivo en cada iteración. Si uno solo lo hace, el ancho de banda de ese bus es el nuevo techo. Con estas dos líneas se sabe antes del port si se obtendrá 4,5x o 0,4x.

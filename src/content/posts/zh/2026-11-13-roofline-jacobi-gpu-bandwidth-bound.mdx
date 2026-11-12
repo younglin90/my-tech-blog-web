@@ -1,0 +1,156 @@
+---
+title: "算力15倍的GPU只让Jacobi快了4.5倍 — 决定模板计算速度的是内存带宽(Roofline模型)"
+date: 2026-11-13
+description: "Jacobi模板每字节只有0.25次浮点运算,GPU加速比被带宽比4.5倍锁住,而不是峰值算力比。用Roofline模型来计算。"
+tags: ["Roofline-Model", "GPU", "Poisson", "Iterative-Solver", "Algorithms"]
+locale: zh
+slug: 2026-11-13-roofline-jacobi-gpu-bandwidth-bound
+takeaway: "一次Jacobi扫描每个单元做6 FLOP、搬运24字节。算术强度0.25在CPU和GPU上都处于内存受限区,因此无论峰值算力比是15倍,加速比都固定在带宽比4.50倍。"
+draft: false
+---
+import { RooflineBandwidthPipeLab } from '@/components/post-viz/2026-11-13-roofline-jacobi-gpu-bandwidth-bound/RooflineBandwidthPipeLab'
+import { JacobiRooflineClockRace } from '@/components/post-viz/2026-11-13-roofline-jacobi-gpu-bandwidth-bound/JacobiRooflineClockRace'
+
+## 算力是15倍,速度却只有4.5倍
+
+我们把一个Poisson求解器移植到了一块GPU上。按规格表,它的算力是原来的15倍。结果只快了4.5倍。重写核函数没用,优化缓存也没用,始终停在4.5倍。奇怪的地方在于:4.5恰好等于两台设备内存带宽之比,连小数点都对得上。本文说明这个巧合并非偶然。我们用Roofline模型(算力与内存带宽中较低的一方决定速度)计算Jacobi扫描的上限。读完之后,你可以在动手移植之前就在纸上估算GPU能带来的加速比。
+
+## 2020年笔记里的三行字
+
+2020年2月的笔记用三行字概括了CPU和GPU的区别。CPU适合包含随机内存访问和控制流(分支、循环条件)的通用计算。GPU适合对大量数据重复同一操作的数据并行计算。另外,GPU的内存带宽高于CPU。笔记里举的数字是180 GB/s对40 GB/s。
+
+第三行最重要。前两行说的是"GPU擅长什么"。第三行给出的是"这类工作能快多少"的上限。CFD中的模板运算(stencil,用周围几个网格点更新一个点的计算)是典型的数据并行。所以它很适合GPU。但能快多少,由带宽决定。
+
+## Roofline:性能取两个天花板中较低者
+
+一个核函数的实际性能 $P$ 受下式约束:
+
+$$
+P = \min\left(P_{\text{peak}},\; I \cdot B\right), \qquad I = \frac{\text{FLOP}}{\text{byte}}
+$$
+
+$P_{\text{peak}}$ 是设备的峰值算力(FLOP/s),$B$ 是内存带宽(byte/s)。$I$ 是算术强度(arithmetic intensity,每从DRAM取1字节所做的运算次数)。
+
+在双对数坐标中,这个式子是一条斜线与一条水平线相交,形似屋顶。交点 $I^* = P_{\text{peak}}/B$ 称为脊点(ridge point)。当 $I < I^*$ 时,运算单元在等数据,称为内存受限(memory-bound)。当 $I > I^*$ 时,数据供应充足,瓶颈在运算,称为计算受限(compute-bound)。
+
+本文的设备模型沿用笔记中的带宽,峰值算力为假设值。CPU为40 GB/s、300 GFLOP/s。GPU为180 GB/s、4,500 GFLOP/s。脊点分别是CPU 7.5、GPU 25.0。凡是 $I < 7.5$ 的核函数,在两台设备上都只看带宽。其加速比为 $180/40 = 4.5$ 倍。
+
+可以在下面的模拟中亲手调节。
+
+<RooflineBandwidthPipeLab />
+
+把AI滑块放在0.25(Jacobi),GPU的运算单元只亮起约1%。拖动带宽滑块,加速比会严格跟随带宽比变化。只有把AI提到32,两个点才都碰到水平天花板,加速比才变成15倍。
+
+## 一次Jacobi扫描搬运多少字节
+
+二维Poisson方程 $-\nabla^2 u = f$ 的Jacobi更新如下:
+
+$$
+u^{k+1}_{i,j} = \tfrac14\left(u^k_{i-1,j} + u^k_{i+1,j} + u^k_{i,j-1} + u^k_{i,j+1} + h^2 f_{i,j}\right)
+$$
+
+$h$ 是网格间距,$k$ 是迭代序号。每个单元需要4次加法、1次乘法。再加上收敛判断中 $|\Delta u|$ 的1次比较,计为6 FLOP。
+
+字节数取决于缓存复用。如果每次都从DRAM读取4个邻点和 $f$ 并写回结果,双精度下是 $6 \times 8 = 48$ 字节。如果缓存能复用邻点值,只剩读 $u$、读 $f$、写 $u^{k+1}$,共24字节。对应的算术强度分别是0.125和0.25。两者都比CPU脊点7.5小30倍以上。无论缓存用得多好,这个核函数都摆脱不了内存受限。
+
+这时迭代次数登场了。总时间等于"单次扫描时间 × 扫描次数"。扫描次数由算法决定,而不是硬件。Jacobi的谱半径约为 $1 - \pi^2 h^2/2$。网格加密一倍,扫描次数理论上变为4倍,按本文的判停标准约为3倍。
+
+## 代码:真实地数扫描次数,再给两台设备计时
+
+下面的代码在单位正方形上用Jacobi求解 $-\nabla^2 u = 1$。扫描次数是真实统计的,时间按Roofline公式计算。六种核函数只在字节数上不同。其中包括时间分块(temporal blocking,在驻留缓存的分块上连续执行 $k$ 次扫描,把DRAM往返降到 $1/k$)以及每次扫描都做一次PCIe拷贝的情形。
+
+```python
+import numpy as np
+
+# 设备模型: 原笔记中的带宽(40 vs 180 GB/s) + 假设的峰值算力
+DEV = {"CPU": (40e9, 300e9), "GPU": (180e9, 4500e9)}   # (B/s, FLOP/s)
+PCIE = 12e9                                            # 主机<->GPU 拷贝带宽
+
+def jacobi_sweeps(n, tol=1e-6):
+    """单位正方形 -∇²u = 1, u=0 边界。直到 max|Δu| < tol 的 Jacobi 扫描次数。"""
+    h2 = (1.0 / (n - 1)) ** 2
+    u = np.zeros((n, n))
+    for it in range(1, 10**6):
+        new = 0.25 * (u[:-2, 1:-1] + u[2:, 1:-1] + u[1:-1, :-2] + u[1:-1, 2:] + h2)
+        du = np.abs(new - u[1:-1, 1:-1]).max()
+        u[1:-1, 1:-1] = new
+        if du < tol:
+            return it
+
+def roofline_time(cells, sweeps, flops, bytes_, dev, pcie_bytes=0.0):
+    bw, peak = DEV[dev]
+    per_sweep = cells * max(flops / peak, bytes_ / bw)
+    return sweeps * (per_sweep + cells * pcie_bytes / PCIE)
+
+FLOPS = 6.0   # 每单元: 加法4 + 乘法1 + |Δu| 比较1
+KERNELS = [   # (名称, 每单元DRAM字节, 每单元PCIe字节)
+    ("naive (no reuse)", 48.0, 0.0),
+    ("cached u,f,u_new", 24.0, 0.0),
+    ("temporal block k=4", 24.0 / 4, 0.0),
+    ("temporal block k=32", 24.0 / 32, 0.0),
+    ("temporal block k=128", 24.0 / 128, 0.0),
+    ("cached + PCIe copy/sweep", 24.0, 16.0),
+]
+
+for n in (32, 64, 128):
+    print(f"N={n:4d}  sweeps={jacobi_sweeps(n):6d}")
+
+n = 64
+sweeps = jacobi_sweeps(n)
+cells = (n - 2) ** 2
+print(f"\nN={n}, sweeps={sweeps}, ridge CPU={300/40:.1f}  GPU={4500/180:.1f} FLOP/B")
+print(f"{'kernel':26s} {'AI':>6s} {'CPU ms':>8s} {'GPU ms':>8s} {'speedup':>8s}  bound(GPU)")
+for name, b, pb in KERNELS:
+    ai = FLOPS / b
+    tc = roofline_time(cells, sweeps, FLOPS, b, "CPU") * 1e3
+    tg = roofline_time(cells, sweeps, FLOPS, b, "GPU", pb) * 1e3
+    bound = "memory" if ai < 4500 / 180 else "compute"
+    if pb: bound = "PCIe"
+    print(f"{name:26s} {ai:6.3f} {tc:8.3f} {tg:8.3f} {tc/tg:8.2f}  {bound}")
+print(f"\npeak FLOP ratio = {4500/300:.1f}x, bandwidth ratio = {180/40:.2f}x")
+```
+
+```text
+N=  32  sweeps=  1176
+N=  64  sweeps=  3720
+N= 128  sweeps= 10537
+
+N=64, sweeps=3720, ridge CPU=7.5  GPU=25.0 FLOP/B
+kernel                         AI   CPU ms   GPU ms  speedup  bound(GPU)
+naive (no reuse)            0.125   17.160    3.813     4.50  memory
+cached u,f,u_new            0.250    8.580    1.907     4.50  memory
+temporal block k=4          1.000    2.145    0.477     4.50  memory
+temporal block k=32         8.000    0.286    0.060     4.80  memory
+temporal block k=128       32.000    0.286    0.019    15.00  compute
+cached + PCIe copy/sweep    0.250    8.580   20.973     0.41  PCIe
+
+peak FLOP ratio = 15.0x, bandwidth ratio = 4.50x
+```
+
+把上面的代码直接放到浏览器里运行。
+
+<JacobiRooflineClockRace />
+
+在默认设置(N=64,cached)下按Play,会在3,720次扫描时收敛,显示CPU 8.580 ms、GPU 1.907 ms。把核函数切换为naive或block k=4,4.50倍纹丝不动。而选择block k=128或打开PCIe拷贝,就会得到输出中的15.00倍和0.41倍。调高GPU BW滑块,还能看到加速比随带宽比同步上升。
+
+## 为什么4.50出现四次,15.00和0.41各一次
+
+naive、cached和k=4都是4.50倍。字节数从48降到6,减少到1/8,两台设备的时间也恰好都减少到1/8。比值不变。在内存受限区,节省字节对两台设备同样有效。
+
+k=32时AI为8。CPU越过脊点7.5,进入计算受限。GPU仍处于带宽受限区。所以比值略升到4.80。k=128时AI为32,GPU也越过脊点25。比值达到峰值算力比15.00。不过,在缓存中连续执行128次扫描的时间分块并不现实。分块边界的幽灵区会随分块深度增大。这一行应当当作刻度来读:"要拿到15倍,需要这么高的算术强度"。
+
+最后一行是0.41倍,即GPU慢了2.4倍。每次扫描都把场传回主机再传回来,每个单元有16字节要经过12 GB/s的总线。这条总线比CPU内存还慢。为了在主机上判断收敛而每次全量拷贝的代码,正好掉进这个陷阱。只在GPU上做规约(reduction,把数组归约成一个值的运算)并取回最大值,这项开销就消失了。
+
+第一张表中N=32、64、128的几行显示,扫描次数依次为1,176 → 3,720 → 10,537。网格加密一倍,单元数变为4倍,扫描次数约为3倍。换设备得到的4.5倍,很快就会被一次网格加密吃掉。
+
+## 面对带宽墙的三招
+
+第一,少搬字节。把双精度换成单精度,每个单元的字节数减半。内存受限的核函数就快一倍。常见的折中是混合精度:迭代内部用单精度,残差用双精度计算。
+
+第二,提高算术强度。除了时间分块,高阶模板和无矩阵(matrix-free)高阶DG核函数也能用同样的数据做更多运算。这类核函数会向GPU脊点方向移动。从那时起,峰值算力比才开始有意义。
+
+第三,直接减少扫描次数。多重网格(multigrid)让扫描次数几乎与网格规模无关。这远远超过换设备带来的4.5倍。另一篇文章从Amdahl定律的角度得出了同样的结论([决定热点占比p的是容差](/zh/posts/2026-11-11-python-hotspot-amdahl-poisson-share/))。隐式求解器中决定迭代次数的另一个因素,见[LU-SGS的CFL收敛极限](/zh/posts/2026-11-06-lu-sgs-factorization-error-cfl-limit/)。
+
+## GPU移植估算单上的第一个数字
+
+对每个核函数,数出每单元的FLOP和每单元的字节,相除。如果结果低于两台设备的脊点,预期加速比就是带宽比。峰值算力比不要写进估算单。接着检查每次迭代是否有字节在主机与设备之间往返。只要有一个,那条总线的带宽就成了新的天花板。凭这两行,移植之前就能知道是4.5倍还是0.4倍。
