@@ -1,0 +1,190 @@
+---
+title: "[论文评述] 把界面削到 1 个单元,体积分数却冲到 1.06 —— MMACM-Ex 下风锐化通量与 Δt < Δx/9u"
+date: 2026-11-15
+description: "用一维算例复现五方程模型 MMACM-Ex 的下风反扩散通量,检验界面厚度与时间步条件 Δt < Δx/9u 的来源。"
+tags: ["Interface-Sharpening", "Compressible-Multiphase", "Diffuse-Interface", "Flux-Limiter", "Paper-Review"]
+locale: zh
+slug: 2026-11-15-mmacm-ex-downwind-sharpening-timestep
+takeaway: "MMACM-Ex 的指数 4 在界面边缘给出 H ≈ 8r,因此只有按物质速度计的 Courant 数低于 1/9 时,有界性才有保证。"
+draft: false
+---
+import { SharpeningExponentSlopeLab } from '@/components/post-viz/2026-11-15-mmacm-ex-downwind-sharpening-timestep/SharpeningExponentSlopeLab'
+import { MmacmExSquareWaveRace } from '@/components/post-viz/2026-11-15-mmacm-ex-downwind-sharpening-timestep/MmacmExSquareWaveRace'
+
+## 1 个单元的界面,和 1.063
+
+把一个方波在周期域里输运五圈。MUSCL–van Leer 每个界面用了 25 个单元。在同一份代码里加一行锐化通量,界面变成了 1 个单元。但体积分数的最大值是 1.06336。体积分数本应在 0 与 1 之间。
+
+本文阅读 Zhao 等人(2025,*Physics of Fluids*)的 MMACM-Ex 论文(面向五方程模型的极限界面锐化),并用一维算例复现其核心通量。读完能得到两点。第一,掺入下风(downwind)值如何让界面变陡。第二,论文给出的时间步条件 $\Delta t < \Delta x/9\bar u$ 从何而来,实际有多严格。
+
+## 论文修补的地方
+
+五方程模型(求解两相分密度、动量、能量和体积分数的扩散界面模型)是可压缩多相流的标准模型。它的弱点是黎曼求解器的数值耗散。界面会随时间抹开。抹开的界面会抹掉气泡溃灭、激波–气泡相互作用中的细小结构。
+
+常见的办法是改进重构,例如 THINC 或高阶限制器。[压缩型限制器 β 一文](/zh/posts/2026-10-24-compressive-beta-limiter-volume-fraction/)就属于这一类。MMACM-Ex 反其道而行。重构保持低阶,再额外叠加一个通量。
+
+$$
+\overline{\mathbf F} = \widehat{\mathbf F} + \widehat{\mathbf G}
+$$
+
+$\widehat{\mathbf F}$ 是 HLLC 黎曼通量,$\widehat{\mathbf G}$ 是界面锐化通量。$\widehat{\mathbf G}$ 的每个分量都由同一个人工体积通量 $J_k$ 乘以该相的密度、动量或能量得到。因此质量、动量、能量守恒不会被破坏(He–Tan 2024 的一致性框架)。
+
+## 掺多少下风值 —— 特征函数 H(r)
+
+体积分数分量的锐化通量如下。设单元面 $i+1/2$ 上 $\bar u>0$。
+
+$$
+J_{i+1/2} = \widetilde{\mathcal H}_{i+1/2}\left(\bar u\,\alpha_{i+1} - \widehat F_{\alpha,i+1/2}\right)
+$$
+
+$\alpha_{i+1}$ 是下风单元值,$\widehat F_\alpha$ 是迎风黎曼通量,$\widetilde{\mathcal H}$ 是在迎风单元取值的特征函数。两个通量相加后,面值就是迎风重构值 $\alpha^L$ 与下风值之间的插值。
+
+$$
+\overline F_{\alpha,i+1/2} = \bar u\left[\alpha^L_{i+1/2} + \mathcal H_i\left(\alpha_{i+1} - \alpha^L_{i+1/2}\right)\right]
+$$
+
+$\mathcal H=0$ 回到原通量,$\mathcal H=1$ 是纯下风格式。下风格式能让界面变陡,但单独使用会振荡发散。所以 $\mathcal H$ 被设计成梯度比 $r_i=(\alpha_i-\alpha_{i-1})/(\alpha_{i+1}-\alpha_i)$ 的限制器。
+
+$$
+\mathcal H(r) = 1 - \left(\frac{1-|r|}{1+|r|}\right)^4
+$$
+
+在 $r=1$(界面中部梯度均匀)时为 1,在 $r\to0$ 或 $r\to\infty$(界面边缘)时趋于 0。多维情形再乘以 MYC 法向的 $|n_x|$。该函数只在界面单元(式 19,$\varepsilon<\alpha<1-\varepsilon$ 且单调)中启用。
+
+下面的模拟可以直接动手调。左侧是移动的界面与逐单元的 $\mathcal H$,右侧是 $\mathcal H(r)$ 曲线。
+
+<SharpeningExponentSlopeLab />
+
+改变指数 p,观察 $r=0$ 附近红色切线的斜率。斜率始终是 $2p$。把界面宽度调小,红色探针点会滑到曲线陡峭的前沿。
+
+## 指数 4 决定了时间步
+
+当 $r\to0$ 时,$(1-r)/(1+r)\approx 1-2r$。四次方后得到 $1-8r$。因此 $\mathcal H\approx 8r$。论文图 1 的插图正是这个斜率。
+
+论文用 Zalesak 式 FCT(flux-corrected transport,把修正通量限制在局部极值之内的方法)的思路建立稳定条件。防止过冲的上限如下。
+
+$$
+R_{in} \approx \left(\frac{\Delta x}{\bar u\,\Delta t} - 1\right) r_i
+$$
+
+若 $\mathcal H < R_{in}$,就不会产生新的极值。代入 $\mathcal H<8r$ 得 $\Delta x/(\bar u\Delta t)-1>8$,即 $\Delta t<\Delta x/9\bar u$。对一般指数 $p$,条件为 $\Delta t<\Delta x/((2p+1)\bar u)$。
+
+这里的 $\bar u$ 是**物质速度**,不是声速。论文使用 CFL 0.4,并称"CFL < 0.6 时很容易满足"。原因是可压缩问题的 $\Delta t$ 由 $\max(|u|+c)$ 决定。在水–空气激波管中,水的声速超过 2,000 m/s。按物质速度计的 Courant 数远小于 0.4。
+
+## 代码:同一个方波,三种通量,七档 Courant 数
+
+要看条件有多严,最好用 $c=0$ 的纯对流。这时 Courant 数就是物质 Courant 数。网格 200 个单元,宽 0.3 的方波,周期边界,用 SSP-RK3 输运五圈。
+
+```python
+import numpy as np
+
+def vanleer_face(a):
+    # 左状态 α^L_{i+1/2}(周期边界, u>0)
+    dm = a - np.roll(a, 1)
+    dp = np.roll(a, -1) - a
+    with np.errstate(divide='ignore', invalid='ignore'):
+        r = np.where(np.abs(dp) > 1e-14, dm / dp, 0.0)
+    phi = (r + np.abs(r)) / (1 + np.abs(r))
+    return a + 0.5 * phi * dp
+
+def sharpen_weight(a, p=4, eps=1e-4):
+    # 特征函数 H(r) = 1 - ((1-|r|)/(1+|r|))^p,仅在界面单元(式 19)
+    dm = a - np.roll(a, 1)
+    dp = np.roll(a, -1) - a
+    with np.errstate(divide='ignore', invalid='ignore'):
+        r = np.where(np.abs(dp) > 1e-14, dm / dp, 0.0)
+    H = 1 - ((1 - np.abs(r)) / (1 + np.abs(r))) ** p
+    iface = (a > eps) & (a < 1 - eps) & (dm * dp > 0)
+    return np.where(iface, H, 0.0)
+
+def rhs(a, scheme, u, dx, p):
+    if scheme == "upwind1":
+        F = u * a
+    else:
+        F = u * vanleer_face(a)          # 黎曼通量 F^
+        if scheme == "mmacm_ex":
+            Ht = sharpen_weight(a, p)    # 迎风单元值 H~ (u>0 → i)
+            J = Ht * (u * np.roll(a, -1) - F)   # 下风(downwind)反扩散通量
+            F = F + J
+    return -(F - np.roll(F, 1)) / dx
+
+def advect(scheme, N=200, cfl=0.4, periods=5, p=4):
+    dx, u = 1.0 / N, 1.0
+    x = (np.arange(N) + 0.5) * dx
+    a = ((x > 0.35) & (x < 0.65)).astype(float)
+    a0 = a.copy()
+    dt = cfl * dx / u
+    steps = int(round(periods / dt))
+    for _ in range(steps):           # SSP-RK3
+        a1 = a + dt * rhs(a, scheme, u, dx, p)
+        a2 = 0.75 * a + 0.25 * (a1 + dt * rhs(a1, scheme, u, dx, p))
+        a = a / 3 + 2 / 3 * (a2 + dt * rhs(a2, scheme, u, dx, p))
+    width = np.sum((a > 0.01) & (a < 0.99)) / 2   # 每个界面的单元数
+    L1 = np.mean(np.abs(a - a0))
+    return width, a.min(), a.max(), L1, steps
+
+print("N=200, square wave, 5 periods")
+print(f"{'scheme':>9} {'CFL':>5} {'cells':>6} {'min':>10} {'max':>9} {'L1':>8}")
+for s in ["upwind1", "vanleer", "mmacm_ex"]:
+    w, lo, hi, L1, n = advect(s)
+    print(f"{s:>9} {0.4:5.2f} {w:6.1f} {lo:10.2e} {hi:9.5f} {L1:8.5f}")
+print("\nMMACM-Ex CFL scan (p=4, bound 1/(2p+1) = 0.111)")
+for c in [0.1, 0.11, 0.13, 0.2, 0.4, 0.6, 0.8]:
+    w, lo, hi, L1, n = advect("mmacm_ex", cfl=c)
+    print(f"{'mmacm_ex':>9} {c:5.2f} {w:6.1f} {lo:10.2e} {hi:9.5f} {L1:8.5f}")
+print("\nexponent p scan (CFL 0.4)")
+for p in [1, 2, 4, 8]:
+    w, lo, hi, L1, n = advect("mmacm_ex", p=p)
+    print(f"{'p='+str(p):>9} {0.4:5.2f} {w:6.1f} {lo:10.2e} {hi:9.5f} {L1:8.5f}")
+```
+
+```text
+N=200, square wave, 5 periods
+   scheme   CFL  cells        min       max       L1
+  upwind1  0.40  100.0   2.68e-02   0.65726  0.24526
+  vanleer  0.40   25.0   1.42e-14   1.00000  0.04327
+ mmacm_ex  0.40    1.0  -6.34e-02   1.06336  0.01092
+
+MMACM-Ex CFL scan (p=4, bound 1/(2p+1) = 0.111)
+ mmacm_ex  0.10    2.0   7.04e-15   1.00000  0.00124
+ mmacm_ex  0.11    2.0   5.85e-15   1.00000  0.00125
+ mmacm_ex  0.13    2.0   5.46e-15   1.00000  0.00126
+ mmacm_ex  0.20    2.0  -2.64e-03   1.00264  0.00139
+ mmacm_ex  0.40    1.0  -6.34e-02   1.06336  0.01092
+ mmacm_ex  0.60    1.0  -1.18e-01   1.11804  0.01843
+ mmacm_ex  0.80    1.0  -2.41e-01   1.24136  0.03214
+
+exponent p scan (CFL 0.4)
+      p=1  0.40    1.0  -2.12e-01   1.21235  0.03324
+      p=2  0.40    2.0  -2.31e-02   1.02313  0.00454
+      p=4  0.40    1.0  -6.34e-02   1.06336  0.01092
+      p=8  0.40    1.0  -5.77e-02   1.05767  0.00923
+```
+
+把上面的代码直接放到浏览器里运行。三种通量同时输运同一个方波。
+
+<MmacmExSquareWaveRace />
+
+在默认 CFL 0.40 下跑到底,橙色曲线的 max 停在 1.063 附近。把 CFL 降到 0.11,下方曲线图的过冲量贴在 0 上,界面保持 2 个单元。
+
+## 读数:2 个单元与 1 个单元的差别
+
+第一张表直接印证了论文的主张。一阶迎风五圈后把方波抹平,最大值只有 0.657。van Leer 保持有界,但每个界面占 25 个单元。MMACM-Ex 把 L1 误差降到四分之一。
+
+但 CFL 0.4 下的"1 个单元"并不是好消息。在条件以内的 0.10~0.13,界面恰好 2 个单元,误差 0.0012。升到 0.4,界面变薄到 1 个单元。同时出现 −0.063 和 1.063,误差增大 9 倍。这是过冲把界面削成台阶的结果。论文说的"少于两个单元",指的是条件以内得到的 2 个单元。
+
+条件 $1/9=0.111$ 是充分条件。到 0.13 有界性依然成立。0.20 时首次出现 0.26% 的过冲。$\mathcal H<8r$ 是最坏情形,所以真实阈值略高一些。
+
+指数扫描并不单调。p=1 过冲 21%。p=2 最小,为 2.3%。p=4 和 p=8 在 6% 左右。CFL 0.4 对四种情形都超出各自的充分条件。所以这张表不该读成"哪个 p 安全",而应读成"在条件之外,p 不会以可预测的方式改变结果"。
+
+## 这次复现没有覆盖的内容
+
+论文的大部分结果是二维和三维的:空气–R22 激波–气泡相互作用、水下爆炸、三维气泡溃灭。那里 $|n_x|$ 加权与 HLLC 面速度 $\bar u$ 会同时起作用。这个一维实验只抽出了体积分数方程。分密度和能量分量的一致性没有检验。
+
+另一点是重构时把界面单元的 $\rho_k$ 视为常数的处理(Zhang 等)。单一标量对流中看不到它。一致性通量的意义,和[反扩散 IST 一文](/zh/posts/2026-07-25-interface-sharpening-anti-diffusion/)对照会更清楚。IST 每步额外求解一个锐化方程,MMACM-Ex 则把它融进通量。下风值压低 Courant 数上限的现象,与 [VOF 对流 CFL 上限一文](/zh/posts/2026-08-16-vof-interface-advection-cfl-limit/)中的 NVD 分析同源。
+
+## 若要把这个通量放进低马赫、低速界面问题
+
+如果声速决定 $\Delta t$,在高速可压缩问题里几乎不用担心。但对声学做隐式处理、把 $\Delta t$ 放大到物质速度尺度的低马赫代码就不同了。此时 Courant 数会落在 0.4~0.8,上表下方几行就成了现实。移植之前,先在日志里打印一行 $\max|\bar u|\,\Delta t/\Delta x < 1/(2p+1)$。若超出,较稳妥的做法是直接对锐化通量施加 Zalesak 限制,或只把锐化步拆成子步。
+
+**参考文献**: S. Zhao, H. Yong, S. Guo, S. Liu, G. Ni, Z. He, "A high-fidelity interface sharpening method for the five-equation model in compressible multiphase flows," *Phys. Fluids* 37, 076157 (2025). Z. He, S. Tan, *J. Comput. Phys.* 513, 113192 (2024).

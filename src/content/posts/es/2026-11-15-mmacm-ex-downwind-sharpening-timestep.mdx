@@ -1,0 +1,190 @@
+---
+title: "[Revisión de artículo] Afilar la interfaz a una celda llevó la fracción de volumen a 1.06 — flujo aguas abajo de MMACM-Ex y Δt < Δx/9u"
+date: 2026-11-15
+description: "Reproducción 1D del flujo antidifusivo aguas abajo de MMACM-Ex para el modelo de cinco ecuaciones: espesor de interfaz, acotamiento y el origen de la condición Δt < Δx/9u."
+tags: ["Interface-Sharpening", "Compressible-Multiphase", "Diffuse-Interface", "Flux-Limiter", "Paper-Review"]
+locale: es
+slug: 2026-11-15-mmacm-ex-downwind-sharpening-timestep
+takeaway: "El exponente 4 de MMACM-Ex produce H ≈ 8r en el borde de la interfaz, así que el acotamiento solo está garantizado si el número de Courant basado en la velocidad material queda bajo 1/9."
+draft: false
+---
+import { SharpeningExponentSlopeLab } from '@/components/post-viz/2026-11-15-mmacm-ex-downwind-sharpening-timestep/SharpeningExponentSlopeLab'
+import { MmacmExSquareWaveRace } from '@/components/post-viz/2026-11-15-mmacm-ex-downwind-sharpening-timestep/MmacmExSquareWaveRace'
+
+## Una interfaz de una celda, y un 1.063
+
+Una onda cuadrada dio cinco vueltas a un dominio periódico. MUSCL–van Leer gastó 25 celdas por interfaz. Al añadir una sola línea con un flujo de afilado, quedó en una celda. Pero el máximo de la fracción de volumen salió 1.06336. Una fracción de volumen debe quedar entre 0 y 1.
+
+Este artículo revisa el trabajo MMACM-Ex de Zhao et al. (2025, *Physics of Fluids*), un afilado extremo de interfaz para el modelo de cinco ecuaciones, y reproduce su flujo central en 1D. Se obtienen dos cosas. Primero, cómo mezclar el valor aguas abajo (downwind) empina la interfaz. Segundo, de dónde sale la condición de paso temporal del artículo, $\Delta t < \Delta x/9\bar u$, y qué tan estricta es en la práctica.
+
+## Lo que corrige el artículo
+
+El modelo de cinco ecuaciones (un modelo de interfaz difusa que resuelve densidades parciales, momento, energía y fracción de volumen de ambas fases) es el estándar en flujo multifásico compresible. Su punto débil es la difusión numérica del resolvedor de Riemann. La interfaz se ensancha con el tiempo. Una interfaz ensanchada borra estructuras finas en el colapso de burbujas y en la interacción choque–burbuja.
+
+La receta habitual es mejorar la reconstrucción, como THINC o un limitador de alto orden. El [artículo sobre el limitador compresivo β](/es/posts/2026-10-24-compressive-beta-limiter-volume-fraction/) pertenece a esa familia. MMACM-Ex va en sentido contrario. Mantiene una reconstrucción de bajo orden y suma un segundo flujo.
+
+$$
+\overline{\mathbf F} = \widehat{\mathbf F} + \widehat{\mathbf G}
+$$
+
+$\widehat{\mathbf F}$ es el flujo de Riemann HLLC y $\widehat{\mathbf G}$ es el flujo de afilado de interfaz. Cada componente de $\widehat{\mathbf G}$ es un único flujo volumétrico artificial $J_k$ multiplicado por la densidad, el momento o la energía de esa fase. Así se conservan masa, momento y energía (el marco de consistencia de He y Tan, 2024).
+
+## Cuánto valor aguas abajo mezclar — la función característica H(r)
+
+Este es el flujo de afilado para la fracción de volumen en la cara $i+1/2$, con $\bar u>0$.
+
+$$
+J_{i+1/2} = \widetilde{\mathcal H}_{i+1/2}\left(\bar u\,\alpha_{i+1} - \widehat F_{\alpha,i+1/2}\right)
+$$
+
+$\alpha_{i+1}$ es el valor de la celda aguas abajo, $\widehat F_\alpha$ es el flujo de Riemann aguas arriba (upwind) y $\widetilde{\mathcal H}$ es la función característica evaluada en la celda aguas arriba. Al sumar ambos flujos, el valor en la cara es una combinación entre la reconstrucción aguas arriba $\alpha^L$ y el valor aguas abajo.
+
+$$
+\overline F_{\alpha,i+1/2} = \bar u\left[\alpha^L_{i+1/2} + \mathcal H_i\left(\alpha_{i+1} - \alpha^L_{i+1/2}\right)\right]
+$$
+
+Con $\mathcal H=0$ se recupera el flujo original. Con $\mathcal H=1$ queda un esquema puramente aguas abajo. Ese esquema empina frentes, pero por sí solo oscila y diverge. Por eso $\mathcal H$ se diseña como un limitador en la razón de pendientes $r_i=(\alpha_i-\alpha_{i-1})/(\alpha_{i+1}-\alpha_i)$.
+
+$$
+\mathcal H(r) = 1 - \left(\frac{1-|r|}{1+|r|}\right)^4
+$$
+
+Vale 1 en $r=1$ (pendiente uniforme en el centro de la interfaz) y tiende a 0 cuando $r\to0$ o $r\to\infty$ (los bordes). En varias dimensiones se multiplica por $|n_x|$ de una normal MYC. Solo se activa en celdas de interfaz (ec. 19: $\varepsilon<\alpha<1-\varepsilon$ y monotonía local).
+
+En la simulación siguiente se puede manipular directamente. A la izquierda, una interfaz en movimiento con $\mathcal H$ por celda; a la derecha, la curva $\mathcal H(r)$.
+
+<SharpeningExponentSlopeLab />
+
+Al cambiar el exponente p, conviene mirar la tangente roja en $r=0$. Su pendiente siempre es $2p$. Si se reduce el ancho de la interfaz, la sonda roja se desliza hacia el frente empinado de la curva.
+
+## El exponente 4 fija el paso temporal
+
+Cuando $r\to0$, $(1-r)/(1+r)\approx 1-2r$. Elevado a la cuarta queda $1-8r$. Por lo tanto $\mathcal H\approx 8r$. Esa es la pendiente del recuadro de la Fig. 1 del artículo.
+
+El artículo arma la condición de estabilidad con la lógica FCT de Zalesak (flux-corrected transport, que limita un flujo de corrección para no crear extremos nuevos). La cota que evita sobrepasos es la siguiente.
+
+$$
+R_{in} \approx \left(\frac{\Delta x}{\bar u\,\Delta t} - 1\right) r_i
+$$
+
+Si $\mathcal H < R_{in}$, no aparece ningún extremo nuevo. Con $\mathcal H<8r$ resulta $\Delta x/(\bar u\Delta t)-1>8$, es decir, $\Delta t<\Delta x/9\bar u$. Para un exponente general $p$ queda $\Delta t<\Delta x/((2p+1)\bar u)$.
+
+Aquí $\bar u$ es la **velocidad material**, no la velocidad del sonido. El artículo usa CFL 0.4 y afirma que la condición "se cumple fácilmente con CFL < 0.6". La razón es que en problemas compresibles $\Delta t$ lo fija $\max(|u|+c)$. En el tubo de choque agua–aire, la velocidad del sonido en el agua supera los 2,000 m/s. El número de Courant material queda muy por debajo de 0.4.
+
+## Código: una onda cuadrada, tres flujos, siete números de Courant
+
+Para medir qué tan estricta es la condición, lo ideal es advección pura con $c=0$. Así el número de Courant coincide con el material. 200 celdas, onda cuadrada de ancho 0.3, contorno periódico, cinco vueltas con SSP-RK3.
+
+```python
+import numpy as np
+
+def vanleer_face(a):
+    # estado izquierdo α^L_{i+1/2} (periódico, u>0)
+    dm = a - np.roll(a, 1)
+    dp = np.roll(a, -1) - a
+    with np.errstate(divide='ignore', invalid='ignore'):
+        r = np.where(np.abs(dp) > 1e-14, dm / dp, 0.0)
+    phi = (r + np.abs(r)) / (1 + np.abs(r))
+    return a + 0.5 * phi * dp
+
+def sharpen_weight(a, p=4, eps=1e-4):
+    # función característica H(r) = 1 - ((1-|r|)/(1+|r|))^p, solo en celdas de interfaz (ec. 19)
+    dm = a - np.roll(a, 1)
+    dp = np.roll(a, -1) - a
+    with np.errstate(divide='ignore', invalid='ignore'):
+        r = np.where(np.abs(dp) > 1e-14, dm / dp, 0.0)
+    H = 1 - ((1 - np.abs(r)) / (1 + np.abs(r))) ** p
+    iface = (a > eps) & (a < 1 - eps) & (dm * dp > 0)
+    return np.where(iface, H, 0.0)
+
+def rhs(a, scheme, u, dx, p):
+    if scheme == "upwind1":
+        F = u * a
+    else:
+        F = u * vanleer_face(a)          # flujo de Riemann F^
+        if scheme == "mmacm_ex":
+            Ht = sharpen_weight(a, p)    # valor de la celda aguas arriba H~ (u>0 → i)
+            J = Ht * (u * np.roll(a, -1) - F)   # flujo antidifusivo aguas abajo (downwind)
+            F = F + J
+    return -(F - np.roll(F, 1)) / dx
+
+def advect(scheme, N=200, cfl=0.4, periods=5, p=4):
+    dx, u = 1.0 / N, 1.0
+    x = (np.arange(N) + 0.5) * dx
+    a = ((x > 0.35) & (x < 0.65)).astype(float)
+    a0 = a.copy()
+    dt = cfl * dx / u
+    steps = int(round(periods / dt))
+    for _ in range(steps):           # SSP-RK3
+        a1 = a + dt * rhs(a, scheme, u, dx, p)
+        a2 = 0.75 * a + 0.25 * (a1 + dt * rhs(a1, scheme, u, dx, p))
+        a = a / 3 + 2 / 3 * (a2 + dt * rhs(a2, scheme, u, dx, p))
+    width = np.sum((a > 0.01) & (a < 0.99)) / 2   # celdas por interfaz
+    L1 = np.mean(np.abs(a - a0))
+    return width, a.min(), a.max(), L1, steps
+
+print("N=200, square wave, 5 periods")
+print(f"{'scheme':>9} {'CFL':>5} {'cells':>6} {'min':>10} {'max':>9} {'L1':>8}")
+for s in ["upwind1", "vanleer", "mmacm_ex"]:
+    w, lo, hi, L1, n = advect(s)
+    print(f"{s:>9} {0.4:5.2f} {w:6.1f} {lo:10.2e} {hi:9.5f} {L1:8.5f}")
+print("\nMMACM-Ex CFL scan (p=4, bound 1/(2p+1) = 0.111)")
+for c in [0.1, 0.11, 0.13, 0.2, 0.4, 0.6, 0.8]:
+    w, lo, hi, L1, n = advect("mmacm_ex", cfl=c)
+    print(f"{'mmacm_ex':>9} {c:5.2f} {w:6.1f} {lo:10.2e} {hi:9.5f} {L1:8.5f}")
+print("\nexponent p scan (CFL 0.4)")
+for p in [1, 2, 4, 8]:
+    w, lo, hi, L1, n = advect("mmacm_ex", p=p)
+    print(f"{'p='+str(p):>9} {0.4:5.2f} {w:6.1f} {lo:10.2e} {hi:9.5f} {L1:8.5f}")
+```
+
+```text
+N=200, square wave, 5 periods
+   scheme   CFL  cells        min       max       L1
+  upwind1  0.40  100.0   2.68e-02   0.65726  0.24526
+  vanleer  0.40   25.0   1.42e-14   1.00000  0.04327
+ mmacm_ex  0.40    1.0  -6.34e-02   1.06336  0.01092
+
+MMACM-Ex CFL scan (p=4, bound 1/(2p+1) = 0.111)
+ mmacm_ex  0.10    2.0   7.04e-15   1.00000  0.00124
+ mmacm_ex  0.11    2.0   5.85e-15   1.00000  0.00125
+ mmacm_ex  0.13    2.0   5.46e-15   1.00000  0.00126
+ mmacm_ex  0.20    2.0  -2.64e-03   1.00264  0.00139
+ mmacm_ex  0.40    1.0  -6.34e-02   1.06336  0.01092
+ mmacm_ex  0.60    1.0  -1.18e-01   1.11804  0.01843
+ mmacm_ex  0.80    1.0  -2.41e-01   1.24136  0.03214
+
+exponent p scan (CFL 0.4)
+      p=1  0.40    1.0  -2.12e-01   1.21235  0.03324
+      p=2  0.40    2.0  -2.31e-02   1.02313  0.00454
+      p=4  0.40    1.0  -6.34e-02   1.06336  0.01092
+      p=8  0.40    1.0  -5.77e-02   1.05767  0.00923
+```
+
+Ahora el código anterior corre directamente en el navegador. Los tres flujos transportan la misma onda cuadrada a la vez.
+
+<MmacmExSquareWaveRace />
+
+Con el valor por defecto CFL 0.40, al llegar al final el max naranja se detiene cerca de 1.063. Si se baja el CFL a 0.11, la curva de sobrepaso del gráfico inferior se pega a cero y la interfaz se mantiene en dos celdas.
+
+## Lectura de los números: dos celdas frente a una
+
+La primera tabla muestra directamente lo que afirma el artículo. El upwind de primer orden borró la onda en cinco vueltas; su máximo es 0.657. Van Leer se mantiene acotado, pero usa 25 celdas por interfaz. MMACM-Ex reduce el error L1 a la cuarta parte.
+
+Sin embargo, la "una celda" a CFL 0.4 no es una buena noticia. Dentro de la cota, entre 0.10 y 0.13, la interfaz ocupa exactamente dos celdas y el error es 0.0012. Al subir a 0.4, la interfaz baja a una celda. Al mismo tiempo aparecen −0.063 y 1.063, y el error se multiplica por nueve. El sobrepaso talla la interfaz en escalones. Las "menos de dos celdas" del artículo son las dos celdas que se obtienen dentro de la cota.
+
+La condición $1/9=0.111$ es suficiente, no exacta. A 0.13 el acotamiento todavía se mantuvo. El primer sobrepaso, de 0.26%, aparece a 0.20. $\mathcal H<8r$ es el peor caso, así que el umbral real está algo más arriba.
+
+El barrido del exponente no es monótono. p=1 se pasa un 21%. p=2 es el menor, con 2.3%. p=4 y p=8 rondan el 6%. CFL 0.4 queda fuera de la cota suficiente de los cuatro. Por eso esta tabla no se lee como "qué p es seguro", sino como "fuera de la cota, p no cambia el resultado de forma predecible".
+
+## Lo que esta reproducción deja fuera
+
+La mayoría de los resultados del artículo son 2D y 3D: interacción choque–burbuja aire–R22, explosión submarina, colapso de burbuja 3D. Allí entran juntos el peso $|n_x|$ y la velocidad de cara HLLC $\bar u$. Este experimento 1D aísla solo la ecuación de fracción de volumen. No prueba la consistencia de las componentes de densidad parcial y energía.
+
+Tampoco incluye mantener $\rho_k$ constante en celdas de interfaz durante la reconstrucción (Zhang et al.), algo que no aparece en la advección de un solo escalar. El sentido de un flujo consistente se aclara al compararlo con el [artículo sobre afilado antidifusivo IST](/es/posts/2026-07-25-interface-sharpening-anti-diffusion/). IST resuelve una ecuación de afilado aparte en cada paso; MMACM-Ex la integra en el flujo. La forma en que los valores aguas abajo bajan el techo de Courant comparte raíz con el análisis NVD del [artículo sobre el límite CFL de advección VOF](/es/posts/2026-08-16-vof-interface-advection-cfl-limit/).
+
+## Antes de llevar este flujo a un código de interfaz de bajo Mach
+
+Si la velocidad del sonido fija $\Delta t$ en un caso compresible de alta velocidad, hay poco de qué preocuparse. Un código de bajo Mach que trata la acústica de forma implícita y agranda $\Delta t$ hasta la escala de la velocidad material es otra historia. El número de Courant cae entonces entre 0.4 y 0.8, y las últimas filas de la tabla se vuelven realidad. Antes de portar, conviene registrar una línea: $\max|\bar u|\,\Delta t/\Delta x < 1/(2p+1)$. Si no se cumple, lo más seguro es aplicar un limitador de Zalesak directamente al flujo de afilado, o subdividir en subpasos solo la etapa de afilado.
+
+**Referencias**: S. Zhao, H. Yong, S. Guo, S. Liu, G. Ni, Z. He, "A high-fidelity interface sharpening method for the five-equation model in compressible multiphase flows," *Phys. Fluids* 37, 076157 (2025). Z. He, S. Tan, *J. Comput. Phys.* 513, 113192 (2024).

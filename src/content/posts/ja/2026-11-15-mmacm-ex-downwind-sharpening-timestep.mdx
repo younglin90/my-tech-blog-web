@@ -1,0 +1,190 @@
+---
+title: "[論文レビュー] 界面を1セルまで削ったら体積分率が1.06になった — MMACM-Exの風下シャープニング流束とΔt < Δx/9u"
+date: 2026-11-15
+description: "5方程式モデル向けMMACM-Exの風下反拡散流束を1Dで再現し、界面幅と時間刻み条件Δt < Δx/9uの由来を確かめます。"
+tags: ["Interface-Sharpening", "Compressible-Multiphase", "Diffuse-Interface", "Flux-Limiter", "Paper-Review"]
+locale: ja
+slug: 2026-11-15-mmacm-ex-downwind-sharpening-timestep
+takeaway: "MMACM-Exの指数4は界面端でH ≈ 8rを生み、そのため物質速度基準のクーラン数が1/9未満のときだけ有界性が保証されます。"
+draft: false
+---
+import { SharpeningExponentSlopeLab } from '@/components/post-viz/2026-11-15-mmacm-ex-downwind-sharpening-timestep/SharpeningExponentSlopeLab'
+import { MmacmExSquareWaveRace } from '@/components/post-viz/2026-11-15-mmacm-ex-downwind-sharpening-timestep/MmacmExSquareWaveRace'
+
+## 1セルの界面と、1.063
+
+矩形波を周期領域で5周させました。MUSCL–van Leerは界面1つに25セルを使いました。同じコードにシャープニング流束を1行足すと、1セルになりました。ところが体積分率の最大値は1.06336でした。体積分率は0と1の間に収まるはずです。
+
+この記事では、Zhaoら(2025, *Physics of Fluids*)のMMACM-Ex論文(5方程式モデル向けの極限界面シャープニング)を読み、中心となる流束を1Dで再現します。得られるものは2つです。1つ目は、風下(downwind)の値を混ぜて界面を立てる仕組み。2つ目は、論文が示した時間刻み条件 $\Delta t < \Delta x/9\bar u$ がどこから来て、実際どれほど厳しいかです。
+
+## 論文が直した箇所
+
+5方程式モデル(2相の部分密度・運動量・エネルギー・体積分率を解く拡散界面モデル)は、圧縮性多相流の標準です。弱点はリーマンソルバーの数値拡散です。時間とともに界面がにじみます。にじんだ界面は、気泡崩壊や衝撃波–気泡干渉の細かな構造を消してしまいます。
+
+よくある処方は再構成を改良することです。THINCや高次リミターがそうです。[圧縮型リミターβの記事](/ja/posts/2026-10-24-compressive-beta-limiter-volume-fraction/)もこの系統です。MMACM-Exは逆を行きます。再構成は低次のままにして、流束をもう1つ上乗せします。
+
+$$
+\overline{\mathbf F} = \widehat{\mathbf F} + \widehat{\mathbf G}
+$$
+
+$\widehat{\mathbf F}$ はHLLCリーマン流束、$\widehat{\mathbf G}$ は界面シャープニング流束です。$\widehat{\mathbf G}$ のすべての成分は、人工体積流束 $J_k$ 1つに各相の密度・運動量・エネルギーを掛けて作ります。そのため質量・運動量・エネルギーの保存は崩れません(He–Tan 2024の整合性の枠組み)。
+
+## 風下をどれだけ混ぜるか — 特性関数 H(r)
+
+体積分率成分のシャープニング流束は次のとおりです。セル面 $i+1/2$ で $\bar u>0$ とします。
+
+$$
+J_{i+1/2} = \widetilde{\mathcal H}_{i+1/2}\left(\bar u\,\alpha_{i+1} - \widehat F_{\alpha,i+1/2}\right)
+$$
+
+$\alpha_{i+1}$ は風下セルの値、$\widehat F_\alpha$ は風上リーマン流束、$\widetilde{\mathcal H}$ は風上セルで評価した特性関数です。2つの流束を足すと、面の値は風上再構成値 $\alpha^L$ と風下値の内分になります。
+
+$$
+\overline F_{\alpha,i+1/2} = \bar u\left[\alpha^L_{i+1/2} + \mathcal H_i\left(\alpha_{i+1} - \alpha^L_{i+1/2}\right)\right]
+$$
+
+$\mathcal H=0$ なら元の流束、$\mathcal H=1$ なら純粋な風下スキームです。風下スキームは界面を立てますが、単独では振動して発散します。そこで $\mathcal H$ は勾配比 $r_i=(\alpha_i-\alpha_{i-1})/(\alpha_{i+1}-\alpha_i)$ のリミターのように設計されます。
+
+$$
+\mathcal H(r) = 1 - \left(\frac{1-|r|}{1+|r|}\right)^4
+$$
+
+$r=1$(界面中央の均一な勾配)で1、$r\to0$ や $r\to\infty$(界面の端)で0に向かいます。多次元ではMYC法線の $|n_x|$ を掛けます。この関数は界面セル(式19、$\varepsilon<\alpha<1-\varepsilon$ かつ単調)でだけ有効にします。
+
+下のシミュレーションで実際に操作してみましょう。左は移動する界面とセルごとの $\mathcal H$、右は $\mathcal H(r)$ 曲線です。
+
+<SharpeningExponentSlopeLab />
+
+指数pを変えながら、$r=0$ 付近の赤い接線の傾きを見てください。傾きは常に $2p$ です。界面幅を狭めると、赤いプローブ点が曲線の急な立ち上がりへ滑っていきます。
+
+## 指数4が時間刻みを決める
+
+$r\to0$ では $(1-r)/(1+r)\approx 1-2r$ です。4乗すると $1-8r$ になります。したがって $\mathcal H\approx 8r$ です。論文の図1の挿入グラフがこの傾きです。
+
+論文はZalesak型FCT(flux-corrected transport、補正流束を極値の範囲内に制限する手法)の論理で安定条件を立てます。過大値を防ぐ上限は次のとおりです。
+
+$$
+R_{in} \approx \left(\frac{\Delta x}{\bar u\,\Delta t} - 1\right) r_i
+$$
+
+$\mathcal H < R_{in}$ なら新しい極値は生まれません。$\mathcal H<8r$ を代入すると $\Delta x/(\bar u\Delta t)-1>8$、つまり $\Delta t<\Delta x/9\bar u$ です。一般の指数 $p$ なら $\Delta t<\Delta x/((2p+1)\bar u)$ となります。
+
+ここでの $\bar u$ は音速ではなく**物質速度**です。論文はCFL 0.4を使い、「CFL < 0.6なら容易に満たされる」と述べています。圧縮性問題では $\Delta t$ が $\max(|u|+c)$ で決まるからです。水–空気衝撃波管では、水の音速は2,000 m/sを超えます。物質速度基準のクーラン数は0.4よりずっと小さくなります。
+
+## コード:同じ矩形波、3種類の流束、7段階のクーラン数
+
+条件の厳しさを見るには、$c=0$ の純粋移流が適しています。そうすればクーラン数がそのまま物質クーラン数になります。格子200セル、幅0.3の矩形波、周期境界、SSP-RK3で5周させます。
+
+```python
+import numpy as np
+
+def vanleer_face(a):
+    # 左状態 α^L_{i+1/2}(周期境界, u>0)
+    dm = a - np.roll(a, 1)
+    dp = np.roll(a, -1) - a
+    with np.errstate(divide='ignore', invalid='ignore'):
+        r = np.where(np.abs(dp) > 1e-14, dm / dp, 0.0)
+    phi = (r + np.abs(r)) / (1 + np.abs(r))
+    return a + 0.5 * phi * dp
+
+def sharpen_weight(a, p=4, eps=1e-4):
+    # 特性関数 H(r) = 1 - ((1-|r|)/(1+|r|))^p、界面セル(式19)のみ
+    dm = a - np.roll(a, 1)
+    dp = np.roll(a, -1) - a
+    with np.errstate(divide='ignore', invalid='ignore'):
+        r = np.where(np.abs(dp) > 1e-14, dm / dp, 0.0)
+    H = 1 - ((1 - np.abs(r)) / (1 + np.abs(r))) ** p
+    iface = (a > eps) & (a < 1 - eps) & (dm * dp > 0)
+    return np.where(iface, H, 0.0)
+
+def rhs(a, scheme, u, dx, p):
+    if scheme == "upwind1":
+        F = u * a
+    else:
+        F = u * vanleer_face(a)          # リーマン流束 F^
+        if scheme == "mmacm_ex":
+            Ht = sharpen_weight(a, p)    # 風上セルの値 H~ (u>0 → i)
+            J = Ht * (u * np.roll(a, -1) - F)   # 風下(downwind)反拡散流束
+            F = F + J
+    return -(F - np.roll(F, 1)) / dx
+
+def advect(scheme, N=200, cfl=0.4, periods=5, p=4):
+    dx, u = 1.0 / N, 1.0
+    x = (np.arange(N) + 0.5) * dx
+    a = ((x > 0.35) & (x < 0.65)).astype(float)
+    a0 = a.copy()
+    dt = cfl * dx / u
+    steps = int(round(periods / dt))
+    for _ in range(steps):           # SSP-RK3
+        a1 = a + dt * rhs(a, scheme, u, dx, p)
+        a2 = 0.75 * a + 0.25 * (a1 + dt * rhs(a1, scheme, u, dx, p))
+        a = a / 3 + 2 / 3 * (a2 + dt * rhs(a2, scheme, u, dx, p))
+    width = np.sum((a > 0.01) & (a < 0.99)) / 2   # 界面1つあたりのセル数
+    L1 = np.mean(np.abs(a - a0))
+    return width, a.min(), a.max(), L1, steps
+
+print("N=200, square wave, 5 periods")
+print(f"{'scheme':>9} {'CFL':>5} {'cells':>6} {'min':>10} {'max':>9} {'L1':>8}")
+for s in ["upwind1", "vanleer", "mmacm_ex"]:
+    w, lo, hi, L1, n = advect(s)
+    print(f"{s:>9} {0.4:5.2f} {w:6.1f} {lo:10.2e} {hi:9.5f} {L1:8.5f}")
+print("\nMMACM-Ex CFL scan (p=4, bound 1/(2p+1) = 0.111)")
+for c in [0.1, 0.11, 0.13, 0.2, 0.4, 0.6, 0.8]:
+    w, lo, hi, L1, n = advect("mmacm_ex", cfl=c)
+    print(f"{'mmacm_ex':>9} {c:5.2f} {w:6.1f} {lo:10.2e} {hi:9.5f} {L1:8.5f}")
+print("\nexponent p scan (CFL 0.4)")
+for p in [1, 2, 4, 8]:
+    w, lo, hi, L1, n = advect("mmacm_ex", p=p)
+    print(f"{'p='+str(p):>9} {0.4:5.2f} {w:6.1f} {lo:10.2e} {hi:9.5f} {L1:8.5f}")
+```
+
+```text
+N=200, square wave, 5 periods
+   scheme   CFL  cells        min       max       L1
+  upwind1  0.40  100.0   2.68e-02   0.65726  0.24526
+  vanleer  0.40   25.0   1.42e-14   1.00000  0.04327
+ mmacm_ex  0.40    1.0  -6.34e-02   1.06336  0.01092
+
+MMACM-Ex CFL scan (p=4, bound 1/(2p+1) = 0.111)
+ mmacm_ex  0.10    2.0   7.04e-15   1.00000  0.00124
+ mmacm_ex  0.11    2.0   5.85e-15   1.00000  0.00125
+ mmacm_ex  0.13    2.0   5.46e-15   1.00000  0.00126
+ mmacm_ex  0.20    2.0  -2.64e-03   1.00264  0.00139
+ mmacm_ex  0.40    1.0  -6.34e-02   1.06336  0.01092
+ mmacm_ex  0.60    1.0  -1.18e-01   1.11804  0.01843
+ mmacm_ex  0.80    1.0  -2.41e-01   1.24136  0.03214
+
+exponent p scan (CFL 0.4)
+      p=1  0.40    1.0  -2.12e-01   1.21235  0.03324
+      p=2  0.40    2.0  -2.31e-02   1.02313  0.00454
+      p=4  0.40    1.0  -6.34e-02   1.06336  0.01092
+      p=8  0.40    1.0  -5.77e-02   1.05767  0.00923
+```
+
+上のコードをブラウザで実際に動かしてみましょう。3つの流束が同じ矩形波を同時に運びます。
+
+<MmacmExSquareWaveRace />
+
+既定値CFL 0.40で最後まで回すと、オレンジのmaxは1.063付近で止まります。CFLを0.11に下げると、下のグラフの過大値曲線が0に張り付き、界面は2セルを保ちます。
+
+## 数字を読む:2セルと1セルの違い
+
+最初の表は論文の主張をそのまま示しています。1次風上は5周で矩形波を消しました。最大値は0.657です。van Leerは有界性を守りますが、界面1つに25セルです。MMACM-ExはL1誤差を4分の1にしました。
+
+ただし、CFL 0.4での「1セル」は良い知らせではありません。条件内の0.10〜0.13では、界面はちょうど2セルで、誤差は0.0012です。0.4に上げると界面は1セルにまで薄くなります。同時に−0.063と1.063が現れ、誤差は9倍になります。過大値が界面を階段状に削った結果です。論文の「2セル未満」は、条件内で得られる2セルのことです。
+
+条件 $1/9=0.111$ は十分条件です。0.13でも有界性は守られました。0.20で初めて0.26%はみ出しました。$\mathcal H<8r$ は最悪の場合なので、実際のしきい値はもう少し上にあります。
+
+指数スキャンは単調ではありません。p=1は21%はみ出します。p=2は2.3%で最小です。p=4とp=8は6%前後です。CFL 0.4は4つともそれぞれの十分条件の外です。ですからこの表は「どのpが安全か」ではなく、「条件の外ではpが結果を予測可能に変えない」と読むべきです。
+
+## この再現が扱わなかったこと
+
+論文の結果の大半は2D・3Dです。空気–R22の衝撃波–気泡干渉、水中爆発、3D気泡崩壊があります。そこでは $|n_x|$ の重みとHLLCの面速度 $\bar u$ が一緒に効いてきます。この1D実験は体積分率方程式だけを切り出しました。部分密度・エネルギー成分の整合性は試していません。
+
+もう1つは、再構成時に界面セルの $\rho_k$ を定数とみなす処理です(Zhangら)。単一スカラーの移流には現れません。整合的な流束の意味は[反拡散ISTの記事](/ja/posts/2026-07-25-interface-sharpening-anti-diffusion/)と比べると鮮明です。ISTは別のシャープニング方程式を毎ステップ解き、MMACM-Exはそれを流束に溶かし込みます。風下値がクーラン数の天井を下げる現象は、[VOF移流のCFL上限の記事](/ja/posts/2026-08-16-vof-interface-advection-cfl-limit/)のNVD解析と同じ根を持ちます。
+
+## 低マッハ・低速の界面問題にこの流束を入れるなら
+
+音速が $\Delta t$ を決める高速の圧縮性問題なら、心配はほとんどありません。しかし音響を陰的に扱い、$\Delta t$ を物質速度に合わせて大きくした低マッハコードは別です。その瞬間にクーラン数は0.4〜0.8になり、上の表の下の行が現実になります。移植前に $\max|\bar u|\,\Delta t/\Delta x < 1/(2p+1)$ の1行をログに出しておきましょう。超えるなら、シャープニング流束に直接Zalesak制限をかけるか、シャープニング段だけを部分ステップに分けるのが安全です。
+
+**参考文献**: S. Zhao, H. Yong, S. Guo, S. Liu, G. Ni, Z. He, "A high-fidelity interface sharpening method for the five-equation model in compressible multiphase flows," *Phys. Fluids* 37, 076157 (2025). Z. He, S. Tan, *J. Comput. Phys.* 513, 113192 (2024).

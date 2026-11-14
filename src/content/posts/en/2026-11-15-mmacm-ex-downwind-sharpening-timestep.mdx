@@ -1,0 +1,190 @@
+---
+title: "[Paper Review] Sharpening the Interface to One Cell Pushed the Volume Fraction to 1.06 — MMACM-Ex Downwind Flux and Δt < Δx/9u"
+date: 2026-11-15
+description: "A 1D reproduction of the MMACM-Ex downwind anti-diffusive flux for the five-equation model: interface width, boundedness, and where the time-step condition Δt < Δx/9u comes from."
+tags: ["Interface-Sharpening", "Compressible-Multiphase", "Diffuse-Interface", "Flux-Limiter", "Paper-Review"]
+locale: en
+slug: 2026-11-15-mmacm-ex-downwind-sharpening-timestep
+takeaway: "The exponent 4 in MMACM-Ex makes H ≈ 8r near the interface edge, so boundedness is guaranteed only when the material-velocity Courant number stays below 1/9."
+draft: false
+---
+import { SharpeningExponentSlopeLab } from '@/components/post-viz/2026-11-15-mmacm-ex-downwind-sharpening-timestep/SharpeningExponentSlopeLab'
+import { MmacmExSquareWaveRace } from '@/components/post-viz/2026-11-15-mmacm-ex-downwind-sharpening-timestep/MmacmExSquareWaveRace'
+
+## A one-cell interface, and a 1.063
+
+I advected a square wave around a periodic domain five times. MUSCL–van Leer spent 25 cells per interface. Adding one line for a sharpening flux brought that down to a single cell. But the maximum volume fraction came out at 1.06336. A volume fraction has to stay between 0 and 1.
+
+This post reads the MMACM-Ex paper by Zhao et al. (2025, *Physics of Fluids*), an extreme interface-sharpening method for the five-equation model, and reproduces its core flux in 1D. You get two things out of it. First, how blending in the downwind value steepens an interface. Second, where the paper's time-step condition $\Delta t < \Delta x/9\bar u$ comes from, and how tight it really is.
+
+## What the paper fixes
+
+The five-equation model (a diffuse-interface model that evolves both phases' partial densities, momentum, energy, and volume fraction) is the workhorse for compressible multiphase flow. Its weak spot is the numerical diffusion of the Riemann solver. Interfaces smear as time goes on. A smeared interface erases fine structure in bubble collapse and shock–bubble interaction.
+
+The usual cure is a better reconstruction, such as THINC or a high-order limiter. The [compressive β-limiter post](/en/posts/2026-10-24-compressive-beta-limiter-volume-fraction/) belongs to that family. MMACM-Ex goes the other way. It keeps a low-order reconstruction and adds a second flux on top.
+
+$$
+\overline{\mathbf F} = \widehat{\mathbf F} + \widehat{\mathbf G}
+$$
+
+$\widehat{\mathbf F}$ is the HLLC Riemann flux and $\widehat{\mathbf G}$ is the interface-sharpening flux. Every component of $\widehat{\mathbf G}$ is one artificial volume flux $J_k$ multiplied by that phase's density, momentum, or energy. That keeps mass, momentum, and energy conserved (the consistency framework of He and Tan, 2024).
+
+## How much downwind to mix in — the characteristic function H(r)
+
+Here is the volume-fraction part of the sharpening flux at face $i+1/2$, assuming $\bar u>0$.
+
+$$
+J_{i+1/2} = \widetilde{\mathcal H}_{i+1/2}\left(\bar u\,\alpha_{i+1} - \widehat F_{\alpha,i+1/2}\right)
+$$
+
+$\alpha_{i+1}$ is the downwind cell value, $\widehat F_\alpha$ is the upwind Riemann flux, and $\widetilde{\mathcal H}$ is the characteristic function taken from the upwind cell. Add the two fluxes and the face value becomes a blend between the upwind reconstruction $\alpha^L$ and the downwind value.
+
+$$
+\overline F_{\alpha,i+1/2} = \bar u\left[\alpha^L_{i+1/2} + \mathcal H_i\left(\alpha_{i+1} - \alpha^L_{i+1/2}\right)\right]
+$$
+
+$\mathcal H=0$ gives back the original flux. $\mathcal H=1$ is a pure downwind scheme. Downwinding steepens fronts, but on its own it oscillates and blows up. So $\mathcal H$ is designed like a limiter in the slope ratio $r_i=(\alpha_i-\alpha_{i-1})/(\alpha_{i+1}-\alpha_i)$.
+
+$$
+\mathcal H(r) = 1 - \left(\frac{1-|r|}{1+|r|}\right)^4
+$$
+
+It equals 1 at $r=1$ (an even slope in the middle of the interface) and goes to 0 as $r\to0$ or $r\to\infty$ (the edges). In multiple dimensions it is multiplied by $|n_x|$ from an MYC normal. It is switched on only in interface cells (Eq. 19: $\varepsilon<\alpha<1-\varepsilon$ and locally monotone).
+
+Try it yourself in the simulation below. The left panel shows a moving interface with $\mathcal H$ per cell; the right panel shows the $\mathcal H(r)$ curve.
+
+<SharpeningExponentSlopeLab />
+
+Change the exponent p and watch the red tangent at $r=0$. Its slope is always $2p$. Shrink the interface width and the red probe slides onto the steep leading edge of the curve.
+
+## The exponent 4 sets the time step
+
+As $r\to0$, $(1-r)/(1+r)\approx 1-2r$. Raise that to the fourth power and you get $1-8r$. So $\mathcal H\approx 8r$. That is the slope in the inset of the paper's Fig. 1.
+
+The paper builds its stability condition with Zalesak-style FCT logic (flux-corrected transport, which limits a correction flux so it creates no new extrema). The cap that prevents overshoot is the following.
+
+$$
+R_{in} \approx \left(\frac{\Delta x}{\bar u\,\Delta t} - 1\right) r_i
+$$
+
+If $\mathcal H < R_{in}$, no new extremum appears. Plugging in $\mathcal H<8r$ gives $\Delta x/(\bar u\Delta t)-1>8$, i.e. $\Delta t<\Delta x/9\bar u$. For a general exponent $p$ it becomes $\Delta t<\Delta x/((2p+1)\bar u)$.
+
+Note that $\bar u$ here is the **material velocity**, not the sound speed. The paper runs at CFL 0.4 and states the condition "is readily satisfied when CFL < 0.6." That is because $\Delta t$ in compressible problems is set by $\max(|u|+c)$. In the water–air shock tube the sound speed in water exceeds 2,000 m/s. The material Courant number sits far below 0.4.
+
+## Code: one square wave, three fluxes, seven Courant numbers
+
+To see how tight the condition is, pure advection with $c=0$ is ideal. Then the Courant number is the material Courant number. 200 cells, a square wave of width 0.3, periodic boundaries, five periods with SSP-RK3.
+
+```python
+import numpy as np
+
+def vanleer_face(a):
+    # left state α^L_{i+1/2} (periodic, u>0)
+    dm = a - np.roll(a, 1)
+    dp = np.roll(a, -1) - a
+    with np.errstate(divide='ignore', invalid='ignore'):
+        r = np.where(np.abs(dp) > 1e-14, dm / dp, 0.0)
+    phi = (r + np.abs(r)) / (1 + np.abs(r))
+    return a + 0.5 * phi * dp
+
+def sharpen_weight(a, p=4, eps=1e-4):
+    # characteristic function H(r) = 1 - ((1-|r|)/(1+|r|))^p, interface cells only (Eq. 19)
+    dm = a - np.roll(a, 1)
+    dp = np.roll(a, -1) - a
+    with np.errstate(divide='ignore', invalid='ignore'):
+        r = np.where(np.abs(dp) > 1e-14, dm / dp, 0.0)
+    H = 1 - ((1 - np.abs(r)) / (1 + np.abs(r))) ** p
+    iface = (a > eps) & (a < 1 - eps) & (dm * dp > 0)
+    return np.where(iface, H, 0.0)
+
+def rhs(a, scheme, u, dx, p):
+    if scheme == "upwind1":
+        F = u * a
+    else:
+        F = u * vanleer_face(a)          # Riemann flux F^
+        if scheme == "mmacm_ex":
+            Ht = sharpen_weight(a, p)    # upwind-cell value H~ (u>0 → i)
+            J = Ht * (u * np.roll(a, -1) - F)   # downwind anti-diffusive flux
+            F = F + J
+    return -(F - np.roll(F, 1)) / dx
+
+def advect(scheme, N=200, cfl=0.4, periods=5, p=4):
+    dx, u = 1.0 / N, 1.0
+    x = (np.arange(N) + 0.5) * dx
+    a = ((x > 0.35) & (x < 0.65)).astype(float)
+    a0 = a.copy()
+    dt = cfl * dx / u
+    steps = int(round(periods / dt))
+    for _ in range(steps):           # SSP-RK3
+        a1 = a + dt * rhs(a, scheme, u, dx, p)
+        a2 = 0.75 * a + 0.25 * (a1 + dt * rhs(a1, scheme, u, dx, p))
+        a = a / 3 + 2 / 3 * (a2 + dt * rhs(a2, scheme, u, dx, p))
+    width = np.sum((a > 0.01) & (a < 0.99)) / 2   # cells per interface
+    L1 = np.mean(np.abs(a - a0))
+    return width, a.min(), a.max(), L1, steps
+
+print("N=200, square wave, 5 periods")
+print(f"{'scheme':>9} {'CFL':>5} {'cells':>6} {'min':>10} {'max':>9} {'L1':>8}")
+for s in ["upwind1", "vanleer", "mmacm_ex"]:
+    w, lo, hi, L1, n = advect(s)
+    print(f"{s:>9} {0.4:5.2f} {w:6.1f} {lo:10.2e} {hi:9.5f} {L1:8.5f}")
+print("\nMMACM-Ex CFL scan (p=4, bound 1/(2p+1) = 0.111)")
+for c in [0.1, 0.11, 0.13, 0.2, 0.4, 0.6, 0.8]:
+    w, lo, hi, L1, n = advect("mmacm_ex", cfl=c)
+    print(f"{'mmacm_ex':>9} {c:5.2f} {w:6.1f} {lo:10.2e} {hi:9.5f} {L1:8.5f}")
+print("\nexponent p scan (CFL 0.4)")
+for p in [1, 2, 4, 8]:
+    w, lo, hi, L1, n = advect("mmacm_ex", p=p)
+    print(f"{'p='+str(p):>9} {0.4:5.2f} {w:6.1f} {lo:10.2e} {hi:9.5f} {L1:8.5f}")
+```
+
+```text
+N=200, square wave, 5 periods
+   scheme   CFL  cells        min       max       L1
+  upwind1  0.40  100.0   2.68e-02   0.65726  0.24526
+  vanleer  0.40   25.0   1.42e-14   1.00000  0.04327
+ mmacm_ex  0.40    1.0  -6.34e-02   1.06336  0.01092
+
+MMACM-Ex CFL scan (p=4, bound 1/(2p+1) = 0.111)
+ mmacm_ex  0.10    2.0   7.04e-15   1.00000  0.00124
+ mmacm_ex  0.11    2.0   5.85e-15   1.00000  0.00125
+ mmacm_ex  0.13    2.0   5.46e-15   1.00000  0.00126
+ mmacm_ex  0.20    2.0  -2.64e-03   1.00264  0.00139
+ mmacm_ex  0.40    1.0  -6.34e-02   1.06336  0.01092
+ mmacm_ex  0.60    1.0  -1.18e-01   1.11804  0.01843
+ mmacm_ex  0.80    1.0  -2.41e-01   1.24136  0.03214
+
+exponent p scan (CFL 0.4)
+      p=1  0.40    1.0  -2.12e-01   1.21235  0.03324
+      p=2  0.40    2.0  -2.31e-02   1.02313  0.00454
+      p=4  0.40    1.0  -6.34e-02   1.06336  0.01092
+      p=8  0.40    1.0  -5.77e-02   1.05767  0.00923
+```
+
+Now run the code above in your browser. All three fluxes carry the same square wave at once.
+
+<MmacmExSquareWaveRace />
+
+Run to the end at the default CFL 0.40 and the orange max settles near 1.063. Drop CFL to 0.11 and the overshoot curve in the lower plot sticks to zero while the interface holds at two cells.
+
+## Reading the numbers: two cells versus one
+
+The first table shows the paper's claim directly. First-order upwind erased the square wave in five periods; its maximum is 0.657. Van Leer stays bounded but spends 25 cells per interface. MMACM-Ex cuts the L1 error to a quarter.
+
+But the "one cell" at CFL 0.4 is not good news. Inside the bound, at 0.10–0.13, the interface is exactly two cells and the error is 0.0012. Raise CFL to 0.4 and the interface thins to one cell. At the same time −0.063 and 1.063 appear and the error grows ninefold. The overshoot is carving the interface into a staircase. The paper's "below two cells" is the two cells you get inside the bound.
+
+The 1/9 = 0.111 condition is sufficient, not sharp. Boundedness still held at 0.13. The first overshoot, 0.26%, shows up at 0.20. $\mathcal H<8r$ is a worst case, so the real threshold sits a bit higher.
+
+The exponent scan is not monotone. p=1 overshoots by 21%. p=2 is smallest at 2.3%. p=4 and p=8 are around 6%. CFL 0.4 lies outside each one's sufficient bound. So read this table not as "which p is safe" but as "outside the bound, p does not change the result in a predictable way."
+
+## What this reproduction leaves out
+
+Most of the paper's results are 2D and 3D: air–R22 shock–bubble interaction, underwater explosion, 3D bubble collapse. There the $|n_x|$ weighting and the HLLC face velocity $\bar u$ come into play together. This 1D experiment isolates the volume-fraction equation alone. It does not test the consistency of the partial-density and energy components.
+
+It also skips holding $\rho_k$ constant in interface cells during reconstruction (Zhang et al.), which does not appear in single-scalar advection. The meaning of a consistent flux becomes clearer next to the [anti-diffusion IST post](/en/posts/2026-07-25-interface-sharpening-anti-diffusion/). IST solves a separate sharpening equation every step; MMACM-Ex folds it into the flux. The way downwind values lower the Courant ceiling shares its roots with the NVD analysis in the [VOF advection CFL limit post](/en/posts/2026-08-16-vof-interface-advection-cfl-limit/).
+
+## Before dropping this flux into a low-Mach interface code
+
+If the sound speed sets $\Delta t$ in a high-speed compressible run, there is little to worry about. A low-Mach code that treats acoustics implicitly and grows $\Delta t$ to the material velocity is different. The Courant number then lands at 0.4–0.8, and the bottom rows of the table become reality. Before porting, log one line: $\max|\bar u|\,\Delta t/\Delta x < 1/(2p+1)$. If it fails, apply a Zalesak limiter to the sharpening flux directly, or substep only the sharpening stage.
+
+**References**: S. Zhao, H. Yong, S. Guo, S. Liu, G. Ni, Z. He, "A high-fidelity interface sharpening method for the five-equation model in compressible multiphase flows," *Phys. Fluids* 37, 076157 (2025). Z. He, S. Tan, *J. Comput. Phys.* 513, 113192 (2024).
