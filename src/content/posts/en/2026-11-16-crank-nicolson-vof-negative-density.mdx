@@ -1,0 +1,185 @@
+---
+title: "Unconditionally Stable Crank–Nicolson Drove Air Density to −331 — the Courant-2 Limit of the θ-Scheme for VOF"
+date: 2026-11-16
+description: "In implicit VOF, Crank–Nicolson pushes the volume fraction below zero once Co > 2, and the mixture density goes negative with it. We derive the bound θ ≥ 1 − 1/Co and test it."
+tags: ["Crank-Nicolson", "VOF", "Boundedness", "Implicit", "Multiphase"]
+locale: en
+slug: 2026-11-16-crank-nicolson-vof-negative-density
+takeaway: "With first-order upwind, the θ-scheme keeps the volume fraction in [0,1] only when Co ≤ 1/(1−θ). Crank–Nicolson (θ=0.5) stops at Co=2, and for water–air an α of just −0.0012 already makes the density negative."
+draft: false
+---
+import { ThetaTrailingEdgeGainLab } from '@/components/post-viz/2026-11-16-crank-nicolson-vof-negative-density/ThetaTrailingEdgeGainLab'
+import { CrankNicolsonSlugTurnRace } from '@/components/post-viz/2026-11-16-crank-nicolson-vof-negative-density/CrankNicolsonSlugTurnRace'
+
+## Unconditionally stable, yet the density hit −331
+
+Crank–Nicolson is unconditionally stable for linear advection. No matter how large the time step, the solution never grows. That is why implicit VOF codes like it for the volume-fraction equation. Second-order accuracy plus a large Δt looks like a free lunch.
+
+Now advect a water slug one full turn at Courant number 4. The air density drops to −331 kg/m³. Nothing blew up. Every number is finite, and the error norm barely differs from the Co = 1 run. This post resolves that contradiction with a one-cell formula. It derives when the θ-scheme (a time integrator that blends the current and next time levels) keeps the volume fraction inside [0, 1]. The answer is a single inequality: $\mathrm{Co} \le 1/(1-\theta)$.
+
+Try θ and the Courant number yourself in the simulation below.
+
+<ThetaTrailingEdgeGainLab />
+
+At θ = 0.5, push Co past 2 and the first cell at the slug's tail turns red (ρ < 0) right away. That is the moment the dot in the lower plot crosses below zero. Raising θ shifts the boundary $\mathrm{Co}^*$ to the right.
+
+## The original loop: density comes right after the volume fraction
+
+My July 2020 notes on an incompressible pressure-based multiphase code lay out the loop like this. Momentum and pressure are solved inside the SIMPLE iterations. Once those finish, the volume fraction is solved. Lines 13–16 of the notes cover that part.
+
+- 13. Volume fraction — "Crank–Nicolson method", interface reconstruction, then $Ax=b$ with Hypre
+- 14–15. Boundary conditions, MPI exchange
+- 16. Compute density from the new volume fraction
+
+Line 16 is the amplifier. Mixture density is linear in the volume fraction.
+
+$$
+\rho = \rho_a + \alpha\,(\rho_w - \rho_a)
+$$
+
+Here $\rho_w = 998$ and $\rho_a = 1.2$ kg/m³ are the water and air densities, and $\alpha$ is the water volume fraction. Density turns negative when $\alpha < -\rho_a/(\rho_w-\rho_a) \approx -0.0012$. A leak of 0.12% below zero puts negative mass into the momentum matrix of the next SIMPLE iteration. The compressible version of this loop was covered in [the compressible SIMPLE pressure-correction post](/en/posts/2026-11-09-compressible-simple-pressure-correction-psi-term/). This time we look outside it, at the one volume-fraction line.
+
+## The θ-scheme reduced to one cell
+
+In 1D with $u>0$ and first-order upwind (taking the value from the side the flow comes from), one θ-scheme step reads:
+
+$$
+\alpha_i^{n+1} - \alpha_i^{n} + \mathrm{Co}\left[\theta\,(\alpha_i^{n+1}-\alpha_{i-1}^{n+1}) + (1-\theta)(\alpha_i^{n}-\alpha_{i-1}^{n})\right] = 0
+$$
+
+$\mathrm{Co} = u\Delta t/\Delta x$ is the Courant number. $\theta=1$ is fully implicit (EI, implicit Euler) and $\theta = 0.5$ is Crank–Nicolson.
+
+Look at the slug's tail. Cell $i$ is water ($\alpha_i^n = 1$) and its upstream neighbor $i-1$ is air. The implicit upwind matrix couples only upstream, so if everything upstream is air, $\alpha_{i-1}^{n+1} = 0$ holds exactly. The tail cell is then multiplied by one constant per step.
+
+$$
+G = \frac{1-(1-\theta)\,\mathrm{Co}}{1+\theta\,\mathrm{Co}}
+$$
+
+The denominator is always positive. Once the numerator goes negative, $G<0$ and the tail cell flips sign. The condition is:
+
+$$
+\mathrm{Co} > \frac{1}{1-\theta} \quad\Longleftrightarrow\quad \theta < 1 - \frac{1}{\mathrm{Co}}
+$$
+
+For Crank–Nicolson, $G = (2-\mathrm{Co})/(2+\mathrm{Co})$. That gives −0.2 at Co = 3, −1/3 at Co = 4, and −2/3 at Co = 10. Since $|G| \le 1$, stability survives. What breaks is monotonicity (the property of not creating new extrema). Those are two different promises, and that is the point of this post.
+
+The leading-edge cell overshoots 1 for the same reason. The problem is linear, so the same formula applies to $1 - \alpha$. The general sufficient condition has the same shape. If the diagonal of the right-hand matrix $B$, $1-(1-\theta)\mathrm{Co}$, is non-negative and the left matrix $A$ is an M-matrix (its inverse has no negative entries), each update is a convex combination and stays in [0, 1].
+
+## Code: one turn of a water slug, three implicit schemes × six Courant numbers
+
+Put a slug at $0.2<x<0.5$ on a periodic 100-cell grid and advect it exactly one turn. Three schemes are compared: EI-upwind, CN-upwind, and CN-central with second-order central differencing in space. Each step tracks min and max of $\alpha$, and density is computed from that minimum. At the end, θ is swept at Co = 4.
+
+```python
+import numpy as np
+
+N = 100                      # cells on a periodic 1D domain of length 1
+RHO_W, RHO_A = 998.0, 1.2    # water / air density [kg/m^3]
+x = (np.arange(N) + 0.5) / N
+alpha0 = ((x > 0.2) & (x < 0.5)).astype(float)   # water slug
+
+def theta_matrices(co, theta, space):
+    """Return (A, B) so that A @ a_new = B @ a_old for one step."""
+    I = np.eye(N)
+    S = np.roll(I, -1, axis=1)          # (S a)_i = a_{i-1}
+    if space == "upwind":
+        D = I - S                        # a_i - a_{i-1}
+    else:
+        D = 0.5 * (S.T - S)              # (a_{i+1} - a_{i-1}) / 2
+    A = I + theta * co * D
+    B = I - (1.0 - theta) * co * D
+    return A, B
+
+def advect_one_turn(co, theta, space):
+    A, B = theta_matrices(co, theta, space)
+    step = np.linalg.solve(A, B)         # dense is fine at N = 100
+    a = alpha0.copy()
+    amin, amax = 0.0, 1.0
+    for _ in range(int(round(N / co))):
+        a = step @ a
+        amin, amax = min(amin, a.min()), max(amax, a.max())
+    rho_min = RHO_A + amin * (RHO_W - RHO_A)      # density from alpha, every step
+    l1 = np.abs(a - alpha0).sum() / N             # error after one full turn
+    return amin, amax, rho_min, l1
+
+cases = [("EI-upwind", 1.0, "upwind"),
+         ("CN-upwind", 0.5, "upwind"),
+         ("CN-central", 0.5, "central")]
+print(f"{'scheme':<11}{'Co':>5}{'min a':>10}{'max a':>9}{'min rho':>10}{'L1':>8}")
+for name, th, sp in cases:
+    for co in (0.5, 1.0, 2.0, 3.0, 4.0, 10.0):
+        amin, amax, rmin, l1 = advect_one_turn(co, th, sp)
+        flag = "  <- rho<0" if rmin < 0 else ""
+        print(f"{name:<11}{co:>5}{amin:>10.4f}{amax:>9.4f}{rmin:>10.1f}{l1:>8.4f}{flag}")
+    print()
+
+print("theta needed for boundedness at Co=4: 1 - 1/Co =", 1 - 1 / 4.0)
+for th in (0.5, 0.7, 0.75, 1.0):
+    amin, amax, rmin, l1 = advect_one_turn(4.0, th, "upwind")
+    print(f"theta={th:<5} min a={amin:8.4f}  min rho={rmin:7.1f}  L1={l1:.4f}")
+```
+
+```text
+scheme        Co     min a    max a   min rho      L1
+EI-upwind    0.5    0.0000   1.0000       1.2  0.1940
+EI-upwind    1.0    0.0000   1.0000       1.2  0.2218
+EI-upwind    2.0    0.0000   1.0000       1.2  0.2639
+EI-upwind    3.0    0.0000   1.0000       1.2  0.2952
+EI-upwind    4.0    0.0000   1.0000       1.2  0.3180
+EI-upwind   10.0    0.0000   1.0000       1.2  0.3888
+
+CN-upwind    0.5    0.0000   1.0000       1.2  0.1592
+CN-upwind    1.0    0.0000   1.0000       1.2  0.1591
+CN-upwind    2.0    0.0000   1.0000       1.2  0.1589
+CN-upwind    3.0   -0.2000   1.2000    -198.2  0.1607  <- rho<0
+CN-upwind    4.0   -0.3333   1.3333    -331.1  0.1621  <- rho<0
+CN-upwind   10.0   -0.6667   1.6596    -663.3  0.2330  <- rho<0
+
+CN-central   0.5   -0.4916   1.4279    -488.8  0.1465  <- rho<0
+CN-central   1.0   -0.4892   1.4362    -486.4  0.1665  <- rho<0
+CN-central   2.0   -0.5096   1.4271    -506.8  0.1703  <- rho<0
+CN-central   3.0   -0.4936   1.4462    -490.8  0.2173  <- rho<0
+CN-central   4.0   -0.5084   1.4633    -505.6  0.2268  <- rho<0
+CN-central  10.0   -0.7850   1.7799    -781.3  0.2845  <- rho<0
+
+theta needed for boundedness at Co=4: 1 - 1/Co = 0.75
+theta=0.5   min a= -0.3333  min rho= -331.1  L1=0.1621
+theta=0.7   min a= -0.0526  min rho=  -51.3  L1=0.2479
+theta=0.75  min a=  0.0000  min rho=    1.2  L1=0.2632
+theta=1.0   min a=  0.0000  min rho=    1.2  L1=0.3180
+```
+
+Run the code above right in your browser.
+
+<CrankNicolsonSlugTurnRace />
+
+At the defaults (Co = 4, θ = 0.5), the orange θ-upwind row shows min alpha −0.3333 and min rho −331.1, matching the output block. Raise θ to 0.75 and it sticks to −0.0000 while L1 grows to 0.2632. Drop Co to 2 or below and the negatives vanish even at θ = 0.5.
+
+## Reading the table: what three numbers say
+
+**CN-upwind's −0.2000, −0.3333, −0.6667.** They match $(2-\mathrm{Co})/(2+\mathrm{Co})$ to four decimals. The minimum is created by the tail cell in the very first step. Numerical diffusion shaves the undershoot afterward, but too late. In a real code, that one step of negative density has already gone into the pressure equation.
+
+**The L1 error barely notices.** CN-upwind's L1 at Co = 2 and 4 is 0.1589 and 0.1621, a 2% difference. A check that compares only the final profile would pass the Co = 4 run. Boundedness shows up only in the running minimum.
+
+**CN-central sits at −0.49 even at Co = 0.5.** Central differencing is non-monotone in space to begin with. Whatever time scheme you pick, it oscillates around the step. A high-order central component for the volume fraction needs a limiter. See [the MMACM-Ex sharpening flux post](/en/posts/2026-11-15-mmacm-ex-downwind-sharpening-timestep/) and [the MSTACS Courant limit post](/en/posts/2026-10-25-mstacs-slope-three-courant-limit/) for that route.
+
+**The θ sweep.** Co = 4 requires $\theta \ge 1 - 1/4 = 0.75$. θ = 0.7 gives −0.0526, which is exactly $G = (1-1.2)/(1+2.8)$. From θ = 0.75 on, it is zero. But L1 rises from 0.1621 to 0.2632, up 62%. Boundedness is paid for in numerical diffusion.
+
+## Three fixes and what each one costs
+
+**1. Raise θ with Co.** Setting $\theta = \max(0.5,\, 1 - 1/\mathrm{Co})$ guarantees boundedness. The larger Co gets, the closer you are to EI and the more diffusion you add. The gain from a big Δt is repaid in interface resolution.
+
+**2. Vary θ per cell.** Choose $\theta_f$ face by face from the local Courant number. Only fast cells near the interface lean implicit. OpenFOAM's `CrankNicolson ψ` coefficient is a global version of the same idea.
+
+**3. Solve, then clip.** $\alpha \leftarrow \min(1, \max(0, \alpha))$ is the most common remedy. Whatever is clipped is mass lost. For CN at Co = 4, that is up to a third of a cell per step at the tail. Clipping hides the symptom and leaves the cause.
+
+The original code did interface reconstruction (compressive differencing) first on line 13, then solved with CN. Compressive schemes mix in downstream values. They have less monotonicity margin than upwind, so the limit above gets tighter.
+
+## The θ to compute before crossing Courant number 2
+
+In implicit VOF, "unconditionally stable" is not a reason to pick Δt. Check three things first.
+
+- With the volume-fraction θ and the maximum cell Courant number, is $1-(1-\theta)\mathrm{Co} \ge 0$?
+- Does your verification track the **running min and max of α**, not just L1?
+- If you clip, do you log the clipped mass every step?
+
+Crank–Nicolson stopping at Co = 2 falls out of a single line of the θ-scheme. However implicit the pressure equation is, the one volume-fraction line that builds the density gets there first.

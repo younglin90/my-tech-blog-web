@@ -1,0 +1,185 @@
+---
+title: "用无条件稳定的Crank–Nicolson求解体积分数，空气密度却变成了−331 — θ格式的库朗数2极限"
+date: 2026-11-16
+description: "隐式VOF中，Crank–Nicolson在Co>2时会让体积分数变负，混合密度随之变负。本文推导有界性条件θ ≥ 1−1/Co并加以验证。"
+tags: ["Crank-Nicolson", "VOF", "Boundedness", "Implicit", "Multiphase"]
+locale: zh
+slug: 2026-11-16-crank-nicolson-vof-negative-density
+takeaway: "采用一阶迎风时，θ格式让体积分数保持在[0,1]内的条件是Co ≤ 1/(1−θ)。Crank–Nicolson(θ=0.5)的上限是Co=2；对水–空气而言，α只要到−0.0012，密度就已为负。"
+draft: false
+---
+import { ThetaTrailingEdgeGainLab } from '@/components/post-viz/2026-11-16-crank-nicolson-vof-negative-density/ThetaTrailingEdgeGainLab'
+import { CrankNicolsonSlugTurnRace } from '@/components/post-viz/2026-11-16-crank-nicolson-vof-negative-density/CrankNicolsonSlugTurnRace'
+
+## 无条件稳定，密度却到了−331
+
+Crank–Nicolson格式对线性对流是无条件稳定(unconditionally stable)的。时间步长取多大，解的幅值都不会增长。因此隐式(implicit)VOF代码常用它求解体积分数方程。二阶精度，又允许大Δt，看起来没有任何代价。
+
+可是，把一个水柱以库朗数4推进一整圈，空气密度会降到−331 kg/m³。解并没有发散。数值都是有限的，误差范数也和库朗数1时几乎一样。本文用一个单元的公式解开这个矛盾。我们推导θ格式(对当前和下一时刻加权平均的时间积分)把体积分数限制在[0, 1]内的条件。结论只有一个不等式：$\mathrm{Co} \le 1/(1-\theta)$。
+
+在下面的模拟中亲手调整θ和库朗数。
+
+<ThetaTrailingEdgeGainLab />
+
+θ = 0.5时把Co调到2以上，水柱尾部的第一个单元立刻变红(ρ < 0)。这正是下方图中圆点落到零线以下的时刻。增大θ，边界$\mathrm{Co}^*$会向右移动。
+
+## 原始笔记的循环：体积分数的下一行就是密度
+
+2020年7月整理的不可压pressure-based多相代码，循环如下。在SIMPLE迭代内求解动量和压力方程，迭代结束后求解体积分数。笔记的第13~16行就是这部分。
+
+- 13. 体积分数计算 — “Crank–Nicolson方法”，界面重构后用Hypre求解$Ax=b$
+- 14~15. 边界条件、MPI交换
+- 16. 用新的体积分数计算密度
+
+第16行是放大器。混合密度是体积分数的线性函数。
+
+$$
+\rho = \rho_a + \alpha\,(\rho_w - \rho_a)
+$$
+
+$\rho_w = 998$、$\rho_a = 1.2$ kg/m³分别是水和空气的密度，$\alpha$是水的体积分数。密度变负的条件是$\alpha < -\rho_a/(\rho_w-\rho_a) \approx -0.0012$。体积分数只要向下漏出0.12%，下一次SIMPLE迭代的动量矩阵里就会出现负质量。可压缩版本的循环在[可压缩SIMPLE压力修正方程一文](/zh/posts/2026-11-09-compressible-simple-pressure-correction-psi-term/)中讨论过。这次看它外面的那一行体积分数。
+
+## 缩到一个单元的θ格式
+
+一维、速度$u>0$、一阶迎风(upwind，取来流一侧的值)离散时，θ格式的一步为：
+
+$$
+\alpha_i^{n+1} - \alpha_i^{n} + \mathrm{Co}\left[\theta\,(\alpha_i^{n+1}-\alpha_{i-1}^{n+1}) + (1-\theta)(\alpha_i^{n}-\alpha_{i-1}^{n})\right] = 0
+$$
+
+$\mathrm{Co} = u\Delta t/\Delta x$是库朗数，$\theta=1$为全隐式(EI，隐式Euler)，$\theta = 0.5$为Crank–Nicolson。
+
+看水柱的尾部。单元$i$是水($\alpha_i^n = 1$)，上游$i-1$是空气。迎风隐式矩阵只与上游耦合，所以上游全是空气时，$\alpha_{i-1}^{n+1} = 0$严格成立。于是尾部单元每一步都乘上同一个常数。
+
+$$
+G = \frac{1-(1-\theta)\,\mathrm{Co}}{1+\theta\,\mathrm{Co}}
+$$
+
+分母恒为正。分子一旦为负，$G<0$，尾部单元就翻成负值。条件是：
+
+$$
+\mathrm{Co} > \frac{1}{1-\theta} \quad\Longleftrightarrow\quad \theta < 1 - \frac{1}{\mathrm{Co}}
+$$
+
+对Crank–Nicolson，$G = (2-\mathrm{Co})/(2+\mathrm{Co})$。Co = 3时为−0.2，Co = 4时为−1/3，Co = 10时为−2/3。由于$|G| \le 1$，稳定性没有被破坏。被破坏的是单调性(monotonicity，不产生新极值的性质)。这是两个不同的承诺，也是本文的要点。
+
+另一侧的前沿单元出于同样原因会超过1。问题是线性的，同一公式对$1 - \alpha$同样成立。一般的充分条件也是同样的形式。若右端矩阵$B$的对角元$1-(1-\theta)\mathrm{Co}$非负，且左端$A$是M矩阵(逆矩阵各元素均非负)，则每次更新都是凸组合，保持在[0, 1]内。
+
+## 代码：水柱一整圈，三种隐式格式 × 六个库朗数
+
+在周期边界的100个单元上放置$0.2<x<0.5$的水柱，恰好推进一圈。比较三种格式：EI-迎风、CN-迎风，以及空间上用二阶中心差分的CN-中心。每一步追踪$\alpha$的最小值和最大值，并用该最小值计算密度。最后在Co = 4下扫描θ。
+
+```python
+import numpy as np
+
+N = 100                      # 长度为1的周期一维区域的单元数
+RHO_W, RHO_A = 998.0, 1.2    # 水 / 空气密度 [kg/m^3]
+x = (np.arange(N) + 0.5) / N
+alpha0 = ((x > 0.2) & (x < 0.5)).astype(float)   # 水柱
+
+def theta_matrices(co, theta, space):
+    """返回使一步满足 A @ a_new = B @ a_old 的 (A, B)。"""
+    I = np.eye(N)
+    S = np.roll(I, -1, axis=1)          # (S a)_i = a_{i-1}
+    if space == "upwind":
+        D = I - S                        # a_i - a_{i-1}
+    else:
+        D = 0.5 * (S.T - S)              # (a_{i+1} - a_{i-1}) / 2
+    A = I + theta * co * D
+    B = I - (1.0 - theta) * co * D
+    return A, B
+
+def advect_one_turn(co, theta, space):
+    A, B = theta_matrices(co, theta, space)
+    step = np.linalg.solve(A, B)         # N = 100 时用稠密矩阵即可
+    a = alpha0.copy()
+    amin, amax = 0.0, 1.0
+    for _ in range(int(round(N / co))):
+        a = step @ a
+        amin, amax = min(amin, a.min()), max(amax, a.max())
+    rho_min = RHO_A + amin * (RHO_W - RHO_A)      # 每一步由 alpha 计算的密度
+    l1 = np.abs(a - alpha0).sum() / N             # 推进一圈后的误差
+    return amin, amax, rho_min, l1
+
+cases = [("EI-upwind", 1.0, "upwind"),
+         ("CN-upwind", 0.5, "upwind"),
+         ("CN-central", 0.5, "central")]
+print(f"{'scheme':<11}{'Co':>5}{'min a':>10}{'max a':>9}{'min rho':>10}{'L1':>8}")
+for name, th, sp in cases:
+    for co in (0.5, 1.0, 2.0, 3.0, 4.0, 10.0):
+        amin, amax, rmin, l1 = advect_one_turn(co, th, sp)
+        flag = "  <- rho<0" if rmin < 0 else ""
+        print(f"{name:<11}{co:>5}{amin:>10.4f}{amax:>9.4f}{rmin:>10.1f}{l1:>8.4f}{flag}")
+    print()
+
+print("theta needed for boundedness at Co=4: 1 - 1/Co =", 1 - 1 / 4.0)
+for th in (0.5, 0.7, 0.75, 1.0):
+    amin, amax, rmin, l1 = advect_one_turn(4.0, th, "upwind")
+    print(f"theta={th:<5} min a={amin:8.4f}  min rho={rmin:7.1f}  L1={l1:.4f}")
+```
+
+```text
+scheme        Co     min a    max a   min rho      L1
+EI-upwind    0.5    0.0000   1.0000       1.2  0.1940
+EI-upwind    1.0    0.0000   1.0000       1.2  0.2218
+EI-upwind    2.0    0.0000   1.0000       1.2  0.2639
+EI-upwind    3.0    0.0000   1.0000       1.2  0.2952
+EI-upwind    4.0    0.0000   1.0000       1.2  0.3180
+EI-upwind   10.0    0.0000   1.0000       1.2  0.3888
+
+CN-upwind    0.5    0.0000   1.0000       1.2  0.1592
+CN-upwind    1.0    0.0000   1.0000       1.2  0.1591
+CN-upwind    2.0    0.0000   1.0000       1.2  0.1589
+CN-upwind    3.0   -0.2000   1.2000    -198.2  0.1607  <- rho<0
+CN-upwind    4.0   -0.3333   1.3333    -331.1  0.1621  <- rho<0
+CN-upwind   10.0   -0.6667   1.6596    -663.3  0.2330  <- rho<0
+
+CN-central   0.5   -0.4916   1.4279    -488.8  0.1465  <- rho<0
+CN-central   1.0   -0.4892   1.4362    -486.4  0.1665  <- rho<0
+CN-central   2.0   -0.5096   1.4271    -506.8  0.1703  <- rho<0
+CN-central   3.0   -0.4936   1.4462    -490.8  0.2173  <- rho<0
+CN-central   4.0   -0.5084   1.4633    -505.6  0.2268  <- rho<0
+CN-central  10.0   -0.7850   1.7799    -781.3  0.2845  <- rho<0
+
+theta needed for boundedness at Co=4: 1 - 1/Co = 0.75
+theta=0.5   min a= -0.3333  min rho= -331.1  L1=0.1621
+theta=0.7   min a= -0.0526  min rho=  -51.3  L1=0.2479
+theta=0.75  min a=  0.0000  min rho=    1.2  L1=0.2632
+theta=1.0   min a=  0.0000  min rho=    1.2  L1=0.3180
+```
+
+在浏览器里直接运行上面的代码。
+
+<CrankNicolsonSlugTurnRace />
+
+默认值(Co = 4、θ = 0.5)下，橙色θ-迎风一行的min alpha为−0.3333，min rho为−331.1，与输出块一致。把θ调到0.75，它贴在−0.0000，L1增大到0.2632。把Co降到2以下，θ = 0.5时负值也会消失。
+
+## 读表：三组数字说明什么
+
+**CN-迎风的−0.2000、−0.3333、−0.6667。** 与上一节的$(2-\mathrm{Co})/(2+\mathrm{Co})$在小数点后四位一致。最小值来自第一步尾部单元。之后数值扩散会削掉下冲，但为时已晚。在实际代码中，那一步的负密度已经传进了压力方程。
+
+**L1误差几乎看不到这件事。** Co = 2和4时CN-迎风的L1分别为0.1589和0.1621，相差2%。只比较一圈后剖面的验证会让Co = 4的结果过关。有界性只能通过过程中的最小值发现。
+
+**CN-中心在Co = 0.5时也有−0.49。** 中心差分在空间离散上就不是单调的。无论换成哪种时间格式，台阶前后都会振荡。若要在体积分数中使用高阶中心成分，就需要限制器(limiter)。[MMACM-Ex锐化通量一文](/zh/posts/2026-11-15-mmacm-ex-downwind-sharpening-timestep/)和[MSTACS库朗数限制一文](/zh/posts/2026-10-25-mstacs-slope-three-courant-limit/)走的就是这条路。
+
+**θ扫描。** Co = 4所需的θ为$1 - 1/4 = 0.75$。θ = 0.7给出−0.0526，正是$G = (1-1.2)/(1+2.8)$。从θ = 0.75开始变为0。代价是L1从0.1621增至0.2632，增加62%。有界性是用数值扩散换来的。
+
+## 三种修正方法及其代价
+
+**1. 随Co提高θ。** 取$\theta = \max(0.5,\, 1 - 1/\mathrm{Co})$即可保证有界。Co越大越接近EI，扩散越强。大Δt带来的收益用界面分辨率来偿还。
+
+**2. 逐单元设定θ。** 按局部库朗数为每个面确定$\theta_f$。只有界面附近的快单元偏向隐式。OpenFOAM的`CrankNicolson ψ`系数是同一思路的全局版本。
+
+**3. 求解后截断。** $\alpha \leftarrow \min(1, \max(0, \alpha))$是最常见的做法。截掉多少，质量就丢多少。Co = 4的CN在尾部单元每步最多丢掉1/3个单元的量。截断只是掩盖症状，病因仍在。
+
+笔记中的原始代码在第13行先做界面重构(压缩差分)，再用CN求解。压缩差分会混入下游值。它的单调性余量比迎风更小，上面的限制只会更严。
+
+## 越过库朗数2之前要算出的θ
+
+在隐式VOF中，“无条件稳定”不能作为选择Δt的依据。先确认三件事：
+
+- 用体积分数时间格式的θ和最大单元库朗数，是否满足$1-(1-\theta)\mathrm{Co} \ge 0$。
+- 验证指标中是否包含**过程中的最小、最大α**，而不只是L1。
+- 如果有截断，是否每一步记录被截掉的质量。
+
+Crank–Nicolson止步于Co = 2，这一事实来自θ格式的一行公式。压力方程再隐式，生成密度的那一行体积分数也会先把路堵住。

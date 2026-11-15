@@ -1,0 +1,185 @@
+---
+title: "무조건 안정한 Crank–Nicolson으로 체적분율을 풀었더니 공기 밀도가 −331이 됐다 — θ 기법의 Courant 2 한계"
+date: 2026-11-16
+description: "음해법 VOF에서 Crank–Nicolson은 Co>2면 체적분율을 음수로 만들고 밀도까지 음수가 된다. 경계성 조건 θ ≥ 1−1/Co를 유도·검증한다."
+tags: ["Crank-Nicolson", "VOF", "Boundedness", "Implicit", "Multiphase"]
+locale: ko
+slug: 2026-11-16-crank-nicolson-vof-negative-density
+takeaway: "θ 기법에 1차 풍상을 쓰면 체적분율이 [0,1]에 머무는 조건은 Co ≤ 1/(1−θ)이다. Crank–Nicolson(θ=0.5)은 Co=2가 끝이고, 물-공기에서는 α가 −0.0012만 돼도 밀도가 음수다."
+draft: false
+---
+import { ThetaTrailingEdgeGainLab } from '@/components/post-viz/2026-11-16-crank-nicolson-vof-negative-density/ThetaTrailingEdgeGainLab'
+import { CrankNicolsonSlugTurnRace } from '@/components/post-viz/2026-11-16-crank-nicolson-vof-negative-density/CrankNicolsonSlugTurnRace'
+
+## 무조건 안정한데, 밀도가 −331이 됐다
+
+Crank–Nicolson은 선형 이류에서 무조건 안정(unconditionally stable)하다. 시간 간격을 아무리 키워도 해의 크기가 자라지 않는다는 뜻이다. 그래서 음해법(implicit) VOF 코드에서 체적분율 방정식에 자주 쓴다. 2차 정확도에 큰 Δt까지 허용하니 손해 볼 게 없어 보인다.
+
+그런데 물기둥 하나를 Courant 수 4로 한 바퀴 돌리면 공기 밀도가 −331 kg/m³까지 내려간다. 해는 발산하지 않았다. 숫자는 유한하고, 오차 노름도 Courant 수 1일 때와 거의 같다. 이 글은 이 모순을 셀 하나짜리 식으로 풀고, θ 기법(theta scheme, 현재와 다음 시각을 가중 평균하는 시간 적분)이 체적분율을 [0, 1] 안에 붙잡아 두는 조건을 유도한다. 결론은 부등식 하나다. $\mathrm{Co} \le 1/(1-\theta)$.
+
+아래 시뮬레이션에서 θ와 Courant 수를 직접 바꿔보자.
+
+<ThetaTrailingEdgeGainLab />
+
+θ = 0.5에서 Co를 2 위로 올리면 물기둥 꼬리의 첫 셀이 바로 빨간색(ρ < 0)으로 바뀐다. 아래 그래프의 점이 0선 아래로 내려가는 순간과 같다. θ를 올리면 경계선 $\mathrm{Co}^*$가 오른쪽으로 밀려난다.
+
+## 원본 노트의 루프: 체적분율 다음 줄은 밀도다
+
+2020년 7월에 정리한 비압축성 pressure-based 다상 코드의 루프는 이렇다. SIMPLE 반복 안에서 모멘텀과 압력 방정식을 풀고, 반복이 끝나면 체적분율을 푼다. 노트의 13~16번 줄이 그 부분이다.
+
+- 13. 부피분율 계산 — "크랭크-니콜슨 방법", 계면 재구성 후 Hypre로 $Ax=b$
+- 14~15. 경계조건, MPI 교환
+- 16. 구한 부피분율로 밀도 계산
+
+16번 줄이 문제의 증폭기다. 혼합 밀도는 체적분율의 선형 함수다.
+
+$$
+\rho = \rho_a + \alpha\,(\rho_w - \rho_a)
+$$
+
+$\rho_w = 998$, $\rho_a = 1.2$ kg/m³가 물과 공기 밀도, $\alpha$가 물의 체적분율이다. 밀도가 음수가 되는 조건은 $\alpha < -\rho_a/(\rho_w-\rho_a) \approx -0.0012$다. 체적분율이 0.12%만 아래로 새도 다음 SIMPLE 반복의 모멘텀 행렬에 음의 질량이 들어간다. 압축성 쪽 루프는 [압축성 SIMPLE 압력 보정식 글](/ko/posts/2026-11-09-compressible-simple-pressure-correction-psi-term/)에서 다뤘다. 이번에는 그 바깥, 체적분율 한 줄을 본다.
+
+## 셀 하나로 줄인 θ 기법
+
+1차원, 속도 $u>0$, 1차 풍상(upwind, 바람이 불어오는 쪽 값을 쓰는 차분)으로 이산화하면 θ 기법 한 스텝은 다음과 같다.
+
+$$
+\alpha_i^{n+1} - \alpha_i^{n} + \mathrm{Co}\left[\theta\,(\alpha_i^{n+1}-\alpha_{i-1}^{n+1}) + (1-\theta)(\alpha_i^{n}-\alpha_{i-1}^{n})\right] = 0
+$$
+
+$\mathrm{Co} = u\Delta t/\Delta x$가 Courant 수, $\theta=1$이 완전 음해법(EI, implicit Euler), $\theta = 0.5$가 Crank–Nicolson이다.
+
+물기둥의 꼬리를 보자. 셀 $i$는 물($\alpha_i^n = 1$), 그 상류 $i-1$은 공기다. 풍상 음해 행렬은 상류 쪽으로만 결합하므로, 상류가 전부 공기면 $\alpha_{i-1}^{n+1} = 0$이 정확히 성립한다. 그러면 꼬리 셀은 한 스텝마다 상수 하나가 곱해진다.
+
+$$
+G = \frac{1-(1-\theta)\,\mathrm{Co}}{1+\theta\,\mathrm{Co}}
+$$
+
+분모는 항상 양수다. 분자가 음수가 되는 순간 $G<0$, 즉 꼬리 셀이 음수로 뒤집힌다. 조건은 다음과 같다.
+
+$$
+\mathrm{Co} > \frac{1}{1-\theta} \quad\Longleftrightarrow\quad \theta < 1 - \frac{1}{\mathrm{Co}}
+$$
+
+Crank–Nicolson에서는 $G = (2-\mathrm{Co})/(2+\mathrm{Co})$다. Co = 3이면 −0.2, Co = 4면 −1/3, Co = 10이면 −2/3이다. $|G| \le 1$이므로 안정성은 깨지지 않는다. 깨지는 것은 단조성(monotonicity, 새 극값을 만들지 않는 성질)이다. 이 둘이 다른 약속이라는 점이 오늘의 요점이다.
+
+반대 방향 앞머리 셀도 같은 이유로 1을 넘는다. 선형 문제라 $1 - \alpha$에 대해 같은 식이 성립하기 때문이다. 일반적인 충분조건도 같은 모양이다. 우변 행렬 $B$의 대각 성분 $1-(1-\theta)\mathrm{Co}$가 음수가 아니고, 좌변 $A$가 M-행렬(역행렬 성분이 모두 0 이상인 행렬)이면 갱신은 볼록 조합이 되어 [0, 1]을 지킨다.
+
+## 코드: 물기둥 한 바퀴, 세 가지 음해법 × Courant 수 여섯 단계
+
+주기 경계 100칸 위에 $0.2<x<0.5$ 물기둥을 놓고 정확히 한 바퀴 돌린다. 세 가지 기법을 비교한다. EI-풍상, CN-풍상, 그리고 공간 2차 중심차분까지 쓴 CN-중심이다. 매 스텝 $\alpha$의 최솟값·최댓값을 추적하고, 그 최솟값으로 밀도를 계산한다. 마지막에는 Co = 4에서 θ를 쓸어 본다.
+
+```python
+import numpy as np
+
+N = 100                      # 길이 1인 주기 1D 영역의 셀 수
+RHO_W, RHO_A = 998.0, 1.2    # 물 / 공기 밀도 [kg/m^3]
+x = (np.arange(N) + 0.5) / N
+alpha0 = ((x > 0.2) & (x < 0.5)).astype(float)   # 물기둥
+
+def theta_matrices(co, theta, space):
+    """한 스텝에 대해 A @ a_new = B @ a_old 가 되는 (A, B) 반환."""
+    I = np.eye(N)
+    S = np.roll(I, -1, axis=1)          # (S a)_i = a_{i-1}
+    if space == "upwind":
+        D = I - S                        # a_i - a_{i-1}
+    else:
+        D = 0.5 * (S.T - S)              # (a_{i+1} - a_{i-1}) / 2
+    A = I + theta * co * D
+    B = I - (1.0 - theta) * co * D
+    return A, B
+
+def advect_one_turn(co, theta, space):
+    A, B = theta_matrices(co, theta, space)
+    step = np.linalg.solve(A, B)         # 100칸이면 밀집 행렬로 충분
+    a = alpha0.copy()
+    amin, amax = 0.0, 1.0
+    for _ in range(int(round(N / co))):
+        a = step @ a
+        amin, amax = min(amin, a.min()), max(amax, a.max())
+    rho_min = RHO_A + amin * (RHO_W - RHO_A)      # 매 스텝 alpha로부터 계산한 밀도
+    l1 = np.abs(a - alpha0).sum() / N             # 한 바퀴 뒤 오차
+    return amin, amax, rho_min, l1
+
+cases = [("EI-upwind", 1.0, "upwind"),
+         ("CN-upwind", 0.5, "upwind"),
+         ("CN-central", 0.5, "central")]
+print(f"{'scheme':<11}{'Co':>5}{'min a':>10}{'max a':>9}{'min rho':>10}{'L1':>8}")
+for name, th, sp in cases:
+    for co in (0.5, 1.0, 2.0, 3.0, 4.0, 10.0):
+        amin, amax, rmin, l1 = advect_one_turn(co, th, sp)
+        flag = "  <- rho<0" if rmin < 0 else ""
+        print(f"{name:<11}{co:>5}{amin:>10.4f}{amax:>9.4f}{rmin:>10.1f}{l1:>8.4f}{flag}")
+    print()
+
+print("theta needed for boundedness at Co=4: 1 - 1/Co =", 1 - 1 / 4.0)
+for th in (0.5, 0.7, 0.75, 1.0):
+    amin, amax, rmin, l1 = advect_one_turn(4.0, th, "upwind")
+    print(f"theta={th:<5} min a={amin:8.4f}  min rho={rmin:7.1f}  L1={l1:.4f}")
+```
+
+```text
+scheme        Co     min a    max a   min rho      L1
+EI-upwind    0.5    0.0000   1.0000       1.2  0.1940
+EI-upwind    1.0    0.0000   1.0000       1.2  0.2218
+EI-upwind    2.0    0.0000   1.0000       1.2  0.2639
+EI-upwind    3.0    0.0000   1.0000       1.2  0.2952
+EI-upwind    4.0    0.0000   1.0000       1.2  0.3180
+EI-upwind   10.0    0.0000   1.0000       1.2  0.3888
+
+CN-upwind    0.5    0.0000   1.0000       1.2  0.1592
+CN-upwind    1.0    0.0000   1.0000       1.2  0.1591
+CN-upwind    2.0    0.0000   1.0000       1.2  0.1589
+CN-upwind    3.0   -0.2000   1.2000    -198.2  0.1607  <- rho<0
+CN-upwind    4.0   -0.3333   1.3333    -331.1  0.1621  <- rho<0
+CN-upwind   10.0   -0.6667   1.6596    -663.3  0.2330  <- rho<0
+
+CN-central   0.5   -0.4916   1.4279    -488.8  0.1465  <- rho<0
+CN-central   1.0   -0.4892   1.4362    -486.4  0.1665  <- rho<0
+CN-central   2.0   -0.5096   1.4271    -506.8  0.1703  <- rho<0
+CN-central   3.0   -0.4936   1.4462    -490.8  0.2173  <- rho<0
+CN-central   4.0   -0.5084   1.4633    -505.6  0.2268  <- rho<0
+CN-central  10.0   -0.7850   1.7799    -781.3  0.2845  <- rho<0
+
+theta needed for boundedness at Co=4: 1 - 1/Co = 0.75
+theta=0.5   min a= -0.3333  min rho= -331.1  L1=0.1621
+theta=0.7   min a= -0.0526  min rho=  -51.3  L1=0.2479
+theta=0.75  min a=  0.0000  min rho=    1.2  L1=0.2632
+theta=1.0   min a=  0.0000  min rho=    1.2  L1=0.3180
+```
+
+위 코드를 브라우저에서 직접 돌려보자.
+
+<CrankNicolsonSlugTurnRace />
+
+기본값(Co = 4, θ = 0.5)에서 주황 θ-풍상 행의 min alpha가 −0.3333, min rho가 −331.1로 출력 블록과 같다. θ를 0.75로 올리면 −0.0000으로 붙고 L1은 0.2632로 커진다. Co를 2 이하로 내리면 θ = 0.5에서도 음수가 사라진다.
+
+## 표 읽기: 세 숫자가 말하는 것
+
+**CN-풍상의 −0.2000, −0.3333, −0.6667.** 앞 절의 $(2-\mathrm{Co})/(2+\mathrm{Co})$와 소수점 넷째 자리까지 같다. 최저점은 첫 스텝에서 꼬리 셀이 만든 값이다. 그 뒤 수치 확산이 언더슈트를 깎지만, 이미 늦었다. 실제 코드에서는 그 한 스텝의 음수 밀도가 압력 방정식으로 넘어간다.
+
+**L1 오차는 이 사건을 거의 못 본다.** Co = 2와 4에서 CN-풍상의 L1은 0.1589와 0.1621로 차이가 2%다. 한 바퀴 뒤 프로파일만 비교하는 검증은 Co = 4 결과를 합격시킨다. 경계성은 과정 중의 최솟값으로만 잡힌다.
+
+**CN-중심은 Co = 0.5에서도 −0.49다.** 중심차분은 공간 이산화부터 단조가 아니다. 시간 기법을 무엇으로 바꿔도 계단 앞뒤에서 진동한다. 체적분율에 고차 중심 성분을 쓰려면 제한자(limiter)가 필요하다. [MMACM-Ex 샤프닝 플럭스 글](/ko/posts/2026-11-15-mmacm-ex-downwind-sharpening-timestep/)과 [MSTACS의 Courant 한계 글](/ko/posts/2026-10-25-mstacs-slope-three-courant-limit/)이 그 방향이다.
+
+**θ 스캔.** Co = 4에서 필요한 θ는 $1 - 1/4 = 0.75$다. θ = 0.7은 −0.0526, 바로 $G = (1-1.2)/(1+2.8)$다. θ = 0.75부터 0이 된다. 대신 L1은 0.1621에서 0.2632로 62% 늘어난다. 경계성을 산 값은 수치 확산이다.
+
+## 고치는 방법 세 가지와 각각의 대가
+
+**1. Co에 맞춰 θ를 올린다.** $\theta = \max(0.5,\, 1 - 1/\mathrm{Co})$로 두면 경계성이 보장된다. Co가 클수록 EI에 가까워지고 확산이 커진다. 큰 Δt의 이득을 계면 해상도로 갚는 셈이다.
+
+**2. 셀마다 θ를 다르게 준다.** 국소 Courant 수로 $\theta_f$를 면마다 정한다. 계면 근처 빠른 셀만 음해 쪽으로 기운다. OpenFOAM의 `CrankNicolson ψ` 계수도 같은 발상의 전역 버전이다.
+
+**3. 풀고 나서 자른다.** $\alpha \leftarrow \min(1, \max(0, \alpha))$는 가장 흔한 처방이다. 잘라낸 만큼 질량이 사라진다. Co = 4 CN이면 꼬리 셀에서 매 스텝 최대 1/3칸 분량이다. 클리핑은 증상을 숨길 뿐 원인은 그대로다.
+
+노트의 원래 코드는 13번 줄에서 계면 재구성(압축 차분)을 먼저 하고 CN으로 풀었다. 압축 차분은 하류 값을 섞는다. 풍상보다 단조성 여유가 작으니 위 한계는 더 빡빡해진다.
+
+## Courant 수 2를 넘기기 전에 계산할 θ
+
+음해법 VOF에서 "무조건 안정"은 Δt 선택의 근거가 못 된다. 다음 세 가지를 먼저 확인하자.
+
+- 체적분율 시간 기법의 θ와 최대 셀 Courant 수로 $1-(1-\theta)\mathrm{Co} \ge 0$인가.
+- 검증 지표에 L1 대신 **과정 중 최소·최대 α**가 들어 있는가.
+- 클리핑이 있다면, 잘라낸 질량을 매 스텝 로그로 남기는가.
+
+Crank–Nicolson이 Co = 2에서 멈춘다는 사실은 θ 기법의 식 한 줄에서 나온다. 압력 방정식이 아무리 음해적이어도, 밀도를 만드는 체적분율 한 줄이 그 앞을 막는다.

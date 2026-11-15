@@ -1,0 +1,185 @@
+---
+title: "無条件安定のCrank–Nicolsonで体積分率を解いたら空気の密度が−331になった — θ法のクーラン数2の壁"
+date: 2026-11-16
+description: "陰解法VOFでCrank–NicolsonはCo>2で体積分率を負にし、密度まで負になります。有界性条件θ ≥ 1−1/Coを導いて検証します。"
+tags: ["Crank-Nicolson", "VOF", "Boundedness", "Implicit", "Multiphase"]
+locale: ja
+slug: 2026-11-16-crank-nicolson-vof-negative-density
+takeaway: "1次風上のθ法で体積分率が[0,1]に収まる条件はCo ≤ 1/(1−θ)です。Crank–Nicolson(θ=0.5)はCo=2が上限で、水‐空気ではαが−0.0012になるだけで密度が負になります。"
+draft: false
+---
+import { ThetaTrailingEdgeGainLab } from '@/components/post-viz/2026-11-16-crank-nicolson-vof-negative-density/ThetaTrailingEdgeGainLab'
+import { CrankNicolsonSlugTurnRace } from '@/components/post-viz/2026-11-16-crank-nicolson-vof-negative-density/CrankNicolsonSlugTurnRace'
+
+## 無条件安定なのに、密度が−331になった
+
+Crank–Nicolson法は線形移流に対して無条件安定(unconditionally stable)です。時間刻みをいくら大きくしても解の大きさは増えません。そのため陰解法(implicit)VOFコードでは体積分率の式によく使われます。2次精度で大きなΔtも許されるので、損はないように見えます。
+
+ところが、水柱を一つクーラン数4で一周させると、空気の密度が−331 kg/m³まで下がります。解は発散していません。数値は有限で、誤差ノルムもクーラン数1のときとほぼ同じです。本記事ではこの矛盾をセル1個の式で解き明かします。θ法(現在と次の時刻を重み付き平均する時間積分)が体積分率を[0, 1]に留める条件を導きます。結論は不等式一つ、$\mathrm{Co} \le 1/(1-\theta)$ です。
+
+下のシミュレーションでθとクーラン数を実際に動かしてみてください。
+
+<ThetaTrailingEdgeGainLab />
+
+θ = 0.5でCoを2より上げると、水柱の後端の最初のセルがすぐ赤(ρ < 0)に変わります。下のグラフの点が0の線より下に落ちる瞬間と同じです。θを上げると境界$\mathrm{Co}^*$が右へ動きます。
+
+## 元のノートのループ:体積分率の次の行は密度
+
+2020年7月にまとめた非圧縮性pressure-based多相コードのループは次のとおりです。SIMPLE反復の中で運動量と圧力の式を解き、反復が終わったら体積分率を解きます。ノートの13〜16行目がその部分です。
+
+- 13. 体積分率の計算 — 「クランク・ニコルソン法」、界面再構成のあとHypreで$Ax=b$
+- 14〜15. 境界条件、MPI交換
+- 16. 求めた体積分率で密度を計算
+
+16行目が増幅器です。混合密度は体積分率の線形関数です。
+
+$$
+\rho = \rho_a + \alpha\,(\rho_w - \rho_a)
+$$
+
+$\rho_w = 998$、$\rho_a = 1.2$ kg/m³が水と空気の密度、$\alpha$が水の体積分率です。密度が負になる条件は$\alpha < -\rho_a/(\rho_w-\rho_a) \approx -0.0012$です。体積分率が0.12%下に漏れるだけで、次のSIMPLE反復の運動量行列に負の質量が入ります。圧縮性側のループは[圧縮性SIMPLEの圧力補正式の記事](/ja/posts/2026-11-09-compressible-simple-pressure-correction-psi-term/)で扱いました。今回はその外側、体積分率の一行を見ます。
+
+## セル1個に縮めたθ法
+
+1次元、速度$u>0$、1次風上(upwind、流れが来る側の値を使う差分)で離散化すると、θ法の1ステップは次のようになります。
+
+$$
+\alpha_i^{n+1} - \alpha_i^{n} + \mathrm{Co}\left[\theta\,(\alpha_i^{n+1}-\alpha_{i-1}^{n+1}) + (1-\theta)(\alpha_i^{n}-\alpha_{i-1}^{n})\right] = 0
+$$
+
+$\mathrm{Co} = u\Delta t/\Delta x$がクーラン数で、$\theta=1$が完全陰解法(EI、後退Euler)、$\theta = 0.5$がCrank–Nicolsonです。
+
+水柱の後端を見ます。セル$i$は水($\alpha_i^n = 1$)、その上流$i-1$は空気です。風上の陰的行列は上流側とだけ結合するので、上流がすべて空気なら$\alpha_{i-1}^{n+1} = 0$が厳密に成り立ちます。すると後端セルには1ステップごとに定数が一つ掛かります。
+
+$$
+G = \frac{1-(1-\theta)\,\mathrm{Co}}{1+\theta\,\mathrm{Co}}
+$$
+
+分母は常に正です。分子が負になった瞬間$G<0$となり、後端セルの符号が反転します。条件は次のとおりです。
+
+$$
+\mathrm{Co} > \frac{1}{1-\theta} \quad\Longleftrightarrow\quad \theta < 1 - \frac{1}{\mathrm{Co}}
+$$
+
+Crank–Nicolsonでは$G = (2-\mathrm{Co})/(2+\mathrm{Co})$です。Co = 3で−0.2、Co = 4で−1/3、Co = 10で−2/3になります。$|G| \le 1$なので安定性は崩れません。崩れるのは単調性(monotonicity、新しい極値を作らない性質)です。この二つが別の約束だという点が今日の要点です。
+
+反対側の先端セルも同じ理由で1を超えます。線形問題なので$1 - \alpha$についても同じ式が成り立つからです。一般的な十分条件も同じ形です。右辺行列$B$の対角成分$1-(1-\theta)\mathrm{Co}$が非負で、左辺$A$がM行列(逆行列の成分がすべて0以上の行列)なら、更新は凸結合になり[0, 1]を守ります。
+
+## コード:水柱一周、3種類の陰解法 × クーラン数6段階
+
+周期境界100セルの上に$0.2<x<0.5$の水柱を置き、ちょうど一周させます。比較するのは3つの手法です。EI‐風上、CN‐風上、そして空間2次の中心差分まで使うCN‐中心です。毎ステップ$\alpha$の最小値・最大値を追跡し、その最小値から密度を計算します。最後にCo = 4でθを掃引します。
+
+```python
+import numpy as np
+
+N = 100                      # 長さ1の周期1D領域のセル数
+RHO_W, RHO_A = 998.0, 1.2    # 水 / 空気の密度 [kg/m^3]
+x = (np.arange(N) + 0.5) / N
+alpha0 = ((x > 0.2) & (x < 0.5)).astype(float)   # 水柱
+
+def theta_matrices(co, theta, space):
+    """1ステップで A @ a_new = B @ a_old となる (A, B) を返す。"""
+    I = np.eye(N)
+    S = np.roll(I, -1, axis=1)          # (S a)_i = a_{i-1}
+    if space == "upwind":
+        D = I - S                        # a_i - a_{i-1}
+    else:
+        D = 0.5 * (S.T - S)              # (a_{i+1} - a_{i-1}) / 2
+    A = I + theta * co * D
+    B = I - (1.0 - theta) * co * D
+    return A, B
+
+def advect_one_turn(co, theta, space):
+    A, B = theta_matrices(co, theta, space)
+    step = np.linalg.solve(A, B)         # N = 100 なら密行列で十分
+    a = alpha0.copy()
+    amin, amax = 0.0, 1.0
+    for _ in range(int(round(N / co))):
+        a = step @ a
+        amin, amax = min(amin, a.min()), max(amax, a.max())
+    rho_min = RHO_A + amin * (RHO_W - RHO_A)      # 毎ステップ alpha から求めた密度
+    l1 = np.abs(a - alpha0).sum() / N             # 一周後の誤差
+    return amin, amax, rho_min, l1
+
+cases = [("EI-upwind", 1.0, "upwind"),
+         ("CN-upwind", 0.5, "upwind"),
+         ("CN-central", 0.5, "central")]
+print(f"{'scheme':<11}{'Co':>5}{'min a':>10}{'max a':>9}{'min rho':>10}{'L1':>8}")
+for name, th, sp in cases:
+    for co in (0.5, 1.0, 2.0, 3.0, 4.0, 10.0):
+        amin, amax, rmin, l1 = advect_one_turn(co, th, sp)
+        flag = "  <- rho<0" if rmin < 0 else ""
+        print(f"{name:<11}{co:>5}{amin:>10.4f}{amax:>9.4f}{rmin:>10.1f}{l1:>8.4f}{flag}")
+    print()
+
+print("theta needed for boundedness at Co=4: 1 - 1/Co =", 1 - 1 / 4.0)
+for th in (0.5, 0.7, 0.75, 1.0):
+    amin, amax, rmin, l1 = advect_one_turn(4.0, th, "upwind")
+    print(f"theta={th:<5} min a={amin:8.4f}  min rho={rmin:7.1f}  L1={l1:.4f}")
+```
+
+```text
+scheme        Co     min a    max a   min rho      L1
+EI-upwind    0.5    0.0000   1.0000       1.2  0.1940
+EI-upwind    1.0    0.0000   1.0000       1.2  0.2218
+EI-upwind    2.0    0.0000   1.0000       1.2  0.2639
+EI-upwind    3.0    0.0000   1.0000       1.2  0.2952
+EI-upwind    4.0    0.0000   1.0000       1.2  0.3180
+EI-upwind   10.0    0.0000   1.0000       1.2  0.3888
+
+CN-upwind    0.5    0.0000   1.0000       1.2  0.1592
+CN-upwind    1.0    0.0000   1.0000       1.2  0.1591
+CN-upwind    2.0    0.0000   1.0000       1.2  0.1589
+CN-upwind    3.0   -0.2000   1.2000    -198.2  0.1607  <- rho<0
+CN-upwind    4.0   -0.3333   1.3333    -331.1  0.1621  <- rho<0
+CN-upwind   10.0   -0.6667   1.6596    -663.3  0.2330  <- rho<0
+
+CN-central   0.5   -0.4916   1.4279    -488.8  0.1465  <- rho<0
+CN-central   1.0   -0.4892   1.4362    -486.4  0.1665  <- rho<0
+CN-central   2.0   -0.5096   1.4271    -506.8  0.1703  <- rho<0
+CN-central   3.0   -0.4936   1.4462    -490.8  0.2173  <- rho<0
+CN-central   4.0   -0.5084   1.4633    -505.6  0.2268  <- rho<0
+CN-central  10.0   -0.7850   1.7799    -781.3  0.2845  <- rho<0
+
+theta needed for boundedness at Co=4: 1 - 1/Co = 0.75
+theta=0.5   min a= -0.3333  min rho= -331.1  L1=0.1621
+theta=0.7   min a= -0.0526  min rho=  -51.3  L1=0.2479
+theta=0.75  min a=  0.0000  min rho=    1.2  L1=0.2632
+theta=1.0   min a=  0.0000  min rho=    1.2  L1=0.3180
+```
+
+上のコードをブラウザで直接動かしてみましょう。
+
+<CrankNicolsonSlugTurnRace />
+
+既定値(Co = 4、θ = 0.5)では、オレンジのθ‐風上の行のmin alphaが−0.3333、min rhoが−331.1で、出力ブロックと一致します。θを0.75に上げると−0.0000に張り付き、L1は0.2632に増えます。Coを2以下に下げると、θ = 0.5でも負の値が消えます。
+
+## 表を読む:3つの数字が語ること
+
+**CN‐風上の−0.2000、−0.3333、−0.6667。** 前節の$(2-\mathrm{Co})/(2+\mathrm{Co})$と小数第4位まで一致します。最小値は最初のステップで後端セルが作った値です。その後、数値拡散がアンダーシュートを削りますが、もう手遅れです。実際のコードでは、その1ステップ分の負の密度がすでに圧力方程式へ渡っています。
+
+**L1誤差はこの事件をほとんど見ません。** Co = 2と4でのCN‐風上のL1は0.1589と0.1621で、差は2%です。一周後のプロファイルだけを比べる検証なら、Co = 4の結果は合格になります。有界性は途中の最小値でしか捉えられません。
+
+**CN‐中心はCo = 0.5でも−0.49です。** 中心差分は空間離散化の段階から単調ではありません。時間スキームを何に変えても、段差の前後で振動します。体積分率に高次の中心成分を使うなら制限関数(limiter)が必要です。[MMACM-Exシャープニング流束の記事](/ja/posts/2026-11-15-mmacm-ex-downwind-sharpening-timestep/)と[MSTACSのクーラン数制限の記事](/ja/posts/2026-10-25-mstacs-slope-three-courant-limit/)がその方向です。
+
+**θの掃引。** Co = 4で必要なθは$1 - 1/4 = 0.75$です。θ = 0.7は−0.0526で、まさに$G = (1-1.2)/(1+2.8)$です。θ = 0.75からは0になります。代わりにL1は0.1621から0.2632へ62%増えます。有界性の代価は数値拡散です。
+
+## 3つの対処法とそれぞれの代価
+
+**1. Coに合わせてθを上げる。** $\theta = \max(0.5,\, 1 - 1/\mathrm{Co})$とすれば有界性が保証されます。Coが大きいほどEIに近づき、拡散が増えます。大きなΔtの得を界面解像度で払う形です。
+
+**2. セルごとにθを変える。** 局所クーラン数から面ごとに$\theta_f$を決めます。界面付近の速いセルだけが陰的側に傾きます。OpenFOAMの`CrankNicolson ψ`係数は同じ発想の全域版です。
+
+**3. 解いてから切る。** $\alpha \leftarrow \min(1, \max(0, \alpha))$は最もよくある処方です。切り捨てた分だけ質量が消えます。Co = 4のCNなら、後端セルで毎ステップ最大1/3セル分です。クリッピングは症状を隠すだけで、原因はそのままです。
+
+ノートの元のコードは、13行目でまず界面再構成(圧縮差分)を行ってからCNで解いていました。圧縮差分は下流の値を混ぜます。風上より単調性の余裕が小さいので、上の制限はさらに厳しくなります。
+
+## クーラン数2を超える前に計算しておくθ
+
+陰解法VOFでは「無条件安定」はΔtを選ぶ根拠になりません。まず次の3点を確認しましょう。
+
+- 体積分率の時間スキームのθと最大セルクーラン数で、$1-(1-\theta)\mathrm{Co} \ge 0$になっているか。
+- 検証指標にL1ではなく**途中の最小・最大α**が入っているか。
+- クリッピングがあるなら、切り捨てた質量を毎ステップ記録しているか。
+
+Crank–NicolsonがCo = 2で止まるという事実は、θ法の式一行から出てきます。圧力方程式がどれほど陰的でも、密度を作る体積分率の一行がその手前で道をふさぎます。

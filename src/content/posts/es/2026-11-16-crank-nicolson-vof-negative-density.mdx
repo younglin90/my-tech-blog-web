@@ -1,0 +1,185 @@
+---
+title: "Crank–Nicolson, incondicionalmente estable, llevó la densidad del aire a −331 — el límite de Courant 2 del esquema θ en VOF"
+date: 2026-11-16
+description: "En VOF implícito, Crank–Nicolson vuelve negativa la fracción volumétrica cuando Co > 2, y la densidad de la mezcla se vuelve negativa con ella. Se deriva y se comprueba la cota θ ≥ 1 − 1/Co."
+tags: ["Crank-Nicolson", "VOF", "Boundedness", "Implicit", "Multiphase"]
+locale: es
+slug: 2026-11-16-crank-nicolson-vof-negative-density
+takeaway: "Con upwind de primer orden, el esquema θ mantiene la fracción volumétrica en [0,1] solo si Co ≤ 1/(1−θ). Crank–Nicolson (θ=0.5) se detiene en Co=2, y en agua–aire basta α = −0.0012 para que la densidad sea negativa."
+draft: false
+---
+import { ThetaTrailingEdgeGainLab } from '@/components/post-viz/2026-11-16-crank-nicolson-vof-negative-density/ThetaTrailingEdgeGainLab'
+import { CrankNicolsonSlugTurnRace } from '@/components/post-viz/2026-11-16-crank-nicolson-vof-negative-density/CrankNicolsonSlugTurnRace'
+
+## Incondicionalmente estable, y aun así la densidad llegó a −331
+
+Crank–Nicolson es incondicionalmente estable (unconditionally stable) para advección lineal. Por grande que sea el paso de tiempo, la solución no crece. Por eso los códigos VOF implícitos lo usan a menudo en la ecuación de la fracción volumétrica. Segundo orden y Δt grande parecen no tener costo.
+
+Sin embargo, al advectar una columna de agua una vuelta completa con número de Courant 4, la densidad del aire baja a −331 kg/m³. Nada explotó. Todos los números son finitos y la norma del error casi no difiere de la del caso Co = 1. Este artículo resuelve esa contradicción con una fórmula de una sola celda. Se deriva cuándo el esquema θ (un integrador temporal que pondera el nivel actual y el siguiente) mantiene la fracción volumétrica dentro de [0, 1]. La respuesta es una desigualdad: $\mathrm{Co} \le 1/(1-\theta)$.
+
+En la simulación de abajo se pueden mover θ y el número de Courant directamente.
+
+<ThetaTrailingEdgeGainLab />
+
+Con θ = 0.5, al subir Co por encima de 2 la primera celda de la cola de la columna se vuelve roja (ρ < 0) de inmediato. Es el mismo instante en que el punto del gráfico inferior cruza por debajo de cero. Al subir θ, la frontera $\mathrm{Co}^*$ se desplaza a la derecha.
+
+## El bucle original: tras la fracción volumétrica viene la densidad
+
+Las notas de julio de 2020 sobre un código multifásico incompresible pressure-based describen el bucle así. Dentro de las iteraciones SIMPLE se resuelven momento y presión. Al terminar, se resuelve la fracción volumétrica. Las líneas 13–16 de las notas cubren esa parte.
+
+- 13. Fracción volumétrica — "método de Crank–Nicolson", reconstrucción de interfaz y luego $Ax=b$ con Hypre
+- 14–15. Condiciones de contorno, intercambio MPI
+- 16. Cálculo de la densidad con la nueva fracción volumétrica
+
+La línea 16 es el amplificador. La densidad de la mezcla es lineal en la fracción volumétrica.
+
+$$
+\rho = \rho_a + \alpha\,(\rho_w - \rho_a)
+$$
+
+$\rho_w = 998$ y $\rho_a = 1.2$ kg/m³ son las densidades del agua y del aire, y $\alpha$ es la fracción volumétrica de agua. La densidad es negativa si $\alpha < -\rho_a/(\rho_w-\rho_a) \approx -0.0012$. Una fuga de 0.12 % por debajo de cero mete masa negativa en la matriz de momento de la siguiente iteración SIMPLE. La versión compresible de este bucle se trató en [el artículo sobre la corrección de presión en SIMPLE compresible](/es/posts/2026-11-09-compressible-simple-pressure-correction-psi-term/). Esta vez se mira fuera de él, en esa única línea de la fracción volumétrica.
+
+## El esquema θ reducido a una celda
+
+En 1D con $u>0$ y upwind de primer orden (tomar el valor del lado de donde viene el flujo), un paso del esquema θ es:
+
+$$
+\alpha_i^{n+1} - \alpha_i^{n} + \mathrm{Co}\left[\theta\,(\alpha_i^{n+1}-\alpha_{i-1}^{n+1}) + (1-\theta)(\alpha_i^{n}-\alpha_{i-1}^{n})\right] = 0
+$$
+
+$\mathrm{Co} = u\Delta t/\Delta x$ es el número de Courant. $\theta=1$ es totalmente implícito (EI, Euler implícito) y $\theta = 0.5$ es Crank–Nicolson.
+
+Considérese la cola de la columna. La celda $i$ es agua ($\alpha_i^n = 1$) y su vecina aguas arriba $i-1$ es aire. La matriz implícita upwind solo acopla hacia aguas arriba, así que si todo aguas arriba es aire, $\alpha_{i-1}^{n+1} = 0$ se cumple exactamente. La celda de la cola queda multiplicada por una constante en cada paso.
+
+$$
+G = \frac{1-(1-\theta)\,\mathrm{Co}}{1+\theta\,\mathrm{Co}}
+$$
+
+El denominador siempre es positivo. Cuando el numerador se vuelve negativo, $G<0$ y la celda cambia de signo. La condición es:
+
+$$
+\mathrm{Co} > \frac{1}{1-\theta} \quad\Longleftrightarrow\quad \theta < 1 - \frac{1}{\mathrm{Co}}
+$$
+
+Para Crank–Nicolson, $G = (2-\mathrm{Co})/(2+\mathrm{Co})$. Eso da −0.2 con Co = 3, −1/3 con Co = 4 y −2/3 con Co = 10. Como $|G| \le 1$, la estabilidad se conserva. Lo que se rompe es la monotonía (monotonicity, no crear nuevos extremos). Son dos promesas distintas, y esa es la idea central de este artículo.
+
+La celda del frente supera 1 por la misma razón. El problema es lineal, así que la misma fórmula vale para $1 - \alpha$. La condición suficiente general tiene la misma forma. Si la diagonal de la matriz derecha $B$, $1-(1-\theta)\mathrm{Co}$, es no negativa y la matriz izquierda $A$ es una M-matriz (su inversa no tiene entradas negativas), cada actualización es una combinación convexa y se queda en [0, 1].
+
+## Código: una vuelta de la columna de agua, tres esquemas implícitos × seis números de Courant
+
+Se coloca una columna en $0.2<x<0.5$ sobre una malla periódica de 100 celdas y se advecta exactamente una vuelta. Se comparan tres esquemas: EI-upwind, CN-upwind y CN-central, con diferencias centrales de segundo orden en espacio. En cada paso se registran el mínimo y el máximo de $\alpha$, y la densidad se calcula con ese mínimo. Al final se barre θ con Co = 4.
+
+```python
+import numpy as np
+
+N = 100                      # celdas en un dominio 1D periódico de longitud 1
+RHO_W, RHO_A = 998.0, 1.2    # densidad del agua / del aire [kg/m^3]
+x = (np.arange(N) + 0.5) / N
+alpha0 = ((x > 0.2) & (x < 0.5)).astype(float)   # columna de agua
+
+def theta_matrices(co, theta, space):
+    """Devuelve (A, B) tales que A @ a_new = B @ a_old en un paso."""
+    I = np.eye(N)
+    S = np.roll(I, -1, axis=1)          # (S a)_i = a_{i-1}
+    if space == "upwind":
+        D = I - S                        # a_i - a_{i-1}
+    else:
+        D = 0.5 * (S.T - S)              # (a_{i+1} - a_{i-1}) / 2
+    A = I + theta * co * D
+    B = I - (1.0 - theta) * co * D
+    return A, B
+
+def advect_one_turn(co, theta, space):
+    A, B = theta_matrices(co, theta, space)
+    step = np.linalg.solve(A, B)         # con N = 100 basta una matriz densa
+    a = alpha0.copy()
+    amin, amax = 0.0, 1.0
+    for _ in range(int(round(N / co))):
+        a = step @ a
+        amin, amax = min(amin, a.min()), max(amax, a.max())
+    rho_min = RHO_A + amin * (RHO_W - RHO_A)      # densidad a partir de alpha, en cada paso
+    l1 = np.abs(a - alpha0).sum() / N             # error tras una vuelta completa
+    return amin, amax, rho_min, l1
+
+cases = [("EI-upwind", 1.0, "upwind"),
+         ("CN-upwind", 0.5, "upwind"),
+         ("CN-central", 0.5, "central")]
+print(f"{'scheme':<11}{'Co':>5}{'min a':>10}{'max a':>9}{'min rho':>10}{'L1':>8}")
+for name, th, sp in cases:
+    for co in (0.5, 1.0, 2.0, 3.0, 4.0, 10.0):
+        amin, amax, rmin, l1 = advect_one_turn(co, th, sp)
+        flag = "  <- rho<0" if rmin < 0 else ""
+        print(f"{name:<11}{co:>5}{amin:>10.4f}{amax:>9.4f}{rmin:>10.1f}{l1:>8.4f}{flag}")
+    print()
+
+print("theta needed for boundedness at Co=4: 1 - 1/Co =", 1 - 1 / 4.0)
+for th in (0.5, 0.7, 0.75, 1.0):
+    amin, amax, rmin, l1 = advect_one_turn(4.0, th, "upwind")
+    print(f"theta={th:<5} min a={amin:8.4f}  min rho={rmin:7.1f}  L1={l1:.4f}")
+```
+
+```text
+scheme        Co     min a    max a   min rho      L1
+EI-upwind    0.5    0.0000   1.0000       1.2  0.1940
+EI-upwind    1.0    0.0000   1.0000       1.2  0.2218
+EI-upwind    2.0    0.0000   1.0000       1.2  0.2639
+EI-upwind    3.0    0.0000   1.0000       1.2  0.2952
+EI-upwind    4.0    0.0000   1.0000       1.2  0.3180
+EI-upwind   10.0    0.0000   1.0000       1.2  0.3888
+
+CN-upwind    0.5    0.0000   1.0000       1.2  0.1592
+CN-upwind    1.0    0.0000   1.0000       1.2  0.1591
+CN-upwind    2.0    0.0000   1.0000       1.2  0.1589
+CN-upwind    3.0   -0.2000   1.2000    -198.2  0.1607  <- rho<0
+CN-upwind    4.0   -0.3333   1.3333    -331.1  0.1621  <- rho<0
+CN-upwind   10.0   -0.6667   1.6596    -663.3  0.2330  <- rho<0
+
+CN-central   0.5   -0.4916   1.4279    -488.8  0.1465  <- rho<0
+CN-central   1.0   -0.4892   1.4362    -486.4  0.1665  <- rho<0
+CN-central   2.0   -0.5096   1.4271    -506.8  0.1703  <- rho<0
+CN-central   3.0   -0.4936   1.4462    -490.8  0.2173  <- rho<0
+CN-central   4.0   -0.5084   1.4633    -505.6  0.2268  <- rho<0
+CN-central  10.0   -0.7850   1.7799    -781.3  0.2845  <- rho<0
+
+theta needed for boundedness at Co=4: 1 - 1/Co = 0.75
+theta=0.5   min a= -0.3333  min rho= -331.1  L1=0.1621
+theta=0.7   min a= -0.0526  min rho=  -51.3  L1=0.2479
+theta=0.75  min a=  0.0000  min rho=    1.2  L1=0.2632
+theta=1.0   min a=  0.0000  min rho=    1.2  L1=0.3180
+```
+
+El código de arriba puede ejecutarse directamente en el navegador.
+
+<CrankNicolsonSlugTurnRace />
+
+Con los valores por defecto (Co = 4, θ = 0.5), la fila naranja θ-upwind muestra min alpha −0.3333 y min rho −331.1, igual que el bloque de salida. Al subir θ a 0.75 queda pegada en −0.0000 y L1 crece a 0.2632. Al bajar Co a 2 o menos, los negativos desaparecen incluso con θ = 0.5.
+
+## Lectura de la tabla: lo que dicen tres números
+
+**Los −0.2000, −0.3333 y −0.6667 de CN-upwind.** Coinciden con $(2-\mathrm{Co})/(2+\mathrm{Co})$ hasta el cuarto decimal. El mínimo lo crea la celda de la cola en el primer paso. Luego la difusión numérica recorta el undershoot, pero ya es tarde. En un código real, ese paso con densidad negativa ya pasó a la ecuación de presión.
+
+**El error L1 apenas lo nota.** El L1 de CN-upwind con Co = 2 y 4 es 0.1589 y 0.1621, una diferencia de 2 %. Una verificación que solo compara el perfil final aprobaría el caso Co = 4. La acotación solo aparece en el mínimo acumulado durante la simulación.
+
+**CN-central llega a −0.49 incluso con Co = 0.5.** Las diferencias centrales ya son no monótonas en espacio. Con cualquier esquema temporal, oscilan alrededor del escalón. Un componente central de alto orden para la fracción volumétrica requiere un limitador (limiter). Ese camino se recorre en [el artículo sobre el flujo de afilado MMACM-Ex](/es/posts/2026-11-15-mmacm-ex-downwind-sharpening-timestep/) y en [el del límite de Courant de MSTACS](/es/posts/2026-10-25-mstacs-slope-three-courant-limit/).
+
+**El barrido de θ.** Con Co = 4 se necesita $\theta \ge 1 - 1/4 = 0.75$. θ = 0.7 da −0.0526, exactamente $G = (1-1.2)/(1+2.8)$. Desde θ = 0.75 el mínimo es cero. Pero L1 sube de 0.1621 a 0.2632, un 62 % más. La acotación se paga con difusión numérica.
+
+## Tres correcciones y lo que cuesta cada una
+
+**1. Subir θ con Co.** Con $\theta = \max(0.5,\, 1 - 1/\mathrm{Co})$ la acotación queda garantizada. Cuanto mayor es Co, más se acerca a EI y más difusión se añade. La ganancia de un Δt grande se paga en resolución de la interfaz.
+
+**2. Variar θ por celda.** Se elige $\theta_f$ cara a cara según el Courant local. Solo las celdas rápidas cerca de la interfaz se inclinan hacia lo implícito. El coeficiente `CrankNicolson ψ` de OpenFOAM es una versión global de la misma idea.
+
+**3. Resolver y luego recortar.** $\alpha \leftarrow \min(1, \max(0, \alpha))$ es el remedio más común. Lo que se recorta es masa perdida. Para CN con Co = 4, hasta un tercio de celda por paso en la cola. El recorte oculta el síntoma y deja la causa.
+
+El código original hacía primero la reconstrucción de interfaz (diferencias compresivas) en la línea 13 y luego resolvía con CN. Los esquemas compresivos mezclan valores aguas abajo. Tienen menos margen de monotonía que el upwind, así que el límite anterior se vuelve más estricto.
+
+## El θ que conviene calcular antes de pasar Courant 2
+
+En VOF implícito, "incondicionalmente estable" no justifica la elección de Δt. Primero hay que comprobar tres cosas.
+
+- Con el θ de la fracción volumétrica y el Courant máximo por celda, ¿se cumple $1-(1-\theta)\mathrm{Co} \ge 0$?
+- ¿La verificación registra el **mínimo y el máximo de α durante la simulación**, y no solo L1?
+- Si hay recorte, ¿se registra la masa recortada en cada paso?
+
+Que Crank–Nicolson se detenga en Co = 2 sale de una sola línea del esquema θ. Por implícita que sea la ecuación de presión, la línea de la fracción volumétrica que construye la densidad llega antes.
