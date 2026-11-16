@@ -1,0 +1,175 @@
+---
+title: "Above Inlet Mach 0.384, a Combustor Can't Take All Its Heat — Thermal Choking and Stagnation-Pressure Loss in Rayleigh Flow"
+date: 2026-11-17
+description: "Adding heat to a constant-area duct drags the Mach number toward 1 and lowers stagnation pressure. We integrate Rayleigh flow with RK4 to find the inlet Mach at which a combustor doubling T0 thermally chokes."
+tags: ["Rayleigh-Flow", "Thermal-Choking", "Combustion", "Compressible-Flow", "Fluid-Mechanics"]
+locale: en
+slug: 2026-11-17-rayleigh-flow-thermal-choking-combustor
+takeaway: "A constant-area combustor that doubles stagnation temperature chokes thermally at inlet Mach 0.384, and loses more than 13% of its stagnation pressure just before it does."
+draft: false
+---
+import { RayleighLineHeatingLab } from '@/components/post-viz/2026-11-17-rayleigh-flow-thermal-choking-combustor/RayleighLineHeatingLab'
+import { CombustorThermalChokeMarch } from '@/components/post-viz/2026-11-17-rayleigh-flow-thermal-choking-combustor/CombustorThermalChokeMarch'
+
+## Why is there a diffuser in front of the combustor?
+
+Air leaves a jet engine compressor at Mach 0.3 to 0.4. Before it reaches the combustor, a diffuser (a widening passage that slows the flow) deliberately cuts that speed by half or more. Flame stability is the first reason. The second is thermodynamics. Adding heat to a moving gas by itself destroys stagnation pressure (the pressure the gas would reach if brought to rest isentropically). The faster the inlet, the larger the loss.
+
+This post puts numbers on that loss. We take a frictionless constant-area duct and add enough heat to double the stagnation temperature. Then we sweep the inlet Mach number from 0.10 to 0.40 and integrate the exit state with RK4. Two results stand out. At inlet Mach 0.30 the duct loses 7.1% of its stagnation pressure. Above 0.384 it cannot even absorb all the heat.
+
+## Heat only, constant area: Rayleigh flow
+
+The setup in the source notes (Hill & Peterson, Section 3.5) is simple. Constant area, no friction, no shaft work. Only the stagnation temperature $T_0$ changes. Combustion, droplet evaporation, Joule heating and wall heat transfer all fit this model. This flow is called Rayleigh flow.
+
+Continuity and momentum integrate immediately: $\rho u$ is constant, and so is $p + \rho u^2$. Written in Mach number, they give the static pressure ratio relative to the inlet (subscript 1).
+
+$$\frac{p}{p_1} = \frac{1 + \gamma M_1^2}{1 + \gamma M^2}$$
+
+$\gamma$ is the ratio of specific heats and $M$ the local Mach number. Adding the equation of state and the energy equation ties stagnation temperature to Mach number one-to-one. Referenced to the sonic point (subscript $*$):
+
+$$\frac{T_0}{T_0^*} = \frac{2(\gamma + 1)M^2 \left(1 + \frac{\gamma - 1}{2}M^2\right)}{(1 + \gamma M^2)^2}$$
+
+$T_0^*$ is the stagnation temperature at which the same mass flux reaches $M=1$. The function peaks at 1 when $M=1$. So every flow has a ceiling on how much heat it can take.
+
+Try it yourself on the T–s diagram below. Change the inlet Mach number and the heat input, and watch the state point slide along the Rayleigh line.
+
+<RayleighLineHeatingLab />
+
+Whether you start subsonic or supersonic, heating pushes the point toward the entropy maximum at $M=1$. Raise the heat input and the point stops at that tip with a red warning. Negative heating (cooling) sends it the other way.
+
+## Heating drags the Mach number toward 1
+
+The differential form shows the cause more clearly than the closed form. Combining the three conservation laws for small changes gives this influence coefficient:
+
+$$\frac{dM^2}{M^2} = \frac{(1 + \gamma M^2)\left(1 + \frac{\gamma - 1}{2}M^2\right)}{1 - M^2}\,\frac{dT_0}{T_0}$$
+
+The numerator is always positive. The sign comes from the denominator $1-M^2$. Subsonic flow speeds up when $dT_0>0$. Supersonic flow slows down. Both head toward 1. And the coefficient blows up as $M \to 1$: a little more heat moves the Mach number a lot.
+
+The intuition goes like this. Heating lowers density. With $\rho u$ fixed, velocity must rise. Rising velocity lowers static pressure through the momentum equation. Lower pressure lowers density further. In subsonic flow this loop amplifies itself.
+
+## The stretch where adding heat cools the gas
+
+The static temperature ratio is $T/T^* = M^2\left[(1+\gamma)/(1+\gamma M^2)\right]^2$. It peaks at $M=1/\sqrt{\gamma}$, which is $M=0.845$ for air ($\gamma=1.4$). Between there and $M=1$, adding heat lowers the static temperature.
+
+It looks like a contradiction, but energy is conserved. Kinetic energy grows faster than the heat you add. Static enthalpy pays the difference. That stretch is orange in the simulation above. Set the inlet to 0.6 and the heat to 0.3: as the point enters the orange segment, $T/T_1$ starts to fall.
+
+Stagnation pressure behaves differently. Heating raises entropy, so stagnation pressure always drops, subsonic or supersonic. Equation (3.18) in the notes gives the ratio. The notes write the exponent as $\gamma(\gamma-1)$; it should be $\gamma/(\gamma-1)$.
+
+## Code: doubling T0, seven inlet Mach numbers
+
+We mimic one combustor. Heat is released uniformly along $x\in[0,1]$, raising $T_0$ from 1 to $\tau=2$ — roughly heating 800 K air to 1600 K. The influence coefficient above is integrated in $T_0$ with 4000 RK4 steps. When $M^2$ reaches 0.9999 we flag thermal choking (the flow has reached sonic speed by heating and cannot take more heat). Static pressure, static temperature and stagnation pressure follow from the local Mach number. Finally we compare RK4 with the closed form.
+
+```python
+import math
+
+G = 1.4  # ratio of specific heats
+
+def t0_ratio_star(M):
+    """Eq. (3.21): T0/T0*"""
+    m2 = M*M
+    return 2*(G+1)*m2*(1+0.5*(G-1)*m2)/(1+G*m2)**2
+
+def dm2_dt0(m2, t0):
+    """Rayleigh influence coefficient: dM²/dT0"""
+    return m2*(1+G*m2)*(1+0.5*(G-1)*m2)/(1-m2)/t0
+
+def heat_march(M1, tau, n=4000):
+    """March M² with RK4 while heat is added uniformly along x∈[0,1]."""
+    m2, t0 = M1*M1, 1.0
+    dt0 = (tau-1.0)/n
+    xs, ms = [0.0], [M1]
+    for i in range(n):
+        k1 = dm2_dt0(m2, t0)
+        k2 = dm2_dt0(m2+0.5*dt0*k1, t0+0.5*dt0)
+        k3 = dm2_dt0(m2+0.5*dt0*k2, t0+0.5*dt0)
+        k4 = dm2_dt0(m2+dt0*k3, t0+dt0)
+        m2n = m2 + dt0*(k1+2*k2+2*k3+k4)/6
+        t0 += dt0
+        if not (0 < m2n < 1) or m2n > 0.9999:   # sonic point reached → thermal choking
+            return xs, ms, (i+1)/n
+        m2 = m2n
+        xs.append((i+1)/n); ms.append(math.sqrt(m2))
+    return xs, ms, None
+
+def ratios(M, M1):
+    """static p, static T, stagnation p relative to inlet (frictionless, constant area)"""
+    p = [(1+G*M1**2)/(1+G*m**2) for m in M]
+    T = [(pi*m/M1)**2 for pi, m in zip(p, M)]
+    p0 = [pi*((1+0.5*(G-1)*m**2)/(1+0.5*(G-1)*M1**2))**(G/(G-1)) for pi, m in zip(p, M)]
+    return p, T, p0
+
+def m1_max(tau):
+    """largest inlet Mach that takes T0 ratio tau without choking (bisection)"""
+    lo, hi = 1e-4, 1.0
+    for _ in range(60):
+        mid = 0.5*(lo+hi)
+        lo, hi = (mid, hi) if t0_ratio_star(mid) < 1/tau else (lo, mid)
+    return 0.5*(lo+hi)
+
+tau = 2.0   # combustor: stagnation temperature doubled
+print(f"tau = T02/T01 = {tau}   M1_max (closed form) = {m1_max(tau):.4f}")
+print(" M1   | M_exit  p0 loss[%]  T_max/T1  x(T_max)  choke x")
+for M1 in [0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40]:
+    x, M, xc = heat_march(M1, tau)
+    p, T, p0 = ratios(M, M1)
+    k = max(range(len(T)), key=T.__getitem__)
+    loss = 100*(1-p0[-1])
+    xtm = f"{x[k]:.3f}" if k < len(x)-1 else "exit"
+    cs = f"{xc:.3f}" if xc else "-"
+    print(f" {M1:.2f} | {M[-1]:.4f}  {loss:9.2f}  {max(T):8.3f}  {xtm:>8}  {cs:>7}")
+
+# closed form vs RK4 exit Mach
+x, M, _ = heat_march(0.30, tau)
+lo, hi = 0.30, 1.0
+target = t0_ratio_star(0.30)*tau
+for _ in range(60):
+    mid = 0.5*(lo+hi)
+    lo, hi = (mid, hi) if t0_ratio_star(mid) < target else (lo, mid)
+print(f"M1=0.30: RK4 M_exit={M[-1]:.6f}  closed form={0.5*(lo+hi):.6f}")
+mf = lambda M: M*(1+0.5*(G-1)*M*M)**(-(G+1)/(2*(G-1)))   # mass flow at the same p01, T01
+print(f"M1 0.40 -> {m1_max(tau):.4f}: mass flow x {mf(m1_max(tau))/mf(0.40):.4f}")
+print(f"heating cools the gas for {1/math.sqrt(G):.4f} < M < 1")
+```
+
+```text
+tau = T02/T01 = 2.0   M1_max (closed form) = 0.3836
+ M1   | M_exit  p0 loss[%]  T_max/T1  x(T_max)  choke x
+ 0.10 | 0.1433       0.71     1.996      exit        -
+ 0.15 | 0.2189       1.61     1.990      exit        -
+ 0.20 | 0.3001       2.92     1.980      exit        -
+ 0.25 | 0.3913       4.71     1.965      exit        -
+ 0.30 | 0.5016       7.11     1.938      exit        -
+ 0.35 | 0.6609      10.46     1.884      exit        -
+ 0.40 | 0.9969      13.54     1.672     0.852    0.890
+M1=0.30: RK4 M_exit=0.501618  closed form=0.501618
+M1 0.40 -> 0.3836: mass flow x 0.9663
+heating cools the gas for 0.8452 < M < 1
+```
+
+Now run the same code in your browser. Two inlet Mach numbers march down the duct side by side.
+
+<CombustorThermalChokeMarch />
+
+At the defaults (A 0.30, B 0.40, τ = 2), case A ends with exit Mach 0.5016 and a 7.11% loss. Case B stops at x = 0.890. Raise τ to 2.5 to see whether A chokes too, or drop B to 0.38 to see whether it makes it to the exit.
+
+## What 0.384, 13.5% and x = 0.890 tell us
+
+First, the stagnation-pressure loss grows roughly with the square of the inlet Mach number: 0.71% at 0.10, 2.92% at 0.20, 7.11% at 0.30. Slowing the inlet to 0.15 cuts the loss to 1.6%. Even after paying the diffuser's own loss, slowing down is worth it.
+
+Second, inlets up to 0.35 reach the exit. But the exit Mach number is already 0.66. The denominator of the influence coefficient is getting small there, so a slight wobble in the heat-release profile swings the exit state hard.
+
+Third, inlet 0.40 reaches sonic speed after only 89% of the duct. Before that, at x = 0.852, static temperature peaked at 1.672 times the inlet value — that is where the flow crossed $M=0.845$. For the next 4% of the duct, the gas cooled while heat was going in.
+
+The closed-form limit $M_{1,\max}=0.3836$ is the root of $T_0/T_0^*(M_1)=1/\tau$. RK4 matches the closed-form exit Mach number to six decimals, which confirms the integration.
+
+## A choked combustor rewrites its upstream
+
+A real engine does not stop the flow at x = 0.890. Subsonic flow carries downstream information upstream. When choking sets in, the inlet adjusts itself: its Mach number drops to 0.3836, just low enough to take all the heat.
+
+At the same stagnation pressure and temperature, dropping the inlet Mach from 0.40 to 0.3836 scales the mass flow by 0.9663. That is 3.4% less air. To the compressor it feels like a sudden exit blockage, and its operating point shifts toward surge (flow reversal in the compressor). This is why the nozzle throat opens when an afterburner lights: the passage widens in step with the heat so the upstream never feels the change.
+
+This calculation ignores friction. In a real duct, friction (Fanno flow) also pulls Mach toward 1, so the true limit sits below 0.384. Heat here does the job area does in a nozzle — compare with [converging–diverging nozzles and choking](/en/posts/2026-06-18-de-laval-nozzle-choked-flow/). The pitfalls of solving such flows with a pressure-based solver are covered in [the ψp′ term of compressible SIMPLE](/en/posts/2026-11-09-compressible-simple-pressure-correction-psi-term/).
+
+## The number to check before τ on an afterburner spec sheet
+
+When you design a heated duct or review a CFD result, compute $T_0/T_0^*(M_1)$ before looking at τ. Its reciprocal is the largest stagnation-temperature ratio that duct can accept. The closer τ gets to it, the more the exit state depends on the heat-release profile. Above it, the inlet condition of your domain is wrong. If a simulation with a fixed mass-flow inlet diverges, suspect this inequality before the solver.
