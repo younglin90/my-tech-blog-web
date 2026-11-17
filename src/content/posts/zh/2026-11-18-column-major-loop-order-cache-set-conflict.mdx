@@ -1,0 +1,153 @@
+---
+title: "按 C 习惯写的 Fortran 循环只在 N=256 时缓存未命中多 8.9 倍 — 列优先数组与缓存组冲突"
+date: 2026-11-18
+description: "以 j 为内层循环读取列优先数组时,N=200 安然无恙,N=256 的 L1 未命中却变成 8.9 倍。用缓存模拟器验证组冲突与填充 ld=N+1。"
+tags: ["Column-Major", "Fortran", "Poisson", "Iterative-Solver", "Algorithms"]
+locale: zh
+slug: 2026-11-18-column-major-loop-order-cache-set-conflict
+takeaway: "以步长 N 遍历列优先数组时,一次内层循环必须保住 N 条缓存行。N 为 2 的幂时这些行挤进 64 个组中的 2 个,N=256 时未命中变成 8.9 倍;只需 ld=N+1 填充一行,比值就回到 1.0。"
+draft: false
+---
+import { ColumnMajorStrideWalkLab } from '@/components/post-viz/2026-11-18-column-major-loop-order-cache-set-conflict/ColumnMajorStrideWalkLab'
+import { StencilCacheSetRace } from '@/components/post-viz/2026-11-18-column-major-loop-order-cache-set-conflict/StencilCacheSetRace'
+
+## 把 C 代码移植到 Fortran 后,速度随网格尺寸忽快忽慢
+
+2020 年 2 月,我在把一份 C 代码和一份 Fortran 代码合并成一个程序。当时的笔记很短:"CPU 擅长任意内存访问。GPU 带宽更高。"真正遇到的问题就藏在这两句之间。我把 C 里的双重循环原样搬进了 Fortran。结果是对的。但网格 200 时很快,网格 256 时明显变慢。
+
+本文用缓存模拟器直接数出原因。先说结论。循环顺序错了会变慢,这没错。但什么时候变慢,由网格尺寸决定。而 2 的幂尺寸尤其危险。读完后,你可以判断什么时候需要在意循环顺序和数组填充(padding,故意把数组声明大小多加一格)。
+
+## 同一块内存,两种走法
+
+C 数组 `double u[NY][NX]` 是行优先(row-major,右侧下标在内存中连续)。Fortran 数组 `u(NX, NY)` 是列优先(column-major,左侧下标连续)。两种语言共享内存时,同一块存储一边叫 `u[j][i]`,另一边叫 `u(i,j)`。下标顺序会颠倒,这一点大家都知道。
+
+容易忽略的是循环顺序。在 C 中,`for i { for j { u[i][j] } }` 是连续访问。原样移植到 Fortran 写成 `do i; do j; u(i,j)`,内层循环就变成遍历右侧下标。在列优先数组中,右侧下标相差 1,地址就相差 N 个元素。
+
+$$
+\text{addr}(i,j) = (i + j\,\ell_d)\times 8\ \text{bytes}
+$$
+
+$\ell_d$ 是声明的第一维大小(leading dimension),8 是一个双精度数的字节数。$i$ 加 1 移动 8 字节,$j$ 加 1 移动 $8\ell_d$ 字节。
+
+CPU 以缓存行(cache line,一次取回的 64 字节块)为单位读取内存,一行正好 8 个双精度数。连续遍历时,每 8 次访问只有 1 次未命中(miss,缓存中没有、需要访问内存的情况)。以步长 N 遍历时,每次访问都是新的一行。不过下一轮内层循环会再次用到这些行。只要它们在此期间留在缓存里,就没有损失。
+
+请在下面的模拟中亲手操作。
+
+<ColumnMajorStrideWalkLab />
+
+把缓存大小(cache)设为不小于网格 N,右侧(步长 N)的走法也只有缓存行边界的那几行是红的,其余全是绿的。只要把缓存减到比 N 少一行,右侧就整片变红。损失不是逐渐到来的,而是像悬崖一样。
+
+## 原因 1:内层循环必须保住多少行
+
+在步长 N 的走法中,一次内层循环沿第 $i$ 行经过 N 列。每列是不同的缓存行,所以需要 N 行。下一个 $i$ 大多落在同一批行里,每 8 行才需要新的一批。条件只有一个。
+
+$$
+N \lesssim N_{\text{lines}} = \frac{C}{L}
+$$
+
+$C$ 是缓存容量,$L$ 是行大小。典型的 L1 数据缓存是 32 KiB、64 B 行,共 512 行。五点模板还会用到 $i-1$ 和 $i+1$ 两行,但它们几乎总和第 $i$ 行在同一缓存行。所以 N 超过 500 左右后,步长 N 的走法每次访问都会未命中。
+
+如果只到这里,结论就是"小网格没问题"。可 N=256 比 512 小,却依然很慢。
+
+## 原因 2:2 的幂步长会挤进少数几个组
+
+真实的缓存不是全相联(fully associative,行可以放在任何位置)的。8 路组相联(set-associative)缓存只能把一行放进 64 个组中的某一个,组号是行号对 64 取余。每组只能放 8 行。
+
+$$
+\text{set} = \left\lfloor \frac{\text{addr}}{L} \right\rfloor \bmod S,\qquad S_{\text{used}} = \frac{S}{\gcd(8\ell_d/L,\ S)}
+$$
+
+$S$ 是组数(64)。$\ell_d=256$ 时一列是 2048 字节,即 32 行。$\gcd(32, 64)=32$,所以步长 N 的走法只在 2 个组之间循环。可用位置只有 2×8 = 16 行。需要 256 行,却被关在 16 行里。缓存 97% 都空着,行却不断被驱逐。这就是冲突未命中(conflict miss)。
+
+$\ell_d=200$ 时一列是 25 行。25 是奇数,会遍历全部 64 个组。512 行都能用,200 行绰绰有余。
+
+## 代码:让五点模板流过 32 KiB 8 路 L1 并统计未命中
+
+实测时间会混入硬件预取、TLB 和操作系统噪声。所以我们直接模拟缓存。把五点模板的读取地址依次送入 LRU(least recently used,驱逐最久未用的行)组相联缓存。不用整个网格,只用内部 64 行的条带。稳态未命中率相同,耗时却少几十倍。
+
+```python
+# 统计五点模板读取列优先(column-major)数组 u(i,j) 时的 L1 缓存未命中
+LINE, WAYS, SIZE = 64, 8, 32 * 1024          # 64 B 缓存行、8 路、32 KiB(典型 L1d)
+NSETS = SIZE // (LINE * WAYS)                # 64 个组
+STRIP = 64                                   # 只模拟内部行 i = 1..64 的条带
+
+def stencil_misses(n, ld, i_inner):
+    sets = [[] for _ in range(NSETS)]        # 每组的 LRU 列表(末尾为最新)
+    miss = 0
+    def touch(i, j):
+        nonlocal miss
+        line = ((i + j * ld) * 8) // LINE    # 列优先地址:i 连续
+        s = sets[line % NSETS]
+        if line in s:
+            s.remove(line)
+        else:
+            miss += 1
+            if len(s) == WAYS:
+                s.pop(0)                     # 驱逐最旧的行
+        s.append(line)
+    rows, cols = range(1, STRIP + 1), range(1, n - 1)
+    order = ((i, j) for j in cols for i in rows) if i_inner else \
+            ((i, j) for i in rows for j in cols)
+    for i, j in order:
+        for di, dj in ((0, 0), (-1, 0), (1, 0), (0, -1), (0, 1)):
+            touch(i + di, j + dj)
+    return miss / (STRIP * (n - 2))
+
+print(f"L1 {SIZE//1024} KiB, {WAYS}-way, {NSETS} sets, line {LINE} B -> {SIZE//LINE} lines")
+print(f"{'N':>5} {'ld':>5} {'i-inner':>8} {'j-inner':>8} {'ratio':>6} {'sets used':>9}")
+from math import gcd
+for n, ld in [(64,64),(128,128),(128,129),(200,200),(256,256),(256,257),
+              (400,401),(480,481),(512,513),(600,601)]:
+    a = stencil_misses(n, ld, True)
+    b = stencil_misses(n, ld, False)
+    stride = ld * 8 // LINE if ld * 8 % LINE == 0 else None
+    used = NSETS // gcd(stride, NSETS) if stride else NSETS
+    print(f"{n:5d} {ld:5d} {a:8.3f} {b:8.3f} {b/a:6.1f} {used:9d}")
+```
+
+```text
+L1 32 KiB, 8-way, 64 sets, line 64 B -> 512 lines
+    N    ld  i-inner  j-inner  ratio sets used
+   64    64    0.129    0.129    1.0         8
+  128   128    0.143    1.266    8.9         4
+  128   129    0.145    0.145    1.0        64
+  200   200    0.142    0.142    1.0        64
+  256   256    0.142    1.258    8.9         2
+  256   257    0.144    0.144    1.0        64
+  400   401    0.143    0.340    2.4        64
+  480   481    0.143    1.254    8.8        64
+  512   513    0.143    1.253    8.8        64
+  600   601    0.143    1.253    8.8        64
+```
+
+在浏览器中直接运行上面的代码。
+
+<StencilCacheSetRace />
+
+默认 N=256 时,橙色(j 在内层)的组图只有两列在闪,未命中率升到输出块里的 1.258 附近。勾选"pad leading dim"后,64 个组均匀填满,降到 0.144。把 N 移到 200、300、384,或把相联度降到 2 路,就能马上看到表中没有列出的边界在哪里。
+
+## 读数:0.142、1.258,以及 N=400 时的 0.340
+
+**i 在内层,0.142。** 每个点读 5 次。其中只有 $j+1$ 列需要新行,8 个点一次。也就是 $1/8 = 0.125$ 加上一点条带边界效应,几乎与 N 无关。
+
+**j 在内层,1.258。** 每个点都要为 $j+1$ 列取新行,上下两行偶尔也落在别的行上,每点超过 1 次。8.9 倍的比值正是把"每行 8 个元素"全部丢掉的结果。
+
+**N=64 为什么没事。** 它只用 8 个组,但 8×8 = 64 行刚好装得下所需的 64 行。N=128 只有 4 个组、32 行,于是崩溃。2 的幂只要足够小也能幸存。
+
+**N=400 的 0.340。** 填充后所有组都能用。但 401 行再加上邻行,接近 512,LRU 会漏掉一部分。这是容量悬崖的斜坡。从 480 起填充也无济于事,因为容量本身不够。
+
+## 解决:三种办法及各自代价
+
+**1. 交换循环。** 在 Fortran 中让最左侧下标作为最内层循环:`do j` 在外,`do i` 在内。代价为零。但如果与 C 函数共享源码,总有一边顺序是错的。数组跨语言边界传递时,最好在接口注释里写明"哪个下标在内层"。
+
+**2. 声明时多加一行。** 写成 `real(8) :: u(N+1, N)`,只用 1..N。步长不再是 2 的幂,所有组都能用上。内存代价是 $1/N$。对于无法改循环顺序的情况也有效,比如行、列双向扫描混合的 ADI(交替方向隐式法)。但如表所示,N 一旦超过缓存行数就失效。
+
+**3. 分块(blocking,把网格切成小块逐块遍历)。** 把内层循环长度缩短到块宽 B,所需行数就从 N 降到 B,对任意 N 都有效。代价是代码更复杂。与[屋顶线一文](/zh/posts/2026-11-13-roofline-jacobi-gpu-bandwidth-bound/)中的时间分块结合,还能一并推开带宽上限。
+
+顺序也很重要。像[热点比例一文](/zh/posts/2026-11-11-python-hotspot-amdahl-poisson-share/)那样,先用性能分析器确认这个循环确实是瓶颈。是的话先试 1,不行再试 2,还不够再用 3。
+
+## 下次把网格设成 2 的幂之前
+
+为了多重网格或 FFT 把网格取成 $2^k$ 很常见,这本身没问题。问题在于连数组声明大小也凑成 $2^k$ 的习惯。计算网格保持 256,只把声明改成 257 即可。
+
+检查只需一行。把一列的字节数 $8\ell_d$ 除以 64,看它与 64 的最大公约数。数值大就有风险;达到 32 以上,8 路 L1 中会被关进 16 行以内。再看是否有任何沿步长方向的循环。两者都满足时,填充一行是最便宜的修复。

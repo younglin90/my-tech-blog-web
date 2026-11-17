@@ -1,0 +1,153 @@
+---
+title: "A Fortran Loop Written with C Habits Took 8.9x More Cache Misses, but Only at N=256 — Column-Major Arrays and Cache Set Conflicts"
+date: 2026-11-18
+description: "Reading a column-major array with j as the inner loop is harmless at N=200 but multiplies L1 misses by 8.9 at N=256. A cache simulator shows why: set conflicts, fixed by padding ld=N+1."
+tags: ["Column-Major", "Fortran", "Poisson", "Iterative-Solver", "Algorithms"]
+locale: en
+slug: 2026-11-18-column-major-loop-order-cache-set-conflict
+takeaway: "Walking a column-major array with stride N means one inner loop must keep N cache lines alive. When N is a power of two those lines pile into 2 of 64 sets, so misses jump 8.9x at N=256, and a single padding row (ld=N+1) brings the ratio back to 1.0."
+draft: false
+---
+import { ColumnMajorStrideWalkLab } from '@/components/post-viz/2026-11-18-column-major-loop-order-cache-set-conflict/ColumnMajorStrideWalkLab'
+import { StencilCacheSetRace } from '@/components/post-viz/2026-11-18-column-major-loop-order-cache-set-conflict/StencilCacheSetRace'
+
+## I ported C code to Fortran, and its speed swung with the grid size
+
+In February 2020 I was merging a C code and a Fortran code into one program. My notes from that time are short: "CPUs handle arbitrary memory access well. GPUs have higher bandwidth." The real problem sat between those two lines. I copied a C double loop into Fortran as is. The results were correct. But a 200-cell grid ran fast, and a 256-cell grid was noticeably slow.
+
+This post counts the cause directly with a cache simulator. Here is the conclusion up front. Yes, the wrong loop order makes code slower. But *when* it hurts is decided by the grid size, and power-of-two sizes are especially dangerous. By the end you will know when loop order and array padding (declaring an array one element larger on purpose) actually matter.
+
+## Same memory, two ways to walk it
+
+A C array `double u[NY][NX]` is row-major (the rightmost index is contiguous in memory). A Fortran array `u(NX, NY)` is column-major (the leftmost index is contiguous). When the two languages share memory, the same storage is called `u[j][i]` on one side and `u(i,j)` on the other. Most people know the indices flip.
+
+The loop order is what gets missed. In C, `for i { for j { u[i][j] } }` is contiguous. Port it literally to Fortran as `do i; do j; u(i,j)` and the inner loop now runs over the right index. In a column-major array, one step in the right index is N elements in memory.
+
+$$
+\text{addr}(i,j) = (i + j\,\ell_d)\times 8\ \text{bytes}
+$$
+
+$\ell_d$ is the declared first dimension (leading dimension), and 8 is the size of one double. Stepping $i$ moves 8 bytes; stepping $j$ moves $8\ell_d$ bytes.
+
+The CPU fetches memory in cache lines (64-byte blocks loaded at once), which hold eight doubles. A contiguous walk costs one miss (an access that has to go out to memory) per eight accesses. A stride-N walk touches a new line on every access. However, the next inner loop reuses those same lines. If they survive in the cache until then, nothing is lost.
+
+Try it yourself in the simulation below.
+
+<ColumnMajorStrideWalkLab />
+
+Set the cache size at or above N and even the stride-N walk on the right shows red only on line-boundary rows, with everything else green. Shrink the cache to one line below N and the right panel turns entirely red. The penalty does not creep in gradually. It arrives as a cliff.
+
+## Cause 1: how many lines the inner loop must hold
+
+In a stride-N walk, one inner loop crosses N columns along row $i$. Each column is a different line, so it needs N lines. The next $i$ mostly lives in the same lines, and only every eighth row needs fresh ones. So there is a single condition.
+
+$$
+N \lesssim N_{\text{lines}} = \frac{C}{L}
+$$
+
+$C$ is the cache capacity and $L$ the line size. A typical L1 data cache is 32 KiB with 64 B lines, which is 512 lines. A 5-point stencil also uses rows $i-1$ and $i+1$, but they almost always share lines with row $i$. So once N passes roughly 500, the stride-N walk misses on every access.
+
+If that were the whole story, the lesson would be "small grids are fine." But N=256 is below 512, and it was still slow.
+
+## Cause 2: power-of-two strides crowd into a few sets
+
+Real caches are not fully associative (able to place a line anywhere). An 8-way set-associative cache can put a line into only one of 64 sets, chosen by the line number modulo 64. Each set holds just eight lines.
+
+$$
+\text{set} = \left\lfloor \frac{\text{addr}}{L} \right\rfloor \bmod S,\qquad S_{\text{used}} = \frac{S}{\gcd(8\ell_d/L,\ S)}
+$$
+
+$S$ is the number of sets (64). With $\ell_d=256$ one column is 2048 bytes, or 32 lines. Since $\gcd(32, 64)=32$, the stride-N walk cycles through only 2 sets. That gives 2×8 = 16 usable lines. It needs 256 and is trapped in 16. Lines keep getting evicted while 97% of the cache sits empty. This is a conflict miss.
+
+With $\ell_d=200$ a column is 25 lines. 25 is odd, so the walk visits all 64 sets. All 512 lines are available, and 200 fit comfortably.
+
+## Code: streaming a 5-point stencil through a 32 KiB 8-way L1 and counting misses
+
+Wall-clock timing mixes in hardware prefetchers, the TLB, and OS noise. So we emulate the cache directly. The read addresses of a 5-point stencil go, in order, into an LRU (least recently used: evict the line untouched the longest) set-associative cache. Instead of the full grid we use a 64-row interior strip. The steady-state miss rate is the same, and the run is dozens of times faster.
+
+```python
+# Count L1 misses when a 5-point stencil reads a column-major array u(i,j)
+LINE, WAYS, SIZE = 64, 8, 32 * 1024          # 64 B lines, 8-way, 32 KiB (typical L1d)
+NSETS = SIZE // (LINE * WAYS)                # 64 sets
+STRIP = 64                                   # simulate only the interior strip i = 1..64
+
+def stencil_misses(n, ld, i_inner):
+    sets = [[] for _ in range(NSETS)]        # per-set LRU list (most recent at the end)
+    miss = 0
+    def touch(i, j):
+        nonlocal miss
+        line = ((i + j * ld) * 8) // LINE    # column-major address: i is contiguous
+        s = sets[line % NSETS]
+        if line in s:
+            s.remove(line)
+        else:
+            miss += 1
+            if len(s) == WAYS:
+                s.pop(0)                     # evict the oldest line
+        s.append(line)
+    rows, cols = range(1, STRIP + 1), range(1, n - 1)
+    order = ((i, j) for j in cols for i in rows) if i_inner else \
+            ((i, j) for i in rows for j in cols)
+    for i, j in order:
+        for di, dj in ((0, 0), (-1, 0), (1, 0), (0, -1), (0, 1)):
+            touch(i + di, j + dj)
+    return miss / (STRIP * (n - 2))
+
+print(f"L1 {SIZE//1024} KiB, {WAYS}-way, {NSETS} sets, line {LINE} B -> {SIZE//LINE} lines")
+print(f"{'N':>5} {'ld':>5} {'i-inner':>8} {'j-inner':>8} {'ratio':>6} {'sets used':>9}")
+from math import gcd
+for n, ld in [(64,64),(128,128),(128,129),(200,200),(256,256),(256,257),
+              (400,401),(480,481),(512,513),(600,601)]:
+    a = stencil_misses(n, ld, True)
+    b = stencil_misses(n, ld, False)
+    stride = ld * 8 // LINE if ld * 8 % LINE == 0 else None
+    used = NSETS // gcd(stride, NSETS) if stride else NSETS
+    print(f"{n:5d} {ld:5d} {a:8.3f} {b:8.3f} {b/a:6.1f} {used:9d}")
+```
+
+```text
+L1 32 KiB, 8-way, 64 sets, line 64 B -> 512 lines
+    N    ld  i-inner  j-inner  ratio sets used
+   64    64    0.129    0.129    1.0         8
+  128   128    0.143    1.266    8.9         4
+  128   129    0.145    0.145    1.0        64
+  200   200    0.142    0.142    1.0        64
+  256   256    0.142    1.258    8.9         2
+  256   257    0.144    0.144    1.0        64
+  400   401    0.143    0.340    2.4        64
+  480   481    0.143    1.254    8.8        64
+  512   513    0.143    1.253    8.8        64
+  600   601    0.143    1.253    8.8        64
+```
+
+Run the code above directly in your browser.
+
+<StencilCacheSetRace />
+
+At the default N=256, only two columns of the orange (j-inner) set map light up, and the miss rate climbs toward the 1.258 in the output block. Turn on "pad leading dim" and all 64 sets fill evenly while the rate drops to 0.144. Move N to 200, 300, or 384, or lower the associativity to 2-way, to find boundaries the table does not show.
+
+## Reading the numbers: 0.142, 1.258, and 0.340 at N=400
+
+**i-inner, 0.142.** Each point reads five values. Only column $j+1$ needs a new line, once every eight points. That is $1/8 = 0.125$ plus a small strip-edge effect, and it barely depends on N.
+
+**j-inner, 1.258.** Every point pulls in a new line for column $j+1$, and the rows above and below occasionally land on other lines too. The rate tops one per point. The 8.9x ratio is exactly the loss of "eight elements per line."
+
+**Why N=64 survives.** It uses only 8 sets, but 8×8 = 64 lines fit, matching the 64 it needs. N=128 gets 4 sets, only 32 lines, and blows up. A power of two can survive if it is small enough.
+
+**0.340 at N=400.** Padding lets the walk use every set. But 401 lines plus the neighbor-row lines approach 512, and LRU drops some. This is the slope of the capacity cliff. From 480 up, padding no longer helps, because raw capacity is the limit.
+
+## The fix: three options and what each costs
+
+**1. Swap the loops.** In Fortran, make the leftmost index the innermost loop: `do j` outside, `do i` inside. It costs nothing. But if the source is shared with a C function, one side ends up in the wrong order. When arrays cross the language boundary, state "which index is innermost" in the interface comment.
+
+**2. Declare one extra row.** Use `real(8) :: u(N+1, N)` and touch only 1..N. The stride is no longer a power of two, so every set is used. The memory cost is $1/N$. It also works where the loop order cannot change, such as ADI (alternating direction implicit) sweeps that run both ways. As the table shows, it stops helping once N exceeds the number of cache lines.
+
+**3. Blocking (splitting the grid into small tiles and sweeping tile by tile).** Shortening the inner loop to tile width B cuts the needed lines from N to B, so it works for any N. The price is more complex code. Combined with the temporal blocking from the [roofline post](/en/posts/2026-11-13-roofline-jacobi-gpu-bandwidth-bound/), it also pushes back the bandwidth limit.
+
+Order matters too. As in the [hotspot share post](/en/posts/2026-11-11-python-hotspot-amdahl-poisson-share/), first confirm with a profiler that this loop is the bottleneck. If it is, try option 1, then 2, then 3.
+
+## Before you size the next grid as a power of two
+
+Multigrid and FFTs often push grids to $2^k$. That alone is fine. The trouble is the habit of matching the declared array size to $2^k$ as well. Keep the computational grid at 256 and declare 257.
+
+The check is one line. Divide the column size in bytes, $8\ell_d$, by 64. If its greatest common divisor with 64 is large, you are at risk; 32 or more traps an 8-way L1 walk in 16 lines or fewer. Then look for any loop that steps along the stride direction. If both hold, a single padding row is the cheapest fix.

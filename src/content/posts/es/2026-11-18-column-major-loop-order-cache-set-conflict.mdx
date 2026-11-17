@@ -1,0 +1,153 @@
+---
+title: "Un bucle Fortran escrito con hábitos de C tuvo 8.9 veces más fallos de caché, solo con N=256 — arreglos column-major y conflictos de conjunto"
+date: 2026-11-18
+description: "Leer un arreglo column-major con j como bucle interno no afecta a N=200, pero multiplica por 8.9 los fallos de L1 con N=256. Un simulador de caché muestra el conflicto de conjuntos y el relleno ld=N+1."
+tags: ["Column-Major", "Fortran", "Poisson", "Iterative-Solver", "Algorithms"]
+locale: es
+slug: 2026-11-18-column-major-loop-order-cache-set-conflict
+takeaway: "Recorrer un arreglo column-major con paso N obliga a que un solo bucle interno mantenga vivas N líneas de caché. Si N es potencia de dos, esas líneas se amontonan en 2 de 64 conjuntos y los fallos suben 8.9 veces con N=256; una sola fila de relleno (ld=N+1) devuelve la razón a 1.0."
+draft: false
+---
+import { ColumnMajorStrideWalkLab } from '@/components/post-viz/2026-11-18-column-major-loop-order-cache-set-conflict/ColumnMajorStrideWalkLab'
+import { StencilCacheSetRace } from '@/components/post-viz/2026-11-18-column-major-loop-order-cache-set-conflict/StencilCacheSetRace'
+
+## Un código C pasado a Fortran cambiaba de velocidad según el tamaño de malla
+
+En febrero de 2020 tocó fusionar un código en C y otro en Fortran en un solo programa. Las notas de entonces son breves: "La CPU maneja bien el acceso arbitrario a memoria. La GPU tiene más ancho de banda." El problema real estaba entre esas dos líneas. Un doble bucle de C se copió tal cual a Fortran. Los resultados eran correctos. Pero con una malla de 200 corría rápido, y con una de 256 era claramente más lento.
+
+Este artículo cuenta la causa directamente con un simulador de caché. Primero la conclusión. Sí, un orden de bucles incorrecto vuelve lento el código. Pero *cuándo* duele lo decide el tamaño de la malla, y los tamaños potencia de dos son especialmente peligrosos. Al final se podrá juzgar cuándo importan el orden de bucles y el relleno del arreglo (padding: declarar el arreglo un elemento más grande a propósito).
+
+## La misma memoria, dos formas de recorrerla
+
+Un arreglo C `double u[NY][NX]` es row-major (el índice derecho es contiguo en memoria). Un arreglo Fortran `u(NX, NY)` es column-major (el índice izquierdo es contiguo). Cuando ambos lenguajes comparten memoria, el mismo almacenamiento se llama `u[j][i]` de un lado y `u(i,j)` del otro. Que los índices se invierten lo sabe casi todo el mundo.
+
+Lo que se escapa es el orden de los bucles. En C, `for i { for j { u[i][j] } }` es acceso contiguo. Si se traslada literalmente a Fortran como `do i; do j; u(i,j)`, el bucle interno recorre el índice derecho. En un arreglo column-major, un paso en el índice derecho son N elementos en memoria.
+
+$$
+\text{addr}(i,j) = (i + j\,\ell_d)\times 8\ \text{bytes}
+$$
+
+$\ell_d$ es la primera dimensión declarada (leading dimension) y 8 el tamaño de un real de doble precisión. Avanzar $i$ mueve 8 bytes; avanzar $j$ mueve $8\ell_d$ bytes.
+
+La CPU trae la memoria por líneas de caché (bloques de 64 bytes cargados de una vez), que contienen ocho dobles. Un recorrido contiguo cuesta un fallo (miss: acceso que debe ir hasta la memoria) cada ocho accesos. Un recorrido con paso N toca una línea nueva en cada acceso. Sin embargo, el siguiente bucle interno reutiliza esas mismas líneas. Si sobreviven en la caché hasta entonces, no se pierde nada.
+
+Conviene manipular directamente la simulación de abajo.
+
+<ColumnMajorStrideWalkLab />
+
+Con un tamaño de caché (cache) igual o mayor que N, incluso el recorrido con paso N de la derecha muestra rojo solo en las filas de borde de línea, y el resto en verde. Basta reducir la caché una línea por debajo de N para que el panel derecho se vuelva rojo por completo. La penalización no llega poco a poco. Llega como un precipicio.
+
+## Causa 1: cuántas líneas debe sostener el bucle interno
+
+En un recorrido con paso N, un bucle interno cruza N columnas a lo largo de la fila $i$. Cada columna es una línea distinta, así que necesita N líneas. El siguiente $i$ vive casi siempre en las mismas líneas, y solo cada ocho filas hacen falta líneas nuevas. Hay una sola condición.
+
+$$
+N \lesssim N_{\text{lines}} = \frac{C}{L}
+$$
+
+$C$ es la capacidad de la caché y $L$ el tamaño de línea. Una caché L1 de datos típica tiene 32 KiB con líneas de 64 B, es decir, 512 líneas. Un esténcil de 5 puntos usa también las filas $i-1$ e $i+1$, pero casi siempre comparten línea con la fila $i$. Por eso, cuando N supera unas 500, el recorrido con paso N falla en cada acceso.
+
+Si eso fuera todo, la lección sería "las mallas pequeñas no tienen problema". Pero N=256 es menor que 512 y aun así era lento.
+
+## Causa 2: los pasos potencia de dos se apiñan en pocos conjuntos
+
+Las cachés reales no son totalmente asociativas (capaces de poner una línea en cualquier lugar). Una caché asociativa por conjuntos de 8 vías solo puede colocar una línea en uno de 64 conjuntos, elegido por el número de línea módulo 64. Cada conjunto guarda apenas ocho líneas.
+
+$$
+\text{set} = \left\lfloor \frac{\text{addr}}{L} \right\rfloor \bmod S,\qquad S_{\text{used}} = \frac{S}{\gcd(8\ell_d/L,\ S)}
+$$
+
+$S$ es el número de conjuntos (64). Con $\ell_d=256$ una columna ocupa 2048 bytes, o 32 líneas. Como $\gcd(32, 64)=32$, el recorrido con paso N gira por solo 2 conjuntos. Eso da 2×8 = 16 líneas utilizables. Necesita 256 y queda atrapado en 16. Las líneas se expulsan una y otra vez mientras el 97% de la caché está vacío. Es un fallo por conflicto (conflict miss).
+
+Con $\ell_d=200$ una columna son 25 líneas. 25 es impar, así que el recorrido visita los 64 conjuntos. Las 512 líneas quedan disponibles y 200 caben con holgura.
+
+## Código: un esténcil de 5 puntos a través de una L1 de 32 KiB y 8 vías, contando fallos
+
+Medir tiempo real mezcla prefetchers de hardware, la TLB y ruido del sistema operativo. Por eso se emula la caché directamente. Las direcciones de lectura de un esténcil de 5 puntos entran, en orden, a una caché asociativa por conjuntos con LRU (least recently used: se expulsa la línea que lleva más tiempo sin usarse). En lugar de la malla completa se usa una franja interior de 64 filas. La tasa de fallos en régimen es la misma y el cálculo es decenas de veces más rápido.
+
+```python
+# Cuenta fallos de L1 cuando un esténcil de 5 puntos lee un arreglo column-major u(i,j)
+LINE, WAYS, SIZE = 64, 8, 32 * 1024          # líneas de 64 B, 8 vías, 32 KiB (L1d típica)
+NSETS = SIZE // (LINE * WAYS)                # 64 conjuntos
+STRIP = 64                                   # se simula solo la franja interior i = 1..64
+
+def stencil_misses(n, ld, i_inner):
+    sets = [[] for _ in range(NSETS)]        # lista LRU por conjunto (la más reciente al final)
+    miss = 0
+    def touch(i, j):
+        nonlocal miss
+        line = ((i + j * ld) * 8) // LINE    # dirección column-major: i es contiguo
+        s = sets[line % NSETS]
+        if line in s:
+            s.remove(line)
+        else:
+            miss += 1
+            if len(s) == WAYS:
+                s.pop(0)                     # expulsa la línea más antigua
+        s.append(line)
+    rows, cols = range(1, STRIP + 1), range(1, n - 1)
+    order = ((i, j) for j in cols for i in rows) if i_inner else \
+            ((i, j) for i in rows for j in cols)
+    for i, j in order:
+        for di, dj in ((0, 0), (-1, 0), (1, 0), (0, -1), (0, 1)):
+            touch(i + di, j + dj)
+    return miss / (STRIP * (n - 2))
+
+print(f"L1 {SIZE//1024} KiB, {WAYS}-way, {NSETS} sets, line {LINE} B -> {SIZE//LINE} lines")
+print(f"{'N':>5} {'ld':>5} {'i-inner':>8} {'j-inner':>8} {'ratio':>6} {'sets used':>9}")
+from math import gcd
+for n, ld in [(64,64),(128,128),(128,129),(200,200),(256,256),(256,257),
+              (400,401),(480,481),(512,513),(600,601)]:
+    a = stencil_misses(n, ld, True)
+    b = stencil_misses(n, ld, False)
+    stride = ld * 8 // LINE if ld * 8 % LINE == 0 else None
+    used = NSETS // gcd(stride, NSETS) if stride else NSETS
+    print(f"{n:5d} {ld:5d} {a:8.3f} {b:8.3f} {b/a:6.1f} {used:9d}")
+```
+
+```text
+L1 32 KiB, 8-way, 64 sets, line 64 B -> 512 lines
+    N    ld  i-inner  j-inner  ratio sets used
+   64    64    0.129    0.129    1.0         8
+  128   128    0.143    1.266    8.9         4
+  128   129    0.145    0.145    1.0        64
+  200   200    0.142    0.142    1.0        64
+  256   256    0.142    1.258    8.9         2
+  256   257    0.144    0.144    1.0        64
+  400   401    0.143    0.340    2.4        64
+  480   481    0.143    1.254    8.8        64
+  512   513    0.143    1.253    8.8        64
+  600   601    0.143    1.253    8.8        64
+```
+
+El código de arriba puede ejecutarse directamente en el navegador.
+
+<StencilCacheSetRace />
+
+Con el valor por defecto N=256, solo dos columnas del mapa de conjuntos naranja (j interno) se encienden, y la tasa de fallos sube hacia el 1.258 del bloque de salida. Al activar "pad leading dim", los 64 conjuntos se llenan de forma pareja y la tasa baja a 0.144. Mover N a 200, 300 o 384, o bajar la asociatividad a 2 vías, revela fronteras que la tabla no muestra.
+
+## Lectura de los números: 0.142, 1.258 y 0.340 con N=400
+
+**i interno, 0.142.** Cada punto lee cinco valores. Solo la columna $j+1$ necesita línea nueva, una vez cada ocho puntos. Es $1/8 = 0.125$ más un pequeño efecto de borde de la franja, y apenas depende de N.
+
+**j interno, 1.258.** Cada punto trae una línea nueva para la columna $j+1$, y las filas de arriba y abajo a veces caen en otras líneas. La tasa supera uno por punto. La razón de 8.9 es justamente la pérdida de "ocho elementos por línea".
+
+**Por qué N=64 sobrevive.** Usa solo 8 conjuntos, pero caben 8×8 = 64 líneas, justo las 64 que necesita. N=128 obtiene 4 conjuntos, solo 32 líneas, y se desploma. Una potencia de dos sobrevive si es lo bastante pequeña.
+
+**0.340 con N=400.** El relleno permite usar todos los conjuntos. Pero 401 líneas más las de filas vecinas se acercan a 512, y LRU pierde algunas. Es la ladera del precipicio de capacidad. Desde 480 el relleno ya no ayuda, porque falta capacidad pura.
+
+## La solución: tres opciones y su costo
+
+**1. Intercambiar los bucles.** En Fortran, el índice más a la izquierda va en el bucle más interno: `do j` afuera, `do i` adentro. No cuesta nada. Pero si el código fuente se comparte con una función C, uno de los dos lados queda en el orden equivocado. Cuando un arreglo cruza la frontera entre lenguajes, conviene dejar escrito en el comentario de la interfaz "qué índice es el interno".
+
+**2. Declarar una fila extra.** Usar `real(8) :: u(N+1, N)` y tocar solo 1..N. El paso deja de ser potencia de dos y se usan todos los conjuntos. El costo en memoria es $1/N$. Sirve también cuando el orden de bucles no puede cambiar, como en los barridos ADI (implícito de direcciones alternadas) en ambos sentidos. Como muestra la tabla, deja de ayudar cuando N supera el número de líneas de caché.
+
+**3. Bloqueo (blocking: dividir la malla en teselas pequeñas y recorrerlas una a una).** Acortar el bucle interno al ancho de tesela B reduce las líneas necesarias de N a B, así que funciona para cualquier N. El precio es un código más complejo. Combinado con el bloqueo temporal del [artículo sobre el modelo roofline](/es/posts/2026-11-13-roofline-jacobi-gpu-bandwidth-bound/), también empuja el límite de ancho de banda.
+
+El orden importa. Como en el [artículo sobre la fracción del hotspot](/es/posts/2026-11-11-python-hotspot-amdahl-poisson-share/), primero se confirma con un perfilador que este bucle es el cuello de botella. Si lo es, se prueba la opción 1, luego la 2 y luego la 3.
+
+## Antes de dimensionar la próxima malla como potencia de dos
+
+Multigrid y FFT suelen llevar las mallas a $2^k$. Eso por sí solo no es problema. El problema es la costumbre de igualar también el tamaño declarado del arreglo a $2^k$. Basta mantener la malla de cálculo en 256 y declarar 257.
+
+La comprobación cabe en una línea. Se divide el tamaño de una columna en bytes, $8\ell_d$, entre 64. Si su máximo común divisor con 64 es grande, hay riesgo; con 32 o más, un recorrido en una L1 de 8 vías queda atrapado en 16 líneas o menos. Luego se busca cualquier bucle que avance en la dirección del paso. Si se cumplen ambas cosas, una fila de relleno es la corrección más barata.
