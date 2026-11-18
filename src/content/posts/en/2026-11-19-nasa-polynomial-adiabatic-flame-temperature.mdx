@@ -1,0 +1,195 @@
+---
+title: "Room-Temperature cp Overpredicted My Methane Flame by 458 K — Reading NASA 7-Coefficient Polynomials"
+date: 2026-11-19
+description: "Freeze cp at its 298 K value and stoichiometric methane–air burns at 2783 K. NASA 7-coefficient polynomials give 2326 K. We read the gri.30.therm format and reproduce the gap with Newton iteration."
+tags: ["NASA-Polynomials", "Adiabatic-Flame-Temperature", "Combustion", "Flamelet", "Fluid-Mechanics"]
+locale: en
+slug: 2026-11-19-nasa-polynomial-adiabatic-flame-temperature
+takeaway: "Combustion products have 1.2–1.6 times their room-temperature heat capacity at 2000 K, so solving the energy balance with 298 K cp overpredicts the stoichiometric methane flame temperature by 458 K."
+draft: false
+---
+import { NasaCpAreaFillLab } from '@/components/post-viz/2026-11-19-nasa-polynomial-adiabatic-flame-temperature/NasaCpAreaFillLab'
+import { AdiabaticFlameNewtonRace } from '@/components/post-viz/2026-11-19-nasa-polynomial-adiabatic-flame-temperature/AdiabaticFlameNewtonRace'
+
+## My hand calculation was off by 458 K before FlameMaster even ran
+
+In the summer of 2018 I installed FlameMaster, a laminar flamelet code, for the first time. To check its output, I worked out the adiabatic flame temperature by hand first. Stoichiometric methane–air gave 2783 K. The code returned something in the 2200s. I assumed the code was wrong and spent a long time digging through the input file. The hand calculation was the one that was wrong.
+
+The culprit was heat capacity. By hand, I used the 298 K value of cp (specific heat at constant pressure) all the way up. The code used temperature polynomials from `gri.30.therm`. This post explains what those polynomials are and how to read them from the file. Then it solves the same energy balance both ways and shows, number by number, where the 458 K comes from.
+
+## Adiabatic flame temperature is an area match
+
+The adiabatic flame temperature is what the products reach when combustion loses no heat. All of the heat $Q$ released by the reaction goes into heating the products. In equation form, $Q = \int_{T_0}^{T_{ad}} C_p(T)\,dT$, where $C_p$ is the total heat capacity of the products.
+
+On a graph, $T_{ad}$ is where the area under the $C_p(T)$ curve equals $Q$. If $C_p$ is constant, that area is a rectangle. If $C_p$ grows with temperature, the same area fills up over a shorter interval. Try it in the simulation below.
+
+<NasaCpAreaFillLab />
+
+As heat accumulates, the blue area (NASA polynomial) and the red rectangle (room-temperature cp) grow at the same rate. But the blue curve keeps climbing past 1000 K, so the blue edge stops first. Turn on the species stack and you will see most of the gap comes from the H₂O and CO₂ bands. Lower φ (the equivalence ratio) and N₂ plus leftover O₂ take a larger share, so the gap shrinks.
+
+## 1971: thermodynamic tables shrink to 14 coefficients
+
+Rocket propellant work in the 1960s relied on the JANAF thermochemical tables. They were thick books listing cp, h, and s at each temperature. Solving equilibrium on a computer meant interpolating those tables. Gordon and McBride at NASA Lewis replaced them with polynomials. The form they published in NASA SP-273 in 1971 is today's 7-coefficient polynomial.
+
+Each species gets its temperature range split in two, usually 300–1000 K and 1000–5000 K. Each interval has 7 coefficients, so 14 per species. Sandia's CHEMKIN adopted the format in the 1980s. GRI-Mech, Cantera, and FlameMaster all read the same files today. A 9-coefficient format with more intervals appeared in 2002. Most combustion mechanism files are still 7-coefficient, though.
+
+## Derivation: one cp polynomial gives you h and s
+
+Everything starts from cp.
+
+$$
+\frac{c_p}{R} = a_1 + a_2 T + a_3 T^2 + a_4 T^3 + a_5 T^4
+$$
+
+$R$ is the gas constant and $a_1$–$a_5$ are the coefficients for that interval. Integrating $dh = c_p\,dT$ gives enthalpy. The integration constant is $a_6$.
+
+$$
+\frac{h}{RT} = a_1 + \frac{a_2}{2}T + \frac{a_3}{3}T^2 + \frac{a_4}{4}T^3 + \frac{a_5}{5}T^4 + \frac{a_6}{T}
+$$
+
+$a_6$ carries the enthalpy of formation (the enthalpy of making the species from its elements in their reference states). That is why evaluating $h(298.15\,\text{K})$ for H₂O returns −241.8 kJ/mol. Entropy comes from integrating $ds = c_p\,dT/T$, with integration constant $a_7$.
+
+$$
+\frac{s^\circ}{R} = a_1 \ln T + a_2 T + \frac{a_3}{2}T^2 + \frac{a_4}{3}T^3 + \frac{a_5}{4}T^4 + a_7
+$$
+
+$s^\circ$ is the entropy at the 1 bar standard pressure. Equilibrium constants need it. The adiabatic flame temperature only needs $h$.
+
+### One species is four lines in a thermo file
+
+The first step in my original notes was `CreateBinFile -i gri.30.therm -m gri.30.trans`. The `.therm` file it reads is fixed-width, 80 columns. Each species takes four lines.
+
+- Line 1: species name, elemental composition, phase (G), then $T_{low}$, $T_{high}$, $T_{mid}$
+- Line 2: **high-temperature** $a_1$–$a_5$
+- Line 3: high-T $a_6$, $a_7$, low-T $a_1$–$a_3$
+- Line 4: low-T $a_4$–$a_7$
+
+The high-temperature coefficients come first. Anyone writing their own parser can easily flip that order. Flip it and you evaluate the high-T polynomial at room temperature. The result is silently wrong. $T_{mid}$ can also vary by species, so read columns 66–73 of line 1. Hard-coding 1000 K breaks when you mix data from different sources.
+
+## Code: the same balance with two heat capacities
+
+Assume lean methane–air combustion. Ignore dissociation and consider complete combustion only. The reaction is $\text{CH}_4 + \tfrac{2}{\phi}(\text{O}_2 + 3.76\,\text{N}_2) \to \text{CO}_2 + 2\text{H}_2\text{O} + 2(\tfrac{1}{\phi}-1)\text{O}_2 + \tfrac{7.52}{\phi}\text{N}_2$. The equation to solve is:
+
+$$
+f(T) = H_\text{prod}(T) - H_\text{reac}(T_0) = 0, \qquad T^{k+1} = T^k - \frac{f(T^k)}{C_{p,\text{prod}}(T^k)}
+$$
+
+The derivative of $f$ is exactly $C_p$, so Newton iteration is the natural choice. The coefficients are copied straight from the GRI-Mech 3.0 `.therm` file.
+
+```python
+# NASA 7 coefficients copied from gri.30.therm: (T_mid, low a1..a7, high a1..a7)
+NASA = {
+ "CH4": (1000., [5.14987613E+00,-1.36709788E-02,4.91800599E-05,-4.84743026E-08,1.66693956E-11,-1.02466476E+04,-4.64130376E+00],
+                [7.48514950E-02,1.33909467E-02,-5.73285809E-06,1.22292535E-09,-1.01815230E-13,-9.46834459E+03,1.84373180E+01]),
+ "O2":  (1000., [3.78245636E+00,-2.99673416E-03,9.84730201E-06,-9.68129509E-09,3.24372837E-12,-1.06394356E+03,3.65767573E+00],
+                [3.28253784E+00,1.48308754E-03,-7.57966669E-07,2.09470555E-10,-2.16717794E-14,-1.08845772E+03,5.45323129E+00]),
+ "N2":  (1000., [3.298677E+00,1.4082404E-03,-3.963222E-06,5.641515E-09,-2.444854E-12,-1.0208999E+03,3.950372E+00],
+                [2.92664E+00,1.4879768E-03,-5.68476E-07,1.0097038E-10,-6.753351E-15,-9.227977E+02,5.980528E+00]),
+ "CO2": (1000., [2.35677352E+00,8.98459677E-03,-7.12356269E-06,2.45919022E-09,-1.43699548E-13,-4.83719697E+04,9.90105222E+00],
+                [3.85746029E+00,4.41437026E-03,-2.21481404E-06,5.23490188E-10,-4.72084164E-14,-4.87591660E+04,2.27163806E+00]),
+ "H2O": (1000., [4.19864056E+00,-2.03643410E-03,6.52040211E-06,-5.48797062E-09,1.77197817E-12,-3.02937267E+04,-8.49032208E-01],
+                [3.03399249E+00,2.17691804E-03,-1.64072518E-07,-9.70419870E-11,1.68200992E-14,-3.00042971E+04,4.96677010E+00]),
+}
+R = 8.314462618  # J/(mol K)
+
+def coeffs(sp, T):
+    tm, lo, hi = NASA[sp]
+    return lo if T < tm else hi
+
+def cp_R(sp, T):
+    a = coeffs(sp, T)
+    return a[0] + a[1]*T + a[2]*T**2 + a[3]*T**3 + a[4]*T**4
+
+def h_RT(sp, T):
+    a = coeffs(sp, T)
+    return a[0] + a[1]*T/2 + a[2]*T**2/3 + a[3]*T**3/4 + a[4]*T**4/5 + a[5]/T
+
+def mixture(phi):
+    # CH4 + (2/phi)(O2 + 3.76 N2) -> CO2 + 2 H2O + 2(1/phi-1) O2 + 7.52/phi N2  (phi<=1)
+    reac = {"CH4": 1.0, "O2": 2/phi, "N2": 7.52/phi}
+    prod = {"CO2": 1.0, "H2O": 2.0, "O2": 2*(1/phi - 1), "N2": 7.52/phi}
+    return reac, prod
+
+def H(mix, T, frozen_cp=False):
+    # mixture enthalpy [J]; frozen_cp=True keeps the 298 K heat capacity throughout
+    if frozen_cp:
+        return sum(n*R*(h_RT(s, 298.15)*298.15 + cp_R(s, 298.15)*(T-298.15)) for s, n in mix.items())
+    return sum(n*R*T*h_RT(s, T) for s, n in mix.items())
+
+def Cp(mix, T, frozen_cp=False):
+    Tc = 298.15 if frozen_cp else T
+    return sum(n*R*cp_R(s, Tc) for s, n in mix.items())
+
+def flame_newton(phi, frozen_cp=False, T0=1500.0, tol=1e-6):
+    reac, prod = mixture(phi)
+    Hr = H(reac, 298.15)
+    T, it = T0, 0
+    while True:
+        f = H(prod, T, frozen_cp) - Hr
+        dT = -f / Cp(prod, T, frozen_cp)
+        T += dT; it += 1
+        if abs(dT) < tol: return T, it
+
+print("species  h(298)/kJ/mol  cp(298)/R  cp(2000)/R  jump@1000K(cp/R)")
+for s in NASA:
+    jump = cp_R(s, 1000.0) - cp_R(s, 999.999999)
+    print(f"{s:5s} {h_RT(s,298.15)*R*298.15/1000:12.2f} {cp_R(s,298.15):10.3f} {cp_R(s,2000.):11.3f} {jump:+14.2e}")
+
+print("\nphi   T_ad(NASA)  iters  T_ad(cp298)  iters  overshoot")
+for phi in [0.5, 0.6, 0.7, 0.8, 0.9, 1.0]:
+    Tn, itn = flame_newton(phi)
+    Tf, itf = flame_newton(phi, frozen_cp=True)
+    print(f"{phi:.1f} {Tn:10.1f} {itn:5d} {Tf:11.1f} {itf:5d} {Tf-Tn:+9.1f}")
+
+reac, prod = mixture(1.0)
+Tn, _ = flame_newton(1.0)
+cpm = (H(prod, Tn) - H(prod, 298.15)) / (Tn - 298.15)
+print(f"\nphi=1: mean cp of products = {cpm/Cp(prod,298.15):.3f} x cp(298)")
+```
+
+```text
+species  h(298)/kJ/mol  cp(298)/R  cp(2000)/R  jump@1000K(cp/R)
+CH4         -74.60      4.293      12.080      +9.44e-10
+O2            0.00      3.533       4.546      -2.77e-09
+N2            0.00      3.496       4.328      +1.43e-06
+CO2        -393.51      4.466       7.260      +1.11e-08
+H2O        -241.82      4.040       6.224      +5.83e-09
+
+phi   T_ad(NASA)  iters  T_ad(cp298)  iters  overshoot
+0.5     1480.8     3      1635.1     2    +154.3
+0.6     1669.3     4      1878.5     2    +209.2
+0.7     1847.0     4      2114.7     2    +267.7
+0.8     2015.0     4      2344.1     2    +329.1
+0.9     2174.2     4      2566.9     2    +392.7
+1.0     2325.6     4      2783.4     2    +457.8
+
+phi=1: mean cp of products = 1.226 x cp(298)
+```
+
+Now run the code above in your browser. It advances the same Newton iteration with both heat-capacity models at once.
+
+<AdiabaticFlameNewtonRace />
+
+At the defaults (φ = 1, initial guess 1500 K), pressing Step stops the NASA run after 4 iterations and the room-temperature run after 2. They land at 2325.6 K and 2783.4 K, matching the output block. Moving the initial guess to 300 K or 3500 K adds only one or two iterations. The Scan button sweeps φ from 0.5 to 1.0 and draws both columns of the table as curves.
+
+## Reading the numbers: 1.226, 458, and 2
+
+In the first table, check $h(298)$ against the literature: CO₂ −393.51, H₂O −241.82, CH₄ −74.60 kJ/mol. Any typo made while copying coefficients shows up right here. The low- and high-T cp differ by less than $10^{-6}$ at 1000 K. GRI data is fitted to be continuous at $T_{mid}$.
+
+The temperature dependence of cp varies by species. From 298 K to 2000 K, N₂ rises 24%, H₂O 54%, and CO₂ 63%. CH₄ rises by a factor of 2.8. Averaged over all products, the mean is 1.226 times the 298 K value. The temperature rise shrinks by that same factor: $(2783.4 - 298)/(2325.6 - 298) = 1.226$.
+
+The overprediction grows with φ: 154 K at φ = 0.5 and 458 K at φ = 1. A hotter flame spends more of its rise in the range where cp has climbed the most. The room-temperature run always takes 2 iterations. Its $f(T)$ is a straight line, so one Newton step hits the root. The second just confirms it.
+
+Even 2325.6 K is not the real answer. Above 2000 K, CO₂ and H₂O partly dissociate into CO, H₂, and OH. Dissociation is endothermic. An equilibrium calculation puts stoichiometric methane–air near 2225 K, another 100 K lower. Including dissociation requires equilibrium constants, and that is where $s^\circ$ and $a_7$ come in.
+
+## Where these polynomials show up today
+
+The next step in my FlameMaster notes was reading the mechanism with `ScanMan`. Reverse rate constants are computed from equilibrium constants. Those equilibrium constants come from the $h$ and $s$ of these polynomials. Bad thermo data corrupts reaction rates, not just temperatures. The reverse-rate calculation is covered in detail in [the post on equilibrium constant units](/en/posts/2026-10-22-reverse-rate-kp-kc-unit-dissociation/).
+
+The same holds for flamelet libraries. The temperature tables FlameMaster produces are integrated against a β-PDF and fed into turbulent combustion models. If the table is off by hundreds of kelvin, so is the mean temperature. That integration is described in [the presumed β-PDF post](/en/posts/2026-10-27-presumed-beta-pdf-mean-flame-temperature/). How this heat reshapes compressible flow inside a combustor is in [Rayleigh flow and thermal choking](/en/posts/2026-11-17-rayleigh-flow-thermal-choking-combustor/).
+
+CFD codes that solve species transport face the same task. Every cell recovers $T$ from $h$. The Newton loop above runs in every cell at every time step. That is why commercial codes pretabulate the coefficients.
+
+## Three numbers to check by hand when a new mechanism arrives
+
+When you get a new reaction mechanism, open the `.therm` file first. Compute $h(298)$ for the main products and compare it with literature values. Check that cp is continuous at $T_{mid}$. Finally, find the complete-combustion adiabatic flame temperature with a few Newton steps and compare it with the code. If the code is about 100 K lower, that is dissociation. If the gap is over 400 K, a room-temperature cp is hiding somewhere.
