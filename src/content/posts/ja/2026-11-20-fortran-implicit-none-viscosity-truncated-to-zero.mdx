@@ -1,0 +1,166 @@
+---
+title: "粘性 ν = 0.07 を入れたのに Burgers の解が465ステップで発散した — Fortran の暗黙の型宣言と IMPLICIT NONE"
+date: 2026-11-20
+description: "IMPLICIT NONE のない Fortran では nu・mu・kappa が整数になります。0.07 が 0 に切り捨てられ、中心差分 Burgers が465ステップで発散する過程を再現します。"
+tags: ["Implicit-Typing", "Fortran", "Burgers", "Numerical-Analysis", "Algorithms"]
+locale: ja
+slug: 2026-11-20-fortran-implicit-none-viscosity-truncated-to-zero
+takeaway: "Fortran は頭文字が I〜N の未宣言変数を整数にします。ν・μ・κ・λ はすべて該当し、IMPLICIT NONE の1行がこのバグをコンパイル時に止めます。"
+draft: false
+---
+import { ImplicitTypingNameSorter } from '@/components/post-viz/2026-11-20-fortran-implicit-none-viscosity-truncated-to-zero/ImplicitTypingNameSorter'
+import { BurgersImplicitNuRace } from '@/components/post-viz/2026-11-20-fortran-implicit-none-viscosity-truncated-to-zero/BurgersImplicitNuRace'
+
+## 粘性を 0.07 にしたのに、解は465ステップで発散した
+
+1D 粘性 Burgers ソルバーを Fortran に移植した日のことです。Python の原版は2,000ステップを問題なく回りました。Fortran 版は465ステップで NaN を出しました。格子も時間刻みも初期条件も同じです。デバッガで見ると、粘性係数 `nu` が 0 でした。入力ファイルには確かに 0.07 と書いてありました。
+
+犯人は宣言していない変数ひとつでした。この記事では、Fortran の暗黙の型宣言(implicit typing:宣言のない変数に名前から型を付ける規則)が CFD コードで特に危険な理由を扱います。同じ波を2回解き、465という数字がどこから来るのか確かめます。最後に `IMPLICIT NONE` とモジュールがこの問題をどう防ぐかを整理します。
+
+## 頭文字が型を決める
+
+FORTRAN の登場は1957年です。パンチカードの時代には、宣言文1行にもコストがありました。そこで規則がひとつ決められました。宣言のない変数は、**頭文字が I, J, K, L, M, N なら INTEGER**、それ以外は REAL です。ループ添字 `i`, `j`, `k` や個数 `n` が自然に整数になります。この規則は Fortran 2018 でもデフォルトとして残っています。
+
+問題は整数変数に実数を代入するときです。Fortran は警告なしに 0 方向へ切り捨てます(truncation:小数点以下の切り捨て)。`nu = 0.07` は `nu = 0` になります。コンパイラはこれをエラーとみなしません。文法上は完全に合法だからです。
+
+下のシミュレーションで実際に操作してみましょう。変数名のボタンを押すか直接入力すると、頭文字がアルファベットの帯のどこに落ちるか、何が格納されるかを表示します。
+
+<ImplicitTypingNameSorter />
+
+`nu`、`mu`、`kappa`、`lambda` を押すと、小数点以下が落ちていきます。`visc` や `rho` に変えると同じ値がそのまま残ります。**IMPLICIT NONE** をオンにすると、格納の代わりにコンパイルエラーが出ます。これがこの記事の答えです。
+
+## なぜ CFD の変数ばかり引っかかるのか
+
+流体の物性記号を英字で書き出してみましょう。動粘性係数 ν は `nu`、粘性係数 μ は `mu` です。熱伝導率 κ は `kappa`、体積粘性や熱伝導の λ は `lambda` です。乱流運動エネルギー k は `k`、混合距離 l は `l` です。すべて I〜N の範囲に入ります。
+
+一方、ρ(`rho`)、γ(`gamma`)、Δt(`dt`)、CFL は REAL です。そのためバグは半分だけ発生します。密度と比熱比は正常で、拡散係数だけが 0 になります。コードは動き、結果はもっともらしく間違います。最も見つけにくい種類のバグです。
+
+## ν = 0 になった Burgers 方程式
+
+周期境界で 1D 粘性 Burgers 方程式を解きます。初期条件 $u_0 = 1 + 0.5\sin x$ は右側に切り立っていく波です。特性曲線が交わり衝撃波ができる時刻は $t_b = 1/\max(-u_0') = 2$ です(導出は [Burgers 方程式の特性曲線と衝撃波形成](/ja/posts/2026-05-01-burgers-characteristics-shock-formation/) を参照)。
+
+$$
+\frac{\partial u}{\partial t} + u\frac{\partial u}{\partial x} = \nu \frac{\partial^2 u}{\partial x^2}
+$$
+
+$u$ は速度、$\nu$ は動粘性係数です。対流項・拡散項ともに中心差分、時間は前進 Euler とします。局所速度 $u$ を定数とみなした von Neumann 解析(Fourier モード1つの増幅率を見る安定性解析)では、増幅係数は次のとおりです。
+
+$$
+G = 1 - 2d\,(1-\cos\theta) - i\,c\,\sin\theta, \qquad c = \frac{u\,\Delta t}{\Delta x},\quad d = \frac{\nu\,\Delta t}{\Delta x^2}
+$$
+
+$c$ はクーラン数、$d$ は拡散数、$\theta$ はモードの波数と格子間隔の積です。$d = 0$ なら、すべてのモードで $|G|^2 = 1 + c^2\sin^2\theta > 1$ が成り立ちます。中心差分の対流は粘性なしでは自立できません。安定には概ね $c^2 \le 2d$、つまり $\nu \ge u^2\Delta t/2$ が必要です。下の実験の $u_{\max}=1.5$、$\Delta t = 0.00838$ では $\nu \ge 0.0094$ です。0.07 なら十分ですが、0 では足りません。
+
+## コード:暗黙の規則をまねて、同じ波を2回解く
+
+Python には暗黙の型宣言がありません。そこで、頭文字で型を選び、整数なら `int()` で切り捨てる関数でまねます。次に、意図した ν と切り捨てられた ν で同じ Burgers 問題を解きます。発散判定は $\max|u| > 10$ です。
+
+```python
+import math
+
+def implicit_kind(name):
+    # Fortran の既定の暗黙規則: 頭文字 I~N なら INTEGER、それ以外は REAL
+    return "INTEGER" if name[0].lower() in "ijklmn" else "REAL"
+
+def assign(name, value):
+    # 暗黙の INTEGER 変数に実数を代入すると 0 方向へ切り捨て
+    return int(value) if implicit_kind(name) == "INTEGER" else float(value)
+
+params = {"nu": 0.07, "mu": 1.8e-5, "kappa": 0.026, "lambda": 0.41,
+          "rho": 1.2, "gamma": 1.4, "dt": 0.0126, "cfl": 0.2}
+print("name    kind     intended   stored")
+for k, v in params.items():
+    print(f"{k:<7} {implicit_kind(k):<8} {v:<10.4g} {assign(k, v)}")
+
+def burgers_central(nu, nx=100, steps=2000, cfl=0.2):
+    # 周期境界 [0, 2π)、中心差分の対流 + 中心差分の拡散、前進 Euler
+    dx = 2*math.pi/nx
+    u = [1.0 + 0.5*math.sin(i*dx) for i in range(nx)]
+    dt = cfl*dx/1.5
+    for n in range(1, steps+1):
+        u = [u[i] - dt*u[i]*(u[(i+1) % nx]-u[i-1])/(2*dx)
+             + nu*dt*(u[(i+1) % nx]-2*u[i]+u[i-1])/dx**2 for i in range(nx)]
+        amax = max(abs(v) for v in u)
+        if not math.isfinite(amax) or amax > 10:
+            return n, n*dt, amax
+    return None, steps*dt, amax
+
+print()
+print(f"dx = {2*math.pi/100:.5f}, dt = {0.2*2*math.pi/100/1.5:.5f}")
+print("nu_intended  stored      Re_cell  blowup_step  t_end   max|u|")
+for nu in [0.15, 0.07, 0.03]:
+    for val in (nu, assign("nu", nu)):
+        rc = 1.5*2*math.pi/100/val if val else float("inf")
+        n, t, a = burgers_central(val)
+        tag = f"{n:d}" if n else "-"
+        print(f"{nu:<12} {str(val):<11} {rc:<8.3g} {tag:>11}  {t:6.3f}  {a:.4g}")
+```
+
+```text
+name    kind     intended   stored
+nu      INTEGER  0.07       0
+mu      INTEGER  1.8e-05    0
+kappa   INTEGER  0.026      0
+lambda  INTEGER  0.41       0
+rho     REAL     1.2        1.2
+gamma   REAL     1.4        1.4
+dt      REAL     0.0126     0.0126
+cfl     REAL     0.2        0.2
+
+dx = 0.06283, dt = 0.00838
+nu_intended  stored      Re_cell  blowup_step  t_end   max|u|
+0.15         0.15        0.628              -  16.755  1.033
+0.15         0           inf              465   3.896  10.03
+0.07         0.07        1.35               -  16.755  1.087
+0.07         0           inf              465   3.896  10.03
+0.03         0.03        3.14               -  16.755  1.131
+0.03         0           inf              465   3.896  10.03
+```
+
+上のコードをブラウザで直接動かしてみましょう。青い曲線が REAL の ν、赤い曲線が暗黙の INTEGER で切り捨てられた ν です。デフォルトでは赤が465ステップで点線(10)を超えます。ν スライダーを 0.01 まで下げると青も振動し始め、変数名を `visc` に変えると2本の曲線が重なります。
+
+<BurgersImplicitNuRace />
+
+## 465という数字を読む
+
+1つ目の表は規則どおりです。8つの物性値のうち4つが 0 で格納されました。`mu = 1.8e-5` のように1未満の値は例外なく 0 になります。空気や水の粘性係数はすべてこの範囲にあります。
+
+2つ目の表では、切り捨て側は ν を 0.15、0.07、0.03 のどれにしても、同じ465ステップ、$t = 3.896$ で発散します。当然です。3つとも格納値が 0 だからです。入力を変えても結果が変わらないこと自体が手がかりです。パラメータスイープでこういう行を見たら、その変数が本当にコードに届いているかをまず疑うべきです。
+
+発散時刻 3.896 は衝撃波形成時刻 2 のおよそ2倍です。$t < 2$ では解が滑らかで、高周波モードはほとんどありません。衝撃波が立つと格子スケールの成分が生まれ、毎ステップ $|G| > 1$ で増幅されます。その成長が $\max|u|$ を10まで押し上げるのに、さらに約1.9の時間がかかりました。
+
+REAL 側の $\nu = 0.03$ はセルレイノルズ数(格子1セル基準の Re、$u\Delta x/\nu$)が 3.14 で、2を超えます。それでも発散しませんでした。$c^2 \le 2d$ を満たしているからです。最大値 1.131 は 1.087 より大きく、衝撃波の後ろに弱いウィグルが出たことを示します。発散とウィグルは別の条件で決まります。
+
+## IMPLICIT NONE の次に来るもの:モジュール
+
+解決策は1行です。すべてのプログラム単位の先頭に `implicit none` を書きます。宣言のない名前はコンパイルエラーになります。タイプミスで生まれた `viscc` のような幽霊変数も一緒に捕まります。
+
+```fortran
+module flow_props
+  implicit none
+  private
+  real(8), public, save :: nu = 0.07d0, rho = 1.2d0
+  real(8), save :: work(1000)          ! モジュール外からは見えない
+end module flow_props
+
+subroutine burgers_rhs(u, r, n, dx)
+  use flow_props, only: visc => nu     ! nu だけを取り込み visc に改名
+  implicit none                        ! use の後、宣言文の前
+  integer, intent(in) :: n
+  real(8), intent(in) :: u(n), dx
+  real(8), intent(out) :: r(n)
+  ! ...
+end subroutine burgers_rhs
+```
+
+元のノートがまとめた順序がここに入っています。`use` が最初に来て、`implicit none` がすぐ後に続きます。モジュールはそれを使う単位より先にコンパイルされる必要があります。そのためコンパイラは `use` の時点でモジュール内の名前と型をすでに知っています。`implicit none` があれば、モジュールにない名前を使った瞬間にエラーになります。
+
+`only: visc => nu` は必要な名前だけを取り込み、名前を変えます。名前の衝突を防ぎ、暗黙の規則と無関係な名前を付けられます。モジュールのデフォルトを `private` にし、公開するものだけ `public` で開くのがデータ隠蔽(data hiding)です。`save` はサブルーチン呼び出しの間で値を保持します。
+
+Fortran 90 はモジュール、ユーザー定義型、`interface` による関数オーバーロードを導入しました。Fortran 2003 は型の拡張(`extends`)と型束縛手続きを加えました。ですから、現在の Fortran をオブジェクト指向言語と呼んでも差し支えありません。ただし、これらの機能はすべて型検査が有効であることを前提にしています。オーバーロードは引数の型で実装を選びます。型が名前の頭文字でこっそり決まれば、意図しない実装が呼ばれます。
+
+Fortran の性能の落とし穴はメモリ側にもあります。ループ順序は [列優先配列とキャッシュセット競合](/ja/posts/2026-11-18-column-major-loop-order-cache-set-conflict/)、どこをコンパイル言語に移すかは [ホットスポット比率と Amdahl の法則](/ja/posts/2026-11-11-python-hotspot-amdahl-poisson-share/) で扱いました。
+
+## レガシーソルバーを開いたら最初に grep する2語
+
+他人が書いた Fortran コードを受け取ったら、まず `grep -Li "implicit none" *.f90` を実行します。このコマンドはその行が**ない**ファイルの一覧を返します。一覧が空でなければ、そのファイルの `nu`・`mu`・`kappa`・`k` が本当に REAL か確認するまで、結果を信用しません。gfortran の `-fimplicit-none` オプションを使えば、ソースを直さずに同じ検査を強制できます。ν を変えても結果が変わらないパラメータスイープは、数値手法より先に宣言文を疑うべきサインです。

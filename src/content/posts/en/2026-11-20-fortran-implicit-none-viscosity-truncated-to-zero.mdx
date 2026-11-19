@@ -1,0 +1,166 @@
+---
+title: "I Set ν = 0.07 and My Burgers Solver Blew Up at Step 465 — Fortran Implicit Typing and IMPLICIT NONE"
+date: 2026-11-20
+description: "Without IMPLICIT NONE, Fortran makes nu, mu and kappa integers. We reproduce how truncating 0.07 to 0 makes a central-difference Burgers solver diverge at step 465."
+tags: ["Implicit-Typing", "Fortran", "Burgers", "Numerical-Analysis", "Algorithms"]
+locale: en
+slug: 2026-11-20-fortran-implicit-none-viscosity-truncated-to-zero
+takeaway: "Fortran makes any undeclared variable starting with I–N an integer. ν, μ, κ and λ all fall into that range, and one line of IMPLICIT NONE stops the bug at compile time."
+draft: false
+---
+import { ImplicitTypingNameSorter } from '@/components/post-viz/2026-11-20-fortran-implicit-none-viscosity-truncated-to-zero/ImplicitTypingNameSorter'
+import { BurgersImplicitNuRace } from '@/components/post-viz/2026-11-20-fortran-implicit-none-viscosity-truncated-to-zero/BurgersImplicitNuRace'
+
+## I set the viscosity to 0.07, and the solution blew up at step 465
+
+I was porting a 1D viscous Burgers solver to Fortran. The Python original ran 2,000 steps without complaint. The Fortran version spat out NaN at step 465. Same grid, same time step, same initial condition. The debugger showed the viscosity `nu` was zero. The input file clearly said 0.07.
+
+The culprit was one undeclared variable. This post covers why Fortran's implicit typing (the rule that assigns a type to an undeclared variable based on its name) is especially dangerous in CFD code. We run the same wave twice and trace where the number 465 comes from. At the end, we look at how `IMPLICIT NONE` and modules prevent the whole class of bug.
+
+## The first letter decides the type
+
+FORTRAN appeared in 1957. In the punch-card era, even a declaration line had a cost. So the language adopted a rule. An undeclared variable is **INTEGER if its first letter is I, J, K, L, M or N**, and REAL otherwise. Loop indices `i`, `j`, `k` and counts `n` become integers for free. The rule is still the default in Fortran 2018.
+
+The trouble starts when you assign a real number to an integer variable. Fortran truncates toward zero (drops everything after the decimal point) with no warning. `nu = 0.07` becomes `nu = 0`. The compiler doesn't treat this as an error. It is perfectly legal syntax.
+
+Try it in the simulation below. Pick a variable name or type your own, and it shows where the first letter lands on the alphabet strip and what value actually gets stored.
+
+<ImplicitTypingNameSorter />
+
+Click `nu`, `mu`, `kappa` or `lambda` and watch the fractional part fall away. Switch to `visc` or `rho` and the same value survives intact. Turn on **IMPLICIT NONE** and you get a compile error instead of a stored value. That is the fix this post builds toward.
+
+## Why CFD variables get hit so often
+
+Spell out the usual fluid-property symbols in ASCII. Kinematic viscosity ν is `nu`, dynamic viscosity μ is `mu`. Thermal conductivity κ is `kappa`, and the λ of bulk viscosity or conductivity is `lambda`. Turbulent kinetic energy k is `k`, mixing length l is `l`. Every one of them lands in I–N.
+
+Meanwhile ρ (`rho`), γ (`gamma`), Δt (`dt`) and CFL are REAL. So the bug is only half there. Density and the heat-capacity ratio are fine, and only the diffusion coefficients go to zero. The code runs, and the results are plausibly wrong. That is the hardest kind of bug to find.
+
+## What happens to Burgers when ν = 0
+
+We solve the 1D viscous Burgers equation with periodic boundaries. The initial condition $u_0 = 1 + 0.5\sin x$ steepens to the right. Characteristics cross and a shock forms at $t_b = 1/\max(-u_0') = 2$ (see [Burgers characteristics and shock formation](/en/posts/2026-05-01-burgers-characteristics-shock-formation/) for the derivation).
+
+$$
+\frac{\partial u}{\partial t} + u\frac{\partial u}{\partial x} = \nu \frac{\partial^2 u}{\partial x^2}
+$$
+
+$u$ is velocity and $\nu$ is kinematic viscosity. Both convection and diffusion use central differences, with forward Euler in time. Freezing the local $u$ as a constant, von Neumann analysis (a stability check on the growth factor of a single Fourier mode) gives this amplification factor.
+
+$$
+G = 1 - 2d\,(1-\cos\theta) - i\,c\,\sin\theta, \qquad c = \frac{u\,\Delta t}{\Delta x},\quad d = \frac{\nu\,\Delta t}{\Delta x^2}
+$$
+
+$c$ is the Courant number, $d$ the diffusion number, and $\theta$ the mode wavenumber times grid spacing. With $d = 0$, $|G|^2 = 1 + c^2\sin^2\theta > 1$ for every mode. Central-difference convection cannot stand on its own without viscosity. Stability needs roughly $c^2 \le 2d$, i.e. $\nu \ge u^2\Delta t/2$. With $u_{\max}=1.5$ and $\Delta t = 0.00838$ below, that means $\nu \ge 0.0094$. 0.07 clears it easily. Zero does not.
+
+## Code: emulate the implicit rule and run the same wave twice
+
+Python has no implicit typing. So we emulate it with a function that picks the type from the first letter and truncates with `int()` if it's an integer. Then we run the same Burgers problem with the intended ν and the truncated ν. Divergence means $\max|u| > 10$.
+
+```python
+import math
+
+def implicit_kind(name):
+    # Fortran default implicit rule: first letter I-N -> INTEGER, otherwise REAL
+    return "INTEGER" if name[0].lower() in "ijklmn" else "REAL"
+
+def assign(name, value):
+    # assigning a real to an implicit INTEGER truncates toward zero
+    return int(value) if implicit_kind(name) == "INTEGER" else float(value)
+
+params = {"nu": 0.07, "mu": 1.8e-5, "kappa": 0.026, "lambda": 0.41,
+          "rho": 1.2, "gamma": 1.4, "dt": 0.0126, "cfl": 0.2}
+print("name    kind     intended   stored")
+for k, v in params.items():
+    print(f"{k:<7} {implicit_kind(k):<8} {v:<10.4g} {assign(k, v)}")
+
+def burgers_central(nu, nx=100, steps=2000, cfl=0.2):
+    # periodic [0, 2π), central convection + central diffusion, forward Euler
+    dx = 2*math.pi/nx
+    u = [1.0 + 0.5*math.sin(i*dx) for i in range(nx)]
+    dt = cfl*dx/1.5
+    for n in range(1, steps+1):
+        u = [u[i] - dt*u[i]*(u[(i+1) % nx]-u[i-1])/(2*dx)
+             + nu*dt*(u[(i+1) % nx]-2*u[i]+u[i-1])/dx**2 for i in range(nx)]
+        amax = max(abs(v) for v in u)
+        if not math.isfinite(amax) or amax > 10:
+            return n, n*dt, amax
+    return None, steps*dt, amax
+
+print()
+print(f"dx = {2*math.pi/100:.5f}, dt = {0.2*2*math.pi/100/1.5:.5f}")
+print("nu_intended  stored      Re_cell  blowup_step  t_end   max|u|")
+for nu in [0.15, 0.07, 0.03]:
+    for val in (nu, assign("nu", nu)):
+        rc = 1.5*2*math.pi/100/val if val else float("inf")
+        n, t, a = burgers_central(val)
+        tag = f"{n:d}" if n else "-"
+        print(f"{nu:<12} {str(val):<11} {rc:<8.3g} {tag:>11}  {t:6.3f}  {a:.4g}")
+```
+
+```text
+name    kind     intended   stored
+nu      INTEGER  0.07       0
+mu      INTEGER  1.8e-05    0
+kappa   INTEGER  0.026      0
+lambda  INTEGER  0.41       0
+rho     REAL     1.2        1.2
+gamma   REAL     1.4        1.4
+dt      REAL     0.0126     0.0126
+cfl     REAL     0.2        0.2
+
+dx = 0.06283, dt = 0.00838
+nu_intended  stored      Re_cell  blowup_step  t_end   max|u|
+0.15         0.15        0.628              -  16.755  1.033
+0.15         0           inf              465   3.896  10.03
+0.07         0.07        1.35               -  16.755  1.087
+0.07         0           inf              465   3.896  10.03
+0.03         0.03        3.14               -  16.755  1.131
+0.03         0           inf              465   3.896  10.03
+```
+
+Run the code above right in your browser. Blue is REAL ν, red is ν truncated by implicit INTEGER typing. At the defaults, red crosses the dashed line (10) at step 465. Drop the ν slider to 0.01 and blue starts to wiggle too. Rename the variable to `visc` and the two curves coincide.
+
+<BurgersImplicitNuRace />
+
+## Reading the number 465
+
+The first table is the rule, applied literally. Four of eight properties were stored as zero. Anything below 1, like `mu = 1.8e-5`, becomes zero without exception. The viscosities of air and water all live in that range.
+
+In the second table, the truncated runs blow up at exactly step 465, $t = 3.896$, whether ν was 0.15, 0.07 or 0.03. Of course they do. The stored value is zero in all three. The fact that changing the input doesn't change the output is itself the clue. When a parameter sweep shows rows like these, first check whether the variable actually reaches the code.
+
+The blow-up time 3.896 is about twice the shock time of 2. For $t < 2$ the solution is smooth and has almost no high-frequency content. Once the shock forms, grid-scale components appear and grow by $|G| > 1$ every step. That growth took about 1.9 more time units to push $\max|u|$ to 10.
+
+On the REAL side, $\nu = 0.03$ gives a cell Reynolds number (Re based on one grid cell, $u\Delta x/\nu$) of 3.14, above 2. It still didn't blow up, because it satisfies $c^2 \le 2d$. Its peak of 1.131 is above 1.087, meaning mild wiggles behind the shock. Blow-up and wiggles are governed by different conditions.
+
+## What comes after IMPLICIT NONE: modules
+
+The fix is one line. Put `implicit none` at the top of every program unit. Any undeclared name becomes a compile error. Ghost variables from typos like `viscc` get caught too.
+
+```fortran
+module flow_props
+  implicit none
+  private
+  real(8), public, save :: nu = 0.07d0, rho = 1.2d0
+  real(8), save :: work(1000)          ! invisible outside the module
+end module flow_props
+
+subroutine burgers_rhs(u, r, n, dx)
+  use flow_props, only: visc => nu     ! import only nu, renamed to visc
+  implicit none                        ! after use, before declarations
+  integer, intent(in) :: n
+  real(8), intent(in) :: u(n), dx
+  real(8), intent(out) :: r(n)
+  ! ...
+end subroutine burgers_rhs
+```
+
+The ordering in the original notes is all here. `use` comes first, and `implicit none` follows right after. A module must be compiled before any unit that uses it. So by the time the compiler hits `use`, it already knows every name and type in the module. With `implicit none`, referencing a name the module doesn't have is an immediate error.
+
+`only: visc => nu` imports just the name you need and renames it. That prevents name clashes and lets you pick a name the implicit rule can't touch. Making the module `private` by default and opening only what you need with `public` is data hiding. `save` keeps a value alive between subroutine calls.
+
+Fortran 90 brought modules, derived types and function overloading through `interface`. Fortran 2003 added type extension (`extends`) and type-bound procedures. So calling modern Fortran object-oriented is fair. But all of those features assume type checking is on. Overloading picks an implementation from argument types. If a type is silently chosen by the first letter of a name, the wrong implementation gets called.
+
+Fortran's performance traps live on the memory side too. Loop order is covered in [column-major arrays and cache set conflicts](/en/posts/2026-11-18-column-major-loop-order-cache-set-conflict/), and deciding what to move into a compiled language is in [hotspot share and Amdahl's law](/en/posts/2026-11-11-python-hotspot-amdahl-poisson-share/).
+
+## Two words to grep for when you open a legacy solver
+
+When you inherit someone else's Fortran, start with `grep -Li "implicit none" *.f90`. It lists the files that **lack** that line. If the list isn't empty, don't trust the results until you've confirmed that `nu`, `mu`, `kappa` and `k` in those files are really REAL. gfortran's `-fimplicit-none` flag enforces the same check without touching the source. A parameter sweep where changing ν changes nothing is a signal to suspect the declarations before the numerics.

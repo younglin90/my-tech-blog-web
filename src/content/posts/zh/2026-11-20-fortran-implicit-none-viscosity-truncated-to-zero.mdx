@@ -1,0 +1,166 @@
+---
+title: "粘性设为 ν = 0.07，Burgers 解却在第 465 步发散 — Fortran 隐式类型与 IMPLICIT NONE"
+date: 2026-11-20
+description: "没有 IMPLICIT NONE 的 Fortran 会把 nu、mu、kappa 变成整数。本文复现 0.07 被截断为 0 后，中心差分 Burgers 在第 465 步发散的全过程。"
+tags: ["Implicit-Typing", "Fortran", "Burgers", "Numerical-Analysis", "Algorithms"]
+locale: zh
+slug: 2026-11-20-fortran-implicit-none-viscosity-truncated-to-zero
+takeaway: "Fortran 会把首字母为 I~N 的未声明变量设为整数。ν、μ、κ、λ 全部落在这个区间，一行 IMPLICIT NONE 就能在编译阶段拦住这个错误。"
+draft: false
+---
+import { ImplicitTypingNameSorter } from '@/components/post-viz/2026-11-20-fortran-implicit-none-viscosity-truncated-to-zero/ImplicitTypingNameSorter'
+import { BurgersImplicitNuRace } from '@/components/post-viz/2026-11-20-fortran-implicit-none-viscosity-truncated-to-zero/BurgersImplicitNuRace'
+
+## 粘性明明是 0.07，解却在第 465 步炸了
+
+那天我在把一个一维粘性 Burgers 求解器移植到 Fortran。Python 原版安静地跑完了 2,000 步。Fortran 版在第 465 步输出了 NaN。网格、时间步长、初始条件都一样。用调试器一看，粘性系数 `nu` 是 0。输入文件里写的明明是 0.07。
+
+罪魁祸首是一个没有声明的变量。本文讨论 Fortran 的隐式类型（implicit typing，按变量名给未声明变量分配类型的规则）为什么在 CFD 代码里格外危险。我们把同一个波算两遍，确认 465 这个数字从何而来。最后整理 `IMPLICIT NONE` 和模块如何堵住这个问题。
+
+## 首字母决定类型
+
+FORTRAN 诞生于 1957 年。在穿孔卡片时代，连一行声明语句都有成本。于是语言定了一条规则：未声明的变量，**首字母是 I、J、K、L、M、N 就是 INTEGER**，其余是 REAL。循环下标 `i`、`j`、`k` 和计数 `n` 自然成了整数。这条规则直到 Fortran 2018 仍是默认行为。
+
+问题出在把实数赋给整数变量时。Fortran 会不加警告地向零截断（truncation，舍去小数部分）。`nu = 0.07` 变成 `nu = 0`。编译器不认为这是错误，因为它在语法上完全合法。
+
+在下面的模拟中亲手试一试。点击变量名按钮或直接输入，它会显示首字母落在字母条的哪个位置，以及实际存下的值。
+
+<ImplicitTypingNameSorter />
+
+点 `nu`、`mu`、`kappa`、`lambda`，小数部分会掉下去。换成 `visc` 或 `rho`，同样的值原样保留。打开 **IMPLICIT NONE**，得到的不是存储结果而是编译错误。这就是本文的答案。
+
+## 为什么偏偏是 CFD 变量中招
+
+把流体物性符号写成英文字母看看。运动粘度 ν 是 `nu`，动力粘度 μ 是 `mu`。导热系数 κ 是 `kappa`，体积粘度或导热的 λ 是 `lambda`。湍动能 k 是 `k`，混合长度 l 是 `l`。全都落在 I~N 区间。
+
+反过来，ρ（`rho`）、γ（`gamma`）、Δt（`dt`）、CFL 都是 REAL。所以错误只出现一半。密度和比热比正常，只有扩散系数变成 0。代码能跑，结果看似合理却是错的。这是最难发现的一类错误。
+
+## ν = 0 时的 Burgers 方程
+
+在周期边界上求解一维粘性 Burgers 方程。初始条件 $u_0 = 1 + 0.5\sin x$ 是一个向右变陡的波。特征线相交、激波形成的时刻是 $t_b = 1/\max(-u_0') = 2$（推导见 [Burgers 方程的特征线与激波形成](/zh/posts/2026-05-01-burgers-characteristics-shock-formation/)）。
+
+$$
+\frac{\partial u}{\partial t} + u\frac{\partial u}{\partial x} = \nu \frac{\partial^2 u}{\partial x^2}
+$$
+
+$u$ 是速度，$\nu$ 是运动粘度。对流项和扩散项都用中心差分，时间用前向 Euler。把局部速度 $u$ 冻结为常数做 von Neumann 分析（考察单个 Fourier 模态放大率的稳定性分析），放大因子为：
+
+$$
+G = 1 - 2d\,(1-\cos\theta) - i\,c\,\sin\theta, \qquad c = \frac{u\,\Delta t}{\Delta x},\quad d = \frac{\nu\,\Delta t}{\Delta x^2}
+$$
+
+$c$ 是 Courant 数，$d$ 是扩散数，$\theta$ 是模态波数与网格间距之积。若 $d = 0$，则所有模态都有 $|G|^2 = 1 + c^2\sin^2\theta > 1$。中心差分对流离开粘性无法独立稳定。稳定大致需要 $c^2 \le 2d$，即 $\nu \ge u^2\Delta t/2$。下面实验中 $u_{\max}=1.5$、$\Delta t = 0.00838$，要求 $\nu \ge 0.0094$。0.07 绰绰有余，0 则不行。
+
+## 代码：模仿隐式规则，把同一个波跑两遍
+
+Python 没有隐式类型。所以用一个函数来模仿：按首字母选类型，若是整数就用 `int()` 截断。然后分别用设定的 ν 和截断后的 ν 求解同一个 Burgers 问题。发散判据是 $\max|u| > 10$。
+
+```python
+import math
+
+def implicit_kind(name):
+    # Fortran 默认隐式规则：首字母 I~N 为 INTEGER，其余为 REAL
+    return "INTEGER" if name[0].lower() in "ijklmn" else "REAL"
+
+def assign(name, value):
+    # 把实数赋给隐式 INTEGER 变量时向零截断
+    return int(value) if implicit_kind(name) == "INTEGER" else float(value)
+
+params = {"nu": 0.07, "mu": 1.8e-5, "kappa": 0.026, "lambda": 0.41,
+          "rho": 1.2, "gamma": 1.4, "dt": 0.0126, "cfl": 0.2}
+print("name    kind     intended   stored")
+for k, v in params.items():
+    print(f"{k:<7} {implicit_kind(k):<8} {v:<10.4g} {assign(k, v)}")
+
+def burgers_central(nu, nx=100, steps=2000, cfl=0.2):
+    # 周期边界 [0, 2π)，中心差分对流 + 中心差分扩散，前向 Euler
+    dx = 2*math.pi/nx
+    u = [1.0 + 0.5*math.sin(i*dx) for i in range(nx)]
+    dt = cfl*dx/1.5
+    for n in range(1, steps+1):
+        u = [u[i] - dt*u[i]*(u[(i+1) % nx]-u[i-1])/(2*dx)
+             + nu*dt*(u[(i+1) % nx]-2*u[i]+u[i-1])/dx**2 for i in range(nx)]
+        amax = max(abs(v) for v in u)
+        if not math.isfinite(amax) or amax > 10:
+            return n, n*dt, amax
+    return None, steps*dt, amax
+
+print()
+print(f"dx = {2*math.pi/100:.5f}, dt = {0.2*2*math.pi/100/1.5:.5f}")
+print("nu_intended  stored      Re_cell  blowup_step  t_end   max|u|")
+for nu in [0.15, 0.07, 0.03]:
+    for val in (nu, assign("nu", nu)):
+        rc = 1.5*2*math.pi/100/val if val else float("inf")
+        n, t, a = burgers_central(val)
+        tag = f"{n:d}" if n else "-"
+        print(f"{nu:<12} {str(val):<11} {rc:<8.3g} {tag:>11}  {t:6.3f}  {a:.4g}")
+```
+
+```text
+name    kind     intended   stored
+nu      INTEGER  0.07       0
+mu      INTEGER  1.8e-05    0
+kappa   INTEGER  0.026      0
+lambda  INTEGER  0.41       0
+rho     REAL     1.2        1.2
+gamma   REAL     1.4        1.4
+dt      REAL     0.0126     0.0126
+cfl     REAL     0.2        0.2
+
+dx = 0.06283, dt = 0.00838
+nu_intended  stored      Re_cell  blowup_step  t_end   max|u|
+0.15         0.15        0.628              -  16.755  1.033
+0.15         0           inf              465   3.896  10.03
+0.07         0.07        1.35               -  16.755  1.087
+0.07         0           inf              465   3.896  10.03
+0.03         0.03        3.14               -  16.755  1.131
+0.03         0           inf              465   3.896  10.03
+```
+
+在浏览器里直接运行上面的代码。蓝线是 REAL 的 ν，红线是被隐式 INTEGER 截断的 ν。默认参数下，红线在第 465 步越过虚线（10）。把 ν 滑块降到 0.01，蓝线也开始振荡；把变量名改成 `visc`，两条曲线重合。
+
+<BurgersImplicitNuRace />
+
+## 解读 465 这个数字
+
+第一张表完全照规则执行。8 个物性中有 4 个存成了 0。像 `mu = 1.8e-5` 这样小于 1 的值无一例外变成 0。空气和水的粘度都在这个范围。
+
+第二张表中，截断的一侧无论 ν 设为 0.15、0.07 还是 0.03，都在同一个第 465 步、$t = 3.896$ 发散。这理所当然，因为三种情况存下的值都是 0。改变输入而结果不变，这本身就是线索。参数扫描中看到这样的行，首先要怀疑该变量是否真的进入了代码。
+
+发散时刻 3.896 约为激波形成时刻 2 的两倍。$t < 2$ 时解是光滑的，几乎没有高频模态。激波一旦形成，就出现网格尺度的分量，并以每步 $|G| > 1$ 放大。这个增长又花了约 1.9 个时间单位，才把 $\max|u|$ 推到 10。
+
+REAL 一侧的 $\nu = 0.03$，网格 Reynolds 数（以单个网格为尺度的 Re，$u\Delta x/\nu$）为 3.14，超过 2。但它没有发散，因为满足 $c^2 \le 2d$。最大值 1.131 大于 1.087，说明激波后出现了轻微的数值振荡。发散与振荡由不同的条件决定。
+
+## IMPLICIT NONE 之后：模块
+
+解决办法只有一行：在每个程序单元的开头写 `implicit none`。未声明的名字随即成为编译错误。拼写错误产生的 `viscc` 之类的幽灵变量也一并被抓住。
+
+```fortran
+module flow_props
+  implicit none
+  private
+  real(8), public, save :: nu = 0.07d0, rho = 1.2d0
+  real(8), save :: work(1000)          ! 模块外不可见
+end module flow_props
+
+subroutine burgers_rhs(u, r, n, dx)
+  use flow_props, only: visc => nu     ! 只导入 nu 并重命名为 visc
+  implicit none                        ! 在 use 之后、声明语句之前
+  integer, intent(in) :: n
+  real(8), intent(in) :: u(n), dx
+  real(8), intent(out) :: r(n)
+  ! ...
+end subroutine burgers_rhs
+```
+
+原始笔记整理的顺序都在这里。`use` 最先出现，`implicit none` 紧随其后。模块必须先于使用它的单元编译。因此编译器在遇到 `use` 时已经知道模块里所有名字和类型。有了 `implicit none`，一旦使用模块中不存在的名字就会立即报错。
+
+`only: visc => nu` 只导入需要的名字并重命名。这样既避免命名冲突，也能取一个与隐式规则无关的名字。把模块默认设为 `private`，只用 `public` 开放需要公开的部分，这就是数据隐藏（data hiding）。`save` 让变量值在子程序调用之间保持。
+
+Fortran 90 引入了模块、用户自定义类型以及通过 `interface` 实现的函数重载。Fortran 2003 又加入了类型扩展（`extends`）和类型绑定过程。所以说现代 Fortran 是面向对象语言并不为过。但这些功能都建立在类型检查开启的前提上。重载根据参数类型选择实现。如果类型被变量名首字母悄悄决定，就会调用错误的实现。
+
+Fortran 的性能陷阱也存在于内存一侧。循环顺序问题见 [列优先数组与缓存组冲突](/zh/posts/2026-11-18-column-major-loop-order-cache-set-conflict/)，哪些部分该移到编译型语言见 [热点占比与 Amdahl 定律](/zh/posts/2026-11-11-python-hotspot-amdahl-poisson-share/)。
+
+## 打开遗留求解器时先 grep 的两个词
+
+接手别人写的 Fortran 代码时，先运行 `grep -Li "implicit none" *.f90`。这条命令列出**缺少**这一行的文件。如果列表不为空，在确认这些文件里的 `nu`、`mu`、`kappa`、`k` 确实是 REAL 之前，不要相信计算结果。gfortran 的 `-fimplicit-none` 选项可以在不改源码的情况下强制同样的检查。改变 ν 而结果纹丝不动的参数扫描，是先怀疑声明语句、再怀疑数值方法的信号。

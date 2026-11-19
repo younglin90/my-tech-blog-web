@@ -1,0 +1,166 @@
+---
+title: "Puse ν = 0.07 y la solución de Burgers explotó en el paso 465 — tipado implícito en Fortran e IMPLICIT NONE"
+date: 2026-11-20
+description: "Sin IMPLICIT NONE, Fortran convierte nu, mu y kappa en enteros. Se reproduce cómo truncar 0.07 a 0 hace diverger un esquema centrado de Burgers en el paso 465."
+tags: ["Implicit-Typing", "Fortran", "Burgers", "Numerical-Analysis", "Algorithms"]
+locale: es
+slug: 2026-11-20-fortran-implicit-none-viscosity-truncated-to-zero
+takeaway: "Fortran declara como entera toda variable no declarada que empiece por I–N. ν, μ, κ y λ caen en ese rango, y una sola línea de IMPLICIT NONE detiene el error al compilar."
+draft: false
+---
+import { ImplicitTypingNameSorter } from '@/components/post-viz/2026-11-20-fortran-implicit-none-viscosity-truncated-to-zero/ImplicitTypingNameSorter'
+import { BurgersImplicitNuRace } from '@/components/post-viz/2026-11-20-fortran-implicit-none-viscosity-truncated-to-zero/BurgersImplicitNuRace'
+
+## La viscosidad era 0.07 y la solución explotó en el paso 465
+
+Ese día se estaba portando a Fortran un solver de Burgers viscoso 1D. El original en Python corrió 2,000 pasos sin problemas. La versión en Fortran devolvió NaN en el paso 465. Misma malla, mismo paso de tiempo, misma condición inicial. El depurador mostró que la viscosidad `nu` valía cero. El archivo de entrada decía claramente 0.07.
+
+El culpable fue una sola variable sin declarar. Este artículo explica por qué el tipado implícito de Fortran (la regla que asigna un tipo a una variable no declarada según su nombre) es especialmente peligroso en código CFD. Se resuelve la misma onda dos veces para rastrear de dónde sale el número 465. Al final se resume cómo `IMPLICIT NONE` y los módulos evitan este tipo de error.
+
+## La primera letra decide el tipo
+
+FORTRAN apareció en 1957. En la época de las tarjetas perforadas, hasta una línea de declaración tenía un costo. Así que el lenguaje adoptó una regla. Una variable no declarada es **INTEGER si su primera letra es I, J, K, L, M o N**, y REAL en cualquier otro caso. Los índices de bucle `i`, `j`, `k` y los contadores `n` quedan como enteros sin esfuerzo. La regla sigue siendo el comportamiento por defecto en Fortran 2018.
+
+El problema surge al asignar un número real a una variable entera. Fortran trunca hacia cero (descarta la parte decimal) sin ninguna advertencia. `nu = 0.07` se convierte en `nu = 0`. El compilador no lo considera un error. Es sintaxis perfectamente legal.
+
+Conviene probarlo en la simulación de abajo. Al elegir o escribir un nombre de variable, se ve dónde cae su primera letra en la franja del alfabeto y qué valor se guarda realmente.
+
+<ImplicitTypingNameSorter />
+
+Con `nu`, `mu`, `kappa` o `lambda`, la parte decimal se cae. Con `visc` o `rho`, el mismo valor se conserva intacto. Al activar **IMPLICIT NONE** aparece un error de compilación en lugar de un valor guardado. Esa es la solución hacia la que avanza este artículo.
+
+## Por qué caen justo las variables de CFD
+
+Basta escribir en ASCII los símbolos habituales de propiedades de fluidos. La viscosidad cinemática ν es `nu`, la dinámica μ es `mu`. La conductividad térmica κ es `kappa`, y la λ de la viscosidad volumétrica o de la conductividad es `lambda`. La energía cinética turbulenta k es `k`, la longitud de mezcla l es `l`. Todas caen en I–N.
+
+En cambio, ρ (`rho`), γ (`gamma`), Δt (`dt`) y CFL son REAL. Por eso el error aparece solo a medias. La densidad y la razón de calores específicos están bien, y solo los coeficientes de difusión se vuelven cero. El código corre y los resultados son verosímilmente incorrectos. Es el tipo de error más difícil de encontrar.
+
+## Qué le pasa a Burgers cuando ν = 0
+
+Se resuelve la ecuación de Burgers viscosa 1D con fronteras periódicas. La condición inicial $u_0 = 1 + 0.5\sin x$ se empina hacia la derecha. Las características se cruzan y se forma un choque en $t_b = 1/\max(-u_0') = 2$ (la deducción está en [características de Burgers y formación de choques](/es/posts/2026-05-01-burgers-characteristics-shock-formation/)).
+
+$$
+\frac{\partial u}{\partial t} + u\frac{\partial u}{\partial x} = \nu \frac{\partial^2 u}{\partial x^2}
+$$
+
+$u$ es la velocidad y $\nu$ la viscosidad cinemática. Convección y difusión usan diferencias centradas, con Euler explícito en el tiempo. Congelando la $u$ local como constante, el análisis de von Neumann (estudio de estabilidad del factor de crecimiento de un solo modo de Fourier) da este factor de amplificación.
+
+$$
+G = 1 - 2d\,(1-\cos\theta) - i\,c\,\sin\theta, \qquad c = \frac{u\,\Delta t}{\Delta x},\quad d = \frac{\nu\,\Delta t}{\Delta x^2}
+$$
+
+$c$ es el número de Courant, $d$ el número de difusión y $\theta$ el número de onda del modo por el espaciado de malla. Con $d = 0$, se cumple $|G|^2 = 1 + c^2\sin^2\theta > 1$ para todo modo. La convección centrada no se sostiene sola sin viscosidad. La estabilidad exige aproximadamente $c^2 \le 2d$, es decir $\nu \ge u^2\Delta t/2$. Con $u_{\max}=1.5$ y $\Delta t = 0.00838$, eso da $\nu \ge 0.0094$. 0.07 cumple con holgura. Cero no.
+
+## Código: imitar la regla implícita y resolver la misma onda dos veces
+
+Python no tiene tipado implícito. Por eso se imita con una función que elige el tipo por la primera letra y trunca con `int()` si es entero. Luego se resuelve el mismo problema de Burgers con la ν deseada y con la ν truncada. Se declara divergencia cuando $\max|u| > 10$.
+
+```python
+import math
+
+def implicit_kind(name):
+    # regla implícita por defecto de Fortran: primera letra I-N -> INTEGER, si no REAL
+    return "INTEGER" if name[0].lower() in "ijklmn" else "REAL"
+
+def assign(name, value):
+    # asignar un real a un INTEGER implícito trunca hacia cero
+    return int(value) if implicit_kind(name) == "INTEGER" else float(value)
+
+params = {"nu": 0.07, "mu": 1.8e-5, "kappa": 0.026, "lambda": 0.41,
+          "rho": 1.2, "gamma": 1.4, "dt": 0.0126, "cfl": 0.2}
+print("name    kind     intended   stored")
+for k, v in params.items():
+    print(f"{k:<7} {implicit_kind(k):<8} {v:<10.4g} {assign(k, v)}")
+
+def burgers_central(nu, nx=100, steps=2000, cfl=0.2):
+    # periódico [0, 2π), convección centrada + difusión centrada, Euler explícito
+    dx = 2*math.pi/nx
+    u = [1.0 + 0.5*math.sin(i*dx) for i in range(nx)]
+    dt = cfl*dx/1.5
+    for n in range(1, steps+1):
+        u = [u[i] - dt*u[i]*(u[(i+1) % nx]-u[i-1])/(2*dx)
+             + nu*dt*(u[(i+1) % nx]-2*u[i]+u[i-1])/dx**2 for i in range(nx)]
+        amax = max(abs(v) for v in u)
+        if not math.isfinite(amax) or amax > 10:
+            return n, n*dt, amax
+    return None, steps*dt, amax
+
+print()
+print(f"dx = {2*math.pi/100:.5f}, dt = {0.2*2*math.pi/100/1.5:.5f}")
+print("nu_intended  stored      Re_cell  blowup_step  t_end   max|u|")
+for nu in [0.15, 0.07, 0.03]:
+    for val in (nu, assign("nu", nu)):
+        rc = 1.5*2*math.pi/100/val if val else float("inf")
+        n, t, a = burgers_central(val)
+        tag = f"{n:d}" if n else "-"
+        print(f"{nu:<12} {str(val):<11} {rc:<8.3g} {tag:>11}  {t:6.3f}  {a:.4g}")
+```
+
+```text
+name    kind     intended   stored
+nu      INTEGER  0.07       0
+mu      INTEGER  1.8e-05    0
+kappa   INTEGER  0.026      0
+lambda  INTEGER  0.41       0
+rho     REAL     1.2        1.2
+gamma   REAL     1.4        1.4
+dt      REAL     0.0126     0.0126
+cfl     REAL     0.2        0.2
+
+dx = 0.06283, dt = 0.00838
+nu_intended  stored      Re_cell  blowup_step  t_end   max|u|
+0.15         0.15        0.628              -  16.755  1.033
+0.15         0           inf              465   3.896  10.03
+0.07         0.07        1.35               -  16.755  1.087
+0.07         0           inf              465   3.896  10.03
+0.03         0.03        3.14               -  16.755  1.131
+0.03         0           inf              465   3.896  10.03
+```
+
+El código de arriba puede ejecutarse directamente en el navegador. La curva azul usa ν REAL y la roja, ν truncada por el tipado INTEGER implícito. Con los valores por defecto, la roja cruza la línea discontinua (10) en el paso 465. Al bajar ν a 0.01, la azul también empieza a oscilar. Al renombrar la variable a `visc`, las dos curvas coinciden.
+
+<BurgersImplicitNuRace />
+
+## Cómo leer el número 465
+
+La primera tabla es la regla aplicada al pie de la letra. Cuatro de ocho propiedades se guardaron como cero. Cualquier valor menor que 1, como `mu = 1.8e-5`, se vuelve cero sin excepción. Las viscosidades del aire y del agua están todas en ese rango.
+
+En la segunda tabla, los casos truncados explotan exactamente en el paso 465, $t = 3.896$, ya sea con ν igual a 0.15, 0.07 o 0.03. Es lógico: el valor guardado es cero en los tres. Que cambiar la entrada no cambie la salida ya es una pista. Si un barrido de parámetros muestra filas así, lo primero es comprobar si la variable llega realmente al código.
+
+El tiempo de explosión 3.896 es casi el doble del tiempo de choque, 2. Para $t < 2$ la solución es suave y casi no tiene contenido de alta frecuencia. Al formarse el choque aparecen componentes a escala de malla, que crecen con $|G| > 1$ en cada paso. Ese crecimiento tardó unas 1.9 unidades de tiempo más en llevar $\max|u|$ hasta 10.
+
+Del lado REAL, $\nu = 0.03$ da un número de Reynolds de celda (Re basado en una celda, $u\Delta x/\nu$) de 3.14, mayor que 2. Aun así no explotó, porque cumple $c^2 \le 2d$. Su máximo de 1.131 supera a 1.087, señal de oscilaciones leves detrás del choque. La explosión y las oscilaciones dependen de condiciones distintas.
+
+## Lo que viene después de IMPLICIT NONE: módulos
+
+La solución es una línea. Escribir `implicit none` al inicio de cada unidad de programa. Todo nombre no declarado pasa a ser un error de compilación. Las variables fantasma nacidas de erratas, como `viscc`, también quedan atrapadas.
+
+```fortran
+module flow_props
+  implicit none
+  private
+  real(8), public, save :: nu = 0.07d0, rho = 1.2d0
+  real(8), save :: work(1000)          ! invisible fuera del módulo
+end module flow_props
+
+subroutine burgers_rhs(u, r, n, dx)
+  use flow_props, only: visc => nu     ! importa solo nu y lo renombra visc
+  implicit none                        ! después de use, antes de las declaraciones
+  integer, intent(in) :: n
+  real(8), intent(in) :: u(n), dx
+  real(8), intent(out) :: r(n)
+  ! ...
+end subroutine burgers_rhs
+```
+
+El orden que recogían las notas originales está aquí. `use` va primero, e `implicit none` justo después. Un módulo debe compilarse antes que cualquier unidad que lo use. Así, cuando el compilador llega a `use`, ya conoce todos los nombres y tipos del módulo. Con `implicit none`, usar un nombre que el módulo no tiene es un error inmediato.
+
+`only: visc => nu` importa solo el nombre necesario y lo renombra. Evita choques de nombres y permite elegir uno que la regla implícita no afecte. Dejar el módulo `private` por defecto y abrir con `public` solo lo necesario es ocultamiento de datos (data hiding). `save` conserva un valor entre llamadas a la subrutina.
+
+Fortran 90 trajo módulos, tipos derivados y sobrecarga de funciones mediante `interface`. Fortran 2003 añadió extensión de tipos (`extends`) y procedimientos ligados a tipos. Por eso es razonable llamar orientado a objetos al Fortran moderno. Pero todas esas funciones dan por hecho que la verificación de tipos está activa. La sobrecarga elige la implementación según el tipo de los argumentos. Si el tipo lo decide en silencio la primera letra de un nombre, se llama a la implementación equivocada.
+
+Las trampas de rendimiento de Fortran también están del lado de la memoria. El orden de bucles se trata en [arreglos por columnas y conflictos de conjunto en caché](/es/posts/2026-11-18-column-major-loop-order-cache-set-conflict/), y qué conviene pasar a un lenguaje compilado, en [fracción del punto caliente y ley de Amdahl](/es/posts/2026-11-11-python-hotspot-amdahl-poisson-share/).
+
+## Dos palabras para buscar con grep al abrir un solver heredado
+
+Al recibir código Fortran ajeno, lo primero es `grep -Li "implicit none" *.f90`. Ese comando lista los archivos a los que **les falta** esa línea. Si la lista no está vacía, no conviene confiar en los resultados hasta confirmar que `nu`, `mu`, `kappa` y `k` en esos archivos son realmente REAL. La opción `-fimplicit-none` de gfortran impone la misma verificación sin tocar el código fuente. Un barrido donde cambiar ν no cambia nada es señal para sospechar de las declaraciones antes que de los métodos numéricos.

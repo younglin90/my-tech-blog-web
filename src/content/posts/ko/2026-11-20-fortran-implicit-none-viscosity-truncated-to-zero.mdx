@@ -1,0 +1,166 @@
+---
+title: "점성 ν = 0.07을 넣었는데 Burgers 해가 465스텝에서 터졌다 — 포트란 묵시적 타입과 IMPLICIT NONE"
+date: 2026-11-20
+description: "IMPLICIT NONE이 없는 포트란에서 nu·mu·kappa는 정수가 된다. 0.07이 0으로 잘리면 중심차분 Burgers가 465스텝에서 발산하는 과정을 재현한다."
+tags: ["Implicit-Typing", "Fortran", "Burgers", "Numerical-Analysis", "Algorithms"]
+locale: ko
+slug: 2026-11-20-fortran-implicit-none-viscosity-truncated-to-zero
+takeaway: "포트란은 첫 글자가 I~N인 변수를 정수로 만든다. ν·μ·κ·λ는 전부 여기에 걸리고, IMPLICIT NONE 한 줄이 이 버그를 컴파일 단계에서 막는다."
+draft: false
+---
+import { ImplicitTypingNameSorter } from '@/components/post-viz/2026-11-20-fortran-implicit-none-viscosity-truncated-to-zero/ImplicitTypingNameSorter'
+import { BurgersImplicitNuRace } from '@/components/post-viz/2026-11-20-fortran-implicit-none-viscosity-truncated-to-zero/BurgersImplicitNuRace'
+
+## 점성을 0.07로 넣었는데 해가 465스텝에서 터졌다
+
+1D 점성 Burgers 솔버를 포트란으로 옮긴 날이었다. 파이썬 원본은 2,000스텝을 조용히 돌았다. 포트란 버전은 465스텝에서 NaN을 뱉었다. 격자도, 시간 간격도, 초기 조건도 같았다. 디버거로 찍어 보니 점성 계수 `nu`가 0이었다. 입력 파일에는 분명히 0.07이 적혀 있었다.
+
+범인은 선언하지 않은 변수 하나였다. 이 글은 포트란의 묵시적 타입(implicit typing, 선언 없는 변수에 이름으로 타입을 붙이는 규칙)이 CFD 코드에서 왜 유독 위험한지 다룬다. 같은 파를 두 번 돌려 465라는 숫자가 어디서 나오는지 확인한다. 끝에서는 `IMPLICIT NONE`과 모듈이 이 문제를 어떻게 막는지 정리한다.
+
+## 첫 글자가 타입을 정한다
+
+FORTRAN은 1957년에 나왔다. 천공 카드 시절에는 선언문 한 줄도 비용이었다. 그래서 규칙을 하나 정했다. 선언하지 않은 변수는 **첫 글자가 I, J, K, L, M, N이면 INTEGER**, 나머지는 REAL이다. 루프 지수 `i`, `j`, `k`와 개수 `n`이 자연스럽게 정수가 된다. 이 규칙은 Fortran 2018까지 기본값으로 살아 있다.
+
+문제는 정수 변수에 실수를 대입할 때다. 포트란은 경고 없이 0 쪽으로 잘라낸다(truncation, 소수점 이하 버림). `nu = 0.07`은 `nu = 0`이 된다. 컴파일러는 이것을 오류로 보지 않는다. 문법상 완벽하게 합법이기 때문이다.
+
+아래 시뮬레이션에서 직접 조작해보자. 변수 이름 버튼을 누르거나 직접 입력하면 첫 글자가 알파벳 띠 어디에 떨어지는지, 저장되는 값이 무엇인지 보여 준다.
+
+<ImplicitTypingNameSorter />
+
+`nu`, `mu`, `kappa`, `lambda`를 눌러 보면 소수점 아래가 떨어져 나간다. `visc`나 `rho`로 바꾸면 같은 값이 그대로 남는다. **IMPLICIT NONE**을 켜면 저장 대신 컴파일 오류가 뜬다. 이것이 이 글의 해답이다.
+
+## 왜 하필 CFD 변수가 걸리나
+
+유체역학의 물성치 기호를 영어로 풀어 써 보자. 동점성 계수 ν는 `nu`, 점성 계수 μ는 `mu`다. 열전도 계수 κ는 `kappa`, 체적 점성이나 열전도의 λ는 `lambda`다. 난류 운동 에너지 k는 `k`, 혼합 길이 l은 `l`이다. 전부 I~N 구간에 들어간다.
+
+반대로 ρ(`rho`), γ(`gamma`), Δt(`dt`), CFL은 REAL이다. 그래서 버그가 반쪽만 생긴다. 밀도와 비열비는 멀쩡하고 확산 계수만 0이 된다. 코드는 돌아가고, 결과는 그럴듯하게 틀린다. 가장 찾기 어려운 형태의 버그다.
+
+## ν = 0이 된 Burgers 방정식
+
+주기 경계에서 1D 점성 Burgers 방정식을 푼다. 초기 조건 $u_0 = 1 + 0.5\sin x$는 오른쪽으로 가파라지는 파다. 특성선이 만나 충격이 생기는 시각은 $t_b = 1/\max(-u_0') = 2$다(자세한 유도는 [Burgers 방정식의 특성선과 충격 형성](/ko/posts/2026-05-01-burgers-characteristics-shock-formation/) 참고).
+
+$$
+\frac{\partial u}{\partial t} + u\frac{\partial u}{\partial x} = \nu \frac{\partial^2 u}{\partial x^2}
+$$
+
+$u$는 속도, $\nu$는 동점성 계수다. 대류항과 확산항을 모두 중심차분으로, 시간은 전진 Euler로 놓는다. 국소 속도 $u$를 상수로 얼린 von Neumann 해석(Fourier 모드 하나의 증폭률을 보는 안정성 분석)에서 증폭 계수는 다음과 같다.
+
+$$
+G = 1 - 2d\,(1-\cos\theta) - i\,c\,\sin\theta, \qquad c = \frac{u\,\Delta t}{\Delta x},\quad d = \frac{\nu\,\Delta t}{\Delta x^2}
+$$
+
+$c$는 Courant 수, $d$는 확산수, $\theta$는 모드의 파수와 격자 간격의 곱이다. $d = 0$이면 $|G|^2 = 1 + c^2\sin^2\theta > 1$이 모든 모드에서 성립한다. 중심차분 대류는 점성 없이 홀로 서지 못한다. 안정하려면 대략 $c^2 \le 2d$, 즉 $\nu \ge u^2\Delta t/2$가 필요하다. 아래 실험의 $u_{\max}=1.5$, $\Delta t = 0.00838$에서는 $\nu \ge 0.0094$다. 0.07은 넉넉하다. 0은 아니다.
+
+## 코드: 묵시 규칙을 흉내 내고 같은 파를 두 번 돌린다
+
+파이썬에는 묵시적 타입이 없다. 그래서 첫 글자로 타입을 고르고 정수면 `int()`로 자르는 함수로 흉내 낸다. 그다음 의도한 ν와 잘린 ν로 같은 Burgers 문제를 돌린다. 발산 판정은 $\max|u| > 10$이다.
+
+```python
+import math
+
+def implicit_kind(name):
+    # Fortran 기본 묵시 규칙: 첫 글자 I~N이면 INTEGER, 나머지는 REAL
+    return "INTEGER" if name[0].lower() in "ijklmn" else "REAL"
+
+def assign(name, value):
+    # 묵시 INTEGER 변수에 실수를 대입하면 0 쪽으로 잘린다
+    return int(value) if implicit_kind(name) == "INTEGER" else float(value)
+
+params = {"nu": 0.07, "mu": 1.8e-5, "kappa": 0.026, "lambda": 0.41,
+          "rho": 1.2, "gamma": 1.4, "dt": 0.0126, "cfl": 0.2}
+print("name    kind     intended   stored")
+for k, v in params.items():
+    print(f"{k:<7} {implicit_kind(k):<8} {v:<10.4g} {assign(k, v)}")
+
+def burgers_central(nu, nx=100, steps=2000, cfl=0.2):
+    # 주기 경계 [0, 2π), 중심차분 대류 + 중심차분 확산, 전진 Euler
+    dx = 2*math.pi/nx
+    u = [1.0 + 0.5*math.sin(i*dx) for i in range(nx)]
+    dt = cfl*dx/1.5
+    for n in range(1, steps+1):
+        u = [u[i] - dt*u[i]*(u[(i+1) % nx]-u[i-1])/(2*dx)
+             + nu*dt*(u[(i+1) % nx]-2*u[i]+u[i-1])/dx**2 for i in range(nx)]
+        amax = max(abs(v) for v in u)
+        if not math.isfinite(amax) or amax > 10:
+            return n, n*dt, amax
+    return None, steps*dt, amax
+
+print()
+print(f"dx = {2*math.pi/100:.5f}, dt = {0.2*2*math.pi/100/1.5:.5f}")
+print("nu_intended  stored      Re_cell  blowup_step  t_end   max|u|")
+for nu in [0.15, 0.07, 0.03]:
+    for val in (nu, assign("nu", nu)):
+        rc = 1.5*2*math.pi/100/val if val else float("inf")
+        n, t, a = burgers_central(val)
+        tag = f"{n:d}" if n else "-"
+        print(f"{nu:<12} {str(val):<11} {rc:<8.3g} {tag:>11}  {t:6.3f}  {a:.4g}")
+```
+
+```text
+name    kind     intended   stored
+nu      INTEGER  0.07       0
+mu      INTEGER  1.8e-05    0
+kappa   INTEGER  0.026      0
+lambda  INTEGER  0.41       0
+rho     REAL     1.2        1.2
+gamma   REAL     1.4        1.4
+dt      REAL     0.0126     0.0126
+cfl     REAL     0.2        0.2
+
+dx = 0.06283, dt = 0.00838
+nu_intended  stored      Re_cell  blowup_step  t_end   max|u|
+0.15         0.15        0.628              -  16.755  1.033
+0.15         0           inf              465   3.896  10.03
+0.07         0.07        1.35               -  16.755  1.087
+0.07         0           inf              465   3.896  10.03
+0.03         0.03        3.14               -  16.755  1.131
+0.03         0           inf              465   3.896  10.03
+```
+
+위 코드를 브라우저에서 직접 돌려보자. 파란 곡선은 REAL ν, 빨간 곡선은 묵시 INTEGER로 잘린 ν다. 기본값에서 빨간 쪽은 465스텝에 점선(10)을 넘는다. ν 슬라이더를 0.01까지 내리면 파란 쪽도 진동하기 시작하고, 변수 이름을 `visc`로 바꾸면 두 곡선이 겹친다.
+
+<BurgersImplicitNuRace />
+
+## 465라는 숫자 읽기
+
+첫 번째 표는 규칙 그대로다. 8개 물성치 중 4개가 0으로 저장됐다. `mu = 1.8e-5`처럼 1보다 작은 값은 예외 없이 0이 된다. 공기·물의 점성 계수는 전부 이 범위에 있다.
+
+두 번째 표에서 잘린 쪽은 ν를 0.15, 0.07, 0.03 무엇으로 넣든 똑같이 465스텝, $t = 3.896$에서 터진다. 당연하다. 세 경우 모두 저장된 값이 0이기 때문이다. 입력을 바꿔도 결과가 바뀌지 않는다는 것 자체가 단서다. 파라미터 스윕에서 이런 줄이 보이면 그 변수가 실제로 코드에 들어가는지부터 의심해야 한다.
+
+발산 시각 3.896은 충격 형성 시각 2의 약 두 배다. $t < 2$에서는 해가 매끄러워 고주파 모드가 거의 없다. 충격이 서면서 격자 규모 성분이 생기고, 매 스텝 $|G| > 1$로 불어난다. 그 성장이 $\max|u|$를 10까지 끌어올리는 데 약 1.9의 시간이 더 걸렸다.
+
+REAL 쪽에서 $\nu = 0.03$은 셀 Reynolds 수(격자 한 칸 기준 Re, $u\Delta x/\nu$)가 3.14로 2를 넘는다. 그래도 터지지 않았다. $c^2 \le 2d$를 만족하기 때문이다. 최댓값 1.131은 1.087보다 크다. 충격 뒤에 약한 위글이 생겼다는 뜻이다. 터짐과 위글은 다른 조건이 정한다.
+
+## IMPLICIT NONE 다음에 오는 것: 모듈
+
+해결은 한 줄이다. 모든 프로그램 단위 맨 위에 `implicit none`을 쓴다. 그러면 선언하지 않은 이름은 컴파일 오류가 된다. 오타로 생긴 `viscc` 같은 유령 변수도 함께 잡힌다.
+
+```fortran
+module flow_props
+  implicit none
+  private
+  real(8), public, save :: nu = 0.07d0, rho = 1.2d0
+  real(8), save :: work(1000)          ! 모듈 밖에서는 보이지 않음
+end module flow_props
+
+subroutine burgers_rhs(u, r, n, dx)
+  use flow_props, only: visc => nu     ! nu만 가져오고 이름을 visc로 바꾼다
+  implicit none                        ! use 다음, 선언문 앞
+  integer, intent(in) :: n
+  real(8), intent(in) :: u(n), dx
+  real(8), intent(out) :: r(n)
+  ! ...
+end subroutine burgers_rhs
+```
+
+원본 노트가 정리한 순서가 여기 담겨 있다. `use`가 가장 먼저 오고, `implicit none`이 바로 뒤를 잇는다. 모듈은 그것을 쓰는 단위보다 먼저 컴파일돼야 한다. 그래서 컴파일러는 `use` 시점에 모듈 안의 이름과 타입을 이미 안다. `implicit none`이 있으면 모듈에 없는 이름을 쓰는 순간 오류가 난다.
+
+`only: visc => nu`는 필요한 이름만 가져오면서 이름을 바꾼다. 이름 충돌을 막고, 묵시 규칙과도 무관한 이름을 줄 수 있다. 모듈 기본값을 `private`로 두고 공개할 것만 `public`으로 여는 것이 데이터 은닉(data hiding)이다. `save`는 서브루틴 호출 사이에 값을 유지시킨다.
+
+Fortran 90은 모듈, 사용자 정의 타입, `interface`를 통한 함수 오버로딩을 들여왔다. Fortran 2003은 타입 상속(`extends`)과 타입 바운드 프로시저를 더했다. 그래서 지금의 포트란은 객체지향 언어라고 불러도 된다. 하지만 그 기능들은 모두 타입 검사가 켜져 있다는 전제 위에 서 있다. 오버로딩은 인자의 타입으로 구현을 고른다. 타입이 이름 첫 글자로 몰래 정해지면 엉뚱한 구현이 불린다.
+
+포트란 성능 함정은 메모리 쪽에도 있다. 루프 순서 문제는 [열 우선 배열과 캐시 세트 충돌](/ko/posts/2026-11-18-column-major-loop-order-cache-set-conflict/)에서, 어디를 컴파일 언어로 옮길지는 [핫스팟 비율과 Amdahl 법칙](/ko/posts/2026-11-11-python-hotspot-amdahl-poisson-share/)에서 다뤘다.
+
+## 레거시 솔버를 열면 먼저 grep할 두 단어
+
+남이 짠 포트란 코드를 받으면 `grep -Li "implicit none" *.f90`부터 돌린다. 이 명령은 그 줄이 **없는** 파일 목록을 준다. 목록이 비어 있지 않다면, 그 파일에 쓰인 `nu`·`mu`·`kappa`·`k`가 정말 REAL인지 확인하기 전까지 결과를 믿지 않는다. gfortran은 `-fimplicit-none` 옵션으로 소스를 고치지 않고도 같은 검사를 강제할 수 있다. ν를 바꿔도 결과가 그대로인 파라미터 스윕은 수치 기법보다 선언문을 먼저 의심할 신호다.
