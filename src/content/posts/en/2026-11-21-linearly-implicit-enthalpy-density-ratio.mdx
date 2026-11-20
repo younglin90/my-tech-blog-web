@@ -1,0 +1,242 @@
+---
+title: "[Paper Review] Dividing the Enthalpy by ρⁿ Blew Up in 40 Steps — the Linearly Implicit Pressure Equation of Battisti–Boscheri and ρⁿ⁺¹"
+date: 2026-11-21
+description: "A 1D reproduction of the linearly implicit pressure equation from Battisti–Boscheri (2025), showing why the enthalpy must be divided by ρⁿ⁺¹ to keep uniform-pressure advection exact."
+tags: ["All-Mach", "Semi-Implicit", "Low-Mach", "Baer-Nunziato", "Paper-Review"]
+locale: en
+slug: 2026-11-21-linearly-implicit-enthalpy-density-ratio
+takeaway: "The enthalpy flux in a semi-implicit pressure equation is constant only if you divide by the ρⁿ⁺¹ produced by the explicit convection step. Divide by ρⁿ and a pressure source appears at every Mach number; the 1D reproduction blew up in 40 steps."
+draft: false
+---
+import { EnthalpyFluxDenominatorLab } from '@/components/post-viz/2026-11-21-linearly-implicit-enthalpy-density-ratio/EnthalpyFluxDenominatorLab'
+import { LinearlyImplicitBumpLapRace } from '@/components/post-viz/2026-11-21-linearly-implicit-enthalpy-density-ratio/LinearlyImplicitBumpLapRace'
+
+## Same 112 steps, but one of them blew up at step 40
+
+I built two copies of a semi-implicit compressible solver. They differ by one line: when computing the enthalpy, do you divide by $\rho^n$ or by $\rho^{n+1}$? The test was the easiest one there is. Take a flow with uniform pressure and velocity, put a density bump in it, and advect it once around a periodic box. The exact answer is "the bump just moves."
+
+The $\rho^{n+1}$ version finished the lap in 112 steps with a velocity error around $2\times10^{-4}$. The $\rho^n$ version blew up at exactly step 40, at Mach 0.5 and at Mach 0.01 alike.
+
+This post reviews the 2025 JCP paper by Battisti and Boscheri, *A linearly implicit shock capturing scheme for compressible two-phase flows at all Mach numbers*. Their Eq. (18) defines the enthalpy as $\rho^n h^n/\rho^{n+1}$ in a single line and moves on. By the end you will be able to derive why that line is needed, and you will check the numbers with a 1D single-phase reproduction.
+
+## Why the enthalpy flux must be constant in uniform-pressure advection
+
+A semi-implicit scheme updates momentum and energy in two stages. First it applies convection (the terms that carry quantities along with the flow) explicitly. That gives the starred intermediate values $\rho^\star, q^\star$. Then it solves the pressure terms implicitly.
+
+The implicit part of the energy equation contains the enthalpy flux $h\,q$. Here $h = \gamma p/((\gamma-1)\rho)$ is the specific enthalpy (enthalpy per unit mass) and $q=\rho u$ is momentum. The divergence of this term drives the pressure change.
+
+Now take uniform $u$ and $p$. Explicit convection moves $q$ and $\rho$ at the same speed, so $q^\star = u\,\rho^\star$ holds exactly after the convection step. The enthalpy flux becomes
+
+$$
+h\,q^\star = \frac{\gamma p}{\gamma-1}\,u\,\frac{\rho^\star}{\rho_{\text{den}}}
+$$
+
+where $\rho_{\text{den}}$ is the density used to build the enthalpy. If $\rho_{\text{den}} = \rho^\star = \rho^{n+1}$, the ratio is 1. The flux is spatially constant, its divergence vanishes, and pressure stays put. If $\rho_{\text{den}}=\rho^n$, the ratio $\rho^\star/\rho^n$ wiggles around the bump, and that wiggle becomes a spurious pressure source at every step.
+
+Try it yourself in the simulation below. It advects the bump and plots the flux and pressure source produced by each denominator side by side.
+
+<EnthalpyFluxDenominatorLab />
+
+Raise the material Courant number ($u\Delta t/\Delta x$) and the bump amplitude. The wiggle in the red flux grows roughly with their product. The green curve stays nearly flat for every setting.
+
+## The model in the paper: the seven-equation Baer–Nunziato system
+
+The paper targets the Baer–Nunziato model. Each phase has its own mass, momentum, and energy equation, and an advection equation for the solid volume fraction $\phi_s$ brings the total to seven. The interface pressure $p_I$ and velocity $\mathbf{u}_I$ couple the phases through non-conservative terms.
+
+Each phase uses the stiffened gas equation of state. Its internal energy is linear in pressure, which matters later.
+
+$$
+\rho_\alpha e_\alpha = \frac{p_\alpha + \gamma_\alpha \pi_\alpha}{\gamma_\alpha - 1}
+$$
+
+$\gamma_\alpha$ is the ratio of specific heats and $\pi_\alpha$ is the stiffening pressure that mimics a liquid. Air uses $\pi=0$; water uses hundreds of MPa.
+
+## What goes implicit, what stays explicit
+
+The first-order semi-discrete scheme (Eq. 12) splits the terms as follows. With the phase index $\alpha$, the momentum and energy equations read
+
+$$
+(\rho_\alpha\phi_\alpha\mathbf{u}_\alpha)^{n+1} = \mathbf{q}^\star_\alpha - \Delta t\,\nabla(\phi_\alpha p_\alpha)^{n+1} + \Delta t\,p_I^n\nabla\phi_\alpha^{n+1}
+$$
+
+$$
+(\rho_\alpha\phi_\alpha E_\alpha)^{n+1} = E^\star_\alpha - \Delta t\,\nabla\cdot\big(h^n_\alpha(\rho_\alpha\phi_\alpha\mathbf{u}_\alpha)^{n+1}\big) + \Delta t\,p_I^n\mathbf{u}_I^n\nabla\phi_\alpha^{n+1}
+$$
+
+$\mathbf{q}^\star_\alpha, E^\star_\alpha$ are the results of applying the nonlinear convective fluxes explicitly. The pressure gradient and the enthalpy flux are on the implicit side. Those are exactly the stiff terms that carry sound waves.
+
+The key move is splitting the energy flux into a kinetic part $\rho k\mathbf{u}$ and an enthalpy part $h\rho\mathbf{u}$. The kinetic part is treated as convection, explicitly. The enthalpy part goes implicit together with pressure.
+
+## Two devices that keep the pressure equation linear
+
+Substituting momentum into energy yields a wave equation for $(\phi_\alpha p_\alpha)^{n+1}$ (Eq. 17). Left alone, the new kinetic energy $\tfrac12\rho u^2$ would enter as the square of an unknown. The paper blocks this in two ways.
+
+First, it linearizes the kinetic energy semi-implicitly (Eq. 15):
+
+$$
+(\rho_\alpha\phi_\alpha k_\alpha)^{n+1} := \frac12\,\frac{(\rho_\alpha\phi_\alpha\mathbf{u}_\alpha)^n}{(\rho_\alpha\phi_\alpha)^n}\,(\rho_\alpha\phi_\alpha\mathbf{u}_\alpha)^{n+1}
+$$
+
+One old velocity $\mathbf{u}^n$ times one new momentum. The square is gone.
+
+Second, the stiffened gas EOS makes internal energy a linear function of pressure. Together, the two devices make the pressure system exactly linear. One GMRES solve, no Newton iterations. That is why the paper calls it "linearly implicit."
+
+The paper also states the cost (Remark 1). The linearized kinetic energy breaks thermodynamic consistency by $O(\Delta t^q)$, where $q$ is the time order of the scheme.
+
+Then comes Eq. (18). Inside the wave equation, the enthalpy is set to
+
+$$
+h^n_\alpha := \frac{\rho^n_\alpha h^n_\alpha}{\rho^{n+1}_\alpha}
+$$
+
+The numerator is the old enthalpy density. The denominator is the new density, already known from explicit convection. It is precisely the choice that makes the ratio $\rho^\star/\rho_{\text{den}}$ from the previous section equal to 1. With it the paper proves discrete preservation of constant velocity and pressure (part of its well-balanced property).
+
+## The time step only sees the material speed
+
+Because the pressure and enthalpy terms are implicit, the sound speed drops out of the time step restriction. The paper's condition (Eq. 11) is
+
+$$
+\Delta t \le \mathrm{CFL}\,\min_\Omega \frac{\varrho}{\max(|\mathbf{u}_f\cdot\mathbf{n}|, |\mathbf{u}_s\cdot\mathbf{n}|)}
+$$
+
+where $\varrho$ is a characteristic cell length and $\mathbf{u}_f, \mathbf{u}_s$ are the phase velocities. At Mach 0.01 the acoustic Courant number climbs to about 90. That time-step gain itself was covered in the [review of the reference-state IMEX two-fluid solver](/en/posts/2026-11-01-rs-imex-two-fluid-material-cfl/).
+
+What sets this paper apart is the central-difference discretization of the implicit terms. No upwind dissipation enters the acoustic terms. The way sound-speed-scaled numerical viscosity erases low-Mach solutions is exactly what we saw in the [review of the asymptotic-preserving IMEX wave scheme](/en/posts/2026-06-21-asymptotic-preserving-low-mach-wave/). Only the convective terms use TVD finite volumes to capture shocks.
+
+## Code: a 1D single-phase linearly implicit scheme with two denominators
+
+The reproduction is single-phase, ideal gas ($\pi=0$), first order. Setting the volume fraction $\phi=1$ removes every $p_I$ term. What remains is the explicit convection of Eq. (13), the linear pressure equation of Eq. (17), and the conservative update of Eq. (14).
+
+- 100 cells, periodic boundaries, $\gamma=1.4$
+- Initial state: $\rho = 1 + 0.2\,e^{-((x-0.5)/0.05)^2}$, $p = 1/\gamma$ (sound speed ≈ 1), $u_0 = $ Mach number
+- Three schemes: explicit Rusanov (dissipation includes sound speed), semi-implicit + Eq. (18), semi-implicit with denominator $\rho^n$
+- Measured over one lap ($T=1/u_0$): step count, max $|u-u_0|/u_0$, retained bump height
+
+```python
+import numpy as np
+
+g, N = 1.4, 100
+dx = 1.0 / N
+x = (np.arange(N) + 0.5) * dx
+R = lambda a: np.roll(a, -1)   # i+1 (periodic)
+L = lambda a: np.roll(a, 1)    # i-1
+
+def initial(mach):
+    rho = 1.0 + 0.2 * np.exp(-((x - 0.5) / 0.05) ** 2)   # density bump
+    u = np.full(N, mach)
+    p = np.full(N, 1.0 / g)                               # c ≈ 1 → u0 = Mach number
+    return rho, rho * u, p / (g - 1) + 0.5 * rho * u**2
+
+def rusanov(Ul, Ur, Fl, Fr, a):
+    return 0.5 * (Fl + Fr) - 0.5 * a * (Ur - Ul)
+
+def explicit_step(rho, q, E, dt):
+    u = q / rho
+    p = (g - 1) * (E - 0.5 * rho * u**2)
+    s = np.abs(u) + np.sqrt(g * p / rho)
+    a = np.maximum(s, R(s))                               # dissipation with sound speed
+    out = []
+    for U, F in zip([rho, q, E], [q, q * u + p, (E + p) * u]):
+        f = rusanov(U, R(U), F, R(F), a)
+        out.append(U - dt / dx * (f - L(f)))
+    return out
+
+def semi_implicit_step(rho, q, E, dt, h_den="new"):
+    u = q / rho
+    p = (g - 1) * (E - 0.5 * rho * u**2)
+    k = 0.5 * rho * u**2
+    a = np.maximum(np.abs(u), R(np.abs(u)))               # material speed only
+    star = []                                             # Eq. (13): explicit convection
+    for U, F in zip([rho, q, k], [q, q * u, k * u]):
+        f = rusanov(U, R(U), F, R(F), a)
+        star.append(U - dt / dx * (f - L(f)))
+    rs, qs, ks = star
+    Es = E - (k - ks)
+    den = rs if h_den == "new" else rho                   # Eq. (18): rho^{n+1} vs rho^n
+    h = g * p / ((g - 1) * den)
+    hf, qf = 0.5 * (h + R(h)), 0.5 * (qs + R(qs))
+    # Eq. (17): wave equation linear in pressure, central differences
+    i = np.arange(N); ip, im = (i + 1) % N, (i - 1) % N
+    c2 = dt**2 / dx**2
+    A = np.zeros((N, N))
+    A[i, i] = 1 / (g - 1) + c2 * (hf + L(hf))
+    A[i, ip] = -u * dt / (4 * dx) - c2 * hf
+    A[i, im] = +u * dt / (4 * dx) - c2 * L(hf)
+    b = Es - 0.5 * u * qs - dt / dx * (hf * qf - L(hf * qf))
+    pn = np.linalg.solve(A, b)
+    qn = qs - dt * (R(pn) - L(pn)) / (2 * dx)             # Eq. (14b)
+    qfn = qf - dt * (R(pn) - pn) / dx
+    En = Es - dt / dx * (hf * qfn - L(hf * qfn))          # Eq. (14c)
+    return rs, qn, En
+
+def lap(mach, scheme, cfl=0.9, h_den="new"):
+    rho, q, E = initial(mach)
+    T = 1.0 / mach                                        # one lap of the domain
+    speed = mach + 1.0 if scheme == "explicit" else mach
+    n = int(np.ceil(T / (cfl * dx / speed)))
+    dt, du = T / n, 0.0
+    for k in range(n):
+        if scheme == "explicit":
+            rho, q, E = explicit_step(rho, q, E, dt)
+        else:
+            rho, q, E = semi_implicit_step(rho, q, E, dt, h_den)
+        du = max(du, np.abs(q / rho - mach).max() / mach)
+        if not np.isfinite(du) or du > 1:
+            return n, f"blow@{k + 1}", np.nan
+    return n, f"{du:.1e}", (rho.max() - 1) / 0.2
+
+print("Mach | explicit: steps  peak | eq18 rho^n+1: steps  du/u0   peak "
+      "| rho^n: CFL0.9    CFL0.3 du/u0")
+for M in [0.5, 0.1, 0.03, 0.01]:
+    ne, _, pe = lap(M, "explicit")
+    ni, di, pi = lap(M, "semi")
+    _, d9, _ = lap(M, "semi", 0.9, "old")
+    _, d3, _ = lap(M, "semi", 0.3, "old")
+    print(f"{M:4.2f} | {ne:15d} {pe:5.3f} | {ni:19d} {di:>7s} {pi:5.3f} "
+          f"| {d9:>12s} {d3:>12s}")
+```
+
+The output:
+
+```text
+Mach | explicit: steps  peak | eq18 rho^n+1: steps  du/u0   peak | rho^n: CFL0.9    CFL0.3 du/u0
+0.50 |             334 0.211 |                 112 2.2e-04 0.738 |      blow@40      1.2e-02
+0.10 |            1223 0.109 |                 112 2.3e-04 0.738 |      blow@40      1.0e-02
+0.03 |            3815 0.089 |                 112 2.2e-04 0.738 |      blow@40      9.6e-03
+0.01 |           11223 0.089 |                 112 2.1e-04 0.738 |      blow@40      9.2e-03
+```
+
+Run the code above right in your browser. All three schemes advance through the same physical time together.
+
+<LinearlyImplicitBumpLapRace />
+
+Lower the Mach slider and the gray explicit scheme needs more steps while its bump flattens. Drop the material CFL to 0.3 and the red curve no longer blows up, but its velocity error sits near $10^{-2}$, about 50 times above the green one.
+
+## Reading the table: 112, 0.738, 40, and 1%
+
+**112.** The semi-implicit step count does not depend on Mach number. The time step is $0.9\,\Delta x/u_0$ and one lap takes $1/u_0$. The explicit scheme needs 11,223 steps at Mach 0.01, roughly 100 times more.
+
+**0.738.** The bump height with Eq. (18) is also Mach-independent, because its convective dissipation scales only with $|u|$. Explicit Rusanov puts the sound speed into its dissipation coefficient. From Mach 0.03 on, its bump height saturates at 0.089. That is the height you get by spreading the bump's mass evenly over the whole domain. In other words, the bump is gone.
+
+**40.** The $\rho^n$ scheme blows up at step 40 for all four Mach numbers. The spurious pressure source scales with $\rho^\star/\rho^n - 1$, which is set by the material Courant number and the bump slope. Mach number never enters that ratio, so the failure step does not move either.
+
+**1%.** At CFL 0.3 the $\rho^n$ scheme survives the lap, but its velocity error is about 1%, roughly 50 times the $2\times10^{-4}$ of Eq. (18). In a single advection test that is easy to dismiss as "small noise." In a real run where an interface passes through hundreds of times, it accumulates.
+
+## What this reproduction leaves out
+
+The heart of the paper is the two-phase model. The reproduction drops all of the following:
+
+- The interface pressure $p_I$ and volume-fraction gradient terms. The paper discretizes these non-conservative terms so that moving equilibria are preserved (Section 3.7).
+- The pressure and velocity relaxation source terms. The paper relaxes them in a separate stage after the homogeneous solve (Section 3.5).
+- Second-order IMEX time stepping, TVD reconstruction, and second-order numerical dissipation (Sections 3.2 and 3.4).
+- The proof of asymptotic preservation toward the mixture model in the low-Mach limit (Section 3.6).
+
+So "40 steps" is a number for this 1D setup, not a general constant. But the structure that produces the ratio $\rho^\star/\rho_{\text{den}}$ is the same in one phase or two. In the two-phase case, $\rho_\alpha\phi_\alpha$ simply takes the same slot.
+
+## The first test to put in a pressure-based semi-implicit code
+
+If you have just written a semi-implicit solver, run the uniform-velocity, uniform-pressure density bump before any shock tube. The exact answer is trivial, and failures show up as big numbers. Check three things:
+
+1. Which density did you divide the enthalpy (or any coefficient containing $p/\rho$) by? If the coefficient enters the implicit stage, divide by the density after explicit convection.
+2. Does $|u-u_0|/u_0$ stay near round-off even when the material CFL approaches 1?
+3. Does the bump height stay unchanged as you lower the Mach number by factors of ten? If it changes, some sound-speed-scaled dissipation is still hiding in the acoustic terms.

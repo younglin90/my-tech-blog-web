@@ -1,0 +1,242 @@
+---
+title: "[論文レビュー] エンタルピーの分母を ρⁿ にしたら40ステップで発散した — Battisti–Boscheri の線形陰的圧力方程式と ρⁿ⁺¹"
+date: 2026-11-21
+description: "Battisti–Boscheri（2025）の線形陰的圧力方程式を1Dで再現し、等圧移流を保つにはエンタルピーを ρⁿ⁺¹ で割る必要がある理由を確かめます。"
+tags: ["All-Mach", "Semi-Implicit", "Low-Mach", "Baer-Nunziato", "Paper-Review"]
+locale: ja
+slug: 2026-11-21-linearly-implicit-enthalpy-density-ratio
+takeaway: "半陰的圧力方程式のエンタルピー流束は、陽的対流が作った ρⁿ⁺¹ で割ったときだけ一定になります。ρⁿ で割るとマッハ数に関係なく圧力源が生まれ、1D再現では40ステップで発散しました。"
+draft: false
+---
+import { EnthalpyFluxDenominatorLab } from '@/components/post-viz/2026-11-21-linearly-implicit-enthalpy-density-ratio/EnthalpyFluxDenominatorLab'
+import { LinearlyImplicitBumpLapRace } from '@/components/post-viz/2026-11-21-linearly-implicit-enthalpy-density-ratio/LinearlyImplicitBumpLapRace'
+
+## 同じ112ステップなのに、片方だけ40ステップで発散した
+
+半陰的（semi-implicit）圧縮性ソルバーを2つ作りました。違いは1行だけです。エンタルピーを計算するとき、密度を $\rho^n$ で割るか $\rho^{n+1}$ で割るか。試験は最も簡単なものです。圧力と速度が一様な流れに密度の山を1つ置き、周期領域を1周させます。正解は「山がそのまま移動する」です。
+
+$\rho^{n+1}$ 版は112ステップで1周し、速度誤差は $2\times10^{-4}$ 程度でした。$\rho^n$ 版はマッハ0.5でも0.01でも、ちょうど40ステップ目で発散しました。
+
+この記事では Battisti と Boscheri の2025年 JCP 論文 *A linearly implicit shock capturing scheme for compressible two-phase flows at all Mach numbers* をレビューします。論文の式 (18) はエンタルピーを $\rho^n h^n/\rho^{n+1}$ と定義し、1行で先へ進みます。読み終えるころには、その1行がなぜ必要かを自分で導けるようになります。1D単相に縮めた再現コードで数字も確かめます。
+
+## 等圧移流でエンタルピー流束が一定でなければならない理由
+
+半陰的スキームは運動量とエネルギーを2段階で更新します。まず対流（流体が物理量を運ぶ項）を陽的に計算します。その結果が星印つきの中間値 $\rho^\star, q^\star$ です。次に圧力を含む項を陰的に解きます。
+
+エネルギー式の陰的部分にはエンタルピー流束 $h\,q$ があります。$h = \gamma p/((\gamma-1)\rho)$ は比エンタルピー（単位質量あたりのエンタルピー）、$q=\rho u$ は運動量です。この項の発散が圧力変化を生みます。
+
+ここで $u$ と $p$ が一様な場合を考えます。陽的対流は $q$ と $\rho$ を同じ速度で運ぶので、対流直後も $q^\star = u\,\rho^\star$ が厳密に成り立ちます。エンタルピー流束は次のようになります。
+
+$$
+h\,q^\star = \frac{\gamma p}{\gamma-1}\,u\,\frac{\rho^\star}{\rho_{\text{den}}}
+$$
+
+$\rho_{\text{den}}$ はエンタルピーを作るときに割った密度です。$\rho_{\text{den}} = \rho^\star = \rho^{n+1}$ なら比は1です。流束が空間的に一定なので発散はゼロで、圧力は変わりません。$\rho_{\text{den}}=\rho^n$ なら比 $\rho^\star/\rho^n$ が山の近くで揺れます。この揺れが毎ステップ偽の圧力源になります。
+
+下のシミュレーションで実際に操作してみましょう。山を流しながら、2つの分母が作る流束と圧力源を並べて描きます。
+
+<EnthalpyFluxDenominatorLab />
+
+物質クーラン数（material Courant number、$u\Delta t/\Delta x$）と山の振幅を上げてみてください。赤い流束の揺れはおおよそ両者の積に比例して大きくなります。緑の線はどの設定でもほぼ平らなままです。
+
+## 論文が扱うモデル：Baer–Nunziato 7方程式
+
+論文の対象は Baer–Nunziato モデルです。2つの相（phase）がそれぞれ質量・運動量・エネルギー式を持ちます。固相体積分率 $\phi_s$ の移流式が加わり、全部で7本になります。界面圧力 $p_I$ と界面速度 $\mathbf{u}_I$ が非保存項として2相をつなぎます。
+
+各相の状態方程式は stiffened gas モデルです。内部エネルギーが圧力について線形であることが後で効いてきます。
+
+$$
+\rho_\alpha e_\alpha = \frac{p_\alpha + \gamma_\alpha \pi_\alpha}{\gamma_\alpha - 1}
+$$
+
+$\gamma_\alpha$ は比熱比、$\pi_\alpha$ は液体を模す硬化圧力です。空気は $\pi=0$、水は数億 Pa 程度を使います。
+
+## 何を陰的に、何を陽的に
+
+論文の1次半離散スキーム（式 12）は項を次のように分けます。相の添字 $\alpha$ をつけて運動量とエネルギーだけ書きます。
+
+$$
+(\rho_\alpha\phi_\alpha\mathbf{u}_\alpha)^{n+1} = \mathbf{q}^\star_\alpha - \Delta t\,\nabla(\phi_\alpha p_\alpha)^{n+1} + \Delta t\,p_I^n\nabla\phi_\alpha^{n+1}
+$$
+
+$$
+(\rho_\alpha\phi_\alpha E_\alpha)^{n+1} = E^\star_\alpha - \Delta t\,\nabla\cdot\big(h^n_\alpha(\rho_\alpha\phi_\alpha\mathbf{u}_\alpha)^{n+1}\big) + \Delta t\,p_I^n\mathbf{u}_I^n\nabla\phi_\alpha^{n+1}
+$$
+
+$\mathbf{q}^\star_\alpha, E^\star_\alpha$ は非線形対流流束を陽的に適用した値です。圧力勾配とエンタルピー流束が陰的な側にあります。音波を運ぶ硬い（stiff）項がまさにこの2つです。
+
+要点はエネルギー流束を運動エネルギー部分 $\rho k\mathbf{u}$ とエンタルピー部分 $h\rho\mathbf{u}$ に分けたことです。運動エネルギー部分は対流とみなして陽的に計算します。エンタルピー部分は圧力と一緒に陰的に回します。
+
+## 圧力方程式を線形に保つ2つの工夫
+
+運動量式をエネルギー式に代入すると、$(\phi_\alpha p_\alpha)^{n+1}$ についての波動方程式（式 17）が得られます。そのままでは新しい時刻の運動エネルギー $\tfrac12\rho u^2$ が未知数の2乗で入ります。論文はこれを2つの方法で防ぎます。
+
+1つ目は、運動エネルギーの半陰的線形化です（式 15）。
+
+$$
+(\rho_\alpha\phi_\alpha k_\alpha)^{n+1} := \frac12\,\frac{(\rho_\alpha\phi_\alpha\mathbf{u}_\alpha)^n}{(\rho_\alpha\phi_\alpha)^n}\,(\rho_\alpha\phi_\alpha\mathbf{u}_\alpha)^{n+1}
+$$
+
+古い速度 $\mathbf{u}^n$ 1つに新しい運動量1つを掛けます。2乗が消えます。
+
+2つ目は stiffened gas 状態方程式です。内部エネルギーが圧力の1次式なので、2つの工夫が重なって圧力系が厳密に線形になります。ニュートン反復なしに GMRES 1回で解けます。論文が「線形陰的（linearly implicit）」と呼ぶ理由です。
+
+代償も論文に書かれています（Remark 1）。線形化した運動エネルギーのせいで、熱力学的整合性が $O(\Delta t^q)$ だけずれます。$q$ はスキームの時間精度です。
+
+最後に式 (18) が来ます。波動方程式の中のエンタルピーを次のように置きます。
+
+$$
+h^n_\alpha := \frac{\rho^n_\alpha h^n_\alpha}{\rho^{n+1}_\alpha}
+$$
+
+分子は古い時刻のエンタルピー密度です。分母は陽的対流ですでに分かっている新しい密度です。前節の比 $\rho^\star/\rho_{\text{den}}$ を1にする選択そのものです。論文はこれで等速・等圧流れの離散的保存（well-balanced 性の一部）を証明しています。
+
+## 時間刻みは物質速度だけを見る
+
+圧力とエンタルピーの項が陰的なので、音速が時間刻みの条件から消えます。論文の条件（式 11）は次の通りです。
+
+$$
+\Delta t \le \mathrm{CFL}\,\min_\Omega \frac{\varrho}{\max(|\mathbf{u}_f\cdot\mathbf{n}|, |\mathbf{u}_s\cdot\mathbf{n}|)}
+$$
+
+$\varrho$ はセルの特性長さ、$\mathbf{u}_f, \mathbf{u}_s$ は2相の速度です。マッハ0.01なら音響クーラン数はおよそ90まで上がります。この時間刻みの利得そのものは[基準状態 IMEX 二流体ソルバーのレビュー](/ja/posts/2026-11-01-rs-imex-two-fluid-material-cfl/)で詳しく扱いました。
+
+この論文の特徴は、陰的項を中心差分で離散化する点です。音響項に風上（upwind）散逸を入れません。低マッハで音速に比例する数値粘性が解を消してしまう問題は、[漸近保存 IMEX 波動スキームのレビュー](/ja/posts/2026-06-21-asymptotic-preserving-low-mach-wave/)で見た通りです。衝撃波は対流項だけを TVD 有限体積で扱って捉えます。
+
+## コード：単相1Dに縮めた線形陰的スキーム、分母2通り
+
+再現は単相・理想気体（$\pi=0$）・1次精度に縮めました。体積分率 $\phi=1$ とすると $p_I$ の項はすべて消えます。残るのは式 (13) の陽的対流、式 (17) の線形圧力方程式、式 (14) の保存形更新です。
+
+- 格子100セル、周期境界、$\gamma=1.4$
+- 初期状態：$\rho = 1 + 0.2\,e^{-((x-0.5)/0.05)^2}$、$p = 1/\gamma$（音速 ≈ 1）、$u_0 = $ マッハ数
+- 比較する3つ：陽的 Rusanov（音速を含む散逸）、半陰的 + 式 (18)、半陰的 + 分母 $\rho^n$
+- 1周（$T=1/u_0$）での測定：ステップ数、最大 $|u-u_0|/u_0$、山の高さの保存率
+
+```python
+import numpy as np
+
+g, N = 1.4, 100
+dx = 1.0 / N
+x = (np.arange(N) + 0.5) * dx
+R = lambda a: np.roll(a, -1)   # i+1 (周期境界)
+L = lambda a: np.roll(a, 1)    # i-1
+
+def initial(mach):
+    rho = 1.0 + 0.2 * np.exp(-((x - 0.5) / 0.05) ** 2)   # 密度の山
+    u = np.full(N, mach)
+    p = np.full(N, 1.0 / g)                               # c ≈ 1 → u0 = マッハ数
+    return rho, rho * u, p / (g - 1) + 0.5 * rho * u**2
+
+def rusanov(Ul, Ur, Fl, Fr, a):
+    return 0.5 * (Fl + Fr) - 0.5 * a * (Ur - Ul)
+
+def explicit_step(rho, q, E, dt):
+    u = q / rho
+    p = (g - 1) * (E - 0.5 * rho * u**2)
+    s = np.abs(u) + np.sqrt(g * p / rho)
+    a = np.maximum(s, R(s))                               # 音速を含む散逸
+    out = []
+    for U, F in zip([rho, q, E], [q, q * u + p, (E + p) * u]):
+        f = rusanov(U, R(U), F, R(F), a)
+        out.append(U - dt / dx * (f - L(f)))
+    return out
+
+def semi_implicit_step(rho, q, E, dt, h_den="new"):
+    u = q / rho
+    p = (g - 1) * (E - 0.5 * rho * u**2)
+    k = 0.5 * rho * u**2
+    a = np.maximum(np.abs(u), R(np.abs(u)))               # 物質速度のみ
+    star = []                                             # 式 (13): 陽的対流
+    for U, F in zip([rho, q, k], [q, q * u, k * u]):
+        f = rusanov(U, R(U), F, R(F), a)
+        star.append(U - dt / dx * (f - L(f)))
+    rs, qs, ks = star
+    Es = E - (k - ks)
+    den = rs if h_den == "new" else rho                   # 式 (18): rho^{n+1} vs rho^n
+    h = g * p / ((g - 1) * den)
+    hf, qf = 0.5 * (h + R(h)), 0.5 * (qs + R(qs))
+    # 式 (17): 圧力に線形な波動方程式、中心差分
+    i = np.arange(N); ip, im = (i + 1) % N, (i - 1) % N
+    c2 = dt**2 / dx**2
+    A = np.zeros((N, N))
+    A[i, i] = 1 / (g - 1) + c2 * (hf + L(hf))
+    A[i, ip] = -u * dt / (4 * dx) - c2 * hf
+    A[i, im] = +u * dt / (4 * dx) - c2 * L(hf)
+    b = Es - 0.5 * u * qs - dt / dx * (hf * qf - L(hf * qf))
+    pn = np.linalg.solve(A, b)
+    qn = qs - dt * (R(pn) - L(pn)) / (2 * dx)             # 式 (14b)
+    qfn = qf - dt * (R(pn) - pn) / dx
+    En = Es - dt / dx * (hf * qfn - L(hf * qfn))          # 式 (14c)
+    return rs, qn, En
+
+def lap(mach, scheme, cfl=0.9, h_den="new"):
+    rho, q, E = initial(mach)
+    T = 1.0 / mach                                        # 領域を1周
+    speed = mach + 1.0 if scheme == "explicit" else mach
+    n = int(np.ceil(T / (cfl * dx / speed)))
+    dt, du = T / n, 0.0
+    for k in range(n):
+        if scheme == "explicit":
+            rho, q, E = explicit_step(rho, q, E, dt)
+        else:
+            rho, q, E = semi_implicit_step(rho, q, E, dt, h_den)
+        du = max(du, np.abs(q / rho - mach).max() / mach)
+        if not np.isfinite(du) or du > 1:
+            return n, f"blow@{k + 1}", np.nan
+    return n, f"{du:.1e}", (rho.max() - 1) / 0.2
+
+print("Mach | explicit: steps  peak | eq18 rho^n+1: steps  du/u0   peak "
+      "| rho^n: CFL0.9    CFL0.3 du/u0")
+for M in [0.5, 0.1, 0.03, 0.01]:
+    ne, _, pe = lap(M, "explicit")
+    ni, di, pi = lap(M, "semi")
+    _, d9, _ = lap(M, "semi", 0.9, "old")
+    _, d3, _ = lap(M, "semi", 0.3, "old")
+    print(f"{M:4.2f} | {ne:15d} {pe:5.3f} | {ni:19d} {di:>7s} {pi:5.3f} "
+          f"| {d9:>12s} {d3:>12s}")
+```
+
+出力は次の通りです。
+
+```text
+Mach | explicit: steps  peak | eq18 rho^n+1: steps  du/u0   peak | rho^n: CFL0.9    CFL0.3 du/u0
+0.50 |             334 0.211 |                 112 2.2e-04 0.738 |      blow@40      1.2e-02
+0.10 |            1223 0.109 |                 112 2.3e-04 0.738 |      blow@40      1.0e-02
+0.03 |            3815 0.089 |                 112 2.2e-04 0.738 |      blow@40      9.6e-03
+0.01 |           11223 0.089 |                 112 2.1e-04 0.738 |      blow@40      9.2e-03
+```
+
+上のコードをブラウザで直接動かしてみましょう。3つのスキームが同じ物理時間を一緒に進みます。
+
+<LinearlyImplicitBumpLapRace />
+
+マッハのスライダーを下げると、灰色の陽的スキームのステップ数が増え、山が平たくなります。物質 CFL を0.3に下げると赤い線は発散しません。ただし速度誤差は緑より約50倍大きい $10^{-2}$ 付近にとどまります。
+
+## 表の読み方：112、0.738、40、そして1%
+
+**112.** 半陰的スキームのステップ数はマッハ数に依存しません。時間刻みが $0.9\,\Delta x/u_0$ で、1周が $1/u_0$ だからです。陽的スキームはマッハ0.01で11,223ステップかかります。約100倍です。
+
+**0.738.** 式 (18) を使った半陰的スキームの山の高さもマッハ数に依存しません。対流散逸が $|u|$ にだけ比例するからです。陽的 Rusanov は散逸係数に音速が入ります。マッハ0.03以下では山の高さが0.089で飽和します。これは山の質量を領域全体に均等にならした高さです。つまり山は完全に消えています。
+
+**40.** 分母を $\rho^n$ にしたスキームは、4つのマッハ数すべてで40ステップ目に発散します。偽の圧力源の大きさは $\rho^\star/\rho^n - 1$、つまり物質クーラン数と山の勾配で決まります。マッハ数はこの比に入りません。だから発散するステップも同じです。
+
+**1%.** CFL を0.3に下げると $\rho^n$ スキームも1周を耐えます。しかし速度誤差は約1%で、式 (18) の $2\times10^{-4}$ の50倍ほどです。等圧移流の試験だけなら「小さなノイズ」と見逃しやすい大きさです。界面が何百回も通過する実際の計算では蓄積します。
+
+## この再現が省いたもの
+
+論文の本体は2相モデルです。再現では次をすべて省きました。
+
+- 界面圧力 $p_I$ と体積分率勾配の項。論文はこの項まで含めて、動く平衡を保存するよう非保存項を離散化しています（3.7節）。
+- 圧力・速度の緩和（relaxation）ソース項。論文は均質系を解いた後、別段階で緩和します（3.5節）。
+- 2次 IMEX 時間積分と TVD 再構成、2次の数値散逸（3.2節、3.4節）。
+- 低マッハ極限で混合物モデルへ向かう漸近保存の証明（3.6節）。
+
+したがって「40ステップ」はこの1D設定での数字で、一般的な定数ではありません。ただし比 $\rho^\star/\rho_{\text{den}}$ を生む構造は単相でも2相でも同じです。2相では $\rho_\alpha\phi_\alpha$ が同じ位置に入るだけです。
+
+## 圧力ベースの半陰的コードに最初に入れるテスト
+
+新しい半陰的ソルバーを書いたら、衝撃波管より先に等速・等圧の密度の山を回してみましょう。正解は自明で、失敗すると数字が大きく跳ねます。確認するのは3点です。
+
+1. エンタルピー（あるいは $p/\rho$ を含むすべての係数）をどの密度で割ったか。陰的段階に入る係数なら、陽的対流が終わった後の密度で割ります。
+2. 物質 CFL を1近くまで上げても、$|u-u_0|/u_0$ が丸め誤差付近にとどまるか。
+3. マッハ数を1桁ずつ下げても、山の高さが変わらないか。変わるなら、音響項のどこかに音速比例の散逸が残っています。
