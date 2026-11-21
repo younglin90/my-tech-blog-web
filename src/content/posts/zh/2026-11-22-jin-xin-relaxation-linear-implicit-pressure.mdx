@@ -1,0 +1,250 @@
+---
+title: "[论文解读] 把 Newton 从隐式压力方程里拿掉 — Thomann–Iollo–Puppo 松弛格式与 a 的上下限"
+date: 2026-11-22
+description: "用 Jin–Xin 松弛把隐式压力方程换成常系数线性方程，Newton 迭代随之消失，但松弛速度 a 同时有了下限和上限。"
+tags: ["Relaxation-Scheme", "All-Mach", "Low-Mach", "Implicit", "Paper-Review"]
+locale: zh
+slug: 2026-11-22-jin-xin-relaxation-linear-implicit-pressure
+takeaway: "松弛型隐式压力步在 a = c 时与一次线性化 Newton 完全相同。a 低于 c/√2 时 2Δx 模态被放大；a 取 10c 时每步只衰减 1%，脉冲几乎原样保留。"
+draft: false
+---
+import { RelaxedImplicitAmplificationLab } from '@/components/post-viz/2026-11-22-jin-xin-relaxation-linear-implicit-pressure/RelaxedImplicitAmplificationLab'
+import { JinXinNewtonPulseRace } from '@/components/post-viz/2026-11-22-jin-xin-relaxation-linear-implicit-pressure/JinXinNewtonPulseRace'
+
+## 本以为 a 越大越安全
+
+松弛格式(relaxation scheme，把非线性项换成辅助变量、从而按线性系统求解的方法)有一条老经验。松弛速度 $a$ 只要大于物理声速就行。取大了只是多一点数值耗散，计算本身是安全的。我把这条经验直接搬进了隐式压力求解器，把 $a$ 设成声速的 10 倍。结果并不是耗散。密度脉冲没有衰减，停在 0.106 的幅值上。同一时刻 Newton 解的幅值是 $1.5\times10^{-5}$。
+
+本文把 Thomann–Iollo–Puppo(2023)的 "Implicit relaxed all Mach number schemes" 简化到一维并复现。读完你会得到三点。松弛为什么能去掉 Newton 迭代。在隐式格式里，$a$ 为什么不仅有下限、实际上还有上限。以及如何用一行公式算出这两个界限。
+
+## 论文改动的那一行
+
+低马赫数可压缩流中，声波比流速快几十倍。显式格式必须按声速选时间步长。因此只对压力项做隐式处理的 IMEX(显式-隐式混合时间积分)分裂成了标准做法。[Peluchon(2017)的声学-输运分裂](/zh/posts/2026-05-30-peluchon-acoustic-transport-imex/)和[昨天介绍的 Battisti–Boscheri 线性隐式压力方程](/zh/posts/2026-11-21-linearly-implicit-enthalpy-density-ratio/)都属于这一类。
+
+麻烦出在状态方程上。如果压力 $p(\rho)$ 是密度的非线性函数，隐式压力方程也就是非线性的，每一步都需要 Newton 迭代。Thomann、Iollo 和 Puppo 没有动通量，而是**多引入了一个变量**。在压力的位置放一个辅助变量 $w$，并让 $w$ 满足线性波动方程。
+
+$$
+\partial_t \rho + \partial_x m = 0,\qquad
+\partial_t m + \partial_x w = 0,\qquad
+\partial_t w + a^2\,\partial_x m = \frac{p(\rho) - w}{\varepsilon}
+$$
+
+$m=\rho u$ 是动量，$w$ 是松弛压力，$a$ 是常数松弛速度，$\varepsilon$ 是松弛时间。当 $\varepsilon\to0$ 时 $w=p(\rho)$，原系统恢复。这个结构本身和[Jin–Xin·Suliciu 松弛格式](/zh/posts/2026-07-04-jin-xin-suliciu-relaxation-scheme/)里讲的一样。新东西在于把它放进了**隐式压力步**。左边三个方程是常系数线性系统，所以隐式求解也只需要一个线性系统。
+
+## 为什么需要 Newton，又为什么不再需要
+
+先按物质速度显式输运动量，得到 $m^*$。然后用后向 Euler 处理压力部分。如果直接用原始压力，得到：
+
+$$
+\rho^{n+1} - \Delta t^2\,\delta_{xx}\,p(\rho^{n+1}) = \rho^n - \Delta t\,\delta_x m^*
+$$
+
+$\delta_x$、$\delta_{xx}$ 是基于面的一阶、二阶差分。未知量 $\rho^{n+1}$ 在 $p(\cdot)$ 里面，所以要 Newton。用松弛系统时，先投影 $w^n = p(\rho^n)$，再对 $w$ 求解：
+
+$$
+w^{n+1} - a^2\Delta t^2\,\delta_{xx}\,w^{n+1} = p(\rho^n) - a^2\Delta t\,\delta_x m^*
+$$
+
+左边矩阵只由 $a$ 和 $\Delta t$ 决定，与状态无关。分解一次，在时间步长不变期间可以一直复用。之后密度按 $\rho^{n+1}=\rho^n-\Delta t\,\delta_x m_f^{n+1}$ 显式更新。
+
+那么 $a$ 的代价是什么？关掉动量、只看一个密度模态，单步放大因子有闭式表达。
+
+$$
+G_{N}(\theta) = \frac{1}{1+\nu^2 s^2},\qquad
+G_{R}(\theta) = 1 - \frac{c^2}{a^2}\,\frac{z}{1+z},\quad z = \frac{a^2}{c^2}\,\nu^2 s^2
+$$
+
+$\nu=c\Delta t/\Delta x$ 是声学 Courant 数，$s=2\sin(\theta/2)$，$\theta$ 是无量纲波数。$G_N$ 是线性化 Newton，$G_R$ 是松弛格式。代入 $a=c$ 得 $G_R=1/(1+z)=G_N$。**松弛格式在 $a=c$ 时等于一次 Newton。**
+
+在下面的模拟里直接调节 $a/c$ 和 $\nu$。
+
+<RelaxedImplicitAmplificationLab />
+
+把 $a/c$ 降到 0.7 以下，橙色曲线右端($\theta=\pi$，即 2Δx 模态)会落进 −1 以下的红色带，按 Play 后噪声会长大。反过来把 $a/c$ 调到 10，曲线几乎贴着 1，脉冲不再缩小。
+
+## 用一个公式读出两个界限
+
+在 $\nu$ 很大的隐式区间，高波数处 $z\gg1$，于是 $G_R \to 1 - c^2/a^2$。两个界限都在这一行里。
+
+- **下限**：$|G_R|\le1$ 要求 $c^2/a^2 \le 2$，即 $a \ge c/\sqrt{2}$。这比显式松弛的次特征条件 $a\ge c$ 宽松，因为后向 Euler 自身补上了一部分耗散。
+- **实际上限**：$a\gg c$ 时 $G_R\to1$。模态既不衰减也不振荡，原样保留。$a=10c$ 时每步只减少 1%。
+
+为什么会这样？$a$ 很大时，$w$ 方程中的隐式扩散 $a^2\Delta t^2\delta_{xx}$ 几乎把压力扰动完全抹平。作用在动量上的压力梯度消失了。密度只按原来的质量通量移动。结果是压力把密度拉回的作用被削弱为 $c^2/a^2$ 倍。在显式格式里，大的 $a$ 意味着"抹平"。在隐式格式里，它意味着"冻结"。
+
+## 代码：同一个脉冲算三遍 — 显式、Newton、松弛
+
+在一维等熵 Euler($p=\rho^{1.4}$，周期边界)中，放一个随背景马赫数 0.05 流动的密度脉冲(幅值 0.2)。计算到流体走过区域的 1/4 为止。显式 Rusanov 按声速取 CFL 0.9，两个隐式格式按物质速度取 CFL 0.9。松弛格式把 $a/c_{\max}$ 从 0.5 扫到 10，测量与 Newton 解的 L2 差。
+
+```python
+import numpy as np
+np.seterr(all="ignore")
+
+# 一维等熵 Euler: p = rho^gamma, 周期边界, 低马赫声学脉冲
+N, gam = 200, 1.4
+dx = 1.0 / N
+x = (np.arange(N) + 0.5) * dx
+c0 = np.sqrt(gam)
+A0 = 0.2                             # 密度脉冲幅值
+u0 = 0.05 * c0                       # 背景马赫数 0.05
+T = 0.25 / u0                        # 流体走过区域 1/4 所需时间
+
+def pres(r):
+    return r**gam
+
+def cyclic_solve(lo, di, up, b):
+    # 周期三对角: Thomas + Sherman-Morrison
+    n = len(b); g = -di[0]
+    d = di.copy(); d[0] -= g; d[-1] -= lo[0] * up[-1] / g
+    def thomas(rhs):
+        cp = np.zeros(n); dp = np.zeros(n)
+        cp[0] = up[0] / d[0]; dp[0] = rhs[0] / d[0]
+        for i in range(1, n):
+            m = d[i] - lo[i] * cp[i-1]
+            cp[i] = up[i] / m; dp[i] = (rhs[i] - lo[i] * dp[i-1]) / m
+        y = np.zeros(n); y[-1] = dp[-1]
+        for i in range(n - 2, -1, -1):
+            y[i] = dp[i] - cp[i] * y[i+1]
+        return y
+    uvec = np.zeros(n); uvec[0] = g; uvec[-1] = up[-1]
+    y = thomas(b); q = thomas(uvec)
+    vfac = (y[0] + lo[0] * y[-1] / g) / (1 + q[0] + lo[0] * q[-1] / g)
+    return y - vfac * q
+
+def advect_m(r, m, dt):
+    # 只看物质速度的显式 Rusanov: (rho u^2)_x
+    u = m / r; f = m * u
+    s = np.maximum(np.abs(u), np.abs(np.roll(u, -1)))
+    F = 0.5 * (f + np.roll(f, -1)) - 0.5 * s * (np.roll(m, -1) - m)
+    return m - dt / dx * (F - np.roll(F, 1))
+
+def face_mom(ms, w, dt):
+    mf = 0.5 * (ms + np.roll(ms, -1))
+    return mf - dt / dx * (np.roll(w, -1) - w)
+
+def relaxed_step(r, m, dt, a):
+    # Jin-Xin 松弛: w_t + a^2 m_x = 0 隐式处理 -> 线性、常系数、只解一次
+    ms = advect_m(r, m, dt)
+    k = (a * dt / dx)**2
+    mf0 = 0.5 * (ms + np.roll(ms, -1))
+    rhs = pres(r) - a**2 * dt / dx * (mf0 - np.roll(mf0, 1))
+    w = cyclic_solve(np.full(N, -k), np.full(N, 1 + 2 * k), np.full(N, -k), rhs)
+    mf = face_mom(ms, w, dt)
+    rn = r - dt / dx * (mf - np.roll(mf, 1))
+    mn = 0.5 * (mf + np.roll(mf, 1))   # 把面动量平均到单元
+    return rn, mn, 1
+
+def newton_step(r, m, dt, tol=1e-10):
+    # 原始非线性压力 p(rho^{n+1}) 直接隐式处理 -> Newton 迭代
+    ms = advect_m(r, m, dt)
+    mf0 = 0.5 * (ms + np.roll(ms, -1))
+    b = r - dt / dx * (mf0 - np.roll(mf0, 1))
+    k = (dt / dx)**2
+    rn = r.copy(); it = 0
+    while True:
+        p = pres(rn)
+        res = rn - k * (np.roll(p, -1) - 2 * p + np.roll(p, 1)) - b
+        if np.max(np.abs(res)) < tol:
+            break
+        dp = gam * rn**(gam - 1)
+        lo = -k * np.roll(dp, 1); up = -k * np.roll(dp, -1)
+        rn = rn - cyclic_solve(lo, 1 + 2 * k * dp, up, res)
+        it += 1
+        if it > 50:
+            return rn * np.nan, ms, it
+    w = pres(rn)
+    mf = face_mom(ms, w, dt)
+    mn = 0.5 * (mf + np.roll(mf, 1))   # 把面动量平均到单元
+    return rn, mn, it
+
+def rusanov_acoustic_step(r, m, dt):
+    u = m / r; p = pres(r); c = np.sqrt(gam * r**(gam - 1))
+    U = np.array([r, m]); F = np.array([m, m * u + p])
+    s = np.maximum(np.abs(u) + c, np.roll(np.abs(u) + c, -1))
+    Fh = 0.5 * (F + np.roll(F, -1, axis=1)) - 0.5 * s * (np.roll(U, -1, axis=1) - U)
+    U = U - dt / dx * (Fh - np.roll(Fh, 1, axis=1))
+    return U[0], U[1], 0
+
+def run(kind, cfl, a_ratio=1.0):
+    r = 1 + A0 * np.exp(-((x - 0.5) / 0.05)**2)
+    m = r * u0
+    mass0 = r.sum() * dx
+    cmax = np.sqrt(gam * r.max()**(gam - 1))
+    if kind == 'explicit':
+        dt = cfl * dx / (u0 + cmax)
+    else:
+        dt = cfl * dx / u0
+    nst = int(np.ceil(T / dt)); dt = T / nst
+    its = 0
+    for _ in range(nst):
+        if kind == 'explicit':
+            r, m, i = rusanov_acoustic_step(r, m, dt)
+        elif kind == 'newton':
+            r, m, i = newton_step(r, m, dt)
+        else:
+            r, m, i = relaxed_step(r, m, dt, a_ratio * cmax)
+        if not np.all(np.isfinite(r)):
+            return dict(steps=nst, solves=its, amp=np.nan, mass=np.nan, r=r)
+        its += i
+    return dict(steps=nst, solves=its, amp=r.max() - r.mean(), mass=abs(r.sum() * dx - mass0), r=r)
+
+print(f"M0 = 0.05, N = {N}, A0 = {A0}, T = {T:.3f} (flow moves L/4)")
+ex = run('explicit', 0.9)
+nw = run('newton', 0.9)
+print(f"{'scheme':<16}{'steps':>7}{'lin.solves':>12}{'amp':>11}{'|dmass|':>11}")
+print(f"{'explicit':<16}{ex['steps']:>7}{'-':>12}{ex['amp']:>11.2e}{ex['mass']:>11.1e}")
+print(f"{'implicit Newton':<16}{nw['steps']:>7}{nw['solves']:>12}{nw['amp']:>11.2e}{nw['mass']:>11.1e}")
+print()
+print(f"{'a/c_max':<9}{'solves':>8}{'amp':>11}{'L2 vs Newton':>15}")
+for ar in [0.5, 0.7, 0.8, 0.9, 1.0, 1.5, 3.0, 10.0]:
+    rx = run('relaxed', 0.9, ar)
+    d = np.sqrt(np.mean((rx['r'] - nw['r'])**2))
+    print(f"{ar:<9}{rx['solves']:>8}{rx['amp']:>11.2e}{d:>15.2e}")
+```
+
+```text
+M0 = 0.05, N = 200, A0 = 0.2, T = 4.226 (flow moves L/4)
+scheme            steps  lin.solves        amp    |dmass|
+explicit           1208           -   2.84e-02    4.4e-16
+implicit Newton      56         102   1.45e-05    2.2e-16
+
+a/c_max    solves        amp   L2 vs Newton
+0.5             5        nan            nan
+0.7            56   3.56e-04       2.61e-04
+0.8            56   3.03e-05       2.95e-05
+0.9            56   2.20e-05       5.40e-06
+1.0            56   1.01e-05       3.13e-06
+1.5            56   6.30e-09       1.03e-05
+3.0            56   3.59e-04       9.16e-05
+10.0           56   1.06e-01       2.74e-02
+```
+
+在浏览器里直接运行上面的代码。
+
+<JinXinNewtonPulseRace />
+
+默认参数下 Newton 做了 102 次线性求解，松弛做了 56 次，与输出块一致。把 $a/c_{\max}$ 降到 0.5，橙色曲线在第 5 步发散。调到 10，脉冲基本停在 0.106 附近。
+
+## 读表：102 与 56、0.5 的发散、10 的 0.106
+
+**步数。** 显式 1208 步，隐式 56 步。比值 21.6 与 $(u_0+c)/u_0$ 基本一致。作为交换，两个隐式格式都把声学脉冲抹到 $10^{-5}$ 量级，显式则保留 $2.84\times10^{-2}$。这就是低马赫隐式方法的交易：放弃声学，换取时间步长。
+
+**线性求解次数。** Newton 在 56 步中求解 102 次，平均每步 1.8 次。脉冲衰减后残差很快变小，很多步一次迭代就结束。松弛格式恰好每步一次。一维里只差 1.8 倍。但松弛矩阵是常数。在三维非结构网格上可以只构造一次分解或预条件子并反复使用，这才是真正的收益。
+
+**$a/c_{\max}$ 取 0.9~1.0。** 与 Newton 的 L2 差为 $3\sim5\times10^{-6}$。正如线性分析所说，$a\approx c$ 时两种格式几乎相同。剩下的差异来自声速 $c$ 随位置变化。
+
+**0.5 与 0.7。** $c^2/a^2=4$，所以 $G_R\to-3$，5 步就发散了。按 $c_{\max}$ 计，0.7 低于界限 $1/\sqrt2\approx0.707$。但脉冲以外的声速是 $c_{\max}$ 的 0.93 倍，实际 $a/c$ 为 0.75，所以算下来了。代价是 L2 差增大到 $2.6\times10^{-4}$。
+
+**3 与 10。** $a=3c_{\max}$ 时 L2 为 $9.2\times10^{-5}$，开始偏离 Newton。$a=10c_{\max}$ 时幅值为 0.106。把 $G_R\approx0.99$ 连乘 56 次，得到 $0.2\times0.99^{56}\approx0.11$。一行公式几乎精确地预测了表中的数字。
+
+## 这个一维玩具与论文的距离
+
+本复现只借用了论文的结构。差别如下：
+
+- 论文处理完整 Euler、刚性气体(stiffened gas)乃至弹性材料。这里是没有能量方程的等熵系统。
+- 论文在多维中解耦求解关于压力的线性椭圆方程。这里只是一个周期三对角系统。
+- 把面动量平均回单元是本文的简化。若用宽模板中心梯度更新单元动量，奇偶模态会增长，不到 150 步就发散。
+- 论文把 $a$ 取在局部最大声速附近。本文关于上限的讨论，是对这一选择为何合理的补充说明。
+
+## 松弛速度 a 该放在哪里
+
+给隐式松弛求解器设 $a$ 之前，先算一行 $G_R\to1-c^2/a^2$。硬下限是 $c_{\max}/\sqrt2$，留出余量的实用下限是 $c_{\max}$。上限没有固定值，但 $c^2/a^2$ 就是每步的衰减率这一事实不会变。把 $a$ 放在 $c_{\max}$ 的 1~1.5 倍，一个线性系统就能得到与 Newton 相同的结果。再往上加并不是安全余量，只是让压力不再做功。

@@ -1,0 +1,250 @@
+---
+title: "[Paper Review] Removing Newton from the Implicit Pressure Solve — Thomann–Iollo–Puppo Relaxation and the Two Limits on a"
+date: 2026-11-22
+description: "Jin–Xin relaxation turns the implicit pressure equation into a constant-coefficient linear system, so Newton disappears. The price: the relaxation speed a gets both a floor and a ceiling."
+tags: ["Relaxation-Scheme", "All-Mach", "Low-Mach", "Implicit", "Paper-Review"]
+locale: en
+slug: 2026-11-22-jin-xin-relaxation-linear-implicit-pressure
+takeaway: "At a = c the relaxed implicit pressure step is exactly one linearized Newton step. Drop a below c/√2 and the 2Δx mode grows; raise it to 10c and each step removes only 1%, so the pulse barely moves."
+draft: false
+---
+import { RelaxedImplicitAmplificationLab } from '@/components/post-viz/2026-11-22-jin-xin-relaxation-linear-implicit-pressure/RelaxedImplicitAmplificationLab'
+import { JinXinNewtonPulseRace } from '@/components/post-viz/2026-11-22-jin-xin-relaxation-linear-implicit-pressure/JinXinNewtonPulseRace'
+
+## A bigger a was supposed to be safer
+
+Relaxation schemes (methods that swap a nonlinear term for an auxiliary variable so the system becomes linear) come with an old rule of thumb. The relaxation speed $a$ only has to exceed the physical sound speed. Making it larger just adds numerical diffusion. I carried that rule straight into an implicit pressure solver and set $a$ to ten times the sound speed. The result was not diffusion. The density pulse refused to decay and sat at an amplitude of 0.106. The Newton solution at the same time was $1.5\times10^{-5}$.
+
+This post reproduces Thomann–Iollo–Puppo (2023), "Implicit relaxed all Mach number schemes," reduced to 1D. You will come away with three things. Why relaxation eliminates the Newton loop. Why, in an implicit scheme, $a$ has an effective upper limit as well as a lower one. And a one-line formula that gives you both.
+
+## The one line the paper changed
+
+In low-Mach compressible flow, acoustic waves outrun the flow by a factor of tens. An explicit scheme must size its time step to the sound speed. That is why IMEX splitting (mixed explicit–implicit time integration) with an implicit pressure term became standard. [Peluchon's (2017) acoustic–transport splitting](/en/posts/2026-05-30-peluchon-acoustic-transport-imex/) and [yesterday's Battisti–Boscheri linearly implicit pressure equation](/en/posts/2026-11-21-linearly-implicit-enthalpy-density-ratio/) both belong to this family.
+
+The trouble is the equation of state. If $p(\rho)$ is nonlinear in density, the implicit pressure equation is nonlinear too, and every step needs Newton iterations. Thomann, Iollo, and Puppo left the flux alone and **added one variable**. An auxiliary $w$ takes the place of pressure and obeys a linear wave equation.
+
+$$
+\partial_t \rho + \partial_x m = 0,\qquad
+\partial_t m + \partial_x w = 0,\qquad
+\partial_t w + a^2\,\partial_x m = \frac{p(\rho) - w}{\varepsilon}
+$$
+
+$m=\rho u$ is momentum, $w$ the relaxed pressure, $a$ a constant relaxation speed, and $\varepsilon$ the relaxation time. As $\varepsilon\to0$, $w=p(\rho)$ and the original system returns. The structure is the same one covered in [the Jin–Xin and Suliciu relaxation post](/en/posts/2026-07-04-jin-xin-suliciu-relaxation-scheme/). What is new is putting it inside the **implicit pressure stage**. The left-hand sides form a constant-coefficient linear system, so solving it implicitly takes one linear solve.
+
+## Why Newton is needed, and why it stops being needed
+
+First, momentum is advected explicitly at the material speed to give $m^*$. Then the pressure part is closed with backward Euler. Using the true pressure gives:
+
+$$
+\rho^{n+1} - \Delta t^2\,\delta_{xx}\,p(\rho^{n+1}) = \rho^n - \Delta t\,\delta_x m^*
+$$
+
+$\delta_x$ and $\delta_{xx}$ are face-based first and second differences. The unknown $\rho^{n+1}$ sits inside $p(\cdot)$, hence Newton. With the relaxation system, we project $w^n = p(\rho^n)$ and solve for $w$:
+
+$$
+w^{n+1} - a^2\Delta t^2\,\delta_{xx}\,w^{n+1} = p(\rho^n) - a^2\Delta t\,\delta_x m^*
+$$
+
+The matrix depends only on $a$ and $\Delta t$, not on the state. Factor it once and reuse it for as long as the time step stays fixed. Density is then updated explicitly as $\rho^{n+1}=\rho^n-\Delta t\,\delta_x m_f^{n+1}$.
+
+So what does $a$ cost? Switch off momentum and follow a single density mode, and the one-step gain comes out in closed form.
+
+$$
+G_{N}(\theta) = \frac{1}{1+\nu^2 s^2},\qquad
+G_{R}(\theta) = 1 - \frac{c^2}{a^2}\,\frac{z}{1+z},\quad z = \frac{a^2}{c^2}\,\nu^2 s^2
+$$
+
+$\nu=c\Delta t/\Delta x$ is the acoustic Courant number, $s=2\sin(\theta/2)$, and $\theta$ the nondimensional wavenumber. $G_N$ is linearized Newton, $G_R$ the relaxed scheme. Set $a=c$ and $G_R=1/(1+z)=G_N$. **At $a=c$ the relaxed scheme equals one Newton step.**
+
+Try changing $a/c$ and $\nu$ in the simulation below.
+
+<RelaxedImplicitAmplificationLab />
+
+Push $a/c$ below 0.7 and the right end of the orange curve ($\theta=\pi$, the 2Δx mode) drops into the red band under −1; press Play and the noise grows. Push $a/c$ up to 10 and the curve hugs 1, and the pulse stops shrinking.
+
+## Reading both limits from one formula
+
+In the implicit regime $\nu$ is large, so high wavenumbers have $z\gg1$ and $G_R \to 1 - c^2/a^2$. Both limits live in that one expression.
+
+- **Lower limit**: $|G_R|\le1$ requires $c^2/a^2 \le 2$, i.e. $a \ge c/\sqrt{2}$. That is looser than the explicit subcharacteristic condition $a\ge c$, because backward Euler contributes some damping of its own.
+- **Effective upper limit**: for $a\gg c$, $G_R\to1$. The mode neither decays nor oscillates. With $a=10c$, each step removes just 1%.
+
+Why does this happen? A large $a$ makes the implicit diffusion $a^2\Delta t^2\delta_{xx}$ in the $w$ equation flatten the pressure perturbation almost completely. The pressure gradient acting on momentum vanishes. Density moves only by the original mass flux. The restoring force of pressure is weakened by a factor $c^2/a^2$. In an explicit scheme a big $a$ means smearing. In an implicit scheme it means freezing.
+
+## Code: the same pulse three ways — explicit, Newton, relaxed
+
+We take 1D isentropic Euler ($p=\rho^{1.4}$, periodic) with a density pulse (amplitude 0.2) riding a Mach 0.05 background flow. We run until the fluid has crossed a quarter of the domain. Explicit Rusanov uses CFL 0.9 based on the sound speed. Both implicit schemes use CFL 0.9 based on the material speed. The relaxed scheme sweeps $a/c_{\max}$ from 0.5 to 10 and reports its L2 distance from the Newton solution.
+
+```python
+import numpy as np
+np.seterr(all="ignore")
+
+# 1D isentropic Euler: p = rho^gamma, periodic, low-Mach acoustic pulse
+N, gam = 200, 1.4
+dx = 1.0 / N
+x = (np.arange(N) + 0.5) * dx
+c0 = np.sqrt(gam)
+A0 = 0.2                             # density pulse amplitude
+u0 = 0.05 * c0                       # background Mach number 0.05
+T = 0.25 / u0                        # time for the fluid to cross 1/4 of the domain
+
+def pres(r):
+    return r**gam
+
+def cyclic_solve(lo, di, up, b):
+    # periodic tridiagonal: Thomas + Sherman-Morrison
+    n = len(b); g = -di[0]
+    d = di.copy(); d[0] -= g; d[-1] -= lo[0] * up[-1] / g
+    def thomas(rhs):
+        cp = np.zeros(n); dp = np.zeros(n)
+        cp[0] = up[0] / d[0]; dp[0] = rhs[0] / d[0]
+        for i in range(1, n):
+            m = d[i] - lo[i] * cp[i-1]
+            cp[i] = up[i] / m; dp[i] = (rhs[i] - lo[i] * dp[i-1]) / m
+        y = np.zeros(n); y[-1] = dp[-1]
+        for i in range(n - 2, -1, -1):
+            y[i] = dp[i] - cp[i] * y[i+1]
+        return y
+    uvec = np.zeros(n); uvec[0] = g; uvec[-1] = up[-1]
+    y = thomas(b); q = thomas(uvec)
+    vfac = (y[0] + lo[0] * y[-1] / g) / (1 + q[0] + lo[0] * q[-1] / g)
+    return y - vfac * q
+
+def advect_m(r, m, dt):
+    # explicit Rusanov using material speed only: (rho u^2)_x
+    u = m / r; f = m * u
+    s = np.maximum(np.abs(u), np.abs(np.roll(u, -1)))
+    F = 0.5 * (f + np.roll(f, -1)) - 0.5 * s * (np.roll(m, -1) - m)
+    return m - dt / dx * (F - np.roll(F, 1))
+
+def face_mom(ms, w, dt):
+    mf = 0.5 * (ms + np.roll(ms, -1))
+    return mf - dt / dx * (np.roll(w, -1) - w)
+
+def relaxed_step(r, m, dt, a):
+    # Jin-Xin relaxation: w_t + a^2 m_x = 0 implicit -> linear, constant coefficients, one solve
+    ms = advect_m(r, m, dt)
+    k = (a * dt / dx)**2
+    mf0 = 0.5 * (ms + np.roll(ms, -1))
+    rhs = pres(r) - a**2 * dt / dx * (mf0 - np.roll(mf0, 1))
+    w = cyclic_solve(np.full(N, -k), np.full(N, 1 + 2 * k), np.full(N, -k), rhs)
+    mf = face_mom(ms, w, dt)
+    rn = r - dt / dx * (mf - np.roll(mf, 1))
+    mn = 0.5 * (mf + np.roll(mf, 1))   # average face momentum to cells
+    return rn, mn, 1
+
+def newton_step(r, m, dt, tol=1e-10):
+    # original nonlinear pressure p(rho^{n+1}) implicit -> Newton iterations
+    ms = advect_m(r, m, dt)
+    mf0 = 0.5 * (ms + np.roll(ms, -1))
+    b = r - dt / dx * (mf0 - np.roll(mf0, 1))
+    k = (dt / dx)**2
+    rn = r.copy(); it = 0
+    while True:
+        p = pres(rn)
+        res = rn - k * (np.roll(p, -1) - 2 * p + np.roll(p, 1)) - b
+        if np.max(np.abs(res)) < tol:
+            break
+        dp = gam * rn**(gam - 1)
+        lo = -k * np.roll(dp, 1); up = -k * np.roll(dp, -1)
+        rn = rn - cyclic_solve(lo, 1 + 2 * k * dp, up, res)
+        it += 1
+        if it > 50:
+            return rn * np.nan, ms, it
+    w = pres(rn)
+    mf = face_mom(ms, w, dt)
+    mn = 0.5 * (mf + np.roll(mf, 1))   # average face momentum to cells
+    return rn, mn, it
+
+def rusanov_acoustic_step(r, m, dt):
+    u = m / r; p = pres(r); c = np.sqrt(gam * r**(gam - 1))
+    U = np.array([r, m]); F = np.array([m, m * u + p])
+    s = np.maximum(np.abs(u) + c, np.roll(np.abs(u) + c, -1))
+    Fh = 0.5 * (F + np.roll(F, -1, axis=1)) - 0.5 * s * (np.roll(U, -1, axis=1) - U)
+    U = U - dt / dx * (Fh - np.roll(Fh, 1, axis=1))
+    return U[0], U[1], 0
+
+def run(kind, cfl, a_ratio=1.0):
+    r = 1 + A0 * np.exp(-((x - 0.5) / 0.05)**2)
+    m = r * u0
+    mass0 = r.sum() * dx
+    cmax = np.sqrt(gam * r.max()**(gam - 1))
+    if kind == 'explicit':
+        dt = cfl * dx / (u0 + cmax)
+    else:
+        dt = cfl * dx / u0
+    nst = int(np.ceil(T / dt)); dt = T / nst
+    its = 0
+    for _ in range(nst):
+        if kind == 'explicit':
+            r, m, i = rusanov_acoustic_step(r, m, dt)
+        elif kind == 'newton':
+            r, m, i = newton_step(r, m, dt)
+        else:
+            r, m, i = relaxed_step(r, m, dt, a_ratio * cmax)
+        if not np.all(np.isfinite(r)):
+            return dict(steps=nst, solves=its, amp=np.nan, mass=np.nan, r=r)
+        its += i
+    return dict(steps=nst, solves=its, amp=r.max() - r.mean(), mass=abs(r.sum() * dx - mass0), r=r)
+
+print(f"M0 = 0.05, N = {N}, A0 = {A0}, T = {T:.3f} (flow moves L/4)")
+ex = run('explicit', 0.9)
+nw = run('newton', 0.9)
+print(f"{'scheme':<16}{'steps':>7}{'lin.solves':>12}{'amp':>11}{'|dmass|':>11}")
+print(f"{'explicit':<16}{ex['steps']:>7}{'-':>12}{ex['amp']:>11.2e}{ex['mass']:>11.1e}")
+print(f"{'implicit Newton':<16}{nw['steps']:>7}{nw['solves']:>12}{nw['amp']:>11.2e}{nw['mass']:>11.1e}")
+print()
+print(f"{'a/c_max':<9}{'solves':>8}{'amp':>11}{'L2 vs Newton':>15}")
+for ar in [0.5, 0.7, 0.8, 0.9, 1.0, 1.5, 3.0, 10.0]:
+    rx = run('relaxed', 0.9, ar)
+    d = np.sqrt(np.mean((rx['r'] - nw['r'])**2))
+    print(f"{ar:<9}{rx['solves']:>8}{rx['amp']:>11.2e}{d:>15.2e}")
+```
+
+```text
+M0 = 0.05, N = 200, A0 = 0.2, T = 4.226 (flow moves L/4)
+scheme            steps  lin.solves        amp    |dmass|
+explicit           1208           -   2.84e-02    4.4e-16
+implicit Newton      56         102   1.45e-05    2.2e-16
+
+a/c_max    solves        amp   L2 vs Newton
+0.5             5        nan            nan
+0.7            56   3.56e-04       2.61e-04
+0.8            56   3.03e-05       2.95e-05
+0.9            56   2.20e-05       5.40e-06
+1.0            56   1.01e-05       3.13e-06
+1.5            56   6.30e-09       1.03e-05
+3.0            56   3.59e-04       9.16e-05
+10.0           56   1.06e-01       2.74e-02
+```
+
+Run the code above directly in your browser.
+
+<JinXinNewtonPulseRace />
+
+At the defaults, Newton needs 102 linear solves and the relaxed scheme 56, matching the output block. Set $a/c_{\max}$ to 0.5 and the orange curve blows up at step 5. Set it to 10 and the pulse stays near 0.106.
+
+## Reading the table: 102 vs 56, a blow-up at 0.5, 0.106 at 10
+
+**Step count.** Explicit takes 1208 steps; implicit takes 56. The ratio of 21.6 is close to $(u_0+c)/u_0$. In exchange, both implicit schemes wipe the acoustic pulse down to the $10^{-5}$ level, while explicit keeps $2.84\times10^{-2}$. That is the deal low-Mach implicit methods make: give up acoustics, buy time step.
+
+**Linear solves.** Newton needs 102 solves over 56 steps, 1.8 per step. Once the pulse decays the residual drops fast, so many steps finish in one iteration. The relaxed scheme is exactly one per step. In 1D that is only a 1.8× gap. The real payoff is that the relaxed matrix is constant. On a 3D unstructured mesh you can build the factorization or preconditioner once and reuse it.
+
+**$a/c_{\max}$ from 0.9 to 1.0.** The L2 distance from Newton is $3$–$5\times10^{-6}$. As the linear analysis predicts, $a\approx c$ makes the two schemes nearly identical. The leftover comes from $c$ varying in space.
+
+**0.5 and 0.7.** With $c^2/a^2=4$, $G_R\to-3$. It blew up in five steps. Measured against $c_{\max}$, 0.7 is below the threshold $1/\sqrt2\approx0.707$. Outside the pulse, though, the sound speed is 0.93 of $c_{\max}$, so the effective $a/c$ is 0.75 and the run survives. The L2 distance grows to $2.6\times10^{-4}$.
+
+**3 and 10.** At $a=3c_{\max}$ the L2 distance reaches $9.2\times10^{-5}$. At $a=10c_{\max}$ the amplitude is 0.106. Multiply $G_R\approx0.99$ fifty-six times and you get $0.2\times0.99^{56}\approx0.11$. One line of algebra predicts the table almost exactly.
+
+## How far this 1D toy is from the paper
+
+This reproduction borrows only the paper's structure. The differences, stated plainly:
+
+- The paper treats full Euler, stiffened gas, and elastic materials. Here the system is isentropic, with no energy equation.
+- The paper solves decoupled linear elliptic equations for pressure in multiple dimensions. Here it is one periodic tridiagonal system.
+- Averaging face momentum back to cells is this post's simplification. Updating cell momentum with a wide centered gradient let an odd–even mode grow and blew up before step 150.
+- The paper picks $a$ near the local maximum sound speed. The upper-limit argument here is a supplement explaining why that choice is sensible.
+
+## Where to set the relaxation speed a
+
+Before putting $a$ into an implicit relaxed solver, compute the one line $G_R\to1-c^2/a^2$. The hard floor is $c_{\max}/\sqrt2$; the practical floor, with margin, is $c_{\max}$. There is no fixed ceiling, but $c^2/a^2$ remains the per-step decay rate. Keep $a$ at 1–1.5 times $c_{\max}$ and one linear solve gives the Newton answer. Going higher is not a safety margin. It just stops the pressure from doing any work.
