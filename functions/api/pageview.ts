@@ -30,8 +30,13 @@ export async function onRequestPost(context: {
   const slug = path.match(/^\/(?:ko|en|ja|zh|es)\/posts\/([^/]+)\/?$/)?.[1] ?? null
   context.waitUntil(
     (async () => {
-      const known = slug !== null && (await isKnownSlug(env, request, slug))
-      await recordPageview({ ...env, DB: db }, request, known ? slug : null)
+      // The index is only needed for per-post stats. An asset-fetch failure
+      // must not drop the site-wide visit or pageview.
+      const knownSlug = slug !== null && await isKnownSlug(env, request, slug).catch((e) => {
+        console.error('visit-post-index', e)
+        return false
+      })
+      await recordPageview({ ...env, DB: db }, request, knownSlug ? slug : null)
     })().catch((e) => console.error('visit-count', e)),
   )
   return new Response(null, { status: 204, headers: { 'Cache-Control': 'no-store' } })
