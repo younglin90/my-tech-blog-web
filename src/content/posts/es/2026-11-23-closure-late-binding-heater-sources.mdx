@@ -1,0 +1,174 @@
+---
+title: "Cuatro calentadores registrados en un bucle y solo se encendió uno — late binding en closures y currying para fijar términos fuente"
+date: 2026-11-23
+description: "Las lambdas de Python y la captura [&] de C++ leen tarde la variable del bucle y cuatro fuentes de calor colapsan en una. Se reproduce en conducción 1D y se corrige con una fábrica currificada."
+tags: ["Closure", "Functional-Programming", "Heat-Transfer", "Numerical-Analysis", "Algorithms"]
+locale: es
+slug: 2026-11-23-closure-late-binding-heater-sources
+takeaway: "Una closure creada dentro de un bucle captura el nombre de la variable, no su valor. Los parámetros de términos fuente y condiciones de contorno deben fijarse con una función fábrica, porque un balance de energía nunca detecta este error."
+draft: false
+---
+import { ClosureCaptureLoopLab } from '@/components/post-viz/2026-11-23-closure-late-binding-heater-sources/ClosureCaptureLoopLab'
+import { HeaterClosureRodRace } from '@/components/post-viz/2026-11-23-closure-late-binding-heater-sources/HeaterClosureRodRace'
+
+## Cuatro calentadores en un bucle: ¿cuántos se encienden?
+
+Sobre una barra se colocan cuatro calentadores, en x = 0.2, 0.4, 0.6 y 0.8. Sus potencias son 10, 20, 30 y 40. Un bucle crea una función por calentador y la agrega a una lista. El solver recorre la lista y suma las funciones para obtener el término fuente.
+
+La respuesta es uno. Más exactamente, el mismo calentador se enciende cuatro veces: el de potencia 40 en 0.8. Este artículo trata la causa, el late binding (enlace tardío) de las closures (funciones que retienen variables externas). Se mide el error en un problema de conducción 1D, se corrige con currying y al final se muestra cómo aparece lo mismo con lambdas de C++.
+
+El punto de partida fue un resumen de programación funcional en C++. Una línea decía: "Closure: crear una función local dentro de una función". Es correcto. Pero las notas no decían qué recuerda esa función local.
+
+## P1. ¿Qué captura una closure: un valor o un nombre?
+
+Una `lambda xx: q * ...` de Python no evalúa `q` al crearse. Solo guarda una referencia que dice "mira la casilla externa llamada `q`". El valor se lee recién cuando la función **se llama**.
+
+Una variable de bucle tiene una sola casilla. Cada iteración sobrescribe su contenido. Al terminar el bucle, la casilla conserva el último valor. Cuando el solver llama después a las cuatro funciones, las cuatro leen la misma casilla.
+
+Este comportamiento se llama late binding (resolver un nombre a su valor en el momento de la llamada). No es un bug: es la especificación del lenguaje. Por eso es más peligroso.
+
+En la simulación de abajo se puede manipular directamente. Step avanza el bucle una iteración a la vez.
+
+<ClosureCaptureLoopLab />
+
+En modo "by name", cada iteración arrastra a la nueva posición a todos los calentadores ya creados. Con "by value", cada calentador se queda en su sitio y las dos barras de potencia de abajo coinciden.
+
+## P2. ¿Por qué corre sin ninguna advertencia?
+
+No hay motivo para un error. Las cuatro funciones son válidas. Cada una devuelve una fuente de calor correcta. Simplemente devuelven la misma.
+
+Hay algo peor. El resultado parece físico. Las temperaturas son positivas y suaves. Se alcanza el estado estacionario. El balance de energía (calor que entra = calor que sale por las paredes) cierra. Desde el punto de vista del solver, resolvió bien un problema con cuatro calentadores de potencia 40 superpuestos.
+
+Si la verificación se detiene en "¿conserva?, ¿converge?", este error pasa. Igual que el [tipado implícito de Fortran que truncó una viscosidad de 0.07 a cero](/es/posts/2026-11-20-fortran-implicit-none-viscosity-truncated-to-zero/), la entrada cambió y el solver no se enteró.
+
+## P3. ¿Cuánto se equivoca? Medirlo con código
+
+Se resuelve conducción estacionaria 1D avanzando en el tiempo.
+
+$$
+\frac{\partial T}{\partial t} = \frac{\partial^2 T}{\partial x^2} + s(x), \qquad T(0)=T(1)=0
+$$
+
+$T$ es la temperatura y $s(x)$ la suma de las funciones de los calentadores. Conductividad y difusividad valen 1.
+
+Se usa FTCS (Euler explícito en el tiempo, diferencias centradas en el espacio) con $\Delta t = 0.4\,\Delta x^2$. Celdas fantasma (ghost cells, celdas ficticias fuera del contorno) imponen $T=0$ en las paredes. El avance se detiene cuando el incremento es suficientemente pequeño. La lista de fuentes se construye de tres maneras.
+
+```python
+import numpy as np
+
+# barra 1D: k = 1, alpha = 1, T = 0 en ambos extremos
+N = 100
+dx = 1.0 / N
+x = (np.arange(N) + 0.5) * dx
+centers = [0.2, 0.4, 0.6, 0.8]     # centros de los calentadores
+powers = [10.0, 20.0, 30.0, 40.0]  # potencia q [W/m]
+width = 0.1
+
+def build_late():
+    # la closure captura los NOMBRES c y q, no sus valores
+    srcs = []
+    for c, q in zip(centers, powers):
+        srcs.append(lambda xx: q * (np.abs(xx - c) < width / 2))
+    return srcs
+
+def build_default_arg():
+    # los argumentos por defecto se evalúan al crear la lambda
+    srcs = []
+    for c, q in zip(centers, powers):
+        srcs.append(lambda xx, c=c, q=q: q * (np.abs(xx - c) < width / 2))
+    return srcs
+
+def make_heater(c, q):
+    # fábrica currificada: fija (c, q) primero y devuelve f(x)
+    def heater(xx):
+        return q * (np.abs(xx - c) < width / 2)
+    return heater
+
+def build_curried():
+    return [make_heater(c, q) for c, q in zip(centers, powers)]
+
+def diffuse_to_steady(srcs, tol=1e-7):
+    s = sum(f(x) for f in srcs)
+    T = np.zeros(N)
+    dt = 0.4 * dx * dx
+    for n in range(1, 200001):
+        Tp = np.concatenate(([-T[0]], T, [-T[-1]]))  # celdas fantasma, T = 0 en paredes
+        dT = dt * ((Tp[2:] - 2 * T + Tp[:-2]) / dx**2 + s)
+        T += dT
+        if np.max(np.abs(dT)) / dt < tol * np.max(s):
+            break
+    return s, T, n
+
+for name, build in [("late-binding", build_late),
+                    ("default-arg", build_default_arg),
+                    ("curried", build_curried)]:
+    srcs = build()
+    peaks = sorted({round(float(np.sum(x * f(x)) / np.sum(f(x))), 3) for f in srcs})
+    s, T, n = diffuse_to_steady(srcs)
+    wall = T[0] / (dx / 2) + T[-1] / (dx / 2)  # calor que sale por ambas paredes
+    print(f"{name:13s} distinct heaters={len(peaks)} centers={peaks}")
+    print(f"{'':13s} power in={np.sum(s)*dx:6.3f}  wall flux out={wall:6.3f}  "
+          f"Tmax={T.max():.4f} at x={x[np.argmax(T)]:.3f}  steps={n}")
+```
+
+```text
+late-binding  distinct heaters=1 centers=[0.8]
+              power in=16.000  wall flux out=16.000  Tmax=2.4320 at x=0.775  steps=35392
+default-arg   distinct heaters=4 centers=[0.2, 0.4, 0.6, 0.8]
+              power in=10.000  wall flux out=10.000  Tmax=1.5670 at x=0.585  steps=38394
+curried       distinct heaters=4 centers=[0.2, 0.4, 0.6, 0.8]
+              power in=10.000  wall flux out=10.000  Tmax=1.5670 at x=0.585  steps=38394
+```
+
+El código de arriba puede ejecutarse directamente en el navegador. Las dos barras avanzan a la vez con el mismo bucle FTCS.
+
+<HeaterClosureRodRace />
+
+Con los valores por defecto, la tabla reproduce el bloque de salida: power in 16 contra 10, Tmax 2.4320 contra 1.5670, steps 35392 contra 38394. Al marcar "loop order reversed", la corrida con late binding enciende cuatro veces el calentador de potencia 10 y ahora le falta calor. El signo del error depende del orden del bucle.
+
+Tres números de la salida importan.
+
+- **Calor aportado 16 contra 10.** El late binding inyectó $4 \times 40 \times 0.1 = 16$. Lo previsto era $(10+20+30+40) \times 0.1 = 10$. Un 60 % de más.
+- **Posición del máximo 0.775 contra 0.585.** No solo cambia la magnitud: el punto caliente se desplazó. Para criterios de tensión térmica o cambio de fase, el error de posición es el más grave.
+- **wall flux out = power in.** La conservación es exacta en ambos casos. El balance no revela nada.
+
+## P4. ¿Cómo evita el currying este error?
+
+Las notas lo definen así: "Currying: descomponer una función de N argumentos en N funciones de un argumento".
+
+Un calentador es en realidad una función de tres argumentos.
+
+$$
+f(c, q, x) = q\,\mathbb{1}\left[\,|x-c| < w/2\,\right]
+$$
+
+$c$ es el centro, $q$ la potencia, $w$ el ancho y $\mathbb{1}$ la función indicadora (vale 1 si se cumple la condición).
+
+Currificada, recibe un argumento a la vez: $f(c)(q)(x)$. La clave es que los primeros argumentos entran como **argumentos de una llamada a función**. Cada llamada crea un ámbito nuevo (scope, el espacio donde viven las variables). Llamar cuatro veces a `make_heater(c, q)` crea cuatro juegos de casillas `c` y `q`. Cada `heater` interno retiene la suya.
+
+El truco del argumento por defecto (`c=c`) da el mismo resultado. Pero agrega parámetros falsos a la firma. Una llamada errónea `f(x, 0.5)` sobrescribe el centro en silencio. `functools.partial(heater3, c, q)` también es seguro. En la práctica, una fábrica con nombre es lo más legible. Al abrir `heater.__closure__` en un depurador, los valores capturados quedan a la vista.
+
+## P5. ¿Pasa lo mismo con lambdas de C++?
+
+Sí, con otros síntomas. En C++ la forma de captura se escribe explícitamente.
+
+```cpp
+std::vector<std::function<double(double)>> srcs;
+for (std::size_t k = 0; k < centers.size(); ++k) {
+    double c = centers[k], q = powers[k];
+    srcs.push_back([&](double x) { return std::abs(x - c) < w / 2 ? q : 0.0; }); // peligroso
+    // srcs.push_back([=](double x) { ... });   // captura por valor: seguro
+}
+```
+
+`[&]` captura por referencia. Aquí `c` y `q` son locales del cuerpo del bucle, así que su vida termina en cada iteración. Llamar a la lambda fuera del bucle lee variables que ya no existen. Es comportamiento indefinido (undefined behavior). Una compilación de depuración puede devolver por casualidad el último valor; una optimizada puede devolver basura. Es peor que en Python: ni siquiera se reproduce de forma fiable.
+
+Con `[=]`, cada lambda guarda su propia copia, el mismo efecto que la fábrica currificada de Python. Otros puntos de las notas apuntan en la misma dirección. La corrección de `const`, los constructores `explicit` y la propiedad única de `unique_ptr` fijan en tiempo de compilación "quién puede cambiar este valor y cuándo". Si el [artículo sobre arreglos column-major](/es/posts/2026-11-18-column-major-loop-order-cache-set-conflict/) pedía dejar explícita la disposición en memoria, la lista de captura deja explícita la vida útil.
+
+El `codedFixedValue` de OpenFOAM y los callbacks de fuentes definidos por el usuario son, al final, objetos función como estos. Todo código que registre una lambda por parche dentro de un bucle merece una segunda mirada.
+
+## Una prueba de una línea antes de armar una lista de fuentes en un bucle
+
+Justo después del registro, se evalúa cada función en un punto representativo. La línea `peaks` del código hace exactamente eso. Si el número de calentadores distintos no coincide con lo previsto, hay que detenerse ahí.
+
+Esta comprobación termina antes de que corra el solver. Recibir un resultado que conserva perfectamente después de 30 000 pasos ya es tarde. Si hay una `lambda` o un `[&]` dentro de un bucle, intercalar una función fábrica cuesta unas cinco líneas.

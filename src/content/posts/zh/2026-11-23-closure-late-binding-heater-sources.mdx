@@ -1,0 +1,174 @@
+---
+title: "循环里注册了 4 个加热器，只亮了 1 个 — 闭包的延迟绑定与用柯里化固定源项"
+date: 2026-11-23
+description: "Python lambda 和 C++ [&] 捕获会延迟读取循环变量，使 4 个热源叠成最后一个。本文用一维热传导复现这个错误，并用柯里化工厂函数修复。"
+tags: ["Closure", "Functional-Programming", "Heat-Transfer", "Numerical-Analysis", "Algorithms"]
+locale: zh
+slug: 2026-11-23-closure-late-binding-heater-sources
+takeaway: "在循环里创建的闭包捕获的是变量的名字，而不是值。源项和边界条件函数应当用工厂函数先固定参数，而能量守恒检查抓不到这个错误。"
+draft: false
+---
+import { ClosureCaptureLoopLab } from '@/components/post-viz/2026-11-23-closure-late-binding-heater-sources/ClosureCaptureLoopLab'
+import { HeaterClosureRodRace } from '@/components/post-viz/2026-11-23-closure-late-binding-heater-sources/HeaterClosureRodRace'
+
+## 在循环里注册 4 个加热器，会亮几个
+
+在一根杆上放 4 个加热器。位置是 0.2、0.4、0.6、0.8。强度是 10、20、30、40。用循环为每个加热器生成一个函数，放进列表。求解器遍历列表，把函数加起来得到源项。
+
+答案是 1 个。准确地说，是同一个加热器亮了 4 次：位于 0.8、强度 40 的那个。本文讨论造成这一现象的闭包(closure，捕获了外部变量的函数)延迟绑定。我们用一维热传导测量误差有多大，整理用柯里化(currying)防止它的方法。最后看看 C++ lambda 中同样的问题如何出现。
+
+原始笔记是一份 C++ 函数式编程整理。出发点是其中一行："闭包：在函数内部创建局部函数。"定义没错。但笔记没有写这个局部函数到底记住了什么。
+
+## Q1. 闭包捕获的是什么 — 值还是名字
+
+Python 的 `lambda xx: q * ...` 在创建时并不计算 `q`。它只保存一个引用："去看外层那个叫 `q` 的格子。"真正读取值是在函数**被调用时**。
+
+循环变量只有一个格子。每次迭代只是改写格子里的内容。循环结束后，格子里留下最后一个值。之后求解器调用这 4 个函数，它们读的都是同一个格子。
+
+这种行为叫延迟绑定(late binding，在调用时才把名字解析成值)。它不是 bug，而是语言规范。正因如此才更危险。
+
+在下面的模拟中亲手操作一下。用 Step 让循环一次前进一轮。
+
+<ClosureCaptureLoopLab />
+
+在 "by name" 模式下，每轮迭代时，已经创建的加热器也会一起跳到新位置。切换到 "by value"，每个加热器都留在自己的位置，下方两根功率条的长度一致。
+
+## Q2. 为什么连警告都没有就跑完了
+
+没有报错的理由。4 个函数都合法。每个都返回一个正常的热源。只是返回的是同一个热源。
+
+更麻烦的是，结果在物理上看起来很合理。温度为正且光滑。也能顺利达到稳态。能量收支(输入热量 = 从壁面流出的热量)同样闭合。从求解器的角度看，它正确地求解了一个 4 个强度 40 加热器叠在一起的问题。
+
+如果验证习惯止步于"是否守恒、是否收敛"，这个错误就会被放过。就像[把黏度 0.07 截断成零的 Fortran 隐式类型](/zh/posts/2026-11-20-fortran-implicit-none-viscosity-truncated-to-zero/)一样，输入变了，求解器却毫不知情。
+
+## Q3. 误差有多大 — 用代码测量
+
+用时间推进求解一维稳态热传导。
+
+$$
+\frac{\partial T}{\partial t} = \frac{\partial^2 T}{\partial x^2} + s(x), \qquad T(0)=T(1)=0
+$$
+
+$T$ 是温度，$s(x)$ 是各加热器函数之和。导热系数和扩散系数都取 1。
+
+采用 FTCS(时间前向欧拉 + 中心差分)，$\Delta t = 0.4\,\Delta x^2$。壁面用虚拟单元(ghost cell，边界外的假想单元)施加 $T=0$。增量足够小时停止。源项列表用三种方式构建。
+
+```python
+import numpy as np
+
+# 一维杆: k = 1, alpha = 1, 两端 T = 0
+N = 100
+dx = 1.0 / N
+x = (np.arange(N) + 0.5) * dx
+centers = [0.2, 0.4, 0.6, 0.8]     # 加热器中心
+powers = [10.0, 20.0, 30.0, 40.0]  # 加热器强度 q [W/m]
+width = 0.1
+
+def build_late():
+    # 闭包捕获的是 c、q 的"名字"而不是"值"
+    srcs = []
+    for c, q in zip(centers, powers):
+        srcs.append(lambda xx: q * (np.abs(xx - c) < width / 2))
+    return srcs
+
+def build_default_arg():
+    # 默认参数在创建 lambda 的那一刻求值
+    srcs = []
+    for c, q in zip(centers, powers):
+        srcs.append(lambda xx, c=c, q=q: q * (np.abs(xx - c) < width / 2))
+    return srcs
+
+def make_heater(c, q):
+    # 柯里化工厂: 先固定 (c, q)，再返回 f(x)
+    def heater(xx):
+        return q * (np.abs(xx - c) < width / 2)
+    return heater
+
+def build_curried():
+    return [make_heater(c, q) for c, q in zip(centers, powers)]
+
+def diffuse_to_steady(srcs, tol=1e-7):
+    s = sum(f(x) for f in srcs)
+    T = np.zeros(N)
+    dt = 0.4 * dx * dx
+    for n in range(1, 200001):
+        Tp = np.concatenate(([-T[0]], T, [-T[-1]]))  # 虚拟单元，壁面 T = 0
+        dT = dt * ((Tp[2:] - 2 * T + Tp[:-2]) / dx**2 + s)
+        T += dT
+        if np.max(np.abs(dT)) / dt < tol * np.max(s):
+            break
+    return s, T, n
+
+for name, build in [("late-binding", build_late),
+                    ("default-arg", build_default_arg),
+                    ("curried", build_curried)]:
+    srcs = build()
+    peaks = sorted({round(float(np.sum(x * f(x)) / np.sum(f(x))), 3) for f in srcs})
+    s, T, n = diffuse_to_steady(srcs)
+    wall = T[0] / (dx / 2) + T[-1] / (dx / 2)  # 从两侧壁面流出的热量
+    print(f"{name:13s} distinct heaters={len(peaks)} centers={peaks}")
+    print(f"{'':13s} power in={np.sum(s)*dx:6.3f}  wall flux out={wall:6.3f}  "
+          f"Tmax={T.max():.4f} at x={x[np.argmax(T)]:.3f}  steps={n}")
+```
+
+```text
+late-binding  distinct heaters=1 centers=[0.8]
+              power in=16.000  wall flux out=16.000  Tmax=2.4320 at x=0.775  steps=35392
+default-arg   distinct heaters=4 centers=[0.2, 0.4, 0.6, 0.8]
+              power in=10.000  wall flux out=10.000  Tmax=1.5670 at x=0.585  steps=38394
+curried       distinct heaters=4 centers=[0.2, 0.4, 0.6, 0.8]
+              power in=10.000  wall flux out=10.000  Tmax=1.5670 at x=0.585  steps=38394
+```
+
+在浏览器里直接运行上面的代码。两根杆用同一个 FTCS 循环同时推进。
+
+<HeaterClosureRodRace />
+
+默认参数下，表中 power in 16 对 10、Tmax 2.4320 对 1.5670、steps 35392 对 38394 与输出块一致。勾选 "loop order reversed" 后，延迟绑定一侧只把强度 10 的加热器点亮 4 次，反而热量不足。也就是说，误差的方向取决于循环顺序。
+
+输出中要读的数字有三个。
+
+- **输入热量 16 对 10。** 延迟绑定注入了 $4 \times 40 \times 0.1 = 16$。预期值是 $(10+20+30+40) \times 0.1 = 10$。多了 60%。
+- **最高温度位置 0.775 对 0.585。** 不仅是大小，连最热的位置都移动了。如果用于热应力或相变判断，位置误差更致命。
+- **wall flux out = power in。** 两种情况守恒都很精确。守恒检查什么也告诉不了你。
+
+## Q4. 柯里化如何防止这个错误
+
+原始笔记的定义是："柯里化：把有 N 个参数的函数分解成 N 个单参数函数的过程。"
+
+加热器本来是一个三参数函数。
+
+$$
+f(c, q, x) = q\,\mathbb{1}\left[\,|x-c| < w/2\,\right]
+$$
+
+$c$ 是中心，$q$ 是强度，$w$ 是宽度，$\mathbb{1}$ 是条件成立时取 1 的指示函数。
+
+柯里化后，参数逐个传入：$f(c)(q)(x)$。关键在于前面的参数是作为**函数调用的参数**进入的。每次函数调用都会创建新的作用域(scope，变量所在的空间)。调用 `make_heater(c, q)` 四次，就会生成四套 `c`、`q` 格子。内部的 `heater` 各自捕获自己的格子。
+
+默认参数技巧(`c=c`)效果相同。但它会在签名里多出伪参数。有人误写成 `f(x, 0.5)`，中心就被悄悄覆盖。`functools.partial(heater3, c, q)` 也是安全的。实际工作中，具名工厂函数最易读。在调试器里打开 `heater.__closure__`，捕获的值一目了然。
+
+## Q5. C++ lambda 也会这样吗
+
+会，只是症状不同。C++ lambda 需要显式写出捕获方式。
+
+```cpp
+std::vector<std::function<double(double)>> srcs;
+for (std::size_t k = 0; k < centers.size(); ++k) {
+    double c = centers[k], q = powers[k];
+    srcs.push_back([&](double x) { return std::abs(x - c) < w / 2 ? q : 0.0; }); // 危险
+    // srcs.push_back([=](double x) { ... });   // 按值捕获: 安全
+}
+```
+
+`[&]` 是按引用捕获。这里 `c`、`q` 是循环体内的局部变量，每轮迭代结束时生命周期就结束了。在循环外调用 lambda，读到的是已经消失的变量。这是未定义行为(undefined behavior)。调试构建下可能碰巧得到最后一个值，优化构建下可能得到垃圾值。这比 Python 更糟，因为它甚至无法稳定复现。
+
+用 `[=]` 按值捕获，每个 lambda 都持有自己的副本，效果与 Python 的柯里化工厂相同。笔记里的其他条目也指向同一个方向。const 正确性、explicit 构造函数、`unique_ptr` 的独占所有权，都是在编译期钉死"谁能在何时修改这个值"的机制。如果说[列优先数组那篇文章](/zh/posts/2026-11-18-column-major-loop-order-cache-set-conflict/)主张把内存布局写进代码，那么捕获列表就是把生命周期写进代码。
+
+OpenFOAM 的 `codedFixedValue` 和用户自定义源项回调，归根结底也是这样的函数对象。凡是在循环里为每个边界片注册 lambda 的代码，都值得再看一眼。
+
+## 用循环构建源项列表之前的一行测试
+
+注册完成后，立即对每个函数在一个代表点上求值。上面代码中的 `peaks` 那一行就是做这件事。如果不同加热器的数量与预期不符，就当场停下。
+
+这个检查在求解器运行之前就完成了。跑完 3 万步后拿到一个守恒完美的结果，就已经太晚了。如果循环里有 `lambda` 或 `[&]`，插入一个工厂函数的代价大约只有五行。

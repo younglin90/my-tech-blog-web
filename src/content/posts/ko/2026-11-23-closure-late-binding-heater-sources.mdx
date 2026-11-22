@@ -1,0 +1,174 @@
+---
+title: "히터 4개를 루프로 등록했는데 1개만 켜졌다 — 클로저 늦은 바인딩과 커링으로 소스항 고정하기"
+date: 2026-11-23
+description: "파이썬 lambda와 C++ [&] 캡처가 루프 변수를 늦게 읽어 열원 4개가 마지막 하나로 겹치는 버그를 1D 열전도로 재현하고, 커링 팩토리로 고친다."
+tags: ["Closure", "Functional-Programming", "Heat-Transfer", "Numerical-Analysis", "Algorithms"]
+locale: ko
+slug: 2026-11-23-closure-late-binding-heater-sources
+takeaway: "루프 안에서 만든 클로저는 변수의 값이 아니라 이름을 붙잡는다. 소스항·경계조건 함수는 팩토리 함수로 인자를 먼저 고정해야 하고, 에너지 보존 검사로는 이 버그를 잡을 수 없다."
+draft: false
+---
+import { ClosureCaptureLoopLab } from '@/components/post-viz/2026-11-23-closure-late-binding-heater-sources/ClosureCaptureLoopLab'
+import { HeaterClosureRodRace } from '@/components/post-viz/2026-11-23-closure-late-binding-heater-sources/HeaterClosureRodRace'
+
+## 히터 네 개를 루프에서 등록하면 몇 개가 켜질까
+
+막대 위에 히터 네 개를 놓는다. 위치는 0.2, 0.4, 0.6, 0.8이다. 세기는 10, 20, 30, 40이다. 히터마다 함수 하나를 루프에서 만들어 리스트에 넣는다. 솔버는 리스트를 돌며 함수를 더해 소스항을 만든다.
+
+답은 하나다. 정확히는 같은 히터가 네 번 켜진다. 0.8 위치의 세기 40짜리다. 이 글은 이 현상의 원인인 클로저(closure, 바깥 변수를 붙잡은 함수)의 늦은 바인딩을 다룬다. 1D 열전도로 얼마나 틀리는지 재고, 커링(currying)으로 막는 법을 정리한다. 마지막으로 C++ 람다에서 같은 일이 어떻게 생기는지 본다.
+
+원본 노트는 C++ 함수형 프로그래밍 정리였다. 거기 적힌 한 줄이 출발점이다. "클로저: 함수 안에 지역 함수를 만드는 것." 정의는 맞다. 하지만 그 지역 함수가 무엇을 기억하는지는 적혀 있지 않다.
+
+## Q1. 클로저는 무엇을 붙잡는가 — 값인가, 이름인가
+
+파이썬 `lambda xx: q * ...`는 만들어지는 순간 `q`를 계산하지 않는다. "바깥의 `q`라는 칸을 보라"는 참조만 저장한다. 실제로 값을 읽는 건 함수가 **호출될 때**다.
+
+루프 변수는 칸이 하나뿐이다. 반복마다 그 칸의 내용만 바뀐다. 루프가 끝나면 칸에는 마지막 값이 남는다. 솔버가 나중에 함수 네 개를 부르면 넷 다 같은 칸을 읽는다.
+
+이 동작을 늦은 바인딩(late binding, 이름을 호출 시점에 값으로 해석하는 방식)이라 부른다. 버그가 아니라 언어 명세다. 그래서 더 위험하다.
+
+아래 시뮬레이션에서 직접 조작해보자. Step으로 루프를 한 반복씩 돌린다.
+
+<ClosureCaptureLoopLab />
+
+"by name"에서는 반복이 진행될 때마다 이미 만든 히터까지 모두 새 위치로 따라 움직인다. "by value"로 바꾸면 각 히터가 자기 자리에 남고, 아래 막대 두 개의 길이가 같아진다.
+
+## Q2. 왜 경고도 없이 돌아가는가
+
+에러가 날 이유가 없다. 함수 네 개는 모두 유효하다. 각각 정상적인 열원을 돌려준다. 다만 같은 열원을 돌려줄 뿐이다.
+
+더 고약한 점이 있다. 해석 결과가 물리적으로 그럴듯하다. 온도는 양수이고 매끄럽다. 정상상태에도 잘 도달한다. 에너지 수지(들어온 열 = 벽으로 나간 열)도 맞는다. 솔버 입장에서는 세기 40짜리 히터 네 개를 겹쳐 놓은 문제를 정확히 푼 것이다.
+
+검증 습관이 "보존되는가, 수렴하는가"에서 멈추면 이 버그는 통과한다. [점성 0.07이 0으로 잘린 포트란 묵시적 타입](/ko/posts/2026-11-20-fortran-implicit-none-viscosity-truncated-to-zero/)처럼, 입력이 바뀌었는데 솔버는 모른다.
+
+## Q3. 얼마나 틀리는가 — 코드로 재기
+
+1D 정상 열전도 문제를 시간 전진으로 푼다.
+
+$$
+\frac{\partial T}{\partial t} = \frac{\partial^2 T}{\partial x^2} + s(x), \qquad T(0)=T(1)=0
+$$
+
+$T$는 온도, $s(x)$는 히터 함수들의 합이다. 열전도율과 확산계수는 1로 둔다.
+
+FTCS(시간 전진 오일러 + 중심 차분)로 $\Delta t = 0.4\,\Delta x^2$를 쓴다. 벽은 고스트 셀(ghost cell, 경계 밖 가상 셀)로 $T=0$을 맞춘다. 증분이 충분히 작아지면 멈춘다. 소스 리스트는 세 가지 방식으로 만든다.
+
+```python
+import numpy as np
+
+# 1D 막대: k = 1, alpha = 1, 양 끝 T = 0
+N = 100
+dx = 1.0 / N
+x = (np.arange(N) + 0.5) * dx
+centers = [0.2, 0.4, 0.6, 0.8]     # 히터 중심
+powers = [10.0, 20.0, 30.0, 40.0]  # 히터 세기 q [W/m]
+width = 0.1
+
+def build_late():
+    # 클로저가 c, q의 '값'이 아니라 '이름'을 붙잡는다
+    srcs = []
+    for c, q in zip(centers, powers):
+        srcs.append(lambda xx: q * (np.abs(xx - c) < width / 2))
+    return srcs
+
+def build_default_arg():
+    # 기본 인자는 lambda를 만드는 순간 평가된다
+    srcs = []
+    for c, q in zip(centers, powers):
+        srcs.append(lambda xx, c=c, q=q: q * (np.abs(xx - c) < width / 2))
+    return srcs
+
+def make_heater(c, q):
+    # 커링된 팩토리: (c, q)를 먼저 고정하고 f(x)를 돌려준다
+    def heater(xx):
+        return q * (np.abs(xx - c) < width / 2)
+    return heater
+
+def build_curried():
+    return [make_heater(c, q) for c, q in zip(centers, powers)]
+
+def diffuse_to_steady(srcs, tol=1e-7):
+    s = sum(f(x) for f in srcs)
+    T = np.zeros(N)
+    dt = 0.4 * dx * dx
+    for n in range(1, 200001):
+        Tp = np.concatenate(([-T[0]], T, [-T[-1]]))  # 고스트 셀, 벽에서 T = 0
+        dT = dt * ((Tp[2:] - 2 * T + Tp[:-2]) / dx**2 + s)
+        T += dT
+        if np.max(np.abs(dT)) / dt < tol * np.max(s):
+            break
+    return s, T, n
+
+for name, build in [("late-binding", build_late),
+                    ("default-arg", build_default_arg),
+                    ("curried", build_curried)]:
+    srcs = build()
+    peaks = sorted({round(float(np.sum(x * f(x)) / np.sum(f(x))), 3) for f in srcs})
+    s, T, n = diffuse_to_steady(srcs)
+    wall = T[0] / (dx / 2) + T[-1] / (dx / 2)  # 양쪽 벽으로 빠져나간 열
+    print(f"{name:13s} distinct heaters={len(peaks)} centers={peaks}")
+    print(f"{'':13s} power in={np.sum(s)*dx:6.3f}  wall flux out={wall:6.3f}  "
+          f"Tmax={T.max():.4f} at x={x[np.argmax(T)]:.3f}  steps={n}")
+```
+
+```text
+late-binding  distinct heaters=1 centers=[0.8]
+              power in=16.000  wall flux out=16.000  Tmax=2.4320 at x=0.775  steps=35392
+default-arg   distinct heaters=4 centers=[0.2, 0.4, 0.6, 0.8]
+              power in=10.000  wall flux out=10.000  Tmax=1.5670 at x=0.585  steps=38394
+curried       distinct heaters=4 centers=[0.2, 0.4, 0.6, 0.8]
+              power in=10.000  wall flux out=10.000  Tmax=1.5670 at x=0.585  steps=38394
+```
+
+위 코드를 브라우저에서 직접 돌려보자. 두 막대가 같은 FTCS 루프로 동시에 전진한다.
+
+<HeaterClosureRodRace />
+
+기본값에서 표의 power in 16 대 10, Tmax 2.4320 대 1.5670, steps 35392 대 38394가 출력 블록과 같게 나온다. "loop order reversed"를 켜면 늦은 바인딩 쪽은 세기 10짜리 히터만 네 번 켜서 오히려 열이 모자라게 된다. 오차의 방향이 루프 순서에 달려 있다는 뜻이다.
+
+출력에서 읽을 숫자는 세 가지다.
+
+- **투입 열량 16 대 10.** 늦은 바인딩은 $4 \times 40 \times 0.1 = 16$을 넣었다. 의도한 값은 $(10+20+30+40) \times 0.1 = 10$이다. 60% 과다다.
+- **최고 온도 위치 0.775 대 0.585.** 크기만이 아니라 뜨거운 곳 자체가 옮겨 갔다. 열응력이나 상변화 판정이라면 위치 오차가 더 치명적이다.
+- **wall flux out = power in.** 두 경우 모두 보존이 정확하다. 보존 검사는 아무것도 알려주지 않는다.
+
+## Q4. 커링은 이 버그를 어떻게 막는가
+
+원본 노트의 정의는 이렇다. "커링: N개 인자를 가진 함수를 하나의 인자를 가진 N개 함수로 분해하는 과정."
+
+히터는 원래 세 인자 함수다.
+
+$$
+f(c, q, x) = q\,\mathbb{1}\left[\,|x-c| < w/2\,\right]
+$$
+
+$c$는 중심, $q$는 세기, $w$는 폭, $\mathbb{1}$은 조건이 참이면 1인 지시함수다.
+
+커링하면 $f(c)(q)(x)$처럼 인자를 하나씩 받는다. 핵심은 앞쪽 인자가 **함수 호출의 인자**로 들어간다는 점이다. 함수 호출은 그때마다 새 스코프(scope, 변수가 사는 공간)를 만든다. `make_heater(c, q)`를 네 번 부르면 `c`, `q` 칸도 네 벌 생긴다. 안쪽 `heater`는 각자 자기 칸을 붙잡는다.
+
+기본 인자 트릭(`c=c`)도 같은 결과를 낸다. 하지만 시그니처에 가짜 인자가 생긴다. 누군가 `f(x, 0.5)`처럼 부르면 조용히 덮어써진다. `functools.partial(heater3, c, q)`도 안전하다. 실무에서는 이름 있는 팩토리가 가장 읽기 쉽다. 디버거에서 `heater.__closure__`를 열면 붙잡은 값이 바로 보인다.
+
+## Q5. C++ 람다에서도 같은 일이 생기나
+
+생긴다. 다만 증상이 다르다. C++ 람다는 캡처 방식을 명시한다.
+
+```cpp
+std::vector<std::function<double(double)>> srcs;
+for (std::size_t k = 0; k < centers.size(); ++k) {
+    double c = centers[k], q = powers[k];
+    srcs.push_back([&](double x) { return std::abs(x - c) < w / 2 ? q : 0.0; }); // 위험
+    // srcs.push_back([=](double x) { ... });   // 값 캡처: 안전
+}
+```
+
+`[&]`는 참조 캡처다. 여기서 `c`, `q`는 루프 본문 안 지역 변수라 반복마다 수명이 끝난다. 루프 밖에서 람다를 부르면 이미 사라진 변수를 읽는다. 정의되지 않은 동작(undefined behavior)이다. 디버그 빌드에서는 마지막 값이 우연히 나오고, 최적화 빌드에서는 쓰레기 값이 나올 수 있다. 파이썬보다 나쁘다. 재현조차 안 된다.
+
+`[=]`로 값을 캡처하면 각 람다가 복사본을 가진다. 파이썬의 커링 팩토리와 같은 효과다. 노트에 적힌 다른 항목들도 같은 방향을 가리킨다. 상수 정확성(`const`), 명시적 생성자, `unique_ptr`의 고유 소유권 모두 "누가 언제 값을 바꿀 수 있는가"를 컴파일 시점에 못 박는 장치다. [열 우선 배열 글](/ko/posts/2026-11-18-column-major-loop-order-cache-set-conflict/)이 메모리 배치를 코드에 드러내라고 했다면, 캡처 목록은 수명을 코드에 드러낸다.
+
+OpenFOAM의 `codedFixedValue`나 사용자 정의 소스항 콜백도 결국 이런 함수 객체다. 패치마다 람다를 루프로 등록하는 코드는 의심해볼 만하다.
+
+## 소스항 리스트를 루프로 만들기 전에 해볼 한 줄 테스트
+
+등록이 끝난 직후, 함수마다 대표점을 하나씩 찍어 본다. 위 코드의 `peaks` 줄이 그 역할이다. 서로 다른 히터 수가 의도한 개수와 다르면 그 자리에서 멈춘다.
+
+이 검사는 솔버를 돌리기 전에 끝난다. 3만 스텝을 돌린 뒤 보존이 맞는 결과를 받으면 늦다. 루프 안에서 `lambda`나 `[&]`를 쓰고 있다면, 그 줄에 팩토리 함수 하나를 끼워 넣는 비용은 다섯 줄이다.

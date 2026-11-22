@@ -1,0 +1,174 @@
+---
+title: "ヒーター4個をループで登録したら1個しか点かなかった — クロージャの遅延束縛とカリー化で熱源項を固定する"
+date: 2026-11-23
+description: "Pythonのlambdaや C++ の[&]キャプチャがループ変数を遅れて読み、熱源4個が最後の1個に重なるバグを1D熱伝導で再現し、カリー化ファクトリで直します。"
+tags: ["Closure", "Functional-Programming", "Heat-Transfer", "Numerical-Analysis", "Algorithms"]
+locale: ja
+slug: 2026-11-23-closure-late-binding-heater-sources
+takeaway: "ループ内で作ったクロージャは変数の値ではなく名前を捕まえます。熱源項や境界条件の関数はファクトリ関数で引数を先に固定すべきで、エネルギー保存のチェックではこのバグは見つかりません。"
+draft: false
+---
+import { ClosureCaptureLoopLab } from '@/components/post-viz/2026-11-23-closure-late-binding-heater-sources/ClosureCaptureLoopLab'
+import { HeaterClosureRodRace } from '@/components/post-viz/2026-11-23-closure-late-binding-heater-sources/HeaterClosureRodRace'
+
+## ヒーター4個をループで登録すると、いくつ点くか
+
+棒の上にヒーターを4個置きます。位置は0.2、0.4、0.6、0.8です。強さは10、20、30、40です。ヒーターごとの関数をループで作り、リストに入れます。ソルバーはリストを回して関数を足し合わせ、熱源項を作ります。
+
+答えは1個です。正確には、同じヒーターが4回点きます。位置0.8、強さ40のものです。この記事では、その原因であるクロージャ(closure、外側の変数を捕まえた関数)の遅延束縛を扱います。1D熱伝導でどれだけ外れるかを測り、カリー化(currying)で防ぐ方法をまとめます。最後に、C++のラムダで同じことがどう起きるかを見ます。
+
+元のノートは C++ の関数型プログラミングのまとめでした。出発点はそこにあった1行です。「クロージャ:関数の中にローカル関数を作ること」。定義は正しいです。しかし、そのローカル関数が何を覚えているかは書かれていませんでした。
+
+## Q1. クロージャは何を捕まえるのか — 値か、名前か
+
+Python の `lambda xx: q * ...` は、作られた瞬間に `q` を評価しません。「外側の `q` という枠を見よ」という参照だけを保存します。値を実際に読むのは、関数が**呼ばれたとき**です。
+
+ループ変数の枠は1つしかありません。反復ごとに中身が書き換わるだけです。ループが終わると、枠には最後の値が残ります。後でソルバーが4つの関数を呼ぶと、4つとも同じ枠を読みます。
+
+この動作を遅延束縛(late binding、名前を呼び出し時点で値に解決する方式)と呼びます。バグではなく言語仕様です。だからこそ危険です。
+
+下のシミュレーションで実際に操作してみましょう。Step でループを1反復ずつ進めます。
+
+<ClosureCaptureLoopLab />
+
+「by name」では、反復が進むたびに、すでに作ったヒーターまで新しい位置へ一斉に移動します。「by value」に切り替えると各ヒーターは自分の位置に残り、下の2本のバーの長さがそろいます。
+
+## Q2. なぜ警告もなく動くのか
+
+エラーになる理由がありません。4つの関数はどれも有効です。それぞれ正常な熱源を返します。ただ、同じ熱源を返しているだけです。
+
+さらに厄介な点があります。結果が物理的にもっともらしいのです。温度は正で滑らかです。定常状態にもきちんと到達します。エネルギー収支(入った熱 = 壁から出た熱)も合います。ソルバーから見れば、強さ40のヒーターを4個重ねた問題を正しく解いただけです。
+
+検証の習慣が「保存するか、収束するか」で止まっていると、このバグは通過します。[粘性0.07がゼロに切り捨てられた Fortran の暗黙の型](/ja/posts/2026-11-20-fortran-implicit-none-viscosity-truncated-to-zero/)と同じく、入力が変わったのにソルバーは気づきません。
+
+## Q3. どれだけ外れるか — コードで測る
+
+1D 定常熱伝導を時間発展で解きます。
+
+$$
+\frac{\partial T}{\partial t} = \frac{\partial^2 T}{\partial x^2} + s(x), \qquad T(0)=T(1)=0
+$$
+
+$T$ は温度、$s(x)$ はヒーター関数の和です。熱伝導率と拡散係数は1とします。
+
+FTCS(時間前進オイラー + 中心差分)で $\Delta t = 0.4\,\Delta x^2$ を使います。壁ではゴーストセル(ghost cell、境界の外の仮想セル)で $T=0$ を課します。増分が十分小さくなったら止めます。熱源リストは3通りの方法で作ります。
+
+```python
+import numpy as np
+
+# 1D 棒: k = 1, alpha = 1, 両端 T = 0
+N = 100
+dx = 1.0 / N
+x = (np.arange(N) + 0.5) * dx
+centers = [0.2, 0.4, 0.6, 0.8]     # ヒーター中心
+powers = [10.0, 20.0, 30.0, 40.0]  # ヒーター強さ q [W/m]
+width = 0.1
+
+def build_late():
+    # クロージャは c, q の「値」ではなく「名前」を捕まえる
+    srcs = []
+    for c, q in zip(centers, powers):
+        srcs.append(lambda xx: q * (np.abs(xx - c) < width / 2))
+    return srcs
+
+def build_default_arg():
+    # デフォルト引数は lambda を作った瞬間に評価される
+    srcs = []
+    for c, q in zip(centers, powers):
+        srcs.append(lambda xx, c=c, q=q: q * (np.abs(xx - c) < width / 2))
+    return srcs
+
+def make_heater(c, q):
+    # カリー化ファクトリ: (c, q) を先に固定して f(x) を返す
+    def heater(xx):
+        return q * (np.abs(xx - c) < width / 2)
+    return heater
+
+def build_curried():
+    return [make_heater(c, q) for c, q in zip(centers, powers)]
+
+def diffuse_to_steady(srcs, tol=1e-7):
+    s = sum(f(x) for f in srcs)
+    T = np.zeros(N)
+    dt = 0.4 * dx * dx
+    for n in range(1, 200001):
+        Tp = np.concatenate(([-T[0]], T, [-T[-1]]))  # ゴーストセル、壁で T = 0
+        dT = dt * ((Tp[2:] - 2 * T + Tp[:-2]) / dx**2 + s)
+        T += dT
+        if np.max(np.abs(dT)) / dt < tol * np.max(s):
+            break
+    return s, T, n
+
+for name, build in [("late-binding", build_late),
+                    ("default-arg", build_default_arg),
+                    ("curried", build_curried)]:
+    srcs = build()
+    peaks = sorted({round(float(np.sum(x * f(x)) / np.sum(f(x))), 3) for f in srcs})
+    s, T, n = diffuse_to_steady(srcs)
+    wall = T[0] / (dx / 2) + T[-1] / (dx / 2)  # 両側の壁から逃げた熱
+    print(f"{name:13s} distinct heaters={len(peaks)} centers={peaks}")
+    print(f"{'':13s} power in={np.sum(s)*dx:6.3f}  wall flux out={wall:6.3f}  "
+          f"Tmax={T.max():.4f} at x={x[np.argmax(T)]:.3f}  steps={n}")
+```
+
+```text
+late-binding  distinct heaters=1 centers=[0.8]
+              power in=16.000  wall flux out=16.000  Tmax=2.4320 at x=0.775  steps=35392
+default-arg   distinct heaters=4 centers=[0.2, 0.4, 0.6, 0.8]
+              power in=10.000  wall flux out=10.000  Tmax=1.5670 at x=0.585  steps=38394
+curried       distinct heaters=4 centers=[0.2, 0.4, 0.6, 0.8]
+              power in=10.000  wall flux out=10.000  Tmax=1.5670 at x=0.585  steps=38394
+```
+
+上のコードをブラウザで実際に動かしてみましょう。2本の棒が同じ FTCS ループで同時に進みます。
+
+<HeaterClosureRodRace />
+
+デフォルト値では、表の power in 16 対 10、Tmax 2.4320 対 1.5670、steps 35392 対 38394 が出力ブロックと一致します。「loop order reversed」をオンにすると、遅延束縛側は強さ10のヒーターだけを4回点け、逆に熱が足りなくなります。誤差の向きがループ順序で決まるということです。
+
+出力で読むべき数字は3つです。
+
+- **投入熱量 16 対 10。** 遅延束縛は $4 \times 40 \times 0.1 = 16$ を入れました。意図した値は $(10+20+30+40) \times 0.1 = 10$ です。60% の過多です。
+- **最高温度の位置 0.775 対 0.585。** 大きさだけでなく、熱い場所そのものが移りました。熱応力や相変化の判定なら、位置の誤差のほうが致命的です。
+- **wall flux out = power in。** どちらも保存は正確です。保存チェックは何も教えてくれません。
+
+## Q4. カリー化はこのバグをどう防ぐのか
+
+元のノートの定義はこうです。「カリー化:N個の引数を持つ関数を、引数1個の関数N個に分解する過程」。
+
+ヒーターは本来、3引数の関数です。
+
+$$
+f(c, q, x) = q\,\mathbb{1}\left[\,|x-c| < w/2\,\right]
+$$
+
+$c$ は中心、$q$ は強さ、$w$ は幅、$\mathbb{1}$ は条件が真なら1になる指示関数です。
+
+カリー化すると $f(c)(q)(x)$ のように引数を1つずつ受け取ります。要点は、前の引数が**関数呼び出しの引数**として入ることです。関数呼び出しは毎回新しいスコープ(scope、変数が住む空間)を作ります。`make_heater(c, q)` を4回呼べば、`c` と `q` の枠も4組できます。内側の `heater` はそれぞれ自分の枠を捕まえます。
+
+デフォルト引数のトリック(`c=c`)も同じ結果になります。ただしシグネチャに偽の引数が増えます。誰かが `f(x, 0.5)` と呼ぶと、黙って上書きされます。`functools.partial(heater3, c, q)` も安全です。実務では名前付きファクトリがいちばん読みやすいです。デバッガで `heater.__closure__` を開けば、捕まえた値がすぐ見えます。
+
+## Q5. C++ のラムダでも同じことが起きるか
+
+起きます。ただし症状が違います。C++ のラムダはキャプチャ方法を明示します。
+
+```cpp
+std::vector<std::function<double(double)>> srcs;
+for (std::size_t k = 0; k < centers.size(); ++k) {
+    double c = centers[k], q = powers[k];
+    srcs.push_back([&](double x) { return std::abs(x - c) < w / 2 ? q : 0.0; }); // 危険
+    // srcs.push_back([=](double x) { ... });   // 値キャプチャ: 安全
+}
+```
+
+`[&]` は参照キャプチャです。ここで `c` と `q` はループ本体のローカル変数なので、反復ごとに寿命が尽きます。ループの外でラムダを呼ぶと、すでに消えた変数を読みます。未定義動作(undefined behavior)です。デバッグビルドでは偶然最後の値が出て、最適化ビルドではゴミ値が出ることがあります。Python より悪いです。再現すらしないからです。
+
+`[=]` で値をキャプチャすれば、各ラムダがコピーを持ちます。Python のカリー化ファクトリと同じ効果です。ノートにある他の項目も同じ方向を指しています。const 正確性、explicit コンストラクタ、`unique_ptr` の固有所有権は、どれも「誰がいつ値を変えられるか」をコンパイル時に固定する仕組みです。[列優先配列の記事](/ja/posts/2026-11-18-column-major-loop-order-cache-set-conflict/)がメモリ配置をコードに明示せよと述べたなら、キャプチャリストは寿命をコードに明示します。
+
+OpenFOAM の `codedFixedValue` やユーザー定義の熱源コールバックも、結局はこうした関数オブジェクトです。パッチごとにラムダをループで登録するコードは、一度疑ってみる価値があります。
+
+## 熱源リストをループで作る前に試す1行テスト
+
+登録が終わった直後に、関数ごとに代表点を1つずつ評価します。上のコードの `peaks` の行がその役目です。異なるヒーターの数が意図した個数と違えば、その場で止めます。
+
+このチェックはソルバーを回す前に終わります。3万ステップ回した後で保存の合った結果を受け取っても手遅れです。ループ内で `lambda` や `[&]` を使っているなら、ファクトリ関数を1つ挟むコストは5行ほどです。

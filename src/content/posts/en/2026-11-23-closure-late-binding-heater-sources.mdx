@@ -1,0 +1,174 @@
+---
+title: "I Registered Four Heaters in a Loop and Only One Turned On — Closure Late Binding and Currying for Source Terms"
+date: 2026-11-23
+description: "Python lambdas and C++ [&] captures read loop variables too late, so four heat sources collapse into one. A 1D conduction run measures the damage; a curried factory fixes it."
+tags: ["Closure", "Functional-Programming", "Heat-Transfer", "Numerical-Analysis", "Algorithms"]
+locale: en
+slug: 2026-11-23-closure-late-binding-heater-sources
+takeaway: "A closure built inside a loop captures the variable's name, not its value. Freeze source-term and boundary-condition parameters with a factory function, because an energy-balance check will never catch this bug."
+draft: false
+---
+import { ClosureCaptureLoopLab } from '@/components/post-viz/2026-11-23-closure-late-binding-heater-sources/ClosureCaptureLoopLab'
+import { HeaterClosureRodRace } from '@/components/post-viz/2026-11-23-closure-late-binding-heater-sources/HeaterClosureRodRace'
+
+## Register four heaters in a loop. How many turn on?
+
+Put four heaters on a rod at x = 0.2, 0.4, 0.6 and 0.8. Their strengths are 10, 20, 30 and 40. A loop builds one function per heater and appends it to a list. The solver sums the list to get the source term.
+
+The answer is one. More precisely, the same heater turns on four times: the strength-40 heater at 0.8. This post is about the cause, late binding in closures (functions that hold on to outer variables). We measure the error on a 1D conduction problem, fix it with currying, and then look at how the same thing shows up with C++ lambdas.
+
+The starting point was a set of notes on functional programming in C++. One line read: "Closure: a local function defined inside a function." True. But the notes never said what that local function remembers.
+
+## Q1. What does a closure capture — a value or a name?
+
+A Python `lambda xx: q * ...` does not evaluate `q` when it is created. It stores a reference that says "look at the outer slot called `q`." The value is read only when the function is **called**.
+
+A loop variable has exactly one slot. Each iteration overwrites its contents. When the loop ends, the slot holds the last value. When the solver later calls all four functions, they all read the same slot.
+
+This is late binding (resolving a name to a value at call time). It is not a bug. It is the language spec, which makes it more dangerous.
+
+Try it in the simulation below. Use Step to advance the loop one iteration at a time.
+
+<ClosureCaptureLoopLab />
+
+In "by name" mode, every heater created so far jumps to the new position each iteration. Switch to "by value" and each heater stays put, and the two power bars at the bottom match.
+
+## Q2. Why does it run without a warning?
+
+There is nothing to complain about. All four functions are valid. Each returns a perfectly good heat source. They just return the same one.
+
+It gets worse. The result looks physical. Temperatures are positive and smooth. The run reaches steady state. The energy balance (heat in = heat out through the walls) closes. From the solver's point of view, it solved a problem with four strength-40 heaters stacked on top of each other, and solved it correctly.
+
+If your verification habit stops at "does it conserve, does it converge," this bug passes. Like the [Fortran implicit typing that truncated a viscosity of 0.07 to zero](/en/posts/2026-11-20-fortran-implicit-none-viscosity-truncated-to-zero/), the input changed and the solver never noticed.
+
+## Q3. How wrong is it? Measuring with code
+
+We solve 1D steady conduction by marching in time.
+
+$$
+\frac{\partial T}{\partial t} = \frac{\partial^2 T}{\partial x^2} + s(x), \qquad T(0)=T(1)=0
+$$
+
+$T$ is temperature and $s(x)$ is the sum of the heater functions. Conductivity and diffusivity are set to 1.
+
+We use FTCS (forward Euler in time, central differences in space) with $\Delta t = 0.4\,\Delta x^2$. Ghost cells (fictitious cells outside the boundary) enforce $T=0$ at the walls. The march stops once the increment is small enough. The source list is built three ways.
+
+```python
+import numpy as np
+
+# 1D rod: k = 1, alpha = 1, T = 0 at both ends
+N = 100
+dx = 1.0 / N
+x = (np.arange(N) + 0.5) * dx
+centers = [0.2, 0.4, 0.6, 0.8]     # heater centers
+powers = [10.0, 20.0, 30.0, 40.0]  # heater strength q [W/m]
+width = 0.1
+
+def build_late():
+    # the closure captures the NAMES c and q, not their values
+    srcs = []
+    for c, q in zip(centers, powers):
+        srcs.append(lambda xx: q * (np.abs(xx - c) < width / 2))
+    return srcs
+
+def build_default_arg():
+    # default arguments are evaluated when the lambda is created
+    srcs = []
+    for c, q in zip(centers, powers):
+        srcs.append(lambda xx, c=c, q=q: q * (np.abs(xx - c) < width / 2))
+    return srcs
+
+def make_heater(c, q):
+    # curried factory: fix (c, q) first, return f(x)
+    def heater(xx):
+        return q * (np.abs(xx - c) < width / 2)
+    return heater
+
+def build_curried():
+    return [make_heater(c, q) for c, q in zip(centers, powers)]
+
+def diffuse_to_steady(srcs, tol=1e-7):
+    s = sum(f(x) for f in srcs)
+    T = np.zeros(N)
+    dt = 0.4 * dx * dx
+    for n in range(1, 200001):
+        Tp = np.concatenate(([-T[0]], T, [-T[-1]]))  # ghost cells, T = 0 at walls
+        dT = dt * ((Tp[2:] - 2 * T + Tp[:-2]) / dx**2 + s)
+        T += dT
+        if np.max(np.abs(dT)) / dt < tol * np.max(s):
+            break
+    return s, T, n
+
+for name, build in [("late-binding", build_late),
+                    ("default-arg", build_default_arg),
+                    ("curried", build_curried)]:
+    srcs = build()
+    peaks = sorted({round(float(np.sum(x * f(x)) / np.sum(f(x))), 3) for f in srcs})
+    s, T, n = diffuse_to_steady(srcs)
+    wall = T[0] / (dx / 2) + T[-1] / (dx / 2)  # heat leaving through both walls
+    print(f"{name:13s} distinct heaters={len(peaks)} centers={peaks}")
+    print(f"{'':13s} power in={np.sum(s)*dx:6.3f}  wall flux out={wall:6.3f}  "
+          f"Tmax={T.max():.4f} at x={x[np.argmax(T)]:.3f}  steps={n}")
+```
+
+```text
+late-binding  distinct heaters=1 centers=[0.8]
+              power in=16.000  wall flux out=16.000  Tmax=2.4320 at x=0.775  steps=35392
+default-arg   distinct heaters=4 centers=[0.2, 0.4, 0.6, 0.8]
+              power in=10.000  wall flux out=10.000  Tmax=1.5670 at x=0.585  steps=38394
+curried       distinct heaters=4 centers=[0.2, 0.4, 0.6, 0.8]
+              power in=10.000  wall flux out=10.000  Tmax=1.5670 at x=0.585  steps=38394
+```
+
+Now run the code above in your browser. Both rods march with the same FTCS loop at the same time.
+
+<HeaterClosureRodRace />
+
+At the defaults the table reproduces the output block: power in 16 vs 10, Tmax 2.4320 vs 1.5670, steps 35392 vs 38394. Check "loop order reversed" and the late-binding run turns on the strength-10 heater four times, so now it is short on heat. The sign of the error depends on loop order.
+
+Three numbers in the output matter.
+
+- **Heat input 16 vs 10.** Late binding injected $4 \times 40 \times 0.1 = 16$. The intended value is $(10+20+30+40) \times 0.1 = 10$. That is 60% too much.
+- **Peak location 0.775 vs 0.585.** Not just the magnitude — the hot spot itself moved. For thermal stress or phase-change criteria, the location error is the worse one.
+- **wall flux out = power in.** Conservation is exact in both cases. The balance check tells you nothing.
+
+## Q4. How does currying prevent this?
+
+The notes define it this way: "Currying: decomposing a function of N arguments into N functions of one argument each."
+
+A heater is really a three-argument function.
+
+$$
+f(c, q, x) = q\,\mathbb{1}\left[\,|x-c| < w/2\,\right]
+$$
+
+$c$ is the center, $q$ the strength, $w$ the width, and $\mathbb{1}$ the indicator function (1 when the condition holds).
+
+Curried, it takes one argument at a time: $f(c)(q)(x)$. The key is that the leading arguments enter as **arguments of a function call**. Every call creates a fresh scope (the space where variables live). Calling `make_heater(c, q)` four times creates four separate `c` and `q` slots. Each inner `heater` holds on to its own.
+
+The default-argument trick (`c=c`) gives the same result. But it adds fake parameters to the signature. Call `f(x, 0.5)` by mistake and the center is silently overwritten. `functools.partial(heater3, c, q)` is also safe. In practice, a named factory is the easiest to read. Open `heater.__closure__` in a debugger and the captured values are right there.
+
+## Q5. Does the same thing happen with C++ lambdas?
+
+Yes, with different symptoms. C++ lambdas spell out how they capture.
+
+```cpp
+std::vector<std::function<double(double)>> srcs;
+for (std::size_t k = 0; k < centers.size(); ++k) {
+    double c = centers[k], q = powers[k];
+    srcs.push_back([&](double x) { return std::abs(x - c) < w / 2 ? q : 0.0; }); // dangerous
+    // srcs.push_back([=](double x) { ... });   // capture by value: safe
+}
+```
+
+`[&]` captures by reference. Here `c` and `q` are locals of the loop body, so their lifetime ends every iteration. Calling the lambda after the loop reads variables that no longer exist. That is undefined behavior. A debug build may happen to return the last value; an optimized build may return garbage. This is worse than Python — it may not even reproduce.
+
+Capturing with `[=]` gives each lambda its own copy, the same effect as the curried factory in Python. Other items in the notes point the same way. `const` correctness, explicit constructors, and the unique ownership of `unique_ptr` all pin down "who can change this value, and when" at compile time. The [column-major post](/en/posts/2026-11-18-column-major-loop-order-cache-set-conflict/) argued for making memory layout explicit in code; a capture list makes lifetime explicit.
+
+OpenFOAM's `codedFixedValue` and user-defined source callbacks are ultimately function objects like these. Any code that registers one lambda per patch inside a loop deserves a second look.
+
+## A one-line test before you build a source list in a loop
+
+Right after registration, evaluate each function at a representative point. The `peaks` line in the code above does exactly that. If the number of distinct heaters differs from what you intended, stop there.
+
+This check finishes before the solver runs. Getting a perfectly conserving result after 30,000 steps is too late. If there is a `lambda` or `[&]` inside a loop, slotting in a factory function costs about five lines.
