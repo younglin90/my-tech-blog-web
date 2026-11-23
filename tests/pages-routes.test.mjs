@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict'
-import { readFileSync, readdirSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
+import { relative, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
+import { runInNewContext } from 'node:vm'
 
 const rules = JSON.parse(readFileSync(new URL('../public/_routes.json', import.meta.url), 'utf8'))
 
-// Paths here use exact rules or terminal /*. Exclusions override inclusions.
-const matches = (rule, path) => rule.endsWith('/*') ? path.startsWith(rule.slice(0, -1)) : path === rule
+// Exact or terminal wildcard prefix rules. Exclusions override inclusions.
+const matches = (rule, path) => rule.endsWith('*') ? path.startsWith(rule.slice(0, -1)) : path === rule
 const invokes = path => rules.include.some(rule => matches(rule, path)) &&
   !rules.exclude.some(rule => matches(rule, path))
 
@@ -20,25 +22,29 @@ test('Pages route config is within platform constraints', () => {
   }
 })
 
-test('locale middleware still sees root, unlocalized and unknown paths', () => {
-  for (const path of ['/', '/posts/example', '/tags/numerics', '/unknown-path']) {
-    assert.equal(invokes(path), true, path)
+test('locale middleware still sees root and supported legacy paths', () => {
+  assert.equal(invokes('/'), true)
+  for (const segment of ['posts', 'series', 'tags', 'tools', 'about', 'bookmarks', 'glossary', 'privacy', 'viz']) {
+    assert.equal(invokes('/' + segment), true, segment)
+    assert.equal(invokes('/' + segment + '/'), true, segment)
+  }
+  for (const segment of ['posts', 'series', 'tags', 'tools']) {
+    assert.equal(invokes('/' + segment + '/example/'), true, segment)
   }
 })
 
 test('admin auth and every checked-in Pages API remain routed through Functions', () => {
-  const apis = []
-  for (const prefix of ['api', 'admin/api']) {
-    const directory = new URL('../functions/' + prefix + '/', import.meta.url)
-    for (const entry of readdirSync(directory, { withFileTypes: true })) {
-      if (entry.isFile() && entry.name.endsWith('.ts')) {
-        apis.push('/' + prefix + '/' + entry.name.slice(0, -3))
-      }
-    }
+  const directory = fileURLToPath(new URL('../functions/', import.meta.url))
+  const entries = readdirSync(directory, { recursive: true, withFileTypes: true })
+  const paths = entries.filter(entry => entry.isFile() && entry.name.endsWith('.ts') && !entry.name.startsWith('_'))
+    .map(entry => ('/' + relative(directory, resolve(entry.parentPath ?? entry.path, entry.name))).slice(0, -3).replaceAll('\\', '/'))
+  assert.ok(paths.length >= 11)
+  for (const path of paths) {
+    assert.equal(invokes(path), true, path)
+    assert.equal(invokes(path + '/'), true, path)
   }
-  assert.ok(apis.length >= 11)
   for (const path of ['/admin', '/admin/', '/admin.html', '/admin.txt',
-    '/admin/index.html', '/admin/index.txt', '/admin/__next._full.txt', ...apis]) {
+    '/admin/index.html', '/admin/index.txt', '/admin/__next._full.txt', '/admin.__next.txt']) {
     assert.equal(invokes(path), true, path)
   }
 })
@@ -51,14 +57,46 @@ test('localized content and common static assets bypass Functions', () => {
     }
   }
   for (const path of ['/_next/static/chunks/main.js', '/katex/fonts/sample.woff2',
-    '/sitemap.xml', '/robots.txt', '/post-index.json', '/rag-index.json', '/favicon.ico']) {
+    '/sitemap.xml', '/sitemap/ko.xml', '/robots.txt', '/post-index.json', '/rag-index.json', '/favicon.ico',
+    '/read/', '/preview/disabled/', '/unknown-path', '/unexpected/file.js', '/api/unknown', '/api/visitors/unknown']) {
     assert.equal(invokes(path), false, path)
   }
 })
 
-if (process.env.CHECK_BUILD_OUTPUT === '1') {
+test('the service worker lets visits reuse the server HTTP TTL, not a service-worker cache', () => {
+  const handlers = {}
+  const network = []
+  const origin = 'https://example.test'
+  runInNewContext(readFileSync(new URL('../public/sw.js', import.meta.url), 'utf8'), {
+    URL,
+    self: { location: { origin }, addEventListener: (event, handler) => { handlers[event] = handler } },
+    fetch: (request, init) => { network.push(init.cache); return Promise.resolve() },
+  })
+  const request = (path, method = 'GET') => {
+    let intercepted = false
+    handlers.fetch({ request: new Request(origin + path, { method }), respondWith: () => { intercepted = true } })
+    return intercepted
+  }
+  assert.equal(request('/api/visitors'), false)
+  assert.equal(request('/api/pageview', 'POST'), false)
+  assert.equal(request('/api/post-stats'), true)
+  assert.equal(request('/sitemap/ko.xml'), true)
+  assert.deepEqual(network, ['no-store', 'no-store'])
+})
+
+// npm run build calls this after Next export. Bare unit tests may omit out/.
+if (process.env.CHECK_BUILD_OUTPUT === '1' || existsSync(resolve('out'))) {
   test('Next export includes the exact Pages routing config', () => {
     const buildRoutes = JSON.parse(readFileSync(resolve('out/_routes.json'), 'utf8'))
     assert.deepEqual(buildRoutes, rules)
+  })
+  test('all exported admin documents and payloads remain behind Functions', () => {
+    const out = resolve('out')
+    const entries = readdirSync(out, { recursive: true, withFileTypes: true })
+    const files = entries.filter(entry => entry.isFile())
+      .map(entry => relative(out, resolve(entry.parentPath ?? entry.path, entry.name)).replaceAll('\\', '/'))
+      .filter(file => file.startsWith('admin/') || file.startsWith('admin.'))
+    assert.ok(files.some(file => file === 'admin/index.html' || file === 'admin.html'))
+    for (const file of files) assert.equal(invokes('/' + file), true, file)
   })
 }

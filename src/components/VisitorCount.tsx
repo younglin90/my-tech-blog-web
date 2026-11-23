@@ -32,7 +32,9 @@ export function VisitorCount() {
 
   useEffect(() => {
     let cancelled = false
-    fetch('/api/visitors', { cache: 'no-store' })
+    // Let the browser reuse the public response for its short server-set TTL.
+    // Error responses remain no-store.
+    fetch('/api/visitors')
       .then(async (r) => {
         if (r.ok) return r.json()
         const body = (await r.json().catch(() => ({}))) as { error?: string }
