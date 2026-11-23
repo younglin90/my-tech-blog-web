@@ -4,6 +4,7 @@ import Link from 'next/link'
 import { notFound } from 'next/navigation'
 import type { Metadata } from 'next'
 import { ReadingStats } from '@/components/ReadingStats'
+import curation from '@/components/featured-cfd.json'
 import { TopPosts } from '@/components/TopPosts'
 import { LOCALES, isLocale, t, SITE_NAMES, hreflangAlternates, type Locale } from '@/lib/i18n'
 import { SITE_URL } from '@/lib/site'
@@ -107,6 +108,18 @@ export default async function AboutPage({ params }: AboutProps) {
       <p className="mb-8 text-base leading-relaxed" style={{ color: 'var(--text-muted)' }}>
         {t(loc, 'about.intro')}
       </p>
+
+      <section id="editorial-practice" aria-labelledby="editorial-practice-title" className="mb-10">
+        <h2 id="editorial-practice-title" className="display mb-2 text-xl font-semibold" style={{ color: 'var(--text)' }}>
+          {curation.locales[loc].editor}
+        </h2>
+        <p className="mb-2 text-sm leading-relaxed" style={{ color: 'var(--text-muted)' }}>
+          {curation.locales[loc].principles}
+        </p>
+        <p className="text-sm leading-relaxed" style={{ color: 'var(--text-muted)' }}>
+          {curation.locales[loc].ads}
+        </p>
+      </section>
 
       <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-5">
         {stats.map(({ label, value }) => (

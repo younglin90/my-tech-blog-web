@@ -1,6 +1,5 @@
 import '@/styles/globals.css'
 import { Fraunces, Geist, JetBrains_Mono } from 'next/font/google'
-import Script from 'next/script'
 import { ThemeProvider } from '@/components/ThemeProvider'
 import { BackToTop } from '@/components/BackToTop'
 import { MobileNav } from '@/components/MobileNav'
@@ -115,16 +114,6 @@ export default function RootLayout({
         style={{ fontFamily: 'var(--font-body, system-ui, sans-serif)' }}
       >
         <PageviewBeacon />
-        {ADSENSE.client && (
-          // 광고는 hydration 뒤에 로드한다. AdSense가 실행 직후 <head>에 관리 script를
-          // 삽입해 React와 충돌하는 것을 막고, publisher 확인은 위 meta가 담당한다.
-          <Script
-            id="adsense-loader"
-            strategy="afterInteractive"
-            src={`https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=${ADSENSE.client}`}
-            crossOrigin="anonymous"
-          />
-        )}
         {/* 글자 크기 선호를 첫 페인트 전에 적용한다. hydration 후에 적용하면
             'large'를 고른 재방문자는 본문 전체가 1.0 → 1.2로 리플로우되는 걸 보게 된다. */}
         <script

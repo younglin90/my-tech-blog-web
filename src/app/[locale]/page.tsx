@@ -4,6 +4,7 @@ import { ContinueReading } from '@/components/ContinueReading'
 import { TopPosts } from '@/components/TopPosts'
 import { RecentComments } from '@/components/RecentComments'
 import { StartHere } from '@/components/StartHere'
+import { FeaturedCfd } from '@/components/FeaturedCfd'
 import { LOCALES, isLocale, t, hreflangAlternates, type Locale } from '@/lib/i18n'
 import postIndex from '@/lib/post-index.json'
 import { dedupePostsForLocale } from '@/lib/post-index'
@@ -92,6 +93,7 @@ export default async function Home({ params }: HomeProps) {
         </h1>
       </section>
 
+      <FeaturedCfd locale={loc} />
       <StartHere locale={loc} />
 
       <div className="mb-12 grid gap-4 sm:grid-cols-2">
