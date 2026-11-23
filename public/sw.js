@@ -4,7 +4,7 @@
  * visible immediately without asking users to clear browser cache.
  */
 
-const CACHE_VERSION = 'v4'
+const CACHE_VERSION = 'v5'
 const CACHE_STATIC = `static-${CACHE_VERSION}`
 
 const PRECACHE = ['/icon-192.png', '/icon-512.png', '/favicon.ico', '/manifest.webmanifest']
@@ -74,7 +74,11 @@ self.addEventListener('fetch', (e) => {
     return
   }
 
-  // Generated content — always network. Do not populate stale page caches.
+  // Respect the HTTP cache for this public aggregate. Do not put it in a
+  // service worker cache: only successful responses have a short server TTL.
+  if (url.pathname === '/api/visitors') return
+
+  // Generated content and other APIs — always network. Do not populate stale page caches.
   if (isApiOrFeed(url)) {
     e.respondWith(
       fetch(req, { cache: 'no-store' }).catch(() => new Response('offline', { status: 503 })),
