@@ -164,9 +164,15 @@ frontmatter·본문만 새로 쓰고, import·수식·코드블록·출력블록
 ## 6. 검증 — push 전 게이트
 ```bash
 node scripts/verify-post-set.mjs {DATE}-{slug} --run   # 5 locale 정합 + 코드블록 실제 실행
-npm run build 2>&1 | tail -20                          # KaTeX/MDX/TS 에러 0이어야 함
+(set -o pipefail; npm run build 2>&1 | tail -20)          # 빌드 실패 상태를 유지하고 로그는 마지막 20줄만 표시
 ```
 둘 다 통과해야 push. 실패하면 고치고 재실행. **깨진 상태로 main push 절대 금지.**
+
+### Workers 요청 예산 — push 전 확인
+- 5개 locale 포스트와 두 post-viz는 정적 배포를 유지한다. viz 계산은 브라우저의 TypeScript에서만 실행하고, 데이터는 번들 또는 정적 파일로 제공한다. rAF, 슬라이더, Play/Step/Reset은 네트워크 요청을 만들지 않는다.
+- 일일 발행 작업에서는 `functions/`, `public/_routes.json`, 전역 미들웨어, 서비스 워커, 방문자 집계 코드를 변경하지 않는다. 새 API, 폴링, 자동 재시도, 캐시 우회, 공통 API 프리페치를 추가하지 않는다. 서버 기능이 필요한 소재는 정적 데모로 바꾸거나 별도 작업으로 보고한다.
+- 검증은 기존 `verify-post-set --run`과 로컬 `npm run build`로 끝낸다. 운영 사이트 전체 크롤링·반복 스모크 테스트와 `/api/pageview` 등 집계 쓰기 호출은 금지한다.
+- 커밋 직전 `git diff --cached --name-only`를 한 번 확인한다. 오늘 포스트 5개, 해당 viz, 인덱스와 이번 빌드의 생성물만 포함한다. 금지 경로·별개 변경이 섞였거나 검증에 실패했으면 push하지 않고 사유를 보고한다.
 
 ## 7. 커밋 & 푸시
 ```bash
