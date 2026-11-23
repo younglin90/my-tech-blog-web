@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { relative, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
 import { runInNewContext } from 'node:vm'
 
@@ -33,10 +34,10 @@ test('locale middleware still sees root and supported legacy paths', () => {
 })
 
 test('admin auth and every checked-in Pages API remain routed through Functions', () => {
-  const directory = new URL('../functions/', import.meta.url)
+  const directory = fileURLToPath(new URL('../functions/', import.meta.url))
   const entries = readdirSync(directory, { recursive: true, withFileTypes: true })
   const paths = entries.filter(entry => entry.isFile() && entry.name.endsWith('.ts') && !entry.name.startsWith('_'))
-    .map(entry => resolve(entry.parentPath ?? entry.path, entry.name).slice(resolve(directory.pathname).length, -3).replaceAll('\\', '/'))
+    .map(entry => ('/' + relative(directory, resolve(entry.parentPath ?? entry.path, entry.name))).slice(0, -3).replaceAll('\\', '/'))
   assert.ok(paths.length >= 11)
   for (const path of paths) {
     assert.equal(invokes(path), true, path)
@@ -92,9 +93,8 @@ if (process.env.CHECK_BUILD_OUTPUT === '1' || existsSync(resolve('out'))) {
   test('all exported admin documents and payloads remain behind Functions', () => {
     const out = resolve('out')
     const entries = readdirSync(out, { recursive: true, withFileTypes: true })
-    const root = out.length + 1
     const files = entries.filter(entry => entry.isFile())
-      .map(entry => resolve(entry.parentPath ?? entry.path, entry.name).slice(root).replaceAll('\\', '/'))
+      .map(entry => relative(out, resolve(entry.parentPath ?? entry.path, entry.name)).replaceAll('\\', '/'))
       .filter(file => file.startsWith('admin/') || file.startsWith('admin.'))
     assert.ok(files.some(file => file === 'admin/index.html' || file === 'admin.html'))
     for (const file of files) assert.equal(invokes('/' + file), true, file)
