@@ -1,0 +1,156 @@
+---
+title: "Aislar un cable aumentó su pérdida de calor un 23 % — el radio crítico de aislamiento r = k/h en cilindros"
+date: 2026-11-24
+description: "Envolver un cilindro delgado con aislante primero aumenta la pérdida de calor. Se deriva la suma de resistencias de conducción y convección para obtener k/h y se verifica con volúmenes finitos."
+tags: ["Critical-Insulation-Radius", "Thermal-Resistance", "Heat-Transfer", "FVM", "Fluid-Mechanics"]
+locale: es
+slug: 2026-11-24-critical-insulation-radius-cylinder
+takeaway: "Si el radio exterior de una capa aislante cilíndrica es menor que k/h, añadir aislante deja escapar más calor, y el punto de equilibrio frente al cilindro desnudo queda mucho más afuera."
+draft: false
+---
+import { CriticalRadiusResistanceLab } from '@/components/post-viz/2026-11-24-critical-insulation-radius-cylinder/CriticalRadiusResistanceLab'
+import { InsulationMarchRace } from '@/components/post-viz/2026-11-24-critical-insulation-radius-cylinder/InsulationMarchRace'
+
+## ¿Un forro más grueso enfría o calienta el cable?
+
+Un cable de cobre de 5 mm de radio está a 100 °C en aire a 25 °C. Para reducir su pérdida de calor, se envuelve con 6 mm de aislante de k = 0.055 W/m·K. Al hacer las cuentas, la pérdida no baja. Sube un 23 %.
+
+Este artículo explica de dónde sale ese resultado contraintuitivo. Al sumar dos resistencias térmicas cilíndricas y derivar aparece el radio crítico de aislamiento (critical insulation radius, el radio exterior del aislante en el que la pérdida de calor es máxima), $r_{cr} = k/h$. Después se avanza la capa aislante en el tiempo con volúmenes finitos (FVM) para confirmar el valor. Al final bastará una división para saber si un espesor de aislante sirve o no.
+
+## Dos resistencias que se mueven en sentidos opuestos
+
+En estado estacionario, el flujo de calor por metro de cilindro, $q'$, es la diferencia de temperatura dividida por la resistencia térmica (diferencia de temperatura por unidad de flujo de calor). Con aislante hay dos resistencias en serie. Una es la conducción a través de la capa. La otra es la convección desde la superficie exterior hacia el aire.
+
+Más espesor aumenta la resistencia de conducción. Pero también agranda la superficie exterior. Una superficie mayor reduce la resistencia de convección. Que la suma suba o baje depende de cuál de los dos cambios es más rápido.
+
+La siguiente simulación permite comprobarlo de forma directa.
+
+<CriticalRadiusResistanceLab />
+
+Al subir despacio el control $r_o$ desde 5 mm, la curva roja de resistencia total toca fondo en 11 mm, mientras las partículas que salen del cable aumentan. Con $h$ en 50, el mínimo baja a la escala de 1 mm y desaparece. En convección forzada el efecto apenas se nota.
+
+## De dónde sale ln(r_o/r_i)/2πk
+
+La conducción radial estacionaria en un cilindro sin generación de calor es:
+
+$$
+\frac{1}{r}\frac{d}{dr}\left(k\,r\,\frac{dT}{dr}\right)=0
+$$
+
+$r$ es la coordenada radial, $k$ la conductividad térmica y $T$ la temperatura. Integrando dos veces se obtiene $T(r)=C_1\ln r + C_2$. La temperatura cae de forma logarítmica con el radio.
+
+El flujo de calor es $q = -k\,(2\pi r L)\,dT/dr$. Al sustituir el perfil logarítmico, $r$ se cancela y queda una constante independiente del radio. Por unidad de longitud resulta la resistencia de conducción:
+
+$$
+R'_{cond}=\frac{\ln(r_o/r_i)}{2\pi k},\qquad R'_{conv}=\frac{1}{2\pi r_o h}
+$$
+
+$r_i$ es el radio del cable, $r_o$ el radio exterior del aislante y $h$ el coeficiente de convección. En una pared plana, la resistencia de conducción crece en proporción al espesor. En un cilindro solo crece de forma logarítmica. La resistencia de convección, en cambio, cae como $1/r_o$. En un cilindro delgado el logaritmo crece lento y $1/r_o$ cae rápido. Ahí está el origen de la inversión.
+
+## Un máximo, no un mínimo: derivar R'_tot
+
+Se deriva el total $R'_{tot}=R'_{cond}+R'_{conv}$ respecto de $r_o$ y se iguala a cero:
+
+$$
+\frac{dR'_{tot}}{dr_o}=\frac{1}{2\pi k\,r_o}-\frac{1}{2\pi h\,r_o^{2}}=0
+\;\;\Rightarrow\;\; r_{cr}=\frac{k}{h}
+$$
+
+La nota de clase original preguntaba si existe un espesor óptimo que minimice la pérdida. La segunda derivada es positiva en $r_{cr}$. Así que este punto es un mínimo de resistencia y un máximo de pérdida. No existe un espesor finito que minimice la pérdida de calor.
+
+Con los valores del ejemplo, $r_{cr}=0.055/5=0.011$ m. El cable de 5 mm es más delgado. Por eso, hasta 6 mm de espesor, cada capa extra aumenta la pérdida. En el cableado eléctrico esto es una ventaja. Un forro delgado aísla eléctricamente y ayuda a enfriar a la vez.
+
+## Código: avanzar la capa aislante con volúmenes finitos hasta el estado estacionario
+
+La solución analítica sola resulta un poco seca. La capa se divide en 20 celdas y arranca a 25 °C. El lado del cable se fija en 100 °C y el exterior usa una frontera convectiva (condición de Robin: el flujo en la superficie es proporcional a la diferencia de temperatura superficie–aire). Se avanza de forma explícita hasta que el flujo que entra desde el cable y el que sale al aire coinciden dentro de $10^{-4}$.
+
+```python
+import math
+
+r_i, k, h = 0.005, 0.055, 5.0          # radio del cable [m], k del aislante [W/m K], h [W/m2 K]
+T_i, T_inf = 100.0, 25.0               # temperatura del cable / del aire [C]
+rho_c = 4.0e4                          # rho*c del aislante [J/m3 K]
+N, tol = 20, 1e-4                      # celdas, tolerancia de estado estacionario
+
+def q_line_exact(r_o):
+    R = math.log(r_o / r_i) / (2*math.pi*k) + 1.0 / (2*math.pi*r_o*h)
+    return (T_i - T_inf) / R
+
+def insulation_march(r_o):
+    dr = (r_o - r_i) / N
+    rf = [r_i + j*dr for j in range(N + 1)]
+    V = [math.pi*(rf[j+1]**2 - rf[j]**2) for j in range(N)]
+    G = [2*math.pi*rf[j]*k/dr for j in range(1, N)]          # conductancia de caras interiores
+    G0 = 2*math.pi*r_i*k/(dr/2)                               # cable -> celda 0
+    Gout = 1/((dr/2)/(2*math.pi*r_o*k) + 1/(2*math.pi*r_o*h)) # celda N-1 -> aire
+    Gsum = [0.0]*N
+    for j, g in enumerate(G):
+        Gsum[j] += g; Gsum[j+1] += g
+    Gsum[0] += G0; Gsum[-1] += Gout
+    dt = 0.45*min(rho_c*V[j]/Gsum[j] for j in range(N))       # límite de estabilidad explícito
+    T = [T_inf]*N; n = 0
+    while True:
+        dQ = [0.0]*N
+        for j, g in enumerate(G):
+            f = g*(T[j] - T[j+1]); dQ[j] -= f; dQ[j+1] += f
+        q_in = G0*(T_i - T[0]); q_out = Gout*(T[-1] - T_inf)
+        dQ[0] += q_in; dQ[-1] -= q_out
+        T = [T[j] + dt*dQ[j]/(rho_c*V[j]) for j in range(N)]
+        n += 1
+        if abs(q_in - q_out) < tol*q_out:
+            return n, n*dt, q_out, T[-1]
+
+r_cr = k / h
+q_bare = q_line_exact(r_i)
+print(f"r_cr = k/h = {r_cr*1e3:.1f} mm,  bare wire q' = {q_bare:.2f} W/m")
+print(" r_o[mm]  steps     t[s]   q'_num  q'_exact  err[%]  T_s[C]")
+for r_o in [0.007, 0.011, 0.020, 0.030, 0.050]:
+    n, t, q, Ts = insulation_march(r_o)
+    qe = q_line_exact(r_o)
+    print(f"{r_o*1e3:7.0f} {n:6d} {t:8.1f} {q:8.2f} {qe:8.2f} {100*(q-qe)/qe:7.3f} {Ts:7.1f}")
+r = r_cr
+while q_line_exact(r) > q_bare:
+    r += 1e-5
+print(f"insulation starts to pay off only beyond r_o = {r*1e3:.1f} mm")
+```
+
+```text
+r_cr = k/h = 11.0 mm,  bare wire q' = 11.78 W/m
+ r_o[mm]  steps     t[s]   q'_num  q'_exact  err[%]  T_s[C]
+      7  12227     13.4    13.58    13.58  -0.002    87.1
+     11   9808     97.2    14.49    14.49  -0.016    67.5
+     20   6999    439.7    13.37    13.39  -0.096    47.0
+     30   5608    992.7    11.98    12.01  -0.239    38.4
+     50   4449   2617.3    10.21    10.27  -0.653    32.2
+insulation starts to pay off only beyond r_o = 32.0 mm
+```
+
+El mismo código puede ejecutarse directamente en el navegador.
+
+<InsulationMarchRace />
+
+Con los valores por defecto (A = 11 mm, B = 50 mm), al pulsar Play los pasos, $q'$ y el error de la tabla convergen a las dos filas correspondientes del bloque de salida. Bajar el caso A a 6 mm achica las celdas y dispara el número de pasos. Al subir $h$ se puede comprobar si se invierte el orden de los $q'$ estacionarios.
+
+## Lectura de la salida: 23 %, 32 mm y 0.653 %
+
+La primera cifra es 23 %. Los 11.78 W/m del cable desnudo suben a 14.49 W/m en $r_{cr}$. Y eso con la superficie ya a 67.5 °C. La diferencia de temperatura se redujo, pero el área creció 2.2 veces y la convección ganó.
+
+La segunda es 32 mm, donde el aislante por fin supera al cable desnudo. Son 6.4 veces el radio del cable y unas 3 veces $r_{cr}$. A 30 mm la pérdida sigue en 11.98 W/m, peor que sin aislante. La creencia común de que "basta con pasar el radio crítico" es falsa. Hay que seguir envolviendo bastante más allá de $r_{cr}$ solo para quedar a mano.
+
+La tercera es el error de 0.653 %. Con el mismo número de celdas, las capas gruesas acumulan más error. Cada celda supone una temperatura lineal, que se aparta del perfil logarítmico. Con $r_o/r_i = 10$, el gradiente en la primera celda es 10 veces el de la última. Una malla uniforme en $\ln r$ en lugar de $r$ casi elimina este error.
+
+También vale mirar los pasos. La capa de 7 mm llega al estado estacionario en 13 s de tiempo físico, pero necesita 12,227 pasos. Capas delgadas implican celdas pequeñas, y el límite de estabilidad explícito recorta $\Delta t$. Ese límite de los esquemas de difusión y un intento de esquivarlo se tratan en el [artículo sobre DuFort–Frankel](/es/posts/2026-11-04-dufort-frankel-negative-temperature/).
+
+## La esfera da 2k/h, y h no es realmente constante
+
+En una esfera se repiten los pasos. La resistencia de conducción es $(1/r_i-1/r_o)/(4\pi k)$ y la de convección $1/(4\pi r_o^2 h)$. Al derivar se obtiene $r_{cr}=2k/h$, el doble que en el cilindro. La superficie crece como $r^2$, así que la resistencia de convección cae más rápido.
+
+En la práctica $h$ no es constante. En convección natural sobre un cilindro horizontal, $h$ escala aproximadamente con el diámetro a la potencia $-1/4$. Un radio mayor baja un poco $h$ y desplaza $r_{cr}$ ligeramente por encima de la fórmula. La radiación se suma al $h$ efectivo. Una superficie de alta emisividad eleva $h$ y reduce $r_{cr}$. Un código de conducción 1D con varias fuentes de calor sobre una barra está en el [artículo sobre clausuras y calentadores](/es/posts/2026-11-23-closure-late-binding-heater-sources/). Al añadirle la frontera de Robin de hoy se puede repetir el mismo experimento.
+
+En CFD esto conecta con el mallado para transferencia de calor conjugada (conjugate heat transfer, resolver a la vez la conducción en el sólido y la convección en el fluido). Si un forro delgado se aplasta en una o dos celdas, su resistencia de conducción parece desaparecer. El código anterior dio 0.65 % de error en la capa gruesa incluso con 20 celdas. Lo más seguro es estirar la malla en dirección radial dentro de la capa.
+
+## Antes de dimensionar el aislante de una tubería, dividir k entre h
+
+Conviene calcular $k/h$ antes de elegir un espesor. En aire quieto, $h$ vale 5–10 W/m²·K y la $k$ del aislante 0.03–0.06 W/m·K. Eso sitúa $r_{cr}$ entre 3 y 12 mm.
+
+Una línea de vapor con diámetro exterior de decenas de milímetros ya supera $r_{cr}$. Ahí, más aislante siempre reduce la pérdida. La trampa está en los radios pequeños: cables de señal, vainas de termopar, tubos finos de refrigerante. En esos casos hay que calcular el radio de equilibrio frente al cilindro desnudo y dimensionar a partir de él. En el ejemplo de hoy, ese radio fue 32 mm.

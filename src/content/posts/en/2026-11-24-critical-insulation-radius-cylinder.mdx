@@ -1,0 +1,156 @@
+---
+title: "Insulating a Wire Raised Its Heat Loss by 23% — The Critical Insulation Radius r = k/h for Cylinders"
+date: 2026-11-24
+description: "Wrapping insulation around a thin cylinder first increases heat loss. Differentiate the summed conduction and convection resistances to get r = k/h, then confirm it with a finite-volume march."
+tags: ["Critical-Insulation-Radius", "Thermal-Resistance", "Heat-Transfer", "FVM", "Fluid-Mechanics"]
+locale: en
+slug: 2026-11-24-critical-insulation-radius-cylinder
+takeaway: "If the outer radius of a cylindrical insulation layer is below k/h, adding insulation lets more heat escape, and the break-even point against the bare cylinder lies much farther out."
+draft: false
+---
+import { CriticalRadiusResistanceLab } from '@/components/post-viz/2026-11-24-critical-insulation-radius-cylinder/CriticalRadiusResistanceLab'
+import { InsulationMarchRace } from '@/components/post-viz/2026-11-24-critical-insulation-radius-cylinder/InsulationMarchRace'
+
+## Does a thicker jacket make a wire run hotter or cooler?
+
+A copper wire of radius 5 mm sits at 100 °C in 25 °C air. To cut its heat loss, you wrap it in 6 mm of insulation with k = 0.055 W/m·K. Run the numbers and the loss does not drop. It rises by 23%.
+
+This post explains where that counterintuitive result comes from. Add two cylindrical thermal resistances, differentiate, and you get the critical insulation radius (the outer insulation radius at which heat loss peaks), $r_{cr} = k/h$. Then we march the insulation layer in time with a finite-volume (FVM) model and confirm the number. By the end, a single division will tell you whether an insulation spec actually helps.
+
+## Two resistances moving in opposite directions
+
+At steady state, the heat rate per meter of cylinder, $q'$, is the temperature difference divided by the thermal resistance (temperature difference per unit heat rate). With insulation in place, two resistances act in series. One is conduction through the insulation layer. The other is convection from the outer surface into the air.
+
+Thicker insulation raises the conduction resistance. But it also enlarges the outer surface. A larger surface lowers the convection resistance. Whether the sum goes up or down is a race between those two rates.
+
+Try it yourself in the simulation below.
+
+<CriticalRadiusResistanceLab />
+
+Slide $r_o$ up slowly from 5 mm. The red total-resistance curve bottoms out at 11 mm, while the particles leaving the wire actually multiply. Push $h$ up to 50 and the minimum drops into the 1 mm range and vanishes. Under forced convection, the effect barely shows up.
+
+## Where ln(r_o/r_i)/2πk comes from
+
+Steady radial conduction in a cylinder with no heat generation reads:
+
+$$
+\frac{1}{r}\frac{d}{dr}\left(k\,r\,\frac{dT}{dr}\right)=0
+$$
+
+Here $r$ is the radial coordinate, $k$ the thermal conductivity, and $T$ the temperature. Integrating twice gives $T(r)=C_1\ln r + C_2$. Temperature falls off logarithmically with radius.
+
+The heat rate is $q = -k\,(2\pi r L)\,dT/dr$. Plug in the log profile and $r$ cancels, leaving a constant independent of radius. Per unit length, that gives the conduction resistance:
+
+$$
+R'_{cond}=\frac{\ln(r_o/r_i)}{2\pi k},\qquad R'_{conv}=\frac{1}{2\pi r_o h}
+$$
+
+$r_i$ is the wire radius, $r_o$ the outer insulation radius, and $h$ the convection coefficient. For a flat wall, conduction resistance grows linearly with thickness. For a cylinder, it grows only logarithmically. Convection resistance, meanwhile, falls as $1/r_o$. On a thin cylinder the log grows slowly and $1/r_o$ falls fast. That is the root of the reversal.
+
+## A maximum, not a minimum: differentiating R'_tot
+
+Differentiate the total $R'_{tot}=R'_{cond}+R'_{conv}$ with respect to $r_o$ and set it to zero:
+
+$$
+\frac{dR'_{tot}}{dr_o}=\frac{1}{2\pi k\,r_o}-\frac{1}{2\pi h\,r_o^{2}}=0
+\;\;\Rightarrow\;\; r_{cr}=\frac{k}{h}
+$$
+
+The original lecture note asked whether an optimal thickness minimizes heat loss. The second derivative is positive at $r_{cr}$. So this point is a resistance minimum and a heat-loss maximum. No finite thickness minimizes heat loss.
+
+With the example values, $r_{cr}=0.055/5=0.011$ m. The 5 mm wire is smaller than that. So up to 6 mm of thickness, every extra layer increases the loss. In electrical wiring this is a bonus. A thin jacket insulates electrically and helps cooling at the same time.
+
+## Code: march the insulation layer with finite volumes to steady state
+
+The analytic answer alone is a bit dry. Split the layer into 20 cells and start it at 25 °C. The wire side is held at 100 °C, and the outer side uses a convective boundary (a Robin condition, where surface heat flux is proportional to the surface–air temperature difference). We march explicitly in time until the inflow at the wire and the outflow to the air agree within $10^{-4}$.
+
+```python
+import math
+
+r_i, k, h = 0.005, 0.055, 5.0          # wire radius [m], insulation k [W/m K], h [W/m2 K]
+T_i, T_inf = 100.0, 25.0               # wire / ambient temperature [C]
+rho_c = 4.0e4                          # insulation rho*c [J/m3 K]
+N, tol = 20, 1e-4                      # cells, steady-state tolerance
+
+def q_line_exact(r_o):
+    R = math.log(r_o / r_i) / (2*math.pi*k) + 1.0 / (2*math.pi*r_o*h)
+    return (T_i - T_inf) / R
+
+def insulation_march(r_o):
+    dr = (r_o - r_i) / N
+    rf = [r_i + j*dr for j in range(N + 1)]
+    V = [math.pi*(rf[j+1]**2 - rf[j]**2) for j in range(N)]
+    G = [2*math.pi*rf[j]*k/dr for j in range(1, N)]          # interior face conductance
+    G0 = 2*math.pi*r_i*k/(dr/2)                               # wire -> cell 0
+    Gout = 1/((dr/2)/(2*math.pi*r_o*k) + 1/(2*math.pi*r_o*h)) # cell N-1 -> air
+    Gsum = [0.0]*N
+    for j, g in enumerate(G):
+        Gsum[j] += g; Gsum[j+1] += g
+    Gsum[0] += G0; Gsum[-1] += Gout
+    dt = 0.45*min(rho_c*V[j]/Gsum[j] for j in range(N))       # explicit stability limit
+    T = [T_inf]*N; n = 0
+    while True:
+        dQ = [0.0]*N
+        for j, g in enumerate(G):
+            f = g*(T[j] - T[j+1]); dQ[j] -= f; dQ[j+1] += f
+        q_in = G0*(T_i - T[0]); q_out = Gout*(T[-1] - T_inf)
+        dQ[0] += q_in; dQ[-1] -= q_out
+        T = [T[j] + dt*dQ[j]/(rho_c*V[j]) for j in range(N)]
+        n += 1
+        if abs(q_in - q_out) < tol*q_out:
+            return n, n*dt, q_out, T[-1]
+
+r_cr = k / h
+q_bare = q_line_exact(r_i)
+print(f"r_cr = k/h = {r_cr*1e3:.1f} mm,  bare wire q' = {q_bare:.2f} W/m")
+print(" r_o[mm]  steps     t[s]   q'_num  q'_exact  err[%]  T_s[C]")
+for r_o in [0.007, 0.011, 0.020, 0.030, 0.050]:
+    n, t, q, Ts = insulation_march(r_o)
+    qe = q_line_exact(r_o)
+    print(f"{r_o*1e3:7.0f} {n:6d} {t:8.1f} {q:8.2f} {qe:8.2f} {100*(q-qe)/qe:7.3f} {Ts:7.1f}")
+r = r_cr
+while q_line_exact(r) > q_bare:
+    r += 1e-5
+print(f"insulation starts to pay off only beyond r_o = {r*1e3:.1f} mm")
+```
+
+```text
+r_cr = k/h = 11.0 mm,  bare wire q' = 11.78 W/m
+ r_o[mm]  steps     t[s]   q'_num  q'_exact  err[%]  T_s[C]
+      7  12227     13.4    13.58    13.58  -0.002    87.1
+     11   9808     97.2    14.49    14.49  -0.016    67.5
+     20   6999    439.7    13.37    13.39  -0.096    47.0
+     30   5608    992.7    11.98    12.01  -0.239    38.4
+     50   4449   2617.3    10.21    10.27  -0.653    32.2
+insulation starts to pay off only beyond r_o = 32.0 mm
+```
+
+Now run the same code in your browser.
+
+<InsulationMarchRace />
+
+With the defaults (A = 11 mm, B = 50 mm), hit Play and the table's steps, $q'$, and error settle onto the two matching rows of the output block. Drop case A to 6 mm and the step count shoots up as cells shrink. Raise $h$ and check whether the steady $q'$ ranking of the two cases flips.
+
+## Reading the output: 23%, 32 mm, and 0.653%
+
+The first number is 23%. The bare wire's 11.78 W/m climbs to 14.49 W/m at $r_{cr}$. That happens even though the surface temperature drops to 67.5 °C. The temperature difference shrank, but the area grew 2.2×, so convection won.
+
+The second is 32 mm, where insulation finally beats the bare wire. That is 6.4× the wire radius and about 3× $r_{cr}$. At 30 mm the loss is still 11.98 W/m, worse than bare. The common belief that "you just need to get past the critical radius" is wrong. You have to keep wrapping well past $r_{cr}$ just to break even.
+
+The third is the 0.653% error. The cell count is fixed, yet thicker layers carry more error. Each cell assumes a linear temperature, which drifts from the log profile. At $r_o/r_i = 10$, the gradient at the first cell is 10× the gradient at the last. A grid uniform in $\ln r$ instead of $r$ nearly removes this error.
+
+The step counts are worth a look too. The 7 mm layer reaches steady state in 13 s of physical time but needs 12,227 steps. Thin layers mean small cells, and the explicit stability limit chops $\Delta t$. That diffusion-scheme limit and one attempt to dodge it are covered in the [DuFort–Frankel post](/en/posts/2026-11-04-dufort-frankel-negative-temperature/).
+
+## Spheres give 2k/h, and h is not really constant
+
+A sphere follows the same steps. Conduction resistance is $(1/r_i-1/r_o)/(4\pi k)$, and convection resistance is $1/(4\pi r_o^2 h)$. Differentiating gives $r_{cr}=2k/h$, twice the cylinder value. The surface grows as $r^2$, so convection resistance falls faster.
+
+In practice $h$ is not constant. For natural convection on a horizontal cylinder, $h$ scales roughly with diameter to the $-1/4$ power. A larger radius lowers $h$ slightly, nudging $r_{cr}$ a bit above the formula. Radiation adds to the effective $h$. A high-emissivity surface raises $h$ and shrinks $r_{cr}$. A 1D conduction code with several heat sources on a rod lives in the [heater closure post](/en/posts/2026-11-23-closure-late-binding-heater-sources/). Bolt today's Robin boundary onto it and you can run the same experiment.
+
+In CFD this feeds directly into conjugate heat transfer (solving solid conduction and fluid convection together) meshing. Squash a thin jacket into one or two cells and its conduction resistance seems to vanish. The code above hit 0.65% error on a thick layer even with 20 cells. Grading the mesh radially inside the layer is the safer choice.
+
+## Before you size pipe insulation, divide k by h
+
+Compute $k/h$ before picking a thickness. In still air, $h$ is 5–10 W/m²·K and insulation $k$ is 0.03–0.06 W/m·K. That puts $r_{cr}$ between 3 and 12 mm.
+
+A steam line with an outer diameter of tens of millimeters is already past $r_{cr}$. There, more insulation always reduces the loss. The trap is small radii: signal cables, thermocouple sheaths, thin refrigerant lines. For those, compute the break-even radius against the bare cylinder and size from there. In today's example, that radius was 32 mm.
