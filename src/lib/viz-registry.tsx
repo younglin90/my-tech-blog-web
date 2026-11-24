@@ -96,6 +96,8 @@ export const VIZ_COMPONENTS: Record<string, ComponentType> = {
   "CorrectionFluxArrowBalance": lazyViz(() => import("@/components/post-viz/2026-09-23-multicomponent-lbm-correction-velocity/CorrectionFluxArrowBalance").then((m) => ({ default: m.CorrectionFluxArrowBalance }))),
   "CouetteBounceBackLab": lazyViz(() => import("@/components/post-viz/2026-07-20-lbm-bounce-back-zou-he-boundary-conditions/CouetteBounceBackLab").then((m) => ({ default: m.CouetteBounceBackLab }))),
   "CouetteHeatingPrLab": lazyViz(() => import("@/components/post-viz/2026-10-19-two-population-lb-quasi-equilibrium-viscous-heating/CouetteHeatingPrLab").then((m) => ({ default: m.CouetteHeatingPrLab }))),
+  "CouettePoiseuilleSplitLab": lazyViz(() => import("@/components/post-viz/2026-11-25-couette-poiseuille-adverse-pressure-backflow/CouettePoiseuilleSplitLab").then((m) => ({ default: m.CouettePoiseuilleSplitLab }))),
+  "CouettePoiseuilleStartupRace": lazyViz(() => import("@/components/post-viz/2026-11-25-couette-poiseuille-adverse-pressure-backflow/CouettePoiseuilleStartupRace").then((m) => ({ default: m.CouettePoiseuilleStartupRace }))),
   "CounterRotatingVortexPair": lazyViz(() => import("@/components/post-viz/2026-05-26-jet-in-crossflow-vortex-pair-strouhal/CounterRotatingVortexPair").then((m) => ({ default: m.CounterRotatingVortexPair }))),
   "CrankNicolsonSlugTurnRace": lazyViz(() => import("@/components/post-viz/2026-11-16-crank-nicolson-vof-negative-density/CrankNicolsonSlugTurnRace").then((m) => ({ default: m.CrankNicolsonSlugTurnRace }))),
   "CriticalRadiusResistanceLab": lazyViz(() => import("@/components/post-viz/2026-11-24-critical-insulation-radius-cylinder/CriticalRadiusResistanceLab").then((m) => ({ default: m.CriticalRadiusResistanceLab }))),

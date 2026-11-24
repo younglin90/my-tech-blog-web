@@ -1,0 +1,150 @@
+---
+title: "The Top Plate Drags Forward, Yet the Fluid at the Bottom Flows Backward — Couette–Poiseuille Flow and the Adverse Pressure Gradient P = −1"
+date: 2026-11-25
+description: "Why P = −1 sets zero wall shear and the onset of backflow in Couette–Poiseuille flow, where a moving plate meets an adverse pressure gradient — checked with a finite-volume march."
+tags: ["Couette-Flow", "Adverse-Pressure-Gradient", "Poiseuille", "FVM", "Fluid-Mechanics"]
+locale: en
+slug: 2026-11-25-couette-poiseuille-adverse-pressure-backflow
+takeaway: "Couette–Poiseuille flow is a straight line plus a parabola, and the moment the pressure parameter P drops below −1, the fixed-wall shear changes sign and a backflow layer appears."
+draft: false
+---
+import { CouettePoiseuilleSplitLab } from '@/components/post-viz/2026-11-25-couette-poiseuille-adverse-pressure-backflow/CouettePoiseuilleSplitLab'
+import { CouettePoiseuilleStartupRace } from '@/components/post-viz/2026-11-25-couette-poiseuille-adverse-pressure-backflow/CouettePoiseuilleStartupRace'
+
+## The plate moves forward, the bottom fluid moves back
+
+Put fluid between two flat plates. The top plate slides to the right. The bottom plate stays put. Intuition says all the fluid should be dragged to the right. Raise the downstream pressure a little, though, and the fluid near the bottom starts flowing left. This post shows why that threshold sits exactly at $P=-1$. It also covers $P=-3$, where the net flow rate hits zero. At the end, a finite-volume method (FVM, a discretization that solves conservation laws on cell averages) reproduces the result. Then we look at a trap: right at the threshold, the grid flips the sign.
+
+The source is a set of handwritten undergraduate notes on viscous flow. Next to Couette flow (shear flow driven by a moving plate) sits the note "adverse pressure gradient." The sketch below it shows velocity arrows bending backward near the floor. It is the simplest model of separation, the one you see before boundary-layer theory.
+
+## One straight line, one parabola
+
+Let the gap be $h$ and the top-plate speed $U$. Once the flow is fully developed, velocity depends only on $y$. The momentum equation reduces to a balance between pressure gradient and viscous force.
+
+$$
+\mu \frac{d^2 u}{dy^2} = \frac{dp}{dx}, \qquad u(0)=0,\quad u(h)=U
+$$
+
+$\mu$ is the dynamic viscosity and $dp/dx$ is the streamwise pressure gradient. The equation is linear. So the solution splits into two pieces: the Couette solution with no pressure gradient, and the Poiseuille solution (parabolic flow pushed by a pressure difference) with both plates at rest.
+
+$$
+\frac{u}{U} = \frac{y}{h} + P\,\frac{y}{h}\left(1-\frac{y}{h}\right), \qquad P = -\frac{h^2}{2\mu U}\frac{dp}{dx}
+$$
+
+$P$ is the dimensionless pressure parameter. If pressure falls downstream ($dp/dx<0$), then $P>0$: a favorable gradient. If downstream pressure is higher, $P<0$: an adverse pressure gradient. The parabolic piece has the same shape as the [plane Poiseuille analytical solution](/en/posts/2026-03-28-poiseuille-flow-analytical-solution/). Only its sign is set by $P$.
+
+Try it yourself in the simulation below.
+
+<CouettePoiseuilleSplitLab />
+
+Drag $P$ from 0 down to −1 and −3. The green line stays fixed while the purple parabola bulges left. When the white sum curve goes negative near the floor, particles turn red and drift backward.
+
+## P = −1: the moment wall shear vanishes
+
+Shear stress at the fixed wall is proportional to the velocity gradient. Differentiate the solution and it falls out.
+
+$$
+\tau_{\text{bottom}} = \mu \left.\frac{du}{dy}\right|_{0} = \frac{\mu U}{h}(1+P), \qquad \tau_{\text{top}} = \frac{\mu U}{h}(1-P)
+$$
+
+$\tau_{\text{bottom}}$ acts on the lower wall and $\tau_{\text{top}}$ on the top plate. At $P=-1$, the lower-wall shear is exactly zero. Boundary-layer theory defines the separation point by the same condition: zero wall shear. For $P<-1$ the near-wall gradient is negative. The fluid right above the wall flows backward.
+
+The backflow thickness is the height where $u=0$, from $y/h\,(1+P-Py/h)=0$.
+
+$$
+\frac{y_r}{h} = 1 + \frac{1}{P} \quad (P<-1)
+$$
+
+At $P=-2$, the lower half reverses. At $P=-3$, the lower two-thirds reverse. The flow rate is worth computing too.
+
+$$
+\frac{Q}{Uh} = \int_0^1 \frac{u}{U}\, d\!\left(\frac{y}{h}\right) = \frac{1}{2} + \frac{P}{6}
+$$
+
+At $P=-3$ the flow rate is zero. The top plate keeps moving, yet no net mass crosses the section. The forward upper layer and the backward lower layer cancel exactly.
+
+Why does the bottom flip first? The adverse gradient applies the same force across the whole section. Fluid near the top plate keeps getting dragged along. Fluid near the floor is held by the wall and was already slow. Under the same backward push, the slowest layer crosses zero first. It is the same mechanism as in [drag crisis and boundary-layer separation](/en/posts/2026-06-09-drag-crisis-boundary-layer-separation/). One difference: here the flow is parallel, so the separation bubble never closes. The backflow layer runs on forever in $x$.
+
+## Code: start from rest and march to steady state
+
+With an exact solution in hand, the code is a check. Start from fluid at rest and march the unsteady equation to steady state. In dimensionless form it reads $u_t = 2P + u_{yy}$, with time in units of $h^2/\nu$.
+
+- Grid: 40 cell centers, $\Delta y = 1/40$.
+- Walls: ghost cells (virtual cells outside the wall) set by linear interpolation to the wall value.
+- Time: explicit Euler, $\Delta t = 0.4\Delta y^2$ (below the diffusion limit 0.5).
+- Stop: per-step rate of change $\max|\Delta u|/\Delta t < 10^{-8}$.
+- Measured: lower-wall gradient (second-order formula), flow rate, fraction of negative cells, max error against the exact solution.
+
+```python
+def exact_profile(y, P):
+    # u/U = y/h + P (y/h)(1 - y/h)
+    return y + P * y * (1.0 - y)
+
+def couette_poiseuille_march(P, N=40, tol=1e-8):
+    # dimensionless: u_t = 2P + u_yy, u(0)=0, u(1)=1, start from rest
+    dy = 1.0 / N
+    y = [(j + 0.5) * dy for j in range(N)]
+    dt = 0.4 * dy * dy
+    u = [0.0] * N
+    steps = 0
+    while True:
+        ue = [-u[0]] + u + [2.0 - u[-1]]   # ghost: lower wall u=0, upper wall u=1
+        dmax = 0.0
+        for j in range(N):
+            lap = (ue[j + 2] - 2.0 * ue[j + 1] + ue[j]) / (dy * dy)
+            du = dt * (2.0 * P + lap)
+            u[j] += du
+            dmax = max(dmax, abs(du))
+        steps += 1
+        if dmax / dt < tol:
+            break
+    tau0 = (9.0 * u[0] - u[1]) / (3.0 * dy)      # second-order wall gradient
+    Q = sum(u) * dy
+    back = sum(1 for v in u if v < 0) * dy
+    err = max(abs(u[j] - exact_profile(y[j], P)) for j in range(N))
+    return steps, steps * dt, tau0, Q, back, err
+
+print(f"{'P':>5} {'steps':>6} {'t_ss':>6} {'tau_bot':>8} {'exact':>6} {'Q':>7} {'backflow':>8} {'max_err':>9}")
+for P in [2.0, 0.0, -0.5, -1.0, -2.0, -3.0, -4.0]:
+    s, t, tau, Q, b, e = couette_poiseuille_march(P)
+    print(f"{P:5.1f} {s:6d} {t:6.3f} {tau:8.4f} {1 + P:6.2f} {Q:7.4f} {b:8.3f} {e:9.2e}")
+```
+
+```text
+    P  steps   t_ss  tau_bot  exact       Q backflow   max_err
+  2.0   8446  2.112   3.0333   3.00  0.8337    0.000  3.12e-04
+  0.0   8206  2.052   1.0000   1.00  0.5000    0.000  1.01e-09
+ -0.5   8114  2.029   0.4917   0.50  0.4166    0.000  7.81e-05
+ -1.0   7995  1.999  -0.0167   0.00  0.3331    0.025  1.56e-04
+ -2.0   7531  1.883  -1.0333  -1.00  0.1662    0.500  3.13e-04
+ -3.0   7586  1.897  -2.0500  -2.00 -0.0006    0.675  4.69e-04
+ -4.0   8013  2.003  -3.0667  -3.00 -0.1675    0.750  6.25e-04
+```
+
+Run the code above right in your browser.
+
+<CouettePoiseuilleStartupRace />
+
+At the defaults $P=-3$, $N=40$, hit Play and it stops after about 7,600 steps. `Q` lands near 0 and `backflow` at 0.675. Now set $P$ to −1 and sweep $N$ from 10 to 80. The red cell that appears and disappears is the subject of the next section.
+
+## Reading the output: 8,000 steps, 0.675, and −0.0167
+
+**Time to steady state barely depends on $P$.** Every case reaches $t_{ss}\approx 2$, about 8,000 steps. The slowest diffusive mode decays like $e^{-\pi^2 t}$. Driving the residual to $10^{-8}$ takes $t \approx \ln(10^{9})/\pi^2 \approx 2$. The pressure gradient changes the final shape, not the time scale.
+
+**Flow rate and backflow thickness match theory.** At $P=-3$, $Q=-0.0006$, equal to the exact 0 within grid error. The backflow fraction 0.675 matches $2/3$ within one cell width. The 0.500 at $P=-2$ and 0.750 at $P=-4$ follow $1+1/P$ exactly.
+
+**The problem is $P=-1$.** The exact solution is $u=y^2$, with nothing negative. Yet the code reports a wall gradient of −0.0167 and one backflow cell (0.025). The culprit is the ghost cell. Linear interpolation misses the curvature near the wall. Every cell ends up off by $|P|\Delta y^2/4$, which is exactly the `max_err` column ($3.12\times10^{-4}$ at $P=2$). The wall-gradient error reads off the table too: $\tfrac{2}{3}P\Delta y$ in every row. At $P=-1$ that error is −0.0167, and with a true value of 0, the sign simply flips.
+
+The lesson is simple. If you detect separation by the sign of wall shear, the grid error owns the verdict near the threshold. It is the same story as [why one code produced two convergence orders](/en/posts/2026-10-07-sod-vortex-order-verification/). Know what your measurement is sensitive to. Here the first-order error of the wall treatment swamps the interior's second-order accuracy.
+
+## Where this profile actually shows up
+
+**Lubrication theory.** The gap in a journal bearing is Couette–Poiseuille flow with a tiny spacing. The Reynolds lubrication equation is the flow rate $Q = Uh/2 - (h^3/12\mu)\,dp/dx$ plugged into mass conservation. Pressure builds where the gap narrows. That pressure acts as an adverse gradient that balances the flow rate.
+
+**Wall functions and separation.** Turbulence-model wall functions treat the near-wall region as Couette-like. A strong adverse gradient breaks that assumption. That is why wall functions are unreliable just upstream of separation.
+
+**Code verification.** This solution tests the pressure gradient, a moving wall, and viscous terms at once. The exact solution is a quadratic, so a second-order scheme should have zero interior error. Almost all remaining error comes from the boundary treatment. That makes it a clean isolated test of wall-boundary code.
+
+## One case to run the next time you code a moving-wall boundary
+
+Run this problem at $P=-1$ on 10, 20, and 40 cells. If the lower-wall shear converges to zero at first order, your ghost cell is linear interpolation. If it converges at second order, or is zero from the coarsest grid, you are handling near-wall curvature. One table row tells you the order of your boundary treatment. If your analysis reports separation locations, run this check first.
