@@ -1,0 +1,163 @@
+---
+title: "网格加密4倍，颗粒冷却慢了2.6倍——点颗粒热源为什么不能只放进一个网格单元"
+date: 2026-11-26
+description: "把拉格朗日点颗粒的热源全部放进一个单元，网格越细，颗粒越被自己的热量困住。用3D代码比较27单元分配与物理宽度核函数。"
+tags: ["Point-Particle", "Two-Way-Coupling", "Combustion", "Multiphase", "Fluid-Mechanics"]
+locale: zh
+slug: 2026-11-26-point-particle-source-kernel
+takeaway: "只有把分配宽度固定为物理长度而不是网格间距，颗粒传热才会网格收敛。27单元模板只是把问题推迟了3倍。"
+draft: false
+---
+import { PointSourceSelfHeatingLab } from '@/components/post-viz/2026-11-26-point-particle-source-kernel/PointSourceSelfHeatingLab'
+import { PointParticleKernelRace } from '@/components/post-viz/2026-11-26-point-particle-source-kernel/PointParticleKernelRace'
+
+## 网格加密4倍，颗粒冷却慢了2.6倍
+
+一个计算铝颗粒燃烧的实验室加密了网格。从1个节点、2,662个单元，扩展到20个节点。分辨率提高，答案理应更好。结果颗粒附近的气体温度却异常跳升。本文把原因追溯到只占一个单元的热源。读完后，你可以用数字判断颗粒源项(source term，颗粒传给气体的质量、热量和动量)应当以多大宽度分配。
+
+先说结论。同一个颗粒、同样的物理条件，只把网格从16³换成64³。颗粒温度降到一半的时间从0.0106增加到0.0274。物理没有变，答案却跟着网格走。网格收敛(grid convergence，网格越细答案越趋于同一个值)被破坏了。
+
+## 一张幻灯片：不是1个单元，而是27个
+
+原始资料是一份论文评述幻灯片。它引用了研究铝颗粒燃烧的Beckstead(2005)和Feng(2018)。关键笔记很简短："原有计算方式：包含颗粒的cell + 26个sten。"接着是："把差值分配到周围的sten。"代价也写在上面："计算时间增加，约2周。"
+
+颗粒过程分为三个阶段：气相(gas phase)阶段，以及两个汽化(vaporizing)阶段。汽化阶段颗粒向气体释放质量和热量。若把这些全部放进包含颗粒的那一个单元，就会出问题。所以他们把它分配到周围26个单元，即一个3×3×3的块。
+
+这个处方是否真的解决了问题，就是本文要回答的。下面的模拟可以直接动手操作。
+
+<PointSourceSelfHeatingLab />
+
+增大网格数N，观察红色核(cell)的点在右图中如何上升。黄色的27单元只是斜率更平缓。只有蓝色的高斯核在N增大时保持水平。
+
+## 三维中的点热源是无穷大
+
+稳态下，点热源 $Q$ 周围的温度与距离 $r$ 成反比。
+
+$$
+T(r) = \frac{Q}{4\pi k\, r}
+$$
+
+$k$ 是气体导热系数，$r$ 是到颗粒中心的距离。$r \to 0$ 时温度发散。一维中点热源温度有限。二维中按对数发散。只有三维按 $1/r$ 发散。
+
+把热量放进一个单元，数值解就在单元尺度上截断这个奇点。于是颗粒"看到"的单元温度为
+
+$$
+T_{\text{seen}} = \frac{g\,Q}{k\,\Delta x}, \qquad g \approx 0.253
+$$
+
+$\Delta x$ 是单元间距，$g$ 是7点拉普拉斯算子的格点格林函数(lattice Green's function)在原点的值。网格减半，颗粒看到的温度翻倍。
+
+颗粒的热损失由颗粒与周围的温差决定。
+
+$$
+Q = H\,(T_p - T_{\text{seen}}) = \frac{H\,T_p}{1 + H g / (k\,\Delta x)}
+$$
+
+$H$ 是颗粒-气体换热系数，$T_p$ 是颗粒温度。分母中的两项是串联热阻。$1/H$ 是颗粒表面热阻，$g/(k\Delta x)$ 是颗粒自己加热的那个单元的热阻。这与[圆柱的临界保温半径](/zh/posts/2026-11-24-critical-insulation-radius-cylinder/)中看到的串联热阻结构相同。区别只有一点：第二个热阻来自网格，而不是物理。
+
+## 三种分配方式的比较
+
+在27单元块中均匀分配，有效宽度为 $3\Delta x$。自加热大约降到1/3。但它仍然与 $\Delta x$ 成正比。再把网格加密3倍，同样的问题又回来了。
+
+解决办法是把宽度绑定到物理长度上。固定高斯核(Gaussian kernel，钟形权重)的标准差 $\sigma$。
+
+$$
+w_i = \frac{\exp\!\left(-|\mathbf{x}_i - \mathbf{x}_p|^2 / 2\sigma^2\right)}{\sum_j \exp\!\left(-|\mathbf{x}_j - \mathbf{x}_p|^2 / 2\sigma^2\right)}
+$$
+
+$w_i$ 是单元 $i$ 分得的比例，$\mathbf{x}_p$ 是颗粒位置。颗粒看到的温度也用同样的权重平均。这样自加热热阻就绑定到 $\sigma$ 而非 $\Delta x$。网格加密时 $\sigma$ 保持不变。
+
+## 代码：周期盒中的一个颗粒，三种核 × 五级网格
+
+在边长为1的周期盒中心放一个温度为1的颗粒。气体从0开始做三维扩散。颗粒与气体交换热量。测量颗粒温度降到0.5所需的时间。耦合项采用点隐式(point-implicit)求解，保证细网格下也不会发散。
+
+```python
+import numpy as np
+
+# 周期盒(L=1)中的一个高温颗粒：气体3D扩散 + 颗粒-气体换热(双向耦合)
+ALPHA, H, CP, SIGMA = 1.0, 0.25, 0.002, 0.06
+
+def kernel_weights(N, kind):
+    dx = 1.0 / N
+    c = N // 2
+    W = np.zeros((N, N, N))
+    if kind == "cell":
+        W[c, c, c] = 1.0
+    elif kind == "stencil27":
+        W[c-1:c+2, c-1:c+2, c-1:c+2] = 1.0
+    else:  # 以物理宽度SIGMA固定的高斯核
+        x = (np.arange(N) - c) * dx
+        r2 = x[:, None, None]**2 + x[None, :, None]**2 + x[None, None, :]**2
+        W = np.exp(-r2 / (2 * SIGMA**2))
+    return W / W.sum()
+
+def cool_particle(N, kind):
+    dx = 1.0 / N
+    dt = 0.9 * dx**2 / (6 * ALPHA)
+    W = kernel_weights(N, kind)
+    s = (W**2).sum() / dx**3          # 有效逆体积：颗粒“看到”的气体大小
+    Tg = np.zeros((N, N, N))
+    Tp, t, seen_max = 1.0, 0.0, 0.0
+    while Tp > 0.5:
+        lap = sum(np.roll(Tg, k, a) for a in range(3) for k in (1, -1)) - 6 * Tg
+        Tg += dt * ALPHA * lap / dx**2
+        seen = (W * Tg).sum()
+        Q = H * (Tp - seen) / (1 + H * dt * (1 / CP + s))   # 点隐式耦合
+        Tg += dt * Q * W / dx**3
+        Tp -= dt * Q / CP
+        t += dt
+        seen_max = max(seen_max, seen + dt * Q * s)
+    return t, seen_max
+
+print(f"isolated particle (Tg fixed 0): t_half = {CP/H*np.log(2):.5f}")
+print(f"{'N':>4} {'dx':>7} | {'cell':>14} | {'stencil27':>14} | {'gauss':>14}")
+for N in (16, 24, 32, 48, 64):
+    row = [cool_particle(N, k) for k in ("cell", "stencil27", "gauss")]
+    print(f"{N:>4} {1/N:7.4f} | " + " | ".join(f"{t:.5f} ({m:.3f})" for t, m in row))
+```
+
+```text
+isolated particle (Tg fixed 0): t_half = 0.00555
+   N      dx |           cell |      stencil27 |          gauss
+  16  0.0625 | 0.01055 (0.383) | 0.00645 (0.057) | 0.00645 (0.046)
+  24  0.0417 | 0.01354 (0.512) | 0.00677 (0.109) | 0.00599 (0.045)
+  32  0.0312 | 0.01611 (0.599) | 0.00718 (0.162) | 0.00601 (0.045)
+  48  0.0208 | 0.02181 (0.707) | 0.00833 (0.261) | 0.00592 (0.045)
+  64  0.0156 | 0.02743 (0.770) | 0.00956 (0.344) | 0.00590 (0.045)
+```
+
+把上面的代码直接放到浏览器里运行。
+
+<PointParticleKernelRace />
+
+把N调到64，红色曲线最后才碰到0.5线。在默认值N=48下，确认t_half接近表中的0.0218、0.0083和0.0059。增大H，cell与gauss之间的差距会进一步拉大。
+
+## 读表：0.0274、0.0096、0.0059
+
+基准是气体固定为0的孤立颗粒。此时半衰时间为0.00555。
+
+单单元方式在N=16时已慢1.9倍。N=64时慢4.9倍。括号中的数字是颗粒看到的气体温度最大值。它从0.383升到0.770。颗粒在自己加热的单元里看到了自身温度1的77%。驱动散热的温差消失了。
+
+27单元方式没那么糟，但方向相同。从0.00645增加到0.00956，增加了48%。单单元方式在N=24附近的误差，在27单元的N=64处再次出现。块宽为 $3\Delta x$，这正符合预期。
+
+高斯核从N=24起稳定在0.0059~0.0060。看到的温度也固定在0.045。N=16时为0.00645，略有不同，是因为 $\sigma=0.06$ 小于 $\Delta x=0.0625$。核覆盖不了一个单元时，就退回到单单元方式。
+
+## 比较矩阵：固定什么，付出什么
+
+| 方式 | 有效宽度 | 网格收敛 | 成本 | 陷阱 |
+|---|---|---|---|---|
+| 单个单元 | $\Delta x$ | 破坏 ($\propto 1/\Delta x$) | 最小 | 越细越差 |
+| 27单元均匀 | $3\Delta x$ | 破坏 (推迟3倍) | 27倍访问 | 边界与并行分区边界需要虚单元 |
+| 高斯核 $\sigma$ 固定 | $\sigma$ | 保持 ($\Delta x < \sigma$) | $(\sigma/\Delta x)^3$ 个单元 | $\sigma$ 成为新的模型常数 |
+
+27单元方式的"2周"就是表中第二行的成本。每个单元都要读写26个邻居，并行分区边界上的通信随之增加。这和[DEM扇区尺寸](/zh/posts/2026-10-08-dem-sector-neighbor-search/)一文中的邻居搜索成本属于同一类。
+
+高斯核也不是免费的。$\Delta x$ 变小时，核覆盖的单元数按立方增长。而且如何确定 $\sigma$ 成了新问题。常见选择是颗粒直径的若干倍，或颗粒周围的边界层厚度。
+
+## 为铝颗粒计算确定核宽度前要问的问题
+
+先比较 $\Delta x$ 与颗粒直径 $d_p$。若 $\Delta x \gg d_p$，单单元方式也能撑住。因为自加热热阻小于表面热阻。算一次 $H g/(k\Delta x)$ 即可。若超过0.1，就该换核了。
+
+接着把网格加密一级，比较同一颗粒的燃烧时间。Beckstead关联式把燃烧时间与颗粒直径的约1.8次方挂钩。若只换了网格燃烧时间就变了，那个差值不是物理。
+
+最后让分配宽度与插值宽度一致。若放热的核与读取温度的核不同，能量守恒与自加热抵消会同时被破坏。上面的代码用同一个 `W` 处理两者。

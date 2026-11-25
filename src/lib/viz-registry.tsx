@@ -288,6 +288,8 @@ export const VIZ_COMPONENTS: Record<string, ComponentType> = {
   "PipeProfileEnergyLedger": lazyViz(() => import("@/components/post-viz/2026-09-17-kinetic-energy-coefficient-pipe-profile/PipeProfileEnergyLedger").then((m) => ({ default: m.PipeProfileEnergyLedger }))),
   "PlateauRayleighJet": lazyViz(() => import("@/components/post-viz/2026-04-23-plateau-rayleigh-jet-breakup/PlateauRayleighJet").then((m) => ({ default: m.PlateauRayleighJet }))),
   "PlateSorStopRace": lazyViz(() => import("@/components/post-viz/2026-10-21-jacobi-stopping-rule-finer-grid-error/PlateSorStopRace").then((m) => ({ default: m.PlateSorStopRace }))),
+  "PointParticleKernelRace": lazyViz(() => import("@/components/post-viz/2026-11-26-point-particle-source-kernel/PointParticleKernelRace").then((m) => ({ default: m.PointParticleKernelRace }))),
+  "PointSourceSelfHeatingLab": lazyViz(() => import("@/components/post-viz/2026-11-26-point-particle-source-kernel/PointSourceSelfHeatingLab").then((m) => ({ default: m.PointSourceSelfHeatingLab }))),
   "PoiseuilleFrictionExplorer": lazyViz(() => import("@/components/post-viz/2026-07-23-pipe-entrance-hagen-poiseuille/PoiseuilleFrictionExplorer").then((m) => ({ default: m.PoiseuilleFrictionExplorer }))),
   "PoiseuilleProfile": lazyViz(() => import("@/components/post-viz/2026-03-28-poiseuille-flow-analytical-solution/PoiseuilleProfile").then((m) => ({ default: m.PoiseuilleProfile }))),
   "PoissonDistanceCurvatureMap": lazyViz(() => import("@/components/post-viz/2026-11-02-poisson-wall-distance-curvature-error/PoissonDistanceCurvatureMap").then((m) => ({ default: m.PoissonDistanceCurvatureMap }))),

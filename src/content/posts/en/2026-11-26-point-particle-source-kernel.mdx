@@ -1,0 +1,163 @@
+---
+title: "Refining the Grid 4× Made the Particle Cool 2.6× Slower — Why a Point-Particle Heat Source Can't Go into One Cell"
+date: 2026-11-26
+description: "Depositing a Lagrangian point particle's heat into a single cell traps it in its own heat as the grid is refined. A 3D code compares 27-cell spreading with a fixed-width Gaussian kernel."
+tags: ["Point-Particle", "Two-Way-Coupling", "Combustion", "Multiphase", "Fluid-Mechanics"]
+locale: en
+slug: 2026-11-26-point-particle-source-kernel
+takeaway: "Particle heat transfer converges with the grid only when the spreading width is tied to a physical length, not to the cell size. A 27-cell stencil just delays the problem by a factor of three."
+draft: false
+---
+import { PointSourceSelfHeatingLab } from '@/components/post-viz/2026-11-26-point-particle-source-kernel/PointSourceSelfHeatingLab'
+import { PointParticleKernelRace } from '@/components/post-viz/2026-11-26-point-particle-source-kernel/PointParticleKernelRace'
+
+## Refining the grid 4× made the particle cool 2.6× slower
+
+A lab simulating aluminum particle combustion refined its grid. They went from one node with 2,662 cells to twenty nodes. Higher resolution was supposed to mean a better answer. Instead, the gas temperature next to each particle spiked. This post traces that to a single-cell heat source. By the end, you can decide with numbers how wide a particle source term (the mass, heat, and momentum a particle hands to the gas) should be spread.
+
+Here is the punchline. Same particle, same physics, only the grid changes from 16³ to 64³. The time for the particle temperature to halve grows from 0.0106 to 0.0274. The physics didn't move, but the answer follows the grid. Grid convergence (the answer settling to one value as cells shrink) is broken.
+
+## One slide: 27 cells instead of one
+
+The source is a paper-review slide deck. It cites Beckstead (2005) and Feng (2018) on Al particle combustion. The key note is terse: "previous method: the cell containing the particle + 26 stencil cells." Then: "distribute the difference to the surrounding stencil." The price is written down too: "longer compute time, about two weeks."
+
+The particle life has three stages. A gas-phase stage, then two vaporizing stages. While vaporizing, the particle pushes mass and heat into the gas. Dumping all of it into the one cell that holds the particle causes trouble. So they spread it over the 26 neighbors, a 3×3×3 block.
+
+The question here is whether that fix actually fixes anything. Try it yourself in the simulation below.
+
+<PointSourceSelfHeatingLab />
+
+Increase N and watch the red (cell) marker climb on the right-hand plot. The yellow 27-cell curve only has a gentler slope. Only the blue Gaussian stays flat as N grows.
+
+## A point heat source is infinite in 3D
+
+At steady state, the temperature around a point heat source $Q$ falls off as $1/r$.
+
+$$
+T(r) = \frac{Q}{4\pi k\, r}
+$$
+
+$k$ is the gas conductivity and $r$ the distance from the particle center. As $r \to 0$, the temperature blows up. In 1D a point source stays finite. In 2D it diverges logarithmically. Only 3D blows up like $1/r$.
+
+Put the heat into one cell, and the numerical solution clips that singularity at the cell size. The cell temperature the particle "sees" becomes
+
+$$
+T_{\text{seen}} = \frac{g\,Q}{k\,\Delta x}, \qquad g \approx 0.253
+$$
+
+$\Delta x$ is the cell spacing, and $g$ is the origin value of the lattice Green's function for the 7-point Laplacian. Halve the cell size and the particle sees twice the temperature.
+
+The particle's heat loss is set by the temperature difference to its surroundings.
+
+$$
+Q = H\,(T_p - T_{\text{seen}}) = \frac{H\,T_p}{1 + H g / (k\,\Delta x)}
+$$
+
+$H$ is the particle–gas exchange coefficient and $T_p$ the particle temperature. The two terms in the denominator are resistances in series. $1/H$ is the surface resistance, and $g/(k\Delta x)$ is the resistance of the cell the particle has heated up itself. It is the same series-resistance structure as in the [critical insulation radius of a cylinder](/en/posts/2026-11-24-critical-insulation-radius-cylinder/). With one difference: the second resistance comes from the grid, not from physics.
+
+## Three ways to spread the source
+
+Spreading evenly over a 27-cell block gives an effective width of $3\Delta x$. Self-heating drops to roughly a third. But it is still proportional to $\Delta x$. Refine three more times and the problem is back.
+
+The fix is to tie the width to a physical length. Fix the standard deviation $\sigma$ of a Gaussian kernel (a bell-shaped weight).
+
+$$
+w_i = \frac{\exp\!\left(-|\mathbf{x}_i - \mathbf{x}_p|^2 / 2\sigma^2\right)}{\sum_j \exp\!\left(-|\mathbf{x}_j - \mathbf{x}_p|^2 / 2\sigma^2\right)}
+$$
+
+$w_i$ is the share cell $i$ receives, and $\mathbf{x}_p$ is the particle position. The temperature the particle sees is averaged with the same weights. Now the self-heating resistance is tied to $\sigma$ instead of $\Delta x$. Refine the grid and $\sigma$ stays put.
+
+## Code: one particle in a periodic box, three kernels × five grids
+
+Place a particle at temperature 1 in the center of a periodic box of side 1. The gas starts at 0 and diffuses in 3D. Particle and gas exchange heat. We time how long the particle takes to reach 0.5. The coupling term is solved point-implicitly so it stays stable on fine grids.
+
+```python
+import numpy as np
+
+# Hot particle in a periodic box (L=1): 3D gas diffusion + particle-gas heat exchange (two-way coupling)
+ALPHA, H, CP, SIGMA = 1.0, 0.25, 0.002, 0.06
+
+def kernel_weights(N, kind):
+    dx = 1.0 / N
+    c = N // 2
+    W = np.zeros((N, N, N))
+    if kind == "cell":
+        W[c, c, c] = 1.0
+    elif kind == "stencil27":
+        W[c-1:c+2, c-1:c+2, c-1:c+2] = 1.0
+    else:  # Gaussian with physical width fixed at SIGMA
+        x = (np.arange(N) - c) * dx
+        r2 = x[:, None, None]**2 + x[None, :, None]**2 + x[None, None, :]**2
+        W = np.exp(-r2 / (2 * SIGMA**2))
+    return W / W.sum()
+
+def cool_particle(N, kind):
+    dx = 1.0 / N
+    dt = 0.9 * dx**2 / (6 * ALPHA)
+    W = kernel_weights(N, kind)
+    s = (W**2).sum() / dx**3          # effective inverse volume: how much gas the particle 'sees'
+    Tg = np.zeros((N, N, N))
+    Tp, t, seen_max = 1.0, 0.0, 0.0
+    while Tp > 0.5:
+        lap = sum(np.roll(Tg, k, a) for a in range(3) for k in (1, -1)) - 6 * Tg
+        Tg += dt * ALPHA * lap / dx**2
+        seen = (W * Tg).sum()
+        Q = H * (Tp - seen) / (1 + H * dt * (1 / CP + s))   # point-implicit coupling
+        Tg += dt * Q * W / dx**3
+        Tp -= dt * Q / CP
+        t += dt
+        seen_max = max(seen_max, seen + dt * Q * s)
+    return t, seen_max
+
+print(f"isolated particle (Tg fixed 0): t_half = {CP/H*np.log(2):.5f}")
+print(f"{'N':>4} {'dx':>7} | {'cell':>14} | {'stencil27':>14} | {'gauss':>14}")
+for N in (16, 24, 32, 48, 64):
+    row = [cool_particle(N, k) for k in ("cell", "stencil27", "gauss")]
+    print(f"{N:>4} {1/N:7.4f} | " + " | ".join(f"{t:.5f} ({m:.3f})" for t, m in row))
+```
+
+```text
+isolated particle (Tg fixed 0): t_half = 0.00555
+   N      dx |           cell |      stencil27 |          gauss
+  16  0.0625 | 0.01055 (0.383) | 0.00645 (0.057) | 0.00645 (0.046)
+  24  0.0417 | 0.01354 (0.512) | 0.00677 (0.109) | 0.00599 (0.045)
+  32  0.0312 | 0.01611 (0.599) | 0.00718 (0.162) | 0.00601 (0.045)
+  48  0.0208 | 0.02181 (0.707) | 0.00833 (0.261) | 0.00592 (0.045)
+  64  0.0156 | 0.02743 (0.770) | 0.00956 (0.344) | 0.00590 (0.045)
+```
+
+Now run the code above right in your browser.
+
+<PointParticleKernelRace />
+
+Push N to 64 and the red curve is the last to hit the 0.5 line. At the default N=48, check that t_half lands near the table's 0.0218, 0.0083, and 0.0059. Raise H and the gap between cell and gauss widens.
+
+## Reading the table: 0.0274, 0.0096, 0.0059
+
+The baseline is an isolated particle with the gas pinned at 0. Its half-time is 0.00555.
+
+The single-cell method is already 1.9× slower at N=16. At N=64 it is 4.9×. The number in parentheses is the peak gas temperature the particle saw. It climbs from 0.383 to 0.770. The particle sees 77% of its own temperature in the cell it heated. The temperature difference that drives the heat out is gone.
+
+The 27-cell method is less bad, but it moves the same way. From 0.00645 to 0.00956, up 48%. The single-cell error near N=24 reappears in the 27-cell run at N=64. With a block width of $3\Delta x$, that is exactly what you'd expect.
+
+The Gaussian sits at 0.0059–0.0060 from N=24 on. The seen temperature is locked at 0.045. The slightly different 0.00645 at N=16 happens because $\sigma=0.06$ is smaller than $\Delta x=0.0625$. When the kernel can't span one cell, it falls back to the single-cell method.
+
+## Comparison matrix: what you fix and what you pay
+
+| Method | Effective width | Grid convergence | Cost | Pitfall |
+|---|---|---|---|---|
+| One cell | $\Delta x$ | Broken ($\propto 1/\Delta x$) | Minimal | Worse as you refine |
+| 27 cells, uniform | $3\Delta x$ | Broken (3× delay) | 27× access | Ghost cells at boundaries and partitions |
+| Gaussian, fixed $\sigma$ | $\sigma$ | Holds ($\Delta x < \sigma$) | $(\sigma/\Delta x)^3$ cells | $\sigma$ becomes a new model constant |
+
+The "two weeks" from the 27-cell approach is the cost in the second row. Reading and writing 26 neighbors per cell adds communication at parallel partition boundaries. It is the same kind of neighbor-search cost as in the [DEM sector size](/en/posts/2026-10-08-dem-sector-neighbor-search/) post.
+
+The Gaussian isn't free either. As $\Delta x$ shrinks, the number of cells under the kernel grows as a cube. And choosing $\sigma$ becomes a new question. Common choices are a few particle diameters, or the boundary-layer thickness around the particle.
+
+## Questions to ask before picking a kernel width for Al particles
+
+First compare $\Delta x$ with the particle diameter $d_p$. If $\Delta x \gg d_p$, the single-cell method survives. The self-heating resistance is smaller than the surface resistance. Just compute $H g/(k\Delta x)$ once. If it exceeds 0.1, change the kernel.
+
+Next, refine the grid one level and compare the burn time of the same particle. The Beckstead correlation ties burn time to roughly the 1.8 power of the particle diameter. If the burn time moved when only the grid changed, that difference isn't physics.
+
+Finally, make the spreading width and the interpolation width the same. If the kernel that deposits heat differs from the kernel that reads temperature, energy conservation and self-heating cancellation break together. The code above uses a single `W` for both.

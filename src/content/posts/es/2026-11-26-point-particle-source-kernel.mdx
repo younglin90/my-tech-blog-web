@@ -1,0 +1,163 @@
+---
+title: "Refinar la malla 4× hizo que la partícula se enfriara 2.6× más lento — por qué la fuente de calor de una partícula puntual no cabe en una sola celda"
+date: 2026-11-26
+description: "Si el calor de una partícula lagrangiana puntual se deposita en una sola celda, al refinar la malla la partícula queda atrapada en su propio calor. Un código 3D compara el reparto en 27 celdas con un kernel gaussiano de ancho fijo."
+tags: ["Point-Particle", "Two-Way-Coupling", "Combustion", "Multiphase", "Fluid-Mechanics"]
+locale: es
+slug: 2026-11-26-point-particle-source-kernel
+takeaway: "La transferencia de calor de la partícula converge con la malla solo si el ancho de reparto se fija a una longitud física y no al tamaño de celda. Un esténcil de 27 celdas apenas retrasa el problema por un factor de tres."
+draft: false
+---
+import { PointSourceSelfHeatingLab } from '@/components/post-viz/2026-11-26-point-particle-source-kernel/PointSourceSelfHeatingLab'
+import { PointParticleKernelRace } from '@/components/post-viz/2026-11-26-point-particle-source-kernel/PointParticleKernelRace'
+
+## Refinar la malla 4× hizo que la partícula se enfriara 2.6× más lento
+
+Un laboratorio que simulaba la combustión de partículas de aluminio refinó su malla. Pasó de un nodo con 2,662 celdas a veinte nodos. Más resolución debía significar una mejor respuesta. En cambio, la temperatura del gas junto a cada partícula se disparó. Este artículo rastrea la causa hasta una fuente de calor de una sola celda. Al final se puede decidir con números cuánto conviene repartir un término fuente de partícula (la masa, el calor y la cantidad de movimiento que la partícula entrega al gas).
+
+Primero, el resultado. Misma partícula, misma física, solo cambia la malla de 16³ a 64³. El tiempo en que la temperatura de la partícula cae a la mitad crece de 0.0106 a 0.0274. La física no cambió, pero la respuesta sigue a la malla. La convergencia de malla (que la respuesta se asiente en un valor al reducir las celdas) está rota.
+
+## Una diapositiva: 27 celdas en lugar de una
+
+La fuente es una presentación de revisión de artículos. Cita a Beckstead (2005) y Feng (2018) sobre la combustión de partículas de Al. La nota clave es breve: "método anterior: la celda que contiene la partícula + 26 celdas del esténcil". Luego: "repartir la diferencia en el esténcil vecino". El precio también está anotado: "mayor tiempo de cómputo, unas dos semanas".
+
+La vida de la partícula tiene tres etapas. Una etapa en fase gaseosa y luego dos etapas de vaporización. Al vaporizarse, la partícula envía masa y calor al gas. Volcar todo en la única celda que contiene la partícula trae problemas. Por eso lo repartieron entre los 26 vecinos, un bloque de 3×3×3.
+
+La pregunta aquí es si esa corrección realmente corrige algo. Conviene probarlo directamente en la simulación de abajo.
+
+<PointSourceSelfHeatingLab />
+
+Al aumentar N, el marcador rojo (cell) sube en la gráfica de la derecha. La curva amarilla de 27 celdas solo tiene una pendiente más suave. Únicamente la gaussiana azul permanece plana al crecer N.
+
+## Una fuente puntual de calor es infinita en 3D
+
+En estado estacionario, la temperatura alrededor de una fuente puntual $Q$ decae como $1/r$.
+
+$$
+T(r) = \frac{Q}{4\pi k\, r}
+$$
+
+$k$ es la conductividad del gas y $r$ la distancia al centro de la partícula. Cuando $r \to 0$, la temperatura diverge. En 1D una fuente puntual sigue siendo finita. En 2D diverge de forma logarítmica. Solo en 3D diverge como $1/r$.
+
+Al poner el calor en una celda, la solución numérica recorta esa singularidad al tamaño de celda. La temperatura de celda que la partícula "ve" resulta
+
+$$
+T_{\text{seen}} = \frac{g\,Q}{k\,\Delta x}, \qquad g \approx 0.253
+$$
+
+$\Delta x$ es el espaciado de celdas y $g$ el valor en el origen de la función de Green de red (lattice Green's function) del laplaciano de 7 puntos. Al reducir la celda a la mitad, la partícula ve el doble de temperatura.
+
+La pérdida de calor de la partícula depende de la diferencia de temperatura con su entorno.
+
+$$
+Q = H\,(T_p - T_{\text{seen}}) = \frac{H\,T_p}{1 + H g / (k\,\Delta x)}
+$$
+
+$H$ es el coeficiente de intercambio partícula–gas y $T_p$ la temperatura de la partícula. Los dos términos del denominador son resistencias en serie. $1/H$ es la resistencia superficial y $g/(k\Delta x)$ la resistencia de la celda que la propia partícula calentó. Es la misma estructura de resistencias en serie del [radio crítico de aislamiento de un cilindro](/es/posts/2026-11-24-critical-insulation-radius-cylinder/). Con una diferencia: la segunda resistencia proviene de la malla, no de la física.
+
+## Tres maneras de repartir la fuente
+
+Repartir de forma uniforme en un bloque de 27 celdas da un ancho efectivo de $3\Delta x$. El autocalentamiento baja a cerca de un tercio. Pero sigue siendo proporcional a $\Delta x$. Al refinar tres veces más, el problema regresa.
+
+La solución es atar el ancho a una longitud física. Se fija la desviación estándar $\sigma$ de un kernel gaussiano (un peso con forma de campana).
+
+$$
+w_i = \frac{\exp\!\left(-|\mathbf{x}_i - \mathbf{x}_p|^2 / 2\sigma^2\right)}{\sum_j \exp\!\left(-|\mathbf{x}_j - \mathbf{x}_p|^2 / 2\sigma^2\right)}
+$$
+
+$w_i$ es la fracción que recibe la celda $i$ y $\mathbf{x}_p$ la posición de la partícula. La temperatura que ve la partícula se promedia con los mismos pesos. Así la resistencia de autocalentamiento queda atada a $\sigma$ en lugar de $\Delta x$. Al refinar la malla, $\sigma$ no cambia.
+
+## Código: una partícula en una caja periódica, tres kernels × cinco mallas
+
+Se coloca una partícula a temperatura 1 en el centro de una caja periódica de lado 1. El gas parte de 0 y se difunde en 3D. Partícula y gas intercambian calor. Se mide el tiempo hasta que la partícula llega a 0.5. El término de acoplamiento se resuelve de forma implícita puntual (point-implicit) para que sea estable en mallas finas.
+
+```python
+import numpy as np
+
+# Partícula caliente en una caja periódica (L=1): difusión 3D del gas + intercambio de calor partícula-gas (acoplamiento bidireccional)
+ALPHA, H, CP, SIGMA = 1.0, 0.25, 0.002, 0.06
+
+def kernel_weights(N, kind):
+    dx = 1.0 / N
+    c = N // 2
+    W = np.zeros((N, N, N))
+    if kind == "cell":
+        W[c, c, c] = 1.0
+    elif kind == "stencil27":
+        W[c-1:c+2, c-1:c+2, c-1:c+2] = 1.0
+    else:  # gaussiana con ancho físico fijo en SIGMA
+        x = (np.arange(N) - c) * dx
+        r2 = x[:, None, None]**2 + x[None, :, None]**2 + x[None, None, :]**2
+        W = np.exp(-r2 / (2 * SIGMA**2))
+    return W / W.sum()
+
+def cool_particle(N, kind):
+    dx = 1.0 / N
+    dt = 0.9 * dx**2 / (6 * ALPHA)
+    W = kernel_weights(N, kind)
+    s = (W**2).sum() / dx**3          # volumen inverso efectivo: cuánto gas 've' la partícula
+    Tg = np.zeros((N, N, N))
+    Tp, t, seen_max = 1.0, 0.0, 0.0
+    while Tp > 0.5:
+        lap = sum(np.roll(Tg, k, a) for a in range(3) for k in (1, -1)) - 6 * Tg
+        Tg += dt * ALPHA * lap / dx**2
+        seen = (W * Tg).sum()
+        Q = H * (Tp - seen) / (1 + H * dt * (1 / CP + s))   # acoplamiento implícito puntual
+        Tg += dt * Q * W / dx**3
+        Tp -= dt * Q / CP
+        t += dt
+        seen_max = max(seen_max, seen + dt * Q * s)
+    return t, seen_max
+
+print(f"isolated particle (Tg fixed 0): t_half = {CP/H*np.log(2):.5f}")
+print(f"{'N':>4} {'dx':>7} | {'cell':>14} | {'stencil27':>14} | {'gauss':>14}")
+for N in (16, 24, 32, 48, 64):
+    row = [cool_particle(N, k) for k in ("cell", "stencil27", "gauss")]
+    print(f"{N:>4} {1/N:7.4f} | " + " | ".join(f"{t:.5f} ({m:.3f})" for t, m in row))
+```
+
+```text
+isolated particle (Tg fixed 0): t_half = 0.00555
+   N      dx |           cell |      stencil27 |          gauss
+  16  0.0625 | 0.01055 (0.383) | 0.00645 (0.057) | 0.00645 (0.046)
+  24  0.0417 | 0.01354 (0.512) | 0.00677 (0.109) | 0.00599 (0.045)
+  32  0.0312 | 0.01611 (0.599) | 0.00718 (0.162) | 0.00601 (0.045)
+  48  0.0208 | 0.02181 (0.707) | 0.00833 (0.261) | 0.00592 (0.045)
+  64  0.0156 | 0.02743 (0.770) | 0.00956 (0.344) | 0.00590 (0.045)
+```
+
+Ahora el código de arriba se puede ejecutar directamente en el navegador.
+
+<PointParticleKernelRace />
+
+Con N en 64, la curva roja es la última en tocar la línea de 0.5. Con el valor por defecto N=48, t_half debe quedar cerca de los 0.0218, 0.0083 y 0.0059 de la tabla. Al subir H, la brecha entre cell y gauss se amplía.
+
+## Lectura de la tabla: 0.0274, 0.0096, 0.0059
+
+La referencia es una partícula aislada con el gas fijo en 0. Su tiempo medio es 0.00555.
+
+El método de una celda ya es 1.9× más lento con N=16. Con N=64 es 4.9×. El número entre paréntesis es la temperatura máxima del gas que vio la partícula. Sube de 0.383 a 0.770. La partícula ve el 77% de su propia temperatura en la celda que calentó. La diferencia de temperatura que impulsa la salida de calor desaparece.
+
+El método de 27 celdas es menos malo, pero va en la misma dirección. De 0.00645 a 0.00956, un aumento del 48%. El error de una celda cerca de N=24 reaparece en 27 celdas con N=64. Con un ancho de bloque de $3\Delta x$, es justo lo esperado.
+
+La gaussiana se mantiene en 0.0059–0.0060 desde N=24. La temperatura vista queda fija en 0.045. El valor algo distinto de 0.00645 en N=16 se debe a que $\sigma=0.06$ es menor que $\Delta x=0.0625$. Cuando el kernel no alcanza a cubrir una celda, vuelve al método de una celda.
+
+## Matriz comparativa: qué se fija y qué se paga
+
+| Método | Ancho efectivo | Convergencia de malla | Costo | Trampa |
+|---|---|---|---|---|
+| Una celda | $\Delta x$ | Rota ($\propto 1/\Delta x$) | Mínimo | Empeora al refinar |
+| 27 celdas, uniforme | $3\Delta x$ | Rota (retraso de 3×) | 27× accesos | Celdas fantasma en fronteras y particiones |
+| Gaussiana, $\sigma$ fijo | $\sigma$ | Se mantiene ($\Delta x < \sigma$) | $(\sigma/\Delta x)^3$ celdas | $\sigma$ pasa a ser una nueva constante del modelo |
+
+Las "dos semanas" del método de 27 celdas son el costo de la segunda fila. Leer y escribir 26 vecinos por celda añade comunicación en las fronteras de partición en paralelo. Es el mismo tipo de costo de búsqueda de vecinos que en el artículo sobre [el tamaño de sector en DEM](/es/posts/2026-10-08-dem-sector-neighbor-search/).
+
+La gaussiana tampoco es gratis. Al reducir $\Delta x$, el número de celdas bajo el kernel crece al cubo. Y elegir $\sigma$ se vuelve una pregunta nueva. Las opciones habituales son algunos diámetros de partícula o el espesor de la capa límite alrededor de la partícula.
+
+## Preguntas antes de elegir el ancho del kernel para partículas de Al
+
+Primero se compara $\Delta x$ con el diámetro de partícula $d_p$. Si $\Delta x \gg d_p$, el método de una celda resiste. La resistencia de autocalentamiento es menor que la superficial. Basta calcular $H g/(k\Delta x)$ una vez. Si supera 0.1, toca cambiar el kernel.
+
+Después se refina la malla un nivel y se compara el tiempo de combustión de la misma partícula. La correlación de Beckstead liga el tiempo de combustión a cerca de la potencia 1.8 del diámetro. Si el tiempo de combustión cambió cuando solo cambió la malla, esa diferencia no es física.
+
+Por último, el ancho de reparto y el de interpolación deben coincidir. Si el kernel que deposita calor difiere del que lee la temperatura, se rompen a la vez la conservación de energía y la cancelación del autocalentamiento. El código de arriba usa un único `W` para ambos.
