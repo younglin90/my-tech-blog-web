@@ -1,0 +1,185 @@
+---
+title: "质量守恒到小数点后15位，静止流体的密度却偏了1% — 动网格ALE与几何守恒律(GCL)"
+date: 2026-11-27
+description: "只移动网格就会破坏均匀流。面速度的计算方式决定ALE结果的对错，而质量总和检查发现不了这个错误。"
+tags: ["Geometric-Conservation-Law", "ALE", "FSI", "FVM", "Numerical-Analysis"]
+locale: zh
+slug: 2026-11-27-ale-geometric-conservation-law
+takeaway: "ALE通量中的面速度必须是面实际扫过的距离除以Δt，而不是解析的dx/dt。只有这样，均匀流才能保持到机器精度。"
+draft: false
+---
+import { AleSweptVolumeLab } from '@/components/post-viz/2026-11-27-ale-geometric-conservation-law/AleSweptVolumeLab'
+import { GclUniformFlowRace } from '@/components/post-viz/2026-11-27-ale-geometric-conservation-law/GclUniformFlowRace'
+
+## 什么都没做，密度却变了
+
+密度为1的流体以速度1均匀流动。我们只让网格节点按正弦形状摆动。从物理上讲，什么都不该发生。然而2秒后，密度最多偏离了1.07%。还有一个怪现象。总质量精确等于1，一直到小数点后15位。
+
+本文要解开这个矛盾。原因是几何守恒律(GCL，Geometric Conservation Law —— 保证网格运动本身不产生虚假源项的条件)。读完后，你可以用一句话说清楚ALE代码应该怎样计算面速度。
+
+2020年2月学习流固耦合(FSI，Fluid–Structure Interaction)时，我把方法归为四类：ALE、AMI、嵌套网格(chimera/overset)和浸入边界法(IBM)。其中前三种的网格会动。网格一动，GCL问题就跟着来了。
+
+## 问题：FSI中处理运动边界的四种方法
+
+结构运动时，流体区域的形状随之改变。应对方式大致分两类：要么网格跟着运动，要么网格固定、把边界嵌进去。
+
+- **ALE(Arbitrary Lagrangian–Eulerian)**：网格节点以任意速度 $\mathbf{w}$ 运动。$\mathbf{w}=0$ 时是欧拉描述，$\mathbf{w}=\mathbf{u}$ 时是拉格朗日描述。壁面附近的节点跟随结构，内部节点平滑插值。
+- **AMI(Arbitrary Mesh Interface)**：在旋转区域与静止区域的交界面上，用重叠面积对不匹配的面做插值。每个区域内部作刚体运动。
+- **嵌套网格(overset)**：包围物体的网格整体在背景网格上移动，在重叠区域相互插值交换数据。
+- **IBM(Immersed Boundary Method)**：网格固定，边界以力项的形式嵌入。详见[浸入边界法的direct forcing与delta核](/zh/posts/2026-08-03-immersed-boundary-direct-forcing-delta-kernel/)。
+
+前三种方法中，单元体积随时间变化，或者单元本身在移动。单元边界一旦移动，通量里就会出现网格速度。陷阱就在这个网格速度的算法上。
+
+在下面的模拟中，亲手摆动一个单元的两个面。
+
+<AleSweptVolumeLab />
+
+黄色条是面在一步内实际移动的距离。紫色条是通量假设的距离 $w\,\Delta t$。选择 `w(t_n)` 并增大 Δt，两条不再一致，下方图中的两条体积曲线随之分开。密度读数偏离1的比例正好等于这个差。切换到 `swept (GCL)`，两条曲线重合，密度精确回到1。
+
+## 原因：体积变化与通量看的是两块不同的表
+
+运动控制体 $V(t)$ 上的守恒方程如下。
+
+$$
+\frac{d}{dt}\int_{V(t)} \rho \, dV + \oint_{S(t)} \rho\,(\mathbf{u}-\mathbf{w})\cdot\mathbf{n}\, dS = 0
+$$
+
+$\rho$ 为密度，$\mathbf{u}$ 为流体速度，$\mathbf{w}$ 为面速度，$\mathbf{n}$ 为外法向。
+
+代入 $\rho = $ 常数、$\mathbf{u} = $ 常数。均匀流是精确解。$\mathbf{u}$ 项是闭合曲面积分，因此为零。剩下的是：
+
+$$
+\frac{dV}{dt} = \oint_{S(t)} \mathbf{w}\cdot\mathbf{n}\, dS
+$$
+
+这就是GCL。单元体积的变化率必须等于其各面扫过的体积。在连续层面，这是一个平凡的恒等式。
+
+麻烦出现在离散之后。一维有限体积中，单元 $i$ 的更新为：
+
+$$
+(\rho V)_i^{n+1} = (\rho V)_i^{n} - \Delta t\,\big[F_{i+1/2} - F_{i-1/2}\big], \quad F = \rho\,(u - w)
+$$
+
+$V_i^{n+1}$ 由新的节点位置按几何计算。通量中的 $w$ 则另外计算。要让均匀解保持不变，需要：
+
+$$
+V_i^{n+1} - V_i^{n} = \Delta t\,\big(w_{i+1/2} - w_{i-1/2}\big)
+$$
+
+这就是**离散GCL**。左边来自几何，右边来自通量。两者一旦不同，$\rho$ 就会凭空增减。
+
+常见错误是把 $w$ 取为节点运动的解析导数 $dx/dt$ 在 $t^n$ 时刻的值。这相当于左黎曼和。除非节点匀速运动，否则它与实际位移相差 $O(\Delta t^2)$。每一步，这个误差都在单元之间重新分配。
+
+那为什么总质量仍然守恒？因为是通量形式。离开单元 $i$ 的 $F_{i+1/2}$ 原封不动地进入单元 $i+1$。求和后所有内部通量相互抵消。也就是说，质量**去了哪里**算错了，但**有多少**是对的。守恒型格式并不自动保证GCL。
+
+## 解决：直接使用面实际扫过的体积
+
+处方很简单。把面速度定义为：
+
+$$
+w_{i+1/2} = \frac{x_{i+1/2}^{n+1} - x_{i+1/2}^{n}}{\Delta t}
+$$
+
+这样离散GCL就成了恒等式，不管节点运动多复杂。在二维和三维中，按几何计算每个面扫过的体积 $\delta V_f$，再把 $\dot{V}_f = \delta V_f / \Delta t$ 用于通量。OpenFOAM中的 `meshPhi` 正是这个量。
+
+如果用中点时刻 $t^{n+1/2}$ 的解析 $w$ 呢？作为中点公式，每步误差降到 $O(\Delta t^3)$。但它不为零。在多步时间积分或旋转网格中，这个残差会不断累积。
+
+## 代码：用三种面速度让均匀流运行2秒
+
+在周期边界的一维区域 $[0,1]$ 上放64个单元。节点按 $x = \xi + a\sin(2\pi\xi)\sin(2\pi t/T)$ 摆动。流体速度为1，初始密度为1。用一阶迎风通量推进2秒，然后测量 $\max|\rho-1|$。
+
+```python
+import math
+
+def node_pos(xi, t, amp, period):
+    # 让参考网格 xi 按正弦形状摆动(两端节点固定)
+    return xi + amp*math.sin(2*math.pi*xi)*math.sin(2*math.pi*t/period)
+
+def node_speed(xi, t, amp, period):
+    # 节点位置的解析时间导数 dx/dt
+    return amp*math.sin(2*math.pi*xi)*math.cos(2*math.pi*t/period)*2*math.pi/period
+
+def ale_uniform_test(n, dt, mode, amp=0.05, period=0.25, t_end=2.0, v=1.0):
+    xi = [j/n for j in range(n+1)]
+    x = [node_pos(s, 0.0, amp, period) for s in xi]
+    rho = [1.0]*n                         # 从均匀密度出发
+    steps = int(round(t_end/dt))
+    for k in range(steps):
+        t0, t1 = k*dt, (k+1)*dt
+        x_new = [node_pos(s, t1, amp, period) for s in xi]
+        if mode == "w(t_n)":
+            w = [node_speed(s, t0, amp, period) for s in xi]
+        elif mode == "w(t_n+1/2)":
+            w = [node_speed(s, t0 + 0.5*dt, amp, period) for s in xi]
+        else:                              # GCL: 面实际扫过的距离 / dt
+            w = [(b - a)/dt for a, b in zip(x, x_new)]
+        f = []
+        for j in range(n):                 # 面 j: 单元 j-1 | 单元 j(周期边界)
+            rel = v - w[j]                 # 穿过该面的相对速度
+            f.append(rel*(rho[j-1] if rel > 0 else rho[j]))
+        f.append(f[0])
+        mass = [rho[i]*(x[i+1]-x[i]) - dt*(f[i+1]-f[i]) for i in range(n)]
+        x = x_new
+        rho = [mass[i]/(x[i+1]-x[i]) for i in range(n)]
+    total = sum(rho[i]*(x[i+1]-x[i]) for i in range(n))
+    return max(abs(r - 1.0) for r in rho), total
+
+n = 64
+print(f"N = {n}, amp = 0.05, period = 0.25, t_end = 2.0, v = 1")
+print(f"{'dt':>6} | {'w(t_n)':>9} | {'w(t_n+1/2)':>10} | {'GCL':>8} | total mass, w(t_n)")
+for dt in [4e-3, 2e-3, 1e-3, 5e-4]:
+    e = {m: ale_uniform_test(n, dt, m) for m in ["w(t_n)", "w(t_n+1/2)", "GCL"]}
+    print(f"{dt:6.0e} | {e['w(t_n)'][0]:9.2e} | {e['w(t_n+1/2)'][0]:10.2e} | "
+          f"{e['GCL'][0]:8.1e} | {e['w(t_n)'][1]:.15f}")
+print()
+print("amp scan at dt = 1e-3: max|rho-1|, w(t_n) | GCL")
+for amp in [0.01, 0.025, 0.05, 0.1]:
+    a = ale_uniform_test(n, 1e-3, "w(t_n)", amp=amp)[0]
+    g = ale_uniform_test(n, 1e-3, "GCL", amp=amp)[0]
+    print(f"  amp = {amp:5.3f}: {a:.2e} | {g:.1e}")
+```
+
+```text
+N = 64, amp = 0.05, period = 0.25, t_end = 2.0, v = 1
+    dt |    w(t_n) | w(t_n+1/2) |      GCL | total mass, w(t_n)
+ 4e-03 |  1.07e-02 |   1.82e-05 |  2.0e-15 | 1.000000000000000
+ 2e-03 |  6.09e-03 |   5.09e-06 |  1.8e-15 | 0.999999999999999
+ 1e-03 |  3.20e-03 |   1.34e-06 |  0.0e+00 | 0.999999999999999
+ 5e-04 |  1.64e-03 |   3.42e-07 |  0.0e+00 | 1.000000000000000
+
+amp scan at dt = 1e-3: max|rho-1|, w(t_n) | GCL
+  amp = 0.010: 3.89e-04 | 0.0e+00
+  amp = 0.025: 1.14e-03 | 0.0e+00
+  amp = 0.050: 3.20e-03 | 0.0e+00
+  amp = 0.100: 1.51e-02 | 0.0e+00
+```
+
+在浏览器里直接运行上面的代码。三种格式在同一网格上同时推进。
+
+<GclUniformFlowRace />
+
+在默认值(dt = 4e-3，amp = 0.05，N = 64)下，t 到达2时，红色 `w(t_n)` 停在约1.07e-2，黄色中点停在1.8e-5附近。绿色GCL始终贴在1e-15以下的底部。把 amp 提高到0.1，或把 N 改成128试试。红线会变，绿线纹丝不动。
+
+## 解读输出：1.07%、1.8e-5和2e-15
+
+**对Δt的阶数。** Δt 每减半，`w(t_n)` 列大约减半(1.07e-2 → 6.09e-3 → 3.20e-3 → 1.64e-3)，是一阶。中点列每次约缩小4倍(1.82e-5 → 5.09e-6 → 1.34e-6 → 3.42e-7)，是二阶。格式本身在空间上是一阶迎风，但这个误差完全来自时间方向的几何不一致。
+
+**GCL列为零。** 2e-15是舍入误差。无论 Δt 和振幅取多少，均匀流都能保持。这就是GCL的含义。它不是精度的提升，而是恒等式成立。
+
+**质量列。** 即使是 `w(t_n)`，总质量也是1.000000000000000。这说明质量求和检查抓不住这个错误。验证ALE代码时，应先做**均匀流保持测试**，再看质量平衡。
+
+**振幅扫描。** 振幅翻倍时，误差增长略多于两倍(0.05 → 0.1时，3.20e-3 → 1.51e-2)。面速度与振幅成正比，而大振幅下单元体积变化变成非线性。在FSI中，结构位移越大，违反GCL的代价越高。
+
+## 在实际FSI代码中的表现
+
+在一维玩具问题里，1%看起来不大。实际计算中，症状更隐蔽。
+
+- **虚假压力振荡。** 在可压缩求解器中，密度误差就是压力误差。振荡翼型周围会出现与网格运动同频的压力噪声。在气动弹性分析中，这种噪声会反馈到结构上。
+- **稳定性下降。** 不满足GCL的高阶时间积分，其线性稳定极限可能缩小。在固定网格上运行良好的BDF2，换到动网格上可能发散。
+- **不可压缩求解器的连续性残差。** 压力修正基于面体积通量之和。如果面通量不使用几何的 $\dot V_f$，网格运动噪声就会混入压力方程的源项。
+
+网格质量也要一起看。大位移让单元扭曲时，就需要非正交修正，参见[非正交扩散通量修正](/zh/posts/2026-07-01-non-orthogonal-diffusion-correction/)。IBM网格固定，没有GCL问题。代价是边界附近的精度和质量泄漏。在四种方法之间做选择，归根结底是选择在哪里支付这笔成本。
+
+## 编写动网格求解器时最先运行的测试
+
+只放一个均匀流，然后剧烈晃动网格。边界设为周期条件。几个周期后输出 $\max|\rho-1|$ 或 $\max|\mathbf{u}-\mathbf{u}_0|$。如果不在1e-14附近，说明面速度的计算与几何不一致。这个测试五分钟就能写好。比起跑完一周的振荡翼计算再去追查压力噪声，要便宜得多。

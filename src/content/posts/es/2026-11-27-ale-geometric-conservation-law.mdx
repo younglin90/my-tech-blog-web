@@ -1,0 +1,185 @@
+---
+title: "La masa se conservó hasta 15 dígitos, pero la densidad de un fluido en reposo se desvió 1 % — Mallas móviles ALE y la ley de conservación geométrica (GCL)"
+date: 2026-11-27
+description: "Mover solo la malla puede romper un flujo uniforme. La forma de calcular la velocidad de cara decide si un solver ALE mantiene constante un estado constante, y un balance de masa no detecta el error."
+tags: ["Geometric-Conservation-Law", "ALE", "FSI", "FVM", "Numerical-Analysis"]
+locale: es
+slug: 2026-11-27-ale-geometric-conservation-law
+takeaway: "En un flujo ALE, la velocidad de cara debe ser la distancia que la cara barrió realmente dividida entre Δt, no el dx/dt analítico. Solo así un flujo uniforme se mantiene uniforme con precisión de máquina."
+draft: false
+---
+import { AleSweptVolumeLab } from '@/components/post-viz/2026-11-27-ale-geometric-conservation-law/AleSweptVolumeLab'
+import { GclUniformFlowRace } from '@/components/post-viz/2026-11-27-ale-geometric-conservation-law/GclUniformFlowRace'
+
+## La densidad cambió sin que hiciéramos nada
+
+Un fluido de densidad 1 fluye de manera uniforme a velocidad 1. Solo se hacen oscilar los nodos de la malla con forma senoidal. Físicamente no debería pasar nada. Sin embargo, tras 2 segundos la densidad se desvió hasta 1.07 %. Hay una segunda rareza. La masa total era exactamente 1 hasta el decimal quince.
+
+Este artículo resuelve esa contradicción. La causa es la ley de conservación geométrica (GCL, Geometric Conservation Law: la condición de que el movimiento de la malla por sí solo no cree un término fuente falso). Al terminar, se podrá resumir en una línea cómo debe calcular un código ALE las velocidades de cara.
+
+En febrero de 2020, al estudiar interacción fluido–estructura (FSI, Fluid–Structure Interaction), clasifiqué los métodos en cuatro grupos: ALE, AMI, quimera (overset) y el método de frontera inmersa (IBM). Los tres primeros mueven la malla. En cuanto la malla se mueve, aparece el problema de la GCL.
+
+## El problema: cuatro maneras de tratar geometría móvil en FSI
+
+Cuando una estructura se mueve, cambia la forma del dominio fluido. Hay dos respuestas generales. O la malla sigue el movimiento, o la malla queda fija y la frontera se incrusta.
+
+- **ALE (Arbitrary Lagrangian–Eulerian)**: los nodos se mueven con una velocidad arbitraria $\mathbf{w}$. Con $\mathbf{w}=0$ es euleriano; con $\mathbf{w}=\mathbf{u}$ es lagrangiano. Los nodos cerca de la pared siguen a la estructura y los interiores se interpolan suavemente.
+- **AMI (Arbitrary Mesh Interface)**: donde una zona giratoria toca una estacionaria, las caras no coincidentes se interpolan por área de solapamiento. Cada zona se mueve como sólido rígido.
+- **Quimera (overset)**: una malla ajustada al cuerpo se desliza completa sobre una malla de fondo. Los valores se interpolan en la zona de solapamiento.
+- **IBM (Immersed Boundary Method)**: la malla es fija y la frontera entra como término de fuerza. Se trató en [IBM de forzamiento directo y núcleos delta](/es/posts/2026-08-03-immersed-boundary-direct-forcing-delta-kernel/).
+
+En los tres primeros, el volumen de las celdas cambia en el tiempo o las celdas se desplazan. Cuando una cara se mueve, la velocidad de malla entra en el flujo. La trampa está en cómo se calcula esa velocidad.
+
+En la simulación siguiente se pueden mover las dos caras de una sola celda.
+
+<AleSweptVolumeLab />
+
+La barra amarilla es la distancia que la cara recorrió realmente en un paso. La barra violeta es la distancia que supuso el flujo, $w\,\Delta t$. Con `w(t_n)` y un Δt mayor, las barras no coinciden y las dos curvas de volumen de abajo se separan. La lectura de densidad se aleja de 1 justo en esa proporción. Con `swept (GCL)` las curvas se superponen y la densidad vuelve exactamente a 1.
+
+## La causa: el cambio de volumen y el flujo miran relojes distintos
+
+La ley de conservación sobre un volumen de control móvil $V(t)$ es:
+
+$$
+\frac{d}{dt}\int_{V(t)} \rho \, dV + \oint_{S(t)} \rho\,(\mathbf{u}-\mathbf{w})\cdot\mathbf{n}\, dS = 0
+$$
+
+$\rho$ es la densidad, $\mathbf{u}$ la velocidad del fluido, $\mathbf{w}$ la velocidad de cara y $\mathbf{n}$ la normal exterior.
+
+Se sustituye $\rho$ constante y $\mathbf{u}$ constante. El flujo uniforme es solución exacta. El término en $\mathbf{u}$ desaparece por ser una integral sobre superficie cerrada. Queda:
+
+$$
+\frac{dV}{dt} = \oint_{S(t)} \mathbf{w}\cdot\mathbf{n}\, dS
+$$
+
+Esa es la GCL. La tasa de cambio del volumen de una celda debe igualar el volumen barrido por sus caras. En el nivel continuo es una identidad trivial.
+
+El problema aparece al discretizar. En volúmenes finitos 1D, la actualización de la celda $i$ es:
+
+$$
+(\rho V)_i^{n+1} = (\rho V)_i^{n} - \Delta t\,\big[F_{i+1/2} - F_{i-1/2}\big], \quad F = \rho\,(u - w)
+$$
+
+$V_i^{n+1}$ se calcula geométricamente a partir de las nuevas posiciones. El $w$ dentro del flujo se calcula aparte. Para que la solución uniforme sobreviva hace falta:
+
+$$
+V_i^{n+1} - V_i^{n} = \Delta t\,\big(w_{i+1/2} - w_{i-1/2}\big)
+$$
+
+Esta es la **GCL discreta**. El lado izquierdo viene de la geometría y el derecho del flujo. Si difieren, se crea o destruye $\rho$ en esa medida.
+
+Un error común es tomar $w$ como la derivada analítica $dx/dt$ del movimiento nodal en $t^n$. Eso es una suma de Riemann por la izquierda. Salvo que los nodos se muevan a velocidad constante, falla por $O(\Delta t^2)$ respecto del desplazamiento real. En cada paso, ese error se redistribuye entre celdas.
+
+¿Por qué se conserva entonces la masa total? Por la forma de flujo. El $F_{i+1/2}$ que sale de la celda $i$ entra intacto en la celda $i+1$. Al sumar, todos los flujos interiores se cancelan. El esquema se equivoca en **adónde** va la masa, pero acierta en **cuánta** hay. Un esquema conservativo no garantiza la GCL por sí solo.
+
+## La solución: usar el volumen que la cara barrió realmente
+
+El remedio es sencillo. Se define la velocidad de cara como:
+
+$$
+w_{i+1/2} = \frac{x_{i+1/2}^{n+1} - x_{i+1/2}^{n}}{\Delta t}
+$$
+
+Así la GCL discreta se vuelve una identidad, sin importar lo complejo del movimiento nodal. En 2D y 3D se calcula geométricamente el volumen barrido $\delta V_f$ de cada cara y se usa $\dot{V}_f = \delta V_f / \Delta t$ en el flujo. El `meshPhi` de OpenFOAM es exactamente esa cantidad.
+
+¿Y el $w$ analítico en el instante medio $t^{n+1/2}$? Al ser una regla del punto medio, el error por paso baja a $O(\Delta t^3)$. Pero no es cero. Con integradores multipaso o mallas giratorias, ese residuo se acumula.
+
+## Código: un flujo uniforme durante 2 segundos con tres velocidades de cara
+
+Se colocan 64 celdas en el dominio periódico 1D $[0,1]$. Los nodos oscilan según $x = \xi + a\sin(2\pi\xi)\sin(2\pi t/T)$. La velocidad del fluido es 1 y la densidad inicial es 1. Se avanza 2 segundos con un flujo upwind de primer orden y se mide $\max|\rho-1|$.
+
+```python
+import math
+
+def node_pos(xi, t, amp, period):
+    # Se hace oscilar la malla de referencia xi en forma sinusoidal (nodos extremos fijos)
+    return xi + amp*math.sin(2*math.pi*xi)*math.sin(2*math.pi*t/period)
+
+def node_speed(xi, t, amp, period):
+    # Derivada temporal analítica dx/dt de la posición del nodo
+    return amp*math.sin(2*math.pi*xi)*math.cos(2*math.pi*t/period)*2*math.pi/period
+
+def ale_uniform_test(n, dt, mode, amp=0.05, period=0.25, t_end=2.0, v=1.0):
+    xi = [j/n for j in range(n+1)]
+    x = [node_pos(s, 0.0, amp, period) for s in xi]
+    rho = [1.0]*n                         # Se parte de densidad uniforme
+    steps = int(round(t_end/dt))
+    for k in range(steps):
+        t0, t1 = k*dt, (k+1)*dt
+        x_new = [node_pos(s, t1, amp, period) for s in xi]
+        if mode == "w(t_n)":
+            w = [node_speed(s, t0, amp, period) for s in xi]
+        elif mode == "w(t_n+1/2)":
+            w = [node_speed(s, t0 + 0.5*dt, amp, period) for s in xi]
+        else:                              # GCL: distancia que la cara barrió realmente / dt
+            w = [(b - a)/dt for a, b in zip(x, x_new)]
+        f = []
+        for j in range(n):                 # cara j: celda j-1 | celda j (periódica)
+            rel = v - w[j]                 # velocidad relativa a través de la cara
+            f.append(rel*(rho[j-1] if rel > 0 else rho[j]))
+        f.append(f[0])
+        mass = [rho[i]*(x[i+1]-x[i]) - dt*(f[i+1]-f[i]) for i in range(n)]
+        x = x_new
+        rho = [mass[i]/(x[i+1]-x[i]) for i in range(n)]
+    total = sum(rho[i]*(x[i+1]-x[i]) for i in range(n))
+    return max(abs(r - 1.0) for r in rho), total
+
+n = 64
+print(f"N = {n}, amp = 0.05, period = 0.25, t_end = 2.0, v = 1")
+print(f"{'dt':>6} | {'w(t_n)':>9} | {'w(t_n+1/2)':>10} | {'GCL':>8} | total mass, w(t_n)")
+for dt in [4e-3, 2e-3, 1e-3, 5e-4]:
+    e = {m: ale_uniform_test(n, dt, m) for m in ["w(t_n)", "w(t_n+1/2)", "GCL"]}
+    print(f"{dt:6.0e} | {e['w(t_n)'][0]:9.2e} | {e['w(t_n+1/2)'][0]:10.2e} | "
+          f"{e['GCL'][0]:8.1e} | {e['w(t_n)'][1]:.15f}")
+print()
+print("amp scan at dt = 1e-3: max|rho-1|, w(t_n) | GCL")
+for amp in [0.01, 0.025, 0.05, 0.1]:
+    a = ale_uniform_test(n, 1e-3, "w(t_n)", amp=amp)[0]
+    g = ale_uniform_test(n, 1e-3, "GCL", amp=amp)[0]
+    print(f"  amp = {amp:5.3f}: {a:.2e} | {g:.1e}")
+```
+
+```text
+N = 64, amp = 0.05, period = 0.25, t_end = 2.0, v = 1
+    dt |    w(t_n) | w(t_n+1/2) |      GCL | total mass, w(t_n)
+ 4e-03 |  1.07e-02 |   1.82e-05 |  2.0e-15 | 1.000000000000000
+ 2e-03 |  6.09e-03 |   5.09e-06 |  1.8e-15 | 0.999999999999999
+ 1e-03 |  3.20e-03 |   1.34e-06 |  0.0e+00 | 0.999999999999999
+ 5e-04 |  1.64e-03 |   3.42e-07 |  0.0e+00 | 1.000000000000000
+
+amp scan at dt = 1e-3: max|rho-1|, w(t_n) | GCL
+  amp = 0.010: 3.89e-04 | 0.0e+00
+  amp = 0.025: 1.14e-03 | 0.0e+00
+  amp = 0.050: 3.20e-03 | 0.0e+00
+  amp = 0.100: 1.51e-02 | 0.0e+00
+```
+
+El código anterior se puede ejecutar directamente en el navegador. Los tres esquemas avanzan a la vez sobre la misma malla.
+
+<GclUniformFlowRace />
+
+Con los valores por defecto (dt = 4e-3, amp = 0.05, N = 64), al llegar a t = 2 la curva roja `w(t_n)` se detiene cerca de 1.07e-2 y la amarilla de punto medio cerca de 1.8e-5. La verde de GCL queda pegada al suelo, por debajo de 1e-15. Conviene subir amp a 0.1 o pasar N a 128. La línea roja cambia; la verde no se mueve.
+
+## Lectura de la salida: 1.07 %, 1.8e-5 y 2e-15
+
+**Orden en Δt.** La columna `w(t_n)` se reduce a la mitad cada vez que Δt se reduce a la mitad (1.07e-2 → 6.09e-3 → 3.20e-3 → 1.64e-3). Primer orden. La de punto medio baja unas cuatro veces (1.82e-5 → 5.09e-6 → 1.34e-6 → 3.42e-7). Segundo orden. El esquema es upwind de primer orden en espacio, pero este error viene solo del desajuste geométrico temporal.
+
+**La columna GCL es cero.** 2e-15 es error de redondeo. Con cualquier Δt o amplitud, el flujo uniforme se conserva. Eso es lo que significa la GCL. No es una mejora de precisión; es una identidad que se cumple.
+
+**La columna de masa.** Incluso con `w(t_n)`, la masa total es 1.000000000000000. Un balance de masa no detecta este error. Por eso, al verificar un código ALE, la **prueba de conservación del flujo uniforme** debe ir antes que el balance de masa.
+
+**Barrido de amplitud.** Al duplicar la amplitud, el error crece algo más del doble (de 0.05 a 0.1: 3.20e-3 → 1.51e-2). La velocidad de cara escala con la amplitud, y con amplitudes grandes el cambio de volumen se vuelve no lineal. En FSI, cuanto mayor el desplazamiento estructural, más cara sale una violación de la GCL.
+
+## Cómo aparece esto en códigos FSI reales
+
+En un problema 1D de juguete, 1 % parece poco. En cálculos reales los síntomas son más sutiles.
+
+- **Oscilación espuria de presión.** En un solver compresible, el error de densidad es error de presión. Alrededor de un perfil oscilante aparece ruido de presión a la frecuencia del movimiento de malla. En aeroelasticidad, ese ruido se retroalimenta a la estructura.
+- **Pérdida de estabilidad.** Los integradores de alto orden que violan la GCL pueden ver reducido su límite de estabilidad lineal. Un BDF2 que funcionaba en malla fija puede divergir en malla móvil.
+- **Residuos de continuidad en solvers incompresibles.** La corrección de presión parte de la suma de flujos volumétricos de cara. Si esos flujos no usan el $\dot V_f$ geométrico, el ruido del movimiento de malla entra en la fuente de la ecuación de presión.
+
+También importa la calidad de malla. Cuando grandes desplazamientos deforman las celdas, hace falta corrección no ortogonal; ver [corrección del flujo difusivo no ortogonal](/es/posts/2026-07-01-non-orthogonal-diffusion-correction/). IBM no tiene problema de GCL porque su malla es fija. A cambio paga con precisión cerca de la frontera y fugas de masa. Elegir entre los cuatro métodos es, al final, elegir dónde pagar ese costo.
+
+## La primera prueba al escribir un solver de malla móvil
+
+Solo se pone un flujo uniforme y se agita la malla con fuerza. Las fronteras son periódicas. Tras unos periodos se imprime $\max|\rho-1|$ o $\max|\mathbf{u}-\mathbf{u}_0|$. Si no está cerca de 1e-14, la velocidad de cara no concuerda con la geometría. Esta prueba se escribe en cinco minutos. Es mucho más barata que buscar ruido de presión tras una semana de cálculo de un ala oscilante.

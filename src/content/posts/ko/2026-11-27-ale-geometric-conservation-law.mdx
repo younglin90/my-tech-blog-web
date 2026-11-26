@@ -1,0 +1,185 @@
+---
+title: "질량은 15자리까지 보존됐는데 정지 유체의 밀도가 1% 흔들렸다 — 이동격자 ALE와 기하 보존 법칙(GCL)"
+date: 2026-11-27
+description: "격자만 움직였는데 균일 유동이 깨지는 이유. 면 속도를 어떻게 계산하느냐가 ALE 결과를 가른다."
+tags: ["Geometric-Conservation-Law", "ALE", "FSI", "FVM", "Numerical-Analysis"]
+locale: ko
+slug: 2026-11-27-ale-geometric-conservation-law
+takeaway: "ALE 플럭스의 면 속도는 해석적 dx/dt가 아니라 면이 실제로 쓸고 간 거리 ÷ Δt여야 한다. 그래야 균일 유동이 기계 정밀도로 유지된다."
+draft: false
+---
+import { AleSweptVolumeLab } from '@/components/post-viz/2026-11-27-ale-geometric-conservation-law/AleSweptVolumeLab'
+import { GclUniformFlowRace } from '@/components/post-viz/2026-11-27-ale-geometric-conservation-law/GclUniformFlowRace'
+
+## 아무것도 안 했는데 밀도가 변했다
+
+밀도 1인 유체가 속도 1로 균일하게 흐른다. 격자 노드만 사인 모양으로 흔든다. 물리적으로는 아무 일도 없어야 한다. 그런데 2초 뒤 밀도가 최대 1.07% 어긋났다. 이상한 점은 하나 더 있다. 전체 질량은 소수점 15자리까지 정확히 1이었다.
+
+이 글은 이 모순을 푼다. 원인은 기하 보존 법칙(GCL, Geometric Conservation Law — 격자 운동 자체가 가짜 생성항을 만들지 않게 하는 조건)이다. 읽고 나면 ALE 코드에서 면 속도를 어떻게 계산해야 하는지 한 줄로 정리할 수 있다.
+
+2020년 2월, 유체–구조 연성(FSI, Fluid–Structure Interaction)을 공부하며 방법을 네 가지로 정리한 적이 있다. ALE, AMI, 키메라(overset), 가상경계법(IBM)이다. 이 중 앞의 셋은 격자가 움직인다. 격자가 움직이는 순간 GCL 문제가 따라온다.
+
+## 문제: FSI에서 격자를 움직이는 네 가지 방법
+
+구조물이 움직이면 유체 영역의 모양이 바뀐다. 이를 다루는 방법은 크게 둘로 갈린다. 격자를 따라 움직이거나, 격자는 고정하고 경계를 심는다.
+
+- **ALE(Arbitrary Lagrangian–Eulerian)**: 격자 노드가 임의의 속도 $\mathbf{w}$로 움직인다. $\mathbf{w}=0$이면 오일러, $\mathbf{w}=\mathbf{u}$이면 라그랑주다. 벽 근처 노드는 구조물을 따라가고 안쪽 노드는 매끄럽게 보간한다.
+- **AMI(Arbitrary Mesh Interface)**: 회전 영역과 정지 영역이 맞닿은 면에서 서로 맞지 않는 면을 겹침 면적으로 보간한다. 각 영역 내부는 강체처럼 움직인다.
+- **키메라(overset)**: 물체를 감싼 격자가 배경 격자 위를 통째로 이동한다. 겹친 영역에서 값을 보간해 주고받는다.
+- **IBM(Immersed Boundary Method)**: 격자는 고정이다. 경계는 힘 항으로 심는다. 자세한 내용은 [가상경계법 direct forcing과 델타 커널](/ko/posts/2026-08-03-immersed-boundary-direct-forcing-delta-kernel/)에서 다뤘다.
+
+앞의 셋은 모두 셀 부피가 시간에 따라 변하거나 셀이 이동한다. 셀 경계가 움직이면 플럭스에 격자 속도가 들어간다. 그 격자 속도를 계산하는 방식에 함정이 있다.
+
+아래 시뮬레이션에서 셀 하나의 두 면을 직접 흔들어 보자.
+
+<AleSweptVolumeLab />
+
+노란 막대는 면이 한 스텝 동안 실제로 움직인 거리다. 보라 막대는 플럭스가 가정한 거리 $w\,\Delta t$다. `w(t_n)`을 고르고 Δt를 키우면 두 막대가 어긋나고, 아래 그래프의 두 부피 곡선이 벌어진다. 그 벌어진 비율만큼 밀도 readout이 1에서 멀어진다. `swept (GCL)`로 바꾸면 두 곡선이 겹치고 밀도는 정확히 1로 돌아온다.
+
+## 원인: 부피 변화와 플럭스가 서로 다른 시계를 본다
+
+움직이는 검사체적 $V(t)$에 대한 보존식은 다음과 같다.
+
+$$
+\frac{d}{dt}\int_{V(t)} \rho \, dV + \oint_{S(t)} \rho\,(\mathbf{u}-\mathbf{w})\cdot\mathbf{n}\, dS = 0
+$$
+
+$\rho$는 밀도, $\mathbf{u}$는 유체 속도, $\mathbf{w}$는 면 속도, $\mathbf{n}$은 바깥 법선이다.
+
+여기에 $\rho = $ 상수, $\mathbf{u} = $ 상수를 넣는다. 균일 유동은 정확한 해다. $\mathbf{u}$ 항은 닫힌 면 적분이라 사라진다. 남는 것은 다음 식이다.
+
+$$
+\frac{dV}{dt} = \oint_{S(t)} \mathbf{w}\cdot\mathbf{n}\, dS
+$$
+
+이것이 GCL이다. 셀 부피의 변화율은 면이 쓸고 간 부피와 같아야 한다는 뜻이다. 연속 수준에서는 당연한 항등식이다.
+
+문제는 이산화한 뒤에 생긴다. 1D 유한체적에서 셀 $i$의 갱신은 이렇게 된다.
+
+$$
+(\rho V)_i^{n+1} = (\rho V)_i^{n} - \Delta t\,\big[F_{i+1/2} - F_{i-1/2}\big], \quad F = \rho\,(u - w)
+$$
+
+$V_i^{n+1}$은 새 노드 위치로부터 기하학적으로 계산한다. 반면 플럭스 안의 $w$는 따로 계산한다. 균일 해를 넣으면 다음이 필요하다.
+
+$$
+V_i^{n+1} - V_i^{n} = \Delta t\,\big(w_{i+1/2} - w_{i-1/2}\big)
+$$
+
+이것이 **이산 GCL**이다. 좌변은 기하, 우변은 플럭스에서 온다. 둘이 다르면 차이만큼 $\rho$가 생기거나 사라진다.
+
+흔한 실수는 $w$를 노드 운동의 해석적 미분 $dx/dt$를 $t^n$에서 계산하는 것이다. 이러면 왼쪽 리만 합이 된다. 노드가 등속으로 움직이지 않는 한 실제 이동 거리와 $O(\Delta t^2)$만큼 어긋난다. 매 스텝 이 오차가 셀 사이에 재분배된다.
+
+전체 질량은 왜 보존될까. 플럭스 형태이기 때문이다. 셀 $i$의 $F_{i+1/2}$은 셀 $i+1$에서 그대로 빠진다. 합하면 내부 플럭스가 모두 상쇄된다. 즉 질량이 **어디로 가는지**는 틀리지만 **얼마인지**는 맞다. 보존형 스킴이 GCL을 자동으로 보장하지 않는 이유다.
+
+## 해결: 면이 쓸고 간 부피를 그대로 쓴다
+
+처방은 간단하다. 면 속도를 다음과 같이 정의한다.
+
+$$
+w_{i+1/2} = \frac{x_{i+1/2}^{n+1} - x_{i+1/2}^{n}}{\Delta t}
+$$
+
+그러면 이산 GCL이 항등식이 된다. 노드 운동이 아무리 복잡해도 상관없다. 2D·3D에서는 면이 쓸고 간 부피 $\delta V_f$를 기하학적으로 계산하고 $\dot{V}_f = \delta V_f / \Delta t$를 플럭스에 쓴다. OpenFOAM의 `meshPhi`가 바로 이 양이다.
+
+중간점 시각 $t^{n+1/2}$에서 해석적 $w$를 쓰면 어떨까. 중간점 적분이라 오차가 $O(\Delta t^3)$로 줄어든다. 하지만 0은 아니다. 다단계 시간 적분이나 회전 격자에서는 이 잔차가 쌓인다.
+
+## 코드: 세 가지 면 속도로 균일 유동을 2초 동안 흘린다
+
+주기 경계 1D 영역 $[0,1]$에 셀 64개를 놓는다. 노드는 $x = \xi + a\sin(2\pi\xi)\sin(2\pi t/T)$로 흔든다. 유체 속도는 1, 초기 밀도는 1이다. 1차 풍상 플럭스로 2초를 진행한 뒤 $\max|\rho-1|$을 잰다.
+
+```python
+import math
+
+def node_pos(xi, t, amp, period):
+    # 기준 격자 xi를 사인 모양으로 흔든다 (양 끝 노드는 고정)
+    return xi + amp*math.sin(2*math.pi*xi)*math.sin(2*math.pi*t/period)
+
+def node_speed(xi, t, amp, period):
+    # 노드 위치의 해석적 시간 미분 dx/dt
+    return amp*math.sin(2*math.pi*xi)*math.cos(2*math.pi*t/period)*2*math.pi/period
+
+def ale_uniform_test(n, dt, mode, amp=0.05, period=0.25, t_end=2.0, v=1.0):
+    xi = [j/n for j in range(n+1)]
+    x = [node_pos(s, 0.0, amp, period) for s in xi]
+    rho = [1.0]*n                         # 균일 밀도에서 출발
+    steps = int(round(t_end/dt))
+    for k in range(steps):
+        t0, t1 = k*dt, (k+1)*dt
+        x_new = [node_pos(s, t1, amp, period) for s in xi]
+        if mode == "w(t_n)":
+            w = [node_speed(s, t0, amp, period) for s in xi]
+        elif mode == "w(t_n+1/2)":
+            w = [node_speed(s, t0 + 0.5*dt, amp, period) for s in xi]
+        else:                              # GCL: 면이 실제로 쓸고 간 거리 / dt
+            w = [(b - a)/dt for a, b in zip(x, x_new)]
+        f = []
+        for j in range(n):                 # 면 j: 셀 j-1 | 셀 j (주기 경계)
+            rel = v - w[j]                 # 면을 지나는 상대 속도
+            f.append(rel*(rho[j-1] if rel > 0 else rho[j]))
+        f.append(f[0])
+        mass = [rho[i]*(x[i+1]-x[i]) - dt*(f[i+1]-f[i]) for i in range(n)]
+        x = x_new
+        rho = [mass[i]/(x[i+1]-x[i]) for i in range(n)]
+    total = sum(rho[i]*(x[i+1]-x[i]) for i in range(n))
+    return max(abs(r - 1.0) for r in rho), total
+
+n = 64
+print(f"N = {n}, amp = 0.05, period = 0.25, t_end = 2.0, v = 1")
+print(f"{'dt':>6} | {'w(t_n)':>9} | {'w(t_n+1/2)':>10} | {'GCL':>8} | total mass, w(t_n)")
+for dt in [4e-3, 2e-3, 1e-3, 5e-4]:
+    e = {m: ale_uniform_test(n, dt, m) for m in ["w(t_n)", "w(t_n+1/2)", "GCL"]}
+    print(f"{dt:6.0e} | {e['w(t_n)'][0]:9.2e} | {e['w(t_n+1/2)'][0]:10.2e} | "
+          f"{e['GCL'][0]:8.1e} | {e['w(t_n)'][1]:.15f}")
+print()
+print("amp scan at dt = 1e-3: max|rho-1|, w(t_n) | GCL")
+for amp in [0.01, 0.025, 0.05, 0.1]:
+    a = ale_uniform_test(n, 1e-3, "w(t_n)", amp=amp)[0]
+    g = ale_uniform_test(n, 1e-3, "GCL", amp=amp)[0]
+    print(f"  amp = {amp:5.3f}: {a:.2e} | {g:.1e}")
+```
+
+```text
+N = 64, amp = 0.05, period = 0.25, t_end = 2.0, v = 1
+    dt |    w(t_n) | w(t_n+1/2) |      GCL | total mass, w(t_n)
+ 4e-03 |  1.07e-02 |   1.82e-05 |  2.0e-15 | 1.000000000000000
+ 2e-03 |  6.09e-03 |   5.09e-06 |  1.8e-15 | 0.999999999999999
+ 1e-03 |  3.20e-03 |   1.34e-06 |  0.0e+00 | 0.999999999999999
+ 5e-04 |  1.64e-03 |   3.42e-07 |  0.0e+00 | 1.000000000000000
+
+amp scan at dt = 1e-3: max|rho-1|, w(t_n) | GCL
+  amp = 0.010: 3.89e-04 | 0.0e+00
+  amp = 0.025: 1.14e-03 | 0.0e+00
+  amp = 0.050: 3.20e-03 | 0.0e+00
+  amp = 0.100: 1.51e-02 | 0.0e+00
+```
+
+위 코드를 브라우저에서 직접 돌려보자. 세 스킴이 같은 격자 위에서 동시에 진행한다.
+
+<GclUniformFlowRace />
+
+기본값(dt = 4e-3, amp = 0.05, N = 64)에서 t = 2에 도달하면 빨간 `w(t_n)`이 약 1.07e-2, 노란 중간점이 1.8e-5 근처에 멈춘다. 초록 GCL은 1e-15 아래 바닥에 붙어 있다. amp를 0.1로 올리거나 N을 128로 바꿔 보자. 빨간 선은 움직이지만 초록 선은 꿈쩍하지 않는다.
+
+## 출력 읽기: 1.07%, 1.8e-5, 그리고 2e-15
+
+**Δt에 대한 차수.** `w(t_n)` 열은 Δt를 절반으로 줄일 때마다 대략 절반이 된다(1.07e-2 → 6.09e-3 → 3.20e-3 → 1.64e-3). 1차다. 중간점 열은 약 4배씩 준다(1.82e-5 → 5.09e-6 → 1.34e-6 → 3.42e-7). 2차다. 스킴 자체는 공간 1차 풍상인데도 이 오차는 순전히 시간 쪽 기하 불일치에서 나온다.
+
+**GCL 열은 0이다.** 2e-15는 반올림 오차다. Δt를 얼마로 두든, 진폭을 얼마로 두든 균일 유동이 유지된다. 이것이 GCL의 정의다. 정확도 개선이 아니라 항등식 성립이다.
+
+**질량 열.** `w(t_n)`조차 전체 질량은 1.000000000000000이다. 질량 보존 체크만으로는 이 버그를 못 잡는다는 뜻이다. ALE 코드를 검증할 때 질량 합보다 **균일 유동 보존 테스트**를 먼저 돌려야 하는 이유다.
+
+**진폭 스캔.** 진폭이 2배가 되면 오차는 2배보다 조금 더 커진다(0.05 → 0.1에서 3.20e-3 → 1.51e-2). 면 속도가 진폭에 비례하고, 큰 진폭에서는 셀 부피 변화가 비선형이 되기 때문이다. FSI에서 구조 변위가 클수록 GCL 위반이 비싸진다.
+
+## 실제 FSI 코드에서 이것이 드러나는 모습
+
+1D 장난감에서 1%는 작아 보인다. 실제 계산에서는 증상이 더 교묘하다.
+
+- **가짜 압력 진동.** 압축성 솔버에서 밀도 오차는 곧 압력 오차다. 진동하는 날개 주위에서 격자 진동 주파수의 압력 잡음이 생긴다. 공력 탄성 해석에서 이 잡음이 구조로 되먹임된다.
+- **안정성 손실.** GCL을 만족하지 않는 고차 시간 적분은 선형 안정성 한계가 줄어든다. 고정 격자에서 잘 돌던 BDF2가 이동 격자에서 터지는 경우가 있다.
+- **비압축성 솔버의 연속식 잔차.** 압력 보정은 $\nabla\cdot(\mathbf{u}-\mathbf{w})$가 아니라 체적 플럭스 합으로 계산된다. 면 플럭스에 기하학적 $\dot V_f$를 쓰지 않으면 압력 방정식 소스에 격자 운동 잡음이 섞인다.
+
+격자 품질도 같이 봐야 한다. 큰 변위로 셀이 비뚤어지면 비직교 보정이 필요해진다. 이는 [비직교 확산 플럭스 보정](/ko/posts/2026-07-01-non-orthogonal-diffusion-correction/)에서 다뤘다. IBM은 격자가 고정이라 GCL 문제가 없다. 대신 경계 근처 정확도와 질량 누설을 대가로 치른다. 네 방법의 선택은 결국 이 비용을 어디에 지불하느냐의 문제다.
+
+## 이동 격자 솔버를 새로 짤 때 맨 처음 돌릴 테스트
+
+균일 유동 하나만 넣고 격자를 마구 흔든다. 경계는 주기 조건으로 둔다. 몇 주기 뒤 $\max|\rho-1|$이나 $\max|\mathbf{u}-\mathbf{u}_0|$을 출력한다. 1e-14 근처가 아니면 면 속도 계산이 기하와 어긋나 있다. 이 테스트는 5분이면 짠다. 날개 진동 해석을 일주일 돌린 뒤 압력 잡음의 원인을 찾는 것보다 훨씬 싸다.

@@ -1,0 +1,185 @@
+---
+title: "Mass Was Conserved to 15 Digits, Yet a Fluid at Rest Drifted 1% in Density — ALE Moving Meshes and the Geometric Conservation Law (GCL)"
+date: 2026-11-27
+description: "Moving only the mesh can break a uniform flow. How you compute the face velocity decides whether an ALE solver keeps a constant state constant — and a mass-sum check will never catch the bug."
+tags: ["Geometric-Conservation-Law", "ALE", "FSI", "FVM", "Numerical-Analysis"]
+locale: en
+slug: 2026-11-27-ale-geometric-conservation-law
+takeaway: "In an ALE flux, the face velocity must be the distance the face actually swept divided by Δt, not the analytic dx/dt. Only then does a uniform flow stay uniform to machine precision."
+draft: false
+---
+import { AleSweptVolumeLab } from '@/components/post-viz/2026-11-27-ale-geometric-conservation-law/AleSweptVolumeLab'
+import { GclUniformFlowRace } from '@/components/post-viz/2026-11-27-ale-geometric-conservation-law/GclUniformFlowRace'
+
+## The density changed, and we did nothing
+
+A fluid with density 1 flows uniformly at speed 1. We only wiggle the mesh nodes in a sine pattern. Physically, nothing should happen. Yet after 2 seconds the density was off by up to 1.07%. There is a second oddity. The total mass was exactly 1 to fifteen decimal places.
+
+This post resolves that contradiction. The culprit is the geometric conservation law (GCL — the condition that mesh motion alone must not create a fake source term). By the end, you will be able to state in one line how an ALE code should compute face velocities.
+
+Back in February 2020, while studying fluid–structure interaction (FSI), I sorted the methods into four groups: ALE, AMI, chimera (overset), and the immersed boundary method (IBM). The first three move the mesh. The moment a mesh moves, the GCL comes along.
+
+## The problem: four ways to handle moving geometry in FSI
+
+When a structure moves, the shape of the fluid domain changes. There are two broad responses. Either the mesh follows the motion, or the mesh stays fixed and the boundary is embedded.
+
+- **ALE (Arbitrary Lagrangian–Eulerian)**: mesh nodes move with an arbitrary velocity $\mathbf{w}$. With $\mathbf{w}=0$ it is Eulerian; with $\mathbf{w}=\mathbf{u}$ it is Lagrangian. Nodes near the wall follow the structure, and interior nodes are smoothly interpolated.
+- **AMI (Arbitrary Mesh Interface)**: where a rotating zone meets a stationary one, non-matching faces are interpolated by overlap area. Each zone moves as a rigid body.
+- **Chimera (overset)**: a body-fitted grid slides over a background grid. Values are interpolated back and forth in the overlap.
+- **IBM (Immersed Boundary Method)**: the mesh is fixed, and the boundary enters as a force term. I covered it in [direct-forcing IBM and delta kernels](/en/posts/2026-08-03-immersed-boundary-direct-forcing-delta-kernel/).
+
+In the first three, cell volumes change in time or cells move. Once a cell face moves, the mesh velocity enters the flux. The trap lies in how that mesh velocity is computed.
+
+Try it yourself: wiggle the two faces of a single cell in the simulation below.
+
+<AleSweptVolumeLab />
+
+The yellow bar is the distance the face actually moved in one step. The purple bar is the distance the flux assumed, $w\,\Delta t$. Pick `w(t_n)` and raise Δt: the bars disagree and the two volume curves below drift apart. The density readout leaves 1 by exactly that ratio. Switch to `swept (GCL)` and the curves overlap, and the density snaps back to exactly 1.
+
+## The cause: volume change and flux read different clocks
+
+The conservation law over a moving control volume $V(t)$ reads:
+
+$$
+\frac{d}{dt}\int_{V(t)} \rho \, dV + \oint_{S(t)} \rho\,(\mathbf{u}-\mathbf{w})\cdot\mathbf{n}\, dS = 0
+$$
+
+Here $\rho$ is density, $\mathbf{u}$ is fluid velocity, $\mathbf{w}$ is face velocity, and $\mathbf{n}$ is the outward normal.
+
+Plug in constant $\rho$ and constant $\mathbf{u}$. A uniform flow is an exact solution. The $\mathbf{u}$ term vanishes because it is a closed surface integral. What remains is:
+
+$$
+\frac{dV}{dt} = \oint_{S(t)} \mathbf{w}\cdot\mathbf{n}\, dS
+$$
+
+That is the GCL. The rate of change of a cell's volume must equal the volume swept by its faces. At the continuous level, it is a trivial identity.
+
+Trouble starts after discretization. In 1D finite volumes, the update for cell $i$ is:
+
+$$
+(\rho V)_i^{n+1} = (\rho V)_i^{n} - \Delta t\,\big[F_{i+1/2} - F_{i-1/2}\big], \quad F = \rho\,(u - w)
+$$
+
+$V_i^{n+1}$ comes from the new node positions, geometrically. The $w$ inside the flux is computed separately. For the uniform solution to survive, we need:
+
+$$
+V_i^{n+1} - V_i^{n} = \Delta t\,\big(w_{i+1/2} - w_{i-1/2}\big)
+$$
+
+This is the **discrete GCL**. The left side comes from geometry, the right side from the flux. Any mismatch creates or destroys $\rho$.
+
+A common mistake is to set $w$ to the analytic derivative $dx/dt$ of the node motion at $t^n$. That is a left Riemann sum. Unless nodes move at constant speed, it misses the true displacement by $O(\Delta t^2)$. Every step, this error is redistributed among cells.
+
+Why is the total mass still conserved? Because of the flux form. $F_{i+1/2}$ leaving cell $i$ enters cell $i+1$ unchanged. Summed up, all interior fluxes cancel. So the scheme gets **where** the mass goes wrong, but **how much** right. A conservative scheme does not guarantee the GCL automatically.
+
+## The fix: use the volume the face actually swept
+
+The remedy is simple. Define the face velocity as:
+
+$$
+w_{i+1/2} = \frac{x_{i+1/2}^{n+1} - x_{i+1/2}^{n}}{\Delta t}
+$$
+
+Now the discrete GCL is an identity, no matter how complex the node motion. In 2D and 3D, compute the swept volume $\delta V_f$ of each face geometrically and use $\dot{V}_f = \delta V_f / \Delta t$ in the flux. OpenFOAM's `meshPhi` is exactly this quantity.
+
+What about the analytic $w$ at the midpoint $t^{n+1/2}$? Being a midpoint rule, its error drops to $O(\Delta t^3)$ per step. But it is not zero. With multistep time integration or rotating meshes, that residual accumulates.
+
+## Code: run a uniform flow for 2 seconds with three face velocities
+
+Place 64 cells on the periodic 1D domain $[0,1]$. Wiggle the nodes as $x = \xi + a\sin(2\pi\xi)\sin(2\pi t/T)$. Fluid velocity is 1 and initial density is 1. Advance 2 seconds with a first-order upwind flux, then measure $\max|\rho-1|$.
+
+```python
+import math
+
+def node_pos(xi, t, amp, period):
+    # Wiggle the reference grid xi sinusoidally (end nodes stay fixed)
+    return xi + amp*math.sin(2*math.pi*xi)*math.sin(2*math.pi*t/period)
+
+def node_speed(xi, t, amp, period):
+    # Analytic time derivative dx/dt of the node position
+    return amp*math.sin(2*math.pi*xi)*math.cos(2*math.pi*t/period)*2*math.pi/period
+
+def ale_uniform_test(n, dt, mode, amp=0.05, period=0.25, t_end=2.0, v=1.0):
+    xi = [j/n for j in range(n+1)]
+    x = [node_pos(s, 0.0, amp, period) for s in xi]
+    rho = [1.0]*n                         # Start from uniform density
+    steps = int(round(t_end/dt))
+    for k in range(steps):
+        t0, t1 = k*dt, (k+1)*dt
+        x_new = [node_pos(s, t1, amp, period) for s in xi]
+        if mode == "w(t_n)":
+            w = [node_speed(s, t0, amp, period) for s in xi]
+        elif mode == "w(t_n+1/2)":
+            w = [node_speed(s, t0 + 0.5*dt, amp, period) for s in xi]
+        else:                              # GCL: distance the face actually swept / dt
+            w = [(b - a)/dt for a, b in zip(x, x_new)]
+        f = []
+        for j in range(n):                 # face j: cell j-1 | cell j (periodic)
+            rel = v - w[j]                 # relative velocity through the face
+            f.append(rel*(rho[j-1] if rel > 0 else rho[j]))
+        f.append(f[0])
+        mass = [rho[i]*(x[i+1]-x[i]) - dt*(f[i+1]-f[i]) for i in range(n)]
+        x = x_new
+        rho = [mass[i]/(x[i+1]-x[i]) for i in range(n)]
+    total = sum(rho[i]*(x[i+1]-x[i]) for i in range(n))
+    return max(abs(r - 1.0) for r in rho), total
+
+n = 64
+print(f"N = {n}, amp = 0.05, period = 0.25, t_end = 2.0, v = 1")
+print(f"{'dt':>6} | {'w(t_n)':>9} | {'w(t_n+1/2)':>10} | {'GCL':>8} | total mass, w(t_n)")
+for dt in [4e-3, 2e-3, 1e-3, 5e-4]:
+    e = {m: ale_uniform_test(n, dt, m) for m in ["w(t_n)", "w(t_n+1/2)", "GCL"]}
+    print(f"{dt:6.0e} | {e['w(t_n)'][0]:9.2e} | {e['w(t_n+1/2)'][0]:10.2e} | "
+          f"{e['GCL'][0]:8.1e} | {e['w(t_n)'][1]:.15f}")
+print()
+print("amp scan at dt = 1e-3: max|rho-1|, w(t_n) | GCL")
+for amp in [0.01, 0.025, 0.05, 0.1]:
+    a = ale_uniform_test(n, 1e-3, "w(t_n)", amp=amp)[0]
+    g = ale_uniform_test(n, 1e-3, "GCL", amp=amp)[0]
+    print(f"  amp = {amp:5.3f}: {a:.2e} | {g:.1e}")
+```
+
+```text
+N = 64, amp = 0.05, period = 0.25, t_end = 2.0, v = 1
+    dt |    w(t_n) | w(t_n+1/2) |      GCL | total mass, w(t_n)
+ 4e-03 |  1.07e-02 |   1.82e-05 |  2.0e-15 | 1.000000000000000
+ 2e-03 |  6.09e-03 |   5.09e-06 |  1.8e-15 | 0.999999999999999
+ 1e-03 |  3.20e-03 |   1.34e-06 |  0.0e+00 | 0.999999999999999
+ 5e-04 |  1.64e-03 |   3.42e-07 |  0.0e+00 | 1.000000000000000
+
+amp scan at dt = 1e-3: max|rho-1|, w(t_n) | GCL
+  amp = 0.010: 3.89e-04 | 0.0e+00
+  amp = 0.025: 1.14e-03 | 0.0e+00
+  amp = 0.050: 3.20e-03 | 0.0e+00
+  amp = 0.100: 1.51e-02 | 0.0e+00
+```
+
+Now run the code above in your browser. All three schemes advance on the same mesh at once.
+
+<GclUniformFlowRace />
+
+At the defaults (dt = 4e-3, amp = 0.05, N = 64), when t reaches 2, the red `w(t_n)` stops near 1.07e-2 and the yellow midpoint near 1.8e-5. The green GCL hugs the floor below 1e-15. Raise amp to 0.1 or switch N to 128. The red line moves; the green line does not budge.
+
+## Reading the output: 1.07%, 1.8e-5, and 2e-15
+
+**Order in Δt.** The `w(t_n)` column roughly halves each time Δt halves (1.07e-2 → 6.09e-3 → 3.20e-3 → 1.64e-3). First order. The midpoint column drops about fourfold (1.82e-5 → 5.09e-6 → 1.34e-6 → 3.42e-7). Second order. The scheme is first-order upwind in space, yet this error comes purely from a temporal geometric mismatch.
+
+**The GCL column is zero.** 2e-15 is round-off. Whatever Δt or amplitude you pick, the uniform flow survives. That is what the GCL means. It is not an accuracy improvement; it is an identity holding.
+
+**The mass column.** Even with `w(t_n)`, total mass is 1.000000000000000. A mass-sum check cannot catch this bug. That is why, when verifying an ALE code, a **free-stream preservation test** should come before the mass balance.
+
+**Amplitude scan.** Doubling the amplitude grows the error a bit more than twofold (from 0.05 to 0.1: 3.20e-3 → 1.51e-2). Face speed scales with amplitude, and at large amplitude the volume change turns nonlinear. In FSI, the larger the structural displacement, the costlier a GCL violation.
+
+## How this shows up in real FSI codes
+
+In a 1D toy, 1% looks small. In real runs, the symptoms are subtler.
+
+- **Spurious pressure oscillation.** In a compressible solver, density error is pressure error. Around an oscillating airfoil, pressure noise appears at the mesh-motion frequency. In aeroelastic analysis, that noise feeds back into the structure.
+- **Loss of stability.** High-order time integrators that violate the GCL can have a reduced linear stability limit. A BDF2 that ran fine on a fixed mesh may blow up on a moving one.
+- **Continuity residuals in incompressible solvers.** Pressure correction works from the sum of volumetric face fluxes. If those fluxes do not use the geometric $\dot V_f$, mesh-motion noise leaks into the pressure-equation source.
+
+Mesh quality matters too. When large displacements skew cells, non-orthogonal correction becomes necessary; see [non-orthogonal diffusion flux correction](/en/posts/2026-07-01-non-orthogonal-diffusion-correction/). IBM has no GCL issue because its mesh is fixed. It pays instead with accuracy near the boundary and mass leakage. Choosing among the four methods is really choosing where to pay that cost.
+
+## The first test to run when writing a moving-mesh solver
+
+Put in nothing but a uniform flow and shake the mesh hard. Use periodic boundaries. After a few periods, print $\max|\rho-1|$ or $\max|\mathbf{u}-\mathbf{u}_0|$. If it is not near 1e-14, the face velocity is out of step with the geometry. This test takes five minutes to write. That is far cheaper than hunting pressure noise after a week-long oscillating-wing run.
