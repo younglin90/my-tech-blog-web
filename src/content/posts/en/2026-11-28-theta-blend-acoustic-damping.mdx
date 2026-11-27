@@ -1,0 +1,152 @@
+---
+title: "[Paper Review] Our Implicit Scheme Erased 25% of an Acoustic Wave — Dimarco et al. (2017) Cell-Wise BE/CN Blending with a θ Limiter"
+date: 2026-11-28
+description: "Backward Euler shaves 25% off an acoustic pulse in one lap; Crank–Nicolson overshoots a step by 31%. We rebuild a per-face θ blend in 1D and measure both effects."
+tags: ["Crank-Nicolson", "IMEX", "TVD", "Implicit", "Paper-Review"]
+locale: en
+slug: 2026-11-28-theta-blend-acoustic-damping
+takeaway: "Choosing θ per face between 1/2 and 1 keeps smooth waves like CN and keeps jumps monotone like BE — but at large CFL the blend drifts toward BE."
+draft: false
+---
+import { ThetaModeDampingLab } from '@/components/post-viz/2026-11-28-theta-blend-acoustic-damping/ThetaModeDampingLab'
+import { ThetaBlendPulseRace } from '@/components/post-viz/2026-11-28-theta-blend-acoustic-damping/ThetaBlendPulseRace'
+
+## The more stable the scheme, the quieter the sound
+
+Implicit methods don't blow up when you enlarge the time step. That's why low-Mach compressible solvers treat the acoustic terms implicitly. But the most stable choice, Backward Euler (BE), quietly erases sound waves. Our compressible multiphase code showed exactly this in an acoustic reflection case: the reflected amplitude came out about 23% too small. This post shrinks the IMEX-TVD idea of Dimarco, Loubère, Michel-Dansac, and Vignal (2017) to 1D and reproduces it. By the end you'll be able to explain, with numbers, why one would blend BE and Crank–Nicolson (CN) cell by cell, and where that stops working.
+
+## What a single Fourier mode loses each step
+
+The simplest model is linear advection, $u_t + u_x = 0$. In 1D acoustics, the Riemann invariant $p + \rho c\,u$ (a quantity constant along a characteristic) obeys exactly this equation. So one acoustic wave can be treated as advection.
+
+A θ-scheme takes a weighted average of the spatial flux between the current and next time levels.
+
+$$
+u_i^{n+1} - u_i^n + \nu\left[\theta\,\delta F^{n+1} + (1-\theta)\,\delta F^{n}\right]_i = 0
+$$
+
+$\nu = c\Delta t/\Delta x$ is the acoustic CFL number and $\delta F$ is the difference of central face fluxes. $\theta = 1$ gives BE; $\theta = 1/2$ gives CN.
+
+Plug in a mode with wavenumber $\kappa = k\Delta x$ and you get the per-step amplification factor.
+
+$$
+|G|^2 = \frac{1 + (1-\theta)^2 s^2}{1 + \theta^2 s^2}, \qquad s = \nu \sin\kappa
+$$
+
+At $\theta = 1/2$ numerator and denominator match, so $|G| = 1$: no amplitude loss at all. At $\theta = 1$, $|G| = 1/\sqrt{1+s^2}$ shrinks every step. The loss per step is tiny, but hundreds of steps add up.
+
+Try changing θ and the CFL number in the simulation below.
+
+<ThetaModeDampingLab />
+
+Lower θ from 1 to 0.5 and the yellow envelope sticks to 1. Raise the CFL and the lap takes fewer steps, yet $s$ grows, so BE actually loses more.
+
+## Why CN isn't the answer
+
+CN preserves amplitude but keeps all the dispersion (each wavelength traveling at a different speed). Short waves lag behind. A smooth Gaussian pulse barely notices. A step-shaped pulse is another story: it is full of short wavelengths, and as they fall behind they leave ripples. That's the Gibbs oscillation.
+
+BE damps short waves hard, so the region around a step stays monotone. BE sits on the TVD side (total variation diminishing: total variation never grows). The two schemes have exactly opposite strengths and weaknesses.
+
+## The paper's idea: pick θ cell by cell
+
+Dimarco et al. (2017) tackled this for the low-Mach Euler equations. A first-order implicit solution is TVD but very diffusive. A second-order solution is accurate but oscillates. The paper blends the two cell by cell with a limiter, aiming for second-order accuracy and TVD at the same time.
+
+This post reduces that idea to a single θ. From the current solution $u^n$ we compute a slope ratio $r_i$ and clip it with minmod.
+
+$$
+\phi_i = \max\!\left(0, \min(1, r_i)\right), \qquad \theta_i = 1 - \tfrac{1}{2}\phi_i
+$$
+
+$r_i = (u_i - u_{i-1})/(u_{i+1} - u_i)$ is the ratio of the two neighboring slopes. In smooth regions $r_i \approx 1$, so $\theta_i = 1/2$ (CN). At jumps and extrema $r_i \le 0$, so $\theta_i = 1$ (BE). Each face $i+1/2$ takes the larger θ of its two cells.
+
+Because θ is fixed from $u^n$, the system stays linear. No Newton iterations. That's the same goal as the [Thomann–Iollo–Puppo relaxation scheme](/en/posts/2026-11-22-jin-xin-relaxation-linear-implicit-pressure/). And since it's written in face-flux form, mass is conserved to machine precision.
+
+## Code: one lap for a Gaussian and a step
+
+Split the periodic box $[0,1]$ into 200 cells. Advect a Gaussian pulse and a step pulse exactly one lap with each of the three schemes. The exact solution is the initial shape. For the Gaussian we track the maximum; for the step, the maximum and minimum.
+
+```python
+import numpy as np
+
+N = 200                      # cells on periodic [0, 1]
+dx = 1.0 / N
+x = (np.arange(N) + 0.5) * dx
+
+def face_theta(u, mode):
+    """theta at face i+1/2: 1 = Backward Euler, 1/2 = Crank-Nicolson"""
+    if mode == "BE":
+        return np.ones(N)
+    if mode == "CN":
+        return np.full(N, 0.5)
+    # BLEND: minmod smoothness ratio from u^n
+    dm = u - np.roll(u, 1)
+    dp = np.roll(u, -1) - u
+    r = dm / np.where(np.abs(dp) < 1e-12, 1e-12, dp)
+    phi = np.clip(np.minimum(1.0, r), 0.0, 1.0)   # 1 smooth, 0 jump/extremum
+    th = 1.0 - 0.5 * phi
+    return np.maximum(th, np.roll(th, -1))        # take the safer neighbor
+
+def theta_step(u, nu, mode):
+    """one implicit step of u_t + u_x = 0, central face flux, per-face theta"""
+    tp = face_theta(u, mode)          # face i+1/2
+    tm = np.roll(tp, 1)               # face i-1/2
+    i = np.arange(N)
+    A = np.eye(N)
+    A[i, i] += 0.5 * nu * (tp - tm)
+    A[i, (i + 1) % N] += 0.5 * nu * tp
+    A[i, (i - 1) % N] -= 0.5 * nu * tm
+    f = 0.5 * (u + np.roll(u, -1))    # explicit part of face flux
+    rhs = u - nu * ((1 - tp) * f - (1 - tm) * np.roll(f, 1))
+    return np.linalg.solve(A, rhs)
+
+gauss = np.exp(-((x - 0.5) / 0.08) ** 2)
+square = np.where(np.abs(x - 0.5) < 0.15, 1.0, 0.0)
+
+print(" nu  scheme  gauss_peak  square_max  square_min   mass")
+for nu in (0.5, 1.0, 2.0):
+    steps = int(round(N / nu))        # exactly one lap around the box
+    for mode in ("BE", "CN", "BLEND"):
+        g, s = gauss.copy(), square.copy()
+        for _ in range(steps):
+            g = theta_step(g, nu, mode)
+            s = theta_step(s, nu, mode)
+        print(f"{nu:4.1f}  {mode:6s}  {g.max():10.4f}  {s.max():10.4f}"
+              f"  {s.min():10.4f}  {s.sum() * dx:.6f}")
+```
+
+```text
+ nu  scheme  gauss_peak  square_max  square_min   mass
+ 0.5  BE          0.7497      0.9989     -0.0005  0.300000
+ 0.5  CN          0.9976      1.3142     -0.2945  0.300000
+ 0.5  BLEND       0.9452      1.0245     -0.0263  0.300000
+ 1.0  BE          0.6255      0.9677     -0.0001  0.300000
+ 1.0  CN          0.9962      1.3159     -0.3637  0.300000
+ 1.0  BLEND       0.8661      0.9994     -0.0009  0.300000
+ 2.0  BE          0.4939      0.8687      0.0003  0.300000
+ 2.0  CN          0.9884      1.3450     -0.3068  0.300000
+ 2.0  BLEND       0.6142      0.9509     -0.0045  0.300000
+```
+
+Now run the same code right in your browser.
+
+<ThetaBlendPulseRace />
+
+Keep the CFL at 0.5 and toggle between gauss and square. Red BE loses height; blue CN leaves ripples behind the step. Push the CFL to 2 or more and the green BLEND Gaussian peak sinks toward BE.
+
+## Reading the table: 0.75, 1.31, and 0.95
+
+At CFL 0.5, the BE Gaussian peak is 0.7497 — 25% gone in one lap, the same size as the 23% reflection damping mentioned earlier. CN keeps 0.9976, almost everything. But the step's maximum is 1.3142 and its minimum −0.2945, an overshoot beyond 31%. If this were density or volume fraction, a negative value means the run stops.
+
+BLEND gives 0.9452 for the Gaussian and 1.0245 / −0.0263 for the step. Amplitude loss drops to a fifth of BE's, and oscillation falls below a tenth of CN's. Mass is 0.300000 in every case.
+
+At CFL 2 the picture changes. The BLEND Gaussian peak falls to 0.6142, close to BE's 0.4939. There are two reasons. First, minmod treats a smooth extremum like a jump and picks BE there — the extremum clipping shared by all TVD limiters. Second, at large CFL the per-step BE loss $s^2$ grows, so those few cells drag the whole pulse down. The paper also places a CFL restriction on the second-order correction.
+
+## How far this toy is from the paper
+
+The paper splits the full Euler system IMEX-style: convection explicit, acoustics implicit. Here only one acoustic characteristic is left. The paper's limiter bounds the difference between a first-order implicit solution and a second-order one; here that's simplified to a per-face θ. So read the trends, not the exact numbers.
+
+The same source bundle offers other routes. Arun et al. (2019) replace BE with the two-stage ARS(2,2,2) IMEX-RK and cut damping from $O(\Delta t)$ to $O(\Delta t^2)$. Second-order IMEX can still lose order in the stiff limit, though; that case is covered in [the IMEX scheme that dropped to first order as M→0](/en/posts/2026-11-08-imex-order-reduction-stiffly-accurate/).
+
+## The first number to change when you suspect acoustic damping
+
+If reflected or resonant amplitudes come out low, check θ first. If θ = 1, plug your actual $\nu$ and cells per wavelength into the amplification factor above and compute the loss per period. If it matches the observed error, time integration is the culprit. Next, choose θ per face. Then drop the CFL toward 1 and check that BLEND stays on the CN side. The belief that an implicit scheme lets you crank the CFL freely is where the damping starts.

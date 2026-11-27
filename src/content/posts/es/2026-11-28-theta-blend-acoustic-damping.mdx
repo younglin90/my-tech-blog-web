@@ -1,0 +1,152 @@
+---
+title: "[Revisión de artículo] El esquema implícito borró el 25% de una onda acústica — Mezcla BE/CN celda a celda de Dimarco et al. (2017) con un limitador θ"
+date: 2026-11-28
+description: "Euler implícito recorta un 25% la amplitud de un pulso acústico en una vuelta; Crank–Nicolson sobrepasa un escalón en un 31%. Se reproduce en 1D una mezcla con θ por cara."
+tags: ["Crank-Nicolson", "IMEX", "TVD", "Implicit", "Paper-Review"]
+locale: es
+slug: 2026-11-28-theta-blend-acoustic-damping
+takeaway: "Elegir θ por cara entre 1/2 y 1 conserva las ondas suaves como CN y mantiene monótonos los saltos como BE, aunque con CFL grande la mezcla se inclina hacia BE."
+draft: false
+---
+import { ThetaModeDampingLab } from '@/components/post-viz/2026-11-28-theta-blend-acoustic-damping/ThetaModeDampingLab'
+import { ThetaBlendPulseRace } from '@/components/post-viz/2026-11-28-theta-blend-acoustic-damping/ThetaBlendPulseRace'
+
+## Cuanto más estable, más silencio
+
+Los métodos implícitos no divergen al aumentar el paso de tiempo. Por eso los solvers compresibles de bajo Mach tratan los términos acústicos de forma implícita. Pero la opción más estable, Euler implícito (Backward Euler, BE), borra el sonido sin avisar. Eso ocurrió en un caso de reflexión acústica de nuestro código multifásico compresible: la amplitud reflejada salió cerca de un 23% menor. Este artículo reduce a 1D la idea IMEX-TVD de Dimarco, Loubère, Michel-Dansac y Vignal (2017) y la reproduce. Al terminar, se puede explicar con números por qué conviene mezclar BE y Crank–Nicolson (CN) celda a celda, y dónde deja de funcionar.
+
+## Lo que pierde un modo de Fourier en cada paso
+
+El modelo más simple es la advección lineal $u_t + u_x = 0$. En acústica 1D, el invariante de Riemann $p + \rho c\,u$ (una cantidad constante a lo largo de una característica) cumple exactamente esta ecuación. Así que una onda acústica puede tratarse como advección.
+
+Un esquema θ promedia con pesos el flujo espacial entre el instante actual y el siguiente.
+
+$$
+u_i^{n+1} - u_i^n + \nu\left[\theta\,\delta F^{n+1} + (1-\theta)\,\delta F^{n}\right]_i = 0
+$$
+
+$\nu = c\Delta t/\Delta x$ es el número CFL acústico y $\delta F$ la diferencia de flujos centrados en las caras. $\theta = 1$ da BE; $\theta = 1/2$ da CN.
+
+Al introducir un modo con número de onda $\kappa = k\Delta x$ se obtiene el factor de amplificación por paso.
+
+$$
+|G|^2 = \frac{1 + (1-\theta)^2 s^2}{1 + \theta^2 s^2}, \qquad s = \nu \sin\kappa
+$$
+
+Con $\theta = 1/2$ numerador y denominador coinciden, así que $|G| = 1$: no se pierde amplitud. Con $\theta = 1$, $|G| = 1/\sqrt{1+s^2}$ y cada paso reduce la onda. La pérdida por paso es pequeña, pero cientos de pasos la acumulan.
+
+En la simulación de abajo se pueden cambiar θ y el CFL directamente.
+
+<ThetaModeDampingLab />
+
+Al bajar θ de 1 a 0.5, la envolvente amarilla se pega a 1. Al subir el CFL, la vuelta requiere menos pasos, pero $s$ crece y BE pierde todavía más.
+
+## Por qué CN no es la respuesta
+
+CN conserva la amplitud, pero mantiene toda la dispersión (cada longitud de onda viaja a distinta velocidad). Las ondas cortas se retrasan. Un pulso gaussiano suave casi no lo nota. Un pulso escalón es otra historia: está lleno de longitudes de onda cortas y, al quedarse atrás, dejan ondulaciones. Esa es la oscilación de Gibbs.
+
+BE amortigua con fuerza las ondas cortas, de modo que la zona del escalón queda monótona. BE está del lado TVD (total variation diminishing: la variación total no crece). Las fortalezas y debilidades de ambos esquemas son exactamente opuestas.
+
+## La idea del artículo: elegir θ celda a celda
+
+Dimarco et al. (2017) abordaron este problema en las ecuaciones de Euler a bajo Mach. Una solución implícita de primer orden es TVD pero muy difusiva. Una de segundo orden es precisa pero oscila. El artículo mezcla ambas celda a celda con un limitador para lograr segundo orden y TVD a la vez.
+
+Aquí la idea se reduce a un único θ. A partir de la solución actual $u^n$ se calcula un cociente de pendientes $r_i$ y se recorta con minmod.
+
+$$
+\phi_i = \max\!\left(0, \min(1, r_i)\right), \qquad \theta_i = 1 - \tfrac{1}{2}\phi_i
+$$
+
+$r_i = (u_i - u_{i-1})/(u_{i+1} - u_i)$ es el cociente de las dos pendientes vecinas. En zonas suaves $r_i \approx 1$, así que $\theta_i = 1/2$ (CN). En saltos y extremos $r_i \le 0$, así que $\theta_i = 1$ (BE). Cada cara $i+1/2$ toma el mayor θ de sus dos celdas.
+
+Como θ se fija a partir de $u^n$, el sistema sigue siendo lineal. No hacen falta iteraciones de Newton. Es el mismo objetivo del [esquema de relajación de Thomann–Iollo–Puppo](/es/posts/2026-11-22-jin-xin-relaxation-linear-implicit-pressure/). Y al estar escrito en forma de flujos por cara, la masa se conserva a precisión de máquina.
+
+## Código: una vuelta para un gaussiano y un escalón
+
+El dominio periódico $[0,1]$ se divide en 200 celdas. Un pulso gaussiano y un pulso escalón se advectan exactamente una vuelta con cada uno de los tres esquemas. La solución exacta es la forma inicial. Del gaussiano se mide el máximo; del escalón, el máximo y el mínimo.
+
+```python
+import numpy as np
+
+N = 200                      # cells on periodic [0, 1]
+dx = 1.0 / N
+x = (np.arange(N) + 0.5) * dx
+
+def face_theta(u, mode):
+    """theta at face i+1/2: 1 = Backward Euler, 1/2 = Crank-Nicolson"""
+    if mode == "BE":
+        return np.ones(N)
+    if mode == "CN":
+        return np.full(N, 0.5)
+    # BLEND: minmod smoothness ratio from u^n
+    dm = u - np.roll(u, 1)
+    dp = np.roll(u, -1) - u
+    r = dm / np.where(np.abs(dp) < 1e-12, 1e-12, dp)
+    phi = np.clip(np.minimum(1.0, r), 0.0, 1.0)   # 1 smooth, 0 jump/extremum
+    th = 1.0 - 0.5 * phi
+    return np.maximum(th, np.roll(th, -1))        # take the safer neighbor
+
+def theta_step(u, nu, mode):
+    """one implicit step of u_t + u_x = 0, central face flux, per-face theta"""
+    tp = face_theta(u, mode)          # face i+1/2
+    tm = np.roll(tp, 1)               # face i-1/2
+    i = np.arange(N)
+    A = np.eye(N)
+    A[i, i] += 0.5 * nu * (tp - tm)
+    A[i, (i + 1) % N] += 0.5 * nu * tp
+    A[i, (i - 1) % N] -= 0.5 * nu * tm
+    f = 0.5 * (u + np.roll(u, -1))    # explicit part of face flux
+    rhs = u - nu * ((1 - tp) * f - (1 - tm) * np.roll(f, 1))
+    return np.linalg.solve(A, rhs)
+
+gauss = np.exp(-((x - 0.5) / 0.08) ** 2)
+square = np.where(np.abs(x - 0.5) < 0.15, 1.0, 0.0)
+
+print(" nu  scheme  gauss_peak  square_max  square_min   mass")
+for nu in (0.5, 1.0, 2.0):
+    steps = int(round(N / nu))        # exactly one lap around the box
+    for mode in ("BE", "CN", "BLEND"):
+        g, s = gauss.copy(), square.copy()
+        for _ in range(steps):
+            g = theta_step(g, nu, mode)
+            s = theta_step(s, nu, mode)
+        print(f"{nu:4.1f}  {mode:6s}  {g.max():10.4f}  {s.max():10.4f}"
+              f"  {s.min():10.4f}  {s.sum() * dx:.6f}")
+```
+
+```text
+ nu  scheme  gauss_peak  square_max  square_min   mass
+ 0.5  BE          0.7497      0.9989     -0.0005  0.300000
+ 0.5  CN          0.9976      1.3142     -0.2945  0.300000
+ 0.5  BLEND       0.9452      1.0245     -0.0263  0.300000
+ 1.0  BE          0.6255      0.9677     -0.0001  0.300000
+ 1.0  CN          0.9962      1.3159     -0.3637  0.300000
+ 1.0  BLEND       0.8661      0.9994     -0.0009  0.300000
+ 2.0  BE          0.4939      0.8687      0.0003  0.300000
+ 2.0  CN          0.9884      1.3450     -0.3068  0.300000
+ 2.0  BLEND       0.6142      0.9509     -0.0045  0.300000
+```
+
+Ahora el mismo código puede ejecutarse en el navegador.
+
+<ThetaBlendPulseRace />
+
+Con el CFL en 0.5, alternar entre gauss y square. El BE rojo pierde altura; el CN azul deja ondulaciones tras el escalón. Al subir el CFL a 2 o más, el pico gaussiano del BLEND verde baja hacia BE.
+
+## Lectura de la tabla: 0.75, 1.31 y 0.95
+
+Con CFL 0.5, el pico gaussiano de BE es 0.7497: un 25% perdido en una vuelta, del mismo tamaño que el 23% de amortiguamiento de la reflexión mencionado al inicio. CN conserva 0.9976, casi todo. A cambio, el máximo del escalón es 1.3142 y el mínimo −0.2945, un sobrepaso de más del 31%. Si fuera densidad o fracción volumétrica, un valor negativo detendría el cálculo.
+
+BLEND da 0.9452 en el gaussiano y 1.0245 / −0.0263 en el escalón. La pérdida de amplitud baja a la quinta parte de la de BE y la oscilación queda por debajo de una décima parte de la de CN. La masa es 0.300000 en todos los casos.
+
+Con CFL 2 el panorama cambia. El pico gaussiano de BLEND cae a 0.6142, cerca del 0.4939 de BE. Hay dos razones. Primero, minmod trata un extremo suave como un salto y elige BE allí: el recorte de extremos (clipping) común a todos los limitadores TVD. Segundo, con CFL grande la pérdida de BE por paso, $s^2$, crece, y esas pocas celdas arrastran todo el pulso. El artículo también impone una restricción de CFL a la corrección de segundo orden.
+
+## Distancia entre este juguete y el artículo
+
+El artículo divide el sistema de Euler completo al estilo IMEX: convección explícita, acústica implícita. Aquí solo queda una característica acústica. El limitador del artículo acota la diferencia entre una solución implícita de primer orden y otra de segundo orden; aquí se simplifica a un θ por cara. Conviene leer tendencias, no los números exactos.
+
+El mismo conjunto de fuentes ofrece otras rutas. Arun et al. (2019) sustituyen BE por el IMEX-RK de dos etapas ARS(2,2,2) y reducen el amortiguamiento de $O(\Delta t)$ a $O(\Delta t^2)$. Aun así, un IMEX de segundo orden puede perder orden en el límite rígido; ese caso está en [el IMEX que cayó a primer orden cuando M→0](/es/posts/2026-11-08-imex-order-reduction-stiffly-accurate/).
+
+## El primer número que conviene cambiar ante un amortiguamiento acústico
+
+Si las amplitudes reflejadas o resonantes salen bajas, lo primero es revisar θ. Si θ = 1, basta con introducir el $\nu$ real y las celdas por longitud de onda en el factor de amplificación y calcular la pérdida por periodo. Si coincide con el error observado, la culpable es la integración temporal. Lo siguiente es elegir θ por cara. Después, bajar el CFL hacia 1 y comprobar que BLEND se queda del lado de CN. La creencia de que un esquema implícito permite subir el CFL sin límite es justo donde empieza el amortiguamiento.

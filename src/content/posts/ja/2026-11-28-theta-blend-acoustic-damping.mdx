@@ -1,0 +1,152 @@
+---
+title: "[論文レビュー] 陰解法が音波を25%消した — Dimarcoら(2017) BE・CNのセルごとのブレンドとθリミッタ"
+date: 2026-11-28
+description: "後退オイラーは音波振幅を1周で25%削り、クランク–ニコルソンは段差で31%はね上がります。面ごとにθを選ぶブレンドを1Dで再現します。"
+tags: ["Crank-Nicolson", "IMEX", "TVD", "Implicit", "Paper-Review"]
+locale: ja
+slug: 2026-11-28-theta-blend-acoustic-damping
+takeaway: "θを面ごとに1/2と1の間で選ぶと、滑らかな波はCNのように保ち、不連続はBEのように単調に守れます。ただしCFLが大きいとBE側に寄ります。"
+draft: false
+---
+import { ThetaModeDampingLab } from '@/components/post-viz/2026-11-28-theta-blend-acoustic-damping/ThetaModeDampingLab'
+import { ThetaBlendPulseRace } from '@/components/post-viz/2026-11-28-theta-blend-acoustic-damping/ThetaBlendPulseRace'
+
+## 安定なほど音波は消えていく
+
+陰解法(implicit method)は時間刻みを大きくしても発散しません。そのため低マッハ圧縮性ソルバーは音響項を陰的に解きます。ところが最も安定な後退オイラー(Backward Euler, BE)は、音波を静かに消してしまいます。私たちの圧縮性多相コードの音響反射ケースでもそうでした。反射波の振幅が約23%小さく出たのです。この記事では、Dimarco、Loubère、Michel-Dansac、Vignal(2017)のIMEX-TVDのアイデアを1Dに縮めて再現します。読み終えると、BEとクランク–ニコルソン(Crank–Nicolson, CN)をセルごとに混ぜる理由とその限界を、数字で説明できるようになります。
+
+## 一つのフーリエモードが毎ステップ失うもの
+
+最も単純なモデルは線形移流 $u_t + u_x = 0$ です。1D音響系のリーマン不変量(特性線に沿って一定な量)$p + \rho c\,u$ はまさにこの式に従います。ですから音波一つを移流として扱えます。
+
+θスキームは空間フラックスを現在と次の時刻の間で重み付き平均します。
+
+$$
+u_i^{n+1} - u_i^n + \nu\left[\theta\,\delta F^{n+1} + (1-\theta)\,\delta F^{n}\right]_i = 0
+$$
+
+$\nu = c\Delta t/\Delta x$ は音響CFL数、$\delta F$ は中心面フラックスの差分です。$\theta = 1$ ならBE、$\theta = 1/2$ ならCNです。
+
+波数 $\kappa = k\Delta x$ のモードを入れると、1ステップの増幅率が得られます。
+
+$$
+|G|^2 = \frac{1 + (1-\theta)^2 s^2}{1 + \theta^2 s^2}, \qquad s = \nu \sin\kappa
+$$
+
+$\theta = 1/2$ では分子と分母が等しく $|G| = 1$ です。振幅をまったく失いません。$\theta = 1$ では $|G| = 1/\sqrt{1+s^2}$ で毎ステップ縮みます。1ステップの損失は小さくても、数百ステップ積み重なると大きくなります。
+
+下のシミュレーションでθとCFLを実際に動かしてみましょう。
+
+<ThetaModeDampingLab />
+
+θを1から0.5に下げると、黄色の包絡線が1に張り付きます。CFLを上げると1周のステップ数は減りますが、$s$ が大きくなるのでBEの損失はむしろ増えます。
+
+## CNが正解ではない理由
+
+CNは振幅を保ちますが、分散(波長ごとに速度が異なる現象)はそのまま残ります。短い波長は遅れて進みます。滑らかなガウスパルスならほとんど問題ありません。段差状のパルスは違います。段差には短い波長が多く含まれ、それらが遅れて波紋を作ります。これがギブス振動(Gibbs oscillation)です。
+
+BEは短い波長を強く減衰させます。そのため段差付近が単調に保たれます。BEはTVD(total variation diminishing、全変動が増えない性質)を満たす側です。二つのスキームの長所と短所は正反対です。
+
+## 論文の着想:θをセルごとに選ぶ
+
+Dimarcoら(2017)は低マッハのオイラー方程式でこの問題を扱いました。1次の陰的解はTVDですが拡散が大きいです。2次の解は正確ですが振動します。論文は両者をリミッタでセルごとに混ぜ、2次精度とTVDを同時に狙います。
+
+この記事ではその着想をθ一つに縮めます。現在の解 $u^n$ から勾配比 $r_i$ を計算し、minmodで切ります。
+
+$$
+\phi_i = \max\!\left(0, \min(1, r_i)\right), \qquad \theta_i = 1 - \tfrac{1}{2}\phi_i
+$$
+
+$r_i = (u_i - u_{i-1})/(u_{i+1} - u_i)$ は左右の勾配の比です。滑らかなら $r_i \approx 1$ で $\theta_i = 1/2$(CN)です。不連続や極値では $r_i \le 0$ なので $\theta_i = 1$(BE)です。面 $i+1/2$ には両隣のセルのうち大きいθを使います。
+
+θを $u^n$ から決めるので、連立方程式は線形のままです。ニュートン反復は要りません。これは[Thomann–Iollo–Puppoの緩和法](/ja/posts/2026-11-22-jin-xin-relaxation-linear-implicit-pressure/)が目指したものと同じです。面フラックス形式なので、質量も機械精度で保存されます。
+
+## コード:ガウスと段差を1周させる
+
+周期箱 $[0,1]$ を200セルに分けます。ガウスパルスと段差パルスを三つのスキームでちょうど1周移流させます。厳密解は初期形状そのものです。ガウスは最大値を、段差は最大値と最小値を見ます。
+
+```python
+import numpy as np
+
+N = 200                      # cells on periodic [0, 1]
+dx = 1.0 / N
+x = (np.arange(N) + 0.5) * dx
+
+def face_theta(u, mode):
+    """theta at face i+1/2: 1 = Backward Euler, 1/2 = Crank-Nicolson"""
+    if mode == "BE":
+        return np.ones(N)
+    if mode == "CN":
+        return np.full(N, 0.5)
+    # BLEND: minmod smoothness ratio from u^n
+    dm = u - np.roll(u, 1)
+    dp = np.roll(u, -1) - u
+    r = dm / np.where(np.abs(dp) < 1e-12, 1e-12, dp)
+    phi = np.clip(np.minimum(1.0, r), 0.0, 1.0)   # 1 smooth, 0 jump/extremum
+    th = 1.0 - 0.5 * phi
+    return np.maximum(th, np.roll(th, -1))        # take the safer neighbor
+
+def theta_step(u, nu, mode):
+    """one implicit step of u_t + u_x = 0, central face flux, per-face theta"""
+    tp = face_theta(u, mode)          # face i+1/2
+    tm = np.roll(tp, 1)               # face i-1/2
+    i = np.arange(N)
+    A = np.eye(N)
+    A[i, i] += 0.5 * nu * (tp - tm)
+    A[i, (i + 1) % N] += 0.5 * nu * tp
+    A[i, (i - 1) % N] -= 0.5 * nu * tm
+    f = 0.5 * (u + np.roll(u, -1))    # explicit part of face flux
+    rhs = u - nu * ((1 - tp) * f - (1 - tm) * np.roll(f, 1))
+    return np.linalg.solve(A, rhs)
+
+gauss = np.exp(-((x - 0.5) / 0.08) ** 2)
+square = np.where(np.abs(x - 0.5) < 0.15, 1.0, 0.0)
+
+print(" nu  scheme  gauss_peak  square_max  square_min   mass")
+for nu in (0.5, 1.0, 2.0):
+    steps = int(round(N / nu))        # exactly one lap around the box
+    for mode in ("BE", "CN", "BLEND"):
+        g, s = gauss.copy(), square.copy()
+        for _ in range(steps):
+            g = theta_step(g, nu, mode)
+            s = theta_step(s, nu, mode)
+        print(f"{nu:4.1f}  {mode:6s}  {g.max():10.4f}  {s.max():10.4f}"
+              f"  {s.min():10.4f}  {s.sum() * dx:.6f}")
+```
+
+```text
+ nu  scheme  gauss_peak  square_max  square_min   mass
+ 0.5  BE          0.7497      0.9989     -0.0005  0.300000
+ 0.5  CN          0.9976      1.3142     -0.2945  0.300000
+ 0.5  BLEND       0.9452      1.0245     -0.0263  0.300000
+ 1.0  BE          0.6255      0.9677     -0.0001  0.300000
+ 1.0  CN          0.9962      1.3159     -0.3637  0.300000
+ 1.0  BLEND       0.8661      0.9994     -0.0009  0.300000
+ 2.0  BE          0.4939      0.8687      0.0003  0.300000
+ 2.0  CN          0.9884      1.3450     -0.3068  0.300000
+ 2.0  BLEND       0.6142      0.9509     -0.0045  0.300000
+```
+
+上のコードをブラウザで実際に動かしてみましょう。
+
+<ThetaBlendPulseRace />
+
+CFLを0.5のままgaussとsquareを切り替えてみてください。赤のBEはピークが下がり、青のCNは段差の後ろに波紋を残します。CFLを2以上に上げると、緑のBLENDのガウスピークがBE側に下がります。
+
+## 表を読む:0.75、1.31、そして0.95
+
+CFL 0.5でBEのガウスピークは0.7497です。1周で25%を失いました。冒頭の反射波23%の減衰と同じ大きさです。CNは0.9976でほぼ保存します。その代わり段差の最大値が1.3142、最小値が−0.2945です。31%以上はね上がります。密度や体積分率なら、負の値はそのまま計算停止です。
+
+BLENDはガウス0.9452、段差1.0245と−0.0263です。振幅損失はBEの5分の1に減り、振動はCNの10分の1以下です。質量はすべてのケースで0.300000です。
+
+CFL 2では様子が変わります。BLENDのガウスピークが0.6142に落ち、BE(0.4939)に近づきます。理由は二つあります。第一に、minmodは滑らかな極値も不連続とみなしてBEを選びます。TVDリミッタに共通する極値の削り(clipping)です。第二に、CFLが大きいと1ステップのBE損失 $s^2$ が大きくなり、その数セルが全体を引き下げます。論文も2次補正にはCFL制限を設けています。
+
+## このおもちゃと論文の距離
+
+論文はオイラー方程式全体をIMEXで分割します。対流は陽的、音響は陰的です。ここでは音響特性を一つだけ残しました。論文のリミッタは1次の陰的解と2次の解の差を制限する構造です。ここではそれを面ごとのθに単純化しました。したがって数字そのものより傾向を見てください。
+
+同じソース群には別の選択肢もあります。Arunら(2019)はBEの代わりにARS(2,2,2)の2段IMEX-RKを使い、減衰を $O(\Delta t)$ から $O(\Delta t^2)$ に下げます。ただし2次のIMEXでも硬い極限では次数を失うことがあります。その事例は[M→0で1次に落ちたIMEX](/ja/posts/2026-11-08-imex-order-reduction-stiffly-accurate/)にまとめました。
+
+## 音響減衰を疑ったとき最初に変える数字
+
+反射波や共鳴の振幅が小さく出たら、まずθを確認します。θ = 1なら、上の増幅率の式に実際の $\nu$ と1波長あたりのセル数を入れて、1周期の損失を計算してみます。それが観測誤差と近ければ、原因は時間積分です。次はθを面ごとに選ぶことです。そしてCFLを1付近まで下げ、BLENDがCN側に留まるか確かめます。陰解法だからCFLをいくらでも上げてよいという考えこそ、減衰の出発点です。
